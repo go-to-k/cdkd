@@ -56,9 +56,6 @@ needs expensive/out-of-scope infrastructure this fixture deliberately avoids:
   here.
 - **Role** — needs a classic ELB setup (legacy service role); create-only
   pass-through + replacement classification are unit-pinned.
-- **Monitoring read-back** — `DescribeServices` returns no `monitoring`
-  member, so only CreateService ACCEPTANCE is live-provable (done here: a
-  mis-flipped required member like `metricNames` would fail the deploy).
 
 ## Resources
 
@@ -73,10 +70,11 @@ needs expensive/out-of-scope infrastructure this fixture deliberately avoids:
 1. **Phase 1 (base)**: deploy with `EnableECSManagedTags: false`,
    `PropagateTags: NONE`, `PlatformVersion: 1.4.0`,
    `HealthCheckGracePeriodSeconds: 30`, plus the #609 members
-   `AvailabilityZoneRebalancing: ENABLED`, `DeploymentController: {Type: ECS}`,
-   `Monitoring` (60s default resolution) and a `ForceNewDeployment` nonce
+   `AvailabilityZoneRebalancing: DISABLED`, `DeploymentController: {Type: ECS}`,
+   `Monitoring` (20s CPUUtilization) and a `ForceNewDeployment` nonce
    (all via the L1 escape hatch); assert `describe-services` shows them
-   (`availabilityZoneRebalancing=ENABLED`; the controller may legitimately be
+   (`availabilityZoneRebalancing=DISABLED`; the service revision carries the
+   20s monitoring; the controller may legitimately be
    omitted for the ECS default per the API docs), assert the deploy-time
    `observedProperties` captured `AvailabilityZoneRebalancing` +
    `DeploymentController.Type=ECS` (the reader's fallback), assert
@@ -87,6 +85,10 @@ needs expensive/out-of-scope infrastructure this fixture deliberately avoids:
    `enableECSManagedTags: true` / `propagateTags: TASK_DEFINITION` (#975) AND
    dropping `PlatformVersion` / `HealthCheckGracePeriodSeconds` (#5004); assert
    the #975 changes reach AWS AND the removed fields are RETAINED (`1.4.0` / `30`).
+   It also drops `AvailabilityZoneRebalancing` and `Monitoring` (#1160): a
+   CloudFormation A/B showed CloudFormation keeps `DISABLED` and resets the
+   service revision's monitoring to `{metricConfigurations: []}`, so assert
+   both.
 3. **Phase 2b (force-nonce)**: redeploy with
    `CDKD_TEST_UPDATE=true,force-nonce` — the template is identical to phase 2
    except the `ForceNewDeployment.ForceNewDeploymentNonce` bump; assert a

@@ -27,15 +27,17 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  * route back and make the test pass for the wrong reason.
  *
  * The #609 additions exercised live here (cheap, control-plane only):
- * - AvailabilityZoneRebalancing: ENABLED — read back via describe-services.
+ * - AvailabilityZoneRebalancing: DISABLED (non-default) in phase 1 — read back
+ *   via describe-services; DROPPED in phase 2, where CloudFormation keeps the
+ *   live value (#1160 A/B), so verify.sh asserts DISABLED is retained.
  * - DeploymentController: { Type: ECS } explicit — CreateService must accept
  *   the member; describe-services may legitimately omit it for the default
  *   ECS controller (SDK API doc), so the strong assert is on the deploy-time
  *   observedProperties (the reader's {Type: ECS} fallback).
- * - Monitoring: default 60s resolution — DescribeServices has no read-back
- *   for it, so the live proof is ACCEPTANCE (a mis-flipped required member
- *   like `metricNames` would fail CreateService); values are pinned by
- *   tests/unit/provisioning/ecs-service-config-props.test.ts.
+ * - Monitoring: 20s CPUUtilization in phase 1, DROPPED in phase 2 —
+ *   DescribeServices has no member for it, so verify.sh reads the service
+ *   revision. CloudFormation resets it to `{metricConfigurations: []}` on
+ *   removal (#1160 A/B), and so must cdkd.
  * - ForceNewDeployment: the nonce is bumped in the `force-nonce` phase (2b)
  *   and verify.sh asserts a fresh rollout (deployments[0].id changed).
  *
@@ -43,8 +45,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  * see the README "Not exercised live" section for the recorded rationale):
  * PlacementStrategies (needs EC2 launch type), VpcLatticeConfigurations
  * (needs VPC Lattice plumbing), DeploymentController CODE_DEPLOY (needs
- * CodeDeploy plumbing), Role (needs a classic ELB setup), Monitoring
- * read-back (no DescribeServices member).
+ * CodeDeploy plumbing), Role (needs a classic ELB setup).
  *
  * Cost: desiredCount is 0 (no task ever launches; only control-plane
  * resources exist), so the fixture is cheap.
@@ -163,27 +164,19 @@ export class EcsServiceUpdatePropsStack extends cdk.Stack {
 
     const cfnService = service.node.defaultChild as ecs.CfnService;
 
-    // issue #609 backfill — present in EVERY phase (unchanged across the
-    // update deploys, so the change-gated update path must NOT re-send them;
-    // only the ForceNewDeployment nonce changes, in phase 2b):
-    //   - AvailabilityZoneRebalancing: readable via describe-services.
+    // issue #609 backfill. DeploymentController / ForceNewDeployment are
+    // present in EVERY phase (unchanged across the update deploys, so the
+    // change-gated update path must NOT re-send them; only the
+    // ForceNewDeployment nonce changes, in phase 2b):
     //   - DeploymentController {Type: ECS}: explicit default-controller form;
     //     the strong assert is on observedProperties (see verify.sh).
-    //   - Monitoring: 60s = the AWS default resolution (no detailed-monitoring
-    //     cost); acceptance-only live proof (no DescribeServices read-back).
     //   - ForceNewDeployment: EnableForceNewDeployment false (a member CFn requires)
     //     plus the nonce; phase 2b bumps the nonce and
     //     verify.sh asserts a fresh rollout appeared.
     // All injected via addPropertyOverride so the wire shape is exactly what a
     // hand-written template emits, independent of the installed aws-cdk-lib's
     // L1 typings.
-    cfnService.addPropertyOverride('AvailabilityZoneRebalancing', 'ENABLED');
     cfnService.addPropertyOverride('DeploymentController', { Type: 'ECS' });
-    cfnService.addPropertyOverride('Monitoring', {
-      MetricConfigurations: [
-        { MetricNames: ['CPUUtilization', 'MemoryUtilization'], ResolutionSeconds: 60 },
-      ],
-    });
     cfnService.addPropertyOverride('ForceNewDeployment', {
       EnableForceNewDeployment: false,
       ForceNewDeploymentNonce: isForceNonce ? 'cdkd-nonce-2' : 'cdkd-nonce-1',
@@ -199,6 +192,14 @@ export class EcsServiceUpdatePropsStack extends cdk.Stack {
     // exactly what a hand-written template / CDK L2 emits. Phase 1 sets one
     // custom shape (create path); phase 2 CHANGES it (update SET path).
     if (!isUpdate) {
+      // #1160: both are DECLARED in phase 1 only, with non-default values, and
+      // phase 2 drops them. CloudFormation keeps AvailabilityZoneRebalancing
+      // (DISABLED stays, not the ENABLED default) and resets Monitoring to an
+      // empty metric list; the 20s resolution makes the reset observable.
+      cfnService.addPropertyOverride('AvailabilityZoneRebalancing', 'DISABLED');
+      cfnService.addPropertyOverride('Monitoring', {
+        MetricConfigurations: [{ MetricNames: ['CPUUtilization'], ResolutionSeconds: 20 }],
+      });
       cfnService.addPropertyOverride('PlatformVersion', '1.4.0');
       cfnService.addPropertyOverride('HealthCheckGracePeriodSeconds', 30);
       cfnService.addPropertyOverride('DeploymentConfiguration', {

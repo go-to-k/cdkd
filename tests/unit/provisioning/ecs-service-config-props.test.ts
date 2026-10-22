@@ -447,7 +447,7 @@ describe('ECS Service config properties (#609)', () => {
       expect(findCommand(UpdateServiceCommand).input.vpcLatticeConfigurations).toEqual([]);
     });
 
-    it('Monitoring: change is sent converted; unchanged is NOT sent; removal is DEFERRED (nothing sent)', async () => {
+    it('Monitoring: change is sent converted; unchanged is NOT sent; removal resets to an empty metric list', async () => {
       const mon = { MetricConfigurations: [{ MetricNames: ['CPUUtilization'], ResolutionSeconds: 20 }] };
       await update({ ...baseProps(), Monitoring: mon }, baseProps());
       expect(findCommand(UpdateServiceCommand).input.monitoring).toEqual({
@@ -460,7 +460,7 @@ describe('ECS Service config properties (#609)', () => {
 
       mockSend.mockReset();
       await update(baseProps(), { ...baseProps(), Monitoring: mon });
-      expect(findCommand(UpdateServiceCommand).input.monitoring).toBeUndefined();
+      expect(findCommand(UpdateServiceCommand).input.monitoring).toEqual({ metricConfigurations: [] });
     });
   });
 

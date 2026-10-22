@@ -456,9 +456,11 @@ export class ECSProvider implements ResourceProvider {
    * these are removed from the template: CapacityProviderStrategy,
    * PlacementConstraints, PlacementStrategies, PlatformVersion,
    * HealthCheckGracePeriodSeconds, EnableECSManagedTags, PropagateTags,
-   * EnableExecuteCommand. `UpdateService` keeps an absent member, so sending
-   * nothing is parity. ServiceConnectConfiguration IS reset by CloudFormation
-   * (see `updateService`). The earlier #1160 resets for the keep list were
+   * EnableExecuteCommand, and (#1160) AvailabilityZoneRebalancing.
+   * `UpdateService` keeps an absent member, so sending nothing is parity.
+   * ServiceConnectConfiguration, VolumeConfigurations,
+   * VpcLatticeConfigurations and Monitoring ARE reset by CloudFormation (see
+   * `updateService`). The earlier #1160 resets for the keep list were
    * parity bugs and are removed.
    */
   removalDefaults = new Map<string, ReadonlyMap<string, unknown>>();
@@ -2066,28 +2068,19 @@ export class ECSProvider implements ResourceProvider {
     // "this parameter triggers a new service deployment": re-sending an
     // unchanged value on an unrelated update could start a spurious rollout.
     //
-    // Removal (present before, absent now) semantics per member — the #1160
-    // doctrine wants live-probed reset sentinels; none of these have been
-    // live-probed yet, so each choice below is documented from the API docs
-    // and marked UNVERIFIED-LIVE where a probe is still owed:
-    //   - ServiceConnectConfiguration -> `{ enabled: false }`. A real
-    //     CloudFormation A/B (#5004) confirmed CloudFormation resets it to
-    //     disabled on removal, so this reset is parity.
-    //   - VolumeConfigurations / VpcLatticeConfigurations -> `[]`. NOT
-    //     measured against CloudFormation (#5004): behavior unchanged, matching
-    //     the empty-list clear sentinel of the sibling list members
-    //     (LoadBalancers / ServiceRegistries). Unlike
-    //     those, the UpdateService doc does not spell out "pass an empty list
-    //     to remove" for these two. UNVERIFIED-LIVE.
-    //   - AvailabilityZoneRebalancing -> DEFERRED (no reset sent). The SDK
-    //     doc is explicit that an absent value on UpdateService keeps the
-    //     existing setting, and the defaults genuinely diverge (CreateService
-    //     defaults ENABLED; a service that never had a value is treated as
-    //     DISABLED), so there is no single defensible CFn reset value without
-    //     a live probe — same deferral shape as DeploymentConfiguration above.
-    //   - Monitoring -> DEFERRED (no reset sent). Its removal reset would
-    //     need the sub-field merge semantics of MonitoringConfiguration
-    //     live-probed first (the DeploymentConfiguration precedent above).
+    // Removal (present before, absent now) semantics per member, each settled
+    // by a real CloudFormation A/B (#5004, #1160):
+    //   - ServiceConnectConfiguration -> `{ enabled: false }`: CloudFormation
+    //     resets it to disabled on removal.
+    //   - VolumeConfigurations / VpcLatticeConfigurations -> `[]`:
+    //     CloudFormation clears both (the service revision carries neither
+    //     afterwards), and UpdateService clears on an empty list.
+    //   - AvailabilityZoneRebalancing -> no reset sent: CloudFormation KEEPS
+    //     the live value (DISABLED stayed DISABLED, not the schema's ENABLED
+    //     default), and UpdateService keeps an absent member.
+    //   - Monitoring -> `{ metricConfigurations: [] }`: CloudFormation resets
+    //     the service revision to exactly that, while UpdateService keeps an
+    //     absent member (the old 20-second resolution survived).
     //   - DeploymentController -> no reset by design: absent means the
     //     default ECS controller, and sending nothing keeps AWS's current
     //     controller (the property is only sent when present AND changed —
@@ -2158,10 +2151,15 @@ export class ECSProvider implements ResourceProvider {
     const monitoringChanged =
       JSON.stringify(previousProperties['Monitoring'] ?? null) !==
       JSON.stringify(properties['Monitoring'] ?? null);
-    const monitoringInput =
-      monitoringChanged && properties['Monitoring'] != null
-        ? this.convertMonitoringConfiguration(properties['Monitoring'] as Record<string, unknown>)
-        : undefined;
+    const monitoringInput = monitoringChanged
+      ? clearOnUpdateRemoval(
+          this.convertMonitoringConfiguration(
+            properties['Monitoring'] as Record<string, unknown> | undefined
+          ),
+          previousProperties['Monitoring'] as MonitoringConfiguration | undefined,
+          { metricConfigurations: [] }
+        )
+      : undefined;
 
     // CFn ForceNewDeployment `{EnableForceNewDeployment, ForceNewDeploymentNonce}`
     // -> the SDK's plain `forceNewDeployment` boolean (only send `true`; the
