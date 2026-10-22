@@ -299,13 +299,14 @@ describe.each(TARGETS.filter((t) => t.resourceType.startsWith('AWS::RDS::')))(
       expect(input['MasterUserPassword']).toBeUndefined();
     });
 
-    it('treats a recorded secret stand-in inside MasterUserSecret as changed', async () => {
-      const input = await modifyInput(
-        { ManageMasterUserPassword: true, MasterUserSecret: { KmsKeyId: 'key-1' } },
-        { ManageMasterUserPassword: true, MasterUserSecret: { KmsKeyId: '***' } }
-      );
-      expect(input['MasterUserSecretKmsKeyId']).toBe('key-1');
-    });
+    it.each(['***', '{{resolve:ssm:/db/kms-key}}'])(
+      'never reads a recorded stand-in nested in MasterUserSecret (%s) as equal',
+      async (standIn) => {
+        const bag = { ManageMasterUserPassword: true, MasterUserSecret: { KmsKeyId: standIn } };
+        const input = await modifyInput(bag, structuredClone(bag));
+        expect(input['ManageMasterUserPassword']).toBe(true);
+      }
+    );
   }
 );
 
