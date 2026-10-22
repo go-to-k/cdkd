@@ -124,12 +124,8 @@ import {
 } from '../../local/stage-resolver.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
 import { createWatchPredicates, resolveWatchConfig } from 'cdk-local/internal';
-import {
-  attachAuthorizers,
-  type AuthorizerInfo,
-  type RouteWithAuth,
-} from '../../local/authorizer-resolver.js';
-import { createAuthorizerCache } from '../../local/authorizer-cache.js';
+import { attachAuthorizers, type RouteWithAuth } from '../../local/authorizer-resolver.js';
+import { createAuthorizerCache, type AuthorizerCache } from '../../local/authorizer-cache.js';
 import {
   buildCognitoJwksUrl,
   buildJwksUrlFromIssuer,
@@ -163,9 +159,14 @@ import {
 interface NextStateMaterial {
   /** Discovered routes with attached authorizer info (`authorizer: undefined` when none). */
   routes: RouteWithAuth[];
-  /** Full per-Lambda spec map (every Lambda reachable through `routes` or a WebSocket route). */
+  /**
+   * Full per-Lambda spec map (every Lambda reachable through `routes` or a
+   * WebSocket route), keyed by {@link servedLambdaKey}: (stack, logical id),
+   * so two stacks reusing a construct id keep two specs (#5181).
+   */
   specs: Map<string, ContainerSpec>;
-  corsConfigByApiId: Map<string, CorsConfig>;
+  /** Per-API CORS config, per stack name: each server reads its own stack's (#5181). */
+  corsConfigByStack: Map<string, Map<string, CorsConfig>>;
   /**
    * Discovered WebSocket APIs (#462). `reloadAllServers` does not reload a
    * WebSocket server: a route-set or Lambda change needs a manual restart,
@@ -174,9 +175,10 @@ interface NextStateMaterial {
   webSocketApis?: readonly DiscoveredWebSocketApi[];
   /**
    * The target stacks this material was built from, so the initial boot can
-   * run startup-only side effects (`warnVpcConfigLambdas`) without re-synthesizing.
+   * run startup-only side effects (`warnVpcConfigLambdas`) without
+   * re-synthesizing, and each server finds its routes' Lambdas' specs.
    */
-  stacks?: readonly StackInfo[];
+  stacks: readonly StackInfo[];
 }
 
 interface LocalStartApiOptions {
@@ -479,7 +481,12 @@ async function localStartApiCommand(
   // jwksWarnedAt Map (URL -> last-warned epoch ms) drives cdk-local's
   // per-time-window pass-through warn dedup (cdk-local #252): the warn
   // re-fires only once the window elapses, instead of once-ever-per-URL.
-  const authorizerCache = createAuthorizerCache();
+  //
+  // One authorizer-verdict cache PER STACK (#5181): cdk-local keys a verdict
+  // by the authorizer's bare logical id and the identity, so two served
+  // stacks reusing an authorizer construct id would answer one stack's
+  // request with the other's cached Allow.
+  const authorizerCaches = new Map<string, AuthorizerCache>();
   const jwksCache = createJwksCache();
   const jwksWarnedAt = new Map<string, number>();
   // #447: SigV4 verifier state for `AuthorizationType: 'AWS_IAM'` routes.
@@ -601,27 +608,13 @@ async function localStartApiCommand(
     // first-attached default. The CLI surfaces a warn line when
     // `--stage` was passed and at least one API doesn't have a Stage
     // with that name.
-    const stageMap = new Map<string, ResolvedStage>();
-    for (const stack of targetStacks) {
-      const m = buildStageMap(stack.template, options.stage);
-      for (const [k, v] of m) stageMap.set(k, v);
+    //
+    const missingApis = attachStageContextPerStack(targetStacks, routes, options.stage);
+    for (const apiId of missingApis) {
+      logger.warn(
+        `--stage '${options.stage}' did not match any Stage on API '${apiId}'; routes on that API will get stageVariables: null.`
+      );
     }
-    if (options.stage) {
-      // Walk the routes looking for HTTP API v2 / REST v1 routes whose
-      // API isn't in `stageMap` (i.e. the API had no Stage with the
-      // override name). One warn per such API, deduplicated.
-      const missingApis = new Set<string>();
-      for (const r of routes) {
-        if (!r.apiLogicalId) continue;
-        if (!stageMap.has(r.apiLogicalId)) missingApis.add(r.apiLogicalId);
-      }
-      for (const apiId of missingApis) {
-        logger.warn(
-          `--stage '${options.stage}' did not match any Stage on API '${apiId}'; routes on that API will get stageVariables: null.`
-        );
-      }
-    }
-    attachStageContext(routes, stageMap);
 
     // PR 8b: attach authorizer info to every route. Routes without an
     // authorizer pass through as `{route, authorizer: undefined}`.
@@ -658,13 +651,16 @@ async function localStartApiCommand(
       routesWithAuth = filtered;
     }
 
-    // A union of stacks (`--stack` with a wildcard, or a physical name two
-    // Stage clones share) is served through maps keyed by BARE logical id --
-    // the per-Lambda container specs, the per-API stage / CORS maps -- so two
-    // stacks declaring one would serve one stack's Lambda for the other's
-    // route. Refuse, naming the stacks (#5175). Checked over the same
+    // A union of stacks (`--stack` with a wildcard) is served through maps
+    // keyed by (stack, logical id), so stacks reusing a construct id each
+    // serve their own Lambda, Stage and CORS (#5181). Refused: two stacks
+    // sharing a physical name (#5175), and a bare logical id the user passed
+    // that more than one served stack declares. Checked over the same
     // population those maps read: every target stack, every discovered route.
-    assertServedLogicalIdsUnambiguous(targetStacks, routes, routesWithAuth, webSocketApis);
+    assertServedLogicalIdsUnambiguous(targetStacks, routes, routesWithAuth, webSocketApis, {
+      ...(options.assumeRole !== undefined && { assumeRole: options.assumeRole }),
+      ...(overrides !== undefined && { overrides }),
+    });
 
     // PR 8c: per-API CORS config. HTTP API v2's `CorsConfiguration` +
     // Function URL's own `Cors` (issue #644) + CORS borrowed from
@@ -678,13 +674,10 @@ async function localStartApiCommand(
     // AWS semantics: Function URL's own headers apply at the Lambda
     // boundary; we only have one slot locally, so closer-to-Lambda
     // wins). The two rarely coexist in practice.
-    const corsConfigByApiId = new Map<string, CorsConfig>();
-    for (const stack of targetStacks) {
-      const fromCloudFront = buildCorsConfigFromCloudFrontChain(stack.template);
-      for (const [k, v] of fromCloudFront) corsConfigByApiId.set(k, v);
-      const direct = buildCorsConfigByApiId(stack.template);
-      for (const [k, v] of direct) corsConfigByApiId.set(k, v);
-    }
+    //
+    // One map per stack (#5181): a server reads its own stack's, so two
+    // stacks reusing an API construct id each keep their own CORS.
+    const corsConfigByStack = buildCorsConfigByStack(targetStacks);
 
     // `--from-state` / `--from-cfn-stack` (issue #606): load deployed
     // state for every routed stack once per synth (= initial boot AND
@@ -758,34 +751,39 @@ async function localStartApiCommand(
     // pool then knows everything it needs to lazy-start a fresh one.
     // Authorizer Lambdas are also pooled — they're invoked just like
     // route handlers (PR 8b).
-    const lambdaIds = uniqueLambdaIds(routes, routesWithAuth, webSocketApis);
-    const specs = new Map<string, ContainerSpec>();
-    for (let i = 0; i < lambdaIds.length; i++) {
-      const logicalId = lambdaIds[i]!;
-      const spec = await buildContainerSpec({
-        logicalId,
-        stacks: targetStacks,
-        overrides,
-        assumeRole: options.assumeRole,
-        containerHost: options.containerHost,
-        ...(debugPortBase !== undefined && { debugPort: debugPortBase + i }),
-        // Issue #1843: folded at the read as well as at the handler entry, the
-        // same shape as `local-invoke.ts`'s STS chain. It seeds the per-Lambda
-        // AssumeRole STS client and the container's own `AWS_REGION`.
-        stsRegion: canonicalizeRegion(
-          options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION']
-        ),
-        inlineTmpDirs,
-        layerTmpDirs,
-        stateByStack,
-        skipPull: options.pull === false,
-        ...(options.layerRoleArn !== undefined && { layerRoleArn: options.layerRoleArn }),
-        ...(profileCredentials && { profileCredentials }),
-        ...(profileCredsFile && { profileCredsFile }),
-        ...dynamicReferenceSpecOptions(options),
-      });
-      specs.set(logicalId, spec);
-    }
+    //
+    // Keyed by (stack, logical id) and resolved against the route's OWN
+    // stack (#5181), so two stacks reusing a construct id each get a spec of
+    // their own Lambda.
+    const specs = await buildServedLambdaSpecs(
+      targetStacks,
+      routes,
+      routesWithAuth,
+      webSocketApis,
+      ({ logicalId, stacks, index }) =>
+        buildContainerSpec({
+          logicalId,
+          stacks,
+          overrides,
+          assumeRole: options.assumeRole,
+          containerHost: options.containerHost,
+          ...(debugPortBase !== undefined && { debugPort: debugPortBase + index }),
+          // Issue #1843: folded at the read as well as at the handler entry, the
+          // same shape as `local-invoke.ts`'s STS chain. It seeds the per-Lambda
+          // AssumeRole STS client and the container's own `AWS_REGION`.
+          stsRegion: canonicalizeRegion(
+            options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION']
+          ),
+          inlineTmpDirs,
+          layerTmpDirs,
+          stateByStack,
+          skipPull: options.pull === false,
+          ...(options.layerRoleArn !== undefined && { layerRoleArn: options.layerRoleArn }),
+          ...(profileCredentials && { profileCredentials }),
+          ...(profileCredsFile && { profileCredsFile }),
+          ...dynamicReferenceSpecOptions(options),
+        })
+    );
 
     // Pull every distinct base image up front so the first request
     // doesn't pay the layer-pull cost. Mirrors `cdkd local invoke`'s
@@ -808,7 +806,7 @@ async function localStartApiCommand(
     return {
       routes: routesWithAuth,
       specs,
-      corsConfigByApiId,
+      corsConfigByStack,
       webSocketApis,
       stacks: targetStacks,
     };
@@ -845,7 +843,7 @@ async function localStartApiCommand(
   // reaches external services via the host's network rather than
   // through the deployed VPC's NAT / private subnets. Re-runs on hot
   // reload would be noisy; we emit this once at initial boot only.
-  warnVpcConfigLambdas(initialMaterial.routes, initialMaterial.stacks ?? []);
+  warnVpcConfigLambdas(initialMaterial.routes, initialMaterial.stacks);
 
   // #447: AWS_IAM-protected routes warn at startup. The local server
   // verifies SigV4 signatures only — IAM policy evaluation (resource /
@@ -905,12 +903,12 @@ async function localStartApiCommand(
   const servers: BootedApiServer[] = [];
   let nextPort = basePort;
   for (const group of initialGroups) {
-    const groupSpecs = filterSpecsForGroup(group, initialMaterial.specs);
+    const groupSpecs = filterSpecsForGroup(group, initialMaterial);
     const groupPool = buildPool(groupSpecs);
     const groupState: ServerState = {
       routes: group.routes,
       pool: groupPool,
-      corsConfigByApiId: initialMaterial.corsConfigByApiId,
+      corsConfigByApiId: corsConfigForGroup(group, initialMaterial),
     };
     // Optional pre-warm: one container per Lambda, in parallel.
     if (options.warm) {
@@ -940,7 +938,11 @@ async function localStartApiCommand(
       ...(mtlsConfig && { mtls: mtlsConfig }),
       // Increment per server; basePort=0 leaves every server on auto-alloc.
       port: basePort === 0 ? 0 : nextPort,
-      authorizerCache,
+      authorizerCache: perStack(
+        authorizerCaches,
+        groupStackName(group, initialMaterial.stacks),
+        createAuthorizerCache
+      ),
       jwksCache,
       jwksWarnedAt,
       sigV4CredentialsLoader,
@@ -1005,12 +1007,7 @@ async function localStartApiCommand(
     // names the affected routes; here we just skip the attach loop so
     // no upgrade is accepted on this API.
     if (api.unsupported) continue;
-    const wsLambdaIds = new Set(api.routes.map((r) => r.targetLambdaLogicalId));
-    const wsSpecs = new Map<string, ContainerSpec>();
-    for (const id of wsLambdaIds) {
-      const spec = initialMaterial.specs.get(id);
-      if (spec) wsSpecs.set(id, spec);
-    }
+    const wsSpecs = filterSpecsForWebSocketApi(api, initialMaterial);
     if (wsSpecs.size === 0) {
       logger.warn(
         `WebSocket API ${api.declaredAt}: no resolvable Lambda backing routes; skipping.`
@@ -1038,7 +1035,7 @@ async function localStartApiCommand(
       rieTimeoutMs,
       host: options.host,
       port: basePort === 0 ? 0 : nextPort,
-      authorizerCache,
+      authorizerCache: perStack(authorizerCaches, api.apiStackName, createAuthorizerCache),
       jwksCache,
       jwksWarnedAt,
       sigV4WarnedForeignIds,
@@ -1107,9 +1104,7 @@ async function localStartApiCommand(
     const hostGatewayMapping: { host: string; ip: string }[] = [
       { host: 'host.docker.internal', ip: 'host-gateway' },
     ];
-    for (const id of wsLambdaIds) {
-      const spec = initialMaterial.specs.get(id);
-      if (!spec) continue;
+    for (const spec of wsSpecs.values()) {
       spec.env['AWS_ENDPOINT_URL_APIGATEWAYMANAGEMENTAPI'] = mgmtEndpoint;
       // cdkd-local-env-identity: AWS's own documentation-example key, a
       // PLACEHOLDER so the SDK will instantiate against the local management
@@ -1503,8 +1498,8 @@ export function pickTargetStacks(
   if (effective !== undefined && typeof effective !== 'string') return [effective];
   if (effective) {
     // By identity: two stacks sharing a physical name (a Stage deployed twice)
-    // are both served, and `assertServedLogicalIdsUnambiguous` refuses their
-    // colliding logical ids rather than one being dropped silently (#5175).
+    // are both selected, and `assertServedLogicalIdsUnambiguous` refuses
+    // their shared name rather than one being dropped silently (#5175).
     return matchStacks(stacks, [effective], { dedupe: 'identity' });
   }
   if (stacks.length === 1) return stacks;
@@ -1572,17 +1567,12 @@ export function tryEmitFromCfnRedundancyTipOnce(
   emittedRef.value = true;
 }
 
-/**
- * Distinct, stable list of Lambda logical IDs reachable through any
- * discovered route OR referenced by a Lambda authorizer attached to one
- * of those routes. Stable order = first-occurrence order in the routes
- * list, then any newly-introduced authorizer Lambdas, which keeps the
- * route-table output deterministic.
- */
+const LAMBDA_FUNCTION_TYPE = 'AWS::Lambda::Function';
+
 /**
  * The stacks whose template declares `logicalId` (optionally of one resource
- * type). One predicate for the served-union refusal and for
- * {@link resolveLambdaByLogicalId}, so the two cannot disagree.
+ * type). One predicate for the served-union checks, {@link lambdaOwners} and
+ * {@link resolveLambdaByLogicalId}, so they cannot disagree.
  */
 function stacksDeclaring(
   logicalId: string,
@@ -1612,11 +1602,103 @@ function renderServeOneStackAdvice(stacks: readonly StackInfo[]): string {
 }
 
 /**
- * Refuse a served union in which a reachable Lambda's, or an API's, logical id
- * is declared by more than one stack. start-api keys its container specs and
- * its stage / CORS maps by the bare logical id, so one stack would silently
- * win for both. A CDK Stage deployed twice (Beta / Prod) always collides: its
- * clones carry identical logical ids (#5175).
+ * A Lambda that a served route, its authorizer or a WebSocket route reaches:
+ * the stack discovery read the route from (`undefined` when it did not say)
+ * and the Lambda's logical id.
+ */
+interface ReachedLambda {
+  stackName: string | undefined;
+  logicalId: string;
+}
+
+/**
+ * The served stack(s) declaring a reached Lambda: the route's own stack when
+ * it declares the id, otherwise every served stack that does. Two stacks
+ * reusing one construct id each serve their own Lambda, so the route's stack
+ * decides, never the first stack in the list (#5181).
+ */
+function lambdaOwners(ref: ReachedLambda, stacks: readonly StackInfo[]): StackInfo[] {
+  if (ref.stackName !== undefined) {
+    const own = stacks.filter((s) => s.stackName === ref.stackName);
+    const declaring = stacksDeclaring(ref.logicalId, own, LAMBDA_FUNCTION_TYPE);
+    if (declaring.length > 0) return declaring;
+  }
+  return stacksDeclaring(ref.logicalId, stacks, LAMBDA_FUNCTION_TYPE);
+}
+
+/**
+ * The key a served Lambda's container spec is stored under: its stack's name
+ * and its logical id, so two stacks reusing a construct id keep two specs
+ * (#5181). Unique because a served union never holds two stacks of one name
+ * ({@link assertServedLogicalIdsUnambiguous}), and unambiguous because a
+ * CloudFormation stack name holds no `:`.
+ *
+ * @internal exported for unit tests.
+ */
+export function servedLambdaKey(stackName: string, logicalId: string): string {
+  return `${stackName}:${logicalId}`;
+}
+
+/** {@link servedLambdaKey} of a reached Lambda's one owner; `undefined` when it has none or several. */
+function servedLambdaKeyFor(ref: ReachedLambda, stacks: readonly StackInfo[]): string | undefined {
+  const owners = lambdaOwners(ref, stacks);
+  return owners.length === 1 ? servedLambdaKey(owners[0]!.stackName, ref.logicalId) : undefined;
+}
+
+/**
+ * The stack a route was discovered in. Discovery records it on every route;
+ * the single-stack fallback covers a route built without it.
+ */
+function routeStackName(
+  route: DiscoveredRoute,
+  stacks: readonly StackInfo[] | undefined
+): string | undefined {
+  if (route.apiStackName !== undefined) return route.apiStackName;
+  return stacks?.length === 1 ? stacks[0]!.stackName : undefined;
+}
+
+/** The stack one API server serves: one server is one API of one stack. */
+export function groupStackName(
+  group: ApiServerGroup,
+  stacks: readonly StackInfo[]
+): string | undefined {
+  const route = group.routes[0]?.route;
+  return route === undefined ? undefined : routeStackName(route, stacks);
+}
+
+/**
+ * The value `byStack` holds for `stackName`, made on first use. Server state
+ * that cdk-local keys by bare logical id (the authorizer-verdict cache) is
+ * kept per stack this way (#5181), across `--watch` reloads.
+ *
+ * @internal exported for unit tests.
+ */
+export function perStack<T>(
+  byStack: Map<string, T>,
+  stackName: string | undefined,
+  make: () => T
+): T {
+  // JSON: `undefined` (a route discovery left without its stack) cannot
+  // collide with a real stack name.
+  const key = JSON.stringify(stackName ?? null);
+  let value = byStack.get(key);
+  if (value === undefined) {
+    value = make();
+    byStack.set(key, value);
+  }
+  return value;
+}
+
+/**
+ * Refuse a served union start-api cannot serve as one. Stacks reusing a
+ * construct id are served side by side: the container specs, the stage and the
+ * CORS maps are keyed by (stack, logical id) (#5181). What still refuses:
+ *
+ * - two served stacks sharing one physical stack name (a CDK Stage deployed
+ *   twice): deployed state and those keys are looked up by that name (#5175);
+ * - a user-supplied BARE logical id -- an `--assume-role <LogicalId>=<arn>`
+ *   entry or an `--env-vars` key -- naming a Lambda that more than one served
+ *   stack declares, since it does not say which stack it means.
  *
  * @internal exported for unit tests.
  */
@@ -1624,12 +1706,13 @@ export function assertServedLogicalIdsUnambiguous(
   stacks: readonly StackInfo[],
   routes: readonly DiscoveredRoute[],
   routesWithAuth: readonly RouteWithAuth[],
-  webSocketApis: readonly DiscoveredWebSocketApi[] = []
+  webSocketApis: readonly DiscoveredWebSocketApi[] = [],
+  userIds: { assumeRole?: AssumeRoleOption; overrides?: EnvOverrideFile } = {}
 ): void {
   if (stacks.length < 2) return;
-  // Deployed state, the stage map and the container specs are looked up by
-  // stack NAME too (`loadStateForRoutedStacks`), so two served stacks sharing
-  // one would read the first one's state even when no logical id collides.
+  // Deployed state, the stage / CORS maps and the container specs are looked
+  // up by stack NAME, so two served stacks sharing one would read the first
+  // one's state even when no logical id collides.
   const byName = new Map<string, StackInfo[]>();
   for (const stack of stacks)
     byName.set(stack.stackName, [...(byName.get(stack.stackName) ?? []), stack]);
@@ -1644,39 +1727,94 @@ export function assertServedLogicalIdsUnambiguous(
       );
     }
   }
-  const checks: Array<[string, string | undefined]> = [];
-  for (const id of uniqueLambdaIds(routes, routesWithAuth, webSocketApis)) {
-    checks.push([id, 'AWS::Lambda::Function']);
-  }
-  const apiIds = new Set<string>();
-  for (const route of routes) {
-    if (route.source !== 'function-url' && route.apiLogicalId) apiIds.add(route.apiLogicalId);
-  }
-  for (const api of webSocketApis) apiIds.add(api.apiLogicalId);
-  for (const id of apiIds) checks.push([id, undefined]);
 
-  for (const [logicalId, type] of checks) {
-    const owners = stacksDeclaring(logicalId, stacks, type);
+  // The served stacks owning a reached Lambda of each logical id.
+  const ownersById = new Map<string, StackInfo[]>();
+  for (const ref of reachedLambdas(routes, routesWithAuth, webSocketApis)) {
+    const owners = lambdaOwners(ref, stacks);
     if (owners.length > 1) {
-      // cdkd-raw-beside-safe: a count, `describeStack` (which runs both names
-      // through `displayIdent`) and `renderServeOneStackAdvice`, which prints a
-      // CDK path only when `displayIdent` leaves it unchanged.
+      // Reached only when the route's own stack does not declare the id
+      // (discovery reads both from one template, so in practice never).
+      // cdkd-raw-beside-safe: a count, `describeStack` and
+      // `renderServeOneStackAdvice`, each sanitized as above.
       throw new Error(
-        `Logical ID ${displayIdent(logicalId)} is declared by ${owners.length} of the served stacks ` +
-          `(${owners.map(describeStack).join(', ')}), and cdkd local start-api cannot serve two ` +
-          `resources under one logical ID. ${renderServeOneStackAdvice(owners)}`
+        `Lambda ${displayIdent(ref.logicalId)} is declared by ${owners.length} of the served ` +
+          `stacks (${owners.map(describeStack).join(', ')}), and cdkd local start-api cannot ` +
+          `tell which one its route reaches. ${renderServeOneStackAdvice(owners)}`
       );
     }
+    for (const owner of owners) {
+      const list = ownersById.get(ref.logicalId) ?? [];
+      if (!list.includes(owner)) list.push(owner);
+      ownersById.set(ref.logicalId, list);
+    }
+  }
+
+  const perLambda = userIds.assumeRole?.perLambda ?? {};
+  for (const logicalId of Object.keys(perLambda)) {
+    const owners = ownersById.get(logicalId) ?? [];
+    if (owners.length < 2) continue;
+    // cdkd-raw-beside-safe: a count, `describeStack` and
+    // `renderServeOneStackAdvice`, each sanitized as above.
+    throw new Error(
+      `--assume-role names Lambda ${displayIdent(logicalId)} by its bare logical ID, which ` +
+        `${owners.length} of the served stacks declare (${owners.map(describeStack).join(', ')}), ` +
+        `so it does not say which one to assume the role for. ${renderServeOneStackAdvice(owners)}`
+    );
+  }
+  for (const key of Object.keys(userIds.overrides ?? {})) {
+    if (key === 'Parameters') continue;
+    const owners = ownersById.get(key) ?? [];
+    if (owners.length < 2) continue;
+    // cdkd-raw-beside-safe: a count, `describeStack`, and each construct path
+    // printed only when `displayIdent` leaves it unchanged.
+    throw new Error(
+      `--env-vars key ${displayIdent(key)} names a Lambda by its bare logical ID, which ` +
+        `${owners.length} of the served stacks declare (${owners.map(describeStack).join(', ')}), ` +
+        `so it does not say which one it overrides. ${renderConstructPathKeyAdvice(key, owners)}`
+    );
   }
 }
 
-function uniqueLambdaIds(
+/**
+ * The `--env-vars` next step: key the override by the Lambda's construct
+ * path, which starts with its stack's CDK path and so names one stack.
+ */
+function renderConstructPathKeyAdvice(logicalId: string, owners: readonly StackInfo[]): string {
+  const paths: string[] = [];
+  for (const owner of owners) {
+    const resource = owner.template.Resources?.[logicalId];
+    const path = resource
+      ? readCdkPathOrUndefined(resource)?.replace(/\/Resource$/, '')
+      : undefined;
+    if (path !== undefined && displayIdent(path) === path) paths.push(JSON.stringify(path));
+  }
+  return paths.length > 0
+    ? `Key it by the Lambda's construct path instead, which names one stack: ${paths.join(', ')}.`
+    : `Key it by the Lambda's construct path instead, which names one stack.`;
+}
+
+/**
+ * Distinct, stable list of the Lambdas reachable through any discovered route,
+ * a Lambda authorizer attached to one, or a WebSocket route -- each with the
+ * stack its route came from. Stable order = first-occurrence order in the
+ * routes list, then any newly-introduced authorizer Lambdas, then WebSocket
+ * Lambdas, which keeps the route-table output deterministic.
+ */
+function reachedLambdas(
   routes: readonly DiscoveredRoute[],
   routesWithAuth: readonly RouteWithAuth[],
   webSocketApis: readonly DiscoveredWebSocketApi[] = []
-): string[] {
+): ReachedLambda[] {
   const seen = new Set<string>();
-  const out: string[] = [];
+  const out: ReachedLambda[] = [];
+  const add = (stackName: string | undefined, logicalId: string): void => {
+    // JSON: neither part can then forge the other's boundary.
+    const key = JSON.stringify([stackName ?? null, logicalId]);
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ stackName, logicalId });
+  };
   for (const r of routes) {
     // Skip deferred-error unsupported routes, synthetic mockCors
     // routes, and service-integration routes — none of them dispatch
@@ -1685,10 +1823,7 @@ function uniqueLambdaIds(
     // AuthType=AWS_IAM) would be wasted boot time.
     if (r.unsupported || r.mockCors || r.serviceIntegration) continue;
     if (r.lambdaLogicalId.length === 0) continue;
-    if (!seen.has(r.lambdaLogicalId)) {
-      seen.add(r.lambdaLogicalId);
-      out.push(r.lambdaLogicalId);
-    }
+    add(r.apiStackName, r.lambdaLogicalId);
   }
   for (const entry of routesWithAuth) {
     // An unsupported / mockCors / service-integration route never
@@ -1699,23 +1834,16 @@ function uniqueLambdaIds(
     }
     const auth = entry.authorizer;
     if (!auth) continue;
+    // An authorizer is declared in its route's API's stack.
     if (auth.kind === 'lambda-token' || auth.kind === 'lambda-request') {
-      if (!seen.has(auth.lambdaLogicalId)) {
-        seen.add(auth.lambdaLogicalId);
-        out.push(auth.lambdaLogicalId);
-      }
+      add(entry.route.apiStackName, auth.lambdaLogicalId);
     }
   }
   // #462: pull every WebSocket route's backing Lambda into the
   // unified spec map so the shared container pool can dispatch them
   // alongside HTTP / REST routes.
   for (const api of webSocketApis) {
-    for (const r of api.routes) {
-      if (!seen.has(r.targetLambdaLogicalId)) {
-        seen.add(r.targetLambdaLogicalId);
-        out.push(r.targetLambdaLogicalId);
-      }
-    }
+    for (const r of api.routes) add(r.lambdaStackName, r.targetLambdaLogicalId);
   }
   return out;
 }
@@ -1760,40 +1888,38 @@ async function prewarmJwks(
  * surfaces this so the developer can pin the unexpected behavior to
  * the VPC config rather than chasing a "connection refused" rabbit
  * hole.
+ *
+ * @internal exported for unit tests.
  */
-function warnVpcConfigLambdas(
+export function warnVpcConfigLambdas(
   routesWithAuth: readonly RouteWithAuth[],
   stacks: readonly StackInfo[]
 ): void {
   const logger = getLogger();
-  // Walk every reachable Lambda (route handler + authorizer) once.
-  const seen = new Set<string>();
-  const reachable: string[] = [];
-  for (const entry of routesWithAuth) {
-    if (!seen.has(entry.route.lambdaLogicalId)) {
-      seen.add(entry.route.lambdaLogicalId);
-      reachable.push(entry.route.lambdaLogicalId);
-    }
-    const auth: AuthorizerInfo | undefined = entry.authorizer;
+  // Walk every route's Lambda and Lambda authorizer once, in its route's own
+  // stack (#5181) -- unsupported / mockCors / service-integration routes
+  // included, the set this warning has always covered.
+  const warned = new Set<string>();
+  const reached: ReachedLambda[] = [];
+  for (const { route, authorizer: auth } of routesWithAuth) {
+    reached.push({ stackName: route.apiStackName, logicalId: route.lambdaLogicalId });
     if (auth && (auth.kind === 'lambda-token' || auth.kind === 'lambda-request')) {
-      if (!seen.has(auth.lambdaLogicalId)) {
-        seen.add(auth.lambdaLogicalId);
-        reachable.push(auth.lambdaLogicalId);
-      }
+      reached.push({ stackName: route.apiStackName, logicalId: auth.lambdaLogicalId });
     }
   }
-  for (const logicalId of reachable) {
-    for (const stack of stacks) {
-      const resource = stack.template.Resources?.[logicalId];
-      if (!resource || resource.Type !== 'AWS::Lambda::Function') continue;
-      const props = resource.Properties ?? {};
-      const vpcConfig = props['VpcConfig'];
-      if (vpcConfig && typeof vpcConfig === 'object' && Object.keys(vpcConfig).length > 0) {
-        logger.warn(
-          `Lambda ${logicalId} has VpcConfig — local container will reach external services via the host's network, NOT through the deployed VPC's NAT/private subnets. Calls to private RDS/ElastiCache will fail. See https://cdkd.dev/local-start-api/#vpc-config-lambdas for details.`
-        );
-      }
-      break;
+  for (const ref of reached) {
+    const owner = lambdaOwners(ref, stacks)[0];
+    if (owner === undefined) continue;
+    const key = servedLambdaKey(owner.stackName, ref.logicalId);
+    if (warned.has(key)) continue;
+    warned.add(key);
+    const props = owner.template.Resources?.[ref.logicalId]?.Properties ?? {};
+    const vpcConfig = props['VpcConfig'];
+    if (vpcConfig && typeof vpcConfig === 'object' && Object.keys(vpcConfig).length > 0) {
+      const shown = stacks.length > 1 ? key : ref.logicalId;
+      logger.warn(
+        `Lambda ${shown} has VpcConfig — local container will reach external services via the host's network, NOT through the deployed VPC's NAT/private subnets. Calls to private RDS/ElastiCache will fail. See https://cdkd.dev/local-start-api/#vpc-config-lambdas for details.`
+      );
     }
   }
 }
@@ -2614,10 +2740,10 @@ export function resolveLambdaByLogicalId(
   logicalId: string,
   stacks: StackInfo[]
 ): ResolvedStartApiLambda {
-  // Never the first stack that declares it: a served union sharing the id is
-  // refused up front (`assertServedLogicalIdsUnambiguous`), and this keeps a
-  // direct caller from resolving one stack's Lambda for another's route.
-  const owners = stacksDeclaring(logicalId, stacks, 'AWS::Lambda::Function');
+  // Never the first stack that declares it: the server passes only the
+  // route's own stack (`lambdaOwners`, #5181), and this keeps a direct caller
+  // from resolving one stack's Lambda for another's route.
+  const owners = stacksDeclaring(logicalId, stacks, LAMBDA_FUNCTION_TYPE);
   if (owners.length > 1) {
     // cdkd-raw-beside-safe: a count, `describeStack` and
     // `renderServeOneStackAdvice`, each sanitized as in
@@ -3361,6 +3487,94 @@ interface BootedWebSocketServer {
 }
 
 /**
+ * Attach each route's Stage (`stage`, `stageVariables`) from its OWN stack's
+ * Stage map (#5181), so two stacks reusing an API construct id each serve
+ * their own Stage. Returns the APIs with no Stage named `stageOverride` (empty
+ * without one), stack-qualified when more than one stack is served.
+ *
+ * @internal exported for unit tests.
+ */
+export function attachStageContextPerStack(
+  stacks: readonly StackInfo[],
+  routes: DiscoveredRoute[],
+  stageOverride: string | undefined
+): Set<string> {
+  const missingApis = new Set<string>();
+  for (const stack of stacks) {
+    const stageMap: Map<string, ResolvedStage> = buildStageMap(stack.template, stageOverride);
+    const own = routes.filter((r) => routeStackName(r, stacks) === stack.stackName);
+    if (stageOverride) {
+      // HTTP API v2 / REST v1 routes whose API had no Stage with the
+      // override name. One entry per such API, deduplicated.
+      for (const r of own) {
+        if (!r.apiLogicalId || stageMap.has(r.apiLogicalId)) continue;
+        missingApis.add(
+          stacks.length > 1 ? `${stack.stackName}:${r.apiLogicalId}` : r.apiLogicalId
+        );
+      }
+    }
+    attachStageContext(own, stageMap);
+  }
+  return missingApis;
+}
+
+/**
+ * The per-API CORS config of each stack, keyed by stack name (#5181). Within
+ * a stack: HTTP API v2 `CorsConfiguration`, a Function URL's own `Cors`
+ * (#644), and CORS borrowed from a fronting CloudFront
+ * ResponseHeadersPolicy (#646), the Function URL's own winning.
+ *
+ * @internal exported for unit tests.
+ */
+export function buildCorsConfigByStack(
+  stacks: readonly StackInfo[]
+): Map<string, Map<string, CorsConfig>> {
+  const out = new Map<string, Map<string, CorsConfig>>();
+  for (const stack of stacks) {
+    const corsConfigByApiId = new Map<string, CorsConfig>();
+    for (const [k, v] of buildCorsConfigFromCloudFrontChain(stack.template)) {
+      corsConfigByApiId.set(k, v);
+    }
+    for (const [k, v] of buildCorsConfigByApiId(stack.template)) corsConfigByApiId.set(k, v);
+    out.set(stack.stackName, corsConfigByApiId);
+  }
+  return out;
+}
+
+/**
+ * Build one container spec per reached Lambda, keyed by
+ * {@link servedLambdaKey} and resolved against the route's own stack
+ * (#5181): two stacks reusing a construct id get one spec each. `build`
+ * receives the owning stack alone, or every served stack when the Lambda has
+ * no single owner, so the resolver names the miss or the ambiguity; `index`
+ * counts the specs built so far (the `--debug-port-base` offset).
+ *
+ * @internal exported for unit tests.
+ */
+export async function buildServedLambdaSpecs(
+  stacks: StackInfo[],
+  routes: readonly DiscoveredRoute[],
+  routesWithAuth: readonly RouteWithAuth[],
+  webSocketApis: readonly DiscoveredWebSocketApi[],
+  build: (args: { logicalId: string; stacks: StackInfo[]; index: number }) => Promise<ContainerSpec>
+): Promise<Map<string, ContainerSpec>> {
+  const specs = new Map<string, ContainerSpec>();
+  for (const ref of reachedLambdas(routes, routesWithAuth, webSocketApis)) {
+    const owners = lambdaOwners(ref, stacks);
+    const key =
+      owners.length === 1 ? servedLambdaKey(owners[0]!.stackName, ref.logicalId) : undefined;
+    if (key !== undefined && specs.has(key)) continue;
+    const spec = await build({
+      logicalId: ref.logicalId,
+      stacks: owners.length === 1 ? owners : stacks,
+      index: specs.size,
+    });
+    specs.set(key ?? ref.logicalId, spec);
+  }
+  return specs;
+}
+
+/**
  * Filter the global Lambda spec map to just the Lambdas reachable from
  * one API server group. The container pool for that server is built
  * from this filtered map so per-API authorizer Lambdas + route
@@ -3371,25 +3585,68 @@ interface BootedWebSocketServer {
  * Also includes any authorizer Lambdas attached to the group's routes
  * (a Lambda authorizer is a Lambda the pool needs to know about, even
  * though no route directly handles `lambdaLogicalId === auth.lambdaLogicalId`).
+ *
+ * @internal exported for unit tests.
  */
-function filterSpecsForGroup(
+export function filterSpecsForGroup(
   group: ApiServerGroup,
-  allSpecs: Map<string, ContainerSpec>
+  material: Pick<NextStateMaterial, 'specs' | 'stacks'>
 ): Map<string, ContainerSpec> {
-  const ids = new Set<string>();
+  // The pool is keyed by the bare id the server dispatches on; one server is
+  // one API of one stack, so the id is unique within it. The spec is looked
+  // up by the route's own stack (#5181).
+  const out = new Map<string, ContainerSpec>();
+  const add = (stackName: string | undefined, logicalId: string): void => {
+    if (out.has(logicalId)) return;
+    const key = servedLambdaKeyFor({ stackName, logicalId }, material.stacks);
+    const spec = key === undefined ? undefined : material.specs.get(key);
+    if (spec) out.set(logicalId, spec);
+  };
   for (const rwa of group.routes) {
-    ids.add(rwa.route.lambdaLogicalId);
+    add(rwa.route.apiStackName, rwa.route.lambdaLogicalId);
     const auth = rwa.authorizer;
     if (auth && (auth.kind === 'lambda-token' || auth.kind === 'lambda-request')) {
-      ids.add(auth.lambdaLogicalId);
+      add(rwa.route.apiStackName, auth.lambdaLogicalId);
     }
   }
+  return out;
+}
+
+/**
+ * {@link filterSpecsForGroup} for one WebSocket API: its routes' Lambdas,
+ * keyed by the bare id the WebSocket server dispatches on, each spec looked
+ * up by the route's own stack (#5181).
+ *
+ * @internal exported for unit tests.
+ */
+export function filterSpecsForWebSocketApi(
+  api: DiscoveredWebSocketApi,
+  material: Pick<NextStateMaterial, 'specs' | 'stacks'>
+): Map<string, ContainerSpec> {
   const out = new Map<string, ContainerSpec>();
-  for (const id of ids) {
-    const spec = allSpecs.get(id);
-    if (spec) out.set(id, spec);
+  for (const r of api.routes) {
+    const ref = { stackName: r.lambdaStackName, logicalId: r.targetLambdaLogicalId };
+    const key = servedLambdaKeyFor(ref, material.stacks);
+    const spec = key === undefined ? undefined : material.specs.get(key);
+    if (spec) out.set(r.targetLambdaLogicalId, spec);
   }
   return out;
+}
+
+/**
+ * The per-API CORS map of a server's own stack (#5181): one server is one API
+ * of one stack, so two stacks reusing an API construct id keep their own CORS.
+ *
+ * @internal exported for unit tests.
+ */
+export function corsConfigForGroup(
+  group: ApiServerGroup,
+  material: Pick<NextStateMaterial, 'corsConfigByStack' | 'stacks'>
+): Map<string, CorsConfig> {
+  const stackName = groupStackName(group, material.stacks);
+  return (
+    (stackName === undefined ? undefined : material.corsConfigByStack.get(stackName)) ?? new Map()
+  );
 }
 
 /**
@@ -3542,12 +3799,12 @@ export async function reloadAllServers(args: {
   for (const booted of servers) {
     const group = newByKey.get(booted.group.serverKey);
     if (!group) continue; // removed — skip swap, server keeps stale state until restart
-    const groupSpecs = filterSpecsForGroup(group, material.specs);
+    const groupSpecs = filterSpecsForGroup(group, material);
     const newPool = buildPool(groupSpecs);
     const newState: ServerState = {
       routes: group.routes,
       pool: newPool,
-      corsConfigByApiId: material.corsConfigByApiId,
+      corsConfigByApiId: corsConfigForGroup(group, material),
     };
     const previousState = booted.server.setServerState(newState);
     // Update the BootedApiServer's `group` in place so post-reload
@@ -3648,34 +3905,24 @@ export async function loadStateForRoutedStacks(
 
   // Collect the set of (stackName, region) pairs that contain at least
   // one routed Lambda OR an attached authorizer Lambda. The stack
-  // resolution mirrors `resolveLambdaByLogicalId`'s walk so we never
-  // load state for a stack whose Lambdas are not actually reachable
-  // from the discovered API surface.
-  const lambdaIds = uniqueLambdaIds(routes, routesWithAuth);
+  // resolution is the spec build's (`lambdaOwners`: the route's own stack),
+  // so we never load state for a stack whose Lambdas are not actually
+  // reachable from the discovered API surface, and two stacks reusing a
+  // construct id both load (#5181).
   const reachableStackNames = new Set<string>();
-  for (const logicalId of lambdaIds) {
-    for (const stack of stacks) {
-      const resource = stack.template.Resources?.[logicalId];
-      if (resource && resource.Type === 'AWS::Lambda::Function') {
-        reachableStackNames.add(stack.stackName);
-        break;
+  // Per stack: does any reachable Lambda in it have an intrinsic-valued env
+  // map — gates the per-stack STS hop.
+  const intrinsicEnvStacks = new Set<string>();
+  for (const ref of reachedLambdas(routes, routesWithAuth)) {
+    for (const owner of lambdaOwners(ref, stacks)) {
+      reachableStackNames.add(owner.stackName);
+      const resource = owner.template.Resources?.[ref.logicalId];
+      if (resource && envHasIntrinsicValue(getTemplateEnv(resource))) {
+        intrinsicEnvStacks.add(owner.stackName);
       }
     }
   }
-
-  // Pre-compute "does any reachable Lambda in this stack have an
-  // intrinsic-valued env map" — gates the per-stack STS hop.
-  const stackHasIntrinsicEnv = (stackName: string): boolean => {
-    for (const logicalId of lambdaIds) {
-      for (const stack of stacks) {
-        if (stack.stackName !== stackName) continue;
-        const resource = stack.template.Resources?.[logicalId];
-        if (!resource || resource.Type !== 'AWS::Lambda::Function') continue;
-        if (envHasIntrinsicValue(getTemplateEnv(resource))) return true;
-      }
-    }
-    return false;
-  };
+  const stackHasIntrinsicEnv = (stackName: string): boolean => intrinsicEnvStacks.has(stackName);
 
   // Issue #606: route through `createLocalStateProvider` so the same
   // code path drives both `--from-state` (S3) and `--from-cfn-stack`

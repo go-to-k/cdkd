@@ -193,28 +193,28 @@ describe('cdkd local start-api (#5175)', () => {
   });
 
   // Distinct physical names (`--stack '**'` over a Stage deployed twice with
-  // generated names): the logical-id collision is what refuses.
+  // generated names): served side by side, each stack's Lambda and API keyed
+  // by (stack, logical id) -- no longer refused (#5181).
   const renamed = (s: StackInfo, name: string): StackInfo =>
     ({ ...s, stackName: name }) as unknown as StackInfo;
   const betaN = renamed(beta, 'Beta-Api');
-  const prodN = renamed(prod, 'Prod-Api');
+  const prodN = { ...renamed(prod, 'Prod-Api') } as StackInfo;
+  const prodRoute = { ...route, apiStackName: 'Prod-Api' } as DiscoveredRoute;
+  const betaRoute = { ...route, apiStackName: 'Beta-Api' } as DiscoveredRoute;
+  const both = [betaRoute, prodRoute];
+  const bothWithAuth = both.map((r) => ({ route: r, authorizer: undefined }) as RouteWithAuth);
 
-  it('refuses a served union whose stacks declare one routed Lambda logical id', () => {
-    expect(() => assertServedLogicalIdsUnambiguous([betaN, prodN], [route], withAuth)).toThrow(
-      `Logical ID FnABC123 is declared by 2 of the served stacks ` +
-        `(Beta-Api (Beta/Api), Prod-Api (Prod/Api)), and cdkd local start-api cannot serve two ` +
-        `resources under one logical ID. Serve one stack at a time: pass --stack with its CDK ` +
-        `path (e.g. --stack 'Beta/Api'), or a target starting with that path.`
-    );
+  it('serves a union of uniquely named stacks reusing a Lambda and an API logical id', () => {
+    expect(() => assertServedLogicalIdsUnambiguous([betaN, prodN], both, bothWithAuth)).not.toThrow();
   });
 
-  it('refuses a served union whose stacks declare one API logical id', () => {
-    const viaApiOnly = { ...route, lambdaLogicalId: '' } as DiscoveredRoute;
+  it('still refuses a bare --assume-role logical id both of them declare, naming both', () => {
+    const assumeRole = { perLambda: { FnABC123: 'arn:aws:iam::123456789012:role/R' } };
     expect(() =>
-      assertServedLogicalIdsUnambiguous([betaN, prodN], [viaApiOnly], [
-        { route: viaApiOnly, authorizer: undefined } as RouteWithAuth,
-      ])
-    ).toThrow(/Logical ID HttpApi is declared by 2 of the served stacks/);
+      assertServedLogicalIdsUnambiguous([betaN, prodN], both, bothWithAuth, [], { assumeRole })
+    ).toThrow(
+      /--assume-role names Lambda FnABC123 by its bare logical ID, which 2 of the served stacks declare \(Beta-Api \(Beta\/Api\), Prod-Api \(Prod\/Api\)\)/
+    );
   });
 
   it('serves one clone without complaint', () => {

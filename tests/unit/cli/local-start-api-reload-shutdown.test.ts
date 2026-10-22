@@ -49,7 +49,7 @@ function fakeServer(initialPool: unknown): {
 }
 
 const logger = { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() };
-const material = { routes: [], specs: new Map(), corsConfigByApiId: new Map() };
+const material = { routes: [], specs: new Map(), corsConfigByStack: new Map(), stacks: [] };
 
 let realWrite: typeof process.stdout.write;
 beforeEach(() => {

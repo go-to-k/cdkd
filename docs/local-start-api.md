@@ -141,6 +141,15 @@ cdkd local start-api MyStack/MyHttpApi/Resource
 A path form also selects the stack, so you do not need `--stack` with it. A
 stack inside a CDK `Stage` is reached as `MyStage/MyStack/MyHttpApi`.
 
+A `--stack` pattern can select several stacks, for example
+`--stack 'Svc*'`. Each stack's APIs are then served with that stack's own
+Lambdas, Stage and CORS settings, even when the stacks reuse a construct ID
+(each declares `new HttpApi(this, 'Api')`). A bare logical ID passed in
+`--assume-role <LogicalId>=<arn>` or as an `--env-vars` key must then name one
+stack's Lambda. If two served stacks declare it, start-api refuses and names
+both stacks. Key the `--env-vars` entry by the Lambda's construct path instead
+(`"SvcA/Handler"`), or serve one stack at a time.
+
 To serve a Function URL, name the Lambda behind it. For a URL created by
 `new lambda.Function(this, 'MyHandler').addFunctionUrl()`, run
 `cdkd local start-api MyStack/MyHandler`.
