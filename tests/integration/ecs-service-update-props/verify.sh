@@ -51,12 +51,14 @@
 #   #609  (Service property backfill): AvailabilityZoneRebalancing /
 #         DeploymentController / Monitoring / ForceNewDeployment were
 #         silent-drops that flipped the Service to the CC-API route. Phase 1g
-#         asserts AvailabilityZoneRebalancing=ENABLED on AWS + the
+#         asserts AvailabilityZoneRebalancing=DISABLED on AWS + the
 #         observedProperties read-back (incl. the DeploymentController
-#         {Type: ECS} fallback for the documented DescribeServices omission);
-#         Monitoring is acceptance-only (no DescribeServices read-back — a
-#         mis-flipped required member would fail the deploy; values pinned in
-#         tests/unit/provisioning/ecs-service-config-props.test.ts). Phase 2b
+#         {Type: ECS} fallback for the documented DescribeServices omission).
+#   #1160 (removal parity, CloudFormation A/B): phase 2 drops
+#         AvailabilityZoneRebalancing (CloudFormation keeps DISABLED) and
+#         Monitoring (CloudFormation resets the service revision to
+#         {metricConfigurations: []}); Monitoring is read from the latest
+#         service deployment's target revision. Phase 2b
 #         bumps ONLY the ForceNewDeployment nonce and asserts a fresh rollout
 #         (deployments[0].id changed). Phase 2c is the #1861 never-declared
 #         arm. NOT exercised live (unit-pinned; see
@@ -91,7 +93,9 @@
 #                     AWS AND the removals are RETAINED (1.4.0 / 30, #5004). Also
 #                     DROPS the two optional circuit-breaker members from a
 #                     still-declared block -> assert AWS shows the defaults
-#                     (#1861 removal arm).
+#                     (#1861 removal arm). Drops AvailabilityZoneRebalancing
+#                     (retained DISABLED) and Monitoring (reset to an empty
+#                     metric list) (#1160).
 #   Phase 2b:         ForceNewDeployment nonce bump only -> fresh rollout
 #                     (deployments[0].id changed) (#609).
 #   Phase 2c:         set the two optional circuit-breaker members OUT OF BAND,
@@ -107,6 +111,32 @@
 #   AWS_REGION   — defaults to us-east-1
 
 set -euo pipefail
+
+# --- #1160: Monitoring has no DescribeServices member; the latest service
+# deployment's target revision carries it. Prints compact JSON, or the bare
+# word MISSING on any failed AWS call, unparseable reply or absent member, and
+# always returns 0, so the caller's exact-string assert prints its FAIL line.
+# One page of up to 100 (the API maximum) covers this fixture's few deployments.
+revision_monitoring() {
+  local deployments rev revisions monitoring
+  if ! deployments="$(aws ecs list-service-deployments --cluster "${CLUSTER_NAME}" --service "${SERVICE_NAME}" --region "${REGION}" --max-results 100 --output json 2>/dev/null)"; then
+    echo "MISSING"
+    return 0
+  fi
+  if ! rev="$(printf '%s' "${deployments}" | jq -r '.serviceDeployments | sort_by(.createdAt) | last | .targetServiceRevisionArn // empty')" || [ -z "${rev}" ]; then
+    echo "MISSING"
+    return 0
+  fi
+  if ! revisions="$(aws ecs describe-service-revisions --service-revision-arns "${rev}" --region "${REGION}" --output json 2>/dev/null)"; then
+    echo "MISSING"
+    return 0
+  fi
+  if ! monitoring="$(printf '%s' "${revisions}" | jq -c '.serviceRevisions[0].monitoring // empty')" || [ -z "${monitoring}" ]; then
+    echo "MISSING"
+    return 0
+  fi
+  printf '%s\n' "${monitoring}"
+}
 
 # --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
 # A destroy/leak assertion must distinguish "not found" from any other probe
@@ -331,14 +361,15 @@ if [ "${BASE_CB_TH_TYPE}" != "COUNT" ] || [ "$(printf '%s' "${BASE_CB_TH_VALUE}"
 fi
 echo "    OK: base #1861 circuit-breaker optional members on AWS are resetOnHealthyTask=false, thresholdConfiguration={COUNT,7} (non-default baseline in place)"
 
-# Base assertion for issue #609: AvailabilityZoneRebalancing=ENABLED (set via
-# the L1 escape hatch) must have reached AWS — before the backfill the
-# property was a silent-drop that flipped the Service to the CC-API route.
+# Base assertion for issue #609: AvailabilityZoneRebalancing=DISABLED (set via
+# the L1 escape hatch; non-default, so the #1160 phase-2 keep assertion is not
+# vacuous) must have reached AWS — before the backfill the property was a
+# silent-drop that flipped the Service to the CC-API route.
 BASE_AZ_REBALANCING=$(aws ecs describe-services \
   --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
   --query 'services[0].availabilityZoneRebalancing' --output text 2>/dev/null)
-if [ "${BASE_AZ_REBALANCING}" != "ENABLED" ]; then
-  echo "FAIL: base availabilityZoneRebalancing is '${BASE_AZ_REBALANCING}', expected 'ENABLED' (#609 AvailabilityZoneRebalancing silent-drop NOT closed)" >&2
+if [ "${BASE_AZ_REBALANCING}" != "DISABLED" ]; then
+  echo "FAIL: base availabilityZoneRebalancing is '${BASE_AZ_REBALANCING}', expected 'DISABLED' (#609 AvailabilityZoneRebalancing silent-drop NOT closed)" >&2
   exit 1
 fi
 # DeploymentController: the SDK API doc says DescribeServices may omit the
@@ -356,7 +387,16 @@ case "${BASE_CONTROLLER}" in
     exit 1
     ;;
 esac
-echo "    OK: base #609 fields on AWS are availabilityZoneRebalancing=ENABLED, deploymentController.type=${BASE_CONTROLLER}"
+echo "    OK: base #609 fields on AWS are availabilityZoneRebalancing=DISABLED, deploymentController.type=${BASE_CONTROLLER}"
+
+# Base assertion for #1160: the phase-1 Monitoring (20s CPUUtilization) reached
+# the service revision, so the phase-2 reset assertion can discriminate.
+BASE_MONITORING=$(revision_monitoring)
+if [ "${BASE_MONITORING}" != '{"metricConfigurations":[{"metricNames":["CPUUtilization"],"resolutionSeconds":20}]}' ]; then
+  echo "FAIL: base service-revision monitoring is '${BASE_MONITORING}', expected 20s CPUUtilization (#1160 baseline never landed, so the phase-2 reset assertion would be vacuous)" >&2
+  exit 1
+fi
+echo "    OK: base service-revision monitoring is 20s CPUUtilization (#1160 baseline in place)"
 
 # Base assertion for issue #1165 on the TaskDefinition: RuntimePlatform
 # (ARM64 / Graviton) and EphemeralStorage (SizeInGiB) are nested CFn PascalCase
@@ -565,8 +605,8 @@ echo "    OK: RestartPolicy registered on AWS (enabled=True) AND captured in obs
 echo "==> Phase 1g: assert #609 Service members captured into observedProperties"
 OBS_SVC_AZ=$(echo "${OBS_STATE}" | jq -r '[.resources[] | select(.resourceType=="AWS::ECS::Service") | .observedProperties.AvailabilityZoneRebalancing] | first // "MISSING"')
 OBS_SVC_CONTROLLER=$(echo "${OBS_STATE}" | jq -r '[.resources[] | select(.resourceType=="AWS::ECS::Service") | .observedProperties.DeploymentController.Type] | first // "MISSING"')
-if [ "${OBS_SVC_AZ}" != "ENABLED" ]; then
-  echo "FAIL: Service observedProperties.AvailabilityZoneRebalancing is '${OBS_SVC_AZ}', expected 'ENABLED' (#609 read-back did NOT surface the member)" >&2
+if [ "${OBS_SVC_AZ}" != "DISABLED" ]; then
+  echo "FAIL: Service observedProperties.AvailabilityZoneRebalancing is '${OBS_SVC_AZ}', expected 'DISABLED' (#609 read-back did NOT surface the member)" >&2
   echo "${OBS_STATE}" | jq '[.resources[] | select(.resourceType=="AWS::ECS::Service") | .observedProperties] | first | keys'
   exit 1
 fi
@@ -574,7 +614,7 @@ if [ "${OBS_SVC_CONTROLLER}" != "ECS" ]; then
   echo "FAIL: Service observedProperties.DeploymentController.Type is '${OBS_SVC_CONTROLLER}', expected 'ECS' (#609 read-back {Type: ECS} fallback for the documented DescribeServices omission NOT working)" >&2
   exit 1
 fi
-echo "    OK: observedProperties captured AvailabilityZoneRebalancing=ENABLED + DeploymentController.Type=ECS (#609 read-back verified against real AWS)"
+echo "    OK: observedProperties captured AvailabilityZoneRebalancing=DISABLED + DeploymentController.Type=ECS (#609 read-back verified against real AWS)"
 
 # --- Phase 2: UPDATE pass (issue #975 add-on-update + #5004 retain-on-removal) --
 echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (flip EnableECSManagedTags + PropagateTags; DROP PlatformVersion / grace)"
@@ -623,6 +663,23 @@ if [ "${AFTER_GRACE}" != "30" ]; then
   exit 1
 fi
 echo "    OK: after removal, AWS retained platformVersion=1.4.0, grace=30 (#5004 CloudFormation parity)"
+
+# #1160: a real CloudFormation A/B showed CloudFormation KEEPS a removed
+# AvailabilityZoneRebalancing (DISABLED stayed DISABLED, not the ENABLED schema
+# default) and RESETS a removed Monitoring to {metricConfigurations: []}.
+AFTER_AZ_REBALANCING=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].availabilityZoneRebalancing' --output text 2>/dev/null)
+if [ "${AFTER_AZ_REBALANCING}" != "DISABLED" ]; then
+  echo "FAIL: after removal, availabilityZoneRebalancing is '${AFTER_AZ_REBALANCING}', expected the retained 'DISABLED' (#1160: CloudFormation keeps it)" >&2
+  exit 1
+fi
+AFTER_MONITORING=$(revision_monitoring)
+if [ "${AFTER_MONITORING}" != '{"metricConfigurations":[]}' ]; then
+  echo "FAIL: after removal, service-revision monitoring is '${AFTER_MONITORING}', expected {\"metricConfigurations\":[]} (#1160: CloudFormation resets it; a 20s value means cdkd kept the stale phase-1 monitoring)" >&2
+  exit 1
+fi
+echo "    OK: after removal, AWS retained availabilityZoneRebalancing=DISABLED and reset monitoring to an empty metric list (#1160 CloudFormation parity)"
 
 # #1165 update SET path: phase 2 CHANGED the DeploymentConfiguration to a new
 # custom shape (MaximumPercent 175 / MinimumHealthyPercent 25 /
@@ -850,4 +907,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ecs-service-update-props test passed (EnableECSManagedTags + PropagateTags UpdateService mapping (#975); PlatformVersion + HealthCheckGracePeriodSeconds retained-on-removal (#5004); DeploymentConfiguration nested-object PascalCase->camelCase on create + update (#1165); DeploymentCircuitBreaker member-level removal reset AND the never-declared arm that discriminates it (#1861); AvailabilityZoneRebalancing + DeploymentController + Monitoring acceptance + ForceNewDeployment forced-rollout (#609); clean destroy)"
+echo "==> ecs-service-update-props test passed (EnableECSManagedTags + PropagateTags UpdateService mapping (#975); PlatformVersion + HealthCheckGracePeriodSeconds retained-on-removal (#5004); DeploymentConfiguration nested-object PascalCase->camelCase on create + update (#1165); DeploymentCircuitBreaker member-level removal reset AND the never-declared arm that discriminates it (#1861); AvailabilityZoneRebalancing + DeploymentController + ForceNewDeployment forced-rollout (#609); AvailabilityZoneRebalancing kept + Monitoring reset on removal (#1160); clean destroy)"

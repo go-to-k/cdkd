@@ -2450,6 +2450,7 @@
     "--service-id",
     "--service-ids",
     "--service-namespace",
+    "--service-revision-arns",
     "--services",
     "--session-id",
     "--shard-count",
