@@ -25,6 +25,7 @@ import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline
 import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
@@ -1258,7 +1259,8 @@ export class RDSProvider implements ResourceProvider {
           physicalId,
           globalClusterId,
           context?.removeProtection === true,
-          progress
+          progress,
+          maskerOrIdentity(context?.maskSecrets)
         ))
           ? globalClusterId
           : undefined;
@@ -1859,6 +1861,25 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
+   * A {@link GlobalClusterDetachError} for a failed detach or membership read.
+   * Its message is the "Failed to delete DBCluster" wrap's, which is persisted
+   * to `deployments/{runId}.jsonl`, so an AWS-authored failure is named by its
+   * CLASS plus the `--verbose` pointer (go-to-k/cdkd#2319) and AWS's text goes
+   * to `debug` through the delete's masker. No `cause` is threaded, as before
+   * (the wrap is non-retryable, so no retry classifier needs AWS's text on a
+   * chain).
+   */
+  private wrapGlobalClusterDetachError(
+    error: unknown,
+    mask: (text: string) => string,
+    build: (text: string) => string
+  ): GlobalClusterDetachError {
+    const failure = describeAwsFailure(error);
+    if (failure.redacted) this.logger.debug(mask(build(mask(failure.detail))));
+    return new GlobalClusterDetachError(build(failure.summary));
+  }
+
+  /**
    * Detach cluster `physicalId` from global cluster `globalClusterId` and wait
    * until it is out of the member list and `available` again, as the
    * CloudFormation handler does before its delete (issue #4029). Returns
@@ -1881,7 +1902,8 @@ export class RDSProvider implements ResourceProvider {
     physicalId: string,
     globalClusterId: string,
     removeProtection: boolean,
-    progress: DeleteProgress
+    progress: DeleteProgress,
+    mask: (text: string) => string
   ): Promise<boolean> {
     let cluster = await this.describeDBCluster(physicalId);
     for (let i = 0; removeProtection && cluster?.DeletionProtection === true && i < 6; i++) {
@@ -1933,8 +1955,11 @@ export class RDSProvider implements ResourceProvider {
         // follows reports the cluster's real state.
         if (name === 'DBClusterNotFoundFault') break;
         if (!TRANSIENT_DETACH_FAULTS.has(name)) {
-          throw new GlobalClusterDetachError(
-            safeMsg`detaching ${physicalId} from global cluster ${globalClusterId} failed (${describeAwsFailure(error).detail})`
+          throw this.wrapGlobalClusterDetachError(
+            error,
+            mask,
+            (text) =>
+              safeMsg`detaching ${physicalId} from global cluster ${globalClusterId} failed (${text})`
           );
         }
         await backOff();
@@ -1955,8 +1980,11 @@ export class RDSProvider implements ResourceProvider {
         if (name === 'GlobalClusterNotFoundFault') {
           stillMember = false;
         } else if (!TRANSIENT_DETACH_FAULTS.has(name)) {
-          throw new GlobalClusterDetachError(
-            safeMsg`could not confirm ${physicalId} left global cluster ${globalClusterId} (${describeAwsFailure(error).detail})`
+          throw this.wrapGlobalClusterDetachError(
+            error,
+            mask,
+            (text) =>
+              safeMsg`could not confirm ${physicalId} left global cluster ${globalClusterId} (${text})`
           );
         }
       }

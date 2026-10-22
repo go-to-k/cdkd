@@ -58,6 +58,12 @@ import {
 } from '../../../src/provisioning/providers/scheduler-schedule-provider.js';
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
+import {
+  hasRedactedCause,
+  isRetryableTransientError,
+  retryClassificationText,
+} from '../../../src/deployment/retryable-errors.js';
 
 /** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
 function bagOf(
@@ -363,7 +369,9 @@ describe('SchedulerScheduleProvider', () => {
 
       expect(rejected).toBeInstanceOf(ProvisioningError);
       expect((rejected as Error).message).toContain('Failed to delete Schedule Sched');
-      expect((rejected as Error).message).toContain('a value that could not be converted to text');
+      // Withheld from the persisted message (go-to-k/cdkd#2319); the debug
+      // line carries the unconvertible-value sentence.
+      expect((rejected as Error).message).toContain('a non-Error value of type object');
       expect((rejected as Error).message).not.toContain(
         'Cannot convert object to primitive value'
       );
@@ -1162,5 +1170,152 @@ describe('SchedulerScheduleProvider', () => {
         expect(mockSend).not.toHaveBeenCalled();
       });
     });
+  });
+});
+
+/**
+ * go-to-k/cdkd#2319: a thrown message is persisted to
+ * `deployments/{runId}.jsonl`, so an AWS-authored failure is named by its class
+ * plus the `--verbose` pointer; AWS's text (the caller's assumed-role ARN on an
+ * access denial) goes to the masked debug line and stays on the `cause`.
+ */
+describe('SchedulerScheduleProvider: AWS failure text stays out of the thrown message (#2319)', () => {
+  const ROLE_ARN = 'arn:aws:sts::123456789012:assumed-role/deployer/session-2319';
+  const DENIED = `User: ${ROLE_ARN} is not authorized to perform: scheduler:Op`;
+  const denied = (): Error =>
+    Object.assign(new Error(DENIED), {
+      name: 'AccessDeniedException',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 400, requestId: 'req-sched-2319' },
+    });
+  const mask = (t: string): string => t.replaceAll('session-2319', '***');
+  const SITES = [
+    {
+      site: 'create',
+      command: CreateScheduleCommand,
+      wrap: 'Failed to create Schedule Sched',
+      run: (p: SchedulerScheduleProvider) =>
+        p.create('Sched', TYPE, { ...BASE_PROPS }, { maskSecrets: mask }),
+    },
+    {
+      site: 'update',
+      command: UpdateScheduleCommand,
+      wrap: 'Failed to update Schedule Sched',
+      run: (p: SchedulerScheduleProvider) =>
+        p.update(
+          'Sched',
+          'my-sched',
+          TYPE,
+          { ...BASE_PROPS, ScheduleExpression: 'rate(2 hours)' },
+          { ...BASE_PROPS },
+          { maskSecrets: mask }
+        ),
+    },
+    {
+      site: 'delete',
+      command: DeleteScheduleCommand,
+      wrap: 'Failed to delete Schedule Sched',
+      run: (p: SchedulerScheduleProvider) =>
+        p.delete('Sched', 'my-sched', TYPE, { ...BASE_PROPS }, { maskSecrets: mask }),
+    },
+  ] as const;
+  let provider: SchedulerScheduleProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new SchedulerScheduleProvider();
+  });
+
+  it.each(SITES)('$site names the class, keeps the text on cause and masked debug', async (c) => {
+    mockSend.mockImplementation((sent: unknown) =>
+      sent instanceof c.command ? Promise.reject(denied()) : Promise.resolve({})
+    );
+    const failure = await c.run(provider).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(failure).toBeInstanceOf(ProvisioningError);
+    expect(failure!.message).toBe(`${c.wrap}: AccessDeniedException. ${VERBOSE_POINTER}`);
+    expect(hasRedactedCause(failure)).toBe(true);
+    expect((failure!.cause as Error).message).toBe(DENIED);
+    expect(isRetryableTransientError(failure, retryClassificationText(failure))).toBe(true);
+    const debug = childLogger.debug.mock.calls.map((call) => String(call[0]));
+    expect(debug).toContain(`${c.wrap}: ${mask(DENIED)}`);
+    expect(debug.join('\n')).not.toContain('session-2319');
+  });
+
+  it('a cdkd-authored failure keeps its text, masked', async () => {
+    mockSend.mockImplementation((sent: unknown) =>
+      sent instanceof DeleteScheduleCommand
+        ? Promise.reject(new Error('socket hang up near session-2319'))
+        : Promise.resolve({})
+    );
+    const failure = await SITES[2].run(provider).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(failure!.message).toBe('Failed to delete Schedule Sched: socket hang up near ***');
+    // The mask changed the text, so the classifiers read the chain.
+    expect(hasRedactedCause(failure)).toBe(true);
+  });
+
+  it('a non-Error throw is withheld, unstamped', async () => {
+    mockSend.mockImplementation((sent: unknown) =>
+      sent instanceof DeleteScheduleCommand ? Promise.reject(DENIED) : Promise.resolve({})
+    );
+    const failure = await SITES[2].run(provider).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(failure!.message).toBe(
+      `Failed to delete Schedule Sched: a non-Error value of type string. ${VERBOSE_POINTER}`
+    );
+    expect(hasRedactedCause(failure)).toBe(false);
+  });
+
+  it('restates an "already exists" from CreateSchedule', async () => {
+    mockSend.mockImplementation((sent: unknown) =>
+      sent instanceof CreateScheduleCommand
+        ? Promise.reject(
+            Object.assign(new Error('Schedule my-sched already exists.'), {
+              name: 'ConflictException',
+              $fault: 'client',
+              $metadata: { httpStatusCode: 409 },
+            })
+          )
+        : Promise.resolve({})
+    );
+    const failure = await SITES[0].run(provider).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(failure!.message).toBe(
+      `Failed to create Schedule Sched: ConflictException. ${VERBOSE_POINTER} AWS reports that it already exists.`
+    );
+  });
+
+  it('getAttribute ends a cdkd-authored text with a period before the hint', async () => {
+    mockSend.mockRejectedValueOnce(new Error('socket hang up'));
+    const failure = await provider.getAttribute('my-sched', TYPE, 'Arn', 'Sched').then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(failure!.message).toBe('Failed to resolve Arn for Schedule my-sched: socket hang up.');
+  });
+
+  it('getAttribute names the class and keeps the custom-group hint', async () => {
+    mockSend.mockRejectedValueOnce(
+      Object.assign(notFound(), { $fault: 'client', $metadata: { httpStatusCode: 404 } })
+    );
+    const failure = await provider.getAttribute('my-sched', TYPE, 'Arn', 'Sched').then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(failure!.message).toBe(
+      `Failed to resolve Arn for Schedule my-sched: ResourceNotFoundException. ${VERBOSE_POINTER} ` +
+        'Schedules in a custom group cannot be looked up by bare name; the Arn is normally served from cdkd state attributes.'
+    );
+    expect((failure!.cause as Error).message).toBe('Schedule not found.');
+    expect(hasRedactedCause(failure)).toBe(true);
   });
 });

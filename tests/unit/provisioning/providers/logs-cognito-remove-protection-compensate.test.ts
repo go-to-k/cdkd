@@ -177,23 +177,25 @@ function iamDeny(): Error {
 }
 
 /**
- * The site's delete failure names `text`. The Cognito wrap withholds an
- * AWS-authored failure's text into its `cause` and names it by its class at the
- * top (go-to-k/cdkd#2319), so that site must be the wrap, never the raw error;
- * the Logs site still relays the text in its own message.
+ * The site's delete failure names `text`. Both wraps withhold an AWS-authored
+ * failure's text into their `cause` and name it by its class at the top
+ * (go-to-k/cdkd#2319), so the site must be the wrap, never the raw error, and
+ * AWS's text must NOT be in the thrown (persisted) message.
  */
+const DELETE_WRAP: Record<string, RegExp> = {
+  'Cognito UserPool': /^Failed to delete Cognito User Pool \S+: /,
+  'Logs LogGroup': /^Failed to delete log group \S+: /,
+};
 const says =
   (site: Site, text: string) =>
   (error: unknown): boolean => {
     if (!(error instanceof Error)) return false;
-    if (site.name !== 'Cognito UserPool') return error.message.includes(text);
     const cause = error.cause;
     if (!(cause instanceof Error) || !cause.message.includes(text)) return false;
-    const tail = isAwsAuthoredFailure(cause) ? `${cause.name}. ${VERBOSE_POINTER}` : cause.message;
-    return (
-      /^Failed to delete Cognito User Pool \S+: /.test(error.message) &&
-      error.message.endsWith(`: ${tail}`)
-    );
+    const authored = isAwsAuthoredFailure(cause);
+    if (authored && error.message.includes(text)) return false;
+    const tail = authored ? `${cause.name}. ${VERBOSE_POINTER}` : cause.message;
+    return DELETE_WRAP[site.name]!.test(error.message) && error.message.endsWith(`: ${tail}`);
   };
 
 function notFound(): Error {

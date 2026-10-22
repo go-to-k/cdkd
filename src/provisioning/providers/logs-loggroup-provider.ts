@@ -30,7 +30,11 @@ import {
   withDerivedNameMasks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
@@ -69,7 +73,11 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
 
 const LOG_GROUP_TYPE = 'AWS::Logs::LogGroup';
 
@@ -310,20 +318,40 @@ export class LogsLogGroupProvider implements ResourceProvider {
   }
 
   /**
-   * A `create()` / `update()` failure wrap quoting the caught error's text
-   * through the operation's masker: an AWS error can echo a request value (a
-   * resolved tag value). The text is masked RAW, the `cause` stays unmasked,
-   * and a message the mask changed is stamped so the retry classifiers read
-   * that chain rather than the masked message (`wrapMaskedAwsError`, issue
-   * #4259). A method, so `gen-update-wrap-coverage` sees the catch that
-   * throws it as a wrap.
+   * The failure wrap the create / update / delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through `mask`,
+   * and the wrap is stamped `markRedactedCause`, so the retry classifiers read
+   * the withheld text on the `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}), except from a create-time wiring call's
+   * failure ({@link markAuxiliaryFailure}), where "it" would read as the log
+   * group. A non-`Error` throw is withheld the same way, unstamped: it has no
+   * chain to read.
+   *
+   * A cdkd-authored or transport error keeps its text, masked RAW (an AWS SDK
+   * error can echo a request value such as a resolved tag value), stamped
+   * exactly when the mask changed it (`wrapMaskedAwsError`, issue #4259). The
+   * delete checks `ResourceNotFoundException` by type before it wraps. A
+   * method, so `gen-update-wrap-coverage` sees the catch that throws it as a
+   * wrap.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
    */
-  private wrapMaskedError(
+  private wrapCaughtError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${mask(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */
@@ -674,7 +702,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // CreateLogGroup sends the resolved tag values, which an AWS error can
       // echo: the message goes through the operation's masker.
       const mask = maskerOrIdentity(context?.maskSecrets);
-      const thrown = this.wrapMaskedError(
+      const thrown = this.wrapCaughtError(
         mask,
         error,
         (text) =>
@@ -756,7 +784,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // An AWS error can echo a request value (a resolved tag value), so the
       // message goes through the operation's masker.
       const mask = maskerOrIdentity(context?.maskSecrets);
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         mask,
         error,
         (text) =>
@@ -1435,12 +1463,17 @@ export class LogsLogGroupProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete log group ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete log group ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

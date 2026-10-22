@@ -34,6 +34,13 @@ vi.mock('../../../../src/utils/logger.js', () => {
 
 import { DLMLifecyclePolicyProvider } from '../../../../src/provisioning/providers/dlm-lifecycle-policy-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
+import { getLogger } from '../../../../src/utils/logger.js';
+import { VERBOSE_POINTER } from '../../../../src/utils/aws-failure-text.js';
+import {
+  hasRedactedCause,
+  isRetryableTransientError,
+  retryClassificationText,
+} from '../../../../src/deployment/retryable-errors.js';
 import {
   CreateLifecyclePolicyCommand,
   UpdateLifecyclePolicyCommand,
@@ -696,7 +703,149 @@ describe('DLMLifecyclePolicyProvider rethrow of an unconvertible thrown value (#
     expect(rejected).toBeInstanceOf(ProvisioningError);
     const message = (rejected as Error).message;
     expect(message).toContain('Failed to create DLM Lifecycle Policy MyPolicy');
-    expect(message).toContain('a value that could not be converted to text');
+    // Withheld from the persisted message (go-to-k/cdkd#2319); the debug
+    // line carries the unconvertible-value sentence.
+    expect(message).toContain('a non-Error value of type object');
     expect(message).not.toContain('Cannot convert object to primitive value');
+  });
+});
+
+/**
+ * go-to-k/cdkd#2319: a thrown message is persisted to
+ * `deployments/{runId}.jsonl`, so an AWS-authored failure is named by its class
+ * plus the `--verbose` pointer; AWS's text (the caller's assumed-role ARN on an
+ * access denial) goes to the masked debug line and stays on the `cause`.
+ */
+describe('DLMLifecyclePolicyProvider: AWS failure text stays out of the thrown message (#2319)', () => {
+  const ROLE_ARN = 'arn:aws:sts::123456789012:assumed-role/deployer/session-2319';
+  const DENIED = `User: ${ROLE_ARN} is not authorized to perform: dlm:Op`;
+  const denied = (): Error =>
+    Object.assign(new Error(DENIED), {
+      name: 'AccessDeniedException',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 400, requestId: 'req-dlm-2319' },
+    });
+  const mask = (t: string): string => t.replaceAll('session-2319', '***');
+  const PROPS = {
+    Description: 'daily snapshots',
+    ExecutionRoleArn: 'arn:aws:iam::123456789012:role/dlm-role',
+    State: 'ENABLED',
+    PolicyDetails: POLICY_DETAILS,
+  };
+  const SITES = [
+    {
+      site: 'create',
+      command: CreateLifecyclePolicyCommand,
+      wrap: 'Failed to create DLM Lifecycle Policy MyPolicy',
+      run: (p: DLMLifecyclePolicyProvider) =>
+        p.create('MyPolicy', RESOURCE_TYPE, { ...PROPS }, { maskSecrets: mask }),
+    },
+    {
+      site: 'update',
+      command: UpdateLifecyclePolicyCommand,
+      wrap: 'Failed to update DLM Lifecycle Policy MyPolicy',
+      run: (p: DLMLifecyclePolicyProvider) =>
+        p.update(
+          'MyPolicy',
+          POLICY_ID,
+          RESOURCE_TYPE,
+          { ...PROPS, Description: 'v2' },
+          { ...PROPS },
+          { maskSecrets: mask }
+        ),
+    },
+    {
+      site: 'delete',
+      command: DeleteLifecyclePolicyCommand,
+      wrap: 'Failed to delete DLM Lifecycle Policy MyPolicy',
+      run: (p: DLMLifecyclePolicyProvider) =>
+        p.delete('MyPolicy', POLICY_ID, RESOURCE_TYPE, undefined, { maskSecrets: mask }),
+    },
+    {
+      site: 'getAttribute',
+      command: GetLifecyclePolicyCommand,
+      wrap: `Failed to resolve Arn for DLM Lifecycle Policy ${POLICY_ID}`,
+      run: (p: DLMLifecyclePolicyProvider) =>
+        p.getAttribute(POLICY_ID, RESOURCE_TYPE, 'Arn', 'MyPolicy'),
+    },
+  ] as const;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    vi.mocked(getLogger().child('x').debug).mockClear();
+  });
+
+  it.each(SITES)('$site names the class and keeps the text on cause and debug', async (c) => {
+    mockSend.mockImplementation((sent: unknown) =>
+      sent instanceof c.command ? Promise.reject(denied()) : Promise.resolve({})
+    );
+    const failure = await c.run(new DLMLifecyclePolicyProvider()).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(failure).toBeInstanceOf(ProvisioningError);
+    expect(failure!.message).toBe(`${c.wrap}: AccessDeniedException. ${VERBOSE_POINTER}`);
+    expect(hasRedactedCause(failure)).toBe(true);
+    expect((failure!.cause as Error).message).toBe(DENIED);
+    expect(isRetryableTransientError(failure, retryClassificationText(failure))).toBe(true);
+    const debug = vi
+      .mocked(getLogger().child('x').debug)
+      .mock.calls.map((call) => String(call[0]));
+    // getAttribute has no operation masker.
+    const text = c.site === 'getAttribute' ? DENIED : mask(DENIED);
+    expect(debug).toContain(`${c.wrap}: ${text}`);
+    if (c.site !== 'getAttribute') expect(debug.join('\n')).not.toContain('session-2319');
+  });
+
+  it('a cdkd-authored failure keeps its text, masked', async () => {
+    mockSend.mockImplementation((sent: unknown) =>
+      sent instanceof DeleteLifecyclePolicyCommand
+        ? Promise.reject(new Error('socket hang up near session-2319'))
+        : Promise.resolve({})
+    );
+    const failure = await SITES[2].run(new DLMLifecyclePolicyProvider()).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(failure!.message).toBe(
+      'Failed to delete DLM Lifecycle Policy MyPolicy: socket hang up near ***'
+    );
+    // The mask changed the text, so the classifiers read the chain.
+    expect(hasRedactedCause(failure)).toBe(true);
+  });
+
+  it('a non-Error throw is withheld, unstamped', async () => {
+    mockSend.mockImplementation((sent: unknown) =>
+      sent instanceof DeleteLifecyclePolicyCommand ? Promise.reject(DENIED) : Promise.resolve({})
+    );
+    const failure = await SITES[2].run(new DLMLifecyclePolicyProvider()).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(failure!.message).toBe(
+      `Failed to delete DLM Lifecycle Policy MyPolicy: a non-Error value of type string. ${VERBOSE_POINTER}`
+    );
+    expect(hasRedactedCause(failure)).toBe(false);
+  });
+
+  it('restates an "already exists" from CreateLifecyclePolicy', async () => {
+    mockSend.mockImplementation((sent: unknown) =>
+      sent instanceof CreateLifecyclePolicyCommand
+        ? Promise.reject(
+            Object.assign(new Error('A policy with this description already exists'), {
+              name: 'InvalidRequestException',
+              $fault: 'client',
+              $metadata: { httpStatusCode: 400 },
+            })
+          )
+        : Promise.resolve({})
+    );
+    const failure = await SITES[0].run(new DLMLifecyclePolicyProvider()).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(failure!.message).toBe(
+      `Failed to create DLM Lifecycle Policy MyPolicy: InvalidRequestException. ${VERBOSE_POINTER} AWS reports that it already exists.`
+    );
   });
 });
