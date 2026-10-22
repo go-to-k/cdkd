@@ -40,18 +40,6 @@ export const CC_API_FALLBACK_DENY_LIST: Record<string, string> = {
   'AWS::ApiGateway::RestApi':
     'Body / BodyS3Location are write-only inputs not returned by CC API GetResource; cdkd state preserves them',
 
-  // AWS::Budgets::Budget: the SDK provider has no `readCurrentState`. The
-  // type had no Cloud Control READ handler, so drift reported it unsupported.
-  // A registry version created 2026-09-25 made it FULLY_MUTABLE with a `read`
-  // handler (`aws cloudformation describe-type --type RESOURCE --type-name
-  // AWS::Budgets::Budget`). That response orders the notification
-  // subscribers differently and adds the AWS default `ThresholdType:
-  // PERCENTAGE`, which state never holds. So `NotificationsWithSubscribers`
-  // diffed as drift on every unchanged budget (#5179). The fix is the
-  // provider's own read-back; drop this entry when it lands.
-  'AWS::Budgets::Budget':
-    'CC API GetResource reorders notification subscribers and adds the defaulted ThresholdType, so an unchanged budget diffs as drift',
-
   // AWS::CloudFormation::Stack: `NestedStackProvider` deploys the child's
   // resources itself, so the row's physicalId is a `cdkd-local` placeholder
   // ARN and no CloudFormation stack exists to read; the provider has no

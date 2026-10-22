@@ -147,6 +147,7 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
 }));
 
 import { createDriftCommand } from '../../../src/cli/commands/drift.js';
+import { BudgetsBudgetProvider } from '../../../src/provisioning/providers/budgets-budget-provider.js';
 
 /**
  * Issues [#2151](https://github.com/go-to-k/cdkd/issues/2151),
@@ -378,17 +379,17 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
   });
 
   /**
-   * go-to-k/cdkd#5179: AWS gave AWS::Budgets::Budget a Cloud Control READ
-   * handler, and the response it returns diffs on an unchanged budget
-   * (subscriber order, the defaulted `ThresholdType`). With no SDK
-   * `readCurrentState`, the deny-list keeps the row `unsupported` and Cloud
+   * go-to-k/cdkd#5183: AWS::Budgets::Budget is read by its own provider, no
+   * longer deny-listed off Cloud Control (#5179). The readback reorders the
+   * subscribers, adds the defaulted `ThresholdType` and returns the limit as
+   * `"1.0"`; the provider's drift hooks make that compare clean, and Cloud
    * Control is never asked.
    */
-  it('a Budget row is deny-listed off the Cloud Control fallback and reports unsupported', async () => {
+  it('a Budget row is compared through its own read-back, and an unchanged one is clean', async () => {
     mockGetState.mockResolvedValue(
       makeState({
         CostBudget: resource('AWS::Budgets::Budget', {
-          Budget: { BudgetType: 'COST', TimeUnit: 'MONTHLY' },
+          Budget: { BudgetType: 'COST', TimeUnit: 'MONTHLY', BudgetLimit: { Amount: 1, Unit: 'USD' } },
           NotificationsWithSubscribers: [
             {
               Notification: {
@@ -406,36 +407,47 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
         Queue: resource(QUEUE, { QueueName: 'ok' }),
       })
     );
-    mockRegistryGetProvider.mockImplementation((type: string) =>
-      type === QUEUE ? SIBLING_PROVIDER : {}
-    );
-    // The shape Cloud Control returns today: subscribers reordered, plus the
-    // AWS-defaulted ThresholdType. Compared, it would report drift.
-    mockCcReadCurrentState.mockResolvedValue({
-      Budget: { BudgetType: 'COST', TimeUnit: 'MONTHLY' },
-      NotificationsWithSubscribers: [
-        {
-          Notification: {
-            NotificationType: 'ACTUAL',
-            ComparisonOperator: 'GREATER_THAN',
-            Threshold: 90,
-            ThresholdType: 'PERCENTAGE',
-          },
-          Subscribers: [
-            { SubscriptionType: 'EMAIL', Address: 'b@example.com' },
-            { SubscriptionType: 'EMAIL', Address: 'a@example.com' },
-          ],
+    // The real provider's drift hooks, over a readback in the live shape.
+    const budgets = new BudgetsBudgetProvider();
+    const budgetProvider = {
+      readCurrentState: async () => ({
+        Budget: {
+          BudgetName: 'b',
+          BudgetType: 'COST',
+          TimeUnit: 'MONTHLY',
+          BudgetLimit: { Amount: '1.0', Unit: 'USD' },
         },
-      ],
-    });
+        NotificationsWithSubscribers: [
+          {
+            Notification: {
+              NotificationType: 'ACTUAL',
+              ComparisonOperator: 'GREATER_THAN',
+              Threshold: 90,
+              ThresholdType: 'PERCENTAGE',
+            },
+            Subscribers: [
+              { SubscriptionType: 'EMAIL', Address: 'b@example.com' },
+              { SubscriptionType: 'EMAIL', Address: 'a@example.com' },
+            ],
+          },
+        ],
+        ResourceTags: [],
+      }),
+      getDriftUnorderedPaths: budgets.getDriftUnorderedPaths.bind(budgets),
+      getDriftUnknownPaths: budgets.getDriftUnknownPaths.bind(budgets),
+      canonicalizeDriftProperties: budgets.canonicalizeDriftProperties.bind(budgets),
+    };
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE ? SIBLING_PROVIDER : budgetProvider
+    );
+    mockCcReadCurrentState.mockRejectedValue(new Error('Cloud Control must not be asked'));
 
     const { output, error } = await runDrift(ARGS);
 
     expect(mockCcReadCurrentState).not.toHaveBeenCalled();
     expect(output).not.toContain('~ CostBudget');
-    expect(output).toContain('? CostBudget (AWS::Budgets::Budget)');
-    expect(output).toContain('(1 resource checked, 1 unsupported)');
-    expect(output).not.toContain('NOT fully compared');
+    expect(output).not.toContain('? CostBudget');
+    expect(output).toContain('✓ TestStack (us-east-1): no drift detected (2 resources checked, 0 unsupported)');
     expect(error).toBeUndefined();
     expect(exitSpy).not.toHaveBeenCalled();
   });

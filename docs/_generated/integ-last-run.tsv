@@ -34,7 +34,7 @@ bench-cdk-sample	2026-10-21T05:45:41Z	PASS	465	standard	destroy 0 errors, 2 log 
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-10-05T08:20:47Z	PASS	81	verify.sh	rc 0, 0 orphans; ca-central-1, delete-marker residue from earlier runs purged (#2624 PR #4573)
 bucket-deployment	2026-10-11T09:33:22Z	PASS	80	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-budgets	2026-10-22T15:17:48Z	PASS	80	verify.sh	PR#5170 re-run at this branch's HEAD after rebasing onto main's #5182 fix; rc ok, orph clean
+budgets	2026-10-22T21:55:31Z	PASS	133	verify.sh	PR#5188 Run C at HEAD (73687a4de): Phase2b clean (2 checked, 0 unsupported); Phase2c drift exit1 on Budget.BudgetLimit.Amount (2->3) OK; Phase2d --revert restored limit to 2, kept both subscribers and FilterExpression, drift clean after; destroy 0 errors; AWS/S3 clean after; marker SET.
 cache-streaming	2026-10-21T13:56:47Z	PASS	634	verify.sh	rc ok, GetAtt redis endpoint verified, orph clean
 cc-abandoned-create-resume	2026-10-20T03:03:42Z	PASS	121	verify.sh	deploy+destroy clean, 0 orphans
 cc-api-fallback	2026-10-17T13:29:07Z	PASS	50	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
