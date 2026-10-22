@@ -59,7 +59,9 @@ Mandatory, BEFORE the first edit.
 that list**: beside the fix, its unit test and (user-visible) its
 `changelog.d/entries/` file, each EXISTING suite whose
 assertions the fix changes (`grep -rl '<[dir/]basename, no
-extension>' tests/unit` hits; suites need not mirror `src/`), the fixture §8-c will
+extension>' tests/unit` hits, plus each changed message's OLD text, which
+cross-provider suites assert without naming the file — go-to-k/cdkd#5161;
+suites need not mirror `src/`), the fixture §8-c will
 extend (`grep -rl '<type's last segment>' tests/integration/*/lib`; a NEW one
 adds `gen:all-matrices`' outputs in `docs/`) and, when a
 provider gains `context?: UpdateContext`, triage.md §2's checker/test pair, and
