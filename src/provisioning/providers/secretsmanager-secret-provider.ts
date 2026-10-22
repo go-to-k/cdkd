@@ -545,11 +545,9 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       // Truthy gate matches create() — Type is the partner identifier for
       // Secrets Manager managed external secrets and is rarely user-set;
       // passing an empty string would be a no-op on AWS side.
-      // DELIBERATELY NOT reset on removal (issue #1160
-      // secretsmanager batch): a template-removed Type still keeps its live
-      // value — the umbrella's UNCERTAIN bucket tracks it (partner-managed
-      // secrets; no documented clear sentinel, and probing one requires a
-      // partner-linked secret we cannot fabricate).
+      // A Type REMOVED from the template is NOT reset: real CloudFormation
+      // updates the secret in place and KEEPS the live Type (go-to-k/cdkd#1160
+      // A/B with `DatadogApiKey`), so cdkd sends nothing, as for Description.
       if (properties['Type']) updateParams.Type = properties['Type'] as string;
 
       await this.smClient.send(new UpdateSecretCommand(updateParams));
