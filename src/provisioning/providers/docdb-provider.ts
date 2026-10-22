@@ -63,8 +63,9 @@ import {
  * password, so the readback that opt-in buys could not confirm it.
  *
  * Without that set the two bags are compared. A rollback revert hands both
- * re-resolved, so an equal password is left out; `drift --revert`'s previous
- * side is an AWS readback, which never holds the password, so it is sent. A
+ * re-resolved, so an equal password is left out. Under `drift --revert` both
+ * sides are AWS readbacks (the desired one with the drifted keys overlaid),
+ * which never hold the password, so nothing is sent. A
  * recorded `{{resolve:` token or whole `***` mask is never read as equal.
  * Compared in memory only; the value is never logged.
  */
