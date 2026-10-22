@@ -20,18 +20,18 @@ lanes' integs or merges at once, nor a merge during another lane's integ: it
 can move `main` under that batch (#4864). A turn blocked on a fixture fix
 yields to the next merge-ready lane. ANY turn holding HOURS tells the user
 unasked its ETA and queue. A subagent running a turn's integs, marker and
-ledger blocks until EVERY run ends and reports ONCE. Its brief SAYS so (the
-runner never reads this file), makes marker and ledger due once the last PID exits,
-and, like a lane's, bans attribution lines in the ledger commit (#5104); a
-state record it cannot read is a STOP, never a purge (`/run-integ` step 7).
-Size it for ONE context (§8-d probe alone, then fixture batches), each run's
-fixture, `pid=<N>`, log, state prefix appended as one line to
-`<scratch>/integ-<PR>.live` at launch. The brief never stops a runner
-stalling between phases: the PARENT arms its own Monitor alarming when no
-PID — read only from each line's `pid=` field (`grep -oE 'pid=[0-9]+'`),
-never a bare digit grep, whose match on a `mktemp` log path's zeroes makes
-`kill -0 0000` signal the process group and always succeed — has run for 15
-min unreported (#5135).
+ledger is handed back INTERIM whatever its brief says. Its brief (the runner
+never reads this file) makes marker and ledger due once the last PID exits
+and, like a lane's, bans
+attribution lines in the ledger commit (#5104); a state record it cannot read
+is a STOP, never a purge (`/run-integ` step 7). Size it for ONE context (§8-d
+probe alone, then fixture batches), each run's fixture, `pid=<N>`, log, state
+prefix appended as one line to `<scratch>/integ-<PR>.live` at launch. The
+PARENT arms its own Monitor on those PIDs — read only from each line's `pid=`
+field (`grep -oE 'pid=[0-9]+'`), never a bare digit grep, whose match on a
+`mktemp` log path's zeroes makes `kill -0 0000` signal the process group and
+always succeed — and `SendMessage`s the runner as each exits, alarming too
+when no PID has run for 15 min unreported (#5135).
 A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
 
 - The `integ-destroy` marker is read from the tree the command runs in, so a
