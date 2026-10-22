@@ -9,6 +9,10 @@
 # Before the fix the target's first segment (`CdkdLocalInvokeStage`) was
 # looked up as a stack: the invoke refused with `Stack '...' not found`, and
 # start-api (no `--stack`) selected no stack and refused to boot.
+# Steps 5-7 (issue go-to-k/cdkd#5175): two Stages whose `Api` stacks share the
+# physical name `CdkdLocalInvokeStageShared`. Before that fix a target naming
+# the shared name silently ran the FIRST Stage's handler, and start-api
+# `--stack <shared name>` served only the first Stage.
 #
 # Run via `/run-integ local-invoke-stage` (recommended) or directly:
 #
@@ -109,17 +113,17 @@ assert_marker() { # usage: assert_marker <step> <target> <expected marker>
 }
 
 # The nested Stage stack, by its full display path.
-assert_marker 1/4 CdkdLocalInvokeStage/Inner/Api/Handler api
+assert_marker 1/7 CdkdLocalInvokeStage/Inner/Api/Handler api
 # Its sibling, whose display path `.../Api` is a STRING prefix of: the `/`
 # boundary must keep `Api` from claiming it.
-assert_marker 2/4 CdkdLocalInvokeStage/Inner/ApiV2/Handler api-v2
+assert_marker 2/7 CdkdLocalInvokeStage/Inner/ApiV2/Handler api-v2
 # The top-level stack still resolves beside the Stage.
-assert_marker 3/4 CdkdLocalInvokeStageTop/Handler top
+assert_marker 3/7 CdkdLocalInvokeStageTop/Handler top
 
 # start-api with NO --stack: the positional target alone must select the
 # Stage stack (its display path is the target's longest prefix), and the
 # Function URL filter must then keep only that stack's handler -- one server.
-echo "==> [4/4] start-api CdkdLocalInvokeStage/Inner/Api/Handler (no --stack)"
+echo "==> [4/7] start-api CdkdLocalInvokeStage/Inner/Api/Handler (no --stack)"
 ${CDKD} local start-api CdkdLocalInvokeStage/Inner/Api/Handler \
   --port "${PORT}" --container-host 127.0.0.1 --no-pull >"${LOG_FILE}" 2>&1 &
 SERVER_PID=$!
@@ -167,5 +171,60 @@ if [[ "${SERVERS}" -ne 1 ]]; then
   exit 1
 fi
 
+# Stop the step-4 server before the refusal steps reuse the log file.
+kill -TERM "${SERVER_PID}" 2>/dev/null || true
+for i in $(seq 1 120); do
+  kill -0 "${SERVER_PID}" 2>/dev/null || break
+  sleep 1
+done
+kill -0 "${SERVER_PID}" 2>/dev/null && kill -KILL "${SERVER_PID}" 2>/dev/null || true
+# Cleared only once the server is gone, so the EXIT trap still owns a survivor.
+for i in $(seq 1 10); do
+  kill -0 "${SERVER_PID}" 2>/dev/null || { SERVER_PID=""; break; }
+  sleep 1
+done
+
+SHARED=CdkdLocalInvokeStageShared
+# Both clones named by their CDK paths, in whichever order the assembly lists them.
+names_both() { # usage: names_both <file>
+  grep -qF "${SHARED} (CdkdLocalInvokeStageBeta/Api)" "$1" \
+    && grep -qF "${SHARED} (CdkdLocalInvokeStageProd/Api)" "$1"
+}
+
+# A target whose head is the shared physical name must be refused, naming both
+# stacks by their CDK paths -- before #5175 it ran the Beta handler, rc 0.
+echo "==> [5/7] local invoke ${SHARED}/Handler is refused as ambiguous"
+RC=0
+${CDKD} local invoke "${SHARED}/Handler" --no-pull >"${LOG_FILE}" 2>&1 || RC=$?
+if [[ "${RC}" -eq 0 ]] || ! grep -qF "matched 2 stacks:" "${LOG_FILE}" \
+  || ! names_both "${LOG_FILE}"; then
+  echo "FAIL: ${SHARED}/Handler was not refused as ambiguous (rc=${RC}). Log:"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+
+# Positive control: the Prod clone, named by its CDK path, runs Prod's handler.
+assert_marker 6/7 CdkdLocalInvokeStageProd/Api/Handler prod
+
+# start-api --stack <shared name> selects both clones, which it cannot serve
+# together (it reads deployed state by stack name): it must refuse before any
+# server binds -- before #5175 it served the Beta clone alone.
+echo "==> [7/7] start-api --stack ${SHARED} is refused"
+${CDKD} local start-api --stack "${SHARED}" \
+  --port "${PORT}" --container-host 127.0.0.1 --no-pull >"${LOG_FILE}" 2>&1 &
+SERVER_PID=$!
+for i in $(seq 1 120); do
+  kill -0 "${SERVER_PID}" 2>/dev/null || break
+  grep -q "Server listening" "${LOG_FILE}" 2>/dev/null && break
+  sleep 0.5
+done
+if grep -q "Server listening" "${LOG_FILE}" 2>/dev/null \
+  || ! grep -qF "share the physical stack name ${SHARED}" "${LOG_FILE}" \
+  || ! names_both "${LOG_FILE}"; then
+  echo "FAIL: start-api --stack ${SHARED} was not refused for its shared stack name. Log:"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+
 echo ""
-echo "==> All 4 local-invoke-stage tests passed"
+echo "==> All 7 local-invoke-stage tests passed"

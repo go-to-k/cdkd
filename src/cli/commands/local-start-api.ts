@@ -111,7 +111,7 @@ import {
 } from '../../local/lambda-resolver.js';
 import { materializeLayerFromArn } from '../../local/layer-arn-materializer.js';
 import { classifyExecutionRoleArnFromState, resolveInlineCodeFilePath } from './local-invoke.js';
-import { matchStacks } from '../stack-matcher.js';
+import { describeStack, matchStacks } from '../stack-matcher.js';
 import {
   buildCorsConfigByApiId,
   buildCorsConfigFromCloudFrontChain,
@@ -645,7 +645,7 @@ async function localStartApiCommand(
         throw new Error(
           `Multiple stacks in app, target '${apiFilter}' is missing a stack prefix. ` +
             `Use 'StackName:${apiFilter}' or 'StackName/${apiFilter}' (Construct path form). ` +
-            `Available stacks: ${targetStacks.map((s) => s.stackName).join(', ')}.`
+            `Available stacks: ${targetStacks.map(describeStack).join(', ')}.`
         );
       }
       const filtered = filterRoutesByApiIdentifier(routesWithAuth, apiFilter);
@@ -657,6 +657,14 @@ async function localStartApiCommand(
       }
       routesWithAuth = filtered;
     }
+
+    // A union of stacks (`--stack` with a wildcard, or a physical name two
+    // Stage clones share) is served through maps keyed by BARE logical id --
+    // the per-Lambda container specs, the per-API stage / CORS maps -- so two
+    // stacks declaring one would serve one stack's Lambda for the other's
+    // route. Refuse, naming the stacks (#5175). Checked over the same
+    // population those maps read: every target stack, every discovered route.
+    assertServedLogicalIdsUnambiguous(targetStacks, routes, routesWithAuth, webSocketApis);
 
     // PR 8c: per-API CORS config. HTTP API v2's `CorsConfiguration` +
     // Function URL's own `Cors` (issue #644) + CORS borrowed from
@@ -1459,7 +1467,13 @@ export function targetStackHint(
   stacks: readonly StackInfo[]
 ): StackInfo | string | undefined {
   if (target?.includes('/') !== true) return undefined;
-  return stackForConstructPath(target, stacks) ?? target.slice(0, target.indexOf('/'));
+  const stack = stackForConstructPath(target, stacks);
+  if (stack === undefined) return target.slice(0, target.indexOf('/'));
+  // The lookup keeps the FIRST stack on a tie, and only a shared physical name
+  // ties: the reversed list then answers with another stack. Return that name
+  // as a pattern, which selects every stack carrying it, so the served-union
+  // check refuses the clones instead of serving the first (#5175).
+  return stackForConstructPath(target, [...stacks].reverse()) === stack ? stack : stack.stackName;
 }
 
 /**
@@ -1488,7 +1502,10 @@ export function pickTargetStacks(
   const effective = pattern ?? cfnStackFallback ?? targetFallback;
   if (effective !== undefined && typeof effective !== 'string') return [effective];
   if (effective) {
-    return matchStacks(stacks, [effective]);
+    // By identity: two stacks sharing a physical name (a Stage deployed twice)
+    // are both served, and `assertServedLogicalIdsUnambiguous` refuses their
+    // colliding logical ids rather than one being dropped silently (#5175).
+    return matchStacks(stacks, [effective], { dedupe: 'identity' });
   }
   if (stacks.length === 1) return stacks;
   if (stacks.length === 0) return [];
@@ -1562,6 +1579,97 @@ export function tryEmitFromCfnRedundancyTipOnce(
  * list, then any newly-introduced authorizer Lambdas, which keeps the
  * route-table output deterministic.
  */
+/**
+ * The stacks whose template declares `logicalId` (optionally of one resource
+ * type). One predicate for the served-union refusal and for
+ * {@link resolveLambdaByLogicalId}, so the two cannot disagree.
+ */
+function stacksDeclaring(
+  logicalId: string,
+  stacks: readonly StackInfo[],
+  type?: string
+): StackInfo[] {
+  return stacks.filter((stack) => {
+    const resource = stack.template.Resources?.[logicalId];
+    return resource !== undefined && (type === undefined || resource.Type === type);
+  });
+}
+
+/**
+ * The next step both refusals end with: serve one stack, named by its CDK path
+ * -- a shared physical name selects every stack carrying it.
+ */
+function renderServeOneStackAdvice(stacks: readonly StackInfo[]): string {
+  const example = stacks.find((s) => s.displayName && s.displayName !== s.stackName)?.displayName;
+  const shown =
+    example !== undefined && displayIdent(example) === example
+      ? ` (e.g. --stack '${example}')`
+      : '';
+  return (
+    `Serve one stack at a time: pass --stack with its CDK path${shown}, ` +
+    `or a target starting with that path.`
+  );
+}
+
+/**
+ * Refuse a served union in which a reachable Lambda's, or an API's, logical id
+ * is declared by more than one stack. start-api keys its container specs and
+ * its stage / CORS maps by the bare logical id, so one stack would silently
+ * win for both. A CDK Stage deployed twice (Beta / Prod) always collides: its
+ * clones carry identical logical ids (#5175).
+ *
+ * @internal exported for unit tests.
+ */
+export function assertServedLogicalIdsUnambiguous(
+  stacks: readonly StackInfo[],
+  routes: readonly DiscoveredRoute[],
+  routesWithAuth: readonly RouteWithAuth[],
+  webSocketApis: readonly DiscoveredWebSocketApi[] = []
+): void {
+  if (stacks.length < 2) return;
+  // Deployed state, the stage map and the container specs are looked up by
+  // stack NAME too (`loadStateForRoutedStacks`), so two served stacks sharing
+  // one would read the first one's state even when no logical id collides.
+  const byName = new Map<string, StackInfo[]>();
+  for (const stack of stacks)
+    byName.set(stack.stackName, [...(byName.get(stack.stackName) ?? []), stack]);
+  for (const [name, sharing] of byName) {
+    if (sharing.length > 1) {
+      // cdkd-raw-beside-safe: `describeStack` and `renderServeOneStackAdvice`
+      // sanitize what they print; the name goes through `displayIdent`.
+      throw new Error(
+        `The served stacks ${sharing.map(describeStack).join(', ')} share the physical stack ` +
+          `name ${displayIdent(name)}, and cdkd local start-api reads each stack's deployed ` +
+          `state by that name, so it cannot serve them together. ${renderServeOneStackAdvice(sharing)}`
+      );
+    }
+  }
+  const checks: Array<[string, string | undefined]> = [];
+  for (const id of uniqueLambdaIds(routes, routesWithAuth, webSocketApis)) {
+    checks.push([id, 'AWS::Lambda::Function']);
+  }
+  const apiIds = new Set<string>();
+  for (const route of routes) {
+    if (route.source !== 'function-url' && route.apiLogicalId) apiIds.add(route.apiLogicalId);
+  }
+  for (const api of webSocketApis) apiIds.add(api.apiLogicalId);
+  for (const id of apiIds) checks.push([id, undefined]);
+
+  for (const [logicalId, type] of checks) {
+    const owners = stacksDeclaring(logicalId, stacks, type);
+    if (owners.length > 1) {
+      // cdkd-raw-beside-safe: a count, `describeStack` (which runs both names
+      // through `displayIdent`) and `renderServeOneStackAdvice`, which prints a
+      // CDK path only when `displayIdent` leaves it unchanged.
+      throw new Error(
+        `Logical ID ${displayIdent(logicalId)} is declared by ${owners.length} of the served stacks ` +
+          `(${owners.map(describeStack).join(', ')}), and cdkd local start-api cannot serve two ` +
+          `resources under one logical ID. ${renderServeOneStackAdvice(owners)}`
+      );
+    }
+  }
+}
+
 function uniqueLambdaIds(
   routes: readonly DiscoveredRoute[],
   routesWithAuth: readonly RouteWithAuth[],
@@ -2506,9 +2614,21 @@ export function resolveLambdaByLogicalId(
   logicalId: string,
   stacks: StackInfo[]
 ): ResolvedStartApiLambda {
-  for (const stack of stacks) {
-    const resource = stack.template.Resources?.[logicalId];
-    if (!resource || resource.Type !== 'AWS::Lambda::Function') continue;
+  // Never the first stack that declares it: a served union sharing the id is
+  // refused up front (`assertServedLogicalIdsUnambiguous`), and this keeps a
+  // direct caller from resolving one stack's Lambda for another's route.
+  const owners = stacksDeclaring(logicalId, stacks, 'AWS::Lambda::Function');
+  if (owners.length > 1) {
+    // cdkd-raw-beside-safe: a count, `describeStack` and
+    // `renderServeOneStackAdvice`, each sanitized as in
+    // `assertServedLogicalIdsUnambiguous`.
+    throw new Error(
+      `Lambda ${displayIdent(logicalId)} is declared by ${owners.length} stacks ` +
+        `(${owners.map(describeStack).join(', ')}). ${renderServeOneStackAdvice(owners)}`
+    );
+  }
+  for (const stack of owners) {
+    const resource = stack.template.Resources![logicalId]!;
     const props = resource.Properties ?? {};
     const memoryMb = typeof props['MemorySize'] === 'number' ? props['MemorySize'] : 128;
     const timeoutSec = typeof props['Timeout'] === 'number' ? props['Timeout'] : 3;

@@ -3,11 +3,7 @@ import { existsSync, statSync } from 'node:fs';
 import { EcsTaskResolutionError } from 'cdk-local/internal';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
-import {
-  buildCdkPathIndex,
-  resolveCdkPathToLogicalIds,
-  stackForPathFormTarget,
-} from '../cli/cdk-path.js';
+import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
 import {
   hasEcrRegistryHostLabels,
   looksLikeEcrHostWithForeignSuffix,
@@ -15,7 +11,11 @@ import {
 } from '../utils/ecr-uri.js';
 import { getLogger } from '../utils/logger.js';
 import { defineOwnKey } from '../utils/own-keys.js';
-import { matchStacks } from '../cli/stack-matcher.js';
+import {
+  describeStack,
+  renderAmbiguousTargetStack,
+  selectTargetStack,
+} from '../cli/stack-matcher.js';
 import {
   substituteImagePlaceholders,
   tryResolveImageFnJoin,
@@ -649,36 +649,31 @@ export function resolveEcsTaskTarget(
 }
 
 function pickStack(parsed: ParsedEcsTarget, stacks: StackInfo[], target: string): StackInfo {
-  if (parsed.stackPattern === null) {
-    if (stacks.length === 1) return stacks[0]!;
-    throw new EcsTaskResolutionError(
-      `Multiple stacks in app, target '${parsed.pathOrId}' is missing a stack prefix. ` +
-        `Use 'StackName:${parsed.pathOrId}' or 'StackName/...' (path form). ` +
-        `Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
-    );
-  }
   // A path-form target's stack is the LONGEST display-path prefix, not the
   // first segment, which is the Stage id for a Stage stack
-  // (go-to-k/cdkd#3953). A head no display path prefixes -- a wildcard such
-  // as `My*` -- still goes to matchStacks.
-  const byPrefix = stackForPathFormTarget(parsed, target, stacks);
-  if (byPrefix) return byPrefix;
-
-  const matched = matchStacks(stacks, [parsed.stackPattern]);
-  if (matched.length === 0) {
-    throw new EcsTaskResolutionError(
-      `Stack '${parsed.stackPattern}' not found. ` +
-        `Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
-    );
+  // (go-to-k/cdkd#3953); a wildcard head such as `My*` and the colon form go
+  // through matchStacks. Two stacks sharing a physical name (a Stage deployed
+  // twice) are refused as ambiguous, never resolved to the first (#5175).
+  const selection = selectTargetStack(parsed, target, stacks);
+  switch (selection.kind) {
+    case 'found':
+      return selection.stack;
+    case 'no-prefix':
+      throw new EcsTaskResolutionError(
+        `Multiple stacks in app, target '${parsed.pathOrId}' is missing a stack prefix. ` +
+          `Use 'StackName:${parsed.pathOrId}' or 'StackName/...' (path form). ` +
+          `Available stacks: ${stacks.map(describeStack).join(', ')}.`
+      );
+    case 'not-found':
+      throw new EcsTaskResolutionError(
+        `Stack '${selection.pattern}' not found. ` +
+          `Available stacks: ${stacks.map(describeStack).join(', ')}.`
+      );
+    case 'ambiguous':
+      throw new EcsTaskResolutionError(
+        renderAmbiguousTargetStack(selection.pattern, selection.matched)
+      );
   }
-  if (matched.length > 1) {
-    throw new EcsTaskResolutionError(
-      `Stack pattern '${parsed.stackPattern}' matched ${matched.length} stacks: ` +
-        matched.map((s) => s.stackName).join(', ') +
-        '. Use a more specific pattern.'
-    );
-  }
-  return matched[0]!;
 }
 
 function extractTaskDefinitionProperties(
