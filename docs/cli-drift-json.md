@@ -105,8 +105,8 @@ An entry in `notCompared` is a resource cdkd could not fully compare:
     "cause": "refused"
   },
   {
-    "logicalId": "Budget1",
-    "type": "AWS::Budgets::Budget",
+    "logicalId": "Queue1",
+    "type": "AWS::SQS::Queue",
     "referencesUnresolved": false,
     "cause": "readFailed"
   }

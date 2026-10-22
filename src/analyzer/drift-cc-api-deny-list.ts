@@ -40,6 +40,18 @@ export const CC_API_FALLBACK_DENY_LIST: Record<string, string> = {
   'AWS::ApiGateway::RestApi':
     'Body / BodyS3Location are write-only inputs not returned by CC API GetResource; cdkd state preserves them',
 
+  // AWS::Budgets::Budget: the SDK provider has no `readCurrentState`. The
+  // type had no Cloud Control READ handler, so drift reported it unsupported.
+  // A registry version created 2026-09-25 made it FULLY_MUTABLE with a `read`
+  // handler (`aws cloudformation describe-type --type RESOURCE --type-name
+  // AWS::Budgets::Budget`). That response orders the notification
+  // subscribers differently and adds the AWS default `ThresholdType:
+  // PERCENTAGE`, which state never holds. So `NotificationsWithSubscribers`
+  // diffed as drift on every unchanged budget (#5179). The fix is the
+  // provider's own read-back; drop this entry when it lands.
+  'AWS::Budgets::Budget':
+    'CC API GetResource reorders notification subscribers and adds the defaulted ThresholdType, so an unchanged budget diffs as drift',
+
   // AWS::CloudFormation::Stack: `NestedStackProvider` deploys the child's
   // resources itself, so the row's physicalId is a `cdkd-local` placeholder
   // ARN and no CloudFormation stack exists to read; the provider has no
@@ -57,6 +69,19 @@ export const CC_API_FALLBACK_DENY_LIST: Record<string, string> = {
   // permanent read failure (exit 2) rather than "drift unknown" (#4668).
   'AWS::CloudWatch::AnomalyDetector':
     "the physicalId is a cdkd-derived metric descriptor, not the primaryIdentifier Cloud Control's GetResource requires",
+
+  // AWS::EMR::InstanceFleetConfig / InstanceGroupConfig: the SDK providers
+  // have no `readCurrentState` and record the bare fleet / group id as the
+  // physicalId. Registry versions created 2025-10-23 gave both types Cloud
+  // Control handlers keyed by a COMPOSITE primaryIdentifier (`ClusterId` +
+  // `InstanceFleetId`, `InstanceGroupId` + `JobFlowId`), so `GetResource`
+  // refuses the bare id with a ValidationException ("Identifier if-... is
+  // not valid for identifier [...]") on every run: a permanent read failure
+  // (exit 2) where it used to be drift unknown (#5179, the #4668 class).
+  'AWS::EMR::InstanceFleetConfig':
+    "the physicalId is the bare fleet id, not the composite primaryIdentifier Cloud Control's GetResource requires",
+  'AWS::EMR::InstanceGroupConfig':
+    "the physicalId is the bare instance group id, not the composite primaryIdentifier Cloud Control's GetResource requires",
 
   // AWS::EC2::LaunchTemplate: `LaunchTemplateData` ships with deeply
   // structured sub-objects that CC API normalizes into a versioned shape

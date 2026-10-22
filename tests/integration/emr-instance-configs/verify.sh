@@ -349,6 +349,45 @@ if [ "${GCOUNT_P2}" != "2" ]; then
 fi
 echo "    resize reached AWS (2 RUNNING instances)"
 
+# --- Phase 2b: drift over the deny-listed instance group (issue #5179) ----
+# AWS gave `AWS::EMR::InstanceGroupConfig` Cloud Control handlers keyed by a COMPOSITE
+# primaryIdentifier (`InstanceGroupId` + `JobFlowId`). The SDK provider has no `readCurrentState` and
+# records the bare instance group id as the physicalId, so drift's Cloud Control
+# fallback had `GetResource` refuse it with a ValidationException on every run:
+# the row landed in `notCompared` (readFailed) and drift exited 2. The type is
+# now on `CC_API_FALLBACK_DENY_LIST`, so the row must be in `notSupported`
+# (drift unknown) and in no `notCompared` entry. One drift call over the stack
+# as deployed; no extra deploy. The exit code is not asserted: other rows in
+# this stack are not this phase's subject.
+echo "==> Phase 2b: drift reports the instance group as drift unknown, not a read failure"
+DRIFT_JSON="$(mktemp)"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json > "${DRIFT_JSON}"
+DRIFT_RC=$?
+set -e
+echo "    drift exited ${DRIFT_RC}"
+DRIFT_VERDICT="$(node -e '
+const t = process.argv[1];
+let r;
+try { r = JSON.parse(require("fs").readFileSync(process.argv[2], "utf8")); }
+catch (e) { process.stdout.write("UNPARSEABLE"); process.exit(0); }
+try {
+  const rows = (k) => r.flatMap((s) => s[k] || []).filter((x) => x.type === t);
+  const nc = rows("notCompared");
+  if (nc.length) { process.stdout.write("NOTCOMPARED:" + nc.map((x) => x.cause).join(",")); process.exit(0); }
+  const ns = rows("notSupported").length;
+  const other = ["drifted", "deleted", "clean", "skipped"].map((k) => k + "=" + rows(k).length).join(",");
+  process.stdout.write(ns === 1 ? "OK" : "NOTSUPPORTED=" + ns + "," + other);
+} catch (e) { process.stdout.write("UNEXPECTED_SHAPE"); }
+' "AWS::EMR::InstanceGroupConfig" "${DRIFT_JSON}")"
+rm -f "${DRIFT_JSON}"
+if [ "${DRIFT_VERDICT}" != "OK" ]; then
+  echo "FAIL [phase 2b]: expected exactly one AWS::EMR::InstanceGroupConfig row in notSupported and none in notCompared, got '${DRIFT_VERDICT}' (drift rc ${DRIFT_RC}; pre-fix this read NOTCOMPARED:readFailed, go-to-k/cdkd#5179)" >&2
+  exit 1
+fi
+echo "    instance group reported as drift unknown (notSupported), not as a read failure"
+
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy (EMR termination takes a few minutes)"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force

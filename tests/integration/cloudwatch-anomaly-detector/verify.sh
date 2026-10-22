@@ -206,7 +206,8 @@ echo "    OK: physical id stable across the in-place update"
 # 2026-10-07). Beside it sits an SQS queue drift CAN compare.
 #
 # The go-to-k/cdkd#2151 arm this phase used to carry (a fallback that THROWS for
-# a type with no READ handler) now lives in the `budgets` fixture.
+# a type with no READ handler) is unit-tested only: no deployable type reaches
+# that throw any more (go-to-k/cdkd#5179).
 echo "==> Phase 2b: drift reports the deny-listed detector as drift unknown"
 # NOT given its own `trap ... EXIT`: bash REPLACES a signal's handler rather
 # than chaining, so a second one would disarm the AWS teardown. The file is
