@@ -187,7 +187,7 @@ import-retain-destroy	2026-10-11T09:33:22Z	PASS	161	verify.sh	PR #4720 (#4705) f
 import-secret-observed	2026-10-18T05:14:02Z	PASS	150	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 import-value-strong-ref	2026-10-20T06:09:47Z	PASS	180	verify.sh	deploy+destroy clean, 0 orphans
 importvalue-chain	2026-10-12T05:04:39Z	PASS	152	verify.sh	PR #4812 head build, rc ok, orph clean
-infra-security	2026-10-22T21:48:28Z	FAIL	185	standard	PR #5187 RETRY (same fixture, requested by maintainer): same failure reproduced -- destroy left SecureBucket non-empty. Confirmed root cause: a real CloudTrail log file (2035B .json.gz) was delivered into its own logging bucket ~2m40s after trail creation, inside the destroy window; bucket has no autoDeleteObjects. cdkd correctly deletes Trail+Policy first, then correctly refuses the non-empty bucket (CFN-parity, matches real CloudFormation); unrelated to this PR. Manually emptied + re-ran destroy both times: 0 errors, 0 orphans. NOT a flake -- reproduced 2/2 with real log delivery as evidence. Marker NOT set; fixture needs autoDeleteObjects or to assert a non-empty-bucket failure as the expected final state.
+infra-security	2026-10-22T22:32:36Z	PASS	204	verify.sh	PR #5187 HEAD: destroy 31 deleted, 0 errors; trail-stop+bucket-empty-before-destroy fix confirmed, 0 orphans
 inplace-attr-propagation	2026-10-03T05:58:37Z	PASS	60	verify.sh	rc ok, orph clean (#4497)
 intrinsic-functions	2026-08-15T00:12:35Z	PASS	20	standard	0 err / 0 orph; resolver change regression check (#1916)
 intrinsics-torture	2026-10-11T09:33:22Z	PASS	60	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
