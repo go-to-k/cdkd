@@ -292,8 +292,8 @@ propagation-races-2	2026-10-11T09:33:22Z	PASS	126	verify.sh	PR #4720 (#4705) fin
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
 rds-aurora	2026-10-21T22:35:49Z	PASS	4681	verify.sh	PR #5152: #1160 SG removal + #5155 final-snapshot-wait; final destroy 4 deleted 0 errors, 0 orphans
 rds-dbinstance-backfill	2026-10-16T17:34:17Z	PASS	826	verify.sh	src b1367d11c; #5004 removal keeps + Port 5433->5434 Modify companion; rc ok, orph clean
-rds-fix-forward-orphan	2026-10-15T19:12:27Z	PASS	1157	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
-rds-full-stack	2026-10-20T06:36:25Z	PASS	1192	verify.sh	deploy+destroy clean, 0 orphans
+rds-fix-forward-orphan	2026-10-22T11:55:53Z	PASS	3557	verify.sh	PR #5178; us-east-1; own state bucket; verify PASS, destroy 14 deleted 0 errors, orph clean
+rds-full-stack	2026-10-22T11:55:53Z	PASS	1065	verify.sh	PR #5178; us-east-1; verify PASS, destroy clean, 0 orphans
 recreate-mixed-direction	2026-10-17T05:11:06Z	PASS	130	verify.sh	rc ok, orph clean (ReplacementRunState refactor #5024)
 recreate-nested-logical-id-collision	2026-10-16T16:59:47Z	PASS	150	verify.sh	rc ok, orph clean (stateless-mixins refactor #5015, rebased)
 recreate-parent-child-permission	2026-10-06T05:49:58Z	PASS	100	verify.sh	rc ok, orph clean (#4602 PR #4609)
