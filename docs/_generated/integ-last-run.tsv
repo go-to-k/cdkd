@@ -35,7 +35,6 @@ bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run 
 bootstrap-free-region	2026-10-05T08:20:47Z	PASS	81	verify.sh	rc 0, 0 orphans; ca-central-1, delete-marker residue from earlier runs purged (#2624 PR #4573)
 bucket-deployment	2026-10-11T09:33:22Z	PASS	80	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 budgets	2026-10-22T14:15:51Z	PASS	85	verify.sh	PR#5182/#5179: pre-fix repro'd the false drift (confirmed), post-fix PASS; rc ok, orph clean
-budgets	2026-10-22T10:03:24Z	FAIL	55	verify.sh	PR #5170 redaction-slice; FAIL: drift printed no drift-unknown line for CostBudget (fixture cites #2151, pre-existing AWS-side false drift tracked as #5179, not caused by this PR); cleanup trap destroyed stack+state, 0 orphans
 cache-streaming	2026-10-21T13:56:47Z	PASS	634	verify.sh	rc ok, GetAtt redis endpoint verified, orph clean
 cc-abandoned-create-resume	2026-10-20T03:03:42Z	PASS	121	verify.sh	deploy+destroy clean, 0 orphans
 cc-api-fallback	2026-10-17T13:29:07Z	PASS	50	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
