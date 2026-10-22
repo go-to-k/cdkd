@@ -34,7 +34,7 @@ bench-cdk-sample	2026-10-21T05:45:41Z	PASS	465	standard	destroy 0 errors, 2 log 
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-10-05T08:20:47Z	PASS	81	verify.sh	rc 0, 0 orphans; ca-central-1, delete-marker residue from earlier runs purged (#2624 PR #4573)
 bucket-deployment	2026-10-11T09:33:22Z	PASS	80	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-budgets	2026-10-22T14:15:51Z	PASS	85	verify.sh	PR#5182/#5179: pre-fix repro'd the false drift (confirmed), post-fix PASS; rc ok, orph clean
+budgets	2026-10-22T15:17:48Z	PASS	80	verify.sh	PR#5170 re-run at this branch's HEAD after rebasing onto main's #5182 fix; rc ok, orph clean
 cache-streaming	2026-10-21T13:56:47Z	PASS	634	verify.sh	rc ok, GetAtt redis endpoint verified, orph clean
 cc-abandoned-create-resume	2026-10-20T03:03:42Z	PASS	121	verify.sh	deploy+destroy clean, 0 orphans
 cc-api-fallback	2026-10-17T13:29:07Z	PASS	50	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
@@ -160,10 +160,10 @@ glue-update-hardening	2026-10-21T09:12:02Z	PASS	292	verify.sh	PR #5147: phase 2g
 guardduty-detector-update	2026-10-15T04:32:09Z	PASS	210	verify.sh	PR #4935 (#4921) maintainer run on f7e8e94cd; own state bucket; all 6 phases incl. Phase 3b reverts; 3 destroys 0 err, no detector left, orph clean
 healthimaging-stateful-update-fallback	2026-10-12T05:13:18Z	PASS	320	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08: DescribeType-denied CC create/update path (fail-open narrowing); rc ok, destroy 0 errors, orph clean
 iam-access-key	2026-10-21T13:56:47Z	PASS	84	verify.sh	rc ok, orph clean, secret-value versions purged
-iam-managed-policy	2026-10-20T06:06:45Z	PASS	70	verify.sh	deploy+destroy clean, 0 orphans
+iam-managed-policy	2026-10-22T10:03:41Z	PASS	72	verify.sh	PR #5170 redaction-slice; deploy+update+destroy clean, 0 orphans
 iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean
 iam-profile-policy-fix-forward-orphan	2026-10-15T19:36:36Z	PASS	130	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
-iam-propagation-stress	2026-10-11T09:33:22Z	PASS	135	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+iam-propagation-stress	2026-10-22T10:03:45Z	PASS	75	verify.sh	PR #5170 redaction-slice; deploy+destroy clean, 0 orphans
 iam-recreate-reattach	2026-10-19T00:03:06Z	PASS	220	verify.sh	rc ok, orph clean (#5078 @336e8f4)
 iam-role-fix-forward-orphan	2026-10-15T23:44:38Z	PASS	110	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4981 CreateRole carries tags; src-revert proof fails the tag assertion
 iam-role-policies-drift-clean	2026-10-12T12:11:04Z	PASS	361	verify.sh	PR #4828, #4821 on rebased sha 45d03480f, MixedRole arm (swap, forced rollback, drift, destroy), rc ok, destroy 0 errors, orph clean; revert proof red (full revert: MixedRole drift; swap half: collision then rollback)
@@ -209,7 +209,7 @@ lambda-fix-forward-orphan	2026-10-15T19:32:06Z	PASS	145	verify.sh	PR #4966 (#325
 lambda-layer-version-update	2026-10-20T06:10:54Z	PASS	85	verify.sh	deploy+destroy clean, 0 orphans
 lambda-log-retention	2026-08-10T05:38:11Z	PASS	69	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 lambda-microvm-image	2026-10-20T05:07:15Z	PASS	862	verify.sh	rc ok, orph clean; #5105
-lambda-network-connector	2026-10-20T06:25:52Z	PASS	962	verify.sh	deploy+destroy clean, 0 orphans
+lambda-network-connector	2026-10-22T10:18:37Z	PASS	969	verify.sh	PR #5170 redaction-slice; CC-to-SDK move + fresh create/delete clean, 0 orphans
 lambda-reserved-concurrency	2026-10-01T04:01:28Z	PASS	126	verify.sh	rc ok, orph clean (#4241)
 lambda-snapstart	2026-10-01T04:01:28Z	PASS	226	verify.sh	rc ok, orph clean (#4241)
 lambda-url-authtype-replay	2026-10-20T05:07:15Z	PASS	150	verify.sh	rc ok, orph clean; #5105

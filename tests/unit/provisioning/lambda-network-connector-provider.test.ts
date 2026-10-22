@@ -171,7 +171,7 @@ describe('LambdaNetworkConnectorProvider', () => {
       ])
     );
     const failed = await provider.create('Nc', TYPE, props).catch((e: unknown) => e);
-    expect(String(failed)).toContain('entered FAILED: The operator role does not have sufficient permissions');
+    expect(String(failed)).toContain('entered FAILED: Re-run with --verbose');
     expect(createdBeforeFailure(failed, 'Nc', TYPE)).toBe(ARN);
     expect(isMarkedNonRetryable(failed)).toBe(true);
     expect(callsOf(DeleteNetworkConnectorCommand)).toHaveLength(0);
@@ -244,7 +244,7 @@ describe('LambdaNetworkConnectorProvider', () => {
     );
     await expect(
       provider.update('Nc', ARN, TYPE, { ...props, OperatorRole: `${ROLE}2` }, props)
-    ).rejects.toThrow('update failed: bad sg');
+    ).rejects.toThrow('update failed: Re-run with --verbose');
   });
 
   it('update refuses a wrong-region client and a malformed configuration before any write', async () => {
@@ -276,7 +276,7 @@ describe('LambdaNetworkConnectorProvider', () => {
         ['GetNetworkConnectorCommand', [{ State: 'DELETE_FAILED', StateReason: 'in use' }]],
       ])
     );
-    await expect(provider.delete('Nc', ARN, TYPE)).rejects.toThrow('entered DELETE_FAILED: in use');
+    await expect(provider.delete('Nc', ARN, TYPE)).rejects.toThrow('entered DELETE_FAILED: Re-run with --verbose');
   });
 
   it('delete treats not-found as deleted in the expected region, and refuses it from another region', async () => {
@@ -394,7 +394,7 @@ describe('LambdaNetworkConnectorProvider — review round gaps', () => {
     );
     await expect(
       provider.update('Nc', ARN, TYPE, { ...props, OperatorRole: `${ROLE}2` }, props)
-    ).rejects.toThrow('entered FAILED: subnet gone');
+    ).rejects.toThrow('entered FAILED: Re-run with --verbose');
   });
 
   it('a config and tag change tags before the update puts the connector in progress', async () => {
@@ -427,7 +427,7 @@ describe('LambdaNetworkConnectorProvider — review round gaps', () => {
     );
     await expect(
       provider.update('Nc', ARN, TYPE, { ...props, OperatorRole: `${ROLE}2` }, props)
-    ).rejects.toThrow('entered DELETING: deleted elsewhere');
+    ).rejects.toThrow('entered DELETING: Re-run with --verbose');
     expect(callsOf(GetNetworkConnectorCommand)).toHaveLength(1);
   });
 
@@ -471,7 +471,7 @@ describe('LambdaNetworkConnectorProvider — review round gaps', () => {
     );
     await expect(
       provider.update('Nc', ARN, TYPE, { ...props, OperatorRole: `${ROLE}2` }, props)
-    ).rejects.toThrow(`entered ${state}: why`);
+    ).rejects.toThrow(`entered ${state}: Re-run with --verbose`);
     expect(callsOf(GetNetworkConnectorCommand)).toHaveLength(1);
   });
 

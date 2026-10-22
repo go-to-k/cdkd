@@ -40,10 +40,15 @@ import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logge
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
-import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
-import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 // ─── List reads (go-to-k/cdkd#3989) ─────────────────────────────────
 //
@@ -260,9 +265,11 @@ export class BudgetsBudgetProvider implements ResourceProvider {
    * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
    */
   /**
-   * The `ProvisioningError` a failed create / update throws, quoting AWS's
-   * text through the operation's masker (issue #2176): a refusal or a 5xx can
-   * quote a resolved secret-derived value.
+   * The `ProvisioningError` a failed create / update throws, through
+   * {@link wrapMaskedError}: an AWS-authored failure is named by its class
+   * (issue #2319), and any other text is masked through the operation's
+   * masker (issue #2176), since a refusal or a 5xx can quote a resolved
+   * secret-derived value.
    */
   private wrapBudgetError(
     mask: MaskerFn,
@@ -273,7 +280,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
     physicalId: string | undefined
   ): ProvisioningError {
     const cause = error instanceof Error ? error : undefined;
-    return wrapMaskedAwsError(
+    return this.wrapMaskedError(
       mask,
       error,
       (text) =>
@@ -284,6 +291,34 @@ export class BudgetsBudgetProvider implements ResourceProvider {
           physicalId,
           cause
         )
+    );
+  }
+
+  /**
+   * A failure wrap that never quotes AWS's own text (issue #2319). The thrown
+   * message is persisted to `deployments/{runId}.jsonl`, and an AWS
+   * `AccessDeniedException` names the caller's assumed-role ARN, so an
+   * AWS-authored failure is named by its class plus the `--verbose` pointer:
+   * AWS's text goes to `debug` through the masker, and the wrap is stamped
+   * `markRedactedCause` so the retry classifiers read the withheld text on the
+   * `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}). A cdkd-authored or transport error, or a
+   * non-`Error` throw, keeps its text, masked (issue #2176).
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error)) return build(mask(failure.detail));
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    return markRedactedCause(
+      build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
     );
   }
 
@@ -692,16 +727,21 @@ export class BudgetsBudgetProvider implements ResourceProvider {
           // Nothing was deleted first, so the budget's existing notifications
           // still count toward its limits (5 notifications, 10 email
           // subscribers each): name what was being added beside them.
-          throw new ProvisioningError(
-            `Failed to update budget ${logicalId}: adding ${newNotifications.length} desired ` +
-              `notification(s) beside every notification the budget already holds (the recorded ` +
-              `NotificationsWithSubscribers is not a list cdkd can read, so none was deleted; a ` +
-              `budget allows at most 5 notifications and 10 email subscribers each): ` +
-              `${describeAwsFailure(error).detail}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            error instanceof Error ? error : undefined
+          const cause = error instanceof Error ? error : undefined;
+          throw this.wrapMaskedError(
+            mask,
+            error,
+            (text) =>
+              new ProvisioningError(
+                `Failed to update budget ${logicalId}: adding ${newNotifications.length} desired ` +
+                  `notification(s) beside every notification the budget already holds (the recorded ` +
+                  `NotificationsWithSubscribers is not a list cdkd can read, so none was deleted; a ` +
+                  `budget allows at most 5 notifications and 10 email subscribers each): ${text}`,
+                resourceType,
+                logicalId,
+                physicalId,
+                cause
+              )
           );
         }
         this.logger.warn(
@@ -1057,12 +1097,17 @@ export class BudgetsBudgetProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete budget ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete budget ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1095,12 +1140,17 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       return await this.budgetArn(accountId, physicalId);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to resolve Arn for budget ${physicalId}: ${cause?.message ?? safeStringify(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(undefined),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to resolve Arn for budget ${physicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

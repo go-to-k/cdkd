@@ -1911,7 +1911,7 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     keyStyle: 'exact',
     minNestedKeys: 5,
     freshObjectMapper: true,
-    minWrittenMembers: 12,
+    minWrittenMembers: 13,
     minWriteScopes: 1,
   },
   {
