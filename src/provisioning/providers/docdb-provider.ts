@@ -62,10 +62,11 @@ import {
  * `CHANGED_PROPERTIES_CONSUMER_TYPES`: DescribeDBClusters never returns the
  * password, so the readback that opt-in buys could not confirm it.
  *
- * Without that set (a rollback revert, `drift --revert`, a direct call) the
- * two bags are compared, and only an equal plain string counts as unchanged:
- * a recorded token or `***` mask cannot be compared, so it is sent. Compared in
- * memory only; the value is never logged.
+ * Without that set the two bags are compared. A rollback revert hands both
+ * re-resolved, so an equal password is left out; `drift --revert`'s previous
+ * side is an AWS readback, which never holds the password, so it is sent. A
+ * recorded `{{resolve:` token or whole `***` mask is never read as equal.
+ * Compared in memory only; the value is never logged.
  */
 function masterUserPasswordToSend(
   properties: Record<string, unknown>,

@@ -219,3 +219,109 @@ describe.each(TARGETS)('$name update: MasterUserPassword only when it changed (#
     expect(logged).not.toContain(NEW_PASSWORD);
   });
 });
+
+describe.each(TARGETS.filter((t) => t.resourceType.startsWith('AWS::RDS::')))(
+  '$name update: managed-password settings ride only a credential change (#5153)',
+  (target) => {
+    beforeEach(() => {
+      mockSend.mockReset();
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        switch (command.constructor.name) {
+          case 'DescribeDBClustersCommand':
+            return Promise.resolve({ DBClusters: [{}] });
+          case 'DescribeDBInstancesCommand':
+            return Promise.resolve({ DBInstances: [{}] });
+          default:
+            return Promise.resolve({});
+        }
+      });
+    });
+
+    const modifyInput = async (
+      desired: Record<string, unknown>,
+      previous: Record<string, unknown>,
+      context?: UpdateContext
+    ): Promise<Record<string, unknown>> => {
+      await target
+        .make()
+        .update('Db', 'db-1', target.resourceType, desired, previous, context);
+      const modifies = mockSend.mock.calls
+        .map((call) => call[0] as { constructor: { name: string }; input: Record<string, unknown> })
+        .filter((command) => command.constructor.name === target.modifyCommand);
+      expect(modifies).toHaveLength(1);
+      return modifies[0]!.input;
+    };
+
+    const credentialKeys = (input: Record<string, unknown>): string[] =>
+      ['MasterUserPassword', 'ManageMasterUserPassword', 'MasterUserSecretKmsKeyId'].filter(
+        (key) => input[key] !== undefined
+      );
+
+    it('sends no lone ManageMasterUserPassword: false beside an unchanged password', async () => {
+      const bag = { MasterUserPassword: PASSWORD, ManageMasterUserPassword: false };
+      const viaSet = await modifyInput(
+        { ...bag, PreferredMaintenanceWindow: 'wed:05:00-wed:05:30' },
+        { ...bag, PreferredMaintenanceWindow: 'tue:05:00-tue:05:30' },
+        { changedProperties: new Set(['PreferredMaintenanceWindow']) }
+      );
+      expect(credentialKeys(viaSet)).toEqual([]);
+      mockSend.mockClear();
+      const viaFallback = await modifyInput(bag, { ...bag });
+      expect(credentialKeys(viaFallback)).toEqual([]);
+    });
+
+    it('sends an unchanged managed setting and KMS key nowhere', async () => {
+      const bag = {
+        ManageMasterUserPassword: true,
+        MasterUserSecret: { KmsKeyId: 'alias/aws/secretsmanager' },
+      };
+      const input = await modifyInput(bag, structuredClone(bag));
+      expect(credentialKeys(input)).toEqual([]);
+    });
+
+    it('sends the managed setting with the newly declared password when management is turned off', async () => {
+      const input = await modifyInput(
+        { ManageMasterUserPassword: false, MasterUserPassword: PASSWORD },
+        { ManageMasterUserPassword: true },
+        { changedProperties: new Set(['ManageMasterUserPassword', 'MasterUserPassword']) }
+      );
+      expect(input['ManageMasterUserPassword']).toBe(false);
+      expect(input['MasterUserPassword']).toBe(PASSWORD);
+    });
+
+    it('sends the managed setting and KMS key together when only the key changed', async () => {
+      const input = await modifyInput(
+        { ManageMasterUserPassword: true, MasterUserSecret: { KmsKeyId: 'key-2' } },
+        { ManageMasterUserPassword: true, MasterUserSecret: { KmsKeyId: 'key-1' } }
+      );
+      expect(input['ManageMasterUserPassword']).toBe(true);
+      expect(input['MasterUserSecretKmsKeyId']).toBe('key-2');
+      expect(input['MasterUserPassword']).toBeUndefined();
+    });
+
+    it('treats a recorded secret stand-in inside MasterUserSecret as changed', async () => {
+      const input = await modifyInput(
+        { ManageMasterUserPassword: true, MasterUserSecret: { KmsKeyId: 'key-1' } },
+        { ManageMasterUserPassword: true, MasterUserSecret: { KmsKeyId: '***' } }
+      );
+      expect(input['MasterUserSecretKmsKeyId']).toBe('key-1');
+    });
+  }
+);
+
+it('RDS DBInstance leaves the MasterUserPassword key out of the input when not sending it (#5153)', async () => {
+  mockSend.mockReset();
+  mockSend.mockResolvedValue({ DBInstances: [{}] });
+  await new RDSProvider().update(
+    'Db',
+    'db-1',
+    'AWS::RDS::DBInstance',
+    { MasterUserPassword: PASSWORD },
+    { MasterUserPassword: PASSWORD }
+  );
+  const modify = mockSend.mock.calls
+    .map((call) => call[0] as { constructor: { name: string }; input: Record<string, unknown> })
+    .find((command) => command.constructor.name === 'ModifyDBInstanceCommand');
+  expect(modify).toBeDefined();
+  expect(Object.hasOwn(modify!.input, 'MasterUserPassword')).toBe(false);
+});
