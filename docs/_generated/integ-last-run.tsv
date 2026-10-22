@@ -39,7 +39,7 @@ cache-streaming	2026-10-21T13:56:47Z	PASS	634	verify.sh	rc ok, GetAtt redis endp
 cc-abandoned-create-resume	2026-10-20T03:03:42Z	PASS	121	verify.sh	deploy+destroy clean, 0 orphans
 cc-api-fallback	2026-10-17T13:29:07Z	PASS	50	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
 cc-api-fallback-transitions	2026-10-15T18:54:20Z	PASS	80	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
-cc-final-snapshot-handlers	2026-09-30T17:44:01Z	PASS	1223	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, 0 surviving state versions
+cc-final-snapshot-handlers	2026-10-22T07:45:16Z	PASS	1103	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean; 0 surviving state versions
 cc-getatt-readback	2026-10-18T04:24:32Z	PASS	104	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 cc-protection-flip	2026-10-03T00:39:18Z	PASS	556	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 cc-protection-flip-eks	2026-10-03T01:13:56Z	PASS	2635	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
@@ -93,7 +93,7 @@ destroy-interrupt	2026-10-18T04:10:16Z	PASS	376	verify.sh	rc 0, 0 orphans; #3361
 destroy-nested-cross-region	2026-10-20T08:13:14Z	PASS	216	verify.sh	rc ok, orph clean; #5115 REST API arm
 diff-fail-on-destructive	2026-10-12T13:46:43Z	PASS	85	verify.sh	rc ok, destroy 0 errors, orph clean (PR #4832, #4827 on e6be0d2a9)
 diff-intrinsic-target-change	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-dlm-lifecycle-policy	2026-10-16T16:09:57Z	PASS	100	verify.sh	PR #5010 (#5004) re-run on 41c3c1321 (post-rebase, comment-only commits); rc ok, orph clean; removal retained
+dlm-lifecycle-policy	2026-10-22T07:45:16Z	PASS	110	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean
 docdb-fix-forward-orphan	2026-10-15T19:24:09Z	PASS	1859	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 docdb-neptune	2026-10-22T03:05:03Z	PASS	5301	verify.sh	PR #5158: #5153 resend-password fix; step 3d never saw resetting-master-credentials; final destroy 7 deleted 0 errors, 0 orphans
 docker-image-asset	2026-10-17T13:23:24Z	PASS	90	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
@@ -136,8 +136,8 @@ eventbridge	2026-10-20T06:05:13Z	PASS	105	verify.sh	deploy+destroy clean, 0 orph
 eventbridge-api-destination	2026-10-11T09:33:22Z	PASS	90	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 eventbridge-archive	2026-10-18T14:34:21Z	PASS	55	verify.sh	rc ok, orph clean; #5044 EventBus provider re-run
 eventbridge-input-transformer	2026-10-14T05:21:01Z	PASS	80	verify.sh	rc ok, orph clean
-eventbridge-pipes	2026-10-16T08:48:48Z	PASS	165	verify.sh	rc ok, orph clean (#3341 slice 4996)
-eventbridge-scheduler	2026-10-18T04:23:38Z	PASS	52	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
+eventbridge-pipes	2026-10-22T07:45:16Z	PASS	155	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean; own state bucket
+eventbridge-scheduler	2026-10-22T07:45:16Z	PASS	60	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean
 eventbus-policy	2026-10-18T14:34:21Z	PASS	65	verify.sh	rc ok, orph clean; #5044 Policy applied on create + changed update (Phase 3b); pre-fix run RED at Phase 1
 eventsourcemapping-race	2026-10-20T05:07:15Z	PASS	70	verify.sh	rc ok, orph clean; #5105
 export	2026-10-21T05:37:12Z	PASS	231	verify.sh	0 surviving state versions, CFn stack deleted; PR 5135
@@ -253,10 +253,10 @@ local-start-cloudfront-from-state	2026-10-22T05:48:49Z	PASS	223	verify.sh	PR #51
 local-start-service	2026-10-22T04:25:39Z	PASS	110	verify.sh	rc ok, orph clean; cdk-local 0.153.2 bump (#5156/#5157)
 local-start-service-watch-fast	2026-10-22T05:48:49Z	PASS	62	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 log-pipeline	2026-10-20T06:16:25Z	PASS	185	standard	PASS on retry; 1st attempt hit CWL subscription-filter invoke-permission eventual-consistency (env flake)
-loggroup-class-guard	2026-10-11T09:33:22Z	PASS	140	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+loggroup-class-guard	2026-10-22T07:45:16Z	PASS	135	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean; own state bucket
 loggroup-kms-associate	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 loggroup-never-expire-guard	2026-10-12T00:02:47Z	PASS	122	verify.sh	PR #4820 (#3466) b48362d; rc 0, destroy clean, orph clean
-logs-loggroup-fix-forward-orphan	2026-10-16T09:35:29Z	PASS	95	verify.sh	rc ok, orph clean (#3341 slice 4997)
+logs-loggroup-fix-forward-orphan	2026-10-22T07:45:16Z	PASS	125	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean; own state bucket
 lost-child-after-failed-deploy	2026-10-11T09:33:22Z	PASS	105	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 macro-expansion	2026-09-25T09:36:54Z	PASS	55	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 microservices	2026-10-21T05:38:54Z	PASS	58	standard	destroy 0 errors, 0 orphans; PR 5135
@@ -286,7 +286,7 @@ outputs-only-export	2026-10-18T13:38:55Z	PASS	130	verify.sh	PR #5052 (stage2 Red
 parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 partial-create-handback	2026-10-20T06:23:43Z	PASS	430	verify.sh	deploy+destroy clean, 0 orphans
 perf-cross-backend-check	2026-10-11T09:33:22Z	PASS	1523	verify.sh	PR #4720 (#4705) c53f78f arms 1/2/4 vs 6728bcdc: single/redeploy/teardown no diff; destroy --all -6.60s; adopt deploy +0.42s
-pipes-fix-forward-orphan	2026-10-15T19:34:21Z	PASS	130	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
+pipes-fix-forward-orphan	2026-10-22T07:45:16Z	PASS	176	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean; own state bucket
 profile-region-default	2026-10-13T14:31:12Z	PASS	155	verify.sh	rc ok, orph clean, own state bucket, after §8-d probe; PR #4864 06b838511
 propagation-races-2	2026-10-11T09:33:22Z	PASS	126	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
