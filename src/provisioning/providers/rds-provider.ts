@@ -22,7 +22,12 @@ import {
 import { DescribeSecurityGroupsCommand, EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
 import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
-import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
@@ -35,6 +40,7 @@ import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-help
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
+  CreateContext,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
@@ -472,15 +478,17 @@ export class RDSProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    const mask = context?.maskSecrets;
     switch (resourceType) {
       case 'AWS::RDS::DBSubnetGroup':
-        return this.createDBSubnetGroup(logicalId, resourceType, properties);
+        return this.createDBSubnetGroup(logicalId, resourceType, properties, mask);
       case 'AWS::RDS::DBCluster':
-        return this.createDBCluster(logicalId, resourceType, properties);
+        return this.createDBCluster(logicalId, resourceType, properties, mask);
       case 'AWS::RDS::DBInstance':
-        return this.createDBInstance(logicalId, resourceType, properties);
+        return this.createDBInstance(logicalId, resourceType, properties, mask);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -512,7 +520,8 @@ export class RDSProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       case 'AWS::RDS::DBCluster':
         return this.updateDBCluster(
@@ -571,7 +580,8 @@ export class RDSProvider implements ResourceProvider {
   private async createDBSubnetGroup(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DBSubnetGroup ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -617,12 +627,17 @@ export class RDSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        dbSubnetGroupName,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create DBSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            dbSubnetGroupName,
+            cause
+          )
       );
     }
   }
@@ -632,7 +647,8 @@ export class RDSProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating DBSubnetGroup ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -718,12 +734,17 @@ export class RDSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update DBSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -757,12 +778,17 @@ export class RDSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete DBSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -772,7 +798,8 @@ export class RDSProvider implements ResourceProvider {
   private async createDBCluster(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DBCluster ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -912,7 +939,9 @@ export class RDSProvider implements ResourceProvider {
               );
             } catch (disableError) {
               this.logger.debug(
-                `Could not disable DeletionProtection on partially-created DBCluster ${dbClusterIdentifier}: ${describeAwsFailure(disableError).detail} (proceeding with DeleteDBCluster anyway)`
+                maskerOrIdentity(mask)(
+                  `Could not disable DeletionProtection on partially-created DBCluster ${dbClusterIdentifier}: ${describeAwsFailure(disableError).detail} (proceeding with DeleteDBCluster anyway)`
+                )
               );
             }
           }
@@ -935,8 +964,9 @@ export class RDSProvider implements ResourceProvider {
           const unprotect = wantsDeletionProtection
             ? aws`aws rds modify-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --no-deletion-protection --apply-immediately; `
             : aws``;
+          // Masked: AWS's text can echo the create's resolved inputs.
           this.logger.warn(
-            `Failed to delete partially-created DBCluster ${logicalId} (${dbClusterIdentifier}): ${describeAwsFailure(cleanupError).detail}. THE CLUSTER IS STILL RUNNING AND BILLING. Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`${wantsDeletionProtection ? ', which cannot delete it while its DeletionProtection is on' : ''}; otherwise delete it yourself: ${aws`${unprotect}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`.render()}`
+            `Failed to delete partially-created DBCluster ${logicalId} (${dbClusterIdentifier}): ${maskerOrIdentity(mask)(describeAwsFailure(cleanupError).detail)}. THE CLUSTER IS STILL RUNNING AND BILLING. Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`${wantsDeletionProtection ? ', which cannot delete it while its DeletionProtection is on' : ''}; otherwise delete it yourself: ${aws`${unprotect}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`.render()}`
           );
         }
         throw innerError;
@@ -945,12 +975,17 @@ export class RDSProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              dbClusterIdentifier,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create DBCluster ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  dbClusterIdentifier,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#4583: name the cluster still in AWS for the failed-CREATE
       // journal; never before CreateDBCluster returned (another owner's name).
@@ -1143,12 +1178,17 @@ export class RDSProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update DBCluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1243,7 +1283,9 @@ export class RDSProvider implements ResourceProvider {
         } catch (disableError) {
           if (!this.isNotFoundError(disableError, 'DBClusterNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for DBCluster ${logicalId}: ${describeAwsFailure(disableError).detail}`
+              maskerOrIdentity(context?.maskSecrets)(
+                `Could not disable deletion protection for DBCluster ${logicalId}: ${describeAwsFailure(disableError).detail}`
+              )
             );
           }
         }
@@ -1336,15 +1378,21 @@ export class RDSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        `Failed to delete DBCluster ${logicalId}: ${describeAwsFailure(error).detail}` +
-          (detachedFrom !== undefined
-            ? ' (it was already detached from its global cluster, and stays a standalone cluster)'
-            : ''),
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const detachedNote =
+        detachedFrom !== undefined
+          ? ' (it was already detached from its global cluster, and stays a standalone cluster)'
+          : '';
+      const failure = this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete DBCluster ${logicalId}: ${text}${detachedNote}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
       throw progress.stripped ? markDeleteStarted(failure) : failure;
     }
@@ -1355,7 +1403,8 @@ export class RDSProvider implements ResourceProvider {
   private async createDBInstance(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DBInstance ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -1481,12 +1530,17 @@ export class RDSProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              dbInstanceIdentifier,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create DBInstance ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  dbInstanceIdentifier,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#4583: the instance exists and no state record will hold
       // it; never before CreateDBInstance returned (another owner's name).
@@ -1649,12 +1703,17 @@ export class RDSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update DBInstance ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1738,7 +1797,9 @@ export class RDSProvider implements ResourceProvider {
         } catch (disableError) {
           if (!this.isNotFoundError(disableError, 'DBInstanceNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for DBInstance ${logicalId}: ${describeAwsFailure(disableError).detail}`
+              maskerOrIdentity(context?.maskSecrets)(
+                `Could not disable deletion protection for DBInstance ${logicalId}: ${describeAwsFailure(disableError).detail}`
+              )
             );
           }
         }
@@ -1803,12 +1864,17 @@ export class RDSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete DBInstance ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1858,6 +1924,39 @@ export class RDSProvider implements ResourceProvider {
     return (
       name === faultName || message.includes('not found') || message.includes('does not exist')
     );
+  }
+
+  /**
+   * The failure wrap the DBSubnetGroup / DBCluster / DBInstance create, update
+   * and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}), so a create-first
+   * replacement still recognises the collision. A cdkd-authored or transport
+   * error keeps its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like
+   * an AWS one, unstamped (it has no chain). The delete catches test not-found
+   * before they wrap.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   /**
