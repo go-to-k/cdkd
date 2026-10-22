@@ -198,7 +198,8 @@ STDOUT_5=$(mktemp)
 STDERR_5=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STDOUT_1B}" "${STDERR_1B}" "${STDOUT_4}" "${STDERR_4}" "${STDOUT_5}" "${STDERR_5}"' EXIT
 invoke_split "${STDOUT_5}" "${STDERR_5}" ${CDKD} local invoke CdkdLocalInvokeContainerFixture/EchoHandler --no-pull --verbose
-grep -qF -- "--build-arg CDKD_SENTINEL_ARG=***" "${STDERR_5}" || {
+# cdk-local >= 0.154.0 quotes an argv element carrying `*` on this line.
+grep -qF -- '--build-arg "CDKD_SENTINEL_ARG=***"' "${STDERR_5}" || {
   echo "FAIL: the --verbose build line with the masked build arg was not logged. stderr was:"
   cat "${STDERR_5}"
   exit 1
