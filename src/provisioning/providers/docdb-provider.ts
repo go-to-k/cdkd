@@ -34,6 +34,7 @@ import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { refuseMalformedDesiredTags } from '../tag-list.js';
+import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
 import { applyDocDBTagDiff, attachDocDBTags, isDocDBNotFoundError } from './docdb-shared.js';
 import {
   ProtectionFlipRegistry,
@@ -43,6 +44,51 @@ import {
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
 } from './deletion-protection-compensation.js';
+
+/**
+ * go-to-k/cdkd#5153: the `MasterUserPassword` a `ModifyDBCluster` carries, or
+ * `undefined` to leave the live password alone. DocumentDB treats ANY supplied
+ * password as a master-credential reset (the cluster enters
+ * `resetting-master-credentials`), so it is sent only when the template
+ * changed it, as CloudFormation does. A removed password sends nothing.
+ *
+ * The deploy's in-place update decides from `changedProperties`, which
+ * compares the templates as written: the record holds a secret as its
+ * `{{resolve:...}}` token or `***`, never the plaintext the desired bag holds.
+ * A changed reference and a `NoEcho` value count as changed there; a secret
+ * rotated under a reference the template spells literally does not, as in
+ * CloudFormation (one built by `Fn::Join` counts a newer read version). This
+ * type is deliberately NOT in
+ * `CHANGED_PROPERTIES_CONSUMER_TYPES`: DescribeDBClusters never returns the
+ * password, so the readback that opt-in buys could not confirm it.
+ *
+ * Without that set the two bags are compared. A rollback revert hands both
+ * re-resolved, so an equal password is left out. Under `drift --revert` both
+ * sides are AWS readbacks (the desired one with the drifted keys overlaid),
+ * which never hold the password, so nothing is sent. A
+ * recorded `{{resolve:` token or whole `***` mask is never read as equal.
+ * Compared in memory only; the value is never logged.
+ */
+function masterUserPasswordToSend(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined
+): string | undefined {
+  const desired = properties['MasterUserPassword'];
+  if (desired === undefined || desired === null) return undefined;
+  const changedProperties = context?.changedProperties;
+  if (changedProperties !== undefined) {
+    return changedProperties.has('MasterUserPassword') ? (desired as string) : undefined;
+  }
+  const recorded = previousProperties['MasterUserPassword'];
+  const unchanged =
+    typeof desired === 'string' &&
+    typeof recorded === 'string' &&
+    recorded === desired &&
+    dynamicReferenceTokens(recorded).length === 0 &&
+    recorded !== SECRET_MASK;
+  return unchanged ? undefined : (desired as string);
+}
 
 /**
  * The attribute map a DocumentDB DB cluster records (issue #3650), under
@@ -277,7 +323,7 @@ export class DocDBProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    _context?: UpdateContext
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::DocDB::DBCluster':
@@ -286,7 +332,8 @@ export class DocDBProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       case 'AWS::DocDB::DBInstance':
         return this.updateDBInstance(
@@ -432,7 +479,8 @@ export class DocDBProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating DocDB DBCluster ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -490,7 +538,8 @@ export class DocDBProvider implements ResourceProvider {
             | string
             | undefined,
           ...(sendVpcSgIds && { VpcSecurityGroupIds: vpcSgIds }),
-          MasterUserPassword: properties['MasterUserPassword'] as string | undefined,
+          // #5153: only a changed password; any supplied one resets credentials.
+          MasterUserPassword: masterUserPasswordToSend(properties, previousProperties, context),
           Port: properties['Port'] != null ? Number(properties['Port']) : undefined,
           ApplyImmediately: true,
         })

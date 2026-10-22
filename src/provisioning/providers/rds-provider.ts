@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   RDSClient,
   CreateDBClusterCommand,
@@ -57,6 +58,110 @@ import {
   type ProtectionFlipRecord,
 } from './deletion-protection-compensation.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
+import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
+
+/**
+ * go-to-k/cdkd#5153: whether an update changes top-level `key`, as
+ * CloudFormation decides it. The deploy's in-place update answers from
+ * `changedProperties`, which compares the templates as written: the record
+ * holds a secret as its `{{resolve:...}}` token or `***`, never the plaintext
+ * the desired bag holds. A changed reference and a `NoEcho` value count as
+ * changed there; a secret rotated under a reference the template spells
+ * literally does not, as in CloudFormation (one built by `Fn::Join` counts a
+ * newer read version). These types are deliberately NOT in
+ * `CHANGED_PROPERTIES_CONSUMER_TYPES`: RDS never returns the password on a
+ * Describe, so the readback that opt-in buys could not confirm it.
+ *
+ * Without that set the two bags are compared. A rollback revert hands both
+ * re-resolved, so an equal value is unchanged. Under `drift --revert` both
+ * sides are AWS readbacks (the desired one with the drifted keys overlaid),
+ * which never hold the password, so it is not sent. A recorded
+ * `{{resolve:` token or whole `***` mask is never read as equal. Compared in
+ * memory only; no value is logged.
+ */
+function propertyChangedForUpdate(
+  key: string,
+  desired: unknown,
+  recorded: unknown,
+  context: UpdateContext | undefined
+): boolean {
+  const changedProperties = context?.changedProperties;
+  if (changedProperties !== undefined) return changedProperties.has(key);
+  return holdsRecordedStandIn(recorded) || !isDeepStrictEqual(desired, recorded);
+}
+
+/** A recorded leaf standing in for a secret: a dynamic reference, or the whole mask. */
+function holdsRecordedStandIn(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value === SECRET_MASK || dynamicReferenceTokens(value).length > 0;
+  }
+  if (Array.isArray(value)) return value.some(holdsRecordedStandIn);
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value).some(holdsRecordedStandIn);
+  }
+  return false;
+}
+
+/**
+ * go-to-k/cdkd#5153: the `MasterUserPassword` a `ModifyDBCluster` /
+ * `ModifyDBInstance` carries, or `undefined` to leave the live password alone.
+ * RDS treats ANY supplied password as a master-credential reset, so it is sent
+ * only when the template changed it, as CloudFormation does. A removed
+ * password sends nothing.
+ */
+function masterUserPasswordToSend(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined
+): string | undefined {
+  const desired = properties['MasterUserPassword'];
+  if (desired === undefined || desired === null) return undefined;
+  return propertyChangedForUpdate(
+    'MasterUserPassword',
+    desired,
+    previousProperties['MasterUserPassword'],
+    context
+  )
+    ? (desired as string)
+    : undefined;
+}
+
+/**
+ * go-to-k/cdkd#5153: whether `ManageMasterUserPassword` / `MasterUserSecret`
+ * ride the Modify* call. They are sent, as before, when any of the three
+ * master-credential properties changed: turning the managed password off
+ * needs the (newly declared) `MasterUserPassword` beside it, and a KMS key is
+ * accepted only while turning management on. Nothing changed sends neither,
+ * as CloudFormation sends nothing for unchanged properties; otherwise a
+ * declared `ManageMasterUserPassword: false` would travel alone once the
+ * unchanged password is left out.
+ */
+function masterCredentialSettingsChanged(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined
+): boolean {
+  return (
+    propertyChangedForUpdate(
+      'MasterUserPassword',
+      properties['MasterUserPassword'],
+      previousProperties['MasterUserPassword'],
+      context
+    ) ||
+    propertyChangedForUpdate(
+      'ManageMasterUserPassword',
+      properties['ManageMasterUserPassword'],
+      previousProperties['ManageMasterUserPassword'],
+      context
+    ) ||
+    propertyChangedForUpdate(
+      'MasterUserSecret',
+      properties['MasterUserSecret'],
+      previousProperties['MasterUserSecret'],
+      context
+    )
+  );
+}
 
 /**
  * How long a cluster or instance delete waits for the resource to be gone:
@@ -423,7 +528,8 @@ export class RDSProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       default:
         throw new ProvisioningError(
@@ -898,6 +1004,12 @@ export class RDSProvider implements ResourceProvider {
       // #609 — `MasterUserSecret` `{ KmsKeyId }` maps to the scalar modify
       // field `MasterUserSecretKmsKeyId` (same flip as create()).
       const masterUserSecret = properties['MasterUserSecret'] as { KmsKeyId?: string } | undefined;
+      // #5153: the managed-password settings ride only a credential change.
+      const sendCredentialSettings = masterCredentialSettingsChanged(
+        properties,
+        previousProperties,
+        context
+      );
 
       // #1160 reset-on-removal — ModifyDBCluster has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
@@ -936,15 +1048,18 @@ export class RDSProvider implements ResourceProvider {
             1
           ),
           ...(vpcSgIds !== undefined && { VpcSecurityGroupIds: vpcSgIds }),
-          MasterUserPassword: properties['MasterUserPassword'] as string | undefined,
+          // #5153: only a changed password; any supplied one resets credentials.
+          MasterUserPassword: masterUserPasswordToSend(properties, previousProperties, context),
           Port: properties['Port'] != null ? Number(properties['Port']) : undefined,
           // #609 security-cluster backfill — all mutable via ModifyDBCluster.
-          ...(properties['ManageMasterUserPassword'] !== undefined && {
-            ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
-          }),
-          ...(masterUserSecret?.KmsKeyId !== undefined && {
-            MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
-          }),
+          ...(sendCredentialSettings &&
+            properties['ManageMasterUserPassword'] !== undefined && {
+              ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
+            }),
+          ...(sendCredentialSettings &&
+            masterUserSecret?.KmsKeyId !== undefined && {
+              MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
+            }),
           ...(properties['MonitoringRoleArn'] !== undefined && {
             MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
           }),
@@ -1391,7 +1506,8 @@ export class RDSProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating DBInstance ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -1420,6 +1536,13 @@ export class RDSProvider implements ResourceProvider {
       // #609 — `MasterUserSecret` `{ KmsKeyId }` → scalar
       // `MasterUserSecretKmsKeyId` (same flip as create()).
       const masterUserSecret = properties['MasterUserSecret'] as { KmsKeyId?: string } | undefined;
+      // #5153: the managed-password settings ride only a credential change.
+      const sendCredentialSettings = masterCredentialSettingsChanged(
+        properties,
+        previousProperties,
+        context
+      );
+      const instancePassword = masterUserPasswordToSend(properties, previousProperties, context);
       // #1160 reset-on-removal — ModifyDBInstance has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
       // the template must be sent as its explicit CFn-default reset value
@@ -1465,9 +1588,8 @@ export class RDSProvider implements ResourceProvider {
           ...(properties['Port'] !== undefined && {
             DBPortNumber: Number(properties['Port']),
           }),
-          ...(properties['MasterUserPassword'] !== undefined && {
-            MasterUserPassword: properties['MasterUserPassword'] as string,
-          }),
+          // #5153: only a changed password; any supplied one resets credentials.
+          ...(instancePassword !== undefined && { MasterUserPassword: instancePassword }),
           ...(properties['VPCSecurityGroups'] !== undefined && {
             VpcSecurityGroupIds: properties['VPCSecurityGroups'] as string[],
           }),
@@ -1476,12 +1598,14 @@ export class RDSProvider implements ResourceProvider {
           // key is immutable post-create; a template change replaces the
           // instance, which cdkd's diff layer schedules independently — same
           // treatment as StorageEncrypted / MasterUsername above).
-          ...(masterUserSecret?.KmsKeyId !== undefined && {
-            MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
-          }),
-          ...(properties['ManageMasterUserPassword'] !== undefined && {
-            ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
-          }),
+          ...(sendCredentialSettings &&
+            masterUserSecret?.KmsKeyId !== undefined && {
+              MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
+            }),
+          ...(sendCredentialSettings &&
+            properties['ManageMasterUserPassword'] !== undefined && {
+              ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
+            }),
           ...(properties['MonitoringRoleArn'] !== undefined && {
             MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
           }),
