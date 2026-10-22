@@ -36,6 +36,19 @@ The second form opens a picker over the services that have no override yet, so
 one Dockerfile can serve several services. Naming the same service twice in
 the first form is an error.
 
+`<service>` names the service in any of these ways, here and in the
+per-service forms of the build flags below:
+
+- the target you passed to `start-service`, such as `MyStack/Orders`
+- its `ServiceName`, or its construct id (such as `Orders`) when the service
+  sets no `ServiceName`
+- its logical id, or `Stack:LogicalId`
+
+`start-alb` starts every service behind the load balancer, so name each one
+by its `ServiceName`, construct id or logical id. If a name fits two services
+that use a registry image, cdkd refuses to start; use `Stack:LogicalId` to
+pick one. Two keys that name the same service are also an error.
+
 ## Build arguments, secrets and stages
 
 Three flags pass options to the override builds. Each takes a value for every
@@ -60,7 +73,8 @@ change this:
 
 - `--no-interactive-overrides` turns the questions off, for scripts and CI.
 - `--strict-overrides` makes cdkd refuse to start while any such service
-  remains.
+  remains. The check runs before any service starts, so nothing is left
+  running.
 
 ## Related
 
