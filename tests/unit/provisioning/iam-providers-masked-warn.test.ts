@@ -1856,10 +1856,12 @@ describe('a masked failure still classifies as retryable (issue #4244)', () => {
     expect(retryable(failure)).toBe(true);
   });
 
-  // go-to-k/cdkd#2319: the AccessKey wraps withhold every AWS-authored text, so
-  // they always stamp one; their unstamped arm is a cdkd-authored error.
-  const quotesAwsText = SITES.filter(({ site }) => !site.startsWith('AccessKey'));
-  const withholdsAwsText = SITES.filter(({ site }) => site.startsWith('AccessKey'));
+  // go-to-k/cdkd#2319: the AccessKey, Role and ManagedPolicy wraps withhold
+  // every AWS-authored text, so they always stamp one; their unstamped arm is a
+  // cdkd-authored error.
+  const withholds = (site: string): boolean => /^(AccessKey|Role|ManagedPolicy) /.test(site);
+  const quotesAwsText = SITES.filter(({ site }) => !withholds(site));
+  const withholdsAwsText = SITES.filter(({ site }) => withholds(site));
 
   it.each(quotesAwsText)('$site: a failure the mask left unchanged is not stamped', async ({ command, run }) => {
     answerIam({ [command]: malformed('Bad request parameter') });
@@ -1870,7 +1872,7 @@ describe('a masked failure still classifies as retryable (issue #4244)', () => {
   });
 
   it.each(withholdsAwsText)('$site: an AWS failure is withheld and stamped, a cdkd-authored one passes unstamped', async ({ command, run }) => {
-    expect(withholdsAwsText).toHaveLength(2); // premise: both AccessKey sites
+    expect(withholdsAwsText).toHaveLength(6); // premise: the AccessKey, Role and ManagedPolicy sites
     answerIam({ [command]: malformed('Bad request parameter') });
     const aws = await failureOf(() => run(retryMasker));
     expect(aws.message).not.toContain('Bad request parameter');

@@ -53,7 +53,12 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
-import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import {
   onlySecretDerived,
@@ -138,18 +143,33 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
   private logger = getLogger().child('IAMManagedPolicyProvider');
 
   /**
-   * A failure wrap quoting the caught error's text through the operation's
-   * masker (issue #2177), stamped when the mask changed it so the retry
-   * classifiers read the unmasked `cause` chain (`wrapMaskedAwsError`, issue
-   * #4244). A method, so `gen-update-wrap-coverage` sees the catch that throws
-   * it as a wrap.
+   * A failure wrap that never quotes AWS's own text (issue #2319). The thrown
+   * message is persisted to `deployments/{runId}.jsonl`, and an IAM
+   * `AccessDenied` names the caller's assumed-role ARN, so an AWS-authored
+   * failure is named by its class plus the `--verbose` pointer: AWS's text
+   * goes to `debug` through the masker, and the wrap is stamped
+   * `markRedactedCause` so the retry classifiers read the withheld text on the
+   * unmasked `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}). A cdkd-authored or transport error, or a
+   * non-`Error` throw, keeps its text masked (issue #2177,
+   * `wrapMaskedAwsError`, issue #4244).
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
+   * sees the catch that throws it as a wrap.
    */
   private wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error)) return build(mask(failure.detail));
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    return markRedactedCause(
+      build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
+    );
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -554,6 +574,8 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       } catch (error) {
         // No `oldResourceSurvivor: 'kept'` (go-to-k/cdkd#4911): `delete()`
         // detaches the policy before `DeletePolicy` refuses, so it is not whole.
+        // `error` is `delete()`'s wrap, which names an AWS failure by its class
+        // (go-to-k/cdkd#2319): this reason is persisted as a RESOURCE_SKIPPED.
         orphanReason = log.mask(
           `old managed policy ${v(physicalId)} could not be deleted: ${safeStringify(error)}`
         );
