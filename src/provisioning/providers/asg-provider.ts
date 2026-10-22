@@ -25,6 +25,7 @@ import {
   type Tag as ASGTag,
   type LaunchTemplateSpecification,
   type AvailabilityZoneDistribution,
+  type AvailabilityZoneImpairmentPolicy,
   type CapacityReservationSpecification,
   type DeletionProtection,
   type InstanceMaintenancePolicy,
@@ -336,8 +337,9 @@ function itemsOf(read: ListRead): unknown[] {
  * change"). Per the real CloudFormation A/B in go-to-k/cdkd#5004, a property
  * REMOVED from the template is reset by CloudFormation for only four members
  * (InstanceMaintenancePolicy, MaxInstanceLifetime,
- * CapacityReservationSpecification, AvailabilityZoneDistribution) — those get
- * a removal reset here, declared in `removalDefaults` or a local
+ * CapacityReservationSpecification, AvailabilityZoneDistribution), plus
+ * AvailabilityZoneImpairmentPolicy per the #1160 A/B — those get a removal
+ * reset here, declared in `removalDefaults` or a local
  * `clearOnUpdateRemoval`. Every other optional member (HealthCheckType,
  * HealthCheckGracePeriod, Cooldown, TerminationPolicies,
  * NewInstancesProtectedFromScaleIn, CapacityRebalance, DesiredCapacityType,
@@ -613,8 +615,10 @@ export class ASGProvider implements ResourceProvider {
     [
       'AWS::AutoScaling::AutoScalingGroup',
       new Map<string, unknown>([
-        // go-to-k/cdkd#5004 (real CloudFormation A/B, us-east-1): CloudFormation
-        // RESETS exactly these four on removal, so cdkd resets them too. The
+        // go-to-k/cdkd#5004 and #1160 (real CloudFormation A/Bs, us-east-1):
+        // CloudFormation RESETS five members on removal, so cdkd resets them
+        // too: the three below, plus MaxInstanceLifetime and
+        // AvailabilityZoneImpairmentPolicy, which `update()` resets locally. The
         // other nine members of this type (HealthCheckType,
         // HealthCheckGracePeriod, Cooldown, TerminationPolicies,
         // NewInstancesProtectedFromScaleIn, CapacityRebalance,
@@ -1351,29 +1355,31 @@ export class ASGProvider implements ResourceProvider {
       // input field means "no change". Per the #5004 CloudFormation A/B,
       // CloudFormation resets only InstanceMaintenancePolicy, MaxInstanceLifetime,
       // CapacityReservationSpecification and AvailabilityZoneDistribution when
-      // removed (the rest keep the live value; see below). A constant reset arrives in
+      // removed, plus AvailabilityZoneImpairmentPolicy per the #1160 A/B (the
+      // rest keep the live value; see below). A constant reset arrives in
       // `properties` from `removalDefaults` (see its declaration for each
       // value's doc basis); the coerced / aliased fields below resolve theirs
       // locally through `clearOnUpdateRemoval`.
       //
-      // Deliberately NOT reset on removal:
-      //   - DesiredCapacity: CFn leaves current capacity unmanaged when the
-      //     property is absent (scaling policies own it) — leaving it
-      //     unchanged IS the CFn-parity behavior.
-      //   - MinSize / MaxSize: required properties, never removable.
-      //   - LaunchTemplate vs MixedInstancesPolicy, VPCZoneIdentifier vs
-      //     AvailabilityZones: mutually-exclusive pairs — a "removal" is
-      //     really a switch to the other member, which the API applies by
-      //     presence; pure removal of both is an invalid template.
-      //   - ServiceLinkedRoleARN: no documented clear sentinel; the default
-      //     is an account-specific service-linked-role ARN — leave unchanged.
-      //   - Context: SDK doc says "Reserved." — leave unchanged.
-      //   - SkipZonalShiftValidation: transient per-request validation flag,
-      //     not persisted group config — nothing to reset.
-      //   - AvailabilityZoneImpairmentPolicy: DEFERRED — the SDK model
-      //     documents no default for `ImpairedZoneHealthCheckBehavior` (and
-      //     none for `ZonalShiftEnabled`), so a reset shape cannot be derived
-      //     without guessing; removal currently keeps the live value.
+      // go-to-k/cdkd#1160 (real CloudFormation A/B, us-east-1, with the
+      // UpdateAutoScalingGroup input CloudFormation sent read from CloudTrail):
+      //   - AvailabilityZoneImpairmentPolicy: RESET. CloudFormation sends
+      //     `ZonalShiftEnabled: false` with the PREVIOUS
+      //     `ImpairedZoneHealthCheckBehavior`, and AWS then reports no policy.
+      //     cdkd sends the same shape (below).
+      //   - DesiredCapacity, ServiceLinkedRoleARN (a custom-suffix role):
+      //     KEPT — CloudFormation sends nothing and the live value stays, so
+      //     cdkd sends nothing either. MinSize / MaxSize are required.
+      //   - LaunchTemplate <-> MixedInstancesPolicy and VPCZoneIdentifier ->
+      //     AvailabilityZones: CloudFormation sends only the member the
+      //     template now declares, exactly as cdkd does. AWS then drops the
+      //     other launch member, but KEEPS the subnets on a switch to
+      //     AvailabilityZones — parity either way.
+      //   - SkipZonalShiftValidation: write-only in the CloudFormation schema
+      //     (a per-request flag, never read back) — nothing to reset.
+      //   - Context: "Reserved." AWS refuses any value an account sets ("is
+      //     not allowed to access Context"), so no deployable template can
+      //     remove one.
       //
       // Sub-field removal inside a KEPT config object (issue #1225 — the
       // #1160 bug class one level down) is deliberately passed through
@@ -1436,6 +1442,28 @@ export class ASGProvider implements ResourceProvider {
       const deletionProtectionInput = properties['DeletionProtection'] as
         | DeletionProtection
         | undefined;
+      // RESET by CloudFormation (#1160 A/B): zonal shift off, the previous
+      // health-check behavior re-sent (the CloudFormation schema requires
+      // both members; AWS then reports no policy).
+      const previousImpairmentPolicy = previousProperties['AvailabilityZoneImpairmentPolicy'];
+      const previousImpairedBehavior =
+        typeof previousImpairmentPolicy === 'object' && previousImpairmentPolicy !== null
+          ? (previousImpairmentPolicy as Record<string, unknown>)['ImpairedZoneHealthCheckBehavior']
+          : undefined;
+      const availabilityZoneImpairmentPolicyInput =
+        clearOnUpdateRemoval<AvailabilityZoneImpairmentPolicy>(
+          properties['AvailabilityZoneImpairmentPolicy'] as
+            | AvailabilityZoneImpairmentPolicy
+            | undefined,
+          previousImpairmentPolicy as AvailabilityZoneImpairmentPolicy | undefined,
+          {
+            ZonalShiftEnabled: false,
+            ...(typeof previousImpairedBehavior === 'string' && {
+              ImpairedZoneHealthCheckBehavior:
+                previousImpairedBehavior as AvailabilityZoneImpairmentPolicy['ImpairedZoneHealthCheckBehavior'],
+            }),
+          }
+        );
 
       await this.getClient().send(
         new UpdateAutoScalingGroupCommand({
@@ -1489,12 +1517,8 @@ export class ASGProvider implements ResourceProvider {
           ...(availabilityZoneDistributionInput !== undefined && {
             AvailabilityZoneDistribution: availabilityZoneDistributionInput,
           }),
-          // Removal reset DEFERRED (no SDK-documented default for the
-          // sub-fields) — see the comment block above.
-          ...(properties['AvailabilityZoneImpairmentPolicy'] !== undefined && {
-            AvailabilityZoneImpairmentPolicy: properties[
-              'AvailabilityZoneImpairmentPolicy'
-            ] as never,
+          ...(availabilityZoneImpairmentPolicyInput !== undefined && {
+            AvailabilityZoneImpairmentPolicy: availabilityZoneImpairmentPolicyInput,
           }),
           ...(properties['SkipZonalShiftValidation'] !== undefined && {
             SkipZonalShiftValidation: properties['SkipZonalShiftValidation'] as boolean,

@@ -19,11 +19,11 @@ import * as sns from 'aws-cdk-lib/aws-sns';
  * deploy as the LaunchTemplate edit.
  *
  * Issue #1160 leg: phases 1-2 set non-default HealthCheckGracePeriod /
- * MaxInstanceLifetime / TerminationPolicies on the ASG; the removal phase
- * (CDKD_TEST_REMOVAL=true) drops them from the template. UpdateAutoScalingGroup
- * has merge semantics (absent = unchanged), so pre-fix the live values silently
- * survived the removal; verify.sh asserts they return to the CFn defaults
- * (grace period 0, no max lifetime, TerminationPolicies ['Default']).
+ * MaxInstanceLifetime / TerminationPolicies / AvailabilityZoneImpairmentPolicy
+ * on the ASG; the removal phase (CDKD_TEST_REMOVAL=true) drops them from the
+ * template. UpdateAutoScalingGroup has merge semantics (absent = unchanged);
+ * verify.sh asserts what CloudFormation does: MaxInstanceLifetime and the
+ * impairment policy are cleared, the other two keep their live values (#5004).
  *
  * min/max/desiredCapacity are all 0 so no instances launch — keeps the deploy
  * cheap and destroy fast (no instance teardown wait).
@@ -37,7 +37,7 @@ export class LaunchTemplateAsgInplaceStack extends cdk.Stack {
     // template delta is the LaunchTemplate's instanceType (the #985 leg needs
     // the ASG's raw template to be UNCHANGED in that phase).
     // CDKD_TEST_REMOVAL keeps the phase-2 instance type and ADDITIONALLY drops
-    // the three non-default ASG properties below (the #1160 removal leg).
+    // the four non-default ASG properties below (the #1160 removal leg).
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
     const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
     const instanceType =
@@ -104,7 +104,7 @@ export class LaunchTemplateAsgInplaceStack extends cdk.Stack {
       ],
     });
 
-    // Issue #1160 removal leg: set non-default values for three optional
+    // Issue #1160 removal leg: set non-default values for four optional
     // mutable ASG properties in phases 1-2, then REMOVE them from the template
     // in the removal phase. Set via the L1 escape hatch so the exact CFn
     // property names land in the template (no L2 API drift).
@@ -113,6 +113,13 @@ export class LaunchTemplateAsgInplaceStack extends cdk.Stack {
       cfnAsg.healthCheckGracePeriod = 90; // CFn default: 0
       cfnAsg.maxInstanceLifetime = 604800; // 7 days; CFn default: none (API min is 86400)
       cfnAsg.terminationPolicies = ['OldestInstance']; // CFn default: ['Default']
+      // Issue #1160 (CloudFormation A/B): a removed policy is reset — CFn sends
+      // ZonalShiftEnabled false with the previous behavior and AWS then
+      // reports no policy.
+      cfnAsg.availabilityZoneImpairmentPolicy = {
+        zonalShiftEnabled: true,
+        impairedZoneHealthCheckBehavior: 'ReplaceUnhealthy',
+      };
     }
   }
 }
