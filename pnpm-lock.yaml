@@ -362,8 +362,8 @@ importers:
         specifier: ^8.0.0
         version: 8.0.0
       cdk-local:
-        specifier: ^0.153.2
-        version: 0.153.2(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@55.1.0)(aws-cdk-lib@2.273.0(constructs@10.8.1))(constructs@10.8.1)(supports-color@7.2.0)
+        specifier: ^0.154.0
+        version: 0.154.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@55.1.0)(aws-cdk-lib@2.273.0(constructs@10.8.1))(constructs@10.8.1)(supports-color@7.2.0)
       chokidar:
         specifier: ^5.0.0
         version: 5.0.0
@@ -3141,8 +3141,8 @@ packages:
   cdk-from-cfn@0.338.0:
     resolution: {integrity: sha512-jIrGLU8g2CLkn4fPtaDP0QurSbtnDWiMUTykaohQRldjImhGBWRTIAO8H/yS2mMIKnJu3pN9VD1t39cIgUSbQg==}
 
-  cdk-local@0.153.2:
-    resolution: {integrity: sha512-j7wTOjP6Irmg+7hsSjhDdSsD6ElOUQ0uAW6SUwmVl4KxkFJ8HQGLQmxDPXJSEOCjwakSM8IxiHZsHbgKmL3ieA==}
+  cdk-local@0.154.0:
+    resolution: {integrity: sha512-U4NtRJL2ph4Z7ZQnXd2+xGf7JDmHmlqyGVMqf4QWk+3ZNrjh28ItBJpt1j43xLs7hALRfqD13HoXF618QWmsBA==}
     engines: {node: '>=22.12.0'}
     hasBin: true
     peerDependencies:
@@ -4326,11 +4326,6 @@ packages:
   scheduler@0.28.0:
     resolution: {integrity: sha512-juorfCmIkIw8tT+p5BXSm6PJjQF/ycEYmKyzURCIt/RaZIhL+PulbQ9Yu2z1HdOJDdqDTlxA1+xKBmHXJsczAw==}
 
-  semver@7.8.1:
-    resolution: {integrity: sha512-rkVq3IXh+4FDGch+KwzX3aV9W3kO54GyEgpvBzSyctDA6Xtd7RJQV1xmXbeQp5v7+VzLOfVqiutSE6GICgPFvg==}
-    engines: {node: '>=10'}
-    hasBin: true
-
   semver@7.8.5:
     resolution: {integrity: sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==}
     engines: {node: '>=10'}
@@ -4835,8 +4830,8 @@ snapshots:
 
   '@aws-cdk/cdk-assets-lib@1.4.8':
     dependencies:
-      '@aws-cdk/cloud-assembly-api': 2.2.4(@aws-cdk/cloud-assembly-schema@54.24.0)
-      '@aws-cdk/cloud-assembly-schema': 54.24.0
+      '@aws-cdk/cloud-assembly-api': 2.2.4(@aws-cdk/cloud-assembly-schema@55.1.0)
+      '@aws-cdk/cloud-assembly-schema': 55.1.0
       '@aws-sdk/client-ecr': 3.1152.0
       '@aws-sdk/client-s3': 3.1152.0
       '@aws-sdk/client-secrets-manager': 3.1152.0
@@ -4856,11 +4851,11 @@ snapshots:
 
   '@aws-cdk/cli-plugin-contract@2.182.2': {}
 
-  '@aws-cdk/cloud-assembly-api@2.2.4(@aws-cdk/cloud-assembly-schema@54.24.0)':
+  '@aws-cdk/cloud-assembly-api@2.2.4(@aws-cdk/cloud-assembly-schema@55.1.0)':
     dependencies:
-      '@aws-cdk/cloud-assembly-schema': 54.24.0
+      '@aws-cdk/cloud-assembly-schema': 55.1.0
       jsonschema: 1.5.0
-      semver: 7.8.1
+      semver: 7.8.5
 
   '@aws-cdk/cloud-assembly-api@2.5.0(@aws-cdk/cloud-assembly-schema@55.1.0)':
     dependencies:
@@ -7721,7 +7716,7 @@ snapshots:
 
   cdk-from-cfn@0.338.0: {}
 
-  cdk-local@0.153.2(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@55.1.0)(aws-cdk-lib@2.273.0(constructs@10.8.1))(constructs@10.8.1)(supports-color@7.2.0):
+  cdk-local@0.154.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@55.1.0)(aws-cdk-lib@2.273.0(constructs@10.8.1))(constructs@10.8.1)(supports-color@7.2.0):
     dependencies:
       '@aws-cdk/cloud-assembly-api': 2.5.0(@aws-cdk/cloud-assembly-schema@55.1.0)
       '@aws-cdk/toolkit-lib': 1.44.0(@aws-cdk/cli-plugin-contract@2.182.2)
@@ -9057,8 +9052,6 @@ snapshots:
 
   scheduler@0.28.0:
     optional: true
-
-  semver@7.8.1: {}
 
   semver@7.8.5: {}
 

@@ -84,7 +84,10 @@ describe("cdk-local's own log lines under cdkd's stdout reservation", () => {
 
       const debugText = debug.mock.calls.map((c) => c.map(String).join(' ')).join('\n');
       // Positive: the build line WAS logged, with the key and the marker.
-      expect(debugText).toContain('--build-arg CDKD_SENTINEL_ARG=***');
+      // cdk-local 0.154.0 renders each argv element through
+      // `displayUntrustedValue`, which quotes one carrying `*`
+      // (go-to-k/cdk-local#825).
+      expect(debugText).toContain('--build-arg "CDKD_SENTINEL_ARG=***"');
       // Negative, across every sink a line could take.
       const everything = [
         debugText,

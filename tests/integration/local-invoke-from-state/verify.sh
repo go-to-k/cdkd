@@ -399,8 +399,9 @@ printf '%s' "${RESULT_SECRET}" | grep -qF '{{resolve:' && {
   exit 1
 }
 # Off the argv: the --verbose docker-run line names each resolved key as a
-# value-less `-e KEY`; an inline one would read `-e KEY=***`. The line must be
-# present, or the absence checks below prove nothing.
+# value-less `-e KEY`; an inline one would read `-e "KEY=***"` (cdk-local
+# >= 0.154.0 quotes an argv element carrying `*`; older ones printed it bare).
+# The line must be present, or the absence checks below prove nothing.
 grep -qE -- '-e IMPORTED_SECRET( |$)' "${SECRET_ERR}" || {
   echo "[verify] FAIL: no value-less '-e IMPORTED_SECRET' on the --verbose docker run line"
   exit 1
@@ -409,7 +410,7 @@ grep -qE -- '-e SAME_STACK_SECRET( |$)' "${SECRET_ERR}" || {
   echo "[verify] FAIL: no value-less '-e SAME_STACK_SECRET' on the --verbose docker run line"
   exit 1
 }
-grep -qE -- '-e (IMPORTED|SAME_STACK)_SECRET=' "${SECRET_ERR}" && {
+grep -qE -- '-e "?(IMPORTED|SAME_STACK)_SECRET=' "${SECRET_ERR}" && {
   echo "[verify] FAIL: a resolved secret was passed inline on the docker argv"
   exit 1
 }
