@@ -20,7 +20,7 @@ lanes' integs or merges at once, nor a merge during another lane's integ: it
 can move `main` under that batch (#4864). A turn blocked on a fixture fix
 yields to the next merge-ready lane. ANY turn holding HOURS tells the user
 unasked its ETA and queue. A subagent running a turn's integs, marker and
-ledger is handed back INTERIM whatever its brief says. Its brief (the runner
+ledger hands back INTERIM reports whatever its brief says. Its brief (the runner
 never reads this file) makes marker and ledger due once the last PID exits
 and, like a lane's, bans
 attribution lines in the ledger commit (#5104); a state record it cannot read
