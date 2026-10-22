@@ -14,13 +14,18 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted } from '../delete-started.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
   createMaskedLogSinks,
   withDerivedNameMasks,
+  type MaskedLogSinks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
@@ -83,18 +88,33 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
   private logger = getLogger().child('IAMInstanceProfileProvider');
 
   /**
-   * A failure wrap quoting the caught error's text through the operation's
-   * masker (issue #2177), stamped when the mask changed it so the retry
-   * classifiers read the unmasked `cause` chain (`wrapMaskedAwsError`, issue
-   * #4244). A method, so `gen-update-wrap-coverage` sees the catch that throws
-   * it as a wrap.
+   * A failure wrap that never quotes AWS's own text (issue #2319). The thrown
+   * message is persisted to `deployments/{runId}.jsonl`, and an IAM
+   * `AccessDenied` names the caller's assumed-role ARN, so an AWS-authored
+   * failure is named by its class plus the `--verbose` pointer: AWS's text
+   * goes to `debug` through the masker, and the wrap is stamped
+   * `markRedactedCause` so the retry classifiers read the withheld text on the
+   * unmasked `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}). A cdkd-authored or transport error, or a
+   * non-`Error` throw, keeps its text masked (issue #2177,
+   * `wrapMaskedAwsError`, issue #4244).
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
+   * sees the catch that throws it as a wrap.
    */
   private wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error)) return build(mask(failure.detail));
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    return markRedactedCause(
+      build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
+    );
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -463,7 +483,10 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting IAM instance profile ${logicalId}: ${physicalId}`);
+    // One masked sink for the whole delete (issue #2177): a profile name can be
+    // a resolved secret.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    log.debug(`Deleting IAM instance profile ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#4946: set once a role is removed, so a refused
     // `DeleteInstanceProfile` is never read as a whole survivor.
     let stripped = false;
@@ -489,7 +512,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
             logicalId,
             physicalId
           );
-          this.logGoneOnDelete(logicalId, physicalId, context);
+          this.logGoneOnDelete(logicalId, physicalId, context, log);
           return;
         }
         throw error;
@@ -505,7 +528,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
             })
           );
           stripped = true;
-          this.logger.debug(`Removed role ${roleName} from instance profile ${physicalId}`);
+          log.debug(`Removed role ${roleName} from instance profile ${physicalId}`);
         } catch (error) {
           if (!(error instanceof NoSuchEntityException)) {
             throw error;
@@ -518,7 +541,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
         new DeleteInstanceProfileCommand({ InstanceProfileName: physicalId })
       );
 
-      this.logger.debug(`Successfully deleted IAM instance profile ${logicalId}`);
+      log.debug(`Successfully deleted IAM instance profile ${logicalId}`);
     } catch (error) {
       if (error instanceof NoSuchEntityException) {
         const clientRegion = await this.iamClient.config.region();
@@ -529,16 +552,23 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logGoneOnDelete(logicalId, physicalId, context);
+        this.logGoneOnDelete(logicalId, physicalId, context, log);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        `Failed to delete IAM instance profile ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      // Named by its class when AWS-authored (`wrapMaskedError`, issue #2319).
+      const { mask } = log;
+      const failure = this.wrapMaskedError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            mask(`Failed to delete IAM instance profile ${logicalId}: ${text}`),
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
       throw stripped ? markDeleteStarted(failure) : failure;
     }
@@ -552,14 +582,15 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
   private logGoneOnDelete(
     logicalId: string,
     physicalId: string,
-    context: DeleteContext | undefined
+    context: DeleteContext | undefined,
+    log: MaskedLogSinks
   ): void {
     if (context?.failedCreateOrphan === true) {
       this.logger.info(
         safeMsg`  IAM instance profile ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
       );
     } else {
-      this.logger.debug(`Instance profile ${physicalId} does not exist, skipping deletion`);
+      log.debug(`Instance profile ${log.value(physicalId)} does not exist, skipping deletion`);
     }
   }
 

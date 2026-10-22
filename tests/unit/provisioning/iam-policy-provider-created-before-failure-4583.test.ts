@@ -98,7 +98,9 @@ describe('IAMPolicyProvider create detaches a partially attached policy (#4583)'
 
     const error = await createError();
 
-    expect((error as Error).message).toContain('not authorized');
+    // Named by its class, AWS's text kept on `cause` (go-to-k/cdkd#2319).
+    expect((error as Error).message).toContain('Failed to create IAM policy Pol: AccessDenied.');
+    expect(((error as Error).cause as Error).message).toContain('not authorized');
     expect(deletesSent()).toEqual([
       ['DeleteRolePolicyCommand', { RoleName: 'role-a', PolicyName: POLICY_NAME }],
     ]);
@@ -145,7 +147,9 @@ describe('IAMPolicyProvider create detaches a partially attached policy (#4583)'
 
     const error = await createError();
 
-    expect((error as Error).message).toContain('not authorized');
+    // Named by its class, AWS's text kept on `cause` (go-to-k/cdkd#2319).
+    expect((error as Error).message).toContain('Failed to create IAM policy Pol: AccessDenied.');
+    expect(((error as Error).cause as Error).message).toContain('not authorized');
     expect(deletesSent()).toHaveLength(1);
     expect(childLogger.warn).toHaveBeenCalledTimes(1);
     const warning = String(childLogger.warn.mock.calls[0]![0]);

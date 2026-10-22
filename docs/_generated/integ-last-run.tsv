@@ -160,16 +160,16 @@ glue-update-hardening	2026-10-21T09:12:02Z	PASS	292	verify.sh	PR #5147: phase 2g
 guardduty-detector-update	2026-10-15T04:32:09Z	PASS	210	verify.sh	PR #4935 (#4921) maintainer run on f7e8e94cd; own state bucket; all 6 phases incl. Phase 3b reverts; 3 destroys 0 err, no detector left, orph clean
 healthimaging-stateful-update-fallback	2026-10-12T05:13:18Z	PASS	320	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08: DescribeType-denied CC create/update path (fail-open narrowing); rc ok, destroy 0 errors, orph clean
 iam-access-key	2026-10-21T13:56:47Z	PASS	84	verify.sh	rc ok, orph clean, secret-value versions purged
-iam-managed-policy	2026-10-22T10:03:41Z	PASS	72	verify.sh	PR #5170 redaction-slice; deploy+update+destroy clean, 0 orphans
+iam-managed-policy	2026-10-22T21:41:33Z	PASS	75	verify.sh	PR #5187; parallel batch of 4, shared state bucket; rc ok, destroy clean 0 errors, 0 orphans
 iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean
-iam-profile-policy-fix-forward-orphan	2026-10-15T19:36:36Z	PASS	130	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
+iam-profile-policy-fix-forward-orphan	2026-10-22T21:32:23Z	PASS	150	verify.sh	PR #5187 rc ok, destroy clean 0 errors, 0 orphans; shared state bucket, ran alone
 iam-propagation-stress	2026-10-22T10:03:45Z	PASS	75	verify.sh	PR #5170 redaction-slice; deploy+destroy clean, 0 orphans
-iam-recreate-reattach	2026-10-19T00:03:06Z	PASS	220	verify.sh	rc ok, orph clean (#5078 @336e8f4)
+iam-recreate-reattach	2026-10-22T21:41:33Z	PASS	235	verify.sh	PR #5187; parallel batch of 4, shared state bucket; rc ok, destroy clean 0 errors, 0 orphans
 iam-role-fix-forward-orphan	2026-10-15T23:44:38Z	PASS	110	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4981 CreateRole carries tags; src-revert proof fails the tag assertion
 iam-role-policies-drift-clean	2026-10-12T12:11:04Z	PASS	361	verify.sh	PR #4828, #4821 on rebased sha 45d03480f, MixedRole arm (swap, forced rollback, drift, destroy), rc ok, destroy 0 errors, orph clean; revert proof red (full revert: MixedRole drift; swap half: collision then rollback)
 iam-role-prefixed-name-update	2026-10-20T09:27:49Z	PASS	147	verify.sh	#5064 head re-run, clean
-iam-secret-derived-principals	2026-10-07T06:43:47Z	PASS	171	verify.sh	rc ok, orph clean (#4639)
-iam-user-group-fix-forward-orphan	2026-10-16T09:35:29Z	PASS	135	verify.sh	rc ok, orph clean (#3341 slice 4997)
+iam-secret-derived-principals	2026-10-22T21:41:33Z	PASS	191	verify.sh	PR #5187; parallel batch of 4, shared state bucket; rc ok, no plaintext secret in surviving state versions, 0 orphans
+iam-user-group-fix-forward-orphan	2026-10-22T21:32:23Z	PASS	181	verify.sh	PR #5187 rc ok, destroy clean 0 errors, 0 orphans; shared state bucket, ran alone
 import-attribute-readback	2026-10-11T09:33:22Z	PASS	161	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 import-attribute-readback-final	2026-10-15T04:24:59Z	PASS	286	verify.sh	rc ok, orph clean; #2613 step 6b in-place web ACL DefaultAction update
 import-attribute-readback-misc	2026-09-27T14:13:26Z	PASS	266	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
@@ -187,7 +187,7 @@ import-retain-destroy	2026-10-11T09:33:22Z	PASS	161	verify.sh	PR #4720 (#4705) f
 import-secret-observed	2026-10-18T05:14:02Z	PASS	150	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 import-value-strong-ref	2026-10-20T06:09:47Z	PASS	180	verify.sh	deploy+destroy clean, 0 orphans
 importvalue-chain	2026-10-12T05:04:39Z	PASS	152	verify.sh	PR #4812 head build, rc ok, orph clean
-infra-security	2026-07-26T18:20:27Z	PASS	186	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
+infra-security	2026-10-22T22:32:36Z	PASS	204	verify.sh	PR #5187 HEAD: destroy 31 deleted, 0 errors; trail-stop+bucket-empty-before-destroy fix confirmed, 0 orphans
 inplace-attr-propagation	2026-10-03T05:58:37Z	PASS	60	verify.sh	rc ok, orph clean (#4497)
 intrinsic-functions	2026-08-15T00:12:35Z	PASS	20	standard	0 err / 0 orph; resolver change regression check (#1916)
 intrinsics-torture	2026-10-11T09:33:22Z	PASS	60	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -288,7 +288,7 @@ partial-create-handback	2026-10-20T06:23:43Z	PASS	430	verify.sh	deploy+destroy c
 perf-cross-backend-check	2026-10-11T09:33:22Z	PASS	1523	verify.sh	PR #4720 (#4705) c53f78f arms 1/2/4 vs 6728bcdc: single/redeploy/teardown no diff; destroy --all -6.60s; adopt deploy +0.42s
 pipes-fix-forward-orphan	2026-10-22T07:45:16Z	PASS	176	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean; own state bucket
 profile-region-default	2026-10-13T14:31:12Z	PASS	155	verify.sh	rc ok, orph clean, own state bucket, after §8-d probe; PR #4864 06b838511
-propagation-races-2	2026-10-11T09:33:22Z	PASS	126	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+propagation-races-2	2026-10-22T21:44:19Z	PASS	130	verify.sh	PR #5187; ran alone after batch of 4; rc ok, destroy clean 0 errors, 0 orphans
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
 rds-aurora	2026-10-21T22:35:49Z	PASS	4681	verify.sh	PR #5152: #1160 SG removal + #5155 final-snapshot-wait; final destroy 4 deleted 0 errors, 0 orphans
 rds-dbinstance-backfill	2026-10-16T17:34:17Z	PASS	826	verify.sh	src b1367d11c; #5004 removal keeps + Port 5433->5434 Modify companion; rc ok, orph clean

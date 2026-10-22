@@ -9,6 +9,7 @@ Combines infrastructure and security resources in a single stack.
 - **S3 Bucket** - Encrypted with the KMS key
 - **SSM StringParameter** - Stores config values (VPC ID, bucket name)
 - **IAM Role** - With inline KMS decrypt policy + AmazonS3ReadOnlyAccess managed policy
+- **CloudTrail Trail** - S3 data events on the secure bucket, delivering its logs into it
 
 ## Demonstrates
 
@@ -30,6 +31,12 @@ cdkd deploy InfraSecurityStack
 ```bash
 cdkd destroy InfraSecurityStack
 ```
+
+The trail delivers log objects into the bucket within minutes, and the bucket
+keeps `autoDeleteObjects: false`, so a destroy refuses the non-empty bucket, as
+CloudFormation does. `verify.sh` stops the trail and empties the bucket just
+before the destroy (and in its EXIT-trap cleanup); that refusal is not what this
+fixture tests.
 
 ## Test Points
 
