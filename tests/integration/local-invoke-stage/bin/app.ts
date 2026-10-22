@@ -16,3 +16,16 @@ const outer = new cdk.Stage(app, 'CdkdLocalInvokeStage');
 const inner = new cdk.Stage(outer, 'Inner');
 new MarkerStack(inner, 'Api', { marker: 'api' });
 new MarkerStack(inner, 'ApiV2', { marker: 'api-v2' });
+
+// Issue go-to-k/cdkd#5175: one Stage deployed twice (Beta / Prod), its stack
+// carrying ONE explicit physical stackName in both. A target naming that
+// shared name must be refused as ambiguous, never resolved to the first Stage.
+for (const [stage, marker] of [
+  ['CdkdLocalInvokeStageBeta', 'beta'],
+  ['CdkdLocalInvokeStageProd', 'prod'],
+] as const) {
+  new MarkerStack(new cdk.Stage(app, stage), 'Api', {
+    marker,
+    stackName: 'CdkdLocalInvokeStageShared',
+  });
+}

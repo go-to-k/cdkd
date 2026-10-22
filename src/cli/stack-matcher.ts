@@ -14,10 +14,14 @@
  * glob: a wildcard over physical names would make `'*'` select every Stage's
  * stacks as well.
  *
- * Results are de-duplicated by `stackName`.
+ * Results keep input order. By default they are de-duplicated by `stackName`,
+ * keeping the first SELECTED stack of each name; `{ dedupe: 'identity' }` keeps
+ * every selected stack, for a caller that must see two stacks sharing one
+ * physical name (a Stage deployed twice) and refuse (#5175).
  */
 import { displayIdent, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { globMatches, pathGlobMatches } from '../utils/glob-match.js';
+import { stackForPathFormTarget } from './cdk-path.js';
 
 export interface StackLike {
   stackName: string;
@@ -29,17 +33,109 @@ export interface StackLike {
   stagePath?: string | undefined;
 }
 
-export function matchStacks<T extends StackLike>(stacks: T[], patterns: string[]): T[] {
+export interface MatchStacksOptions {
+  /**
+   * `'stackName'` (the default) keeps one stack per physical name: `deploy`,
+   * `destroy`, `diff` and the other state-keyed commands address a stack by
+   * `stackName`. `'identity'` keeps every selected stack, so the `cdkd local`
+   * resolvers see both clones of a Stage that share a `stackName` and refuse
+   * as ambiguous instead of running the first one's code (#5175).
+   */
+  dedupe?: 'stackName' | 'identity';
+}
+
+export function matchStacks<T extends StackLike>(
+  stacks: T[],
+  patterns: string[],
+  options: MatchStacksOptions = {}
+): T[] {
   if (patterns.length === 0) return [];
 
-  const selected = new Set<string>();
+  const selected = new Set<T>();
   for (const pattern of patterns) {
-    for (const stack of stacksForPattern(stacks, pattern)) selected.add(stack.stackName);
+    for (const stack of stacksForPattern(stacks, pattern)) selected.add(stack);
   }
-  // Input order, deduplicated by `stackName`.
+  if (options.dedupe === 'identity') return stacks.filter((s) => selected.has(s));
+  // Input order, one stack per `stackName` -- the first SELECTED one, never
+  // merely the first stack of that name: `Prod/Api` must not come back as
+  // `Beta/Api` when the two share a physical name (#5175).
   const seen = new Set<string>();
-  return stacks.filter(
-    (s) => selected.has(s.stackName) && !seen.has(s.stackName) && seen.add(s.stackName)
+  return stacks.filter((s) => selected.has(s) && !seen.has(s.stackName) && seen.add(s.stackName));
+}
+
+/**
+ * The outcome of resolving a `cdkd local` target's owning stack, shared by the
+ * invoke and run-task resolvers, which map each miss onto their own error
+ * class.
+ *
+ * - `no-prefix`: the target names no stack and the app has more than one.
+ * - `not-found` / `ambiguous`: the target's stack head matched zero / more
+ *   than one stack. Two stacks sharing a `stackName` (one Stage deployed
+ *   twice) are BOTH matched by that name, never collapsed to the first.
+ */
+export type TargetStackSelection<T> =
+  | { kind: 'found'; stack: T }
+  | { kind: 'no-prefix' }
+  | { kind: 'not-found'; pattern: string }
+  | { kind: 'ambiguous'; pattern: string; matched: T[] };
+
+/**
+ * Resolve a parsed `cdkd local` target to its stack. A PATH-form target's
+ * stack is the one whose display path (or physical name) is its LONGEST prefix
+ * (`stackForPathFormTarget`, go-to-k/cdkd#3953); a wildcard head and the colon
+ * form go through {@link matchStacks} by identity.
+ *
+ * The prefix lookup keeps the FIRST stack on a tie, and only two stacks
+ * sharing a `stackName` can tie (a display path is unique, and it outranks an
+ * equal physical name). Running the lookup over the reversed list finds the
+ * LAST one, so a different answer means the head is a shared physical name:
+ * ambiguous, not the first clone (#5175).
+ */
+export function selectTargetStack<T extends StackLike>(
+  parsed: { stackPattern: string | null; pathOrId: string; isPath: boolean },
+  target: string,
+  stacks: readonly T[]
+): TargetStackSelection<T> {
+  if (parsed.stackPattern === null) {
+    return stacks.length === 1 ? { kind: 'found', stack: stacks[0]! } : { kind: 'no-prefix' };
+  }
+  const byPrefix = stackForPathFormTarget(parsed, target, stacks);
+  if (byPrefix) {
+    if (stackForPathFormTarget(parsed, target, [...stacks].reverse()) === byPrefix) {
+      return { kind: 'found', stack: byPrefix };
+    }
+    return {
+      kind: 'ambiguous',
+      pattern: byPrefix.stackName,
+      matched: stacks.filter((s) => s.stackName === byPrefix.stackName),
+    };
+  }
+  const matched = matchStacks([...stacks], [parsed.stackPattern], { dedupe: 'identity' });
+  if (matched.length === 1) return { kind: 'found', stack: matched[0]! };
+  if (matched.length === 0) return { kind: 'not-found', pattern: parsed.stackPattern };
+  return { kind: 'ambiguous', pattern: parsed.stackPattern, matched };
+}
+
+/**
+ * The refusal for an `ambiguous` {@link TargetStackSelection}: every matched
+ * stack with its CDK path, and the next step. A CDK path names exactly one
+ * stack, a shared physical name does not.
+ */
+export function renderAmbiguousTargetStack(pattern: string, matched: readonly StackLike[]): string {
+  const sharedName = matched.length > 1 && matched.every((s) => s.stackName === pattern);
+  const example = matched.find((s) => s.displayName && s.displayName !== s.stackName)?.displayName;
+  const hint =
+    example !== undefined &&
+    displayIdent(example, { maxCodePoints: STACK_REF_MAX_CODE_POINTS }) === example
+      ? ` (e.g. '${example}/<construct path>')`
+      : '';
+  return (
+    `Stack pattern ${renderPatternList([pattern])} matched ${matched.length} stacks: ` +
+    `${matched.map(describeStack).join(', ')}` +
+    (sharedName ? ', which share that physical stack name' : '') +
+    (example !== undefined
+      ? `. Name one stack by its CDK path, shown in parentheses${hint}.`
+      : '. Use a more specific pattern.')
   );
 }
 

@@ -128,8 +128,12 @@ cdkd local start-api MyStack/MyHttpApi/Resource
 ```
 
 - The bare logical ID works only in a single-stack app.
-- The stack-qualified logical ID works in any app. You need it when two
-  stacks share a logical ID.
+- The stack-qualified logical ID works in any app where the stack's physical
+  name is unique. You need it when two stacks share a logical ID.
+- Two stacks can share one physical stack name, for example one CDK `Stage`
+  deployed twice. start-api refuses to serve them together and names both. To
+  serve one, address it by its CDK path, either with
+  `--stack 'MyStage/MyStack'` or with a target that starts with that path.
 - A construct path prefix matches the resource below it, so you can leave off
   `/Resource`.
 - A full construct path must match the resource's construct path exactly.
