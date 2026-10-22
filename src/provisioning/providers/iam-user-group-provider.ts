@@ -40,7 +40,11 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
@@ -328,18 +332,33 @@ export class IAMUserGroupProvider implements ResourceProvider {
   private logger = getLogger().child('IAMUserGroupProvider');
 
   /**
-   * A failure wrap quoting the caught error's text through the operation's
-   * masker (issue #2177), stamped when the mask changed it so the retry
-   * classifiers read the unmasked `cause` chain (`wrapMaskedAwsError`, issue
-   * #4244). A method, so `gen-update-wrap-coverage` sees the catch that throws
-   * it as a wrap.
+   * A failure wrap that never quotes AWS's own text (issue #2319). The thrown
+   * message is persisted to `deployments/{runId}.jsonl`, and an IAM
+   * `AccessDenied` names the caller's assumed-role ARN, so an AWS-authored
+   * failure is named by its class plus the `--verbose` pointer: AWS's text
+   * goes to `debug` through the masker, and the wrap is stamped
+   * `markRedactedCause` so the retry classifiers read the withheld text on the
+   * unmasked `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}). A cdkd-authored or transport error, or a
+   * non-`Error` throw, keeps its text masked (issue #2177,
+   * `wrapMaskedAwsError`, issue #4244).
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
+   * sees the catch that throws it as a wrap.
    */
   private wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error)) return build(mask(failure.detail));
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    return markRedactedCause(
+      build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
+    );
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -979,12 +998,18 @@ export class IAMUserGroupProvider implements ResourceProvider {
       log.debug(`Successfully deleted IAM user ${logicalId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        log.mask(`Failed to delete IAM user ${logicalId}: ${describeAwsFailure(error).detail}`),
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      // Named by its class when AWS-authored (`wrapMaskedError`, issue #2319).
+      const failure = this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            log.mask(`Failed to delete IAM user ${logicalId}: ${text}`),
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
       throw progress.stripped ? markDeleteStarted(failure) : failure;
     }
@@ -1582,12 +1607,18 @@ export class IAMUserGroupProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        log.mask(`Failed to delete IAM group ${logicalId}: ${describeAwsFailure(error).detail}`),
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      // Named by its class when AWS-authored (`wrapMaskedError`, issue #2319).
+      const failure = this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            log.mask(`Failed to delete IAM group ${logicalId}: ${text}`),
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
       throw progress.stripped ? markDeleteStarted(failure) : failure;
     }
@@ -2197,13 +2228,21 @@ export class IAMUserGroupProvider implements ResourceProvider {
       // clone keeps each link's prototype, `$metadata` and markers, so the
       // retry classifiers read it as before.
       const cause = error instanceof Error ? error : undefined;
-      // The mark survives `maskError`'s clone of the chain.
-      const failure = new ProvisioningError(
-        `Failed to delete IAM UserToGroupAddition ${logicalId}: ${mask(describeAwsFailure(error).detail)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      // The marks survive `maskError`'s clone of the chain. An AWS-authored
+      // failure is named by its class (`wrapMaskedError`, issue #2319), its text
+      // logged at debug through the operation's masker as well as `mask`.
+      const opMask = createMaskedLogSinks(this.logger, context?.maskSecrets).mask;
+      const failure = this.wrapMaskedError(
+        (text) => mask(opMask(text)),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete IAM UserToGroupAddition ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
       throw maskError(removedAny ? markDeleteStarted(failure) : failure);
     }
