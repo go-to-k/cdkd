@@ -80,14 +80,13 @@ import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-red
  */
 function propertyChangedForUpdate(
   key: string,
-  properties: Record<string, unknown>,
-  previousProperties: Record<string, unknown>,
+  desired: unknown,
+  recorded: unknown,
   context: UpdateContext | undefined
 ): boolean {
   const changedProperties = context?.changedProperties;
   if (changedProperties !== undefined) return changedProperties.has(key);
-  const recorded = previousProperties[key];
-  return holdsRecordedStandIn(recorded) || !isDeepStrictEqual(properties[key], recorded);
+  return holdsRecordedStandIn(recorded) || !isDeepStrictEqual(desired, recorded);
 }
 
 /** A recorded leaf standing in for a secret: a dynamic reference, or the whole mask. */
@@ -116,7 +115,12 @@ function masterUserPasswordToSend(
 ): string | undefined {
   const desired = properties['MasterUserPassword'];
   if (desired === undefined || desired === null) return undefined;
-  return propertyChangedForUpdate('MasterUserPassword', properties, previousProperties, context)
+  return propertyChangedForUpdate(
+    'MasterUserPassword',
+    desired,
+    previousProperties['MasterUserPassword'],
+    context
+  )
     ? (desired as string)
     : undefined;
 }
@@ -136,8 +140,25 @@ function masterCredentialSettingsChanged(
   previousProperties: Record<string, unknown>,
   context: UpdateContext | undefined
 ): boolean {
-  return ['MasterUserPassword', 'ManageMasterUserPassword', 'MasterUserSecret'].some((key) =>
-    propertyChangedForUpdate(key, properties, previousProperties, context)
+  return (
+    propertyChangedForUpdate(
+      'MasterUserPassword',
+      properties['MasterUserPassword'],
+      previousProperties['MasterUserPassword'],
+      context
+    ) ||
+    propertyChangedForUpdate(
+      'ManageMasterUserPassword',
+      properties['ManageMasterUserPassword'],
+      previousProperties['ManageMasterUserPassword'],
+      context
+    ) ||
+    propertyChangedForUpdate(
+      'MasterUserSecret',
+      properties['MasterUserSecret'],
+      previousProperties['MasterUserSecret'],
+      context
+    )
   );
 }
 
