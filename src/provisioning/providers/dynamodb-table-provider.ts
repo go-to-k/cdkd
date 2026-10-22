@@ -117,7 +117,7 @@ import {
   resolveDynamoDbDeleteBudgetMs,
 } from './dynamodb-delete-budget.js';
 import { type ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
-import { maskDeep } from '../masked-retry-logger.js';
+import { maskDeep, maskerOrIdentity } from '../masked-retry-logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import {
   isAmbiguousOutcomeError,
@@ -4085,8 +4085,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
           );
           observedProtectionOn = before.Table?.DeletionProtectionEnabled === true;
         } catch (observeError) {
+          // Masked (#5180): the physical id can carry a dynamic-reference
+          // plaintext, and AWS's text quotes it.
+          const mask = maskerOrIdentity(context?.maskSecrets);
           this.logger.debug(
-            `Could not read DeletionProtectionEnabled on ${physicalId} before disabling it: ${describeAwsFailure(observeError).detail}`
+            mask(
+              safeMsg`Could not read DeletionProtectionEnabled on ${mask(physicalId)} before disabling it: ${mask(describeAwsFailure(observeError).detail)}`
+            )
           );
         }
         await this.dynamoDBClient.send(
@@ -4113,13 +4118,17 @@ export class DynamoDBTableProvider implements ResourceProvider {
           await this.waitForTableActiveAfterUpdate(physicalId, TABLE_ACTIVE_WAIT_ATTEMPTS, budget);
         } catch (waitErr) {
           this.logger.debug(
-            `Could not wait for table ${physicalId} ACTIVE after disabling protection: ${describeAwsFailure(waitErr).detail}`
+            maskerOrIdentity(context?.maskSecrets)(
+              `Could not wait for table ${physicalId} ACTIVE after disabling protection: ${describeAwsFailure(waitErr).detail}`
+            )
           );
         }
       } catch (flipError) {
         if (!(flipError instanceof ResourceNotFoundException)) {
           this.logger.debug(
-            `Could not disable DeletionProtectionEnabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+            maskerOrIdentity(context?.maskSecrets)(
+              `Could not disable DeletionProtectionEnabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+            )
           );
         }
       }

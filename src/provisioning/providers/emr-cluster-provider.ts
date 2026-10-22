@@ -1266,6 +1266,7 @@ export class EMRClusterProvider implements ResourceProvider {
           flip,
           logger: this.logger,
           physicalId,
+          mask: context?.maskSecrets,
           guardName: 'TerminationProtected',
           observe: () => Promise.resolve(current?.TerminationProtected === true),
           disable: async () => {

@@ -1965,6 +1965,7 @@ export class ELBv2Provider implements ResourceProvider {
           flip,
           logger: this.logger,
           physicalId,
+          mask: context?.maskSecrets,
           guardName: 'deletion_protection.enabled',
           observe: async () => {
             const resp = await this.getClient().send(
@@ -1989,7 +1990,9 @@ export class ELBv2Provider implements ResourceProvider {
       } catch (flipError) {
         if (!this.isNotFoundError(flipError)) {
           this.logger.debug(
-            `Could not disable deletion_protection.enabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+            maskerOrIdentity(context?.maskSecrets)(
+              `Could not disable deletion_protection.enabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+            )
           );
         }
       }

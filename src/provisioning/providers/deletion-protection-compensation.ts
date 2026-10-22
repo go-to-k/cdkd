@@ -54,6 +54,7 @@ import {
   retryClassificationText,
 } from '../../deployment/retryable-errors.js';
 import type { Logger } from '../../types/config.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 
@@ -722,13 +723,22 @@ export async function observeThenDisableProtection(opts: {
   readonly logger: Logger;
   readonly physicalId: string;
   readonly guardName: string;
+  /**
+   * The delete's `DeleteContext.maskSecrets`. The physical id can carry a
+   * dynamic-reference plaintext, and AWS's failure text quotes it, so the
+   * debug line below masks both pieces and then the finished line (#5180).
+   */
+  readonly mask?: MaskerFn | undefined;
 }): Promise<void> {
   let observedOn = false;
   try {
     observedOn = await opts.observe();
   } catch (observeError) {
+    const mask = maskerOrIdentity(opts.mask);
     opts.logger.debug(
-      safeMsg`Could not read ${opts.guardName} on ${opts.physicalId} before disabling it: ${describeAwsFailure(observeError).detail}`
+      mask(
+        safeMsg`Could not read ${opts.guardName} on ${mask(opts.physicalId)} before disabling it: ${mask(describeAwsFailure(observeError).detail)}`
+      )
     );
   }
   await opts.disable();
