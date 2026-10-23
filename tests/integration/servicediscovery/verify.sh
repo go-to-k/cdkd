@@ -332,8 +332,17 @@ if [ "${P4_RC}" -eq 0 ]; then
   echo "FAIL: a DnsConfig removed beside a Description change was accepted (issue #1160): CloudFormation's update is refused with 'Service dns config cannot be null'" >&2
   exit 1
 fi
-if ! grep -qF "Service dns config cannot be null" "${P4_LOG}"; then
-  echo "FAIL: the phase 4 deploy failed, but not with AWS's 'Service dns config cannot be null' refusal (issue #1160)" >&2
+# AWS's own text ('Service dns config cannot be null') reaches only the debug
+# log since go-to-k/cdkd#2319: the thrown (and persisted) message names the
+# error class plus the verbose-mode pointer, so the refusal is read by its
+# class here, and its text must not be in the default-verbosity output.
+P4_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${P4_LOG}" | tr '\n' ' ' | tr -s ' ')"
+if ! printf '%s' "${P4_FLAT}" | grep -qE "Failed to update service discovery service RefusedService: InvalidInput\. Re-run with [-][-]verbose for AWS's own message\."; then
+  echo "FAIL: the phase 4 deploy failed, but not with AWS's InvalidInput refusal of the update, named by its class (issue #1160, go-to-k/cdkd#2319)" >&2
+  exit 1
+fi
+if grep -qF "Service dns config cannot be null" "${P4_LOG}"; then
+  echo "FAIL: AWS's refusal text reached the default-verbosity output; the thrown message must name its class only (go-to-k/cdkd#2319)" >&2
   exit 1
 fi
 rm -f "${P4_LOG}"

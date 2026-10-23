@@ -75,6 +75,7 @@ vi.mock('../../../src/deployment/retry.js', async () => {
 });
 
 import { getLogger } from '../../../src/utils/logger.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import {
   ServiceDiscoveryProvider,
 } from '../../../src/provisioning/providers/servicediscovery-provider.js';
@@ -83,6 +84,14 @@ const logger = getLogger() as unknown as {
   debug: ReturnType<typeof vi.fn>;
   warn: ReturnType<typeof vi.fn>;
 };
+
+/** The debug lines carrying a failure wrap's withheld AWS text (go-to-k/cdkd#2319). */
+function failureDebugLines(): string {
+  return logger.debug.mock.calls
+    .map((c) => String(c[0]))
+    .filter((l) => l.startsWith('Failed to '))
+    .join('\n');
+}
 
 const SERVICE_TYPE = 'AWS::ServiceDiscovery::Service';
 
@@ -320,8 +329,12 @@ describe('ServiceDiscoveryProvider ServiceAttributes secret masking (#2050)', ()
         .toHaveLength(1);
 
       expect(thrown.message).toContain('Failed to create service discovery service Svc');
-      expect(thrown.message).toContain(SECRET_MASK);
+      // go-to-k/cdkd#2319: AWS's text is withheld from the message and goes
+      // to the debug line, which is where the masker must reach.
+      expect(thrown.message).toContain(VERBOSE_POINTER);
       expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(failureDebugLines()).toContain(SECRET_MASK);
+      expect(failureDebugLines()).not.toContain(SECRET_PLAINTEXT);
     });
 
     it('leaves the message untouched when the caller threads no masker', async () => {
@@ -329,7 +342,8 @@ describe('ServiceDiscoveryProvider ServiceAttributes secret masking (#2050)', ()
 
       const thrown = await captureThrow(() => createService());
 
-      expect(thrown.message).toContain(SECRET_PLAINTEXT);
+      expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(failureDebugLines()).toContain(SECRET_PLAINTEXT);
     });
   });
 
@@ -343,8 +357,12 @@ describe('ServiceDiscoveryProvider ServiceAttributes secret masking (#2050)', ()
       expect(warnLines()).not.toContain('gave up after');
 
       expect(thrown.message).toContain('Failed to update service discovery service Svc');
-      expect(thrown.message).toContain(SECRET_MASK);
+      // go-to-k/cdkd#2319: AWS's text is withheld from the message and goes
+      // to the debug line, which is where the masker must reach.
+      expect(thrown.message).toContain(VERBOSE_POINTER);
       expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(failureDebugLines()).toContain(SECRET_MASK);
+      expect(failureDebugLines()).not.toContain(SECRET_PLAINTEXT);
     });
 
     it('masks the AWS message on a NON-RETRYABLE removal rejection', async () => {
@@ -355,8 +373,12 @@ describe('ServiceDiscoveryProvider ServiceAttributes secret masking (#2050)', ()
       expectPayloadCarriedThePlaintext(DeleteServiceAttributesCommand);
 
       expect(thrown.message).toContain('Failed to update service discovery service Svc');
-      expect(thrown.message).toContain(SECRET_MASK);
+      // go-to-k/cdkd#2319: AWS's text is withheld from the message and goes
+      // to the debug line, which is where the masker must reach.
+      expect(thrown.message).toContain(VERBOSE_POINTER);
       expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(failureDebugLines()).toContain(SECRET_MASK);
+      expect(failureDebugLines()).not.toContain(SECRET_PLAINTEXT);
     });
 
     it('leaves the message untouched when the caller threads no masker', async () => {
@@ -364,7 +386,8 @@ describe('ServiceDiscoveryProvider ServiceAttributes secret masking (#2050)', ()
 
       const thrown = await captureThrow(() => upsertAttributes());
 
-      expect(thrown.message).toContain(SECRET_PLAINTEXT);
+      expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(failureDebugLines()).toContain(SECRET_PLAINTEXT);
     });
   });
 

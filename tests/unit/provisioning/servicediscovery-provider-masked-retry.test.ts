@@ -185,7 +185,10 @@ describe('ServiceDiscoveryProvider: a masked failure still classifies as retryab
   it.each(SITES)(
     '$site: a failure the mask left unchanged is not stamped',
     async ({ command, run }) => {
-      rejectOn(command, awsRejection('Bad request parameter'));
+      // A cdkd-authored / transport error (no smithy marker): its text is kept,
+      // so only a mask that changed it stamps the wrap. An AWS-authored one is
+      // always withheld and stamped (go-to-k/cdkd#2319).
+      rejectOn(command, new Error('Bad request parameter'));
       const failure = await thrown(run(provider, retryMasker));
       expect(failure.message).toContain('Bad request parameter');
       expect(hasRedactedCause(failure)).toBe(false);
@@ -236,20 +239,39 @@ describe('ServiceDiscoveryProvider: a masked FAILED operation keeps its classifi
   });
 
   it('classifies exactly as the unmasked message does', async () => {
+    // go-to-k/cdkd#2319: AWS's ErrorMessage is withheld from the message with
+    // or without a masker, so the unmasked failure reads the same chain.
     failOperation(TRANSIENT);
     const unmasked = await thrown(provider.create('Ns', HTTP_NS, { Name: 'ns-http' }));
-    expect(unmasked.message).toContain('does not exist');
-    expect(hasRedactedCause(unmasked)).toBe(false);
+    expect(unmasked.message).not.toContain('does not exist');
+    expect(hasRedactedCause(unmasked)).toBe(true);
     expect(retryable(unmasked)).toBe(true);
   });
 
-  it('a FAILED message the mask left unchanged is not stamped', async () => {
+  it('a withheld non-retryable FAILED message stays non-retryable', async () => {
     failOperation('Bad request parameter');
     const failure = await thrown(
       provider.create('Ns', HTTP_NS, { Name: 'ns-http' }, { maskSecrets: retryMasker })
     );
-    expect(failure.message).toContain('Bad request parameter');
-    expect(hasRedactedCause(failure)).toBe(false);
+    expect(failure.message).not.toContain('Bad request parameter');
+    expect(hasRedactedCause(failure)).toBe(true);
     expect(retryable(failure)).toBe(false);
+  });
+
+  it('a FAILED operation with no ErrorMessage keeps the fallback, unstamped', async () => {
+    mockSend.mockImplementation((sent: unknown) => {
+      if (sent instanceof CreateHttpNamespaceCommand) {
+        return Promise.resolve({ OperationId: 'op-4299' });
+      }
+      if (sent instanceof GetOperationCommand) {
+        return Promise.resolve({ Operation: { Status: 'FAIL' } });
+      }
+      return Promise.resolve({});
+    });
+    const failure = await thrown(
+      provider.create('Ns', HTTP_NS, { Name: 'ns-http' }, { maskSecrets: retryMasker })
+    );
+    expect(failure.message).toBe('Operation failed for Ns: Unknown error');
+    expect(hasRedactedCause(failure)).toBe(false);
   });
 });

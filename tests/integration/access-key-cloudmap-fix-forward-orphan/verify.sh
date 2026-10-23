@@ -18,10 +18,16 @@
 #      and `ServiceA` (with `ServiceAttributes`), fails each on its follow-up
 #      call, and the provider's own cleanup is refused too. Asserted: the
 #      deploy failed, the journal carries each as a proven orphan whose key or
-#      service exists, and no state record holds them. The follow-up calls are
+#      service exists, and no state record holds them. KeyA's follow-up is
 #      refused by an IMPLICIT deny (never granted), which the engine retries as
-#      IAM propagation, as before go-to-k/cdkd#4969 made an explicit deny fail
-#      fast. A key create that left its key behind is not replayed
+#      IAM propagation; ServiceA's by an EXPLICIT deny, which fails fast
+#      (go-to-k/cdkd#4969), so ServiceA fails FIRST with its own provider wrap
+#      and KeyA is aborted in its retry wait (the aborted retry carries the
+#      created key into the journal). ServiceA's persisted RESOURCE_FAILED
+#      event names the AWS failure by its class plus the verbose-mode pointer,
+#      with no account id, deny-role name or `not authorized`
+#      (go-to-k/cdkd#2319): with both denies implicit, ServiceA was the one
+#      aborted and its only event carried the abort's fixed text. A key create that left its key behind is not replayed
 #      (go-to-k/cdkd#4945); the run still deletes any key the journal does not
 #      name, so the fix-forward fits the user's 2-key quota.
 #   3. The fix-forward: WITH_ORPHANS=true ORPHAN_FIX_FORWARD=true keeps both
@@ -316,17 +322,18 @@ TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Stat
 # (src/state/{s3-state-backend,lock-manager,s3-noncurrent-version-purge,
 # s3-replication-purge-gap}.ts, src/utils/aws-region-resolver.ts). On this
 # run's user (`cdkd-akcfo-*`) the role may CreateAccessKey and read the user
-# and its keys; in Cloud Map it may CreateService and read. UpdateAccessKey and
-# UpdateServiceAttributes (each CREATE's follow-up) are never granted -- an
-# IMPLICIT deny, retried as IAM propagation, where an explicit one would fail
-# fast (go-to-k/cdkd#4969) -- so each CREATE fails after AWS made the key or
-# service; DeleteAccessKey, DeleteService,
+# and its keys; in Cloud Map it may CreateService and read. UpdateAccessKey (the
+# key CREATE's follow-up) is never granted -- an IMPLICIT deny, retried as IAM
+# propagation -- and UpdateServiceAttributes (the service CREATE's) is
+# explicitly denied, which fails fast (go-to-k/cdkd#4969), so ServiceA's own
+# failure is the one the run records (step 2's #2319 check); each CREATE fails
+# after AWS made the key or service; DeleteAccessKey, DeleteService,
 # DeleteServiceAttributes, DeleteNamespace and DeleteUser are denied, so the
 # providers' own cleanup cannot remove it. No statement allows a credential
 # beyond the access key on this run's user, a PassRole or a role write.
 # sts:AssumeRole is denied everywhere: nothing this session runs assumes a role
 # (cdkd is run without --role-arn).
-DENY_POLICY="$(node -e 'const [bucket,stack,acct]=process.argv.slice(1);const user=`arn:aws:iam::${acct}:user/cdkd-akcfo-*`;process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["iam:CreateAccessKey","iam:ListAccessKeys","iam:GetAccessKeyLastUsed","iam:GetUser","iam:ListUserPolicies","iam:ListAttachedUserPolicies","iam:ListUserTags","iam:ListGroupsForUser"],Resource:user},{Effect:"Allow",Action:["servicediscovery:CreateService","servicediscovery:GetService","servicediscovery:GetNamespace","servicediscovery:GetOperation","servicediscovery:GetServiceAttributes","servicediscovery:ListNamespaces","servicediscovery:ListServices","servicediscovery:ListTagsForResource"],Resource:"*"},{Effect:"Allow",Action:["ssm:GetParameter","ssm:GetParameters"],Resource:`arn:aws:ssm:*:${acct}:parameter/cdk-bootstrap/*`},{Effect:"Allow",Action:["kms:Decrypt","kms:GenerateDataKey"],Resource:`arn:aws:kms:*:${acct}:key/*`,Condition:{StringLike:{"kms:ViaService":"s3.*.amazonaws.com"}}},{Effect:"Allow",Action:["cloudformation:Describe*","cloudformation:List*","iam:ListPolicies","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:["iam:DeleteAccessKey","iam:DeleteUser","iam:PassRole"],Resource:user},{Effect:"Deny",Action:["servicediscovery:DeleteServiceAttributes","servicediscovery:DeleteService","servicediscovery:DeleteNamespace"],Resource:"*"},{Effect:"Deny",Action:"sts:AssumeRole",Resource:"*"}]}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}")"
+DENY_POLICY="$(node -e 'const [bucket,stack,acct]=process.argv.slice(1);const user=`arn:aws:iam::${acct}:user/cdkd-akcfo-*`;process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["iam:CreateAccessKey","iam:ListAccessKeys","iam:GetAccessKeyLastUsed","iam:GetUser","iam:ListUserPolicies","iam:ListAttachedUserPolicies","iam:ListUserTags","iam:ListGroupsForUser"],Resource:user},{Effect:"Allow",Action:["servicediscovery:CreateService","servicediscovery:GetService","servicediscovery:GetNamespace","servicediscovery:GetOperation","servicediscovery:GetServiceAttributes","servicediscovery:ListNamespaces","servicediscovery:ListServices","servicediscovery:ListTagsForResource"],Resource:"*"},{Effect:"Allow",Action:["ssm:GetParameter","ssm:GetParameters"],Resource:`arn:aws:ssm:*:${acct}:parameter/cdk-bootstrap/*`},{Effect:"Allow",Action:["kms:Decrypt","kms:GenerateDataKey"],Resource:`arn:aws:kms:*:${acct}:key/*`,Condition:{StringLike:{"kms:ViaService":"s3.*.amazonaws.com"}}},{Effect:"Allow",Action:["cloudformation:Describe*","cloudformation:List*","iam:ListPolicies","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:["iam:DeleteAccessKey","iam:DeleteUser","iam:PassRole"],Resource:user},{Effect:"Deny",Action:["servicediscovery:UpdateServiceAttributes","servicediscovery:DeleteServiceAttributes","servicediscovery:DeleteService","servicediscovery:DeleteNamespace"],Resource:"*"},{Effect:"Deny",Action:"sts:AssumeRole",Resource:"*"}]}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}")"
 aws iam create-role --role-name "${DENY_ROLE}" --assume-role-policy-document "${TRUST}" \
   --tags Key=cdkd-integ,Value=access-key-cloudmap-fix-forward-orphan >/dev/null
 DENY_ROLE_CREATED=1
@@ -507,6 +514,47 @@ if [ "${SRV_J_ATTRS}" != "0" ]; then
   echo "[verify] WARN: the journaled service ${SRV_J} carries attributes (${SRV_J_ATTRS}); its CREATE was expected to fail on UpdateServiceAttributes" >&2
 fi
 echo "[verify] step 2 ok: access key ${KEY_J} and service ${SRV_J} are in AWS, journaled as proven orphans, with no state record"
+
+# go-to-k/cdkd#2319: ServiceA's persisted RESOURCE_FAILED event names the AWS
+# failure by its class plus the verbose-mode pointer. AWS's text for the refused
+# UpdateServiceAttributes names this account and the deny role's ARN, and the
+# deployments/*.jsonl store outlives the run, so neither may reach it.
+EVENT_KEYS_2="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+  --prefix "${STATE_PREFIX}deployments/" --output json \
+  | jq -r '.Contents // [] | .[].Key | select(endswith(".jsonl"))')"
+# Inside LOG_DIR, which `cleanup` removes on every exit: it holds AWS text.
+FAILED_2="${LOG_DIR}/failed-events-2.jsonl"
+: > "${FAILED_2}"
+while IFS= read -r event_key || [ -n "${event_key}" ]; do
+  [ -n "${event_key}" ] || continue
+  aws s3 cp "s3://${STATE_BUCKET}/${event_key}" - --quiet \
+    | jq -c 'select(.eventType == "RESOURCE_FAILED")' >> "${FAILED_2}"
+done <<< "${EVENT_KEYS_2}"
+# ServiceA's OWN failure: the provider wrap. A sibling-abort event
+# (`Deployment aborted after another resource failed`) says nothing about it.
+SRV_FAILED_MSG="$(jq -r 'select(.logicalId == "ServiceA") | .error.message // empty' "${FAILED_2}" \
+  | grep -F "service discovery service ServiceA" | tail -n 1 || true)"
+# Never print this account's id or the deny role's name on a FAIL.
+SRV_FAILED_SHOWN="$(printf '%s' "${SRV_FAILED_MSG}" | sed -e "s/${ACCOUNT_ID}/<account>/g" -e "s/${DENY_ROLE}/<deny-role>/g")"
+if [ -z "${SRV_FAILED_MSG}" ]; then
+  echo "[verify] FAIL: no RESOURCE_FAILED event for ServiceA carries its provider wrap ('... service discovery service ServiceA') under s3://${STATE_BUCKET}/${STATE_PREFIX}deployments/ after step 2: the premise (ServiceA's explicitly denied UpdateServiceAttributes fails it first) no longer holds, and the #2319 checks below would pass for free. ServiceA's RESOURCE_FAILED messages:" >&2
+  jq -r 'select(.logicalId == "ServiceA") | .error.message // "<no message>"' "${FAILED_2}" \
+    | sed -e "s/${ACCOUNT_ID}/<account>/g" -e "s/${DENY_ROLE}/<deny-role>/g" -e 's/^/  /' >&2
+  rm -f "${FAILED_2}"
+  exit 1
+fi
+rm -f "${FAILED_2}"
+if ! printf '%s' "${SRV_FAILED_MSG}" | grep -qE "Failed to create service discovery service ServiceA: [A-Za-z0-9]+\. Re-run with [-][-]verbose for AWS's own message\."; then
+  echo "[verify] FAIL: ServiceA's RESOURCE_FAILED message is not 'Failed to create service discovery service ServiceA: <ErrorClass> plus the verbose-mode pointer' (#2319); observed: ${SRV_FAILED_SHOWN}" >&2
+  exit 1
+fi
+if printf '%s' "${SRV_FAILED_MSG}" | grep -qF "${ACCOUNT_ID}" \
+  || printf '%s' "${SRV_FAILED_MSG}" | grep -qiF "not authorized" \
+  || printf '%s' "${SRV_FAILED_MSG}" | grep -qF "${DENY_ROLE}"; then
+  echo "[verify] FAIL: ServiceA's RESOURCE_FAILED message quotes AWS's text (account id, deny role or 'not authorized') (#2319); observed: ${SRV_FAILED_SHOWN}" >&2
+  exit 1
+fi
+echo "[verify] step 2 ok: ServiceA's RESOURCE_FAILED event names the AWS failure by its class, with no account id or AWS text"
 
 echo "[verify] step 2b: the keys the journal does not name are deleted (go-to-k/cdkd#4945)"
 # A replayed KeyA create would mint another key the journal does not name;

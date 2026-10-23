@@ -29,6 +29,7 @@ import type {
   IndeterminateGuard,
   ResourceDeleteResult,
   ResourceProvider,
+  CreateContext,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
@@ -40,18 +41,25 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import {
   isAmbiguousOutcomeError,
   isThrottlingError,
   markNonRetryable,
   markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { withIndeterminateGuard } from '../../deployment/delete-outcome.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 
 /**
  * CFn `Tags` entry shape (`[{Key, Value}]`). CodeCommit's SDK tag APIs use a
@@ -406,7 +414,8 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CodeCommit Repository ${logicalId}`);
 
@@ -490,12 +499,17 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      const thrown = new ProvisioningError(
-        `Failed to create CodeCommit Repository ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        repositoryName,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create CodeCommit Repository ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            repositoryName,
+            cause
+          )
       );
       // go-to-k/cdkd#4583: the self-clean delete failed, so the repository is
       // live with no state record; name it for the failed-CREATE journal.
@@ -787,14 +801,25 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
           // The kept live triggers count toward CodeCommit's per-repository
           // limit (10), so name them: removing them is the way out. A plain
           // Error carrying the AWS one as `cause`: the catch below wraps it,
-          // and the retry classifies through the chain.
-          throw new Error(
+          // and the retry classifies through the chain. AWS's failure is named
+          // by its class, its text at `debug` (go-to-k/cdkd#2319), and the
+          // stamp points the classifiers at the chain.
+          const failure = describeAwsFailure(error);
+          if (failure.redacted) {
+            this.logger.debug(
+              maskerOrIdentity(context?.maskSecrets)(
+                `PutRepositoryTriggers failed for CodeCommit Repository ${logicalId}: ${failure.detail}`
+              )
+            );
+          }
+          const triggersError = new Error(
             `PutRepositoryTriggers failed with ${retainedCount} live trigger(s) the desired ` +
               `Triggers does not name kept beside the desired ones (the recorded Triggers is ` +
               `not a list cdkd can read; CodeCommit allows at most 10 triggers per ` +
-              `repository): ${describeAwsFailure(error).detail}`,
+              `repository): ${failure.summary}`,
             { cause: error }
           );
+          throw failure.redacted ? markRedactedCause(triggersError) : triggersError;
         }
         this.logger.debug(
           `Updated triggers for ${currentName} (${newSdkTriggers.length} trigger(s))`
@@ -816,12 +841,17 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       // its non-retryable mark.
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update CodeCommit Repository ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update CodeCommit Repository ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -889,6 +919,39 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     if (holder?.repositoryId !== undefined && holder.repositoryId !== recordedId) {
       throw this.wrapNotThisRepositoryError(logicalId, resourceType, physicalId, 'recorded-name');
     }
+  }
+
+  /**
+   * The failure wrap the create / update / delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through `mask`,
+   * and the wrap is stamped `markRedactedCause`, so the retry classifiers read
+   * the withheld text on the `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}), except from a post-create step's failure
+   * ({@link markAuxiliaryFailure}), where "it" would read as the repository. A
+   * non-`Error` throw is withheld the same way, unstamped: it has no chain.
+   *
+   * A cdkd-authored or transport error keeps its text, masked, stamped exactly
+   * when the mask changed it (`wrapMaskedAwsError`, issue #4259). The delete
+   * checks `RepositoryDoesNotExistException` by type before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${mask(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   /**
@@ -1149,13 +1212,28 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
         return withIndeterminateGuard(undefined, guard);
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete CodeCommit Repository ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete CodeCommit Repository ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap now names the error CLASS, and the destroy / deploy delete
+      // classifiers read `NotFound` / `NotFoundException` in a message as
+      // "already deleted": `EncryptionKeyNotFoundException` (the repository's
+      // KMS key is gone) would drop the record of a repository that still
+      // exists. Only `RepositoryDoesNotExistException` (above) means it is
+      // gone, and a missing key does not come back on a retry
+      // (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNonRetryable(thrown)
+        : thrown;
     }
 
     if (!deletedRepositoryId) {
