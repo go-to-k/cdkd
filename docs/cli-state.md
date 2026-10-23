@@ -504,9 +504,9 @@ The view prints below the menu, and the menu comes back for the same stack.
 | --- | --- |
 | {kbd:up} / {kbd:down} | Move. |
 | Any letter or digit | Filter the list to the entries that contain what you typed. {kbd:backspace} removes a character. |
-| {kbd:enter} | Pick. |
+| {kbd:enter} | Pick. Keys pressed while a view is still printing are dropped. |
 | {kbd:esc} | Go back: from a stack's menu to the stack list, and from the stack list out of the command. |
-| {kbd:ctrl+c} | Quit. |
+| {kbd:ctrl+c} | Quit; the command exits `0`. |
 
 It needs an interactive terminal. In a pipe or a CI job it exits `1` before
 any AWS call, naming `cdkd state list`, `cdkd state resources` and

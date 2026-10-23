@@ -58,6 +58,8 @@ import {
   setupStateBackend,
   stateBrowseDeps,
 } from '../../../src/cli/commands/state.js';
+import { AwsClients } from '../../../src/utils/aws-clients.js';
+import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import { runStateBrowse, type BrowseDeps } from '../../../src/cli/commands/state-browse.js';
 import type { SelectStreams } from '../../../src/cli/interactive-select.js';
 
@@ -117,7 +119,11 @@ function fakeTerminal() {
   return { input, written, streams };
 }
 
-const tick = (): Promise<void> => new Promise((r) => setImmediate(r));
+// Two turns: the next list opens after the previous one resolves (and a view
+// prints), and it drops keys from its own first turn.
+const tick = async (): Promise<void> => {
+  for (let i = 0; i < 3; i++) await new Promise((r) => setImmediate(r));
+};
 async function type(input: PassThrough, ...keys: string[]): Promise<void> {
   for (const key of keys) {
     await tick();
@@ -125,7 +131,8 @@ async function type(input: PassThrough, ...keys: string[]): Promise<void> {
   }
   await tick();
 }
-const esc = (input: PassThrough): void => {
+const esc = async (input: PassThrough): Promise<void> => {
+  await tick();
   input.emit('keypress', '\x1b', { name: 'escape', sequence: '\x1b' });
 };
 
@@ -160,6 +167,30 @@ describe('each browse view prints what its command prints (go-to-k/cdkd#5199)', 
     expect(cap.text()).toBe(expected);
   });
 
+  it('views the region that was picked when one name has records in two regions', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Alpha', region: 'us-east-1' },
+      { stackName: 'Alpha', region: 'eu-west-1' },
+    ]);
+    mockGetState.mockImplementation(async (name, region) => {
+      const s = stateOf(name);
+      s.state.region = region;
+      s.state.resources['Bucket']!.physicalId = `bucket-in-${region}`;
+      return s;
+    });
+    const setup = await setupStateBackend(OPTIONS);
+    const deps = stateBrowseDeps(setup, OPTIONS, fakeTerminal().streams);
+    const cap = captureStdout();
+    try {
+      await deps.printView('resources', { stackName: 'Alpha', region: 'eu-west-1' });
+    } finally {
+      cap.restore();
+      setup.dispose();
+    }
+    expect(cap.text()).toContain('bucket-in-eu-west-1');
+    expect(mockGetState).toHaveBeenCalledWith('Alpha', 'eu-west-1');
+  });
+
   it('lists the stacks sorted, as cdkd state list does', async () => {
     const setup = await setupStateBackend(OPTIONS);
     const deps = stateBrowseDeps(setup, OPTIONS, fakeTerminal().streams);
@@ -170,7 +201,10 @@ describe('each browse view prints what its command prints (go-to-k/cdkd#5199)', 
   it('refuses a region-less legacy record through reportError, not a crash', async () => {
     const setup = await setupStateBackend(OPTIONS);
     const deps = stateBrowseDeps(setup, OPTIONS, fakeTerminal().streams);
-    await expect(deps.printView('show', { stackName: 'Old' })).rejects.toThrow();
+    mockListStacks.mockResolvedValue([{ stackName: 'Old' }]);
+    await expect(deps.printView('show', { stackName: 'Old' })).rejects.toThrow(
+      'has only a legacy state record without a region'
+    );
     setup.dispose();
   });
 });
@@ -190,20 +224,51 @@ describe('runStateBrowse', () => {
     return deps;
   }
 
+  /** Resolves `true` once `p` settles, so a test can see it is still running. */
+  function settled(p: Promise<unknown>): () => boolean {
+    let done = false;
+    void p.then(
+      () => (done = true),
+      () => (done = true)
+    );
+    return () => done;
+  }
+  const count = (written: string[], needle: string): number =>
+    written.join('').split(needle).length - 1;
+
   it('picks a stack, prints a view, goes back to the stack list, and leaves on Esc', async () => {
     const t = fakeTerminal();
     const deps = fakeDeps(t.streams);
     const done = runStateBrowse(deps);
+    const isDone = settled(done);
     // Stack list: down to Beta, Enter. Menu: Enter on the first view.
     await type(t.input, '\x1b[B', '\r', '\r');
-    // Menu again: down three times to "Back", Enter. Then Esc on the stack list.
+    // Menu again: down three times to "Back", Enter.
     await type(t.input, '\x1b[B', '\x1b[B', '\x1b[B', '\r');
-    esc(t.input);
+    expect(isDone(), 'Back returns to the stack list, not out of the command').toBe(false);
+    expect(count(t.written, 'Select a stack:')).toBeGreaterThanOrEqual(2);
+    await esc(t.input);
     await done;
 
     expect(deps.printView).toHaveBeenCalledTimes(1);
     expect(deps.printView).toHaveBeenCalledWith('resources', { stackName: 'Beta', region: 'eu-west-1' });
+    expect(deps.listStacks, 'one listing for the whole session').toHaveBeenCalledTimes(1);
     expect(t.input.setRawMode).toHaveBeenLastCalledWith(false);
+  });
+
+  it('Esc on a stack menu goes back to the stack list', async () => {
+    const t = fakeTerminal();
+    const deps = fakeDeps(t.streams);
+    const done = runStateBrowse(deps);
+    const isDone = settled(done);
+    await type(t.input, '\r');
+    await esc(t.input);
+    await tick();
+    expect(isDone()).toBe(false);
+    expect(count(t.written, 'Select a stack:')).toBeGreaterThanOrEqual(2);
+    await type(t.input, '\x03');
+    await done;
+    expect(deps.printView).not.toHaveBeenCalled();
   });
 
   it('reports a failing view and returns to the menu', async () => {
@@ -215,10 +280,13 @@ describe('runStateBrowse', () => {
       })
     );
     const done = runStateBrowse(deps);
-    await type(t.input, '\r', '\r', '\x03');
-    await done;
-
+    const isDone = settled(done);
+    await type(t.input, '\r', '\r');
     expect(deps.reportError).toHaveBeenCalledWith(new Error('gone'));
+    expect(isDone(), 'the menu comes back after a failing view').toBe(false);
+    expect(count(t.written, 'Alpha (us-east-1):\n> Resources')).toBeGreaterThanOrEqual(2);
+    await type(t.input, '\x03');
+    await done;
   });
 
   it('refuses without a terminal before listing anything', async () => {
@@ -237,6 +305,10 @@ describe('runStateBrowse', () => {
 
 describe('cdkd state browse without a terminal', () => {
   it('refuses with NON_INTERACTIVE before any AWS call', async () => {
+    const stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+    const stdoutTTY = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+    Object.defineProperty(process.stdin, 'isTTY', { value: undefined, configurable: true });
+    Object.defineProperty(process.stdout, 'isTTY', { value: undefined, configurable: true });
     const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
       throw new Error(`exit ${code}`);
     }) as never);
@@ -244,8 +316,14 @@ describe('cdkd state browse without a terminal', () => {
       await expect(runCommand(['browse'])).rejects.toThrow('exit 1');
     } finally {
       exit.mockRestore();
+      for (const [stream, d] of [[process.stdin, stdinTTY], [process.stdout, stdoutTTY]] as const) {
+        if (d) Object.defineProperty(stream, 'isTTY', d);
+        else delete (stream as { isTTY?: boolean }).isTTY;
+      }
     }
     expect(errorSpy.mock.calls.flat().join(' ')).toContain('needs an interactive terminal');
+    expect(vi.mocked(AwsClients), 'no AWS client built').not.toHaveBeenCalled();
+    expect(vi.mocked(S3StateBackend), 'no state backend built').not.toHaveBeenCalled();
     expect(mockVerifyBucketExists, 'no bucket check').not.toHaveBeenCalled();
     expect(mockListStacks).not.toHaveBeenCalled();
   });

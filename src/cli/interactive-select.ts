@@ -29,6 +29,7 @@ export interface SelectInput extends NodeJS.EventEmitter {
 export interface SelectOutput {
   isTTY?: boolean;
   rows?: number;
+  columns?: number;
   write(chunk: string): unknown;
 }
 
@@ -98,6 +99,17 @@ export function renderSelectFrame<T>(
 }
 
 /**
+ * `line` cut to fit `columns - 1` code points, so no frame line wraps: the
+ * redraw moves up one row per LINE, and a wrapped line would leave a stale row
+ * behind on every keypress.
+ */
+export function fitToWidth(line: string, columns: number | undefined): string {
+  if (typeof columns !== 'number' || columns < 2) return line;
+  const chars = [...line];
+  return chars.length < columns ? line : `${chars.slice(0, columns - 2).join('')}…`;
+}
+
+/**
  * Let the user pick one of `items`. Resolves on Enter (`picked`), Esc
  * (`back`) or Ctrl+C / Ctrl+D (`quit`). The frame is erased when it resolves,
  * and the terminal's raw mode is restored on every path.
@@ -122,15 +134,28 @@ export function selectFromList<T>(
   };
   const draw = (): void => {
     erase();
-    const lines = renderSelectFrame(title, filterItems(items, filter), cursor, filter, pageSize);
+    const lines = renderSelectFrame(
+      title,
+      filterItems(items, filter),
+      cursor,
+      filter,
+      pageSize
+    ).map((line) => fitToWidth(line, output.columns));
     output.write(`${lines.join('\n')}\n`);
     drawn = lines.length;
   };
 
-  return new Promise<SelectResult<T>>((resolve) => {
+  return new Promise<SelectResult<T>>((resolve, reject) => {
     emitKeypressEvents(input as NodeJS.ReadableStream);
     input.setRawMode?.(true);
     input.resume();
+    // Keys typed while the previous view was printing sit in the terminal's
+    // buffer and arrive in the first turn; they were not aimed at this list,
+    // so they are dropped rather than picking an entry.
+    let armed = false;
+    setImmediate(() => {
+      armed = true;
+    });
 
     const finish = (result: SelectResult<T>): void => {
       input.removeListener('keypress', onKey);
@@ -141,6 +166,7 @@ export function selectFromList<T>(
     };
 
     const onKey = (str: string | undefined, key: Keypress | undefined): void => {
+      if (!armed) return;
       const visible = filterItems(items, filter);
       const name = key?.name;
       if (key?.ctrl === true && (name === 'c' || name === 'd')) return finish({ kind: 'quit' });
@@ -172,6 +198,13 @@ export function selectFromList<T>(
     };
 
     input.on('keypress', onKey);
-    draw();
+    try {
+      draw();
+    } catch (error) {
+      input.removeListener('keypress', onKey);
+      input.setRawMode?.(false);
+      input.pause();
+      reject(error);
+    }
   });
 }

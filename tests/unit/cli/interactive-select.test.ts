@@ -31,11 +31,14 @@ function fakeTerminal() {
   return { input, output, written, streams };
 }
 
-/** Let the keypress decoder run, then type `keys`. */
+const tick = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+/** Let the picker arm (it drops keys from its first turn), then type `keys`. */
 async function type(input: PassThrough, ...keys: string[]): Promise<void> {
+  await tick();
   for (const key of keys) {
     input.write(key);
-    await new Promise((r) => setImmediate(r));
+    await tick();
   }
 }
 
@@ -47,15 +50,65 @@ describe('selectFromList', () => {
 
     expect(await picked).toEqual({ kind: 'picked', value: 'b' });
     expect(t.input.setRawMode.mock.calls).toEqual([[true], [false]]);
-    // The last write erases the frame it drew.
-    expect(t.written.at(-1)).toMatch(/^\x1b\[\d+F\x1b\[0J$/);
+    // The last write erases exactly the frame it drew.
+    const lastFrame = t.written.at(-2)!;
+    expect(t.written.at(-1)).toBe(`\x1b[${lastFrame.split('\n').length - 1}F\x1b[0J`);
   });
 
   it('wraps around at either end', async () => {
+    const top = fakeTerminal();
+    const up = selectFromList('Pick:', ITEMS, top.streams);
+    await type(top.input, '\x1b[A', '\r');
+    expect(await up).toEqual({ kind: 'picked', value: 'g' });
+
+    const bottom = fakeTerminal();
+    const down = selectFromList('Pick:', ITEMS, bottom.streams);
+    await type(bottom.input, '\x1b[B', '\x1b[B', '\x1b[B', '\r');
+    expect(await down).toEqual({ kind: 'picked', value: 'a' });
+  });
+
+  it('Ctrl+N / Ctrl+P move like down / up, and Ctrl+D quits', async () => {
     const t = fakeTerminal();
     const picked = selectFromList('Pick:', ITEMS, t.streams);
-    await type(t.input, '\x1b[A', '\r');
-    expect(await picked).toEqual({ kind: 'picked', value: 'g' });
+    await type(t.input, '\x0e', '\x0e', '\x10', '\r');
+    expect(await picked).toEqual({ kind: 'picked', value: 'b' });
+
+    const d = fakeTerminal();
+    const quit = selectFromList('Pick:', ITEMS, d.streams);
+    await type(d.input, '\x04');
+    expect(await quit).toEqual({ kind: 'quit' });
+  });
+
+  it('typing or deleting a filter character puts the cursor back on the first match', async () => {
+    const t = fakeTerminal();
+    const picked = selectFromList('Pick:', ITEMS, t.streams);
+    // Cursor on gamma, then "a" keeps all three: the cursor returns to alpha.
+    await type(t.input, '\x1b[B', '\x1b[B', 'a', '\r');
+    expect(await picked).toEqual({ kind: 'picked', value: 'a' });
+
+    const b = fakeTerminal();
+    const second = selectFromList('Pick:', ITEMS, b.streams);
+    await type(b.input, 'a', '\x1b[B', '\x1b[B', '\x7f', '\r');
+    expect(await second).toEqual({ kind: 'picked', value: 'a' });
+  });
+
+  it('drops keys already buffered when the list opens (typed while a view printed)', async () => {
+    const t = fakeTerminal();
+    t.input.write('\x1b[B\r');
+    const picked = selectFromList('Pick:', ITEMS, t.streams);
+    await type(t.input, '\r');
+    expect(await picked).toEqual({ kind: 'picked', value: 'a' });
+  });
+
+  it('cuts every frame line to the terminal width, so none wraps', async () => {
+    const t = fakeTerminal();
+    (t.output as { columns?: number }).columns = 20;
+    const long = [{ label: 'x'.repeat(50), value: 'x' }];
+    const picked = selectFromList('A title much wider than twenty', long, t.streams);
+    await type(t.input, '\r');
+    await picked;
+    for (const line of t.written[0]!.split('\n')) expect([...line].length).toBeLessThan(20);
+    expect(t.written[0]).toContain('…');
   });
 
   it('filters as the user types, case-insensitively, and backspace widens again', async () => {
@@ -106,7 +159,7 @@ describe('selectFromList', () => {
 describe('the page size', () => {
   it('fits the terminal, and a terminal reporting 0 rows gets the 24-row default', async () => {
     const many = Array.from({ length: 30 }, (_, i) => ({ label: `s${i}`, value: i }));
-    for (const [rows, shown] of [[10, 5], [0, 15], [undefined, 15]] as const) {
+    for (const [rows, shown] of [[10, 5], [6, 3], [0, 15], [undefined, 15]] as const) {
       const t = fakeTerminal();
       (t.output as { rows?: number }).rows = rows;
       const picked = selectFromList('T', many, t.streams);
@@ -133,6 +186,12 @@ describe('renderSelectFrame', () => {
       '  ... 7 more below',
       '  (up/down move, type to filter, Enter select, Esc back, Ctrl+C quit)',
     ]);
+  });
+
+  it('keeps the window full when the cursor is near the end', () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({ label: `s${i}`, value: i }));
+    const lines = renderSelectFrame('T', many, 19, '', 5);
+    expect(lines.slice(1, 7)).toEqual(['  ... 15 more above', '  s15', '  s16', '  s17', '  s18', '> s19']);
   });
 
   it('shows the filter when one is typed', () => {
