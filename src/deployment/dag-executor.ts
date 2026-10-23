@@ -1,4 +1,5 @@
 import { getLogger } from '../utils/logger.js';
+import { phaseTimingsEnabled, recordPhase } from '../utils/phase-timings.js';
 
 export type DagNodeState = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
 
@@ -52,6 +53,17 @@ export class DagExecutor<T = unknown> {
    * parallel walk already achieves. Ties keep insertion order (stable sort).
    */
   private priorityById: Map<string, number> | null = null;
+
+  /**
+   * go-to-k/cdkd#5209: the `CDKD_PHASE_TIMINGS` scope a run's slot waits are
+   * reported under — how long each node sat READY (every dependency done)
+   * before a `concurrency` slot freed. Unset, nothing is recorded.
+   */
+  private readonly timingScope: string | undefined;
+
+  constructor(timingScope?: string) {
+    this.timingScope = timingScope;
+  }
 
   add(node: DagNode<T>): void {
     this.nodes.set(node.id, node);
@@ -124,6 +136,9 @@ export class DagExecutor<T = unknown> {
     let active = 0;
     const errors: Array<{ id: string; error: unknown }> = [];
     const priority = this.computePriorities();
+    const timingScope = phaseTimingsEnabled() ? this.timingScope : undefined;
+    // When each pending node was first seen ready (timing only).
+    const readySince = new Map<string, number>();
 
     return new Promise<void>((resolve, reject) => {
       const dispatch = (): void => {
@@ -163,6 +178,10 @@ export class DagExecutor<T = unknown> {
         // transitive dependents starts before a leaf. Array.sort is stable, so
         // nodes of equal priority keep their insertion (template) order.
         ready.sort((a, b) => (priority.get(b.id) ?? 0) - (priority.get(a.id) ?? 0));
+        if (timingScope !== undefined) {
+          const now = performance.now();
+          for (const node of ready) if (!readySince.has(node.id)) readySince.set(node.id, now);
+        }
 
         // Dispatch up to concurrency limit, unless cancellation requested.
         if (!cancelled()) {
@@ -170,6 +189,14 @@ export class DagExecutor<T = unknown> {
             if (active >= concurrency) break;
             node.state = 'running';
             active++;
+            if (timingScope !== undefined) {
+              recordPhase(
+                timingScope,
+                'ready, waiting for a --concurrency slot',
+                performance.now() - (readySince.get(node.id) ?? performance.now()),
+                node.id
+              );
+            }
 
             fn(node)
               .then(() => {

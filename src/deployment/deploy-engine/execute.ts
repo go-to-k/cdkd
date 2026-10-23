@@ -263,7 +263,7 @@ export async function executeDeployment(
         safeMsg`${cyan('Deploying')} ${cyan(createUpdateIds.length)} resource(s) (DAG: ${executionLevels.length} levels, max parallel: ${concurrency})`
       );
 
-      const createUpdateExecutor = new DagExecutor<ResourceChange>();
+      const createUpdateExecutor = new DagExecutor<ResourceChange>(phaseScope);
       const provisionable = new Set(createUpdateIds);
       const createUpdateDeps = new Map<string, Set<string>>();
       for (const id of createUpdateIds) {
@@ -728,7 +728,7 @@ export async function executeDeployment(
       engine.logger.info(safeMsg`${red('Deleting')} ${red(deleteChanges.size)} resource(s)`);
 
       const deleteDeps = buildDeletionDependencies(deleteChanges, currentState, engine.logger);
-      const deleteExecutor = new DagExecutor<ResourceChange>();
+      const deleteExecutor = new DagExecutor<ResourceChange>(phaseScope);
       for (const id of deleteChanges) {
         deleteExecutor.add({
           id,

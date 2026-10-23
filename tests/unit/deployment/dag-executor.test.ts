@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
@@ -409,5 +409,49 @@ describe('DagExecutor', () => {
 
     // At t=0 the only zero-dependency ready nodes are Root and Wide.
     expect(ran[0]).toBe('Wide');
+  });
+});
+
+describe('DagExecutor slot-wait timing (go-to-k/cdkd#5209)', () => {
+  const ENV = 'CDKD_PHASE_TIMINGS';
+  let saved: string | undefined;
+  beforeEach(async () => {
+    saved = process.env[ENV];
+    (await import('../../../src/utils/phase-timings.js')).resetPhaseTimings();
+  });
+  afterEach(async () => {
+    if (saved === undefined) delete process.env[ENV];
+    else process.env[ENV] = saved;
+    (await import('../../../src/utils/phase-timings.js')).resetPhaseTimings();
+  });
+
+  const independent = (scope?: string): DagExecutor<null> => {
+    const executor = new DagExecutor<null>(scope);
+    for (const id of ['A', 'B', 'C']) {
+      executor.add({ id, dependencies: new Set(), state: 'pending', data: null });
+    }
+    return executor;
+  };
+  const run = (executor: DagExecutor<null>): Promise<void> =>
+    executor.execute(1, () => new Promise((r) => setTimeout(r, 20)));
+
+  it('records how long each ready node waited for a slot', async () => {
+    process.env[ENV] = '1';
+    await run(independent('stack S (us-east-1)'));
+    const { renderPhaseTimings } = await import('../../../src/utils/phase-timings.js');
+    const line = renderPhaseTimings().find((l) => l.includes('waiting for a --concurrency slot'));
+    // Three nodes, one slot: the first waits ~0, the others ~20ms and ~40ms.
+    expect(line).toMatch(/x3, max \d+ms \([ABC]\)/);
+    const total = Number(/slot\s+(\d+)ms/.exec(line ?? '')?.[1]);
+    expect(total).toBeGreaterThanOrEqual(50);
+  });
+
+  it('records nothing without a scope, or with the report off', async () => {
+    process.env[ENV] = '1';
+    await run(independent());
+    delete process.env[ENV];
+    await run(independent('stack S (us-east-1)'));
+    const { renderPhaseTimings } = await import('../../../src/utils/phase-timings.js');
+    expect(renderPhaseTimings()).toEqual([]);
   });
 });
