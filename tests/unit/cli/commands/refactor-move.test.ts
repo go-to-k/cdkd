@@ -460,6 +460,31 @@ describe('applyMoveGroup', () => {
     expect(w.holders('p1')).toEqual([]);
   });
 
+  it('names a rename-only stack written before the failure as kept', async () => {
+    const w = world({ A: { Old: rec('p1') }, B: {}, C: { Ren: rec('pc') } });
+    w.move(mv('A', 'Old', 'B', 'New'));
+    w.plans.get('C')!.renames.push({ from: 'Ren', to: 'Ren2', resourceType: queue, source: 'detected' });
+    w.failSave('B', 1);
+    await expect(w.run()).rejects.toThrow(/Renamed and kept \(no move involved\): C \(r\)/);
+    expect(Object.keys(w.records.get('C')!.state.resources)).toEqual(['Ren2']);
+    expect(w.holders('p1')).toEqual(['A']);
+  });
+
+  it('keeps the source out when a destination cannot be read back', async () => {
+    const w = world({ A: { Old: rec('p1') }, B: {} });
+    w.move(mv('A', 'Old', 'B', 'New'));
+    w.failSave('B', 1, true);
+    const real = w.stateBackend.getState.getMockImplementation()!;
+    let reads = 0;
+    w.stateBackend.getState.mockImplementation(async (name: string) => {
+      if (name === 'B' && ++reads > 1) return null as never;
+      return real(name);
+    });
+    await expect(w.run()).rejects.toThrow(/Could not be read back or put back: B \(r\)/);
+    // B holds the record; A must not get it back, or it would be in two stacks.
+    expect(w.holders('p1')).toEqual(['B']);
+  });
+
   it('reports a failed first source save without moving anything', async () => {
     const w = world({ A: { Old: rec('p1') }, B: {} });
     w.move(mv('A', 'Old', 'B', 'New'));
