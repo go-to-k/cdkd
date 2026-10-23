@@ -113,7 +113,7 @@ To check mechanically whether the change would lose an existing resource, run th
 AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd diff '<stack>' --fail-on=destructive
 ```
 
-When a listed deletion is a renamed or moved construct — an old logical ID deleted and a new logical ID of the same type created in the same stack — keep the resource instead of letting the deploy replace it. Run `cdkd refactor` BEFORE deploying: it renames the resource's cdkd state record and touches no AWS resource. Show the dry-run plan to the user and get confirmation first:
+When a listed deletion is a renamed or moved construct — an old logical ID deleted and a new logical ID of the same type created, in the same stack or in another stack of the same account and region — keep the resource instead of letting the deploy replace it. Run `cdkd refactor` BEFORE deploying: it renames the resource's cdkd state record and touches no AWS resource. Show the dry-run plan to the user and get confirmation first:
 
 ```bash
 AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd refactor '<stack>' --dry-run
@@ -121,7 +121,7 @@ AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd refactor '<stack>'
 AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd diff '<stack>' --fail-on=destructive
 ```
 
-It renames a pair only when the new resource then shows no change. Look-alikes it cannot tell apart (two identical queues) make it refuse and print a mapping file; ask the user which old logical ID is which new one, write that file, and pass it with `--override-file`. A resource whose properties also changed is refused: revert the property change, refactor, deploy, then reapply the property change. Moving a resource between stacks is not supported.
+It renames a pair only when the new resource then shows no change. Look-alikes it cannot tell apart (two identical queues) make it refuse and print a mapping file; ask the user which old logical ID is which new one, write that file, and pass it with `--override-file`. A resource whose properties also changed is refused: revert the property change, refactor, deploy, then reapply the property change. For a move between stacks, select both stacks (`cdkd refactor '<source>' '<destination>'`); the destination must already be deployed, and it must be deployed before the stacks that import from it.
 
 `--fail-on` takes `any-change`, `broadening` (an IAM or security-group change that grants something new), `destructive`, or `never` (default); `--fail` / `--no-fail` are aliases for `any-change` / `never`.
 

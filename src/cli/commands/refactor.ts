@@ -42,6 +42,8 @@ import {
   type AmbiguousGroup,
   type MappingEnvironment,
   type ProposedRename,
+  type RefactorCreateSide,
+  type RefactorDeleteSide,
   type RefusedOverride,
 } from '../../analyzer/refactor-pairing.js';
 import {
@@ -82,6 +84,13 @@ import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { ResourceChange, StackState } from '../../types/state.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { computeStackDiff } from './diff-recursive.js';
+import {
+  applyMoveGroup,
+  planMoves,
+  renderMovePlan,
+  type AmbiguousMoveGroup,
+  type MoveOverride,
+} from './refactor-move.js';
 
 interface RefactorOptions {
   app?: string;
@@ -147,6 +156,32 @@ export interface StackRefactorPlan {
    */
   stillChanging: string[];
   template: CloudFormationTemplate;
+  /**
+   * The DELETE and CREATE rows no in-stack rename took, the candidates for a
+   * move between stacks (go-to-k/cdkd#5202). A look-alike whose properties
+   * differ stays a candidate: its match may be in another stack.
+   */
+  unpaired: { creates: RefactorCreateSide[]; deletes: RefactorDeleteSide[] };
+  /** Records moving out of this stack to another (filled by `planMoves`). */
+  movesOut: ProposedMove[];
+  /** Records moving into this stack from another (filled by `planMoves`). */
+  movesIn: ProposedMove[];
+  /** The record the plan read, for the move confirmation; never saved. */
+  state: StackState;
+  /** The stack's diff, for the move confirmation. */
+  diff: RefactorDiffFn;
+}
+
+/** A record moving between two stacks of one environment. */
+export interface ProposedMove {
+  fromStack: string;
+  fromRegion: string;
+  from: string;
+  toStack: string;
+  toRegion: string;
+  to: string;
+  resourceType: string;
+  source: 'detected' | 'override';
 }
 
 /** The changes a rename's new logical id still shows, as paths. */
@@ -198,8 +233,8 @@ export async function planStackRefactor(input: {
       .map((o) => (o !== null && typeof o === 'object' ? o.logicalId : undefined))
       .filter((id): id is string => typeof id === 'string')
   );
-  const creates = [];
-  const deletes = [];
+  const creates: RefactorCreateSide[] = [];
+  const deletes: RefactorDeleteSide[] = [];
   for (const change of base.changes.values()) {
     if (change.changeType === 'CREATE' && !orphanIds.has(change.logicalId)) {
       creates.push({
@@ -355,6 +390,20 @@ export async function planStackRefactor(input: {
           .map((change) => change.logicalId)
           .sort();
 
+  const takenTo = new Set([
+    ...renames.map((r) => r.to),
+    ...skipped.map((x) => x.rename.to),
+    ...ambiguous.flatMap((g) => g.to),
+    ...overrides.map((o) => o.to),
+  ]);
+  const takenFrom = new Set([
+    ...renames.map((r) => r.from),
+    ...skipped.map((x) => x.rename.from),
+    ...ambiguous.flatMap((g) => g.from),
+    ...overrides.map((o) => o.from),
+    ...orphanIds,
+  ]);
+
   return {
     stackName,
     region,
@@ -366,6 +415,14 @@ export async function planStackRefactor(input: {
     refusedOverrides,
     stillChanging,
     template,
+    unpaired: {
+      creates: creates.filter((c) => !takenTo.has(c.logicalId)),
+      deletes: deletes.filter((d) => !takenFrom.has(d.logicalId)),
+    },
+    movesOut: [],
+    movesIn: [],
+    state,
+    diff,
   };
 }
 
@@ -536,9 +593,22 @@ export function renderRefactorPlan(plan: StackRefactorPlan): string[] {
  * per stack (its own account and region). Exported for its unit tests.
  */
 export function sampleMappingFile(
-  plans: ReadonlyArray<{ plan: StackRefactorPlan; account: string }>
+  plans: ReadonlyArray<{ plan: StackRefactorPlan; account: string }>,
+  moveGroups: ReadonlyArray<{ group: AmbiguousMoveGroup; account: string }> = []
 ): string {
-  const environments = plans
+  const moveEnvironments = moveGroups.map(({ group, account }) => {
+    const resources: Record<string, string> = {};
+    group.from.forEach((from, i) => {
+      Object.defineProperty(resources, from, {
+        value: group.to[i] ?? group.to[0]!,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    });
+    return { account, region: group.plan.region, resources };
+  });
+  const stackEnvironments = plans
     .filter(({ plan }) => plan.ambiguous.length > 0)
     .map(({ plan, account }) => {
       const resources: Record<string, string> = {};
@@ -555,13 +625,13 @@ export function sampleMappingFile(
       }
       return { account, region: plan.region, resources };
     });
-  return JSON.stringify({ environments }, null, 2);
+  return JSON.stringify({ environments: [...stackEnvironments, ...moveEnvironments] }, null, 2);
 }
 
 /**
- * The user-named pairs for one stack: the mapping environment whose account
- * and region are the stack's. A pair between two stacks is refused here --
- * moving a resource between stacks is go-to-k/cdkd#5202.
+ * The user-named pairs WITHIN one stack: the mapping environment whose
+ * account and region are the stack's. A pair between two stacks is a move,
+ * collected by {@link moveOverridesOf} instead.
  */
 export function overridesForStack(
   environments: readonly MappingEnvironment[],
@@ -574,17 +644,29 @@ export function overridesForStack(
   for (const env of environments) {
     if (env.account !== account || env.region !== region) continue;
     for (const pair of mappingPairs(env.resources, revert)) {
-      if (pair.fromStack !== stackName && pair.toStack !== stackName) continue;
-      if (pair.fromStack !== pair.toStack) {
-        throw new CdkdError(
-          safeMsg`The mapping file moves ${pair.fromStack}.${pair.from} to ` +
-            safeMsg`${pair.toStack}.${pair.to}, between two stacks. cdkd refactor renames ` +
-            'resources within one stack; moving one between stacks is not supported yet ' +
-            '(go-to-k/cdkd#5202).',
-          'REFACTOR_UNSUPPORTED'
-        );
-      }
+      if (pair.fromStack !== stackName || pair.toStack !== stackName) continue;
       out.push({ from: pair.from, to: pair.to });
+    }
+  }
+  return out;
+}
+
+/**
+ * The user-named moves between two stacks, for every environment whose
+ * account is one of `accounts` (go-to-k/cdkd#5202). Exported for its unit
+ * tests.
+ */
+export function moveOverridesOf(
+  environments: readonly MappingEnvironment[],
+  accounts: ReadonlySet<string>,
+  revert: boolean
+): MoveOverride[] {
+  const out: MoveOverride[] = [];
+  for (const env of environments) {
+    if (!accounts.has(env.account)) continue;
+    for (const pair of mappingPairs(env.resources, revert)) {
+      if (pair.fromStack === pair.toStack) continue;
+      out.push({ region: env.region, ...pair });
     }
   }
   return out;
@@ -764,19 +846,56 @@ async function refactorCommand(stacks: string[], options: RefactorOptions): Prom
       planStacks.set(plan, stackInfo);
     }
 
-    for (const plan of plans) for (const line of renderRefactorPlan(plan)) logger.info(line);
+    // Moves between stacks (go-to-k/cdkd#5202), over the rows no in-stack
+    // rename took. Only a run that selected two or more stacks can move.
+    const accountByPlan = new Map<StackRefactorPlan, string>();
+    if (plans.length > 1) {
+      for (const plan of plans) accountByPlan.set(plan, await accountOf(planStacks.get(plan)!));
+    }
+    const movePlan =
+      plans.length > 1
+        ? await planMoves(
+            plans,
+            (plan) => JSON.stringify([accountByPlan.get(plan), plan.region]),
+            moveOverridesOf(environments, new Set(accountByPlan.values()), options.revert === true)
+          )
+        : { moves: [], differing: [], refused: [], ambiguous: [] as AmbiguousMoveGroup[] };
+    if (plans.length <= 1 && environments.length > 0) {
+      // A named move with fewer than two stacks selected can never apply.
+      const lone = moveOverridesOf(
+        environments,
+        new Set(plans.length === 1 ? [await accountOf(planStacks.get(plans[0]!)!)] : []),
+        options.revert === true
+      );
+      for (const o of lone) {
+        movePlan.refused.push({
+          fromStack: o.fromStack,
+          from: o.from,
+          toStack: o.toStack,
+          to: o.to,
+          reason: 'a move needs both stacks selected; name both, or pass --all',
+        });
+      }
+    }
 
-    if (plans.some((p) => p.ambiguous.length > 0)) {
+    for (const plan of plans) for (const line of renderRefactorPlan(plan)) logger.info(line);
+    for (const line of renderMovePlan(movePlan)) logger.info(line);
+
+    if (plans.some((p) => p.ambiguous.length > 0) || movePlan.ambiguous.length > 0) {
       const withAccounts = [];
       for (const plan of plans) {
         if (plan.ambiguous.length === 0) continue;
         withAccounts.push({ plan, account: await accountOf(planStacks.get(plan)!) });
       }
+      const moveGroups = [];
+      for (const group of movePlan.ambiguous) {
+        moveGroups.push({ group, account: await accountOf(planStacks.get(group.plan)!) });
+      }
       logger.info(
         '\nA mapping file naming each ambiguous pair (edit the pairs, then pass it with ' +
           '--override-file):'
       );
-      for (const line of sampleMappingFile(withAccounts).split('\n')) {
+      for (const line of sampleMappingFile(withAccounts, moveGroups).split('\n')) {
         logger.info(displaySafe(line));
       }
       throw new CdkdError(
@@ -785,7 +904,7 @@ async function refactorCommand(stacks: string[], options: RefactorOptions): Prom
         'REFACTOR_AMBIGUOUS'
       );
     }
-    const refused = plans.flatMap((p) => p.refusedOverrides);
+    const refused = [...plans.flatMap((p) => p.refusedOverrides), ...movePlan.refused];
     if (refused.length > 0) {
       throw new CdkdError(
         `cdkd refactor refused ${refused.length} pair(s) the mapping file names; nothing was ` +
@@ -794,7 +913,9 @@ async function refactorCommand(stacks: string[], options: RefactorOptions): Prom
         'REFACTOR_REFUSED'
       );
     }
-    const toApply = plans.filter((p) => p.renames.length > 0);
+    const toApply = plans.filter(
+      (p) => p.renames.length > 0 || p.movesOut.length > 0 || p.movesIn.length > 0
+    );
     if (toApply.length === 0) {
       logger.info('\nNothing to refactor.');
       return;
@@ -803,11 +924,11 @@ async function refactorCommand(stacks: string[], options: RefactorOptions): Prom
       logger.info('\n--dry-run: state was NOT written. Re-run without --dry-run to apply.');
       return;
     }
-    const count = toApply.reduce((n, p) => n + p.renames.length, 0);
+    const count = toApply.reduce((n, p) => n + p.renames.length, 0) + movePlan.moves.length;
     if (!options.yes && !options.force) {
       const ok = await confirmOrRefuse(
-        `\nRename ${count} resource(s) in cdkd state as listed above? AWS resources are not ` +
-          'touched.',
+        `\nRename or move ${count} resource(s) in cdkd state as listed above? AWS resources ` +
+          'are not touched.',
         {
           refusal:
             'The cdkd refactor confirmation prompt cannot run in a non-interactive ' +
@@ -819,6 +940,31 @@ async function refactorCommand(stacks: string[], options: RefactorOptions): Prom
         logger.info('Refactor cancelled.');
         return;
       }
+    }
+    if (movePlan.moves.length > 0) {
+      // Every stack of the run as one unit: a move writes two records.
+      await applyMoveGroup({
+        plans: toApply,
+        stateBackend,
+        lockManager,
+        recovery,
+        contentionMessage: (plan) =>
+          buildLockContentionMessage({
+            lockManager,
+            stackName: plan.stackName,
+            region: plan.region,
+            recovery,
+          }),
+      });
+      logger.info(
+        safeMsg`Refactored ${count} resource(s) across ${toApply.length} stack(s): ` +
+          safeMsg`${toApply.map((p) => `${p.stackName} (${p.region})`).join(', ')}.`
+      );
+      logger.info(
+        "\nAWS resources were not touched. Run 'cdkd diff' to confirm the refactored resources " +
+          'show no change, and deploy the destination stacks before the stacks that import from them.'
+      );
+      return;
     }
     const done: string[] = [];
     for (const plan of toApply) {

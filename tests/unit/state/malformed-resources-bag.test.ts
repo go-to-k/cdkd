@@ -3189,10 +3189,26 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       .stdout.split('\n')
       .filter(Boolean)
       .sort();
-    expect(renameCallers).toEqual(['src/cli/commands/refactor.ts', 'src/state/logical-id-rename.ts']);
+    expect(renameCallers).toEqual([
+      'src/cli/commands/refactor-move.ts',
+      'src/cli/commands/refactor.ts',
+      'src/state/logical-id-rename.ts',
+    ]);
     const refactorSrc = code('src/cli/commands/refactor.ts');
     expect(refactorSrc.indexOf('refuseMalformedOrphanRecords(')).toBeLessThan(
       refactorSrc.indexOf('applyLogicalIdRenames(')
+    );
+    // `refactor-move.ts` rewrites only records two places hand it: the plans
+    // `planStackRefactor` built (guarded above), and the records
+    // `applyMoveGroup` re-reads, which it guards before its own rewrite.
+    const moveSrc = code('src/cli/commands/refactor-move.ts');
+    expect(moveSrc.split('getState(').length - 1, 'refactor-move.ts reads state outside applyMoveGroup').toBe(1);
+    const applyAt = moveSrc.indexOf('export async function applyMoveGroup(');
+    expect(applyAt).toBeGreaterThan(-1);
+    const applyBody = moveSrc.slice(applyAt);
+    expect(applyBody.indexOf('refuseMalformedOrphanRecords(')).toBeGreaterThan(-1);
+    expect(applyBody.indexOf('refuseMalformedOrphanRecords(')).toBeLessThan(
+      applyBody.indexOf('applyLogicalIdRenames(')
     );
     // `diff.ts` is excluded because it RECEIVES the repaired state rather than
     // loading one. The moment it loads state itself the exclusion is wrong, and

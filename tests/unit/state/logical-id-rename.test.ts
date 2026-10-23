@@ -6,6 +6,8 @@
 import { describe, expect, it } from 'vite-plus/test';
 import {
   applyLogicalIdRenames,
+  insertMovedRecords,
+  removeMovedRecords,
   renameReferencesInValue,
 } from '../../../src/state/logical-id-rename.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
@@ -271,5 +273,67 @@ describe('renameReferencesInValue', () => {
 
   it('does not treat a two-key object as an intrinsic', () => {
     expect(renameReferencesInValue({ Ref: 'Old', Other: 1 }, renames)).toEqual({ Ref: 'Old', Other: 1 });
+  });
+});
+
+describe('removeMovedRecords / insertMovedRecords (go-to-k/cdkd#5202)', () => {
+  it('drops the moved record, its dependency edges and skippedOutputs, and retires its generation', () => {
+    const out = removeMovedRecords(
+      stack({
+        stackInstanceId: '11111111-2222-3333-4444-555555555555',
+        resources: {
+          Moved: record({ nameGeneration: 3 }),
+          Stay: record({ physicalId: 's', dependencies: ['Moved', 'Other'] }),
+        },
+        orphans: [{ logicalId: 'O', orphanedAt: 1, state: record({ dependencies: ['Moved'] }) }],
+        skippedOutputs: { X: 'sha256:a' },
+      }),
+      [{ from: 'Moved', to: 'There' }]
+    );
+    expect(Object.keys(out.resources)).toEqual(['Stay']);
+    expect(out.resources['Stay']!.dependencies).toEqual(['Other']);
+    expect(out.orphans![0]!.state.dependencies).toEqual([]);
+    expect(out.retiredNameGenerations).toEqual({ Moved: 3 });
+    expect(out.skippedOutputs).toBeUndefined();
+    expect(out.stackInstanceId).toBe('11111111-2222-3333-4444-555555555555');
+  });
+
+  it('throws on a record the source does not hold', () => {
+    expect(() => removeMovedRecords(stack({ resources: {} }), [{ from: 'Nope', to: 'X' }])).toThrow();
+  });
+
+  it('adds each record verbatim under its new id, keeping only edges to other moved records', () => {
+    const moved = record({
+      physicalId: 'p1',
+      attributes: { Arn: 'arn:1' },
+      dependencies: ['Stayed', 'Sibling'],
+      properties: { Q: { Ref: 'Sibling' } },
+    });
+    const out = insertMovedRecords(
+      stack({
+        stackInstanceId: '11111111-2222-3333-4444-555555555555',
+        retiredNameGenerations: { NewQueue: 5 },
+        resources: { Existing: record({ physicalId: 'e' }) },
+      }),
+      [
+        { from: 'OldQueue', to: 'NewQueue', record: moved },
+        { from: 'Sibling', to: 'NewSibling', record: record({ physicalId: 'p2' }) },
+      ],
+      template
+    );
+    expect(Object.keys(out.resources)).toEqual(['Existing', 'NewQueue', 'NewSibling']);
+    const placed = out.resources['NewQueue']!;
+    expect(placed.physicalId).toBe('p1');
+    expect(placed.attributes).toEqual({ Arn: 'arn:1' });
+    expect(placed.dependencies).toEqual(['NewSibling']);
+    expect(placed.properties).toEqual({ Q: { Ref: 'NewSibling' } });
+    expect(placed.constructPath).toBe('MyStack/Renamed/Resource');
+    expect(placed.nameGenerationHigh).toBe(5);
+  });
+
+  it('throws on a destination id the destination already holds', () => {
+    expect(() =>
+      insertMovedRecords(stack({ resources: { NewQueue: record() } }), [{ from: 'A', to: 'NewQueue', record: record() }], template)
+    ).toThrow();
   });
 });

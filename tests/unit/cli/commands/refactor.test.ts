@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from 'vite-plus/test';
 import {
   applyStackRefactor,
+  moveOverridesOf,
   overridesForStack,
   referencedLogicalIds,
   planStackRefactor,
@@ -361,6 +362,11 @@ describe('applyStackRefactor', () => {
     refusedOverrides: [],
     stillChanging: [],
     template,
+    unpaired: { creates: [], deletes: [] },
+    movesOut: [],
+    movesIn: [],
+    state: stack({}),
+    diff: fakeDiff({}),
   });
 
   function doubles(etag = '"e1"', acquired = true, opts: { journal?: boolean; absent?: boolean; migrationPending?: boolean } = {}) {
@@ -466,6 +472,7 @@ describe('sampleMappingFile', () => {
   it('writes one environment per ambiguous stack with its own account and region', () => {
     const base = {
       etag: '"e"', renames: [], differing: [], skipped: [], refusedOverrides: [], stillChanging: [], template,
+      unpaired: { creates: [], deletes: [] }, movesOut: [], movesIn: [], state: stack({}), diff: fakeDiff({}),
     };
     const text = sampleMappingFile([
       { plan: { ...base, stackName: 'S', region: 'us-east-1', ambiguous: [{ resourceType: queue, from: ['A', 'B'], to: ['C', 'D'] }] }, account: '111' },
@@ -493,15 +500,17 @@ describe('overridesForStack', () => {
     expect(overridesForStack(envs, 'S', '111111111111', 'eu-west-1', false)).toEqual([]);
   });
 
-  it('refuses a move between stacks', () => {
-    expect(() =>
-      overridesForStack(
-        [{ account: '1', region: 'r', resources: { 'S.Old': 'T.New' } }],
-        'S',
-        '1',
-        'r',
-        false
-      )
-    ).toThrow(/between two stacks/);
+  it('leaves a move between stacks to moveOverridesOf', () => {
+    const envs2: MappingEnvironment[] = [
+      { account: '1', region: 'r', resources: { 'S.Old': 'T.New', 'S.A': 'S.B' } },
+      { account: '9', region: 'r', resources: { 'S.X': 'T.Y' } },
+    ];
+    expect(overridesForStack(envs2, 'S', '1', 'r', false)).toEqual([{ from: 'A', to: 'B' }]);
+    expect(moveOverridesOf(envs2, new Set(['1']), false)).toEqual([
+      { region: 'r', fromStack: 'S', from: 'Old', toStack: 'T', to: 'New' },
+    ]);
+    expect(moveOverridesOf(envs2, new Set(['1']), true)).toEqual([
+      { region: 'r', fromStack: 'T', from: 'New', toStack: 'S', to: 'Old' },
+    ]);
   });
 });
