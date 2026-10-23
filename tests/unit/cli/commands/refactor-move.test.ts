@@ -787,6 +787,16 @@ describe('finishInterruptedMoves', () => {
     expect(e.stateBackend.saveRefactorMarker).not.toHaveBeenCalled();
   });
 
+  it('lists a MARKED source under --dry-run too, writing nothing', async () => {
+    const mark1 = { from: 'Old', toStack: 'B', toRegion: 'r', to: 'New', startedAt: 1 };
+    const e = env({
+      stacks: { A: { ...stack('A', { Old: rec('p1') }), pendingMovesOut: [mark1] }, B: stack('B', {}) },
+    });
+    const { pending } = await e.run(['A'], true);
+    expect(pending).toEqual([expect.objectContaining({ from: 'Old', to: 'New' })]);
+    expect(e.stateBackend.saveState).not.toHaveBeenCalled();
+  });
+
   it('refuses a marker it cannot read, writing nothing', async () => {
     const e = env({ marker: 'torn', stacks: { A: stack('A', {}) } });
     await expect(e.run(['A'])).rejects.toThrow(/cannot be read/);

@@ -191,5 +191,7 @@ describe('cdkd deploy refuses an unfinished refactor move (go-to-k/cdkd#5212)', 
     expect(err.code).toBe('REFACTOR_UNFINISHED');
     for (const fn of Object.values(provider)) expect(fn).not.toHaveBeenCalled();
     expect(stateBackend.saveState).not.toHaveBeenCalled();
+    // Read once for this stack, beside its state read.
+    expect((stateBackend as unknown as { getRefactorMarker: ReturnType<typeof vi.fn> }).getRefactorMarker).toHaveBeenCalledTimes(1);
   });
 });

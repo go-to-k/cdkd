@@ -167,6 +167,8 @@ describe('runDestroyForStack refuses an unfinished cdkd refactor move (go-to-k/c
     expect(err.code).toBe('REFACTOR_UNFINISHED');
     expect(h.getProviderFor, 'no provider delete must be chosen').not.toHaveBeenCalled();
     expect(h.deleteState, 'the record must not be removed').not.toHaveBeenCalled();
+    // The refusal runs under the lock, which it must release.
+    expect(h.releaseLock).toHaveBeenCalledWith(STACK, REGION);
   });
 
   it('CONTROL: the same record minus pendingMovesOut destroys normally', async () => {
@@ -198,6 +200,32 @@ describe('runDestroyForStack refuses an unfinished cdkd refactor move (go-to-k/c
     expect(h.deleteState, 'the record must not be removed').not.toHaveBeenCalled();
     // The lock was taken (and must be released) to reach the recheck at all.
     expect(h.acquireLock).toHaveBeenCalled();
+    expect(h.releaseLock).toHaveBeenCalledWith(STACK, REGION);
+  });
+
+  it('refuses to destroy an EMPTY stack a listed move targets, keeping its record', async () => {
+    const h = makeCtx();
+    (h.ctx.stateBackend.getState as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state: stateWith({}),
+      etag: 'e',
+    });
+    (h.ctx.stateBackend as unknown as Record<string, unknown>)['refactorMarkerKey'] = () =>
+      'cdkd/_refactor/pending.json';
+    (h.ctx.stateBackend as unknown as Record<string, unknown>)['getRefactorMarker'] = vi
+      .fn()
+      .mockResolvedValue({
+        body: {
+          moves: [
+            { fromStack: 'Src', fromRegion: REGION, from: 'X', toStack: STACK, toRegion: REGION, to: 'Moved', startedAt: 1 },
+          ],
+        },
+        etag: '"m"',
+      });
+
+    const thrown = await runDestroyForStack(STACK, stateWith({}), h.ctx).catch((e: unknown) => e);
+
+    expect((thrown as CdkdError).code).toBe('REFACTOR_UNFINISHED');
+    expect(h.deleteState, 'the destination record must survive').not.toHaveBeenCalled();
     expect(h.releaseLock).toHaveBeenCalledWith(STACK, REGION);
   });
 });

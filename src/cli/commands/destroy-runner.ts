@@ -1131,6 +1131,14 @@ async function destroyStackInRegion(
         );
         refusePendingMovesOut(recheck.state, stackName, regionForState, 'cdkd destroy');
       }
+      // go-to-k/cdkd#5212: an empty record may be a move's DESTINATION, made
+      // to receive it; deleting it would leave the move unable to finish.
+      refuseRefactorMarker(
+        await readRefactorMarker(ctx.stateBackend),
+        stackName,
+        regionForState,
+        'cdkd destroy'
+      );
       const recheckResources = recheck ? Object.keys(recheck.state.resources).length : 0;
       const recheckOrphans = recheck ? (recheck.state.orphans ?? []).length : 0;
       // go-to-k/cdkd#4584: the journal too, under the lock. A deploy that
@@ -1625,9 +1633,9 @@ async function destroyStackInRegion(
     onAcquireFailure: restoreBaseRegionAndClients,
   });
 
-  // go-to-k/cdkd#5212: the refactor marker again, under the lock. The check
-  // above ran before the confirmation prompt; a move started since is caught
-  // here. (A move that FINISHED in that window is the general
+  // go-to-k/cdkd#5212: the refactor marker, under the lock -- this destroy's
+  // only read of it, so a move started while the confirmation prompt waited
+  // is seen. (A move that FINISHED in that window is the general
   // destroy-snapshot race, go-to-k/cdkd#5220.)
   try {
     refuseRefactorMarker(

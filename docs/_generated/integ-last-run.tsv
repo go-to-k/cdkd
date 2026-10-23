@@ -315,7 +315,7 @@ remove-protection	2026-10-23T17:17:04Z	PASS	2113	verify.sh	--remove-protection d
 refactor-command	2026-10-23T18:43:40Z	PASS	105	verify.sh	rc ok, orph clean, regression check on fix/refactor-interrupt@b5f2dee1d (#5201)
 refactor-move	2026-10-23T18:39:26Z	FAIL	95	verify.sh	Phase2c: deploy SRC cascaded into deploying DST (cross-stack dep) before SRC's own pendingMovesOut refusal ran; DST create hit ResourceInUseException; orphan create-tokens.json deleted (#5212)
 refactor-command	2026-10-23T19:26:50Z	PASS	105	verify.sh	rc ok, orph clean, regression check on fix/refactor-interrupt@2c9088825 (#5201)
-refactor-move	2026-10-23T19:24:02Z	PASS	150	verify.sh	rc ok, orph clean; shared marker fix on 2c9088825 confirmed: both stacks refuse, no create attempted, diff exits 3 (#5212)
+refactor-move	2026-10-23T20:21:04Z	PASS	151	verify.sh	rc ok, orph clean; re-run on e7af89b9e (lock-scoped marker read + dest template check + read-only dry-run) (#5212)
 remove-protection	2026-10-22T15:37:12Z	PASS	2120	verify.sh	rc ok, orph clean
 remove-protection-compensation	2026-10-22T15:37:12Z	PASS	251	verify.sh	rc ok, orph clean
 remove-protection-journaled-orphan	2026-10-20T10:53:50Z	PASS	675	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
