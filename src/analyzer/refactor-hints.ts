@@ -9,7 +9,7 @@
  * such candidate. No AWS call. A hint is a suggestion: `cdkd refactor`
  * re-checks every pair with its own diff before writing anything.
  */
-import type { ResourceChange, StackState } from '../types/state.js';
+import type { ResourceChange } from '../types/state.js';
 import type { DestructiveChange } from './destructive-changes.js';
 import { displayIdent } from '../utils/display-safe.js';
 import {
@@ -85,13 +85,17 @@ export interface RefactorSides {
 }
 
 /**
- * The logical ids a rollback-orphan record names: the next deploy settles
- * them, so `cdkd refactor` pairs neither side of one (as `planStackRefactor`).
+ * The logical ids a record's rollback-orphan entries name: the next deploy
+ * settles them, so `cdkd refactor` pairs neither side of one (as
+ * `planStackRefactor`). Takes the field's value as read, of any shape: an
+ * entry that is not an object with a string `logicalId` names nothing.
  */
-export function rollbackOrphanIds(state: Pick<StackState, 'orphans'>): Set<string> {
+export function rollbackOrphanIds(orphans: unknown): Set<string> {
   return new Set(
-    (Array.isArray(state.orphans) ? state.orphans : [])
-      .map((o) => (o !== null && typeof o === 'object' ? o.logicalId : undefined))
+    (Array.isArray(orphans) ? (orphans as unknown[]) : [])
+      .map((o) =>
+        o !== null && typeof o === 'object' ? (o as { logicalId?: unknown }).logicalId : undefined
+      )
       .filter((id): id is string => typeof id === 'string')
   );
 }

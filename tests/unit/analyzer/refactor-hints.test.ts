@@ -171,9 +171,8 @@ describe('which stacks take part (cdkd refactor would plan them)', () => {
   it('a rollback-orphan id is on neither side', async () => {
     const node = await tree({ ...record, orphans: [{ logicalId: 'OldQueue' } as never] });
     expect(node.refactorSides?.deletes).toEqual([]);
-    expect(rollbackOrphanIds({ orphans: [{ logicalId: 'X' } as never, null as never] })).toEqual(
-      new Set(['X'])
-    );
+    expect(rollbackOrphanIds([{ logicalId: 'X' }, null, { logicalId: 3 }, 'Y'])).toEqual(new Set(['X']));
+    expect(rollbackOrphanIds('not-a-list')).toEqual(new Set());
   });
 });
 
