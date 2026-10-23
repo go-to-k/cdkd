@@ -621,6 +621,23 @@ export interface StackState {
    */
   retiredNameGenerations?: Record<string, number>;
 
+  /**
+   * Resources an interrupted or in-progress `cdkd refactor` is moving OUT of
+   * this stack (go-to-k/cdkd#5212). Written to the SOURCE record first, with
+   * the moving record still in `resources`; the destination then adds the
+   * record, and a last source save drops both the record and its entry. While
+   * an entry is present, `cdkd deploy` and `cdkd destroy` of this stack refuse
+   * (the record may also be in the destination, whose resource this stack's
+   * deploy would delete), and the next `cdkd refactor` of this stack finishes
+   * the move. Ids only, never a value.
+   *
+   * Additive, NO schema bump (the `orphans` precedent): an older binary drops
+   * the field on its next save and does not refuse, a stated consequence.
+   * Carried by every writer through {@link stackInstanceIdCarriedFrom}. Read
+   * through `pendingMovesOutOf` (`src/state/pending-moves.ts`).
+   */
+  pendingMovesOut?: PendingMoveOut[];
+
   /** Last modification timestamp (Unix milliseconds) */
   lastModified: number;
 }
@@ -654,6 +671,20 @@ export interface ReferenceProvenance {
    * what the upstream holds; a literal spelling's version never enters it.
    */
   readVersions?: string[];
+}
+
+/** One entry of {@link StackState.pendingMovesOut} (go-to-k/cdkd#5212). */
+export interface PendingMoveOut {
+  /** The record's logical id in THIS stack. */
+  from: string;
+  /** The destination stack's name. */
+  toStack: string;
+  /** The destination stack's region. */
+  toRegion: string;
+  /** The record's logical id in the destination. */
+  to: string;
+  /** When the move started (Unix milliseconds). */
+  startedAt: number;
 }
 
 /** One entry of {@link StackState.conditionVerdicts} (go-to-k/cdkd#4479). */
@@ -1542,10 +1573,16 @@ export function exportNamesCarriedFrom(
  */
 export function stackInstanceIdCarriedFrom(
   previous:
-    | Pick<StackState, 'stackInstanceId' | 'retiredNameGenerations' | 'supersededResources'>
+    | Pick<
+        StackState,
+        'stackInstanceId' | 'retiredNameGenerations' | 'supersededResources' | 'pendingMovesOut'
+      >
     | null
     | undefined
-): Pick<StackState, 'stackInstanceId' | 'retiredNameGenerations' | 'supersededResources'> {
+): Pick<
+  StackState,
+  'stackInstanceId' | 'retiredNameGenerations' | 'supersededResources' | 'pendingMovesOut'
+> {
   // go-to-k/cdkd#5064: the lifetime's retired name generations travel with
   // its id -- a writer that dropped them would hand a re-added resource a
   // name an earlier copy of it held.
@@ -1558,6 +1595,12 @@ export function stackInstanceIdCarriedFrom(
     }),
     ...(previous?.supersededResources !== undefined && {
       supersededResources: previous.supersededResources,
+    }),
+    // go-to-k/cdkd#5212: so does an unfinished refactor move -- a writer that
+    // dropped it would let this stack's next deploy delete a resource the
+    // move's destination already holds.
+    ...(previous?.pendingMovesOut !== undefined && {
+      pendingMovesOut: previous.pendingMovesOut,
     }),
   };
 }

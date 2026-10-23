@@ -84,8 +84,10 @@ import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { ResourceChange, StackState } from '../../types/state.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { computeStackDiff } from './diff-recursive.js';
+import { withDeferredInterrupts } from '../../utils/deferred-interrupts.js';
 import {
   applyMoveGroup,
+  finishInterruptedMoves,
   planMoves,
   renderMovePlan,
   type AmbiguousMoveGroup,
@@ -680,6 +682,12 @@ export function envKey(account: string | undefined, region: string): string {
 async function refactorCommand(stacks: string[], options: RefactorOptions): Promise<void> {
   const providerClasses = await loadProviderClasses();
   const logger = getLogger();
+  const holdNotice = (signal: NodeJS.Signals): void => {
+    logger.warn(
+      safeMsg`${signal} received: finishing the cdkd state writes already started (a few S3 ` +
+        'writes), then stopping.'
+    );
+  };
   if (options.verbose) logger.setLevel('debug');
   if (options.revert === true && options.overrideFile === undefined) {
     throw new CdkdError('--revert requires --override-file', 'INCOMPATIBLE_OPTIONS');
@@ -787,6 +795,57 @@ async function refactorCommand(stacks: string[], options: RefactorOptions): Prom
       callerAccount ??= (await getAccountInfo()).accountId;
       return callerAccount;
     };
+
+    // An earlier `cdkd refactor` interrupted mid-move (go-to-k/cdkd#5212):
+    // finish every one involving a selected stack before ANY stack is
+    // planned, since finishing one writes its destination's record too.
+    const selectedStacks: Array<{ stackName: string; region: string }> = [];
+    for (const stackInfo of targetStacks) {
+      selectedStacks.push({
+        stackName: stackInfo.stackName,
+        region: await regionForStack(stackInfo.stackName, stackInfo.region),
+      });
+    }
+    const templateOf = (stackName: string, region: string): CloudFormationTemplate | undefined =>
+      allStacks.find(
+        (s) => s.stackName === stackName && (s.region === undefined || s.region === region)
+      )?.template;
+    const { finished: finishedMoves, pending: pendingMoves } = await withDeferredInterrupts(
+      () =>
+        finishInterruptedMoves({
+          selected: selectedStacks,
+          templateOf,
+          dryRun: options.dryRun === true,
+          stateBackend,
+          lockManager,
+          recovery,
+          contentionMessage: (st) =>
+            buildLockContentionMessage({
+              lockManager,
+              stackName: st.stackName,
+              region: st.region,
+              recovery,
+            }),
+        }),
+      holdNotice
+    );
+    for (const f of finishedMoves) {
+      logger.info(
+        safeMsg`Finished an interrupted move: ${f.fromStack}.${f.from} -> ${f.toStack}.${f.to}`
+      );
+    }
+    if (pendingMoves.length > 0) {
+      for (const f of pendingMoves) {
+        logger.info(
+          safeMsg`An interrupted move would be finished: ${f.fromStack}.${f.from} -> ${f.toStack}.${f.to}`
+        );
+      }
+      logger.info(
+        '\n--dry-run: state was NOT written. Re-run without --dry-run to finish these moves; the ' +
+          'refactor plan is computed after them.'
+      );
+      return;
+    }
 
     const plans: StackRefactorPlan[] = [];
     const planStacks = new Map<StackRefactorPlan, StackInfo>();
@@ -948,19 +1007,23 @@ async function refactorCommand(stacks: string[], options: RefactorOptions): Prom
     }
     if (movePlan.moves.length > 0) {
       // Every stack of the run as one unit: a move writes two records.
-      await applyMoveGroup({
-        plans: toApply,
-        stateBackend,
-        lockManager,
-        recovery,
-        contentionMessage: (plan) =>
-          buildLockContentionMessage({
+      await withDeferredInterrupts(
+        () =>
+          applyMoveGroup({
+            plans: toApply,
+            stateBackend,
             lockManager,
-            stackName: plan.stackName,
-            region: plan.region,
             recovery,
+            contentionMessage: (plan) =>
+              buildLockContentionMessage({
+                lockManager,
+                stackName: plan.stackName,
+                region: plan.region,
+                recovery,
+              }),
           }),
-      });
+        holdNotice
+      );
       logger.info(
         safeMsg`Refactored ${count} resource(s) across ${toApply.length} stack(s): ` +
           safeMsg`${toApply.map((p) => `${p.stackName} (${p.region})`).join(', ')}.`
@@ -974,19 +1037,23 @@ async function refactorCommand(stacks: string[], options: RefactorOptions): Prom
     const done: string[] = [];
     for (const plan of toApply) {
       try {
-        await applyStackRefactor({
-          plan,
-          stateBackend,
-          lockManager,
-          recovery,
-          contentionMessage: () =>
-            buildLockContentionMessage({
+        await withDeferredInterrupts(
+          () =>
+            applyStackRefactor({
+              plan,
+              stateBackend,
               lockManager,
-              stackName: plan.stackName,
-              region: plan.region,
               recovery,
+              contentionMessage: () =>
+                buildLockContentionMessage({
+                  lockManager,
+                  stackName: plan.stackName,
+                  region: plan.region,
+                  recovery,
+                }),
             }),
-        });
+          holdNotice
+        );
       } catch (error) {
         if (done.length > 0) {
           logger.error(

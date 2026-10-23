@@ -1,3 +1,5 @@
+import { refusePendingMovesOut } from '../../state/pending-moves.js';
+import { readRefactorMarker, refuseRefactorMarker } from '../../state/refactor-marker.js';
 import * as readline from 'node:readline/promises';
 import {
   pasteableCommand,
@@ -873,6 +875,11 @@ async function destroyStackInRegion(
   // unusable row does there depends on which part is torn, which is why this is
   // a refusal rather than a drop.
   refuseMalformedOrphanRecordsForDestroy(state, stackName, regionForState, refusalRecovery);
+  // An unfinished `cdkd refactor` moving resources out of this stack
+  // (go-to-k/cdkd#5212): the destination may already hold them, so deleting
+  // them here would delete another stack's resources.
+  refusePendingMovesOut(state, stackName, regionForState, 'cdkd destroy');
+  // (The refactor marker is read once, under the lock, below.)
   // BELOW the bag guard (which proves the bag can be counted) and ABOVE the
   // delete loop and every `deleteState` (issue #3328, review round 1). NOT
   // "above the fast path" as a discriminating claim — the guard returns early
@@ -1122,7 +1129,16 @@ async function destroyStackInRegion(
           regionForState,
           refusalRecovery
         );
+        refusePendingMovesOut(recheck.state, stackName, regionForState, 'cdkd destroy');
       }
+      // go-to-k/cdkd#5212: an empty record may be a move's DESTINATION, made
+      // to receive it; deleting it would leave the move unable to finish.
+      refuseRefactorMarker(
+        await readRefactorMarker(ctx.stateBackend),
+        stackName,
+        regionForState,
+        'cdkd destroy'
+      );
       const recheckResources = recheck ? Object.keys(recheck.state.resources).length : 0;
       const recheckOrphans = recheck ? (recheck.state.orphans ?? []).length : 0;
       // go-to-k/cdkd#4584: the journal too, under the lock. A deploy that
@@ -1616,6 +1632,25 @@ async function destroyStackInRegion(
     // for a cross-region stack.
     onAcquireFailure: restoreBaseRegionAndClients,
   });
+
+  // go-to-k/cdkd#5212: the refactor marker, under the lock -- this destroy's
+  // only read of it, so a move started while the confirmation prompt waited
+  // is seen. (A move that FINISHED in that window is the general
+  // destroy-snapshot race, go-to-k/cdkd#5220.)
+  try {
+    refuseRefactorMarker(
+      await readRefactorMarker(ctx.stateBackend),
+      stackName,
+      regionForState,
+      'cdkd destroy'
+    );
+  } catch (error) {
+    await lock.release({
+      failureMessage: 'Failed to release lock after a refactor-marker refusal',
+    });
+    restoreBaseRegionAndClients();
+    throw error;
+  }
 
   // Second strong-reference scan, now under the producer's lock. The
   // pre-flight scan above is a UX optimization (fast-fail before the

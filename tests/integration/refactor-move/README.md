@@ -19,13 +19,21 @@ uses the non-default state prefix `cdkd-integ-refactor-move`.
 
 1. `cdkd refactor --all --dry-run` plans both moves and leaves both state
    objects' ETags unchanged.
-2. `cdkd refactor --all --yes` moves both records: the destination holds them
-   under the same physical ids, and the source holds neither.
-3. `cdkd deploy --all` keeps both physical ids, the queue's creation
+2. The records a refactor KILLED mid-move leaves are written by hand. Both
+   moves are listed in `_refactor/pending.json`; the table as right after that
+   first write (the source neither marks nor drops it), the queue as after the
+   destination write (the source marks and still holds it, the destination
+   holds it too). `cdkd deploy` of either stack refuses with nothing created,
+   `cdkd destroy` of the source refuses, `cdkd diff` of both exits 3, and the
+   table and its item are untouched.
+3. `cdkd refactor --all --yes` finishes both moves: the destination holds them
+   under the same physical ids, and the source holds neither and records no
+   unfinished move.
+4. `cdkd deploy --all` keeps both physical ids, the queue's creation
    timestamp, the table's data item and the parameter's `Version` (the
    import resolves to the same values).
-4. `cdkd diff --all --fail` reports no change.
-5. `cdkd destroy --all` removes everything and both state records.
+5. `cdkd diff --all --fail` reports no change.
+6. `cdkd destroy --all` removes everything and both state records.
 
 ## Run
 

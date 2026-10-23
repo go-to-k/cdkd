@@ -72,7 +72,6 @@ DEFAULT_STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 PFX="cdkd-refactor-command"
 TABLE="${PFX}-data"
 PARAM_NAME="/cdkd-integ/${PFX}/wiring"
-MAP_FILE="${PWD}/refactor-map.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cdkd() { node "${LOCAL_DIST}" "$@"; }
@@ -136,7 +135,8 @@ cleanup() {
     esac
   done
   aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1
-  rm -f "${MAP_FILE}"
+  # Unset until the pre-run cleanup has run (see below).
+  [ -n "${MAP_DIR:-}" ] && rm -rf "${MAP_DIR}"
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/${PREFIX}/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -165,6 +165,11 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+
+# Outside the fixture tree: the mapping file names the AWS account id. Made
+# AFTER the pre-run cleanup, which would otherwise remove it.
+MAP_DIR="$(mktemp -d)"
+MAP_FILE="${MAP_DIR}/refactor-map.json"
 
 # --- Phase 1: deploy generation "a" ------------------------------------------
 echo "==> Phase 1: deploy generation a"

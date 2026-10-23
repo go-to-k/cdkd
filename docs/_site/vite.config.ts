@@ -101,6 +101,7 @@ const navigation: ScopedNavigationGroup[] = [
       { title: 'Stop on Destructive Changes', path: '/destructive-changes' },
       { title: 'Review Past Deploys', path: '/deployment-events' },
       { title: 'Detect and Fix Drift', path: '/drift' },
+      { title: 'Keep Resources When You Rename or Move', path: '/refactor' },
       { title: 'Orphan Instead of Destroy', path: '/orphan-vs-destroy' },
       { title: 'Read Stack Outputs', path: '/stack-outputs' },
       { title: "Use Another Stack's Outputs", path: '/cross-stack-references' },
