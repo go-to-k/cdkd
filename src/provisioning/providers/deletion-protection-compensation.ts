@@ -1003,7 +1003,11 @@ async function settleBeforeFinalSnapshot(
     // A fully operational non-`available` status can last hours: send now.
     if (current.deletionProtection === false && (terminal || operational)) return;
     // The guard still ON in a terminal status will not change on its own.
-    if (current.deletionProtection === true && terminal) break;
+    if (current.deletionProtection === true && terminal) {
+      throw new Error(
+        `--remove-protection turned DeletionProtection off, but the ${noun} still reads it ON in status '${current.status ?? 'unknown'}', which does not change on its own, and the final snapshot its DeletionPolicy asks for needs it 'available'. The delete was not sent and the guard is put back; re-run the destroy once the ${noun} is 'available'`
+      );
+    }
     const settled = current.deletionProtection === false && current.status === 'available';
     const inGrace = !sawTransitional && graceSleptMs < FLIP_TRANSITION_GRACE_MS;
     if (settled && !inGrace) return;

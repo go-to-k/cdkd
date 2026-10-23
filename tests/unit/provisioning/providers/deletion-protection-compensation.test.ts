@@ -156,8 +156,18 @@ describe('waitForFlipToSettleBeforeFinalSnapshot (#5184)', () => {
   it('throws at once when the guard reads ON in a terminal status (fail closed)', async () => {
     const { error, reads } = await run([ON('stopped')]);
 
-    expect(error?.message).toContain("did not return to 'available'");
+    expect(error?.message).toContain("still reads it ON in status 'stopped'");
     expect(reads).toHaveLength(1);
+  });
+
+  it('does not count a still-available storage status as transitional for the grace window', async () => {
+    // ON in storage-optimization, then OFF and available: no transitional
+    // status was seen, so the OFF read still gets its 30s of grace.
+    const { error, reads } = await run([ON('storage-optimization'), OFF('available')]);
+
+    expect(error).toBeUndefined();
+    // 1 ON read, then OFF reads after 0, 10, 20 and 30s of grace.
+    expect(reads).toHaveLength(5);
   });
 
   it('ends at once on a terminal status with the guard off', async () => {
