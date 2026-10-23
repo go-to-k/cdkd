@@ -44,7 +44,7 @@ import {
   withDerivedNameMasks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { injectiveKey, injectiveKeyPrefix } from '../../state/record-keys.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
@@ -57,12 +57,10 @@ const POLL_TIMEOUT_MS = 30 * 60 * 1000;
 /**
  * Issue #1160: the optional, mutable properties whose REMOVAL from the
  * template leaves the live value in place. `ModifyDBProxy` keeps any setting
- * it is not sent, and cdkd sends no reset on purpose: CloudFormation's
- * published DBProxy handler
- * (aws-cloudformation-resource-providers-rds-proxy, `UpdateHandler`) forwards
- * the desired model's null the same way, so a reset would diverge from it.
- * The update warns instead of staying silent. `RoleArn` is required, and the
- * create-only properties replace the proxy, so neither belongs here.
+ * it is not sent, and cdkd sends no reset. The update warns instead of
+ * staying silent. `RoleArn` is required, and the create-only properties
+ * replace the proxy, so neither belongs here. `Auth` is retained only where
+ * the update does not refuse its removal ({@link authRemovalRefused}).
  */
 const RETAINED_ON_REMOVAL: readonly string[] = [
   'Auth',
@@ -71,6 +69,40 @@ const RETAINED_ON_REMOVAL: readonly string[] = [
   'DebugLogging',
   'VpcSecurityGroupIds',
 ];
+
+/**
+ * The {@link RETAINED_ON_REMOVAL} properties CloudFormation is MEASURED to keep
+ * too (CFn A/B us-east-1 2026-10-22: `RequireTLS` true, `IdleClientTimeout`
+ * 900, `DebugLogging` true and a custom `VpcSecurityGroupIds` removed together
+ * left every live value in place, and the update succeeded). `Auth` is not
+ * here: CloudFormation sends its removal, so a warning naming it claims
+ * nothing about CloudFormation.
+ */
+const CFN_KEEPS_ON_REMOVAL: ReadonlySet<string> = new Set([
+  'RequireTLS',
+  'IdleClientTimeout',
+  'DebugLogging',
+  'VpcSecurityGroupIds',
+]);
+
+/**
+ * Issue #1160: whether `update()` refuses an `Auth` removal. AWS requires
+ * `Auth` while `DefaultAuthScheme` is `NONE` or unset, and CloudFormation
+ * sends the removal, so its update fails (CFn A/B us-east-1 2026-10-22:
+ * `UPDATE_FAILED`, "the 'Auth' parameter is required when the
+ * 'defaultAuthScheme' parameter is set to NONE or not specified"). cdkd
+ * refuses the same deploy before any call. With `DefaultAuthScheme` set,
+ * CloudFormation's removal would be accepted, so nothing is refused. That arm
+ * reaches this provider only under `--allow-unsupported-properties
+ * DefaultAuthScheme` (the property is a silent drop, so a template declaring
+ * it otherwise routes through Cloud Control); the scheme was then never sent
+ * and AWS still requires `Auth`, so the proxy keeps `Auth` and the update
+ * warns, as before.
+ */
+const authRemovalRefused = (properties: Record<string, unknown>): boolean => {
+  const scheme = properties['DefaultAuthScheme'];
+  return scheme === undefined || scheme === 'NONE';
+};
 
 /**
  * AWS RDS DBProxy Provider
@@ -92,7 +124,8 @@ const RETAINED_ON_REMOVAL: readonly string[] = [
  * - `update`: `ModifyDBProxyCommand` for the mutable fields (Auth /
  *   DebugLogging / IdleClientTimeout / RequireTLS / RoleArn /
  *   SecurityGroups); a removed field is left at its live value and warned
- *   about (`RETAINED_ON_REMOVAL`). Tags handled via separate `AddTagsToResource` /
+ *   about (`RETAINED_ON_REMOVAL`), except an `Auth` removal AWS would refuse,
+ *   which is refused before any call (`authRemovalRefused`). Tags handled via separate `AddTagsToResource` /
  *   `RemoveTagsFromResource` diff. EngineFamily and VpcSubnetIds are
  *   immutable on AWS; a diff in those surfaces as `ResourceReplacement`
  *   from the deploy engine, not handled here.
@@ -328,6 +361,27 @@ export class RDSDBProxyProvider implements ResourceProvider {
       DBPROXY_TAGS_WHAT,
       DBPROXY_TAG_OPTIONS
     );
+    // Issue #1160: an Auth removal CloudFormation's update fails on is refused
+    // before any call (`authRemovalRefused`). Not on a rollback replay or
+    // `drift --revert`: neither removes anything from a template. A replay
+    // keeps the live Auth and warns; `drift --revert` passes an empty removed
+    // set, so it keeps the live Auth without a warning.
+    if (
+      context?.replayingState !== true &&
+      context?.desiredFromAwsReadback !== true &&
+      this.removedRetained(properties, previousProperties, context).includes('Auth') &&
+      authRemovalRefused(properties)
+    ) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          safeMsg`${logicalId} (${resourceType}): Auth was removed from the template, but AWS requires Auth while DefaultAuthScheme is NONE or unset, and CloudFormation's update fails on the same change. Declare Auth again; nothing was changed.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+
     const client = this.getClient();
     // The physical id IS the proxy name, which can be secret-derived. Paired
     // with the RECORDED name (go-to-k/cdkd#4339): after a secret rotation the
@@ -429,9 +483,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
 
   /**
    * Issue #1160: one warning naming each {@link RETAINED_ON_REMOVAL} property
-   * the template dropped. The removed set is the caller's (template against
-   * template, EMPTY on `drift --revert`, whose previous side is a readback);
-   * a direct call applies the same presence test (`removedTemplateKeys`).
+   * the template dropped ({@link removedRetained}).
    */
   private warnOnRetainedRemovals(
     logicalId: string,
@@ -440,6 +492,32 @@ export class RDSDBProxyProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context: UpdateContext | undefined
   ): void {
+    const retained = this.removedRetained(properties, previousProperties, context);
+    if (retained.length === 0) return;
+    const one = retained.length === 1;
+    const names = `${one ? 'property' : 'properties'} ${retained.join(', ')}`;
+    // The CloudFormation claim only when CloudFormation is measured to keep
+    // EVERY named property (CFN_KEEPS_ON_REMOVAL).
+    this.logger.warn(
+      context?.replayingState === true
+        ? safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'is' : 'are'} absent from the state being restored; ModifyDBProxy keeps a setting it is not sent, so the rollback leaves any value the failed deploy applied in place.`
+        : retained.every((key) => CFN_KEEPS_ON_REMOVAL.has(key))
+          ? safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'was' : 'were'} removed from the template and ${one ? 'keeps its' : 'keep their'} current AWS value, as CloudFormation leaves ${one ? 'it' : 'them'}; ModifyDBProxy keeps a setting it is not sent. Declare the property with the value you want to change it.`
+          : safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'was' : 'were'} removed from the template; ModifyDBProxy keeps a setting it is not sent, so the proxy keeps its current value. Declare the property with the value you want to change it.`
+    );
+  }
+
+  /**
+   * The {@link RETAINED_ON_REMOVAL} properties the template dropped. The
+   * removed set is the caller's (template against template, EMPTY on
+   * `drift --revert`, whose previous side is a readback); a direct call
+   * applies the same presence test (`removedTemplateKeys`).
+   */
+  private removedRetained(
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): string[] {
     const removed = context?.removedProperties;
     const retained: string[] = [];
     for (const key of RETAINED_ON_REMOVAL) {
@@ -449,14 +527,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
           : previousProperties[key] !== undefined && properties[key] === undefined;
       if (isRemoved) retained.push(key);
     }
-    if (retained.length === 0) return;
-    const one = retained.length === 1;
-    const names = `${one ? 'property' : 'properties'} ${retained.join(', ')}`;
-    this.logger.warn(
-      context?.replayingState === true
-        ? safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'is' : 'are'} absent from the state being restored; ModifyDBProxy keeps a setting it is not sent, so the rollback leaves any value the failed deploy applied in place.`
-        : safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'was' : 'were'} removed from the template; ModifyDBProxy keeps a setting it is not sent, so the proxy keeps its current value. Declare the property with the value you want to change it.`
-    );
+    return retained;
   }
 
   async delete(

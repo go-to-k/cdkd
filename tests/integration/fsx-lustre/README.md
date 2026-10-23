@@ -30,9 +30,11 @@ the SDK provider, built on the CDK L2 (`aws-fsx.LustreFileSystem`).
      `DataCompressionType` is dropped from the template while its live
      value is `LZ4`, and `WeeklyMaintenanceStartTime` is added in the same
      deploy. `UpdateFileSystem` keeps a field it is not sent and cdkd sends
-     no reset, so this asserts that:
+     no reset, as CloudFormation leaves it (CFn A/B on issue #1160), so this
+     asserts that:
      - the deploy succeeds;
-     - the deploy warns, naming `LustreConfiguration.DataCompressionType`;
+     - the deploy warns, naming `LustreConfiguration.DataCompressionType`
+       and saying CloudFormation keeps it too;
      - the value stays `LZ4`;
      - the maintenance window landed, which proves the call fired.
 

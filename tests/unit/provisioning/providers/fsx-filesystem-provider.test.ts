@@ -2192,7 +2192,8 @@ describe('FSxFileSystemProvider nested sub-block update arms', () => {
 // Issue #1160: UpdateFileSystem keeps a field it is not sent, and cdkd sends
 // no reset for any of these removals, so each one must WARN rather than be
 // silently dropped — and must never issue an UpdateFileSystem carrying no
-// update field.
+// update field. The warning says CloudFormation keeps the value too only when
+// every named property is one the CFn A/B measured (CFN_KEEPS_ON_REMOVAL).
 describe('FSxFileSystemProvider update removal (#1160)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -2316,7 +2317,7 @@ describe('FSxFileSystemProvider update removal (#1160)', () => {
     });
     expect(warnings()).toHaveLength(1);
     expect(warnings()[0]).toContain(
-      'properties LustreConfiguration.DataCompressionType, LustreConfiguration.AutoImportPolicy are no longer declared'
+      'properties LustreConfiguration.DataCompressionType, LustreConfiguration.AutoImportPolicy are no longer declared and keep their current AWS value, as CloudFormation leaves them;'
     );
   });
 
@@ -2357,8 +2358,54 @@ describe('FSxFileSystemProvider update removal (#1160)', () => {
     expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
     expect(warnings()).toHaveLength(1);
     expect(warnings()[0]).toContain(
-      'LustreConfiguration.DataCompressionType, LustreConfiguration.WeeklyMaintenanceStartTime are no longer declared'
+      'LustreConfiguration.DataCompressionType, LustreConfiguration.WeeklyMaintenanceStartTime are no longer declared and keep their current AWS value, as CloudFormation leaves them;'
     );
+  });
+
+  it('says CloudFormation keeps every measured OpenZFS sub-property removal', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+
+    const prev = {
+      ...OPENZFS_PROPS,
+      OpenZFSConfiguration: {
+        ...OPENZFS_PROPS.OpenZFSConfiguration,
+        AutomaticBackupRetentionDays: 3,
+        CopyTagsToBackups: true,
+        CopyTagsToVolumes: true,
+        DailyAutomaticBackupStartTime: '05:00',
+        WeeklyMaintenanceStartTime: '1:06:00',
+        DiskIopsConfiguration: { Mode: 'USER_PROVISIONED', Iops: 500 },
+      },
+    };
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, { ...OPENZFS_PROPS }, prev);
+
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): properties OpenZFSConfiguration.AutomaticBackupRetentionDays, OpenZFSConfiguration.CopyTagsToBackups, OpenZFSConfiguration.CopyTagsToVolumes, OpenZFSConfiguration.DailyAutomaticBackupStartTime, OpenZFSConfiguration.WeeklyMaintenanceStartTime, OpenZFSConfiguration.DiskIopsConfiguration are no longer declared and keep their current AWS value, as CloudFormation leaves them; UpdateFileSystem keeps a setting it is not sent. Declare the intended value explicitly to change it.',
+    ]);
+  });
+
+  it('claims nothing about CloudFormation for an unmeasured sub-property of a measured variant', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+
+    const prev = {
+      ...LUSTRE_PROPS,
+      LustreConfiguration: {
+        DeploymentType: 'PERSISTENT_2',
+        AutomaticBackupRetentionDays: 7,
+      },
+    };
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      { ...prev, LustreConfiguration: { DeploymentType: 'PERSISTENT_2' } },
+      prev
+    );
+
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): property LustreConfiguration.AutomaticBackupRetentionDays is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.',
+    ]);
   });
 
   it('still expresses a removed RouteTableIds as a RemoveRouteTableIds delta (no warning)', async () => {
@@ -2407,9 +2454,12 @@ describe('FSxFileSystemProvider update removal (#1160)', () => {
 
       expect(result).toEqual({ physicalId: FS_ID, wasReplaced: false });
       expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
-      // Named by the provider's own line, which claims no CloudFormation reset.
+      // Named by the provider's own line, which claims no CloudFormation reset;
+      // it says CloudFormation keeps the value only where that is measured.
       expect(warnings()).toEqual([
-        `MyFs (AWS::FSx::FileSystem): property ${key} is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`,
+        key === 'FileSystemTypeVersion'
+          ? `MyFs (AWS::FSx::FileSystem): property ${key} is no longer declared and keeps its current AWS value, as CloudFormation leaves it; UpdateFileSystem keeps a setting it is not sent. Declare the intended value explicitly to change it.`
+          : `MyFs (AWS::FSx::FileSystem): property ${key} is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`,
       ]);
     });
   }
@@ -2431,7 +2481,7 @@ describe('FSxFileSystemProvider update removal (#1160)', () => {
     expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
     expect(warnings()).toHaveLength(1);
     expect(warnings()[0]).toContain(
-      'properties NetworkType, LustreConfiguration.DataCompressionType are no longer declared'
+      'properties NetworkType, LustreConfiguration.DataCompressionType are no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.'
     );
   });
 
