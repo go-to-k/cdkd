@@ -346,7 +346,9 @@ async function diffCommand(
       if (inStages.length > 0) logger.info(renderAllLeftOutStageStacks(inStages));
       targetStacks = topLevel;
     } else if (stackPatterns.length > 0) {
-      targetStacks = matchStacks(allStacks, stackPatterns);
+      // Every selected stack, two sharing a physical name in two regions
+      // included (#5176): each diffs against its own region's state.
+      targetStacks = matchStacks(allStacks, stackPatterns, { dedupe: 'identity' });
     } else if (allStacks.length === 1) {
       targetStacks = allStacks;
     } else {
@@ -534,8 +536,15 @@ async function diffCommand(
     // 4. Build a diff tree per target stack (nested children only when --recursive).
     const trees: DiffTreeNode[] = [];
     const producerLookup = producerLookupOver(allStacks);
+    // A name two selected stacks share is shown with its CDK path (#5176).
+    const sharedNames = new Set(
+      targetStacks.map((s) => s.stackName).filter((name, i, names) => names.indexOf(name) !== i)
+    );
     for (const stackInfo of targetStacks) {
-      logger.info(`\nCalculating diff for stack: ${stackInfo.stackName}`);
+      const shownName = sharedNames.has(stackInfo.stackName)
+        ? describeStack(stackInfo)
+        : stackInfo.stackName;
+      logger.info(`\nCalculating diff for stack: ${shownName}`);
       // Stack region drives the state key. Falls back to the CLI region only
       // when synth couldn't determine a region (e.g. env-agnostic stacks), and
       // then to state the old us-east-1 default wrote (go-to-k/cdkd#2100).
@@ -551,7 +560,7 @@ async function diffCommand(
       trees.push(
         await buildDiffTree({
           stackName: stackInfo.stackName,
-          displayName: stackInfo.stackName,
+          displayName: shownName,
           region: stackRegion,
           template: stackInfo.template,
           // Null-prototype on the ABSENT arm too (issue go-to-k/cdkd#3480): the

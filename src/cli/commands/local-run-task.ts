@@ -925,7 +925,9 @@ export function pickCandidateStack(
     if (stacks.length === 1) return stacks[0];
     return undefined;
   }
-  const matched = matchStacks(stacks, [stackPattern]);
+  // By identity: two Stage stacks sharing a physical name are not unique,
+  // never the first one's (#5176).
+  const matched = matchStacks(stacks, [stackPattern], { dedupe: 'identity' });
   if (matched.length === 1) return matched[0];
   return undefined;
 }

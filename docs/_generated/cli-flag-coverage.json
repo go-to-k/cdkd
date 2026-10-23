@@ -108,7 +108,8 @@
         "custom-resource-noecho-nested",
         "importvalue-chain",
         "noecho-named-producer",
-        "outputs-only-export"
+        "outputs-only-export",
+        "shared-stackname-multi-region"
       ]
     },
     {
@@ -390,6 +391,7 @@
         "servicediscovery-namespaces",
         "ses-identity",
         "sg-circular-dependency",
+        "shared-stackname-multi-region",
         "sns-event-source",
         "sns-inline-subscription",
         "sns-pending-subscription",
@@ -835,6 +837,7 @@
         "servicediscovery-namespaces",
         "ses-identity",
         "sg-circular-dependency",
+        "shared-stackname-multi-region",
         "sns-event-source",
         "sns-inline-subscription",
         "sns-pending-subscription",
@@ -1227,6 +1230,7 @@
         "servicediscovery-namespaces",
         "ses-identity",
         "sg-circular-dependency",
+        "shared-stackname-multi-region",
         "sns-event-source",
         "sns-inline-subscription",
         "sns-pending-subscription",
@@ -1671,6 +1675,7 @@
         "servicediscovery-namespaces",
         "ses-identity",
         "sg-circular-dependency",
+        "shared-stackname-multi-region",
         "sns-event-source",
         "sns-inline-subscription",
         "sns-pending-subscription",
@@ -2054,6 +2059,7 @@
         "servicediscovery-namespaces",
         "ses-identity",
         "sg-circular-dependency",
+        "shared-stackname-multi-region",
         "sns-event-source",
         "sns-inline-subscription",
         "sns-pending-subscription",

@@ -199,7 +199,11 @@ export async function synthCommand(
   // `assembly.manifest.missing` for the WHOLE assembly. So a stack argument
   // does NOT narrow which `cdk.context.json` lookups run, and narrowing
   // synthesis here would diverge from `cdk` in a way nothing would report.
-  const selected = stackPatterns.length > 0 ? matchStacks(allStacks, stackPatterns) : allStacks;
+  // Every selected stack, two sharing a physical name included (#5176).
+  const selected =
+    stackPatterns.length > 0
+      ? matchStacks(allStacks, stackPatterns, { dedupe: 'identity' })
+      : allStacks;
   if (selected.length === 0) {
     throw new Error(renderNoStackMatch(stackPatterns, allStacks));
   }
@@ -249,17 +253,26 @@ export async function synthCommand(
       : `Found ${stacks.length} of ${allStacks.length} stack(s):`;
   logger.info(`\n${green('✓')} ${bold('Synthesis complete!')} ${found}`);
 
+  // Two Stages deployed to different regions may share a physical name; their
+  // lines name the CDK path and their `--verbose` files the region (#5176).
+  const sharedNames = new Set(
+    stacks.map((s) => s.stackName).filter((name, i, names) => names.indexOf(name) !== i)
+  );
   for (const stack of stacks) {
+    const shared = sharedNames.has(stack.stackName);
     const resourceCount = countDeployableResources(stack.template);
     const outputCount = Object.keys(stack.template.Outputs ?? {}).length;
 
-    logger.info(`  • ${stack.stackName}`);
+    logger.info(`  • ${shared ? describeStack(stack) : stack.stackName}`);
     logger.info(`    - Resources: ${resourceCount}`);
     logger.info(`    - Outputs: ${outputCount}`);
     logger.info(`    - Has assets: ${assemblyReader.hasAssets(stack) ? 'Yes' : 'No'}`);
 
     if (options.verbose) {
-      const templatePath = resolveVerboseTemplatePath(options.output, stack.stackName);
+      const templatePath = resolveVerboseTemplatePath(
+        options.output,
+        shared ? `${stack.stackName}.${stack.region ?? 'env-agnostic'}` : stack.stackName
+      );
       writeFileSync(templatePath, JSON.stringify(stack.template, null, 2));
       logger.debug(`    - Template written to: ${displaySafe(templatePath)}`);
     }

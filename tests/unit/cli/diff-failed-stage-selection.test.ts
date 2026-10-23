@@ -195,3 +195,43 @@ describe('cdkd diff --all selects top-level stacks only (issue #4474)', () => {
     expect(mockExpandMacros).not.toHaveBeenCalled();
   });
 });
+
+// go-to-k/cdkd#5176: one Stage per region under a shared stackName is two
+// stacks; a pattern selecting both diffs both, each named by its CDK path.
+describe('cdkd diff of a stackName two regions share (issue #5176)', () => {
+  beforeEach(() => {
+    mockSynthesize.mockReset();
+    mockLoggerError.mockReset();
+    mockLoggerInfo.mockReset();
+    mockExpandMacros.mockClear();
+  });
+
+  it('diffs both stacks and names each by its CDK path', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [
+        { ...makeStack('Shared'), displayName: 'UsEast/Api', stagePath: 'UsEast' },
+        {
+          ...makeStack('Shared'),
+          displayName: 'UsWest/Api',
+          stagePath: 'UsWest',
+          region: 'us-west-2',
+        },
+      ],
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+    });
+
+    await runDiff(['Shared']);
+
+    expect(mockExpandMacros).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({ displayName: 'UsEast/Api' }),
+        expect.objectContaining({ displayName: 'UsWest/Api' }),
+      ],
+      expect.anything()
+    );
+    const info = mockLoggerInfo.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(info).toContain('Calculating diff for stack: Shared (UsEast/Api)');
+    expect(info).toContain('Calculating diff for stack: Shared (UsWest/Api)');
+  });
+});

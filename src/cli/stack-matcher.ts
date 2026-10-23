@@ -21,6 +21,8 @@
  */
 import { displayIdent, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { globMatches, pathGlobMatches } from '../utils/glob-match.js';
+import { CdkdError } from '../utils/error-handler.js';
+import { injectiveKey } from '../state/record-keys.js';
 import { stackForPathFormTarget } from './cdk-path.js';
 
 export interface StackLike {
@@ -35,11 +37,13 @@ export interface StackLike {
 
 export interface MatchStacksOptions {
   /**
-   * `'stackName'` (the default) keeps one stack per physical name: `deploy`,
-   * `destroy`, `diff` and the other state-keyed commands address a stack by
-   * `stackName`. `'identity'` keeps every selected stack, so the `cdkd local`
-   * resolvers see both clones of a Stage that share a `stackName` and refuse
-   * as ambiguous instead of running the first one's code (#5175).
+   * `'stackName'` (the default) keeps one stack per physical name.
+   * `'identity'` keeps every selected stack: the `cdkd local` resolvers see
+   * both clones of a Stage that share a `stackName` and refuse as ambiguous
+   * instead of running the first one's code (#5175), and `deploy`, `destroy`,
+   * `diff`, `list`, `synth`, `publish-assets` and `scrub` process one Stage
+   * per region under a shared name as the two stacks it is, keyed by name
+   * AND region (#5176).
    */
   dedupe?: 'stackName' | 'identity';
 }
@@ -61,6 +65,144 @@ export function matchStacks<T extends StackLike>(
   // `Beta/Api` when the two share a physical name (#5175).
   const seen = new Set<string>();
   return stacks.filter((s) => selected.has(s) && !seen.has(s.stackName) && seen.add(s.stackName));
+}
+
+/**
+ * The groups of stacks that address ONE CloudFormation stack (and one cdkd
+ * state record): the same physical `stackName` in the same region, so
+ * deploying both would let the second overwrite the first (#5176). Stacks
+ * sharing a name in DIFFERENT regions are distinct and never grouped.
+ *
+ * `selected` names the stacks this run acts on; every stack when omitted. Two
+ * SELECTED stacks always collide, whatever account they pin: cdkd runs them
+ * all under the caller's one account, state bucket and lock. A selected and an
+ * UNSELECTED stack collide only when their accounts can be the same -- equal,
+ * or either unpinned -- so one Stage of a pipeline whose Stages pin different
+ * accounts is not refused. A group is returned only when it holds a selected
+ * stack. `regionOf` answers `undefined` for an env-agnostic stack whose region
+ * is not resolved yet; two such stacks resolve to the same region and are
+ * grouped too.
+ */
+export function stackNameRegionCollisions<T extends StackLike & { account?: string | undefined }>(
+  stacks: readonly T[],
+  regionOf: (stack: T) => string | undefined,
+  selected: ReadonlySet<T> = new Set(stacks)
+): T[][] {
+  const byNameRegion = new Map<string, T[]>();
+  for (const stack of stacks) {
+    const key = injectiveKey(stack.stackName, regionOf(stack) ?? '');
+    const group = byNameRegion.get(key);
+    if (group) group.push(stack);
+    else byNameRegion.set(key, [stack]);
+  }
+  const sameAccountPossible = (a: T, b: T): boolean =>
+    a.account === undefined || b.account === undefined || a.account === b.account;
+  const groups: T[][] = [];
+  for (const group of byNameRegion.values()) {
+    const chosen = group.filter((s) => selected.has(s));
+    if (chosen.length === 0) continue;
+    const colliding = group.filter(
+      (s) => selected.has(s) || chosen.some((c) => sameAccountPossible(c, s))
+    );
+    if (colliding.length > 1) groups.push(colliding);
+  }
+  return groups;
+}
+
+/**
+ * The stacks a dependency NAME refers to, from `dependent`'s point of view. A
+ * manifest dependency and an inferred cross-stack reference both carry only
+ * the producer's physical name, which two Stages deployed to different
+ * regions share (#5176). The producer is the one in the dependent's own CDK
+ * Stage (a manifest dependency never leaves its assembly), then the one in its
+ * region (an `Fn::ImportValue` never leaves its region), else every candidate:
+ * an extra ordering edge is safe, a missing one is not. A stack never depends
+ * on another of its own name.
+ */
+export function stacksForDependency<T extends StackLike & { region?: string | undefined }>(
+  depName: string,
+  dependent: T,
+  pool: readonly T[]
+): T[] {
+  if (depName === dependent.stackName) return [];
+  const candidates = pool.filter((s) => s.stackName === depName);
+  if (candidates.length <= 1) return candidates;
+  // Each tier narrows the previous one: top-level stacks all share an
+  // `undefined` Stage, so two top-level stacks of one name in two regions are
+  // told apart by region only.
+  const sameStage = candidates.filter((s) => s.stagePath === dependent.stagePath);
+  const inStage = sameStage.length > 0 ? sameStage : candidates;
+  if (inStage.length === 1) return inStage;
+  const sameRegion = inStage.filter((s) => s.region === dependent.region);
+  return sameRegion.length > 0 ? sameRegion : inStage;
+}
+
+/**
+ * The refusal for {@link stackNameRegionCollisions}: every colliding stack by
+ * its CDK path, the shared name and region, and the next step.
+ */
+export function renderStackNameRegionCollision(
+  groups: readonly (readonly (StackLike & {
+    account?: string | undefined;
+    region?: string | undefined;
+  })[])[],
+  regionOf: (stack: StackLike) => string | undefined
+): string {
+  const ident = (v: string): string =>
+    displayIdent(v, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
+  const lines = groups.map((group) => {
+    const region = regionOf(group[0]!);
+    const where =
+      region === undefined
+        ? 'and neither sets env.region, so they deploy to the same region'
+        : `in region ${ident(region)}`;
+    // Two selected stacks pinned to different accounts still share the run's
+    // one account, state bucket and lock, so the accounts are named.
+    const accounts = [...new Set(group.flatMap((s) => (s.account ? [s.account] : [])))];
+    const accountNote =
+      accounts.length > 1
+        ? ` (their accounts ${accounts.map(ident).join(', ')} differ, but one run deploys every selected stack under its own account)`
+        : '';
+    return (
+      `${group.map(describeStack).join(', ')} share the physical stack name ` +
+      `${ident(group[0]!.stackName)} ${where}${accountNote}`
+    );
+  });
+  return (
+    `Selected stacks address the same CloudFormation stack: ${lines.join('; ')}. ` +
+    `Give each a distinct stackName or env.region, or select only one of them by its CDK path.` +
+    // An env-agnostic stack whose region was RESOLVED onto a pinned one's.
+    (groups.some((g) => g.some((s) => s.region === undefined && regionOf(s) !== undefined))
+      ? ` A stack without env.region takes the run's region: pin that Stage's region, or set ` +
+        `AWS_REGION to another region for this run.`
+      : '')
+  );
+}
+
+/**
+ * Throw {@link renderStackNameRegionCollision} when two of `stacks` share a
+ * physical name and a region. `deploy` and `destroy` call it before any
+ * per-stack AWS call. `stacks` then also holds the unselected app stacks of a
+ * selected stack's name that PIN a region, so a selected stack landing on such
+ * a stack's record is refused too, and two unselected ones are left alone. An
+ * unselected env-agnostic stack is not passed: where (and whether) it is
+ * deployed depends on the profile of the run that deployed it, and its record
+ * is indistinguishable from the selected stack's.
+ */
+export function refuseStackNameRegionCollisions<
+  T extends StackLike & { account?: string | undefined; region?: string | undefined },
+>(
+  stacks: readonly T[],
+  regionOf: (stack: T) => string | undefined,
+  selected?: ReadonlySet<T>
+): void {
+  const groups = stackNameRegionCollisions(stacks, regionOf, selected);
+  if (groups.length > 0) {
+    throw new CdkdError(
+      renderStackNameRegionCollision(groups, (s) => regionOf(s as T)),
+      'STACK_NAME_REGION_COLLISION'
+    );
+  }
 }
 
 /**

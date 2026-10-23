@@ -89,4 +89,38 @@ describe('cdkd synth --verbose write wiring', () => {
 
     expect(existsSync(join(outer, 'sibling.template.json'))).toBe(false);
   });
+
+  it('writes one file per region for a stackName two Stage stacks share (#5176)', async () => {
+    const { out } = outdir();
+    synthesize.mockResolvedValue({
+      stacks: [
+        { ...(stack('Shared') as object), displayName: 'UsEast/Api', region: 'us-east-1' },
+        { ...(stack('Shared') as object), displayName: 'UsWest/Api', region: 'us-west-2' },
+        stack('Solo'),
+      ],
+      assemblyDir: out,
+    });
+
+    await run(out, 'Shared');
+
+    expect(readdirSync(out).sort()).toEqual([
+      'Shared.us-east-1.template.json',
+      'Shared.us-west-2.template.json',
+      'Solo.template.json',
+    ]);
+  });
+
+  it('REFUSES an escaping region on a shared stackName, writing nothing outside --output', async () => {
+    const { out, outer } = outdir();
+    synthesize.mockResolvedValue({
+      stacks: [
+        { ...(stack('Shared') as object), displayName: 'A/Api', region: '/../../escaped' },
+        { ...(stack('Shared') as object), displayName: 'B/Api', region: 'us-west-2' },
+      ],
+      assemblyDir: out,
+    });
+
+    await expect(run(out, 'Shared')).rejects.toThrow(/outside/);
+    expect(existsSync(join(outer, 'escaped.template.json'))).toBe(false);
+  });
 });

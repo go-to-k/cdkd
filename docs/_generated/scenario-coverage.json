@@ -2465,6 +2465,11 @@
       ]
     },
     {
+      "name": "shared-stackname-multi-region",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "sns-event-source",
       "annotated": false,
       "scenarios": []
@@ -3560,6 +3565,7 @@
     "secrets-rotation-schedule",
     "secretsmanager-update-value-source",
     "servicediscovery",
+    "shared-stackname-multi-region",
     "sns-event-source",
     "sns-inline-subscription",
     "sns-subscription-filter",

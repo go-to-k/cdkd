@@ -754,6 +754,21 @@ describe('cdkd scrub: the summary states what was purged, bounded by the purge w
     expect(summary).toContain('ROTATE it in Secrets Manager');
   });
 
+  it('counts two records of a stackName two regions share as two stacks (go-to-k/cdkd#5176)', async () => {
+    synthStacks.length = 0;
+    synthStacks.push(
+      { ...makeStackInfo('Scrubbable'), displayName: 'UsEast/Api', region: 'us-east-1' },
+      { ...makeStackInfo('Scrubbable'), displayName: 'UsWest/Api', region: 'us-west-2' }
+    );
+    await expect(scrubCommand([], commandOptions({ all: true }))).resolves.toBeUndefined();
+    expect(commandStateBackend.saveState.mock.calls.map((c) => [c[0], c[1]])).toEqual([
+      ['Scrubbable', 'us-east-1'],
+      ['Scrubbable', 'us-west-2'],
+    ]);
+    const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(summary).toContain('Done: scrubbed 2 stack(s).');
+  });
+
   it('--purge-history on a CLEAN run purges every examined record and says so', async () => {
     commandStateBackend.getState.mockImplementation((stackName: string) => {
       const state = makeState(stackName, false);
