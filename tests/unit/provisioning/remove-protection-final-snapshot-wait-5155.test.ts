@@ -248,7 +248,7 @@ describe.each(CASES)('$label: --remove-protection then a final snapshot (#5155)'
     // `configuring-enhanced-monitoring`, which is neither `available` nor
     // `modifying`.
     const transitional =
-      c.kind === 'cluster' ? 'configuring-enhanced-monitoring' : 'storage-optimization';
+      c.kind === 'cluster' ? 'configuring-enhanced-monitoring' : 'configuring-log-exports';
     const order = route(c.kind, { protectionOn: true, afterFlip: Array(10).fill(transitional) });
     const context: DeleteContext = { removeProtection: true, finalSnapshotIdentifier: SNAP };
 
@@ -273,6 +273,18 @@ describe.each(CASES)('$label: --remove-protection then a final snapshot (#5155)'
 
     expect(order.filter((n) => /^DeleteDB(Cluster|Instance)Command$/.test(n))).toHaveLength(2);
     expect(order.reEnables).toHaveLength(0);
+  });
+
+  it('sends at once in storage-optimization, which AWS documents as fully operational (#5184)', async () => {
+    const order = route(c.kind, {
+      protectionOn: true,
+      afterFlip: Array(10).fill('storage-optimization'),
+    });
+    const context: DeleteContext = { removeProtection: true, finalSnapshotIdentifier: SNAP };
+
+    await c.make().delete('Res', 'res', c.type, c.properties, context);
+
+    expect(describesBetweenFlipAndDelete(order)).toBe(1);
   });
 
   it('leaves a terminal status to AWS at once instead of waiting (#5184)', async () => {

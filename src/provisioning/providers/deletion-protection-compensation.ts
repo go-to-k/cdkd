@@ -905,6 +905,25 @@ const TERMINAL_DB_STATUSES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Issue #5184: statuses the RDS DB instance status table documents as still
+ * available for operations though not `available`, which can last hours:
+ * `storage-optimization` (a storage modification's background phase, up to
+ * and beyond 24 hours) and `storage-initialization` (loading blocks from S3
+ * after a restore). Once the guard reads OFF, a delete in one is sent at once,
+ * as for `available`, rather than waited on; a refusal is then retried like
+ * any other.
+ */
+const PROCEED_DB_STATUSES: ReadonlySet<string> = new Set([
+  'storage-optimization',
+  'storage-initialization',
+]);
+
+/** Whether `status` is `available` or one of {@link PROCEED_DB_STATUSES}. */
+export function isProceedDbStatus(status: string | undefined): boolean {
+  return status === 'available' || (status !== undefined && PROCEED_DB_STATUSES.has(status));
+}
+
+/**
  * Whether `status` is one {@link TERMINAL_DB_STATUSES} names, or an
  * `inaccessible-*`, `incompatible-*` or `*-failed` one (`cloning-failed`,
  * `migration-failed`, ...). `starting` and `stopping` are transitional: each
@@ -931,8 +950,10 @@ export function isTerminalDbStatus(status: string | undefined): boolean {
  * refused once it does. So a settled read ends the wait only after a
  * transitional status has been seen, or after {@link FLIP_TRANSITION_GRACE_MS}
  * of slept time for a flip that never shows one. A TERMINAL status
- * ({@link isTerminalDbStatus}) with the guard off ends the wait at once: the
- * delete is AWS's to accept or refuse. The grace clock starts at the
+ * ({@link isTerminalDbStatus}) or a fully operational one
+ * ({@link isProceedDbStatus}) with the guard off ends the wait at once: the
+ * delete is AWS's to accept or refuse. The guard still ON in a terminal status
+ * throws at once (fail closed). The grace clock starts at the
  * first protection-OFF read, not at the wait's start: time spent while the
  * guard still reads ON is not time the modification had to surface after the
  * OFF readback. A flip that shows a transitional status adds no wait beyond
@@ -975,10 +996,14 @@ async function settleBeforeFinalSnapshot(
     const current = await opts.read();
     if (current === undefined) return;
     const terminal = isTerminalDbStatus(current.status);
-    if (current.status !== 'available' && !terminal) sawTransitional = true;
+    const operational = current.status !== 'available' && isProceedDbStatus(current.status);
+    if (!isProceedDbStatus(current.status) && !terminal) sawTransitional = true;
     if (current.deletionProtection === false) sawOff = true;
     // A terminal status is not this wait's to outlast: AWS accepts or refuses.
-    if (current.deletionProtection === false && terminal) return;
+    // A fully operational non-`available` status can last hours: send now.
+    if (current.deletionProtection === false && (terminal || operational)) return;
+    // The guard still ON in a terminal status will not change on its own.
+    if (current.deletionProtection === true && terminal) break;
     const settled = current.deletionProtection === false && current.status === 'available';
     const inGrace = !sawTransitional && graceSleptMs < FLIP_TRANSITION_GRACE_MS;
     if (settled && !inGrace) return;
@@ -1079,7 +1104,7 @@ export async function deleteAfterProtectionFlipWithFinalSnapshot(
         delay = Math.min(delay * 2, 10_000);
         const current = await opts.read();
         if (current === undefined) break;
-        if (current.deletionProtection === false && current.status === 'available') break;
+        if (current.deletionProtection === false && isProceedDbStatus(current.status)) break;
         if (current.deletionProtection === true || isTerminalDbStatus(current.status)) throw error;
       }
     }

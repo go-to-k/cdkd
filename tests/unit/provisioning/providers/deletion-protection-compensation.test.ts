@@ -9,6 +9,7 @@ import {
   FLIP_TRANSITION_GRACE_MS,
   deleteAfterProtectionFlipWithFinalSnapshot,
   isFinalSnapshotNotAvailableRefusal,
+  isProceedDbStatus,
   isTerminalDbStatus,
   waitForFlipToSettleBeforeFinalSnapshot,
   type FlipSettleReading,
@@ -130,7 +131,7 @@ describe('waitForFlipToSettleBeforeFinalSnapshot (#5184)', () => {
   });
 
   it('sends at the bound when a transitional status other than modifying outlasts it (pre-#5184 behaviour)', async () => {
-    const { error, reads } = await run([OFF('storage-optimization')], { maxWaitMs: 60_000 });
+    const { error, reads } = await run([OFF('upgrading')], { maxWaitMs: 60_000 });
 
     expect(error).toBeUndefined();
     expect(reads.length).toBeGreaterThan(1);
@@ -142,6 +143,21 @@ describe('waitForFlipToSettleBeforeFinalSnapshot (#5184)', () => {
     });
 
     expect(error?.message).toContain("did not return to 'available'");
+  });
+
+  it('ends at once in storage-optimization with the guard off (fully operational, can last hours)', async () => {
+    const { error, reads, sleeps } = await run([OFF('storage-optimization')]);
+
+    expect(error).toBeUndefined();
+    expect(reads).toHaveLength(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it('throws at once when the guard reads ON in a terminal status (fail closed)', async () => {
+    const { error, reads } = await run([ON('stopped')]);
+
+    expect(error?.message).toContain("did not return to 'available'");
+    expect(reads).toHaveLength(1);
   });
 
   it('ends at once on a terminal status with the guard off', async () => {
@@ -266,6 +282,17 @@ describe('isTerminalDbStatus (#5184)', () => {
   });
 });
 
+describe('isProceedDbStatus (#5184)', () => {
+  it('admits available and the documented still-available storage statuses only', () => {
+    expect(isProceedDbStatus('available')).toBe(true);
+    expect(isProceedDbStatus('storage-optimization')).toBe(true);
+    expect(isProceedDbStatus('storage-initialization')).toBe(true);
+    for (const status of ['modifying', 'configuring-enhanced-monitoring', 'backing-up', 'stopped', undefined]) {
+      expect(isProceedDbStatus(status), String(status)).toBe(false);
+    }
+  });
+});
+
 describe('deleteAfterProtectionFlipWithFinalSnapshot (#5184)', () => {
   beforeEach(() => {
     clock = 0;
@@ -361,6 +388,17 @@ describe('deleteAfterProtectionFlipWithFinalSnapshot (#5184)', () => {
     expect(error).toBeUndefined();
     expect(sends).toBe(2);
     expect(reads).toBe(5);
+  });
+
+  it('retries at once when the resource reads storage-optimization after a refusal', async () => {
+    const { error, sends, reads } = await runDelete(
+      [OFF('modifying'), OFF('available'), OFF('storage-optimization')],
+      [CLUSTER_NOT_AVAILABLE, undefined]
+    );
+
+    expect(error).toBeUndefined();
+    expect(sends).toBe(2);
+    expect(reads).toBe(3);
   });
 
   it('rethrows at once when the resource reads a terminal status after the refusal', async () => {
