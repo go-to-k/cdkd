@@ -184,7 +184,8 @@ physical id and its attributes.
 async create(
   logicalId: string,
   resourceType: string,
-  properties: Record<string, unknown>
+  properties: Record<string, unknown>,
+  context?: CreateContext
 ): Promise<ResourceCreateResult> {
   this.logger.debug(safeMsg`Creating DocDB DBSubnetGroup ${logicalId}`);
   // A malformed Tags value is refused before any call.
@@ -216,13 +217,17 @@ async create(
     };
   } catch (error) {
     const cause = error instanceof Error ? error : undefined;
-    const message = error instanceof Error ? error.message : String(error);
-    throw new ProvisioningError(
-      `Failed to create DocDB DBSubnetGroup ${logicalId}: ${message}`,
-      resourceType,
-      logicalId,
-      dbSubnetGroupName,
-      cause
+    throw this.wrapCaughtError(
+      context?.maskSecrets,
+      error,
+      (text) =>
+        new ProvisioningError(
+          `Failed to create DocDB DBSubnetGroup ${logicalId}: ${text}`,
+          resourceType,
+          logicalId,
+          dbSubnetGroupName,
+          cause
+        )
     );
   }
 }
@@ -257,6 +262,11 @@ Five things in this method apply to every provider:
 - **The error.** Put every AWS call inside a `try`, and rethrow a failure as
   `ProvisioningError` with the type, the logical id, the physical id and the
   original error as the cause. The user then sees which resource failed.
+  The thrown message is saved in `deployments/{runId}.jsonl`, and AWS's text
+  for an access denial names the caller's role, so the message must not
+  quote AWS. The `wrapCaughtError` here (`wrapDocDBFailure` in
+  `docdb-shared.ts`) puts the error's class and a `--verbose` pointer in the
+  message, and sends AWS's text, masked, to the debug log.
 - **The log line.** `safeMsg` keeps a value from the template on one line, so
   the value cannot forge a log row.
 
