@@ -29,7 +29,7 @@ import type { Construct } from 'constructs';
  *   dropped (per-key `remove /canarySettings/stageVariableOverrides/flag`)
  *   — the #1160 absent-field-removal semantics, live.
  * - CanaryDeployment (issue #2762): a Deployment with DeploymentCanarySettings
- *   takes the SDK route; phase 2 changes the create-only block, which
+ *   takes the SDK route; phase 2 removes the create-only block, which
  *   replaces the deployment.
  *
  * CacheClusterEnabled / CacheClusterSize are NOT exercised live: a stage
@@ -70,15 +70,19 @@ export class ApigwStagePropsStack extends cdk.Stack {
     // auto-routed the whole Deployment through Cloud Control. No StageName
     // (cdkd leaves that CFn-only convenience to Cloud Control), so the SDK
     // route is what this resource takes. The block is create-only, so phase 2
-    // changing PercentTraffic must REPLACE the deployment.
+    // REMOVING it must replace the deployment, as CloudFormation does.
     const canaryDeployment = new apigateway.CfnDeployment(this, 'CanaryDeployment', {
       restApiId: api.ref,
       description: 'cdkd-stage-props-canary-deployment',
-      deploymentCanarySettings: {
-        percentTraffic: isUpdate ? 20 : 10,
-        stageVariableOverrides: { flag: 'canary' },
-        useStageCache: false,
-      },
+      ...(isUpdate
+        ? {}
+        : {
+            deploymentCanarySettings: {
+              percentTraffic: 10,
+              stageVariableOverrides: { flag: 'canary' },
+              useStageCache: false,
+            },
+          }),
     });
     canaryDeployment.addDependency(method);
 

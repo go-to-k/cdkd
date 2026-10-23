@@ -17,7 +17,7 @@
 #      StageVariableOverrides key dropped (per-key remove). Assert each
 #      removal/change reached AWS and drift is clean.
 #   Both phases also assert the CanaryDeployment (DeploymentCanarySettings,
-#   issue #2762) took the SDK route, and that phase 2's change to that
+#   issue #2762) took the SDK route, and that phase 2's removal of that
 #   create-only block replaced it and deleted the old deployment.
 #   3. Destroy + assert the REST API, client certificate, and log group are
 #      gone and the cdkd state file is removed.
@@ -136,7 +136,10 @@ canary_deployment_row() {
 }
 assert_canary_deployment_sdk() { # usage: assert_canary_deployment_sdk <phase>; sets CANARY_DEP_ID
   local row by
-  row="$(canary_deployment_row)"
+  if ! row="$(canary_deployment_row)" || [ -z "${row}" ]; then
+    echo "FAIL: $1: could not read the CanaryDeployment row from s3://${STATE_BUCKET}/${STATE_KEY}" >&2
+    exit 1
+  fi
   by="${row%% *}"
   CANARY_DEP_ID="${row#* }"
   if [ "${by}" != "sdk" ]; then
@@ -249,10 +252,10 @@ if [ -n "${CANARY_OVERRIDE_P2}" ]; then
 fi
 echo "    canary updated in place (percentTraffic=25, override key removed)"
 
-# DeploymentCanarySettings is create-only: PercentTraffic 10 -> 20 replaces.
+# DeploymentCanarySettings is create-only: removing the block replaces.
 assert_canary_deployment_sdk "phase 2"
 if [ "${CANARY_DEP_ID}" = "${CANARY_DEP_ID_P1}" ]; then
-  echo "FAIL: CanaryDeployment kept id ${CANARY_DEP_ID} after its create-only DeploymentCanarySettings changed (expected a replacement)" >&2
+  echo "FAIL: CanaryDeployment kept id ${CANARY_DEP_ID} after its create-only DeploymentCanarySettings was removed (expected a replacement)" >&2
   exit 1
 fi
 assert_gone "replaced CanaryDeployment ${CANARY_DEP_ID_P1} still exists" \
