@@ -5,7 +5,7 @@
 # GENERATED SHAPE - do not hand-edit. After recording a run, run:
 # INVARIANT: exactly one row per test, rows sorted by test name. Duplicates break
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
-access-key-cloudmap-fix-forward-orphan	2026-10-21T13:42:45Z	PASS	218	verify.sh	PASS, own state bucket (foreignHolder settle scan), 0 orphans, bucket deleted
+access-key-cloudmap-fix-forward-orphan	2026-10-23T22:34:45Z	PASS	166	verify.sh	rc ok, orph clean
 acm-certificate	2026-10-20T05:07:15Z	PASS	115	verify.sh	rc ok, orph clean; #5105 acm/lambda tail thrown errors
 agentcore-tools	2026-10-19T17:48:11Z	PASS	75	verify.sh	rc ok, orph clean; #1160 removed Evaluator Description kept
 alb	2026-10-20T08:55:09Z	PASS	589	verify.sh	PR #5116 (#1160) 0dbcced66; Phase 3.5 listener Port/Protocol removal warns CFn keep, values kept; probe (src reverted) RED at that assertion; run in own state bucket (peer v13 record blocked shared one); destroy 21 deleted 0 errors, orph clean
@@ -53,7 +53,7 @@ cloudtrail-trail	2026-10-21T13:56:47Z	PASS	200	verify.sh	rc ok, reset/retain spl
 cloudwatch	2026-10-20T05:58:30Z	PASS	65	standard	deploy+destroy clean, 0 orphans
 cloudwatch-anomaly-detector	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 codebuild-project	2026-10-20T05:59:05Z	PASS	100	verify.sh	deploy+destroy clean, 0 orphans
-codecommit	2026-10-16T08:15:12Z	PASS	155	verify.sh	rc ok, orph clean (#3341 slice 4995)
+codecommit	2026-10-23T20:51:02Z	PASS	155	verify.sh	rc ok, orph clean
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
 cognito	2026-10-21T14:41:53Z	PASS	231	verify.sh	PR #5150 arm H grep; deploy+destroy clean, 0 orphans, dedicated state bucket
 cognito-custom-attribute-add	2026-10-11T15:20:01Z	PASS	57	verify.sh	PR #4796, rc ok, orph clean
@@ -120,7 +120,7 @@ ec2-vpc	2026-10-20T12:02:38Z	PASS	133	verify.sh	PR#5127 1160 route53 hostedzone 
 ecr	2026-10-20T06:00:42Z	PASS	55	standard	deploy+destroy clean, 0 orphans
 ecr-scanning	2026-10-16T08:15:12Z	PASS	60	verify.sh	rc ok, orph clean (#3341 slice 4995)
 ecs-bluegreen	2026-10-11T09:33:22Z	PASS	230	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-ecs-fargate	2026-10-11T09:33:22Z	PASS	451	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+ecs-fargate	2026-10-23T20:55:48Z	PASS	441	verify.sh	rc ok, orph clean
 ecs-schedule-targets	2026-10-11T09:33:22Z	PASS	80	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 ecs-service-update-props	2026-10-22T19:00:38Z	PASS	132	verify.sh	rc ok, destroy 15 deleted 0 errors, orphans clean (PR#5169)
 efs-immutable-replacement	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
@@ -360,8 +360,8 @@ secrets-dynamic-ref	2026-10-18T21:57:16Z	PASS	888	verify.sh	rc ok, orph clean (P
 secrets-rotation-schedule	2026-10-20T06:31:33Z	PASS	90	verify.sh	deploy+destroy clean, 0 orphans
 secretsmanager-update-value-source	2026-10-22T08:54:56Z	PASS	95	verify.sh	rc ok, orph clean (#5168)
 serverless-api	2026-10-18T18:32:28Z	PASS	58	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
-servicediscovery	2026-10-21T05:41:58Z	PASS	242	verify.sh	0 surviving state versions; PR 5135
-servicediscovery-namespaces	2026-10-06T02:22:44Z	PASS	146	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
+servicediscovery	2026-10-23T22:34:45Z	PASS	217	verify.sh	rc ok, orph clean
+servicediscovery-namespaces	2026-10-23T20:50:37Z	PASS	130	verify.sh	rc ok, orph clean
 ses-identity	2026-08-10T10:50:49Z	PASS	180	verify.sh	upstream SES CC 403 resolved; all 3 phases clean (issue #1468)
 sg-circular-dependency	2026-10-18T21:41:29Z	PASS	440	verify.sh	rc ok, orph clean (#5071)
 shared-stackname-multi-region	2026-10-23T02:44:18Z	PASS	150	verify.sh	rc ok, orph clean both regions (#5193)
