@@ -313,20 +313,13 @@ describe("the final save's deferred cleanup (#5200)", () => {
 
 describe('the rollback journal is read beside the state record (#5200)', () => {
   it('asks for the journal before the state read returns, and reads it no more often', async () => {
-    const { engine } = buildEngine({
+    const { engine, backend } = buildEngine({
       ids: ['A'],
       createGate: () => Promise.resolve(),
       saveGate: () => Promise.resolve(),
     });
-    const backend = (
-      engine as unknown as {
-        stateBackend: {
-          getState: ReturnType<typeof vi.fn>;
-          loadRollbackJournal: ReturnType<typeof vi.fn>;
-        };
-      }
-    ).stateBackend;
-    const loaded = await backend.getState.getMockImplementation()?.();
+    const loaded = (await backend.getState()) as unknown;
+    backend.getState.mockClear();
     let journalAskedBeforeStateReturned: boolean | undefined;
     backend.getState.mockImplementation(async () => {
       await new Promise((r) => setTimeout(r, 10));
