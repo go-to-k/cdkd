@@ -96,13 +96,11 @@ function captureStdout(): { text: () => string; restore: () => void } {
   return { text: () => output.join(''), restore: () => (process.stdout.write = original) };
 }
 
-async function runCommand(args: string[]): Promise<string> {
+/** Run `parse` (a fresh `cdkd state` tree's parse), returning what it printed. */
+async function runCommand(parse: () => Promise<unknown>): Promise<string> {
   const cap = captureStdout();
   try {
-    const stateCmd = createStateCommand();
-    stateCmd.exitOverride();
-    stateCmd.commands.forEach((sub) => sub.exitOverride());
-    await stateCmd.parseAsync(args, { from: 'user' });
+    await parse();
   } finally {
     cap.restore();
   }
@@ -149,11 +147,11 @@ beforeEach(() => {
 
 describe('each browse view prints what its command prints (go-to-k/cdkd#5199)', () => {
   it.each([
-    ['resources', ['resources', 'Alpha']],
-    ['resources-long', ['resources', 'Alpha', '--long']],
-    ['show', ['show', 'Alpha']],
-  ] as const)('%s matches cdkd state %s', async (view, args) => {
-    const expected = await runCommand([...args]);
+    ['resources', () => createStateCommand().parseAsync(['resources', 'Alpha'], { from: 'user' })],
+    ['resources-long', () => createStateCommand().parseAsync(['resources', 'Alpha', '--long'], { from: 'user' })],
+    ['show', () => createStateCommand().parseAsync(['show', 'Alpha'], { from: 'user' })],
+  ] as const)('%s matches its command', async (view, parse) => {
+    const expected = await runCommand(parse);
     expect(expected, 'the command printed something to compare').toContain('Bucket');
 
     const setup = await setupStateBackend(OPTIONS);
@@ -314,7 +312,7 @@ describe('cdkd state browse without a terminal', () => {
       throw new Error(`exit ${code}`);
     }) as never);
     try {
-      await expect(runCommand(['browse'])).rejects.toThrow('exit 1');
+      await expect(runCommand(() => createStateCommand().parseAsync(['browse'], { from: 'user' }))).rejects.toThrow('exit 1');
     } finally {
       exit.mockRestore();
       for (const [stream, d] of [[process.stdin, stdinTTY], [process.stdout, stdoutTTY]] as const) {
