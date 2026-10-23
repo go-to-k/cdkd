@@ -140,8 +140,8 @@ says what to do.
 | A nested stack named directly | Refused, exit `2` | [Nested stacks](#nested-stacks) |
 | Another `--state-prefix` records the same stack | Refused before any prompt or delete | [The same stack name under another state prefix](#the-same-stack-name-under-another-state-prefix) |
 | A damaged state record | `STATE_RESOURCES_MALFORMED`, exit `1` | [A damaged state record](cli-destroy-edge-cases.md#a-damaged-state-record-refuses-the-destroy) |
-| Another command wrote the stack's state while the confirmation prompt waited | `STATE_CHANGED`, nothing deleted; re-run the destroy | — |
-| An unfinished `cdkd refactor` move involves the stack | `REFACTOR_UNFINISHED` | [If a refactor is interrupted](cli-refactor.md#if-a-refactor-is-interrupted) |
+| Another command wrote the stack's state while the confirmation prompt waited | `STATE_CHANGED`, exit `1`, nothing deleted; re-run the destroy | — |
+| An unfinished `cdkd refactor` move involves the stack | `REFACTOR_UNFINISHED`, exit `1` | [If a refactor is interrupted](cli-refactor.md#if-a-refactor-is-interrupted) |
 
 For `terminationProtection`, the other way through is to set it to `false` in
 your CDK code and redeploy. For an imported output, destroy the importing

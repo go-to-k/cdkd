@@ -48,7 +48,7 @@ vi.mock('../../../src/utils/live-renderer.js', () => {
   return { getLiveRenderer: () => renderer };
 });
 
-import { namesEveryResourceOf, runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
+import { holdsSameResourcesAs, runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import { resetRefactorMarkerReadsForTest } from '../../../src/state/refactor-marker.js';
 
@@ -127,6 +127,9 @@ describe('runDestroyForStack re-reads its record under the lock (go-to-k/cdkd#52
   it.each([
     ['a resource gone from the record (moved to another stack)', stateWith({ A: RES_A })],
     ['a resource re-pointed to another physical id (replaced)', stateWith({ A: RES_A, B: { ...RES_B, physicalId: 'p-b2' } })],
+    ['a resource ADDED since (the record would be deleted with it)', stateWith({ A: RES_A, B: RES_B, C: { ...RES_A, physicalId: 'p-c' } })],
+    ['a resource whose deletion policy changed in place', stateWith({ A: RES_A, B: { ...RES_B, deletionPolicy: 'Retain' } })],
+    ['a superseded resource added since', stateWith({ A: RES_A, B: RES_B }, { supersededResources: [{ logicalId: 'B', physicalId: 'p-old', resourceType: 'AWS::SSM::Parameter' }] })],
     ['the record deleted', null],
   ])('refuses when the record shows %s, deleting nothing', async (_label, current) => {
     const { h, thrown } = await destroyWith(stateWith({ A: RES_A, B: RES_B }), current);
@@ -146,27 +149,30 @@ describe('runDestroyForStack re-reads its record under the lock (go-to-k/cdkd#52
     expect(h.getProviderFor).not.toHaveBeenCalled();
   });
 
-  it('CONTROL: the same record, or one with a resource ADDED since, destroys', async () => {
-    for (const current of [stateWith({ A: RES_A, B: RES_B }), stateWith({ A: RES_A, B: RES_B, C: { ...RES_A, physicalId: 'p-c' } })]) {
-      const { h, thrown } = await destroyWith(stateWith({ A: RES_A, B: RES_B }), current);
-      expect((thrown as CdkdError | undefined)?.code).not.toBe('STATE_CHANGED');
-      expect(h.getProviderFor, 'the destroy reaches the delete path').toHaveBeenCalled();
-    }
+  it('CONTROL: the same record, read again as a fresh copy, destroys', async () => {
+    const { h, thrown } = await destroyWith(
+      stateWith({ A: RES_A, B: RES_B }),
+      structuredClone(stateWith({ A: RES_A, B: RES_B }, { lastModified: 2 }))
+    );
+    expect((thrown as CdkdError | undefined)?.code).not.toBe('STATE_CHANGED');
+    expect(h.getProviderFor, 'the destroy reaches the delete path').toHaveBeenCalled();
   });
 });
 
-describe('namesEveryResourceOf', () => {
-  it('holds for the same or a larger record and fails for a missing or re-pointed resource', () => {
+describe('holdsSameResourcesAs', () => {
+  it('holds for an equal copy in any key order, and fails on any added, removed or changed row', () => {
     const snap = stateWith({ A: RES_A, B: RES_B });
-    expect(namesEveryResourceOf(snap, stateWith({ A: RES_A, B: RES_B }))).toBe(true);
-    expect(namesEveryResourceOf(snap, stateWith({ A: RES_A, B: RES_B, C: RES_A }))).toBe(true);
-    expect(namesEveryResourceOf(snap, stateWith({ A: RES_A }))).toBe(false);
-    expect(namesEveryResourceOf(snap, stateWith({ A: RES_A, B: { ...RES_B, physicalId: 'x' } }))).toBe(false);
-    expect(namesEveryResourceOf(snap, stateWith({ A: RES_A, B: null }))).toBe(false);
+    expect(holdsSameResourcesAs(snap, stateWith({ B: { ...RES_B }, A: { ...RES_A } }))).toBe(true);
+    expect(holdsSameResourcesAs(snap, stateWith({ A: RES_A, B: RES_B, C: RES_A }))).toBe(false);
+    expect(holdsSameResourcesAs(snap, stateWith({ A: RES_A }))).toBe(false);
+    expect(holdsSameResourcesAs(snap, stateWith({ A: RES_A, B: { ...RES_B, physicalId: 'x' } }))).toBe(false);
+    expect(holdsSameResourcesAs(snap, stateWith({ A: RES_A, B: { ...RES_B, properties: { V: 1 } } }))).toBe(false);
+    expect(holdsSameResourcesAs(snap, stateWith({ A: RES_A, B: null }))).toBe(false);
   });
 
-  it('skips a snapshot entry that is not a record, and ignores inherited names', () => {
-    expect(namesEveryResourceOf(stateWith({ A: RES_A, Torn: 'x' }), stateWith({ A: RES_A }))).toBe(true);
-    expect(namesEveryResourceOf(stateWith({ constructor: RES_A }), stateWith({}))).toBe(false);
+  it('compares supersededResources too, and ignores fields the delete does not act on', () => {
+    const snap = stateWith({ A: RES_A });
+    expect(holdsSameResourcesAs(snap, stateWith({ A: RES_A }, { supersededResources: [] }))).toBe(false);
+    expect(holdsSameResourcesAs(snap, stateWith({ A: RES_A }, { lastModified: 9, outputs: { O: 'v' } }))).toBe(true);
   });
 });

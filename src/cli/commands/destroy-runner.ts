@@ -1,6 +1,7 @@
 import { refusePendingMovesOut } from '../../state/pending-moves.js';
 import { readRefactorMarker, refuseRefactorMarker } from '../../state/refactor-marker.js';
 import * as readline from 'node:readline/promises';
+import { isDeepStrictEqual } from 'node:util';
 import {
   pasteableCommand,
   plainOrDescribed,
@@ -701,21 +702,21 @@ async function releaseRegistryMarkerAfterDestroy(
  *   cleared) so the user can retry.
  */
 /**
- * Whether `current` still names every resource `snapshot` names, under the
- * same logical and physical ids (go-to-k/cdkd#5220). A resource added since
- * is fine -- this destroy will not touch it; one gone or re-pointed means the
- * snapshot would delete a resource the record no longer owns. An entry the
- * snapshot cannot read as a record is skipped: the container refusals above
- * own it. Exported for its unit tests.
+ * Whether `current` still holds exactly the resources `snapshot` holds
+ * (go-to-k/cdkd#5220): the same `resources` rows, field for field, and the
+ * same `supersededResources`. The delete loop acts on the snapshot's rows --
+ * their physical ids, deletion policies and properties -- and the end of a
+ * clean run deletes the whole record, so any difference is unsafe: a row gone
+ * or re-pointed deletes a resource the record no longer owns, a row changed in
+ * place deletes under a stale deletion policy, and a row added since would be
+ * dropped with the record while its resource stays live. Exported for its
+ * unit tests.
  */
-export function namesEveryResourceOf(snapshot: StackState, current: StackState): boolean {
-  const now = current.resources ?? {};
-  for (const [id, r] of Object.entries(snapshot.resources ?? {})) {
-    if (r === null || typeof r !== 'object') continue;
-    const held = Object.hasOwn(now, id) ? now[id] : undefined;
-    if (held === undefined || held === null || held.physicalId !== r.physicalId) return false;
-  }
-  return true;
+export function holdsSameResourcesAs(snapshot: StackState, current: StackState): boolean {
+  return (
+    isDeepStrictEqual(snapshot.resources, current.resources) &&
+    isDeepStrictEqual(snapshot.supersededResources, current.supersededResources)
+  );
 }
 
 export async function runDestroyForStack(
@@ -1655,9 +1656,9 @@ async function destroyStackInRegion(
   // prompt (go-to-k/cdkd#5220): another command may have written this record
   // while the prompt waited -- a `cdkd refactor` that moved a resource to
   // another stack, a deploy that replaced one -- and deleting from the stale
-  // snapshot would delete a resource the record no longer owns. The record
-  // must still name every resource the snapshot names, under the same ids;
-  // one added since is left alone. The refactor marker is read beside it
+  // snapshot would delete a resource the record no longer owns, and one added
+  // since would be dropped with the record. The record must still hold exactly
+  // the snapshot's resources. The refactor marker is read beside it
   // (go-to-k/cdkd#5212), this destroy's only read of it, so both cost one
   // concurrent round trip.
   try {
@@ -1665,7 +1666,7 @@ async function destroyStackInRegion(
       ctx.stateBackend.getState(stackName, regionForState),
       readRefactorMarker(ctx.stateBackend),
     ]);
-    if (current === null || !namesEveryResourceOf(state, current.state)) {
+    if (current === null || !holdsSameResourcesAs(state, current.state)) {
       throw new CdkdError(
         safeMsg`cdkd destroy refused stack ${stackName} (${regionForState}): its state ` +
           'changed after it was read (another command wrote it while this one waited for ' +
