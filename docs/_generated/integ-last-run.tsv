@@ -30,7 +30,6 @@ basic	2026-10-20T19:58:09Z	PASS	94	standard	PR #5100 pre-merge run, deploy+destr
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-10-19T17:48:11Z	PASS	95	verify.sh	rc ok, orph clean; #1160 removed Runtime fields cleared, lifecycle 900/28800
 bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
-bench-cdk-sample	2026-10-23T16:25:18Z	PASS	434	standard	destroy 0 errors, 38 deleted 2 retained (DeletionPolicy, expected); swept this run's 3 CR/function log groups (#3885 pre-existing gap for standard-flow fixtures)
 bench-cdk-sample	2026-10-23T19:44:09Z	PASS	451	standard	deploy+diff(no change)+destroy, 0 errors, 2 log groups retained by DeletionPolicy (expected); regression check for fix/refactor-interrupt@2c9088825 (/pick-integ P1)
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-10-05T08:20:47Z	PASS	81	verify.sh	rc 0, 0 orphans; ca-central-1, delete-marker residue from earlier runs purged (#2624 PR #4573)
@@ -73,10 +72,6 @@ cross-backend-same-stack-migration	2026-10-11T09:33:22Z	PASS	386	verify.sh	PR #4
 cross-region-concurrent-stacks	2026-10-23T03:26:26Z	PASS	216	verify.sh	rc ok, orph clean both regions (regression net #5193)
 cross-region-state-bucket	2026-10-03T07:02:29Z	PASS	32	verify.sh	rc ok, orph clean (#4283 PR #4449)
 cross-stack-cfn-fallback	2026-10-18T11:16:06Z	PASS	125	verify.sh	#5043 rebased run; rc 0, destroy 0 errors, orphans clean
-cross-stack-references	2026-10-23T16:19:17Z	PASS	55	standard	deploy+destroy clean, 0 orphans
-cross-stack-references	2026-10-23T18:46:05Z	PASS	60	standard	deploy+destroy clean, 0 orphans; regression check for fix/refactor-interrupt@b5f2dee1d (/pick-integ P1)
-cross-stack-references	2026-10-23T19:28:54Z	PASS	65	standard	deploy+diff(no change)+destroy clean, 0 orphans; regression check for fix/refactor-interrupt@2c9088825 (/pick-integ P1)
-cross-stack-references	2026-10-23T20:25:43Z	PASS	60	standard	deploy+diff(no change)+destroy clean, 0 orphans; regression check for fix/refactor-interrupt@e7af89b9e
 cross-stack-references	2026-10-23T20:42:06Z	PASS	70	standard	deploy+diff(no change)+destroy clean, 0 orphans; regression check for fix/refactor-interrupt@1a18a7004 (empty-stack fast path fixture not found, fallback pick)
 cross-stack-secret-import	2026-10-23T02:59:31Z	PASS	656	verify.sh	rc ok, orph clean, 0 surviving secret versions (regression net #5193)
 custom-resource-getatt-data	2026-10-09T09:36:48Z	PASS	95	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)
@@ -200,7 +195,6 @@ intrinsics-torture-2	2026-10-11T09:33:22Z	PASS	65	verify.sh	PR #4720 (#4705) fin
 kinesis-esm-filter	2026-10-16T08:48:48Z	PASS	70	verify.sh	rc ok, orph clean (#3341 slice 4996)
 kinesis-stream-mode-switch	2026-10-20T06:08:39Z	PASS	105	verify.sh	deploy+destroy clean, 0 orphans
 kms-encryption	2026-10-20T11:42:49Z	PASS	65	verify.sh	destroy 0 errors, orph clean; #1160 removal resets OK; probes A/B/C red (PR 5119)
-lambda	2026-10-23T16:20:15Z	PASS	108	verify.sh	RecursiveLoop + ReservedConcurrentExecutions backfills verified; destroy 0 errors, 0 orphans
 lambda	2026-10-23T18:49:15Z	PASS	130	verify.sh	destroy 0 errors, 0 orphans; regression check for fix/refactor-interrupt@b5f2dee1d (/pick-integ P1)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
@@ -271,11 +265,8 @@ monitoring	2026-08-10T05:19:05Z	PASS	43	standard	0810 P2 sweep b6; 7 del 0 err, 
 multi-asset	2026-09-21T12:02:26Z	PASS	97	verify.sh	rc ok, orph clean; #3489 asset-publish sites (file + docker)
 multi-region-same-stack	2026-10-11T21:09:57Z	PASS	59	standard	PR #4809, standard flow + us-west-2 arm, orph clean
 multi-resource	2026-10-23T16:19:29Z	PASS	76	standard	destroy 0 errors, 0 orphans (17 deleted); swept this run's 2 CR log groups (#3885 pre-existing gap)
-multi-stack-deps	2026-10-23T16:19:51Z	PASS	93	standard	all 3 stacks destroyed 0 errors, 0 orphans
-neptune-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	2280	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
-multi-resource	2026-10-21T05:39:15Z	PASS	79	standard	destroy 0 errors, 0 orphans; PR 5135
 multi-stack-deps	2026-10-23T20:31:27Z	PASS	105	standard	deploy+diff(no change)+destroy clean all 3 stacks, 0 orphans; regression check for fix/refactor-interrupt@e7af89b9e
-neptune-fix-forward-orphan	2026-10-15T19:44:42Z	PASS	3092	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
+neptune-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	2280	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
 nested-required-preflight	2026-10-11T09:33:22Z	PASS	55	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 nested-stack	2026-10-13T02:41:29Z	PASS	65	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 nested-stack-3level	2026-10-15T09:24:20Z	PASS	490	verify.sh	PR #4939 (#4929) 504262f2b; own state bucket; rc ok, no seeded secret in any version, orph clean
@@ -311,18 +302,9 @@ recreate-via-cc-api	2026-10-23T16:20:51Z	PASS	123	verify.sh	#615 mid-life SDK->C
 recreate-via-sdk-provider	2026-10-17T13:29:07Z	PASS	106	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
 redacted-delete-address	2026-10-18T18:32:28Z	PASS	91	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
-refactor-command	2026-10-23T17:35:02Z	PASS	100	verify.sh	rc ok, orph clean, regression check on feat/refactor-move@12ac28b86 (#5201)
-refactor-move	2026-10-23T17:32:26Z	PASS	116	verify.sh	rc ok, orph clean, re-run on 12ac28b86 (failure recovery + per-source grouping) (#5202)
-remove-protection	2026-10-23T17:17:04Z	PASS	2113	verify.sh	--remove-protection destroy succeeded, ASG-launched instance confirmed terminated (#796), state cleared, orph clean
-refactor-command	2026-10-23T18:43:40Z	PASS	105	verify.sh	rc ok, orph clean, regression check on fix/refactor-interrupt@b5f2dee1d (#5201)
-refactor-move	2026-10-23T18:39:26Z	FAIL	95	verify.sh	Phase2c: deploy SRC cascaded into deploying DST (cross-stack dep) before SRC's own pendingMovesOut refusal ran; DST create hit ResourceInUseException; orphan create-tokens.json deleted (#5212)
-refactor-command	2026-10-23T19:26:50Z	PASS	105	verify.sh	rc ok, orph clean, regression check on fix/refactor-interrupt@2c9088825 (#5201)
-refactor-command	2026-10-23T20:23:40Z	PASS	105	verify.sh	rc ok, orph clean, regression check on fix/refactor-interrupt@e7af89b9e (#5201)
-refactor-move	2026-10-23T20:21:04Z	PASS	151	verify.sh	rc ok, orph clean; re-run on e7af89b9e (lock-scoped marker read + dest template check + read-only dry-run) (#5212)
-refactor-command	2026-10-23T20:35:54Z	FAIL	60	verify.sh	Phase2c verify.sh:246 "No such file or directory": MAP_DIR=mktemp -d (verify.sh:76) runs before the Pre-run cleanup call (verify.sh:168) which rm -rf's it (verify.sh:141, cleanup()); fixture bug in 1a18a7004, AWS confirmed clean, no refactor-map.json left anywhere (#5201)
 refactor-command	2026-10-23T20:45:22Z	PASS	95	verify.sh	rc ok, orph clean, no refactor-map.json left; mktemp-dir ordering fixed on e48470db5 (#5201)
 refactor-move	2026-10-23T20:40:01Z	PASS	155	verify.sh	rc ok, orph clean; re-run on 1a18a7004 (destroy-runner marker check under lock on empty-stack path, a260b9971) (#5212)
-remove-protection	2026-10-22T15:37:12Z	PASS	2120	verify.sh	rc ok, orph clean
+remove-protection	2026-10-23T17:17:04Z	PASS	2113	verify.sh	--remove-protection destroy succeeded, ASG-launched instance confirmed terminated (#796), state cleared, orph clean
 remove-protection-compensation	2026-10-22T15:37:12Z	PASS	251	verify.sh	rc ok, orph clean
 remove-protection-journaled-orphan	2026-10-20T10:53:50Z	PASS	675	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
