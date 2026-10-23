@@ -36,7 +36,12 @@ export interface SelectOutput {
 export interface SelectStreams {
   input: SelectInput;
   output: SelectOutput;
+  /** How long a fresh list ignores keys (see {@link selectFromList}); tests pass 0. */
+  armDelayMs?: number;
 }
+
+/** No one answers a list within 50 ms of it appearing; a key that early was typed before it. */
+const ARM_DELAY_MS = 50;
 
 /**
  * One character the filter accepts: a letter, digit, punctuation, symbol or
@@ -150,14 +155,17 @@ export function selectFromList<T>(
     input.setRawMode?.(true);
     input.resume();
     // Keys typed while the previous view was printing sit in the terminal's
-    // buffer and arrive in the first turn; they were not aimed at this list,
-    // so they are dropped rather than picking an entry.
+    // buffer and arrive as soon as stdin is read again; they were not aimed at
+    // this list, so they are dropped rather than picking an entry. A timer,
+    // not a turn of the loop: the buffer is read on the NEXT poll, which a
+    // `setImmediate` scheduled from a poll callback runs before.
     let armed = false;
-    setImmediate(() => {
+    const armTimer = setTimeout(() => {
       armed = true;
-    });
+    }, streams.armDelayMs ?? ARM_DELAY_MS);
 
     const finish = (result: SelectResult<T>): void => {
+      clearTimeout(armTimer);
       input.removeListener('keypress', onKey);
       input.setRawMode?.(false);
       input.pause();
@@ -201,6 +209,7 @@ export function selectFromList<T>(
     try {
       draw();
     } catch (error) {
+      clearTimeout(armTimer);
       input.removeListener('keypress', onKey);
       input.setRawMode?.(false);
       input.pause();

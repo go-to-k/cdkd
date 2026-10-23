@@ -115,6 +115,7 @@ function fakeTerminal() {
   const streams: SelectStreams = {
     input,
     output: { isTTY: true, rows: 24, write: (c: string) => written.push(c) },
+    armDelayMs: 0,
   };
   return { input, written, streams };
 }
@@ -122,7 +123,7 @@ function fakeTerminal() {
 // Two turns: the next list opens after the previous one resolves (and a view
 // prints), and it drops keys from its own first turn.
 const tick = async (): Promise<void> => {
-  for (let i = 0; i < 3; i++) await new Promise((r) => setImmediate(r));
+  for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 1));
 };
 async function type(input: PassThrough, ...keys: string[]): Promise<void> {
   for (const key of keys) {

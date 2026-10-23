@@ -9,6 +9,7 @@ import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   filterItems,
   isInteractiveTerminal,
+  fitToWidth,
   renderSelectFrame,
   selectFromList,
   type SelectStreams,
@@ -27,11 +28,11 @@ function fakeTerminal() {
   });
   const written: string[] = [];
   const output = { isTTY: true, rows: 24, write: (chunk: string) => written.push(chunk) };
-  const streams: SelectStreams = { input, output };
+  const streams: SelectStreams = { input, output, armDelayMs: 0 };
   return { input, output, written, streams };
 }
 
-const tick = (): Promise<void> => new Promise((r) => setImmediate(r));
+const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 1));
 
 /** Let the picker arm (it drops keys from its first turn), then type `keys`. */
 async function type(input: PassThrough, ...keys: string[]): Promise<void> {
@@ -90,6 +91,16 @@ describe('selectFromList', () => {
     const second = selectFromList('Pick:', ITEMS, b.streams);
     await type(b.input, 'a', '\x1b[B', '\x1b[B', '\x7f', '\r');
     expect(await second).toEqual({ kind: 'picked', value: 'a' });
+  });
+
+  it('drops keys that arrive from the next poll after the list opens, with the real 50 ms arm', async () => {
+    const t = fakeTerminal();
+    const picked = selectFromList('Pick:', ITEMS, { ...t.streams, armDelayMs: undefined });
+    // A key read on the next loop iteration (stdin's buffer), as in a real TTY.
+    setImmediate(() => t.input.write('\x1b[B\r'));
+    await new Promise((r) => setTimeout(r, 80));
+    t.input.write('\r');
+    expect(await picked).toEqual({ kind: 'picked', value: 'a' });
   });
 
   it('drops keys already buffered when the list opens (typed while a view printed)', async () => {
@@ -153,6 +164,24 @@ describe('selectFromList', () => {
     expect(await q).toEqual({ kind: 'quit' });
     expect(quit.input.setRawMode).toHaveBeenLastCalledWith(false);
     expect(quit.input.listenerCount('keypress'), 'the key listener is removed').toBe(0);
+  });
+});
+
+describe('a frame that cannot be drawn', () => {
+  it('restores the terminal and rejects', async () => {
+    const t = fakeTerminal();
+    const failing = { ...t.streams, output: { ...t.output, write: () => { throw new Error('EPIPE'); } } };
+    await expect(selectFromList('Pick:', ITEMS, failing)).rejects.toThrow('EPIPE');
+    expect(t.input.setRawMode).toHaveBeenLastCalledWith(false);
+    expect(t.input.listenerCount('keypress')).toBe(0);
+  });
+});
+
+describe('fitToWidth', () => {
+  it('keeps a line one column short of the width, and cuts the next one', () => {
+    expect(fitToWidth('x'.repeat(19), 20)).toBe('x'.repeat(19));
+    expect(fitToWidth('x'.repeat(20), 20)).toBe(`${'x'.repeat(18)}…`);
+    expect(fitToWidth('x'.repeat(30), undefined)).toBe('x'.repeat(30));
   });
 });
 
