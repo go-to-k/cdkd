@@ -23,7 +23,10 @@ import {
 } from '../../../src/deployment/deploy-engine/replacement.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
-import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import {
+  hasRedactedCause,
+  isMarkedNonRetryable,
+} from '../../../src/deployment/retryable-errors.js';
 import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
 import { getLogger } from '../../../src/utils/logger.js';
@@ -892,6 +895,44 @@ describe('DeployEngine — a rename onto a name a name-adopting create would tak
     expect(h.callOrder).toEqual(['import']);
   });
 
+  // go-to-k/cdkd#2319: the refusal is persisted, and AWS words a denial with
+  // the caller's ARN. (Worded without "not authorized to perform", which the
+  // probe's retry would wait out on the IAM-propagation schedule.)
+  it('names an AWS-authored probe failure by its class, with its text in debug', async () => {
+    logger.debug.mockClear();
+    const denial = awsSdkError(
+      'User: arn:aws:sts::123456789012:assumed-role/Deployer/s is denied sqs:GetQueueUrl',
+      'AccessDenied'
+    );
+    h.importResult = denial;
+
+    const err = await provision(makeEngine(h), queue('their-queue'));
+
+    expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
+    expect(err!.message).toContain(
+      "already holds it: AccessDenied. Re-run with --verbose for AWS's own message. " +
+        'Nothing was created or deleted.'
+    );
+    expect(err!.message).not.toContain('123456789012');
+    expect(err!.message).not.toContain('Deployer');
+    expect(err!.cause).toBe(denial);
+    expect(hasRedactedCause(err)).toBe(true);
+    expect(isMarkedNonRetryable(err)).toBe(true);
+    const debugLine = debugLines().find((l) => l.includes('Deployer'));
+    expect(debugLine).toContain('could not check whether another resource already holds it');
+    expect(h.callOrder).toEqual(['import']);
+  });
+
+  it('keeps a transport probe failure text, unstamped', async () => {
+    h.importResult = new Error('connect ECONNREFUSED 127.0.0.1:443');
+
+    const err = await provision(makeEngine(h), queue('their-queue'));
+
+    expect(err!.message).toContain('already holds it: connect ECONNREFUSED 127.0.0.1:443.');
+    expect(err!.message).not.toContain('--verbose');
+    expect(hasRedactedCause(err)).toBe(false);
+  });
+
   it('refuses a Step Functions rename whose old id is not a state machine ARN', async () => {
     h = makeHarness('AWS::StepFunctions::StateMachine');
 
@@ -1277,6 +1318,29 @@ describe('DeployEngine — a rename onto a name a name-adopting create would tak
     expect(err!.message).toContain('not authorized to describe ***');
     expect(err!.message).not.toContain('SECRETVALUE');
     expect(h.callOrder).toEqual(['import']);
+  });
+
+  // go-to-k/cdkd#2319: an AWS-authored failure's text moves to `debug`, still
+  // through the rewritten-spelling mask.
+  it('masks the sent spelling of a secret-derived ELBv2 name in the probe failure debug line', async () => {
+    logger.debug.mockClear();
+    const type = 'AWS::ElasticLoadBalancingV2::TargetGroup';
+    h = makeHarness(type);
+    h.importResult = awsSdkError('Denied describing team-SECRETVALUE-x', 'AccessDenied');
+
+    const err = await provision(makeEngine(h), {
+      type,
+      nameProperty: 'Name',
+      recorded: 'mine',
+      desired: 'team_SECRETVALUE.x',
+      physicalId:
+        'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/mine/0123456789abcdef',
+    });
+
+    expect(err!.message).toContain('already holds it: AccessDenied. Re-run with --verbose');
+    expect(err!.message).not.toContain('SECRETVALUE');
+    expect(debugLines().some((l) => l.includes('Denied describing ***'))).toBe(true);
+    expect(debugLines().some((l) => l.includes('SECRETVALUE'))).toBe(false);
   });
 
   it('masks the other prefix spelling of a secret-derived ELBv2 name in the idempotent-create refusal', async () => {

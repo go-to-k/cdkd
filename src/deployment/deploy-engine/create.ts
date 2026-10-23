@@ -46,7 +46,7 @@ import {
   probeFoundSameId,
 } from '../replacement-name-holder.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
-import { markNonRetryable } from '../retryable-errors.js';
+import { markNonRetryable, markRedactedCause } from '../retryable-errors.js';
 import { markRefusedBeforeApplying } from '../prior-attempt-scope.js';
 import {
   type RecordedSecretValues,
@@ -627,14 +627,17 @@ async function refuseTakenCreateName(
   // Marked refused-before-applying (go-to-k/cdkd#4356): every arm refuses
   // BEFORE the create call, so nothing was created, and the deploy then
   // journals no failed op the rollback could misdescribe.
-  const refuse = (message: string, cause?: unknown): never => {
+  // `redactedCause`: the message withholds AWS text `cause` carries, so the
+  // classifiers read the chain (`markRedactedCause`, go-to-k/cdkd#2319).
+  const refuse = (message: string, cause?: unknown, redactedCause = false): never => {
+    const refusal = new CdkdError(
+      maskName(message),
+      'NAMED_CREATE_COLLISION',
+      cause instanceof Error ? cause : undefined
+    );
     throw markNonRetryable(
       markRefusedBeforeApplying(
-        new CdkdError(
-          maskName(message),
-          'NAMED_CREATE_COLLISION',
-          cause instanceof Error ? cause : undefined
-        )
+        redactedCause && cause instanceof Error ? markRedactedCause(refusal) : refusal
       )
     );
   };
@@ -698,13 +701,19 @@ async function refuseTakenCreateName(
         probeError
       );
     }
-    return refuse(
+    // go-to-k/cdkd#2319: as the replacement probe's twin in `replacement.ts`,
+    // an AWS-authored failure is named by its class (the thrown message is
+    // persisted, and an `AccessDenied` names the caller's ARN), with AWS's
+    // text in `debug`; a cdkd-authored or transport failure keeps its text.
+    const failure = describeAwsFailure(probeError);
+    const failureText = (text: string): string =>
       `${subject} is created with ${named}, and ${adoptsText}, but cdkd could not check ` +
-        `whether another resource already holds it: ` +
-        `${displayAwsMessage(maskName(describeAwsFailure(probeError).detail))}. ` +
-        `Nothing was created. Re-run the deploy once the check can succeed.`,
-      probeError
-    );
+      `whether another resource already holds it: ${text}${text.endsWith('.') ? '' : '.'} ` +
+      `Nothing was created. Re-run the deploy once the check can succeed.`;
+    const awsText = displayAwsMessage(maskName(failure.detail));
+    if (!failure.redacted) return refuse(failureText(awsText), probeError);
+    engine.logger.debug(maskName(failureText(awsText)));
+    return refuse(failureText(displaySafe(maskName(failure.summary))), probeError, true);
   }
   if (found === null) return;
   const holderId = found.physicalId;
