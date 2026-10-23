@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { timePhaseSync } from '../utils/phase-timings.js';
 import {
   S3Client,
   GetObjectCommand,
@@ -753,7 +754,10 @@ export class S3StateBackend {
         `Saving state: ${this.stackRef(stackName, region)}${expectedEtag ? `, expected ETag: ${expectedEtag}` : ''}`
       );
 
-      const bodyString = JSON.stringify(body, null, 2);
+      // go-to-k/cdkd#5200: inert unless CDKD_PHASE_TIMINGS=1.
+      const bodyString = timePhaseSync('state saves (every stack)', 'serialize', () =>
+        JSON.stringify(body, null, 2)
+      );
       const response = await this.s3Client.send(
         new PutObjectCommand({
           Bucket: this.config.bucket,

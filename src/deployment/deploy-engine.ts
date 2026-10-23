@@ -1,4 +1,5 @@
 import { getLogger } from '../utils/logger.js';
+import { timePhaseSync } from '../utils/phase-timings.js';
 import { DeploymentEventsReader } from '../state/deployment-events-store.js';
 import { loadRollbackRetainedCopies } from './kept-in-history.js';
 import type { GeneratedNameGuard } from './generated-name-guard.js';
@@ -1476,7 +1477,10 @@ export class DeployEngine {
    */
   /** @internal */
   withParentInfo(state: StackState): StackState {
-    const redacted = this.redactStateForPersist(state);
+    // go-to-k/cdkd#5200: CPU on the event loop, once per save.
+    const redacted = timePhaseSync('state saves (every stack)', 'redact for persist', () =>
+      this.redactStateForPersist(state)
+    );
     if (!this.options.parentStackInfo) return redacted;
     const { parentStack, parentLogicalId, parentRegion } = this.options.parentStackInfo;
     return {

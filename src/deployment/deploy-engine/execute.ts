@@ -11,6 +11,7 @@ import {
 } from '../child-of-recreated-parent.js';
 import { shownType } from '../recreate-target-readers.js';
 import { redactOutputs, rememberRecoverableMaskedOutputs } from './masking.js';
+import { phaseScopeForStack, timePhase } from '../../utils/phase-timings.js';
 import {
   performRollback,
   recoveryHint,
@@ -142,6 +143,8 @@ export async function executeDeployment(
   // don't want to delete it on every save.
   let pendingMigration = migrationPending;
 
+  // go-to-k/cdkd#5200: inert unless CDKD_PHASE_TIMINGS=1.
+  const phaseScope = phaseScopeForStack(stackName, engine.stackRegion);
   // Serialize per-resource state saves to avoid ETag conflicts from concurrent writes
   let saveChain: Promise<void> = Promise.resolve();
   const saveStateAfterResource = (logicalId: string): void => {
@@ -174,11 +177,13 @@ export async function executeDeployment(
         // overwrite the new key in-place under optimistic locking.
         const migrate = pendingMigration;
         const expectedEtag = migrate ? undefined : currentEtag;
-        currentEtag = await engine.stateBackend.saveState(
-          stackName,
-          engine.stackRegion,
-          engine.withParentInfo(partialState),
-          { ...(expectedEtag !== undefined && { expectedEtag }), migrateLegacy: migrate }
+        currentEtag = await timePhase(phaseScope, 'per-resource save', () =>
+          engine.stateBackend.saveState(
+            stackName,
+            engine.stackRegion,
+            engine.withParentInfo(partialState),
+            { ...(expectedEtag !== undefined && { expectedEtag }), migrateLegacy: migrate }
+          )
         );
         if (migrate) pendingMigration = false;
         engine.logger.debug(safeMsg`State saved after ${logicalId}`);
@@ -360,17 +365,23 @@ export async function executeDeployment(
         let succeeded = false;
         try {
           try {
-            await provisionResource(
-              engine,
-              logicalId,
-              change,
-              newResources,
-              stackName,
-              template,
-              parameterValues,
-              conditions,
-              actualCounts,
-              progress
+            await timePhase(
+              phaseScope,
+              `resource ${change.changeType.toLowerCase()}`,
+              () =>
+                provisionResource(
+                  engine,
+                  logicalId,
+                  change,
+                  newResources,
+                  stackName,
+                  template,
+                  parameterValues,
+                  conditions,
+                  actualCounts,
+                  progress
+                ),
+              `${logicalId} ${change.resourceType}`
             );
             // Before the settle: an UPDATE twin re-asked after it is settled.
             settledUpdates.add(logicalId);
@@ -682,7 +693,7 @@ export async function executeDeployment(
       } finally {
         // Wait for any pending per-resource state saves before the next phase or
         // before propagating an error — prevents partial-save races.
-        await saveChain;
+        await timePhase(phaseScope, 'wait for queued saves (create/update)', () => saveChain);
       }
 
       // If SIGINT fired AND there is still un-provisioned work (some nodes
@@ -724,17 +735,23 @@ export async function executeDeployment(
 
             let deleteOutcome: ResourceOutcomeSignal | void;
             try {
-              deleteOutcome = await provisionResource(
-                engine,
-                logicalId,
-                change,
-                newResources,
-                stackName,
-                template,
-                parameterValues,
-                conditions,
-                actualCounts,
-                progress
+              deleteOutcome = await timePhase(
+                phaseScope,
+                'resource delete',
+                () =>
+                  provisionResource(
+                    engine,
+                    logicalId,
+                    change,
+                    newResources,
+                    stackName,
+                    template,
+                    parameterValues,
+                    conditions,
+                    actualCounts,
+                    progress
+                  ),
+                `${logicalId} ${change.resourceType}`
               );
             } catch (provisionError) {
               engine.interrupted = true;
@@ -783,7 +800,7 @@ export async function executeDeployment(
           () => engine.interrupted
         );
       } finally {
-        await saveChain;
+        await timePhase(phaseScope, 'wait for queued saves (delete)', () => saveChain);
       }
 
       if (engine.interrupted && hasPending(deleteExecutor)) {

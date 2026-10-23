@@ -27,6 +27,7 @@ import {
   settleJournalAfterSuccess,
 } from './rollback.js';
 import { journalCanOwnResources } from '../../state/cross-prefix-stack-scan.js';
+import { PhaseClock, phaseScopeForStack } from '../../utils/phase-timings.js';
 import { loadKeptInHistory } from '../kept-in-history.js';
 import { DeploymentEventsReader } from '../../state/deployment-events-store.js';
 import { poisonRenderedSpellingsCollidingIn } from '../intrinsic-resolver/parameter-secrets.js';
@@ -135,6 +136,8 @@ export async function doDeployWithPrefetch(
   createOnlyPrefetch: CreateOnlyPrefetch
 ): Promise<DeployResult> {
   const startTime = Date.now();
+  // go-to-k/cdkd#5200: inert unless CDKD_PHASE_TIMINGS=1.
+  const clock = new PhaseClock(phaseScopeForStack(stackName, engine.stackRegion));
   engine.logger.debug(safeMsg`Starting deployment for stack: ${displayStackName(stackName)}`);
 
   // Live progress renderer: shows in-flight resources as a multi-line area
@@ -185,6 +188,7 @@ export async function doDeployWithPrefetch(
     process.removeListener('SIGINT', sigintHandler);
     throw error;
   }
+  clock.lap('lock acquire');
 
   // go-to-k/cdkd#4705 review P4 / G-6: a first deploy's state gate runs
   // overlapped with the work before the plan is acted on. When that work
@@ -208,6 +212,7 @@ export async function doDeployWithPrefetch(
 
     // 1. Load current state
     const currentStateData = await engine.stateBackend.getState(stackName, engine.stackRegion);
+    clock.lap('state load');
     // The create-token ledger replaces one that outlived its state record
     // (go-to-k/cdkd#4438).
     noteDeployStateRecord(currentStateData?.state !== undefined);
@@ -392,6 +397,7 @@ export async function doDeployWithPrefetch(
         await gate;
       }
     }
+    clock.lap('state checks + loaded-state gate');
 
     // go-to-k/cdkd#4837: reads and a purge the success path would otherwise
     // make after the last resource, started here beside the deploy instead
@@ -915,6 +921,7 @@ export async function doDeployWithPrefetch(
       sources: maskedInputSourcesForDiff,
       rebaselined: new Map<string, Record<string, string>>(),
     };
+    clock.lap('journal, parameters, conditions, DAG build');
     const changes = await engine.diffCalculator.calculateDiff(
       currentState,
       effectiveTemplate,
@@ -1012,6 +1019,7 @@ export async function doDeployWithPrefetch(
         ),
       }
     );
+    clock.lap('diff');
     // The diff was the prefetch's only consumer: withdraw what it did not
     // need, so it stops spending the account's DescribeType quota that the
     // deploy's own (write-only) lookups draw on.
@@ -1190,6 +1198,7 @@ export async function doDeployWithPrefetch(
     };
     const hasChanges = engine.diffCalculator.hasChanges(changes);
 
+    clock.lap('post-diff checks');
     if (!hasChanges) {
       engine.logger.info('No changes detected. Stack is up to date.');
       startProvenanceCapture();
@@ -1581,6 +1590,7 @@ export async function doDeployWithPrefetch(
             currentState.resources,
             currentEtag === undefined
           );
+      clock.lap('no-change path');
 
       return {
         stackName,
@@ -1794,6 +1804,7 @@ export async function doDeployWithPrefetch(
     const totalOperations = createChanges.length + updateChanges.length + deleteChanges.length;
     const progress = { current: 0, total: totalOperations };
 
+    clock.lap('plan checks, approval, name guard');
     // 6. Execute deployment (event-driven DAG dispatch with partial state saves)
     const {
       state: newState,
@@ -1821,6 +1832,7 @@ export async function doDeployWithPrefetch(
           )
         )
     );
+    clock.lap('resource DAG (provisioning + per-resource saves)');
 
     // 7a. Drain in-flight readCurrentState promises so each resource's
     // observedProperties lands in newState before we persist it. By
@@ -1840,6 +1852,7 @@ export async function doDeployWithPrefetch(
       // Best-effort: never in the way of the save it serves.
     }
     await engine.observedCapture.drainObservedCaptures(newState.resources);
+    clock.lap('observed-state drain');
 
     // A part the drain cap stopped waiting for can record its secret after
     // the outputs pass redacted `newState.outputs`, and the drain above is
@@ -1872,6 +1885,7 @@ export async function doDeployWithPrefetch(
       flushKeptForReadoption(engine),
     ]);
     engine.logger.debug(safeMsg`State saved (ETag: ${newEtag})`);
+    clock.lap('final state save');
     // go-to-k/cdkd#4438: the record now names every resource this deploy
     // created, so their create-token `sent` entries have done their job.
     // go-to-k/cdkd#4705: likewise a kept resource this deploy took back: its
@@ -1956,6 +1970,7 @@ export async function doDeployWithPrefetch(
         : Promise.resolve(),
       ledgerAndKeptCleanup,
     ]);
+    clock.lap('journal settle, exports index');
 
     const durationMs = Date.now() - startTime;
     const unchangedCount =
@@ -2078,5 +2093,6 @@ export async function doDeployWithPrefetch(
         safeMsg`Failed to release lock: ${asIsMessage(describeAwsFailure(lockError).detail)}`
       );
     }
+    clock.lap('teardown + lock release');
   }
 }
