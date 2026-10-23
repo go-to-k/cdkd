@@ -250,9 +250,9 @@ const TOP_LEVEL_IMMUTABLE_PROPS = [
  * downgrade (its default depends on `DeploymentType`), and the storage-type
  * and network-type defaults are migrations, not clears. `update()` names a
  * removal in its own warning rather than the shared caller's, whose line
- * claims a CloudFormation reset that is false for `StorageCapacity` and
- * `FileSystemTypeVersion` ({@link CFN_KEEPS_ON_REMOVAL}) and unmeasured for
- * the rest.
+ * claims a CloudFormation reset — false wherever it is measured, since
+ * CloudFormation keeps each removed value there
+ * ({@link CFN_KEEPS_TOP_LEVEL_ON_REMOVAL}), and unmeasured elsewhere.
  */
 const TOP_LEVEL_LEFT_IN_PLACE_PROPS = [
   'StorageCapacity',
@@ -266,12 +266,22 @@ const TOP_LEVEL_LEFT_IN_PLACE_PROPS = [
  * warning's spelling (issue #1160). CFn A/B us-east-1 2026-10-22: a Lustre
  * SCRATCH_2 file system and an OpenZFS SINGLE_AZ_1 one, each property set and
  * then removed, every update `UPDATE_COMPLETE` with the live value unchanged
- * and no FSx administrative action started. `StorageType`, `NetworkType` and
- * the Windows / ONTAP sub-properties are unmeasured, so a warning naming one
- * of them keeps the line that claims nothing about CloudFormation.
+ * and no FSx administrative action started. CFn A/B us-east-1 2026-10-23,
+ * each removal its own update, every one `UPDATE_COMPLETE` with the same
+ * FileSystemId, the live value unchanged and no administrative action: an
+ * OpenZFS SINGLE_AZ_1 file system kept `NetworkType` DUAL (the non-default),
+ * `StorageCapacity` 64 and `StorageType` SSD; a Lustre PERSISTENT_1 one kept
+ * `StorageType` HDD (the non-default) and `StorageCapacity` 6000. A top-level
+ * name counts as measured only for the `FileSystemType` it was measured on
+ * ({@link CFN_KEEPS_TOP_LEVEL_ON_REMOVAL}); Windows / ONTAP, and their
+ * sub-properties, are unmeasured, so a warning naming one of them keeps the
+ * line that claims nothing about CloudFormation. The claim is generalised from
+ * the measured shapes (Lustre SCRATCH_2 and PERSISTENT_1 HDD; OpenZFS
+ * SINGLE_AZ_1 SSD, NetworkType DUAL) to the rest of that type's SSD / HDD
+ * deployments; an `INTELLIGENT_TIERING` file system is a different storage
+ * class nobody measured, so it never gets the claim ({@link cfnKeepsOnRemoval}).
  */
 const CFN_KEEPS_ON_REMOVAL: ReadonlySet<string> = new Set([
-  'FileSystemTypeVersion',
   'LustreConfiguration.AutoImportPolicy',
   'LustreConfiguration.DataCompressionType',
   'LustreConfiguration.WeeklyMaintenanceStartTime',
@@ -284,19 +294,50 @@ const CFN_KEEPS_ON_REMOVAL: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The top-level half of {@link CFN_KEEPS_ON_REMOVAL}, per measured
+ * `FileSystemType`. A Map, not an object literal: the key is template-borne, and
+ * a `constructor` / `__proto__` key must miss rather than reach a prototype.
+ */
+const CFN_KEEPS_TOP_LEVEL_ON_REMOVAL: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['LUSTRE', new Set(['FileSystemTypeVersion', 'StorageCapacity', 'StorageType'])],
+  ['OPENZFS', new Set(['NetworkType', 'StorageCapacity', 'StorageType'])],
+]);
+
+/** The file system shape a removal claim is judged against. */
+interface RemovalClaimShape {
+  /** `FileSystemType` (create-only, so the same on both sides). */
+  fileSystemType: unknown;
+  /** The previous AND desired `StorageType` (a migration has two). */
+  storageTypes: readonly unknown[];
+}
+
+/**
+ * Whether CloudFormation is measured to keep `name` on removal for this shape.
+ * Never when either side's `StorageType` is `INTELLIGENT_TIERING`: no measured
+ * shape had it.
+ */
+const cfnKeepsOnRemoval = (name: string, shape: RemovalClaimShape): boolean =>
+  !shape.storageTypes.includes('INTELLIGENT_TIERING') &&
+  (CFN_KEEPS_ON_REMOVAL.has(name) ||
+    (typeof shape.fileSystemType === 'string' &&
+      CFN_KEEPS_TOP_LEVEL_ON_REMOVAL.get(shape.fileSystemType)?.has(name) === true));
+
+/**
  * The ONE warning line for properties whose removal cdkd leaves in place
  * (issue #1160): top-level names as-is, variant sub-properties as
  * `<Variant>Configuration.<key>`. Names are template-borne, so they go through
  * `safeMsg`. The deploy line says CloudFormation keeps the value too only when
- * EVERY name is in {@link CFN_KEEPS_ON_REMOVAL}; otherwise it claims nothing
- * about CloudFormation. A rollback revert restores an earlier state record, so
+ * EVERY name is measured for this file system's shape
+ * ({@link cfnKeepsOnRemoval}); otherwise it claims nothing about
+ * CloudFormation. A rollback revert restores an earlier state record, so
  * there the property is one the failed deploy ADDED, and the line says that
  * instead (the shared `removalWarning`'s `'rollback'` arm).
  */
 const leftInPlaceWarning = (
   logicalId: string,
   names: readonly string[],
-  caller: 'deploy' | 'rollback'
+  caller: 'deploy' | 'rollback',
+  shape: RemovalClaimShape
 ): string => {
   const one = names.length === 1;
   const subject = one ? 'property' : 'properties';
@@ -304,7 +345,7 @@ const leftInPlaceWarning = (
   if (caller === 'rollback') {
     return safeMsg`${logicalId} (AWS::FSx::FileSystem): ${subject} ${names.join(', ')} ${verb} absent from the state being restored; UpdateFileSystem keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.`;
   }
-  return names.every((name) => CFN_KEEPS_ON_REMOVAL.has(name))
+  return names.every((name) => cfnKeepsOnRemoval(name, shape))
     ? safeMsg`${logicalId} (AWS::FSx::FileSystem): ${subject} ${names.join(', ')} ${verb} no longer declared and ${one ? 'keeps its' : 'keep their'} current AWS value, as CloudFormation leaves ${one ? 'it' : 'them'}; UpdateFileSystem keeps a setting it is not sent. Declare the intended value explicitly to change it.`
     : safeMsg`${logicalId} (AWS::FSx::FileSystem): ${subject} ${names.join(', ')} ${verb} no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`;
 };
@@ -1077,7 +1118,11 @@ export class FSxFileSystemProvider implements ResourceProvider {
         leftInPlaceWarning(
           logicalId,
           leftInPlaceNames,
-          context?.replayingState ? 'rollback' : 'deploy'
+          context?.replayingState ? 'rollback' : 'deploy',
+          {
+            fileSystemType: properties['FileSystemType'] ?? previousProperties['FileSystemType'],
+            storageTypes: [previousProperties['StorageType'], properties['StorageType']],
+          }
         )
       );
     };

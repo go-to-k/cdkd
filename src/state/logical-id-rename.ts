@@ -243,3 +243,129 @@ function renameSubTemplate(
     return `\${${renamed}${dot === -1 ? '' : inner.slice(dot)}}`;
   });
 }
+
+/** One record moving between two stacks (go-to-k/cdkd#5202). */
+export interface LogicalIdMove {
+  /** Its logical id in the source stack. */
+  from: string;
+  /** Its logical id in the destination stack. */
+  to: string;
+}
+
+/**
+ * The SOURCE stack's record once `moves` leave it: each moved record is
+ * dropped (its AWS resource is now the destination's), every remaining
+ * record's `dependencies` entry naming one is dropped (the reference is now
+ * cross-stack), and each moved id's name generation is retired as for any
+ * record that leaves a stack. `skippedOutputs` is dropped by the flat rule.
+ * Throws on a `from` not in `resources`.
+ */
+export function removeMovedRecords(state: StackState, moves: readonly LogicalIdMove[]): StackState {
+  const leavingIds = new Set<string>();
+  for (const { from } of moves) {
+    if (!hasOwnKey(state.resources, from)) {
+      throw new Error(`Logical ID ${from} is not in the source stack's state`);
+    }
+    leavingIds.add(from);
+  }
+  const resources: Record<string, ResourceState> = {};
+  const leaving: Array<{ logicalId: string; record: ResourceState }> = [];
+  for (const [logicalId, record] of Object.entries(state.resources)) {
+    if (leavingIds.has(logicalId)) {
+      leaving.push({ logicalId, record });
+      continue;
+    }
+    defineOwnKey(resources, logicalId, withoutDependencies(record, leavingIds));
+  }
+  const { skippedOutputs: _dropped, ...rest } = state;
+  void _dropped;
+  return {
+    ...rest,
+    ...stackInstanceIdCarriedFrom(state),
+    resources,
+    ...retiredNameGenerationsAfter(state, leaving),
+    ...(Array.isArray(state.orphans) && {
+      orphans: state.orphans.map((entry) =>
+        entry === null || typeof entry !== 'object'
+          ? entry
+          : { ...entry, state: withoutDependencies(entry.state, leavingIds) }
+      ),
+    }),
+    lastModified: Date.now(),
+  };
+}
+
+/**
+ * The DESTINATION stack's record once `moved` arrive: each record is added
+ * under its new logical id verbatim (physical id, attributes, observed
+ * baseline and secret bookkeeping), with the template's construct path, its
+ * references to the other moved records renamed, its dependencies on records
+ * that stayed in the source dropped, and its name-generation high-water mark
+ * raised past any generation the destination retired for that id. Throws on
+ * a `to` already in `resources`.
+ */
+export function insertMovedRecords(
+  state: StackState,
+  moved: ReadonlyArray<LogicalIdMove & { record: ResourceState; source?: string }>,
+  template: CloudFormationTemplate
+): StackState {
+  // References resolve within the record's OWN source stack: two sources can
+  // move records sharing a logical id (one construct path, two stacks).
+  const renamesBySource = new Map<string | undefined, Map<string, string>>();
+  for (const m of moved) {
+    const group = renamesBySource.get(m.source) ?? new Map<string, string>();
+    group.set(m.from, m.to);
+    renamesBySource.set(m.source, group);
+  }
+  const resources: Record<string, ResourceState> = {};
+  for (const [logicalId, record] of Object.entries(state.resources)) {
+    defineOwnKey(resources, logicalId, record);
+  }
+  const retired = state.retiredNameGenerations ?? {};
+  for (const { to, record, source } of moved) {
+    if (hasOwnKey(state.resources, to) || hasOwnKey(resources, to)) {
+      throw new Error(`Logical ID ${to} is already in the destination stack's state`);
+    }
+    const group = renamesBySource.get(source)!;
+    const coMoved = new Set(group.values());
+    const renamed = rewriteRecordReferences(record, group);
+    const kept =
+      renamed !== null && typeof renamed === 'object' && Array.isArray(renamed.dependencies)
+        ? {
+            ...renamed,
+            dependencies: renamed.dependencies.filter(
+              (dep) => typeof dep !== 'string' || coMoved.has(dep)
+            ),
+          }
+        : renamed;
+    const constructPath = constructPathOf(template, to);
+    defineOwnKey(
+      resources,
+      to,
+      withNameGenerationReached(
+        { ...kept, ...(constructPath !== undefined && { constructPath }) },
+        to,
+        hasOwnKey(retired, to) ? retired[to] : undefined
+      )
+    );
+  }
+  const { skippedOutputs: _dropped, ...rest } = state;
+  void _dropped;
+  return {
+    ...rest,
+    ...stackInstanceIdCarriedFrom(state),
+    resources,
+    lastModified: Date.now(),
+  };
+}
+
+/** `record` with each `dependencies` entry in `drop` removed; anything unreadable verbatim. */
+function withoutDependencies(record: ResourceState, drop: ReadonlySet<string>): ResourceState {
+  if (record === null || typeof record !== 'object' || !Array.isArray(record.dependencies)) {
+    return record;
+  }
+  return {
+    ...record,
+    dependencies: record.dependencies.filter((dep) => typeof dep !== 'string' || !drop.has(dep)),
+  };
+}

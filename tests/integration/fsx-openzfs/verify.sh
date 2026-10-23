@@ -25,6 +25,12 @@
 #      back to CFn input shape; before #1089 the block was declared
 #      drift-unknown so drift passed trivially. Now it is compared, so a
 #      mapping bug surfaces here as phantom drift.
+#   2b. Re-deploy with CDKD_TEST_REMOVAL=true (issue #1160): StorageCapacity,
+#      StorageType and NetworkType leave the template. cdkd sends no reset,
+#      as CloudFormation leaves them (CFn A/B on issue #1160): the deploy
+#      succeeds, the values stay (64 / SSD / IPV4), the same file system is
+#      kept, and ONE warning names all three. WeeklyMaintenanceStartTime is
+#      added in the same deploy, so UpdateFileSystem fires beside them.
 #   3. Destroy + assert the file system is GONE from AWS (by id AND by the
 #      fixture's constant tag — an FSx file system bills per hour, so a
 #      leftover is never acceptable) and the cdkd state file is removed.
@@ -77,6 +83,21 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 CLEANUP_TAG_KEY="cdkd-integ"
 CLEANUP_TAG_VALUE="fsx-openzfs"
+# Phase 2b (issue #1160): the provider's removal warning. The needle names the
+# removed properties in the provider's order; the sentinel is an independent
+# substring of the same line, so a reworded warning fails loudly instead of
+# reading as "not fired".
+REMOVAL_NEEDLE="properties StorageCapacity, StorageType, NetworkType are no longer declared and keep their current AWS value, as CloudFormation leaves them"
+REMOVAL_SENTINEL="UpdateFileSystem keeps a setting it is not sent"
+# The companion change in Phase 2b. The stack declares MAINT_TARGET, or
+# MAINT_ALT_TARGET under CDKD_TEST_MAINT_ALT=true -- picked when AWS already
+# holds MAINT_TARGET, so the companion assertion can never pass vacuously.
+MAINT_TARGET="7:03:30"
+MAINT_ALT_TARGET="1:04:45"
+# Deploy logs, streamed through `tee` and read back for the greps; removed by
+# cleanup on every exit path.
+PHASE2_LOG=""
+PHASE2B_LOG=""
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -108,6 +129,8 @@ wait_fs_gone() {
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  [ -n "${PHASE2_LOG:-}" ] && rm -f "${PHASE2_LOG}"
+  [ -n "${PHASE2B_LOG:-}" ] && rm -f "${PHASE2B_LOG}"
   if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
       --stack-region "${REGION}" --yes >/dev/null 2>&1
@@ -187,7 +210,7 @@ output_value() {
 
 # --- Phase 1: deploy baseline ------------------------------------------
 echo "==> Phase 1: deploy OpenZFS SINGLE_AZ_1 file system (this takes ~5-15 min)"
-env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL -u CDKD_TEST_MAINT_ALT node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 FS_ID_P1="$(output_value FileSystemId)"
@@ -251,8 +274,22 @@ echo "    file system routed via SDK provider (provisionedBy=sdk)"
 
 # --- Phase 2: in-place update (throughput + tags) -----------------------
 echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (ThroughputCapacity 64->128, tag change + removal)"
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+PHASE2_LOG="$(mktemp)"
+set +e
+env -u CDKD_TEST_REMOVAL -u CDKD_TEST_MAINT_ALT CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${PHASE2_LOG}"
+PHASE2_RC=${PIPESTATUS[0]}
+set -e
+if [ "${PHASE2_RC}" -ne 0 ]; then
+  echo "FAIL [phase 2]: deploy exited ${PHASE2_RC}" >&2
+  exit 1
+fi
+# Negative control for Phase 2b's needle: this deploy removes no top-level
+# property, so the removal warning must not appear here.
+if grep -qF "${REMOVAL_SENTINEL}" <<<"$(sed 's/\x1b\[[0-9;]*m//g' "${PHASE2_LOG}")"; then
+  echo "FAIL [phase 2]: the #1160 removal warning fired on a deploy that removed no top-level property" >&2
+  exit 1
+fi
 
 FS_ID_P2="$(output_value FileSystemId)"
 if [ "${FS_ID_P1}" != "${FS_ID_P2}" ]; then
@@ -327,6 +364,71 @@ if [ "${OBSERVED_TP}" != "128" ]; then
 fi
 echo "    observedProperties carries the reverse-mapped OpenZFS block (readCurrentState ran)"
 
+# --- Phase 2b: removal of the top-level settings (issue #1160) ----------
+# StorageCapacity, StorageType and NetworkType leave the template. Their live
+# values are read first, so the "stays" assertions compare against what AWS
+# held, not against a constant.
+echo "==> Phase 2b: re-deploy with CDKD_TEST_REMOVAL=true (StorageCapacity / StorageType / NetworkType dropped, maintenance window added)"
+read -r CAPACITY_P2 STORAGE_TYPE_P2 NETWORK_TYPE_P2 MAINT_P2 <<EOF
+$(aws fsx describe-file-systems --file-system-ids "${FS_ID_P2}" --region "${REGION}" \
+  --query 'FileSystems[0].[StorageCapacity,StorageType,NetworkType,OpenZFSConfiguration.WeeklyMaintenanceStartTime]' \
+  --output text)
+EOF
+if [ "${CAPACITY_P2}" != "64" ] || [ "${STORAGE_TYPE_P2}" != "SSD" ] || [ "${NETWORK_TYPE_P2}" != "IPV4" ]; then
+  echo "FAIL [phase 2b]: expected the declared 64 / SSD / IPV4 before the removal, got '${CAPACITY_P2}' / '${STORAGE_TYPE_P2}' / '${NETWORK_TYPE_P2}'" >&2
+  exit 1
+fi
+MAINT_ALT=false
+if [ "${MAINT_P2}" = "${MAINT_TARGET}" ]; then
+  echo "    AWS already holds WeeklyMaintenanceStartTime ${MAINT_TARGET}; using ${MAINT_ALT_TARGET} so the companion change is real"
+  MAINT_TARGET="${MAINT_ALT_TARGET}"
+  MAINT_ALT=true
+fi
+PHASE2B_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_MAINT_ALT="${MAINT_ALT}" node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${PHASE2B_LOG}"
+PHASE2B_RC=${PIPESTATUS[0]}
+set -e
+if [ "${PHASE2B_RC}" -ne 0 ]; then
+  echo "FAIL [phase 2b]: removing StorageCapacity / StorageType / NetworkType failed the deploy (exit ${PHASE2B_RC}); cdkd must leave them in place and warn" >&2
+  exit 1
+fi
+PHASE2B_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${PHASE2B_LOG}")"
+# Needle and sentinel are independent substrings of the SAME warning line: the
+# sentinel without the needle means the wording drifted, not that the
+# warning did not fire.
+if ! grep -qF "${REMOVAL_NEEDLE}" <<<"${PHASE2B_PLAIN}"; then
+  if grep -qF "${REMOVAL_SENTINEL}" <<<"${PHASE2B_PLAIN}"; then
+    echo "FAIL [phase 2b]: the removal warning fired without the CloudFormation-keeps wording '${REMOVAL_NEEDLE}' -- the measured claim regressed in src/provisioning/providers/fsx-filesystem-provider.ts (CFN_KEEPS_TOP_LEVEL_ON_REMOVAL / cfnKeepsOnRemoval), or the wording drifted and this needle needs updating" >&2
+  else
+    echo "FAIL [phase 2b]: removing StorageCapacity / StorageType / NetworkType produced no warning (issue #1160: the removal was dropped silently)" >&2
+  fi
+  exit 1
+fi
+echo "    deploy warned that StorageCapacity, StorageType and NetworkType are left in place"
+
+FS_ID_P2B="$(output_value FileSystemId)"
+if [ "${FS_ID_P2}" != "${FS_ID_P2B}" ]; then
+  echo "FAIL: file system was REPLACED in Phase 2b (${FS_ID_P2} -> ${FS_ID_P2B})" >&2
+  exit 1
+fi
+read -r CAPACITY_P2B STORAGE_TYPE_P2B NETWORK_TYPE_P2B MAINT_P2B <<EOF
+$(aws fsx describe-file-systems --file-system-ids "${FS_ID_P2B}" --region "${REGION}" \
+  --query 'FileSystems[0].[StorageCapacity,StorageType,NetworkType,OpenZFSConfiguration.WeeklyMaintenanceStartTime]' \
+  --output text)
+EOF
+if [ "${CAPACITY_P2B}" != "${CAPACITY_P2}" ] || [ "${STORAGE_TYPE_P2B}" != "${STORAGE_TYPE_P2}" ] \
+  || [ "${NETWORK_TYPE_P2B}" != "${NETWORK_TYPE_P2}" ]; then
+  echo "FAIL [phase 2b]: expected ${CAPACITY_P2} / ${STORAGE_TYPE_P2} / ${NETWORK_TYPE_P2} to stay (cdkd sends no reset), got '${CAPACITY_P2B}' / '${STORAGE_TYPE_P2B}' / '${NETWORK_TYPE_P2B}'" >&2
+  exit 1
+fi
+if [ "${MAINT_P2B}" != "${MAINT_TARGET}" ]; then
+  echo "FAIL [phase 2b]: expected the companion WeeklyMaintenanceStartTime ${MAINT_TARGET}, got '${MAINT_P2B}' (UpdateFileSystem did not apply)" >&2
+  exit 1
+fi
+echo "    removals left in place (${CAPACITY_P2B} / ${STORAGE_TYPE_P2B} / ${NETWORK_TYPE_P2B}) beside an applied change (maintenance ${MAINT_P2B})"
+
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy (FSx deletion takes a few minutes)"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -344,4 +446,4 @@ echo "    no file system with the fixture tag remains"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — AWS::FSx::FileSystem OpenZFS variant: deploy + in-place update (incl. tag removal) + clean-drift + destroy all passed"
+echo "[verify] PASS — AWS::FSx::FileSystem OpenZFS variant: deploy + in-place update (incl. tag removal) + clean-drift + top-level removal (#1160) + destroy all passed"
