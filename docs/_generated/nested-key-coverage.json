@@ -1,15 +1,15 @@
 {
   "summary": {
     "targetCount": 28,
-    "nestedKeyCount": 1463,
-    "sameSpelling": 1360,
+    "nestedKeyCount": 1471,
+    "sameSpelling": 1361,
     "providerHandled": 80,
     "allowListed": 23,
     "caseDivergence": 0,
-    "noSdkMember": 0,
-    "noWriteEvidence": 0,
+    "noSdkMember": 6,
+    "noWriteEvidence": 1,
     "freshObjectTargets": 18,
-    "shapeClean": 178,
+    "shapeClean": 179,
     "shapeHandled": 49,
     "shapeAllowListed": 9,
     "arrayVsWrapper": 0,
@@ -2450,7 +2450,7 @@
       "sdkClientPackage": "@aws-sdk/client-codebuild",
       "keyStyle": "lower-first",
       "freshObjectMapper": true,
-      "nestedKeyCount": 98,
+      "nestedKeyCount": 99,
       "entries": [
         {
           "resourceType": "AWS::CodeBuild::Project",
@@ -2542,6 +2542,14 @@
           "topLevelProperty": "BuildBatchConfig",
           "terminalKey": "ComputeTypesAllowed",
           "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "BuildBatchConfig.Restrictions.FleetsAllowed",
+          "topLevelProperty": "BuildBatchConfig",
+          "terminalKey": "FleetsAllowed",
+          "bucket": "no-write-evidence",
+          "sdkNearMiss": "fleetsAllowed"
         },
         {
           "resourceType": "AWS::CodeBuild::Project",
@@ -3140,7 +3148,7 @@
         }
       ],
       "shapeEntries": [],
-      "shapeCleanCount": 12,
+      "shapeCleanCount": 13,
       "unmatchedDefinitions": [
         "Artifacts",
         "Environment",
@@ -3156,7 +3164,7 @@
       "sdkClientPackage": "@aws-sdk/client-ecs",
       "keyStyle": "lower-first",
       "freshObjectMapper": true,
-      "nestedKeyCount": 122,
+      "nestedKeyCount": 124,
       "entries": [
         {
           "resourceType": "AWS::ECS::Service",
@@ -3605,6 +3613,20 @@
         },
         {
           "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.ContainerConfigurations",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "ContainerConfigurations",
+          "bucket": "no-sdk-member"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
+          "nestedKey": "ServiceConnectConfiguration.ContainerConfigurations.LogLevel",
+          "topLevelProperty": "ServiceConnectConfiguration",
+          "terminalKey": "LogLevel",
+          "bucket": "no-sdk-member"
+        },
+        {
+          "resourceType": "AWS::ECS::Service",
           "nestedKey": "ServiceConnectConfiguration.Enabled",
           "topLevelProperty": "ServiceConnectConfiguration",
           "terminalKey": "Enabled",
@@ -4029,7 +4051,12 @@
       "shapeCleanCount": 18,
       "unmatchedDefinitions": [
         "ForceNewDeployment",
+        "GatewayConnector",
+        "GatewayConnectorFilters",
+        "GatewayConnectorHealthCheck",
+        "GatewayConnectorHealthCheckMatcher",
         "HookTimeoutConfig",
+        "ServiceConnectContainerConfiguration",
         "ServiceConnectTestTrafficRulesHeader",
         "ServiceConnectTestTrafficRulesHeaderValue"
       ],
@@ -4042,7 +4069,7 @@
       "sdkClientPackage": "@aws-sdk/client-ecs",
       "keyStyle": "lower-first",
       "freshObjectMapper": true,
-      "nestedKeyCount": 142,
+      "nestedKeyCount": 146,
       "entries": [
         {
           "resourceType": "AWS::ECS::TaskDefinition",
@@ -4585,6 +4612,34 @@
         },
         {
           "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "ContainerDefinitions.ResourceRequirements.SharingStrategy",
+          "topLevelProperty": "ContainerDefinitions",
+          "terminalKey": "SharingStrategy",
+          "bucket": "no-sdk-member"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "ContainerDefinitions.ResourceRequirements.SharingStrategy.NvidiaMps",
+          "topLevelProperty": "ContainerDefinitions",
+          "terminalKey": "NvidiaMps",
+          "bucket": "no-sdk-member"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "ContainerDefinitions.ResourceRequirements.SharingStrategy.NvidiaMps.MaxComputePercent",
+          "topLevelProperty": "ContainerDefinitions",
+          "terminalKey": "MaxComputePercent",
+          "bucket": "no-sdk-member"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
+          "nestedKey": "ContainerDefinitions.ResourceRequirements.SharingStrategy.NvidiaMps.Memory",
+          "topLevelProperty": "ContainerDefinitions",
+          "terminalKey": "Memory",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::ECS::TaskDefinition",
           "nestedKey": "ContainerDefinitions.ResourceRequirements.Type",
           "topLevelProperty": "ContainerDefinitions",
           "terminalKey": "Type",
@@ -5044,7 +5099,9 @@
       "unmatchedDefinitions": [
         "AuthorizationConfig",
         "FSxAuthorizationConfig",
-        "RestartPolicy"
+        "NvidiaMpsAllocation",
+        "RestartPolicy",
+        "SharingStrategy"
       ],
       "usedSegmentRenames": [
         "ProxyConfigurationProperties"
@@ -7582,7 +7639,7 @@
       "sdkClientPackage": "@aws-sdk/client-lambda-core",
       "keyStyle": "exact",
       "freshObjectMapper": true,
-      "nestedKeyCount": 7,
+      "nestedKeyCount": 8,
       "entries": [
         {
           "resourceType": "AWS::Lambda::NetworkConnector",
@@ -7597,6 +7654,13 @@
           "topLevelProperty": "Configuration",
           "terminalKey": "AssociatedComputeResourceTypes",
           "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::NetworkConnector",
+          "nestedKey": "Configuration.VpcEgressConfiguration.ElasticIpConfiguration",
+          "topLevelProperty": "Configuration",
+          "terminalKey": "ElasticIpConfiguration",
+          "bucket": "no-sdk-member"
         },
         {
           "resourceType": "AWS::Lambda::NetworkConnector",

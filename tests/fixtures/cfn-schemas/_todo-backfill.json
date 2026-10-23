@@ -85,6 +85,7 @@
       "MultiRegionConsistency",
       "ReadOnDemandThroughputSettings",
       "ReadProvisionedThroughputSettings",
+      "TableType",
       "VectorIndexes",
       "WarmThroughput"
     ],
@@ -143,6 +144,9 @@
     ],
     "AWS::EC2::VPCGatewayAttachment": [
       "VpnGatewayId"
+    ],
+    "AWS::ECS::Service": [
+      "GatewayConnectors"
     ],
     "AWS::EFS::MountTarget": [
       "IpAddress",

@@ -13,24 +13,34 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 ## Summary
 
 - Audited targets: **28**
-- Nested CFn key paths audited: **1463**
-- Same spelling in SDK model: **1360**
+- Nested CFn key paths audited: **1471**
+- Same spelling in SDK model: **1361**
 - Explicitly handled in provider: **80**
 - Allow-listed pass-throughs (does NOT block CI): **23**
 - **Case divergences (blocks CI): 0**
-- **No SDK member (blocks CI): 0**
+- **No SDK member (blocks CI): 6**
 - Write-evidence pass — fresh-object targets audited: **18**
-- **No write evidence (blocks CI): 0**
-- Shape pass — bare-array pairs clean: **178**
+- **No write evidence (blocks CI): 1**
+- Shape pass — bare-array pairs clean: **179**
 - Shape pass — explicitly handled in provider: **49**
 - Shape pass — allow-listed (does NOT block CI): **9**
 - **Array-vs-wrapper divergences (blocks CI): 0**
 - **Definition-member-missing divergences (blocks CI): 0**
 - Shape pass — ambiguous (visible, non-blocking): **0**
 
-## Divergences
+## Divergences — BLOCKS CI
 
-None. Every audited nested CFn key either matches an SDK member spelling or is explicitly named by its provider — and on a fresh-object target, its SDK member is also WRITTEN somewhere in the provider.
+Each key below is templated by CFn but never reaches AWS: either it maps to no SDK member at all, or (for a fresh-object target) the SDK member exists and the provider never writes it. Add the CFn->SDK conversion to the provider (naming the CFn spelling, and WRITING the SDK member), or add a `NESTED_KEY_ALLOW_LIST` entry with a rationale in scripts/gen-nested-key-coverage.ts.
+
+| Resource type | CFn nested key / path | Bucket | SDK detail |
+| --- | --- | --- | --- |
+| `AWS::CodeBuild::Project` | `BuildBatchConfig.Restrictions.FleetsAllowed` | no-write-evidence | SDK has `fleetsAllowed`, but the provider never writes it |
+| `AWS::ECS::Service` | `ServiceConnectConfiguration.ContainerConfigurations` | no-sdk-member | — |
+| `AWS::ECS::Service` | `ServiceConnectConfiguration.ContainerConfigurations.LogLevel` | no-sdk-member | — |
+| `AWS::ECS::TaskDefinition` | `ContainerDefinitions.ResourceRequirements.SharingStrategy` | no-sdk-member | — |
+| `AWS::ECS::TaskDefinition` | `ContainerDefinitions.ResourceRequirements.SharingStrategy.NvidiaMps` | no-sdk-member | — |
+| `AWS::ECS::TaskDefinition` | `ContainerDefinitions.ResourceRequirements.SharingStrategy.NvidiaMps.MaxComputePercent` | no-sdk-member | — |
+| `AWS::Lambda::NetworkConnector` | `Configuration.VpcEgressConfiguration.ElasticIpConfiguration` | no-sdk-member | — |
 
 ## Allow-listed pass-throughs
 
@@ -226,9 +236,9 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::AppSync::Resolver` | `appsync-provider.ts` | `@aws-sdk/client-appsync` | lower-first | yes | 9 | 0 |
 | `AWS::CloudFront::Distribution` | `cloudfront-distribution-provider.ts` | `@aws-sdk/client-cloudfront` | exact | yes | 173 | 4 |
 | `AWS::CloudWatch::AnomalyDetector` | `cloudwatch-anomaly-detector-provider.ts` | `@aws-sdk/client-cloudwatch` | exact | yes | 31 | 1 |
-| `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | yes | 98 | 4 |
-| `AWS::ECS::Service` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | yes | 122 | 4 |
-| `AWS::ECS::TaskDefinition` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | yes | 142 | 3 |
+| `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | yes | 99 | 4 |
+| `AWS::ECS::Service` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | yes | 124 | 9 |
+| `AWS::ECS::TaskDefinition` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | yes | 146 | 5 |
 | `AWS::Events::Rule` | `eventbridge-rule-provider.ts` | `@aws-sdk/client-eventbridge` | exact | no | 76 | 0 |
 | `AWS::Glue::Connection` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 37 | 0 |
 | `AWS::Glue::Crawler` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 46 | 1 |
@@ -238,7 +248,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::Glue::Table` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 88 | 2 |
 | `AWS::Glue::Trigger` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 16 | 0 |
 | `AWS::Lambda::EventSourceMapping` | `lambda-eventsource-provider.ts` | `@aws-sdk/client-lambda` | exact | no | 38 | 6 |
-| `AWS::Lambda::NetworkConnector` | `lambda-network-connector-provider.ts` | `@aws-sdk/client-lambda-core` | exact | yes | 7 | 3 |
+| `AWS::Lambda::NetworkConnector` | `lambda-network-connector-provider.ts` | `@aws-sdk/client-lambda-core` | exact | yes | 8 | 3 |
 | `AWS::Lambda::WebFunctionEndpoint` | `lambda-web-function-endpoint-provider.ts` | `@aws-sdk/client-lambda-web` | lower-first | yes | 4 | 0 |
 | `AWS::Lambda::WebFunctionRevision` | `lambda-web-function-revision-provider.ts` | `@aws-sdk/client-lambda-web` | lower-first | yes | 17 | 0 |
 | `AWS::Pipes::Pipe` | `pipes-provider.ts` | `@aws-sdk/client-pipes` | exact | no | 208 | 0 |
