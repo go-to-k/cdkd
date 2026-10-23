@@ -620,6 +620,60 @@ describe('ApiGatewayProvider', () => {
         ).rejects.toThrow('RestApiId is required for API Gateway Deployment');
       });
 
+      // Issue #2762: DeploymentCanarySettings was a silent drop.
+      it('should forward DeploymentCanarySettings as CreateDeployment canarySettings', async () => {
+        mockSend.mockResolvedValueOnce({ id: 'deploy-canary' });
+
+        await provider.create('MyDeployment', resourceType, {
+          RestApiId: 'api-id',
+          DeploymentCanarySettings: {
+            PercentTraffic: 12.5,
+            StageVariableOverrides: { flag: 'canary' },
+            UseStageCache: true,
+          },
+        });
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.constructor.name).toBe('CreateDeploymentCommand');
+        expect(command.input.canarySettings).toEqual({
+          percentTraffic: 12.5,
+          stageVariableOverrides: { flag: 'canary' },
+          useStageCache: true,
+        });
+      });
+
+      it('should send no canarySettings key when DeploymentCanarySettings is absent', async () => {
+        mockSend.mockResolvedValueOnce({ id: 'deploy-plain' });
+
+        await provider.create('MyDeployment', resourceType, { RestApiId: 'api-id' });
+
+        const command = mockSend.mock.calls[0][0];
+        expect(Object.prototype.hasOwnProperty.call(command.input, 'canarySettings')).toBe(false);
+      });
+
+      it.each([
+        ['a string', 'canary', 'got string'],
+        ['an array', [{ PercentTraffic: 10 }], 'got an array'],
+      ])(
+        'should refuse a DeploymentCanarySettings that is %s before any AWS call',
+        async (_label, value, detail) => {
+          await expect(
+            provider.create('MyDeployment', resourceType, {
+              RestApiId: 'api-id',
+              DeploymentCanarySettings: value,
+            })
+          ).rejects.toThrow(
+            `DeploymentCanarySettings for MyDeployment must be an object block; ${detail}`
+          );
+          expect(mockSend).not.toHaveBeenCalled();
+        }
+      );
+
+      it('should declare DeploymentCanarySettings drift-unknown (GetDeployment cannot return it)', () => {
+        expect(provider.getDriftUnknownPaths(resourceType)).toEqual(['DeploymentCanarySettings']);
+        expect(provider.getDriftUnknownPaths('AWS::ApiGateway::Stage')).toEqual([]);
+      });
+
       it('should throw on API error', async () => {
         mockSend.mockRejectedValueOnce(new Error('API error'));
 

@@ -28,6 +28,9 @@ import type { Construct } from 'constructs';
  *   PercentTraffic changed 10 -> 25 and the StageVariableOverrides key
  *   dropped (per-key `remove /canarySettings/stageVariableOverrides/flag`)
  *   — the #1160 absent-field-removal semantics, live.
+ * - CanaryDeployment (issue #2762): a Deployment with DeploymentCanarySettings
+ *   takes the SDK route; phase 2 changes the create-only block, which
+ *   replaces the deployment.
  *
  * CacheClusterEnabled / CacheClusterSize are NOT exercised live: a stage
  * cache cluster takes ~20-30 minutes to provision and bills per hour; the
@@ -62,6 +65,22 @@ export class ApigwStagePropsStack extends cdk.Stack {
       restApiId: api.ref,
     });
     deployment.addDependency(method);
+
+    // Issue #2762: DeploymentCanarySettings, formerly a silent drop that
+    // auto-routed the whole Deployment through Cloud Control. No StageName
+    // (cdkd leaves that CFn-only convenience to Cloud Control), so the SDK
+    // route is what this resource takes. The block is create-only, so phase 2
+    // changing PercentTraffic must REPLACE the deployment.
+    const canaryDeployment = new apigateway.CfnDeployment(this, 'CanaryDeployment', {
+      restApiId: api.ref,
+      description: 'cdkd-stage-props-canary-deployment',
+      deploymentCanarySettings: {
+        percentTraffic: isUpdate ? 20 : 10,
+        stageVariableOverrides: { flag: 'canary' },
+        useStageCache: false,
+      },
+    });
+    canaryDeployment.addDependency(method);
 
     const clientCert = new apigateway.CfnClientCertificate(this, 'ClientCert', {
       description: 'cdkd-stage-props-cert',

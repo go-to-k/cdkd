@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 89,
-    "declaredProperties": 1174,
-    "wiredProperties": 1172,
+    "declaredProperties": 1175,
+    "wiredProperties": 1173,
     "wired": 87,
     "gap": 0,
     "allowListed": 2,
@@ -429,7 +429,7 @@
       "file": "apigateway-provider.ts",
       "className": "ApiGatewayProvider",
       "bucket": "wired",
-      "declaredCount": 38,
+      "declaredCount": 39,
       "properties": [
         {
           "name": "AccessLogSetting",
@@ -655,6 +655,21 @@
             "createAccount",
             "update",
             "updateAccount"
+          ]
+        },
+        {
+          "name": "DeploymentCanarySettings",
+          "status": "wired",
+          "types": [
+            "AWS::ApiGateway::Deployment"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createDeployment"
           ]
         },
         {

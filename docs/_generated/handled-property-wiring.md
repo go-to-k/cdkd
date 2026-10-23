@@ -15,7 +15,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **89**
-- Declared properties: **1174** (**1172** with read evidence)
+- Declared properties: **1175** (**1173** with read evidence)
 - Fully wired classes: **87**
 - Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **38**
@@ -88,7 +88,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `AgentCoreCodeInterpreterProvider` | agentcore-code-interpreter-provider.ts | wired | 0 | 0 |
 | `AgentCoreEvaluatorProvider` | agentcore-evaluator-provider.ts | wired | 6 | 6 |
 | `AgentCoreRuntimeProvider` | agentcore-runtime-provider.ts | wired | 10 | 10 |
-| `ApiGatewayProvider` | apigateway-provider.ts | wired | 38 | 38 |
+| `ApiGatewayProvider` | apigateway-provider.ts | wired | 39 | 39 |
 | `ApiGatewayV2Provider` | apigatewayv2-provider.ts | wired | 54 | 54 |
 | `AppSyncProvider` | appsync-provider.ts | wired | 48 | 48 |
 | `ASGProvider` | asg-provider.ts | wired | 33 | 33 |

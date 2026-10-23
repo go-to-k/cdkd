@@ -103,9 +103,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::ApiGateway::Deployment',
     {
-      handled: new Set<string>(['Description', 'RestApiId']),
+      handled: new Set<string>(['DeploymentCanarySettings', 'Description', 'RestApiId']),
       silentDrop: new Map<string, string>([
-        ['DeploymentCanarySettings', 'not yet implemented by cdkd'],
         [
           'StageDescription',
           'CFn-only convenience for inline-creating a Stage; declare AWS::ApiGateway::Stage with the Description property instead',
@@ -115,7 +114,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
           'CFn-only convenience for inline-creating a Stage from a Deployment; declare AWS::ApiGateway::Stage explicitly to attach to this Deployment',
         ],
       ]),
-      createOnlyDrops: new Set<string>(['DeploymentCanarySettings']),
+      createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['DeploymentId']),
       ccRouteUnavailable: false,
     },
