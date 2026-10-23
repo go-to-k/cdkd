@@ -500,6 +500,9 @@ export async function applyMoveGroup(input: {
  * Whether a save landed is read, not assumed: a save can fail after S3
  * accepted the object (a response that never arrived), so each attempted
  * stack is re-read, and a changed ETag under the lock is this run's write.
+ * That reading relies on every writer of a state record taking its lock, as
+ * every cdkd writer does; a hand edit of `state.json` during the run would
+ * be overwritten with the planned record.
  * Exported for its unit tests.
  */
 export async function recoverAfterFailedSave(input: {
