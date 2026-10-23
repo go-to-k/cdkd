@@ -305,6 +305,7 @@ redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clea
 refactor-command	2026-10-23T20:45:22Z	PASS	95	verify.sh	rc ok, orph clean, no refactor-map.json left; mktemp-dir ordering fixed on e48470db5 (#5201)
 refactor-move	2026-10-23T23:22:22Z	PASS	160	verify.sh	rc ok, orph clean; re-run on 3d64872f4 (destroy re-read is now deep-equality) (#5212, #5220)
 refactor-command	2026-10-23T23:30:13Z	PASS	105	verify.sh	rc ok, orph clean; cdkd diff "moved to <Stack>.<Id>" hint confirmed on [-] rows (#5232, 276f00858)
+refactor-command	2026-10-23T23:41:04Z	PASS	115	verify.sh	rc ok, orph clean; re-run on 4a1466a76 (hint only pairs refactor would plan): ambiguous topics show no hint, table/queue still do (#5232)
 refactor-move	2026-10-23T23:33:51Z	PASS	165	verify.sh	rc ok, orph clean; cdkd diff "moved to <Stack>.<Id>" hint confirmed on both [-] rows (#5232, 276f00858)
 remove-protection	2026-10-23T17:17:04Z	PASS	2113	verify.sh	--remove-protection destroy succeeded, ASG-launched instance confirmed terminated (#796), state cleared, orph clean
 remove-protection-compensation	2026-10-22T15:37:12Z	PASS	251	verify.sh	rc ok, orph clean

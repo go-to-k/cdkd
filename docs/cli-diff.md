@@ -197,11 +197,12 @@ renamed or moved. A deploy would delete it and create a new one;
 [`cdkd refactor`](cli-refactor.md) keeps it instead. The note appears only
 when the pair is unambiguous: one removal and one addition match each other
 and nothing else. A move between stacks is noted when both stacks are in the
-diff (`cdkd diff OldStack NewStack`, or `--all`) deploy to the same
-account and region, and already have cdkd state: `cdkd refactor` never moves a
-resource into a stack that was never deployed. A nested stack's rows get no note. The `--fail-on=destructive` list and the `cdkd deploy`
-approval prompt carry the same note; the prompt sees only the stack being
-deployed, so it notes renames within that stack.
+diff (`cdkd diff OldStack NewStack`, or `--all`), deploy to the same account
+and region, and already have cdkd state: `cdkd refactor` never moves a
+resource into a stack that was never deployed. A nested stack's rows get no
+note. The `--fail-on=destructive` list and the `cdkd deploy` approval prompt
+carry the same note; the prompt sees only the stack being deployed, so it
+notes renames within that stack.
 
 ## Exit codes
 
