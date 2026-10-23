@@ -62,6 +62,7 @@ import {
   isNameCollisionErrorFrom,
   isRecreateRetryableError,
   markNonRetryable,
+  markRedactedCause,
 } from '../retryable-errors.js';
 import {
   type RecordedSecretValues,
@@ -448,16 +449,29 @@ export async function replaceDeleteFirstAndRecreate(
       secrets,
       printingSecretsFor(deps.secretsRun(), logicalId),
     ]);
-    throw new Error(
-      // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676): a
-      // flattened newline inside a secret would no longer match its needle.
-      safeMsg`Failed to delete old resource ${maskSecretsInText(logicalId, shownSecrets)} ` +
+    // go-to-k/cdkd#2319: an AWS-authored failure (an SDK error a provider let
+    // escape) is named by its class, with AWS's text in `debug`
+    // ({@link fallbackFailureText}). Nothing between here and the DAG
+    // executor reads this message for "already gone".
+    const deleteText = fallbackFailureText(
+      deps,
+      deleteError,
+      shownSecrets,
+      (failure) =>
+        // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676): a
+        // flattened newline inside a secret would no longer match its needle.
+        safeMsg`Failed to delete old resource ${maskSecretsInText(logicalId, shownSecrets)} ` +
         safeMsg`(${maskSecretsInText(currentResource.physicalId, shownSecrets)}) ` +
         `during the --replace delete-first fallback: ` +
         // go-to-k/cdkd#2676: the wrapped error's (masked) message is embedded
         // as-is and LAST: it can end in cdkd's own remedy command lines.
-        safeMsg`${asIsMessage(maskSecretsInText(describeAwsFailure(deleteError).detail, shownSecrets))}`,
-      { cause: deleteError instanceof Error ? maskSecretsInError(deleteError, secrets) : undefined }
+        safeMsg`${asIsMessage(failure)}`
+    );
+    throw stampRedacted(
+      new Error(deleteText.message, {
+        cause: deleteError instanceof Error ? maskSecretsInError(deleteError, secrets) : undefined,
+      }),
+      deleteText.redacted
     );
   }
   // Issue #1762: a skip here FAILS the resource, unlike the template-DELETE
@@ -576,18 +590,56 @@ export async function replaceDeleteFirstAndRecreate(
       secrets,
       printingSecretsFor(deps.secretsRun(), logicalId),
     ]);
-    throw new Error(
-      safeMsg`Failed to re-create ${maskSecretsInText(logicalId, shownSecrets)} after the ` +
+    // go-to-k/cdkd#2319: as the delete wrap above ({@link fallbackFailureText}).
+    const recreateText = fallbackFailureText(
+      deps,
+      recreateError,
+      shownSecrets,
+      (failure) =>
+        safeMsg`Failed to re-create ${maskSecretsInText(logicalId, shownSecrets)} after the ` +
         safeMsg`--replace delete-first fallback already deleted the old resource (${maskSecretsInText(currentResource.physicalId, shownSecrets)}). ` +
         // go-to-k/cdkd#2676: the wrapped error's (masked) message is embedded
         // as-is and LAST: it can end in cdkd's own remedy command lines.
-        safeMsg`Re-run the deploy to create it fresh. Cause: ${asIsMessage(maskSecretsInText(describeAwsFailure(recreateError).detail, shownSecrets))}`,
-      {
+        safeMsg`Re-run the deploy to create it fresh. Cause: ${asIsMessage(failure)}`
+    );
+    throw stampRedacted(
+      new Error(recreateText.message, {
         cause:
           recreateError instanceof Error ? maskSecretsInError(recreateError, secrets) : undefined,
-      }
+      }),
+      recreateText.redacted
     );
   }
+}
+
+/**
+ * The message of a `--replace` delete-first fallback wrap (go-to-k/cdkd#2319).
+ *
+ * The thrown message is persisted to `deployments/{runId}.jsonl`, and an
+ * AWS-authored failure (an SDK error a provider let escape) names the caller's
+ * ARN on an access denial: `build` then gets the error's class plus the
+ * `--verbose` pointer, and the message built from AWS's own text goes to
+ * `debug`. A cdkd-authored failure (a provider's own wrap) or a transport
+ * error is passed through as before. Every text is masked with `secrets`
+ * before `build` flattens it. `redacted` says to stamp the wrap
+ * `markRedactedCause`, so a classifier reads the withheld text on the chain.
+ */
+function fallbackFailureText(
+  deps: Pick<ReplacementDeps, 'logger'>,
+  error: unknown,
+  secrets: RecordedSecretValues,
+  build: (failure: string) => string
+): { message: string; redacted: boolean } {
+  const failure = describeAwsFailure(error);
+  const detail = maskSecretsInText(failure.detail, secrets);
+  if (!failure.redacted) return { message: build(detail), redacted: false };
+  deps.logger.debug(build(detail));
+  return { message: build(maskSecretsInText(failure.summary, secrets)), redacted: true };
+}
+
+/** {@link markRedactedCause} when `redacted` and the wrap has a cause to read. */
+function stampRedacted(error: Error, redacted: boolean): Error {
+  return redacted && error.cause instanceof Error ? markRedactedCause(error) : error;
 }
 
 /**
@@ -764,17 +816,28 @@ export async function checkedReplacementNameChange(
         )
       );
     }
+    // go-to-k/cdkd#2319: the thrown message is persisted to
+    // `deployments/{runId}.jsonl`, and an AWS-authored probe failure (an
+    // `AccessDenied`) names the caller's ARN and account. It is named by its
+    // class plus the `--verbose` pointer, AWS's own text goes to `debug`
+    // masked, and the wrap is stamped so a classifier still reads that text
+    // on the `cause` chain. A cdkd-authored or transport failure keeps its text.
+    const failure = describeAwsFailure(probeError);
+    const failureText = (text: string): string =>
+      maskName(
+        `${subject} requires replacement under a new name, and ${adoptsText}, but cdkd could ` +
+          `not check whether another resource already holds it: ${text}${text.endsWith('.') ? '' : '.'} ` +
+          `Nothing was created or deleted. Re-run the deploy once the check can succeed.`
+      );
+    const awsText = displayAwsMessage(maskName(failure.detail));
+    if (failure.redacted) deps.logger.debug(failureText(awsText));
+    const refusal = new CdkdError(
+      failureText(failure.redacted ? displaySafe(maskName(failure.summary)) : awsText),
+      'NAMED_REPLACEMENT_COLLISION',
+      probeError instanceof Error ? probeError : undefined
+    );
     throw markNonRetryable(
-      new CdkdError(
-        maskName(
-          `${subject} requires replacement under a new name, and ${adoptsText}, but cdkd could ` +
-            `not check whether another resource already holds it: ` +
-            `${displayAwsMessage(maskName(describeAwsFailure(probeError).detail))}. ` +
-            `Nothing was created or deleted. Re-run the deploy once the check can succeed.`
-        ),
-        'NAMED_REPLACEMENT_COLLISION',
-        probeError instanceof Error ? probeError : undefined
-      )
+      failure.redacted && probeError instanceof Error ? markRedactedCause(refusal) : refusal
     );
   }
   if (found === null) return change;

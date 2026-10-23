@@ -23,9 +23,11 @@ import { printingSecretsFor } from '../../../src/deployment/deploy-engine/maskin
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 import {
+  hasRedactedCause,
   isMarkedNonRetryable,
   markNonRetryable,
 } from '../../../src/deployment/retryable-errors.js';
+import { getLogger } from '../../../src/utils/logger.js';
 import { awsSdkError, ccAlreadyExistsError } from '../_aws-sdk-error.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -440,9 +442,11 @@ describe('replacement delete wraps chain a masked cause (go-to-k/cdkd#1889)', ()
     it('masks a multi-line secret in the re-create failure', async () => {
       const multiLine = 'pem-line-one-2676\npem-line-two-2676';
       secretsToRecord = [[multiLine, '{{resolve:secretsmanager:db:SecretString:pw}}']];
+      // A provider's own wrap (cdkd-authored), whose text the message still
+      // embeds; an AWS-authored one is named by its class (#2319, below).
       createFailures.push(
         collision(),
-        awsSdkError(`ValidationException: Value '${multiLine}' at 'Source' failed`, 'ValidationException')
+        new Error(`Failed to create Pipe: Value '${multiLine}' at 'Source' failed`)
       );
 
       const wrap = await provisionExpectingWrap(withoutBoundaryMask(makeEngine('replace')), 'replace');
@@ -451,6 +455,91 @@ describe('replacement delete wraps chain a masked cause (go-to-k/cdkd#1889)', ()
       expect(wrap.message).toContain(`Value '***' at 'Source' failed`);
       expect(wrap.message).not.toContain('pem-line-one-2676');
       expect(wrap.message).not.toContain('pem-line-two-2676');
+    });
+  });
+
+  // go-to-k/cdkd#2319: both fallback wraps are persisted, and an SDK error a
+  // provider let escape names the caller's ARN on an access denial.
+  describe('replacement.ts: the --replace delete-first fallback wraps name an AWS failure by its class (#2319)', () => {
+    const DENIAL =
+      'User: arn:aws:sts::123456789012:assumed-role/Deployer/s is denied pipes:DeletePipe';
+
+    function debugLines(): string[] {
+      return vi.mocked(getLogger().debug).mock.calls.map(([m]) => String(m));
+    }
+
+    it('the delete wrap: class in the message, AWS text in debug, cause kept and stamped', async () => {
+      vi.mocked(getLogger().debug).mockClear();
+      const raw = markNonRetryable(awsSdkError(DENIAL, 'AccessDeniedException'));
+      createFailures = [collision()];
+      deleteRejection = () => raw;
+
+      const wrap = await provisionExpectingWrap(makeEngine('replace'), 'replace');
+
+      expect(wrap.message).toBe(
+        'Failed to delete old resource Pipe (my-pipe) during the --replace delete-first ' +
+          "fallback: AccessDeniedException. Re-run with --verbose for AWS's own message."
+      );
+      expect(wrap.cause).toBe(raw);
+      expect(hasRedactedCause(wrap)).toBe(true);
+      expect(debugLines().some((l) => l.includes('Failed to delete old resource') && l.includes(DENIAL))).toBe(true);
+    });
+
+    it('the re-create wrap: class in the message, masked AWS text in debug', async () => {
+      vi.mocked(getLogger().debug).mockClear();
+      secretsToRecord = [[SECRET, '{{resolve:secretsmanager:db:SecretString:pw}}']];
+      createFailures = [
+        collision(),
+        markNonRetryable(awsSdkError(`${DENIAL} for ${SECRET}`, 'AccessDeniedException')),
+      ];
+
+      const wrap = await provisionExpectingWrap(withoutBoundaryMask(makeEngine('replace')), 'replace');
+
+      expect(wrap.message).toContain(
+        "Re-run the deploy to create it fresh. Cause: AccessDeniedException. Re-run with --verbose for AWS's own message."
+      );
+      expect(wrap.message).not.toContain('123456789012');
+      expect(hasRedactedCause(wrap)).toBe(true);
+      const line = debugLines().find((l) => l.includes('Failed to re-create Pipe'));
+      expect(line).toContain(`${DENIAL} for ***`);
+      expect(debugLines().some((l) => l.includes(SECRET))).toBe(false);
+    });
+
+    // #2676: a multi-line secret in the withheld AWS text is masked in the
+    // debug line too, for both wraps.
+    it.each([
+      ['delete', 'Failed to delete old resource Pipe'],
+      ['re-create', 'Failed to re-create Pipe'],
+    ] as const)('masks a multi-line secret in the %s wrap debug line', async (wrapKind, head) => {
+      vi.mocked(getLogger().debug).mockClear();
+      const multiLine = 'pem-line-one-2676\npem-line-two-2676';
+      secretsToRecord = [[multiLine, '{{resolve:secretsmanager:db:SecretString:pw}}']];
+      const denial = () =>
+        markNonRetryable(awsSdkError(`${DENIAL} for '${multiLine}'`, 'AccessDeniedException'));
+      if (wrapKind === 'delete') {
+        createFailures = [collision()];
+        deleteRejection = denial;
+      } else {
+        createFailures = [collision(), denial()];
+      }
+
+      const wrap = await provisionExpectingWrap(withoutBoundaryMask(makeEngine('replace')), 'replace');
+
+      expect(wrap.message).toContain('AccessDeniedException. Re-run with --verbose');
+      const line = debugLines().find((l) => l.includes(head));
+      expect(line).toContain(`${DENIAL} for '***'`);
+      expect(debugLines().some((l) => l.includes('pem-line-one-2676'))).toBe(false);
+      expect(debugLines().some((l) => l.includes('pem-line-two-2676'))).toBe(false);
+    });
+
+    it('keeps a cdkd-authored delete failure text, unstamped', async () => {
+      createFailures = [collision()];
+      deleteRejection = () => markNonRetryable(new Error('Failed to delete Pipe: still in use'));
+
+      const wrap = await provisionExpectingWrap(makeEngine('replace'), 'replace');
+
+      expect(wrap.message).toContain('delete-first fallback: Failed to delete Pipe: still in use');
+      expect(hasRedactedCause(wrap)).toBe(false);
     });
   });
 });
