@@ -7516,6 +7516,7 @@
         "sdk-ccapi-crossref",
         "secret-derived-immutable-names",
         "secrets-dynamic-ref",
+        "shared-stackname-multi-region",
         "stale-attribute-heal",
         "state-info-command",
         "tags-propagation",
@@ -7873,6 +7874,10 @@
         "secrets-dynamic-ref": [
           "l1",
           "l2"
+        ],
+        "shared-stackname-multi-region": [
+          "l2",
+          "literal"
         ],
         "stale-attribute-heal": [
           "l1",

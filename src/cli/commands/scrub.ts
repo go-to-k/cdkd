@@ -1321,7 +1321,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   if (options.all) {
     targetStacks = allStacks;
   } else if (stackPatterns.length > 0) {
-    targetStacks = matchStacks(allStacks, stackPatterns);
+    // Every selected stack: two sharing a physical name in two regions are two
+    // state records, each scrubbed in its own region (#5176).
+    targetStacks = matchStacks(allStacks, stackPatterns, { dedupe: 'identity' });
   } else if (allStacks.length === 1) {
     targetStacks = allStacks;
   } else {
@@ -1391,9 +1393,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   const lockManager = new LockManager(stateS3.s3, stateConfig);
 
   let totalStacksScrubbed = 0;
-  // Stack names already counted in `totalStacksScrubbed`: a parent whose row
-  // attributes are repaired after a child's scrub (go-to-k/cdkd#3961) may have
-  // been counted for its own records already.
+  // State records (`producerRecordKey`: name and region) already counted in
+  // `totalStacksScrubbed`: a parent whose row attributes are repaired after a
+  // child's scrub (go-to-k/cdkd#3961) may have been counted for its own
+  // records already, and two Stages sharing a name in two regions are two
+  // records (#5176).
   const rewrittenStacks = new Set<string>();
   // Parent-row `Outputs.<Name>` attributes holding a recorded plaintext no
   // child output accounts for (go-to-k/cdkd#3961): a finding, never clean.
@@ -1550,17 +1554,18 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     logger,
     siblings: allStacks.filter((s) => !s.region).map((s) => s.stackName),
   });
+  // Keyed by stack OBJECT: two stacks sharing a name in two regions each keep
+  // their own (#5176).
   const stackRegions = new Map(
     await Promise.all(
       targetStacks.map(
-        async (stack) =>
-          [stack.stackName, await regionForStack(stack.stackName, stack.region)] as const
+        async (stack) => [stack, await regionForStack(stack.stackName, stack.region)] as const
       )
     )
   );
   const work: ScrubWorkItem[] = targetStacks.map((stack) => ({
     stackName: stack.stackName,
-    region: stackRegions.get(stack.stackName) ?? region,
+    region: stackRegions.get(stack) ?? region,
     load: () => {
       // The tree is checked BEFORE the parent is scrubbed, as `cdkd deploy`
       // checks it before deploying (issue go-to-k/cdkd#3449): a cyclic or
@@ -1883,8 +1888,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         const parentName = item.parentRow.stackName;
         const row = `${displayStackName(parentName)} (row ${displayIdent(item.parentRow.logicalId)})`;
         if (repaired.changed > 0) {
-          if (!rewrittenStacks.has(parentName)) totalStacksScrubbed++;
-          rewrittenStacks.add(parentName);
+          const parentKey = producerRecordKey(parentName, stackRegion);
+          if (!rewrittenStacks.has(parentKey)) totalStacksScrubbed++;
+          rewrittenStacks.add(parentKey);
           logger.info(
             safeMsg`${options.dryRun ? 'Would scrub' : 'Scrubbed'} ${repaired.changed} nested-stack output attribute(s) in ${row}, from ${shownStack}'s outputs`
           );
@@ -1912,10 +1918,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     // NOT on secrets-found: a resource whose reference is already stored as its
     // `{{resolve:...}}` expression resolves the same secret again but needs no
     // rewrite. Only a state record still holding the plaintext counts.
-    if (scrubbed.historyPurged) historyPurgedStacks.add(stackName);
+    const recordKey = producerRecordKey(stackName, stackRegion);
+    if (scrubbed.historyPurged) historyPurgedStacks.add(recordKey);
     if (scrubbed.recordsChanged > 0) {
-      if (!rewrittenStacks.has(stackName)) totalStacksScrubbed++;
-      rewrittenStacks.add(stackName);
+      if (!rewrittenStacks.has(recordKey)) totalStacksScrubbed++;
+      rewrittenStacks.add(recordKey);
       logger.info(
         // `resource record(s)` is LOOSE -- this count has included outputs and
         // orphans for some time and now includes cross-stack read entries too

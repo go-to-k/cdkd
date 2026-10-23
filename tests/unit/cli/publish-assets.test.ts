@@ -471,6 +471,25 @@ describe('cdkd publish-assets', () => {
       expect(prefixes).toEqual(['MyStage-Api:', 'MyStage-Db:']);
     });
 
+    it('publishes both stacks a shared stackName selects, each to its own region (#5176)', async () => {
+      mockSynthesize.mockResolvedValue({
+        stacks: [
+          makeStack({ stackName: 'Shared', displayName: 'UsEast/Api', region: 'us-east-1' }),
+          makeStack({ stackName: 'Shared', displayName: 'UsWest/Api', region: 'us-west-2' }),
+        ],
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+      });
+      mockAddAssetsToGraph.mockReturnValue([]);
+
+      await runCmd(['Shared']);
+
+      expect(mockAddAssetsToGraph.mock.calls.map((c) => c[2].region)).toEqual([
+        'us-east-1',
+        'us-west-2',
+      ]);
+    });
+
     it('errors when no stacks match the positional pattern', async () => {
       mockSynthesize.mockResolvedValue({
         stacks: [makeStack({ stackName: 'StackA' })],
