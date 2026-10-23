@@ -24,6 +24,7 @@ import { LambdaWebClient } from '@aws-sdk/client-lambda-web';
 import { LambdaCoreClient } from '@aws-sdk/client-lambda-core';
 import { awsClientDefaults, type AwsClientDefaults } from './aws-client-defaults.ts';
 import { currentStackAwsScope, runInStackAwsScope } from './stack-aws-scope.ts';
+import { quietS3Logger } from './sdk-call-log.ts';
 
 /**
  * AWS client configuration
@@ -244,7 +245,7 @@ export class AwsClients {
       this.s3Client = new S3Client({
         ...this.clientOptions,
         // Suppress "Are you using a Stream of unknown length" warning
-        logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+        logger: quietS3Logger(),
       });
     }
     return this.s3Client;

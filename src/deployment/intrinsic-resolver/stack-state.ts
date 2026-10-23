@@ -7,6 +7,7 @@ import { UNSHOWABLE_VALUE, shellBoundedDisplay } from '../../utils/pasteable-com
 import { assumeRoleForCrossAccountStateRead, parseIamRoleArn } from '../../utils/role-arn.js';
 import { type ResolverContext } from './support.js';
 import { S3Client } from '@aws-sdk/client-s3';
+import { quietS3Logger } from '../../utils/sdk-call-log.js';
 
 /**
  * Read the producer's state from the SAME AWS account (no RoleArn).
@@ -122,7 +123,7 @@ export async function getCrossAccountStackState(
     // Suppress the SDK's noisy "unknown Body length" warning; matches
     // the suppression in `AwsClients` and the consumer-side state
     // backend's region-rebuild path.
-    logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+    logger: quietS3Logger(),
   });
 
   const crossAccountBackend = new S3StateBackend(
