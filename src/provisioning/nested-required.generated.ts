@@ -301,6 +301,7 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
       ['Source.Auth', ['Type']],
       ['Source.GitSubmodulesConfig', ['FetchSubmodules']],
       ['Tags', ['Key', 'Value']],
+      ['Triggers.FilterGroups', ['Pattern', 'Type']],
       ['Triggers.PullRequestBuildPolicy', ['RequiresCommentApproval']],
       ['Triggers.ScopeConfiguration', ['Name']],
     ]),

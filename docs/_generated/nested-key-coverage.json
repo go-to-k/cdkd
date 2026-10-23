@@ -1,15 +1,15 @@
 {
   "summary": {
     "targetCount": 28,
-    "nestedKeyCount": 1469,
+    "nestedKeyCount": 1471,
     "sameSpelling": 1361,
     "providerHandled": 80,
     "allowListed": 23,
     "caseDivergence": 0,
-    "noSdkMember": 5,
-    "noWriteEvidence": 0,
+    "noSdkMember": 6,
+    "noWriteEvidence": 1,
     "freshObjectTargets": 18,
-    "shapeClean": 178,
+    "shapeClean": 179,
     "shapeHandled": 49,
     "shapeAllowListed": 9,
     "arrayVsWrapper": 0,
@@ -2450,7 +2450,7 @@
       "sdkClientPackage": "@aws-sdk/client-codebuild",
       "keyStyle": "lower-first",
       "freshObjectMapper": true,
-      "nestedKeyCount": 98,
+      "nestedKeyCount": 99,
       "entries": [
         {
           "resourceType": "AWS::CodeBuild::Project",
@@ -2542,6 +2542,14 @@
           "topLevelProperty": "BuildBatchConfig",
           "terminalKey": "ComputeTypesAllowed",
           "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::CodeBuild::Project",
+          "nestedKey": "BuildBatchConfig.Restrictions.FleetsAllowed",
+          "topLevelProperty": "BuildBatchConfig",
+          "terminalKey": "FleetsAllowed",
+          "bucket": "no-write-evidence",
+          "sdkNearMiss": "fleetsAllowed"
         },
         {
           "resourceType": "AWS::CodeBuild::Project",
@@ -3140,7 +3148,7 @@
         }
       ],
       "shapeEntries": [],
-      "shapeCleanCount": 12,
+      "shapeCleanCount": 13,
       "unmatchedDefinitions": [
         "Artifacts",
         "Environment",
@@ -7631,7 +7639,7 @@
       "sdkClientPackage": "@aws-sdk/client-lambda-core",
       "keyStyle": "exact",
       "freshObjectMapper": true,
-      "nestedKeyCount": 7,
+      "nestedKeyCount": 8,
       "entries": [
         {
           "resourceType": "AWS::Lambda::NetworkConnector",
@@ -7646,6 +7654,13 @@
           "topLevelProperty": "Configuration",
           "terminalKey": "AssociatedComputeResourceTypes",
           "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::NetworkConnector",
+          "nestedKey": "Configuration.VpcEgressConfiguration.ElasticIpConfiguration",
+          "topLevelProperty": "Configuration",
+          "terminalKey": "ElasticIpConfiguration",
+          "bucket": "no-sdk-member"
         },
         {
           "resourceType": "AWS::Lambda::NetworkConnector",
