@@ -105,7 +105,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     {
       handled: new Set<string>(['Description', 'RestApiId']),
       silentDrop: new Map<string, string>([
-        ['DeploymentCanarySettings', 'not yet implemented by cdkd'],
+        [
+          'DeploymentCanarySettings',
+          'API Gateway requires StageName for a canary deployment ("Non null and non empty stageName must be provided for canary deployment"), and StageName is not handled here, so a valid canary Deployment routes to Cloud Control; declare AWS::ApiGateway::Stage with CanarySetting for an SDK-routed canary',
+        ],
         [
           'StageDescription',
           'CFn-only convenience for inline-creating a Stage; declare AWS::ApiGateway::Stage with the Description property instead',

@@ -23,9 +23,6 @@
     "regenerations of the `types` block."
   ],
   "types": {
-    "AWS::ApiGateway::Deployment": [
-      "DeploymentCanarySettings"
-    ],
     "AWS::AutoScaling::AutoScalingGroup": [
       "AvailabilityZoneIds",
       "InstanceId",
