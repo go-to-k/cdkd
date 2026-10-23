@@ -38,7 +38,6 @@ import type {
   CanarySettings,
   CreateAuthorizerCommandOutput,
   CreateDeploymentCommandOutput,
-  DeploymentCanarySettings,
 } from '@aws-sdk/client-api-gateway';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
@@ -198,10 +197,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       ]),
     ],
     ['AWS::ApiGateway::Resource', new Set(['RestApiId', 'ParentId', 'PathPart'])],
-    [
-      'AWS::ApiGateway::Deployment',
-      new Set(['RestApiId', 'Description', 'DeploymentCanarySettings']),
-    ],
+    ['AWS::ApiGateway::Deployment', new Set(['RestApiId', 'Description'])],
     [
       'AWS::ApiGateway::Stage',
       new Set([
@@ -252,6 +248,12 @@ export class ApiGatewayProvider implements ResourceProvider {
         [
           'StageDescription',
           'CFn-only convenience for inline-creating a Stage; declare AWS::ApiGateway::Stage with the Description property instead',
+        ],
+        [
+          // Issue #2762, measured in us-east-1 (request 2571bd53-7f09-4cbd-9c38-0bff4edf32ec):
+          // a stage-less CreateDeployment with canarySettings is refused on both routes.
+          'DeploymentCanarySettings',
+          'API Gateway requires StageName for a canary deployment ("Non null and non empty stageName must be provided for canary deployment"), and StageName is not handled here, so a valid canary Deployment routes to Cloud Control; declare AWS::ApiGateway::Stage with CanarySetting for an SDK-routed canary',
         ],
       ]),
     ],
@@ -1333,21 +1335,6 @@ export class ApiGatewayProvider implements ResourceProvider {
       );
     }
 
-    // Same #1471/#1493 refusal as the Stage's CanarySetting: a present but
-    // malformed block would index every member to undefined and create the
-    // deployment WITHOUT the declared canary.
-    const rawCanary = properties['DeploymentCanarySettings'];
-    if (rawCanary != null && !isPlainObjectBlock(rawCanary)) {
-      throw new ProvisioningError(
-        `AWS::ApiGateway::Deployment DeploymentCanarySettings for ${logicalId} must be an object block; got ${Array.isArray(rawCanary) ? 'an array' : typeof rawCanary}. Fix the template value instead of letting cdkd drop the config.`,
-        resourceType,
-        logicalId
-      );
-    }
-    const canarySettings = toSdkDeploymentCanarySettings(
-      rawCanary as CfnDeploymentCanarySettings | undefined
-    );
-
     try {
       const description = properties['Description'] as string | undefined;
       // Issue #2080: after an earlier ambiguous attempt, name the deployment
@@ -1395,13 +1382,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       const attemptStartMs = Date.now();
       let response: CreateDeploymentCommandOutput;
       try {
-        response = await createClient.send(
-          new CreateDeploymentCommand({
-            restApiId,
-            description,
-            ...(canarySettings !== undefined && { canarySettings }),
-          })
-        );
+        response = await createClient.send(new CreateDeploymentCommand({ restApiId, description }));
       } catch (error) {
         createDeploymentLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
         throw error;
@@ -2697,14 +2678,6 @@ export class ApiGatewayProvider implements ResourceProvider {
   }
 
   /**
-   * `GetDeployment` returns no canary settings (a canary lives on the Stage it
-   * was deployed into), so `DeploymentCanarySettings` cannot be read back.
-   */
-  getDriftUnknownPaths(resourceType: string): string[] {
-    return resourceType === 'AWS::ApiGateway::Deployment' ? ['DeploymentCanarySettings'] : [];
-  }
-
-  /**
    * Read the AWS-current API Gateway resource configuration in CFn-property
    * shape.
    *
@@ -3090,33 +3063,6 @@ function toSdkCanarySettings(
   return {
     percentTraffic: setting.PercentTraffic,
     deploymentId: setting.DeploymentId,
-    stageVariableOverrides: setting.StageVariableOverrides,
-    useStageCache: setting.UseStageCache,
-  };
-}
-
-/**
- * CFn `AWS::ApiGateway::Deployment.DeploymentCanarySettings` block (template
- * shape). Create-only in the CFn schema, so a change replaces the deployment
- * and no update path exists; `GetDeployment` does not return it, so it is a
- * drift-unknown path.
- */
-interface CfnDeploymentCanarySettings {
-  PercentTraffic?: number;
-  StageVariableOverrides?: Record<string, string>;
-  UseStageCache?: boolean;
-}
-
-/**
- * Map the CFn `DeploymentCanarySettings` block to the SDK
- * `CreateDeploymentCommand` `canarySettings` shape (PascalCase -> camelCase).
- */
-function toSdkDeploymentCanarySettings(
-  setting: CfnDeploymentCanarySettings | undefined
-): DeploymentCanarySettings | undefined {
-  if (setting == null) return undefined;
-  return {
-    percentTraffic: setting.PercentTraffic,
     stageVariableOverrides: setting.StageVariableOverrides,
     useStageCache: setting.UseStageCache,
   };

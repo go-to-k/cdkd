@@ -16,9 +16,6 @@
 #      clear), CanarySetting kept with PercentTraffic 10 -> 25 and the
 #      StageVariableOverrides key dropped (per-key remove). Assert each
 #      removal/change reached AWS and drift is clean.
-#   Both phases also assert the CanaryDeployment (DeploymentCanarySettings,
-#   issue #2762) took the SDK route, and that phase 2's removal of that
-#   create-only block replaced it and deleted the old deployment.
 #   3. Destroy + assert the REST API, client certificate, and log group are
 #      gone and the cdkd state file is removed.
 #
@@ -127,38 +124,6 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
-# Issue #2762: the CanaryDeployment's state row, as "<provisionedBy> <physicalId>".
-# No `// "sdk"` default: a v7 writer always records provisionedBy, so an
-# absent field is itself a failure to report.
-canary_deployment_row() {
-  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
-    | jq -r '.resources.CanaryDeployment | "\(.provisionedBy // "<absent>") \(.physicalId // "<absent>")"'
-}
-assert_canary_deployment_sdk() { # usage: assert_canary_deployment_sdk <phase>; sets CANARY_DEP_ID
-  local row by
-  if ! row="$(canary_deployment_row)" || [ -z "${row}" ]; then
-    echo "FAIL: $1: could not read the CanaryDeployment row from s3://${STATE_BUCKET}/${STATE_KEY}" >&2
-    exit 1
-  fi
-  by="${row%% *}"
-  CANARY_DEP_ID="${row#* }"
-  if [ "${by}" != "sdk" ]; then
-    echo "FAIL: $1: CanaryDeployment provisionedBy is '${by}', expected 'sdk'. DeploymentCanarySettings" >&2
-    echo "      is SDK-wired since #2762; a cc-api row means it is still treated as a silent drop." >&2
-    exit 1
-  fi
-  case "${CANARY_DEP_ID}" in
-    "<absent>" | *"|"*)
-      echo "FAIL: $1: CanaryDeployment physicalId '${CANARY_DEP_ID}' is not a bare deployment id" >&2
-      exit 1
-      ;;
-  esac
-  aws apigateway get-deployment --region "${REGION}" --rest-api-id "${API_ID}" \
-    --deployment-id "${CANARY_DEP_ID}" >/dev/null \
-    || { echo "FAIL: $1: CanaryDeployment ${CANARY_DEP_ID} not readable via get-deployment" >&2; exit 1; }
-  echo "    CanaryDeployment SDK-provisioned (${CANARY_DEP_ID})"
-}
-
 # --- Phase 1: deploy with all backfilled Stage props ------------------------
 echo "==> Phase 1: deploy (AccessLogSetting + CanarySetting + ClientCertificateId)"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -211,9 +176,6 @@ if [ -z "${CERT_ID_LIVE}" ]; then
 fi
 echo "    clientCertificateId delivered (${CERT_ID_LIVE})"
 
-assert_canary_deployment_sdk "phase 1"
-CANARY_DEP_ID_P1="${CANARY_DEP_ID}"
-
 echo "==> Phase 1: drift read-back (expect no drift)"
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"
 echo "    drift clean after deploy"
@@ -251,16 +213,6 @@ if [ -n "${CANARY_OVERRIDE_P2}" ]; then
   exit 1
 fi
 echo "    canary updated in place (percentTraffic=25, override key removed)"
-
-# DeploymentCanarySettings is create-only: removing the block replaces.
-assert_canary_deployment_sdk "phase 2"
-if [ "${CANARY_DEP_ID}" = "${CANARY_DEP_ID_P1}" ]; then
-  echo "FAIL: CanaryDeployment kept id ${CANARY_DEP_ID} after its create-only DeploymentCanarySettings was removed (expected a replacement)" >&2
-  exit 1
-fi
-assert_gone "replaced CanaryDeployment ${CANARY_DEP_ID_P1} still exists" \
-  aws apigateway get-deployment --region "${REGION}" --rest-api-id "${API_ID}" --deployment-id "${CANARY_DEP_ID_P1}"
-echo "    CanaryDeployment replaced (${CANARY_DEP_ID_P1} -> ${CANARY_DEP_ID}), old deployment deleted"
 
 echo "==> Phase 2: drift read-back (expect no drift)"
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"
