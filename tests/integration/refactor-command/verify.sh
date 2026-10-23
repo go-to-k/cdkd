@@ -261,7 +261,9 @@ for pair in "${OLD_TABLE_ID} -> ${NEW_TABLE_ID}" "${OLD_QUEUE_ID} -> ${NEW_QUEUE
     "${OLD_TOPIC_X_ID} -> ${NEW_TOPIC_X_ID}" "${OLD_TOPIC_Y_ID} -> ${NEW_TOPIC_Y_ID}"; do
   printf '%s' "${OUT_2C}" | grep -qF "${pair}" || { echo "FAIL: plan lacks ${pair}" >&2; exit 1; }
 done
-if printf '%s' "${OUT_2C}" | grep -qE 'Warning:|Not refactored|Refused'; then
+# Plan lines are indented two spaces; cdkd's own notices (the --region
+# deprecation warning) are not, and must not trip this.
+if printf '%s\n' "${OUT_2C}" | grep -qE '^  (Warning:|Not refactored|Refused|Ambiguous)'; then
   echo "FAIL: the mapped plan carries a warning or refusal" >&2
   exit 1
 fi
