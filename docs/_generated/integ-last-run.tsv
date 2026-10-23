@@ -264,12 +264,9 @@ migrate-from-cfn	2026-10-20T06:19:30Z	PASS	376	run.sh	deploy+destroy clean, 0 or
 monitoring	2026-08-10T05:19:05Z	PASS	43	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 multi-asset	2026-09-21T12:02:26Z	PASS	97	verify.sh	rc ok, orph clean; #3489 asset-publish sites (file + docker)
 multi-region-same-stack	2026-10-11T21:09:57Z	PASS	59	standard	PR #4809, standard flow + us-west-2 arm, orph clean
-multi-resource	2026-10-21T05:39:15Z	PASS	79	standard	destroy 0 errors, 0 orphans; PR 5135
-multi-stack-deps	2026-10-21T05:40:33Z	PASS	108	standard	all 3 stacks destroyed 0 errors, 0 orphans; PR 5135
-neptune-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	2280	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
 multi-resource	2026-10-23T16:19:29Z	PASS	76	standard	destroy 0 errors, 0 orphans (17 deleted); swept this run's 2 CR log groups (#3885 pre-existing gap)
 multi-stack-deps	2026-10-23T16:19:51Z	PASS	93	standard	all 3 stacks destroyed 0 errors, 0 orphans
-neptune-fix-forward-orphan	2026-10-15T19:44:42Z	PASS	3092	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
+neptune-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	2280	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
 nested-required-preflight	2026-10-11T09:33:22Z	PASS	55	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 nested-stack	2026-10-13T02:41:29Z	PASS	65	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 nested-stack-3level	2026-10-15T09:24:20Z	PASS	490	verify.sh	PR #4939 (#4929) 504262f2b; own state bucket; rc ok, no seeded secret in any version, orph clean
