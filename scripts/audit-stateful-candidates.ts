@@ -383,6 +383,18 @@ export const NOT_GUARDED: ReadonlyMap<string, string> = new Map([
   // that direction is one `--force-stateful-recreation` flag; the cost of
   // being wrong in the other is the user's data.
   [
+    'AWS::AppSync::ApiCache',
+    '(c) A response CACHE in front of a GraphQL API: everything it holds is derived ' +
+      'from the resolvers and is rebuilt on the next request. A recreate starts it cold ' +
+      'and loses nothing the API cannot serve again.',
+  ],
+  [
+    'AWS::SageMaker::CodeRepository',
+    '(b) A POINTER: it registers a Git repository URL (and a Secrets Manager secret ' +
+      'for its credentials) with SageMaker. The repository and the secret outlive it; ' +
+      'deleting the registration deletes no code.',
+  ],
+  [
     'AWS::Amplify::Domain',
     '(a) A domain ASSOCIATION, not a zone: the resource is a domain name plus the ' +
       '`SubDomainSettings` map, both written in the template. The DNS records live in ' +

@@ -780,13 +780,13 @@ describe('the committed artifact is a real derivation', () => {
   });
 
   it('the REAL magnitudes are pinned, not only the slack floors', () => {
-    // The floors carry deliberate slack (1000 against 1371), so a
+    // The floors carry deliberate slack (1000 against 1621), so a
     // `provider-coverage.json` that lost 300 tier-2 types clears them. These
     // bands are narrow enough to notice that and wide enough to survive AWS
     // shipping new types between regenerations — the same split the sibling
     // critic `check-local-reachability.ts` uses.
-    expect(report.summary.tier2Count).toBeGreaterThanOrEqual(1300);
-    expect(report.summary.tier2Count).toBeLessThanOrEqual(1500);
+    expect(report.summary.tier2Count).toBeGreaterThanOrEqual(1500);
+    expect(report.summary.tier2Count).toBeLessThanOrEqual(1800);
     expect(report.summary.withCreateOnly).toBeGreaterThanOrEqual(1100);
     expect(report.summary.candidateCount).toBeGreaterThanOrEqual(85);
     expect(report.summary.candidateCount).toBeLessThanOrEqual(140);

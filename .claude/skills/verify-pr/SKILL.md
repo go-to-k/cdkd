@@ -73,8 +73,8 @@ Run each check and report pass/fail:
      ```
      Anything dirty was stale before you ran the above: stage it into the PR and
      re-run `/check-docs`. If `audit:coverage:check` fails, run
-     `vp run audit:coverage:regenerate` (heavy, needs AWS credentials with
-     `cloudformation:ListTypes` + `DescribeType`) and commit the cache. A new
+     `vp run audit:coverage:regenerate` (needs AWS credentials with
+     `cloudformation:ListTypes`) and commit the cache. A new
      `registry.register(...)` also needs an integ fixture covering it; nothing
      blocks on that, so check it here.
 
