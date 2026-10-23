@@ -421,7 +421,9 @@ echo "[verify] step 2 ok: ${CLUSTER_A} and ${DB_A} are in AWS, journaled with th
 EVENT_KEYS_2="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
   --prefix "${STATE_PREFIX}deployments/" --output json \
   | jq -r '.Contents // [] | .[].Key | select(endswith(".jsonl"))')"
-FAILED_2="$(mktemp)"
+# Inside LOG_DIR, which `cleanup` removes on every exit: it holds AWS text.
+FAILED_2="${LOG_DIR}/failed-events-2.jsonl"
+: > "${FAILED_2}"
 while IFS= read -r event_key || [ -n "${event_key}" ]; do
   [ -n "${event_key}" ] || continue
   aws s3 cp "s3://${STATE_BUCKET}/${event_key}" - --quiet \
