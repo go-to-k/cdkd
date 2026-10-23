@@ -320,6 +320,7 @@ refactor-command	2026-10-23T19:26:50Z	PASS	105	verify.sh	rc ok, orph clean, regr
 refactor-command	2026-10-23T20:23:40Z	PASS	105	verify.sh	rc ok, orph clean, regression check on fix/refactor-interrupt@e7af89b9e (#5201)
 refactor-move	2026-10-23T20:21:04Z	PASS	151	verify.sh	rc ok, orph clean; re-run on e7af89b9e (lock-scoped marker read + dest template check + read-only dry-run) (#5212)
 refactor-command	2026-10-23T20:35:54Z	FAIL	60	verify.sh	Phase2c verify.sh:246 "No such file or directory": MAP_DIR=mktemp -d (verify.sh:76) runs before the Pre-run cleanup call (verify.sh:168) which rm -rf's it (verify.sh:141, cleanup()); fixture bug in 1a18a7004, AWS confirmed clean, no refactor-map.json left anywhere (#5201)
+refactor-command	2026-10-23T20:45:22Z	PASS	95	verify.sh	rc ok, orph clean, no refactor-map.json left; mktemp-dir ordering fixed on e48470db5 (#5201)
 refactor-move	2026-10-23T20:40:01Z	PASS	155	verify.sh	rc ok, orph clean; re-run on 1a18a7004 (destroy-runner marker check under lock on empty-stack path, a260b9971) (#5212)
 remove-protection	2026-10-22T15:37:12Z	PASS	2120	verify.sh	rc ok, orph clean
 remove-protection-compensation	2026-10-22T15:37:12Z	PASS	251	verify.sh	rc ok, orph clean
