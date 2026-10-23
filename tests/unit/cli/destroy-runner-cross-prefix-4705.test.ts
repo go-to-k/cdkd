@@ -216,6 +216,21 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     vi.clearAllMocks();
   });
 
+  /**
+   * The under-lock re-read (go-to-k/cdkd#5220) must see the same record this
+   * run is handed -- nothing changed -- so it must not pre-empt the
+   * kept-resource / tombstone / marker behavior every case here is actually
+   * about. `h.ctx.stateBackend` is shared by reference through every
+   * `{ ...h.ctx, ... }` spread in this block, so setting it on `h` always
+   * reaches the `ctx` object the case actually passes.
+   */
+  function primeReread(h: ReturnType<typeof makeCtx>, state: StackState): void {
+    (h.ctx.stateBackend.getState as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state,
+      etag: 'e',
+    });
+  }
+
   const retainedState = (): StackState => ({
     ...emptyState(),
     resources: {
@@ -261,6 +276,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
 
   it('records the kept resources a later create takes back by their GENERATED name, in the tail once the record is gone', async () => {
     const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
+    primeReread(h, retainedState());
     await runDestroyForStack('App', retainedState(), h.ctx);
     expect(h.saveRetainedResources).toHaveBeenCalledTimes(1);
     const [, , entries] = h.saveRetainedResources.mock.calls[0]! as unknown as [string, string, unknown[]];
@@ -306,6 +322,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
         Queue: { physicalId: 'https://q/App-Queue', resourceType: 'AWS::SQS::Queue', properties: {}, provisionedBy: 'sdk' },
       } as unknown as StackState['resources'],
     };
+    primeReread(h, withResource);
     const result = await runDestroyForStack('App', withResource, ctx);
     expect(result.errorCount).toBe(0);
     // Returned with the tombstone still in flight: the next stack is not held.
@@ -339,12 +356,14 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
       getProviderFor: vi.fn(() => ({ provider, provisionedBy: 'sdk' })),
       getProvider: vi.fn(() => provider),
     };
-    await runDestroyForStack('App', {
+    const withQueue: StackState = {
       ...emptyState(),
       resources: {
         Queue: { physicalId: 'https://q/App-Queue', resourceType: 'AWS::SQS::Queue', properties: {}, provisionedBy: 'sdk' },
       } as unknown as StackState['resources'],
-    }, h.ctx);
+    };
+    primeReread(h, withQueue);
+    await runDestroyForStack('App', withQueue, h.ctx);
     expect(h.releaseRegistryMarker).toHaveBeenCalledTimes(1);
     expect(releaseLock).toHaveBeenCalledTimes(1);
   });
@@ -363,6 +382,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
       await gate;
       return 'released' as const;
     });
+    primeReread(h, retainedState());
     const run = runDestroyForStack('App', retainedState(), h.ctx);
     for (let i = 0; i < 200 && started < 2; i++) await new Promise((r) => setImmediate(r));
     expect(started).toBe(2);
@@ -383,6 +403,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
   it('F-1: a record written whose S3 time could not be confirmed warns that it was RECORDED, not that it failed', async () => {
     const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
     h.saveRetainedResources.mockRejectedValueOnce(new RetainedTimeUnconfirmedError(new Error('HEAD 503')));
+    primeReread(h, retainedState());
     await runDestroyForStack('App', retainedState(), h.ctx);
     const text = warn.mock.calls.map((c) => String(c[0])).join('\n');
     expect(text).toMatch(/Recorded the 3 kept resource\(s\) of App, .*their time could not be confirmed from S3/);
@@ -398,6 +419,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
         { logicalId: 'Bucket', resourceType: 'AWS::S3::Bucket', physicalId: 'stale' },
       ],
     });
+    primeReread(h, retainedState());
     await runDestroyForStack('App', retainedState(), h.ctx);
     const [, , entries] = h.saveRetainedResources.mock.calls[0]! as unknown as [string, string, Array<{ logicalId: string; physicalId: string }>];
     expect(entries.map((e) => `${e.logicalId}=${e.physicalId}`)).toEqual([
@@ -410,6 +432,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
 
   it('releases the registry marker AFTER the record is deleted, for a top-level stack', async () => {
     const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
+    primeReread(h, retainedState());
     await runDestroyForStack('App', retainedState(), h.ctx);
     expect(h.releaseRegistryMarker).toHaveBeenCalledWith('App', REGION, undefined);
     expect(h.releaseRegistryMarker.mock.invocationCallOrder[0]!).toBeGreaterThan(
@@ -419,6 +442,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
 
   it('G5: the empty-state path releases the marker too, after its record is deleted', async () => {
     const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
+    primeReread(h, emptyState());
     const result = await runDestroyForStack('App', emptyState(), h.ctx);
     expect(result.skippedEmpty).toBe(true);
     expect(h.deleteState).toHaveBeenCalledTimes(1);
@@ -443,6 +467,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
       getProviderFor: vi.fn(() => ({ provider, provisionedBy: 'sdk' })),
       getProvider: vi.fn(() => provider),
     };
+    primeReread(h, deleted);
     const result = await runDestroyForStack('App', deleted, h.ctx);
     expect(result.errorCount).toBe(0);
     expect(h.deleteState).toHaveBeenCalledTimes(1);
@@ -452,6 +477,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
   it('E-7: a destroy whose tombstone write fails warns (never silent)', async () => {
     const h = makeCtx({ crossPrefixCheck: true, prefixes: ['cdkd'] });
     h.ensureRetainedTombstone.mockRejectedValueOnce(new Error('AccessDenied'));
+    primeReread(h, emptyState());
     await runDestroyForStack('App', emptyState(), h.ctx);
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Could not write the empty kept-resource record of App/));
   });
@@ -474,6 +500,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
       await gate;
       return 'released' as const;
     });
+    primeReread(h, emptyState());
     const run = runDestroyForStack('App', emptyState(), h.ctx);
     // Both in flight before either finished: one round trip, not two.
     for (let i = 0; i < 50 && started < 2; i++) await new Promise((r) => setImmediate(r));
@@ -514,6 +541,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
         Queue: { physicalId: 'https://q/App-Queue', resourceType: 'AWS::SQS::Queue', properties: {}, provisionedBy: 'sdk' },
       } as unknown as StackState['resources'],
     };
+    primeReread(h, deleted);
     const run = runDestroyForStack('App', deleted, h.ctx);
     for (let i = 0; i < 200 && started < 3; i++) await new Promise((r) => setImmediate(r));
     // All three in flight before any of them settles: the tail adds no round
@@ -543,6 +571,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
         },
       } as unknown as StackState['resources'],
     };
+    primeReread(h, failing);
     const result = await runDestroyForStack('App', failing, h.ctx);
     // The delete failed (no provider answers), so the record is preserved.
     expect(result.errorCount).toBeGreaterThan(0);
@@ -553,6 +582,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
 
   it('a nested child (no crossPrefixCheck) never touches the registry marker', async () => {
     const h = makeCtx({});
+    primeReread(h, retainedState());
     await runDestroyForStack('App~Child', retainedState(), h.ctx);
     expect(h.releaseRegistryMarker).not.toHaveBeenCalled();
   });

@@ -110,12 +110,16 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
   const mockDeleteState = vi.fn();
   const mockProviderDelete = vi.fn();
 
-  function makeCtx() {
+  // `current` is what the under-lock re-read (#5220) sees. Pass the same
+  // StackState the case hands to `runDestroyForStack` so the re-read matches
+  // it (nothing changed); omit it only for a case that takes the EMPTY
+  // fast path, which has its own separate re-read untouched by #5220.
+  function makeCtx(current?: StackState) {
     return {
       stateBackend: {
         saveState: mockSaveState,
         deleteState: mockDeleteState,
-        getState: vi.fn(async () => null),
+        getState: vi.fn(async () => (current ? { state: current, etag: 'e' } : null)),
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: {
@@ -154,7 +158,7 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
       supersededResources: [entry],
     });
 
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(order).toEqual(['listener-arn', OLD_TG]);
     expect(result.errorCount).toBe(0);
@@ -175,7 +179,7 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
       supersededResources: [entry],
     });
 
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(result.errorCount).toBe(1);
     expect(mockDeleteState).not.toHaveBeenCalled();
@@ -190,7 +194,7 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
     mockProviderDelete.mockResolvedValue(undefined);
     const state = makeState({}, { supersededResources: [entry] });
 
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(mockProviderDelete).toHaveBeenCalledTimes(1);
     expect(mockProviderDelete.mock.calls[0]![1]).toBe(OLD_TG);
@@ -206,7 +210,7 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
   ])('a record holding only %s keeps its state, as a skip', async (_label, rows) => {
     const state = makeState({}, { supersededResources: rows as never });
 
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(mockDeleteState).not.toHaveBeenCalled();
     expect(mockProviderDelete).not.toHaveBeenCalled();
@@ -221,7 +225,7 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
     const bad = { logicalId: 'Tg' };
     const state = makeState({}, { supersededResources: [entry, bad] as never });
 
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(mockProviderDelete.mock.calls.map((c) => c[1])).toEqual([OLD_TG]);
     expect(result.deletedCount).toBe(1);
@@ -252,7 +256,7 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
       { supersededResources: [entry] }
     );
 
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(mockProviderDelete.mock.calls.map((c) => [c[0], c[1]])).toEqual([['Tg', OLD_TG]]);
     expect(result.deletedCount).toBe(1);
@@ -269,7 +273,7 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
       { supersededResources: [entry] }
     );
 
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(result.skippedCount).toBe(1);
     expect(mockDeleteState).not.toHaveBeenCalled();
@@ -284,7 +288,7 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
     mockProviderDelete.mockResolvedValue(undefined);
     const state = makeState({}, { supersededResources: [entry] });
 
-    await runDestroyForStack('TestStack', state, { ...makeCtx(), removeProtection: true });
+    await runDestroyForStack('TestStack', state, { ...makeCtx(state), removeProtection: true });
 
     expect(mockProviderDelete.mock.calls[0]![4]).toHaveProperty('removeProtection', true);
   });
@@ -296,7 +300,7 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
       { supersededResources: [entry] }
     );
 
-    await runDestroyForStack('TestStack', state, makeCtx());
+    await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(mockProviderDelete.mock.calls.map((c) => c[1])).toEqual([OLD_TG]);
     expect(mockProviderDelete.mock.calls[0]![0]).toBe('Fn');

@@ -54,6 +54,14 @@ const REGION = 'us-east-1';
 const REF = '{{resolve:secretsmanager:team:SecretString:user::}}';
 const USER_ID = 'team-secret-user';
 
+// The under-lock re-read (#5220) needs to see the record each case destroys.
+// `makeState` is always evaluated as an ARGUMENT to `runDestroyForStack`
+// immediately before `makeCtx` (left-to-right argument evaluation), so
+// tracking the last call here is the one place `makeCtx`'s default
+// `getState` (below) needs to echo it back from; the one case building a
+// state object by hand primes this directly instead.
+let lastMadeState: StackState | undefined;
+
 function makeState(userName: string): StackState {
   const user: ResourceState = {
     physicalId: USER_ID,
@@ -69,7 +77,7 @@ function makeState(userName: string): StackState {
     attributes: {},
     dependencies: ['User'],
   };
-  return {
+  const state: StackState = {
     version: 8,
     stackName: 'TestStack',
     region: REGION,
@@ -77,6 +85,8 @@ function makeState(userName: string): StackState {
     outputs: {},
     lastModified: 1,
   };
+  lastMadeState = state;
+  return state;
 }
 
 function makeCtx(providerDelete: ReturnType<typeof vi.fn>) {
@@ -84,6 +94,9 @@ function makeCtx(providerDelete: ReturnType<typeof vi.fn>) {
     stateBackend: {
       saveState: vi.fn().mockResolvedValue('"etag"'),
       deleteState: vi.fn().mockResolvedValue(undefined),
+      getState: vi.fn(async () =>
+        lastMadeState ? { state: lastMadeState, etag: 'e' } : null
+      ),
       listStacks: vi.fn().mockResolvedValue([]),
     } as unknown as S3StateBackend,
     lockManager: {
@@ -148,6 +161,7 @@ describe('cdkd destroy masks a name derived from a secret (go-to-k/cdkd#3869)', 
       outputs: {},
       lastModified: 1,
     };
+    lastMadeState = state;
     let snapshotLine: string | undefined;
     let identifier: string | undefined;
     const providerDelete = vi.fn(

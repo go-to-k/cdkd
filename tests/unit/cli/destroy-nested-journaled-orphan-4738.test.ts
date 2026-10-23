@@ -107,12 +107,21 @@ describe('cdkd destroy of a parent whose nested child left only a journaled orph
   let childStateKept: boolean;
 
   function makeRun() {
+    // Under-lock re-read (#5220): the parent sees its own unchanged record
+    // too (keyed by name, alongside the child's existing entry).
+    const parentState = stateOf('TestStack', {
+      Child: res({
+        resourceType: 'AWS::CloudFormation::Stack',
+        physicalId: 'arn:cdkd-local:us-east-1:123456789012:nested-stack/TestStack/Child',
+      }),
+    });
     const stateBackend = {
-      getState: vi.fn(async (name: string) =>
-        name === CHILD && childStateKept
+      getState: vi.fn(async (name: string) => {
+        if (name === 'TestStack') return { state: parentState, etag: '"e"' };
+        return name === CHILD && childStateKept
           ? { state: stateOf(CHILD, { R: res() }), etag: '"e"' }
-          : null
-      ),
+          : null;
+      }),
       saveState: mockSaveState,
       deleteState: mockDeleteState,
       loadRollbackJournal: vi.fn(async (name: string) => (name === CHILD ? childJournal : null)),
@@ -141,12 +150,6 @@ describe('cdkd destroy of a parent whose nested child left only a journaled orph
       awsClients: {} as AwsClients,
       stateBucket: 'test-bucket',
     } as NestedStackProviderContext;
-    const parentState = stateOf('TestStack', {
-      Child: res({
-        resourceType: 'AWS::CloudFormation::Stack',
-        physicalId: 'arn:cdkd-local:us-east-1:123456789012:nested-stack/TestStack/Child',
-      }),
-    });
     return withNestedStackContext(nestedCtx, () =>
       runDestroyForStack('TestStack', parentState, {
         stateBackend,
