@@ -1,0 +1,772 @@
+import { readFileSync } from 'node:fs';
+import { Command } from 'commander';
+import {
+  appOptions,
+  commonOptions,
+  contextOptions,
+  deprecatedRegionOption,
+  parseContextOptions,
+  stateOptions,
+  stackOptions,
+  useCdkBootstrapAssetsOption,
+  noCfnFallbackOption,
+  warnIfDeprecatedRegion,
+} from '../options.js';
+import { getLogger } from '../../utils/logger.js';
+import { withErrorHandling, CdkdError } from '../../utils/error-handler.js';
+import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import {
+  Synthesizer,
+  synthesisStatusMessage,
+  type SynthesisOptions,
+} from '../../synthesis/synthesizer.js';
+import type { StackInfo } from '../../synthesis/assembly-reader.js';
+import { S3StateBackend } from '../../state/s3-state-backend.js';
+import { LockManager } from '../../state/lock-manager.js';
+import {
+  buildLockContentionMessage,
+  type LockRecoveryContext,
+} from '../../state/lock-contention-message.js';
+import { refuseMalformedState } from '../../state/malformed-resources-bag.js';
+import { applyLogicalIdRenames, type LogicalIdRename } from '../../state/logical-id-rename.js';
+import { DiffCalculator } from '../../analyzer/diff-calculator.js';
+import {
+  mappingPairs,
+  parseMappingFile,
+  proposeRenames,
+  type AmbiguousGroup,
+  type MappingEnvironment,
+  type ProposedRename,
+  type RefusedOverride,
+} from '../../analyzer/refactor-pairing.js';
+import {
+  createAssetRedirectResolver,
+  rewriteTemplateAssetReferences,
+} from '../../assets/asset-redirect.js';
+import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import {
+  exportInferredRegionForSdk,
+  foldRegionOption,
+  legacyStateBucketFallbackRegion,
+  resolveEffectiveRegion,
+  stackRegionResolver,
+} from '../region-options.js';
+import {
+  resolveApp,
+  resolveStateBucketWithDefault,
+  resolveUseCdkBootstrapAssets,
+} from '../config-loader.js';
+import {
+  matchStacks,
+  describeStack,
+  partitionTopLevel,
+  renderAllLeftOutStageStacks,
+  renderAllNoTopLevelStacks,
+  renderNoStackMatch,
+} from '../stack-matcher.js';
+import {
+  loadProviderClasses,
+  registerAllProviders,
+} from '../../provisioning/register-providers.js';
+import { ProviderRegistry } from '../../provisioning/provider-registry.js';
+import { makeCanonicalizePropertiesFn } from '../../provisioning/canonicalize-properties.js';
+import { getAccountInfo } from '../../deployment/intrinsic-resolver/account-drain.js';
+import { producerLookupOver } from '../../deployment/intrinsic-resolver/cdk-cross-account-ref.js';
+import type { CloudFormationTemplate } from '../../types/resource.js';
+import type { ResourceChange, StackState } from '../../types/state.js';
+import { confirmOrRefuse } from './confirm-prompt.js';
+import { computeStackDiff } from './diff-recursive.js';
+
+interface RefactorOptions {
+  app?: string;
+  output: string;
+  stateBucket?: string;
+  statePrefix: string;
+  stack?: string;
+  all?: boolean;
+  dryRun?: boolean;
+  overrideFile?: string;
+  revert?: boolean;
+  force?: boolean;
+  yes?: boolean;
+  region?: string;
+  profile?: string;
+  roleArn?: string;
+  verbose: boolean;
+  context?: string[];
+  useCdkBootstrapAssets?: boolean;
+  cfnFallback?: boolean;
+}
+
+/**
+ * The diff `cdkd refactor` plans against: `computeStackDiff`'s changes for one
+ * stack over a given record. Injected so the planner is testable without AWS.
+ */
+export type RefactorDiffFn = (state: StackState) => Promise<{
+  changes: Map<string, ResourceChange>;
+  blocking: string[];
+}>;
+
+/** A rename the confirming diff rejected, with the properties it would change. */
+export interface DifferingRename {
+  rename: ProposedRename;
+  /** The property paths (or attributes) the next deploy would change. */
+  paths: string[];
+}
+
+/** What `cdkd refactor` will do to one stack, and why it leaves the rest. */
+export interface StackRefactorPlan {
+  stackName: string;
+  region: string;
+  /** The record's ETag the plan was computed from; the apply refuses any other. */
+  etag: string;
+  /** Renames the confirming diff showed to be no-change. */
+  renames: ProposedRename[];
+  /** Detected look-alikes whose properties differ: left for the deploy. */
+  differing: DifferingRename[];
+  ambiguous: AmbiguousGroup[];
+  /** User-named pairs refused, including those whose properties differ. */
+  refusedOverrides: RefusedOverride[];
+  /**
+   * Template resources that reference a renamed one and still change after
+   * the renames: a warning that a named pair may be the wrong way round.
+   */
+  stillChanging: string[];
+  template: CloudFormationTemplate;
+}
+
+/** The changes a rename's new logical id still shows, as paths. */
+function changedPaths(change: ResourceChange | undefined): string[] {
+  if (change === undefined) return ['(not in the diff)'];
+  const paths = (change.propertyChanges ?? []).map((p) => p.path);
+  for (const a of change.attributeChanges ?? []) paths.push(a.attribute);
+  return paths.length > 0 ? paths : [`(${change.changeType})`];
+}
+
+/**
+ * Plan one stack's refactor from its record and template (go-to-k/cdkd#5201).
+ *
+ * The confirming loop applies every proposed rename to an in-memory copy of
+ * the record, diffs it, and drops each rename whose new logical id still
+ * shows a change -- then diffs again, since a dropped rename can be what a
+ * kept one's reference resolved through. Each pass drops at least one rename
+ * or stops, so it runs at most once per rename plus once. Nothing here
+ * writes.
+ */
+export async function planStackRefactor(input: {
+  stackName: string;
+  region: string;
+  state: StackState;
+  etag: string;
+  template: CloudFormationTemplate;
+  overrides: ReadonlyArray<{ from: string; to: string }>;
+  diff: RefactorDiffFn;
+}): Promise<StackRefactorPlan> {
+  const { stackName, region, state, etag, template, overrides, diff } = input;
+
+  const base = await diff(state);
+  if (base.blocking.length > 0) {
+    throw new CdkdError(
+      safeMsg`cdkd refactor refused stack ${stackName} (${region}): ` +
+        `'cdkd diff' reports a condition 'cdkd deploy' refuses to start on. ` +
+        `Resolve what 'cdkd diff ${stackName}' reports, then re-run cdkd refactor.`,
+      'REFACTOR_REFUSED'
+    );
+  }
+
+  // A rollback-orphan record (`orphans`) is re-adopted by the next deploy
+  // under its own logical id, so its CREATE row is not a free destination.
+  const orphanIds = new Set(
+    (Array.isArray(state.orphans) ? state.orphans : [])
+      .map((o) => (o !== null && typeof o === 'object' ? o.logicalId : undefined))
+      .filter((id): id is string => typeof id === 'string')
+  );
+  const creates = [];
+  const deletes = [];
+  for (const change of base.changes.values()) {
+    if (change.changeType === 'CREATE' && !orphanIds.has(change.logicalId)) {
+      creates.push({
+        logicalId: change.logicalId,
+        resourceType: change.resourceType,
+        properties: change.desiredProperties ?? {},
+      });
+    } else if (change.changeType === 'DELETE') {
+      const record = state.resources[change.logicalId];
+      deletes.push({
+        logicalId: change.logicalId,
+        resourceType: change.resourceType,
+        properties:
+          record !== undefined &&
+          record.properties !== null &&
+          typeof record.properties === 'object'
+            ? record.properties
+            : {},
+      });
+    }
+  }
+
+  const proposal = proposeRenames(creates, deletes, overrides);
+  const refusedOverrides = [...proposal.refusedOverrides];
+  const differing: DifferingRename[] = [];
+  let renames = proposal.renames.filter((r) => {
+    if (!orphanIds.has(r.from)) return true;
+    refusedOverrides.push({
+      from: r.from,
+      to: r.to,
+      reason: `a rollback-orphan record also names ${r.from}; run 'cdkd deploy' first to settle it`,
+    });
+    return false;
+  });
+
+  let confirmed: Map<string, ResourceChange> | undefined;
+  while (renames.length > 0) {
+    const renamed = applyLogicalIdRenames(state, toLogicalIdRenames(renames), template);
+    const { changes } = await diff(renamed);
+    const failed = renames.filter((r) => changes.get(r.to)?.changeType !== 'NO_CHANGE');
+    if (failed.length === 0) {
+      confirmed = changes;
+      break;
+    }
+    for (const rename of failed) {
+      const paths = changedPaths(changes.get(rename.to));
+      if (rename.source === 'override') {
+        refusedOverrides.push({
+          from: rename.from,
+          to: rename.to,
+          reason:
+            `its properties also changed (${paths.join(', ')}); cdkd refactor keeps only an ` +
+            `unchanged resource. Revert the property change, run cdkd refactor, then deploy ` +
+            `the change`,
+        });
+      } else {
+        differing.push({ rename, paths });
+      }
+    }
+    renames = renames.filter((r) => !failed.includes(r));
+  }
+
+  // A resource that references a renamed one and still changes after the
+  // renames points at a pair that may be wrong: a mapping file can name two
+  // look-alikes the wrong way round, and each still shows no change itself.
+  const renamedTo = new Set(renames.map((r) => r.to));
+  const stillChanging =
+    confirmed === undefined
+      ? []
+      : [...confirmed.values()]
+          .filter(
+            (change) =>
+              (change.changeType === 'UPDATE' || change.changeType === 'CREATE') &&
+              !renamedTo.has(change.logicalId) &&
+              [...referencedLogicalIds(template, change.logicalId)].some((id) => renamedTo.has(id))
+          )
+          .map((change) => change.logicalId)
+          .sort();
+
+  return {
+    stackName,
+    region,
+    etag,
+    renames,
+    differing,
+    ambiguous: proposal.ambiguous,
+    refusedOverrides,
+    stillChanging,
+    template,
+  };
+}
+
+/**
+ * The logical ids one template resource references: `Ref`, `Fn::GetAtt` (both
+ * forms), `Fn::Sub` placeholders and `DependsOn`. Exported for its unit tests.
+ */
+export function referencedLogicalIds(
+  template: CloudFormationTemplate,
+  logicalId: string
+): Set<string> {
+  const out = new Set<string>();
+  const resources = template.Resources ?? {};
+  if (!Object.hasOwn(resources, logicalId)) return out;
+  const resource = resources[logicalId] as { Properties?: unknown; DependsOn?: unknown };
+  const dependsOn = resource.DependsOn;
+  for (const id of Array.isArray(dependsOn) ? dependsOn : [dependsOn]) {
+    if (typeof id === 'string') out.add(id);
+  }
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      value.forEach(walk);
+      return;
+    }
+    if (value === null || typeof value !== 'object') return;
+    for (const [key, arg] of Object.entries(value as Record<string, unknown>)) {
+      if (key === 'Ref' && typeof arg === 'string') out.add(arg);
+      else if (key === 'Fn::GetAtt') {
+        if (Array.isArray(arg) && typeof arg[0] === 'string') out.add(arg[0]);
+        else if (typeof arg === 'string') out.add(arg.split('.')[0]!);
+      } else if (key === 'Fn::Sub') {
+        const text = typeof arg === 'string' ? arg : Array.isArray(arg) ? arg[0] : undefined;
+        if (typeof text === 'string') {
+          for (const match of text.matchAll(/\$\{([^}!][^}.]*)/g)) out.add(match[1]!);
+        }
+      }
+      walk(arg);
+    }
+  };
+  walk(resource.Properties);
+  return out;
+}
+
+function toLogicalIdRenames(renames: readonly ProposedRename[]): LogicalIdRename[] {
+  return renames.map(({ from, to }) => ({ from, to }));
+}
+
+/**
+ * Apply a plan under the stack's lock (go-to-k/cdkd#5201). The record is
+ * re-read under the lock and must carry the ETag the plan was computed from:
+ * a deploy that ran in between changed what the plan describes, so the
+ * apply refuses rather than renaming against a record it did not check. The
+ * save is conditional on that same ETag.
+ */
+export async function applyStackRefactor(input: {
+  plan: StackRefactorPlan;
+  stateBackend: Pick<S3StateBackend, 'getState' | 'saveState' | 'rotateCreateTokenNonce'>;
+  lockManager: Pick<LockManager, 'acquireLock' | 'releaseLock'>;
+  recovery: LockRecoveryContext;
+  contentionMessage: () => Promise<string>;
+}): Promise<void> {
+  const { plan, stateBackend, lockManager, contentionMessage } = input;
+  const logger = getLogger();
+  const owner = `${process.env['USER'] || 'unknown'}@${process.env['HOSTNAME'] || 'host'}:${process.pid}`;
+  const acquired = await lockManager.acquireLock(plan.stackName, plan.region, owner, 'refactor');
+  if (!acquired) throw new Error(await contentionMessage());
+  try {
+    const stateData = await stateBackend.getState(plan.stackName, plan.region);
+    if (!stateData || stateData.etag !== plan.etag) {
+      throw new CdkdError(
+        safeMsg`The state of stack ${plan.stackName} (${plan.region}) changed after cdkd ` +
+          `refactor planned it, so nothing was written. Re-run cdkd refactor.`,
+        'REFACTOR_STATE_CHANGED'
+      );
+    }
+    const renamed = applyLogicalIdRenames(
+      stateData.state,
+      toLogicalIdRenames(plan.renames),
+      plan.template
+    );
+    // The renamed resources still hold the create tokens their OLD logical
+    // ids sent (EFS, FSx, CloudFront OAI), so a later create of an old id must
+    // send new ones -- as `cdkd orphan` does for the ids that leave a stack.
+    await stateBackend.rotateCreateTokenNonce(
+      plan.stackName,
+      plan.region,
+      plan.renames.map((r) => r.from)
+    );
+    await stateBackend.saveState(plan.stackName, plan.region, renamed, {
+      expectedEtag: plan.etag,
+      ...(stateData.migrationPending && { migrateLegacy: true }),
+    });
+  } finally {
+    await lockManager.releaseLock(plan.stackName, plan.region).catch((err: unknown) => {
+      logger.warn(
+        safeMsg`Failed to release lock: ${displayAwsMessage(describeAwsFailure(err).detail)}`
+      );
+    });
+  }
+}
+
+/** The plan as the lines `cdkd refactor` prints. Exported for its unit tests. */
+export function renderRefactorPlan(plan: StackRefactorPlan): string[] {
+  const lines: string[] = [safeMsg`Stack ${plan.stackName} (${plan.region})`];
+  if (plan.renames.length === 0) lines.push('  No resource to refactor.');
+  for (const r of plan.renames) {
+    lines.push(
+      safeMsg`  ${r.from} -> ${r.to}  (${r.resourceType}${r.source === 'override' ? ', from the mapping file' : ''})`
+    );
+  }
+  for (const { rename, paths } of plan.differing) {
+    lines.push(
+      safeMsg`  Not refactored: ${rename.from} -> ${rename.to} (${rename.resourceType}) also changes ` +
+        safeMsg`${paths.join(', ')}. cdkd refactor keeps only an unchanged resource: revert the ` +
+        'property change, run cdkd refactor, then deploy the change.'
+    );
+  }
+  for (const group of plan.ambiguous) {
+    lines.push(
+      safeMsg`  Ambiguous (${group.resourceType}): ${group.from.join(', ')} could each be ` +
+        safeMsg`${group.to.join(', ')}. Name the pairs with --override-file.`
+    );
+  }
+  for (const refused of plan.refusedOverrides) {
+    lines.push(safeMsg`  Refused: ${refused.from} -> ${refused.to}: ${refused.reason}.`);
+  }
+  if (plan.stillChanging.length > 0) {
+    lines.push(
+      safeMsg`  Warning: ${plan.stillChanging.join(', ')} reference a renamed resource and still ` +
+        'change on the next deploy. Check that each pair above names the resource you meant; ' +
+        "'cdkd diff' after the refactor shows the change."
+    );
+  }
+  return lines;
+}
+
+/** A sample mapping file for the ambiguous groups of `plans`. */
+function sampleMappingFile(plans: readonly StackRefactorPlan[], account: string): string {
+  const resources: Record<string, string> = {};
+  for (const plan of plans) {
+    for (const group of plan.ambiguous) {
+      group.from.forEach((from, i) => {
+        const to = group.to[i] ?? group.to[0]!;
+        resources[`${plan.stackName}.${from}`] = `${plan.stackName}.${to}`;
+      });
+    }
+  }
+  const region = plans.find((p) => p.ambiguous.length > 0)?.region ?? '';
+  return JSON.stringify({ environments: [{ account, region, resources }] }, null, 2);
+}
+
+/**
+ * The user-named pairs for one stack: the mapping environment whose account
+ * and region are the stack's. A pair between two stacks is refused here --
+ * moving a resource between stacks is go-to-k/cdkd#5202.
+ */
+export function overridesForStack(
+  environments: readonly MappingEnvironment[],
+  stackName: string,
+  account: string,
+  region: string,
+  revert: boolean
+): Array<{ from: string; to: string }> {
+  const out: Array<{ from: string; to: string }> = [];
+  for (const env of environments) {
+    if (env.account !== account || env.region !== region) continue;
+    for (const pair of mappingPairs(env.resources, revert)) {
+      if (pair.fromStack !== stackName && pair.toStack !== stackName) continue;
+      if (pair.fromStack !== pair.toStack) {
+        throw new CdkdError(
+          safeMsg`The mapping file moves ${pair.fromStack}.${pair.from} to ` +
+            safeMsg`${pair.toStack}.${pair.to}, between two stacks. cdkd refactor renames ` +
+            'resources within one stack; moving one between stacks is not supported yet ' +
+            '(go-to-k/cdkd#5202).',
+          'REFACTOR_UNSUPPORTED'
+        );
+      }
+      out.push({ from: pair.from, to: pair.to });
+    }
+  }
+  return out;
+}
+
+async function refactorCommand(stacks: string[], options: RefactorOptions): Promise<void> {
+  const providerClasses = await loadProviderClasses();
+  const logger = getLogger();
+  if (options.verbose) logger.setLevel('debug');
+  if (options.revert === true && options.overrideFile === undefined) {
+    throw new CdkdError('--revert requires --override-file', 'INCOMPATIBLE_OPTIONS');
+  }
+
+  warnIfDeprecatedRegion(options);
+  foldRegionOption(options);
+  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
+
+  const app = resolveApp(options.app);
+  if (!app) {
+    throw new Error(
+      'No app command specified. Use --app, set CDKD_APP env var, or add "app" to cdk.json'
+    );
+  }
+
+  // Read before any AWS call, so a malformed file costs nothing.
+  let environments: MappingEnvironment[] = [];
+  if (options.overrideFile !== undefined) {
+    let text: string;
+    try {
+      text = readFileSync(options.overrideFile, 'utf-8');
+    } catch {
+      throw new CdkdError(
+        safeMsg`Cannot read the mapping file ${options.overrideFile}`,
+        'REFACTOR_MAPPING_FILE'
+      );
+    }
+    try {
+      environments = parseMappingFile(text);
+    } catch (error) {
+      throw new CdkdError(
+        safeMsg`Invalid mapping file ${options.overrideFile}: ${(error as Error).message}`,
+        'REFACTOR_MAPPING_FILE'
+      );
+    }
+  }
+
+  const effectiveRegion = await resolveEffectiveRegion(options);
+  exportInferredRegionForSdk(effectiveRegion);
+  const region = effectiveRegion.region;
+  const stateBucket = await resolveStateBucketWithDefault(
+    options.stateBucket,
+    region,
+    legacyStateBucketFallbackRegion(effectiveRegion)
+  );
+
+  const awsClients = new AwsClients({
+    region: effectiveRegion.region,
+    ...(options.profile && { profile: options.profile }),
+  });
+  setAwsClients(awsClients);
+
+  try {
+    logger.info(synthesisStatusMessage(app, 'Synthesizing CDK app...'));
+    const synthesizer = new Synthesizer();
+    const context = parseContextOptions(options.context);
+    const synthOptions: SynthesisOptions = {
+      app,
+      output: options.output,
+      ...(options.region && { region: options.region }),
+      ...(options.profile && { profile: options.profile }),
+      ...(Object.keys(context).length > 0 && { context }),
+      stateBucket,
+      ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
+      deferMacroExpansion: true,
+    };
+    const { stacks: allStacks } = await synthesizer.synthesize(synthOptions);
+    const targetStacks = selectStacks(allStacks, stacks, options);
+    await synthesizer.expandMacrosForStacks(targetStacks, synthOptions);
+
+    const stateConfig = { bucket: stateBucket, prefix: options.statePrefix };
+    const stateBackend = new S3StateBackend(awsClients.s3, stateConfig, {
+      region,
+      ...(options.profile && { profile: options.profile }),
+    });
+    await stateBackend.verifyBucketExists();
+    const lockManager = new LockManager(awsClients.s3, stateConfig);
+    const recovery: LockRecoveryContext = {
+      profile: options.profile,
+      stateBucket,
+      statePrefix: options.statePrefix,
+    };
+    const regionForStack = stackRegionResolver({
+      effective: effectiveRegion,
+      probe: stateBackend,
+      logger,
+      siblings: allStacks.filter((s) => !s.region).map((s) => s.stackName),
+    });
+    const diffCalculator = new DiffCalculator();
+    const registry = new ProviderRegistry();
+    registerAllProviders(registry, providerClasses);
+    const canonicalizeProperties = makeCanonicalizePropertiesFn(registry);
+    const producerLookup = producerLookupOver(allStacks);
+    const resolveAssetRedirect = createAssetRedirectResolver({
+      stateBackend,
+      stsRegion: region,
+      ...(options.profile && { profile: options.profile }),
+      useCdkBootstrapAssets: resolveUseCdkBootstrapAssets(options.useCdkBootstrapAssets),
+      suppressLegacyNotice: true,
+    });
+    let callerAccount: string | undefined;
+    const accountOf = async (stackInfo: StackInfo): Promise<string> => {
+      if (stackInfo.account) return stackInfo.account;
+      callerAccount ??= (await getAccountInfo()).accountId;
+      return callerAccount;
+    };
+
+    const plans: StackRefactorPlan[] = [];
+    for (const stackInfo of targetStacks) {
+      const stackRegion = await regionForStack(stackInfo.stackName, stackInfo.region);
+      const stateData = await stateBackend.getState(stackInfo.stackName, stackRegion);
+      if (!stateData) {
+        logger.info(
+          safeMsg`Stack ${stackInfo.stackName} (${stackRegion}) has no cdkd state: nothing to refactor.`
+        );
+        continue;
+      }
+      refuseMalformedState(stateData.state, stackInfo.stackName, stackRegion, recovery);
+      if ((await stateBackend.loadRollbackJournal(stackInfo.stackName, stackRegion)) !== null) {
+        throw new CdkdError(
+          safeMsg`cdkd refactor refused stack ${stackInfo.stackName} (${stackRegion}): an ` +
+            safeMsg`earlier deploy left a rollback journal. Run 'cdkd rollback ${stackInfo.stackName}' ` +
+            `or a successful 'cdkd deploy' first.`,
+          'REFACTOR_REFUSED'
+        );
+      }
+      const assetRedirect = await resolveAssetRedirect(stackInfo.assetManifestPath, stackRegion);
+      if (assetRedirect) rewriteTemplateAssetReferences(stackInfo.template, assetRedirect);
+
+      const overrides =
+        environments.length === 0
+          ? []
+          : overridesForStack(
+              environments,
+              stackInfo.stackName,
+              await accountOf(stackInfo),
+              stackRegion,
+              options.revert === true
+            );
+      const diff: RefactorDiffFn = async (state) => {
+        const result = await computeStackDiff(
+          state,
+          stackInfo.template,
+          stackRegion,
+          stackInfo.stackName,
+          stateBackend,
+          diffCalculator,
+          {
+            canonicalizeProperties,
+            ...(options.cfnFallback === false && { cfnFallback: false }),
+            producerLookup,
+            ...(stackInfo.account && { consumerAccount: stackInfo.account }),
+            refusalRecovery: recovery,
+            inheritSecretBearingTemplate: false,
+            previewMaskedInputs: true,
+            ...(stackInfo.nestedTemplates && { nestedTemplates: stackInfo.nestedTemplates }),
+          }
+        );
+        return { changes: result.changes, blocking: result.blocking };
+      };
+      plans.push(
+        await planStackRefactor({
+          stackName: stackInfo.stackName,
+          region: stackRegion,
+          state: stateData.state,
+          etag: stateData.etag,
+          template: stackInfo.template,
+          overrides,
+          diff,
+        })
+      );
+    }
+
+    for (const plan of plans) for (const line of renderRefactorPlan(plan)) logger.info(line);
+
+    if (plans.some((p) => p.ambiguous.length > 0)) {
+      const account = plans.length > 0 ? await accountOf(targetStacks[0]!) : '';
+      logger.info(
+        '\nA mapping file naming each ambiguous pair (edit the pairs, then pass it with ' +
+          '--override-file):'
+      );
+      for (const line of sampleMappingFile(plans, account).split('\n')) {
+        logger.info(displaySafe(line));
+      }
+    }
+    if (plans.some((p) => p.ambiguous.length > 0)) {
+      throw new CdkdError(
+        'cdkd refactor found resources it cannot pair on its own; nothing was written. ' +
+          'Name each ambiguous pair in a mapping file and re-run with --override-file.',
+        'REFACTOR_AMBIGUOUS'
+      );
+    }
+    const refused = plans.flatMap((p) => p.refusedOverrides);
+    if (refused.length > 0) {
+      throw new CdkdError(
+        `cdkd refactor refused ${refused.length} pair(s) the mapping file names; nothing was ` +
+          'written. See the refusals above.',
+        'REFACTOR_REFUSED'
+      );
+    }
+    const toApply = plans.filter((p) => p.renames.length > 0);
+    if (toApply.length === 0) {
+      logger.info('\nNothing to refactor.');
+      return;
+    }
+    if (options.dryRun) {
+      logger.info('\n--dry-run: state was NOT written. Re-run without --dry-run to apply.');
+      return;
+    }
+    const count = toApply.reduce((n, p) => n + p.renames.length, 0);
+    if (!options.yes && !options.force) {
+      const ok = await confirmOrRefuse(
+        `\nRename ${count} resource(s) in cdkd state as listed above? AWS resources are not ` +
+          'touched.',
+        {
+          refusal:
+            'The cdkd refactor confirmation prompt cannot run in a non-interactive ' +
+            'environment. Pass -y / --yes (or -f / --force) to confirm, or run the command ' +
+            'from a real terminal.',
+        }
+      );
+      if (!ok) {
+        logger.info('Refactor cancelled.');
+        return;
+      }
+    }
+    for (const plan of toApply) {
+      await applyStackRefactor({
+        plan,
+        stateBackend,
+        lockManager,
+        recovery,
+        contentionMessage: () =>
+          buildLockContentionMessage({
+            lockManager,
+            stackName: plan.stackName,
+            region: plan.region,
+            recovery,
+          }),
+      });
+      logger.info(
+        safeMsg`Refactored ${plan.renames.length} resource(s) in stack ${plan.stackName} (${plan.region}).`
+      );
+    }
+    logger.info(
+      "\nAWS resources were not touched. Run 'cdkd diff' to confirm the renamed resources show no change."
+    );
+  } finally {
+    awsClients.destroy();
+  }
+}
+
+/** Stack selection, as `cdkd diff` selects. */
+function selectStacks(
+  allStacks: StackInfo[],
+  stacks: string[],
+  options: Pick<RefactorOptions, 'all' | 'stack'>
+): StackInfo[] {
+  const logger = getLogger();
+  const stackPatterns = stacks.length > 0 ? stacks : options.stack ? [options.stack] : [];
+  if (allStacks.length === 0) throw new Error(renderNoStackMatch(stackPatterns, allStacks));
+  let targetStacks: StackInfo[];
+  if (options.all) {
+    const { topLevel, inStages } = partitionTopLevel(allStacks);
+    if (topLevel.length === 0) throw new Error(renderAllNoTopLevelStacks(inStages));
+    if (inStages.length > 0) logger.info(renderAllLeftOutStageStacks(inStages));
+    targetStacks = topLevel;
+  } else if (stackPatterns.length > 0) {
+    targetStacks = matchStacks(allStacks, stackPatterns, { dedupe: 'identity' });
+  } else if (allStacks.length === 1) {
+    targetStacks = allStacks;
+  } else {
+    throw new Error(
+      `Multiple stacks found: ${allStacks.map(describeStack).join(', ')}. ` +
+        `Specify stack name(s) or use --all (top-level stacks; '**' for every stack)`
+    );
+  }
+  if (targetStacks.length === 0) throw new Error(renderNoStackMatch(stackPatterns, allStacks));
+  return targetStacks;
+}
+
+/** Create the `cdkd refactor` command. */
+export function createRefactorCommand(): Command {
+  const cmd = new Command('refactor')
+    .description(
+      "Keep resources whose logical IDs a construct rename changed, instead of replacing them (mirrors 'cdk refactor'). Rewrites cdkd state only; AWS resources are not touched."
+    )
+    .argument(
+      '[stacks...]',
+      "Stack name(s) to refactor. Accepts CDK display paths (e.g. 'MyStage/Api') with wildcards, or exact physical CloudFormation names."
+    )
+    .option('--all', "Refactor every top-level stack (Stage stacks: '**')", false)
+    .option('--dry-run', 'Print the refactor plan without writing state', false)
+    .option(
+      '--override-file <path>',
+      'A JSON mapping file naming pairs the detection finds ambiguous, in the cdk refactor format: {"environments":[{"account","region","resources":{"Stack.OldId":"Stack.NewId"}}]}'
+    )
+    .option('--revert', 'Apply the mapping file in reverse (requires --override-file)', false)
+    .option('-f, --force', 'Skip the confirmation prompt', false)
+    .addOption(useCdkBootstrapAssetsOption)
+    .addOption(noCfnFallbackOption)
+    .action(withErrorHandling(refactorCommand));
+
+  [...commonOptions, ...appOptions, ...stateOptions, ...stackOptions, ...contextOptions].forEach(
+    (opt) => cmd.addOption(opt)
+  );
+  cmd.addOption(deprecatedRegionOption);
+  return cmd;
+}

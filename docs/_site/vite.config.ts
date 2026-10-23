@@ -240,6 +240,7 @@ const navigation: ScopedNavigationGroup[] = [
       { title: 'What scrub covers', path: '/cli-scrub-what-it-covers', under: '/cli-scrub' },
       { title: 'Across stacks', path: '/cli-scrub-multi-stack', under: '/cli-scrub' },
       { title: 'Findings and refusals', path: '/cli-scrub-findings', under: '/cli-scrub' },
+      { title: 'cdkd refactor', path: '/cli-refactor' },
       { title: 'cdkd gc', path: '/cli-gc' },
       { title: 'cdkd publish-assets', path: '/cli-publish-assets' },
       { title: 'cdkd force-unlock', path: '/cli-force-unlock' },

@@ -1,0 +1,315 @@
+/**
+ * go-to-k/cdkd#5201: `cdkd refactor`'s planner and apply. The planner keeps a
+ * rename only when the diff over the renamed record shows the new id
+ * unchanged; the apply writes only under the lock, only over the record the
+ * plan read, and always releases the lock.
+ */
+import { describe, expect, it, vi } from 'vite-plus/test';
+import {
+  applyStackRefactor,
+  overridesForStack,
+  referencedLogicalIds,
+  planStackRefactor,
+  renderRefactorPlan,
+  type RefactorDiffFn,
+  type StackRefactorPlan,
+} from '../../../../src/cli/commands/refactor.js';
+import type { ResourceChange, ResourceState, StackState } from '../../../../src/types/state.js';
+import type { CloudFormationTemplate } from '../../../../src/types/resource.js';
+import type { MappingEnvironment } from '../../../../src/analyzer/refactor-pairing.js';
+
+const queue = 'AWS::SQS::Queue';
+
+function rec(properties: Record<string, unknown>, extra: Partial<ResourceState> = {}): ResourceState {
+  return { physicalId: 'p', resourceType: queue, properties, ...extra };
+}
+
+function stack(resources: Record<string, ResourceState>, extra: Partial<StackState> = {}): StackState {
+  return { version: 13, stackName: 'S', region: 'us-east-1', resources, outputs: {}, lastModified: 0, ...extra };
+}
+
+/**
+ * A diff double: a template id the state lacks is CREATE, a state id the
+ * template lacks is DELETE, and a shared id is NO_CHANGE when the record's
+ * properties equal `templateProps` (else UPDATE on each differing key).
+ */
+function fakeDiff(
+  templateProps: Record<string, { type?: string; props: Record<string, unknown> }>,
+  blocking: string[] = []
+): RefactorDiffFn & { calls: StackState[] } {
+  const calls: StackState[] = [];
+  const fn = (async (state: StackState) => {
+    calls.push(state);
+    const changes = new Map<string, ResourceChange>();
+    for (const [id, { type = queue, props }] of Object.entries(templateProps)) {
+      const r = state.resources[id];
+      if (r === undefined) {
+        changes.set(id, { logicalId: id, changeType: 'CREATE', resourceType: type, desiredProperties: props });
+        continue;
+      }
+      const diffs = Object.keys({ ...props, ...r.properties }).filter(
+        (k) => JSON.stringify(props[k]) !== JSON.stringify(r.properties[k])
+      );
+      changes.set(id, {
+        logicalId: id,
+        resourceType: type,
+        changeType: diffs.length === 0 ? 'NO_CHANGE' : 'UPDATE',
+        propertyChanges: diffs.map((path) => ({
+          path,
+          oldValue: r.properties[path],
+          newValue: props[path],
+          requiresReplacement: false,
+        })),
+      });
+    }
+    for (const [id, r] of Object.entries(state.resources)) {
+      if (!(id in templateProps)) {
+        changes.set(id, { logicalId: id, changeType: 'DELETE', resourceType: r.resourceType });
+      }
+    }
+    return { changes, blocking };
+  }) as RefactorDiffFn & { calls: StackState[] };
+  fn.calls = calls;
+  return fn;
+}
+
+const template: CloudFormationTemplate = { Resources: {} };
+
+function plan(state: StackState, diff: RefactorDiffFn, overrides: Array<{ from: string; to: string }> = []) {
+  return planStackRefactor({ stackName: 'S', region: 'us-east-1', state, etag: '"e1"', template, overrides, diff });
+}
+
+describe('planStackRefactor', () => {
+  it('keeps a rename the confirming diff shows unchanged, without writing anything', async () => {
+    const state = stack({ Old: rec({ T: 1 }) });
+    const diff = fakeDiff({ New: { props: { T: 1 } } });
+    const p = await plan(state, diff);
+    expect(p.renames.map((r) => [r.from, r.to])).toEqual([['Old', 'New']]);
+    expect(p.differing).toEqual([]);
+    // The input record is never mutated; the second diff ran over a renamed copy.
+    expect(Object.keys(state.resources)).toEqual(['Old']);
+    expect(Object.keys(diff.calls[1]!.resources)).toEqual(['New']);
+  });
+
+  it('leaves a detected look-alike whose properties changed to the deploy, naming the paths', async () => {
+    const p = await plan(stack({ Old: rec({ T: 1 }) }), fakeDiff({ New: { props: { T: 2 } } }));
+    expect(p.renames).toEqual([]);
+    expect(p.differing).toEqual([
+      { rename: expect.objectContaining({ from: 'Old', to: 'New' }), paths: ['T'] },
+    ]);
+    expect(renderRefactorPlan(p).join('\n')).toMatch(/Not refactored: Old -> New .* also changes T/);
+  });
+
+  it('refuses a mapping-file pair whose properties changed (cdk refactor parity)', async () => {
+    const p = await plan(
+      stack({ OldA: rec({ T: 1 }), OldB: rec({ T: 1 }) }),
+      fakeDiff({ NewA: { props: { T: 1 } }, NewB: { props: { T: 5 } } }),
+      [{ from: 'OldA', to: 'NewB' }]
+    );
+    expect(p.refusedOverrides).toEqual([
+      expect.objectContaining({ from: 'OldA', to: 'NewB', reason: expect.stringMatching(/properties also changed \(T\)/) }),
+    ]);
+    expect(p.renames.map((r) => [r.from, r.to])).toEqual([['OldB', 'NewA']]);
+  });
+
+  it('re-confirms the survivors after dropping a failed rename', async () => {
+    const topic = 'AWS::SNS::Topic';
+    const diff = fakeDiff({
+      NewTopic: { type: topic, props: { T: 1 } },
+      NewQueue: { props: { T: 9 } },
+    });
+    const p = await plan(
+      stack({ OldTopic: rec({ T: 1 }, { resourceType: topic }), OldQueue: rec({ T: 2 }) }),
+      diff
+    );
+    expect(p.renames.map((r) => r.to)).toEqual(['NewTopic']);
+    expect(p.differing.map((x) => x.rename.to)).toEqual(['NewQueue']);
+    // base + one pass that failed NewQueue + one confirming pass.
+    expect(diff.calls).toHaveLength(3);
+    expect(Object.keys(diff.calls[2]!.resources).sort()).toEqual(['NewTopic', 'OldQueue']);
+  });
+
+  it('reports identical look-alikes as ambiguous and renames nothing', async () => {
+    const p = await plan(
+      stack({ OldA: rec({ T: 1 }), OldB: rec({ T: 1 }) }),
+      fakeDiff({ NewA: { props: { T: 1 } }, NewB: { props: { T: 1 } } })
+    );
+    expect(p.renames).toEqual([]);
+    expect(p.ambiguous).toHaveLength(1);
+  });
+
+  it('refuses a stack whose diff carries a deploy-refusal condition', async () => {
+    await expect(plan(stack({ Old: rec({}) }), fakeDiff({ New: { props: {} } }, ['torn']))).rejects.toThrow(
+      /refuses to start/
+    );
+  });
+
+  it('never pairs a CREATE row a rollback-orphan record will be re-adopted under', async () => {
+    const orphanState = rec({ T: 1 }, { physicalId: 'orphaned' });
+    const p = await plan(
+      stack({ Old: rec({ T: 1 }) }, { orphans: [{ logicalId: 'New', orphanedAt: 1, state: orphanState }] }),
+      fakeDiff({ New: { props: { T: 1 } } })
+    );
+    expect(p.renames).toEqual([]);
+  });
+});
+
+describe('stillChanging', () => {
+  it('warns when a resource referencing a renamed one still changes', async () => {
+    const t: CloudFormationTemplate = {
+      Resources: {
+        Wiring: { Type: 'AWS::SSM::Parameter', Properties: { Value: { Ref: 'New' } } },
+        Unrelated: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } },
+      },
+    };
+    const state = stack({
+      Old: rec({ T: 1 }),
+      Wiring: rec({ Value: 'p-other' }, { resourceType: 'AWS::SSM::Parameter' }),
+      Unrelated: rec({ Value: 'y' }, { resourceType: 'AWS::SSM::Parameter' }),
+    });
+    const diff = fakeDiff({
+      New: { props: { T: 1 } },
+      Wiring: { type: 'AWS::SSM::Parameter', props: { Value: 'p-renamed' } },
+      Unrelated: { type: 'AWS::SSM::Parameter', props: { Value: 'x' } },
+    });
+    const p = await planStackRefactor({
+      stackName: 'S', region: 'us-east-1', state, etag: '"e"', template: t, overrides: [], diff,
+    });
+    expect(p.renames.map((r) => r.to)).toEqual(['New']);
+    expect(p.stillChanging).toEqual(['Wiring']);
+    expect(renderRefactorPlan(p).join('\n')).toMatch(/Warning: Wiring reference a renamed resource/);
+  });
+});
+
+describe('referencedLogicalIds', () => {
+  it('collects Ref, both GetAtt forms, Sub placeholders and DependsOn', () => {
+    const t: CloudFormationTemplate = {
+      Resources: {
+        R: {
+          Type: 'X',
+          DependsOn: ['D1'],
+          Properties: {
+            a: { Ref: 'A' },
+            b: { 'Fn::GetAtt': ['B', 'Arn'] },
+            c: { 'Fn::GetAtt': 'C.Arn' },
+            d: { 'Fn::Sub': '${E}-${F.Arn}-${!G}' },
+            e: [{ 'Fn::Sub': ['${H}', { H: 'v' }] }],
+          },
+        },
+      },
+    };
+    expect([...referencedLogicalIds(t, 'R')].sort()).toEqual(['A', 'B', 'C', 'D1', 'E', 'F', 'H']);
+    expect(referencedLogicalIds(t, 'missing').size).toBe(0);
+  });
+});
+
+describe('applyStackRefactor', () => {
+  const thePlan = (): StackRefactorPlan => ({
+    stackName: 'S',
+    region: 'us-east-1',
+    etag: '"e1"',
+    renames: [{ from: 'Old', to: 'New', resourceType: queue, source: 'detected' }],
+    differing: [],
+    ambiguous: [],
+    refusedOverrides: [],
+    stillChanging: [],
+    template,
+  });
+
+  function doubles(etag = '"e1"', acquired = true) {
+    const order: string[] = [];
+    const stateBackend = {
+      getState: vi.fn(async () => {
+        order.push('get');
+        return { state: stack({ Old: rec({ T: 1 }) }), etag, migrationPending: false };
+      }),
+      saveState: vi.fn(async () => {
+        order.push('save');
+      }),
+      rotateCreateTokenNonce: vi.fn(async () => {
+        order.push('rotate');
+      }),
+    };
+    const lockManager = {
+      acquireLock: vi.fn(async () => {
+        order.push('lock');
+        return acquired;
+      }),
+      releaseLock: vi.fn(async () => {
+        order.push('unlock');
+      }),
+    };
+    return { stateBackend, lockManager, order };
+  }
+
+  const run = (d: ReturnType<typeof doubles>) =>
+    applyStackRefactor({
+      plan: thePlan(),
+      stateBackend: d.stateBackend as never,
+      lockManager: d.lockManager as never,
+      recovery: { stateBucket: 'b', statePrefix: 'p' },
+      contentionMessage: async () => 'locked by someone',
+    });
+
+  it('locks, re-reads, rotates create tokens, saves conditionally, unlocks', async () => {
+    const d = doubles();
+    await run(d);
+    expect(d.order).toEqual(['lock', 'get', 'rotate', 'save', 'unlock']);
+    const [, , saved, opts] = d.stateBackend.saveState.mock.calls[0] as unknown as [
+      string,
+      string,
+      StackState,
+      { expectedEtag: string },
+    ];
+    expect(Object.keys(saved.resources)).toEqual(['New']);
+    expect(opts.expectedEtag).toBe('"e1"');
+    expect(d.stateBackend.rotateCreateTokenNonce).toHaveBeenCalledWith('S', 'us-east-1', ['Old']);
+  });
+
+  it('writes nothing and unlocks when the record changed after planning', async () => {
+    const d = doubles('"e2"');
+    await expect(run(d)).rejects.toThrow(/changed after cdkd refactor planned it/);
+    expect(d.stateBackend.saveState).not.toHaveBeenCalled();
+    expect(d.stateBackend.rotateCreateTokenNonce).not.toHaveBeenCalled();
+    expect(d.order.at(-1)).toBe('unlock');
+  });
+
+  it('writes nothing and releases no foreign lock under contention', async () => {
+    const d = doubles('"e1"', false);
+    await expect(run(d)).rejects.toThrow('locked by someone');
+    expect(d.stateBackend.getState).not.toHaveBeenCalled();
+    expect(d.lockManager.releaseLock).not.toHaveBeenCalled();
+  });
+
+  it('unlocks when the save fails', async () => {
+    const d = doubles();
+    d.stateBackend.saveState.mockRejectedValueOnce(new Error('PreconditionFailed'));
+    await expect(run(d)).rejects.toThrow('PreconditionFailed');
+    expect(d.order.at(-1)).toBe('unlock');
+  });
+});
+
+describe('overridesForStack', () => {
+  const envs: MappingEnvironment[] = [
+    { account: '111111111111', region: 'us-east-1', resources: { 'S.Old': 'S.New', 'T.A': 'T.B' } },
+    { account: '222222222222', region: 'us-east-1', resources: { 'S.X': 'S.Y' } },
+  ];
+
+  it('takes only the matching environment and this stack, swapping on --revert', () => {
+    expect(overridesForStack(envs, 'S', '111111111111', 'us-east-1', false)).toEqual([{ from: 'Old', to: 'New' }]);
+    expect(overridesForStack(envs, 'S', '111111111111', 'us-east-1', true)).toEqual([{ from: 'New', to: 'Old' }]);
+    expect(overridesForStack(envs, 'S', '111111111111', 'eu-west-1', false)).toEqual([]);
+  });
+
+  it('refuses a move between stacks', () => {
+    expect(() =>
+      overridesForStack(
+        [{ account: '1', region: 'r', resources: { 'S.Old': 'T.New' } }],
+        'S',
+        '1',
+        'r',
+        false
+      )
+    ).toThrow(/between two stacks/);
+  });
+});
