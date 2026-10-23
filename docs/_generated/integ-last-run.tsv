@@ -77,6 +77,7 @@ cross-stack-references	2026-10-23T16:19:17Z	PASS	55	standard	deploy+destroy clea
 cross-stack-references	2026-10-23T18:46:05Z	PASS	60	standard	deploy+destroy clean, 0 orphans; regression check for fix/refactor-interrupt@b5f2dee1d (/pick-integ P1)
 cross-stack-references	2026-10-23T19:28:54Z	PASS	65	standard	deploy+diff(no change)+destroy clean, 0 orphans; regression check for fix/refactor-interrupt@2c9088825 (/pick-integ P1)
 cross-stack-references	2026-10-23T20:25:43Z	PASS	60	standard	deploy+diff(no change)+destroy clean, 0 orphans; regression check for fix/refactor-interrupt@e7af89b9e
+cross-stack-references	2026-10-23T20:42:06Z	PASS	70	standard	deploy+diff(no change)+destroy clean, 0 orphans; regression check for fix/refactor-interrupt@1a18a7004 (empty-stack fast path fixture not found, fallback pick)
 cross-stack-secret-import	2026-10-23T02:59:31Z	PASS	656	verify.sh	rc ok, orph clean, 0 surviving secret versions (regression net #5193)
 custom-resource-getatt-data	2026-10-09T09:36:48Z	PASS	95	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)
 custom-resource-masked-service-token	2026-10-15T02:06:45Z	PASS	161	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
@@ -318,6 +319,8 @@ refactor-move	2026-10-23T18:39:26Z	FAIL	95	verify.sh	Phase2c: deploy SRC cascade
 refactor-command	2026-10-23T19:26:50Z	PASS	105	verify.sh	rc ok, orph clean, regression check on fix/refactor-interrupt@2c9088825 (#5201)
 refactor-command	2026-10-23T20:23:40Z	PASS	105	verify.sh	rc ok, orph clean, regression check on fix/refactor-interrupt@e7af89b9e (#5201)
 refactor-move	2026-10-23T20:21:04Z	PASS	151	verify.sh	rc ok, orph clean; re-run on e7af89b9e (lock-scoped marker read + dest template check + read-only dry-run) (#5212)
+refactor-command	2026-10-23T20:35:54Z	FAIL	60	verify.sh	Phase2c verify.sh:246 "No such file or directory": MAP_DIR=mktemp -d (verify.sh:76) runs before the Pre-run cleanup call (verify.sh:168) which rm -rf's it (verify.sh:141, cleanup()); fixture bug in 1a18a7004, AWS confirmed clean, no refactor-map.json left anywhere (#5201)
+refactor-move	2026-10-23T20:40:01Z	PASS	155	verify.sh	rc ok, orph clean; re-run on 1a18a7004 (destroy-runner marker check under lock on empty-stack path, a260b9971) (#5212)
 remove-protection	2026-10-22T15:37:12Z	PASS	2120	verify.sh	rc ok, orph clean
 remove-protection-compensation	2026-10-22T15:37:12Z	PASS	251	verify.sh	rc ok, orph clean
 remove-protection-journaled-orphan	2026-10-20T10:53:50Z	PASS	675	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
