@@ -46,7 +46,7 @@ async function headObject(client: S3Client): Promise<void> {
  * prints nothing.
  */
 function hidesUnknownLengthWarning(client: S3Client): boolean {
-  const logger = client.config.logger as { warn?: (m: string) => void; constructor: unknown };
+  const logger = client.config.logger as { warn?: (m: string) => void; constructor: { name: string } };
   if (logger.constructor.name === 'NoOpLogger' || typeof logger.warn !== 'function') return false;
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   try {
