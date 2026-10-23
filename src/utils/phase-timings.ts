@@ -45,15 +45,19 @@ interface PhaseEntry {
   maxLabel: string | undefined;
 }
 
-// Insertion order is report order. Keyed by scope and phase.
-const entries = new Map<string, PhaseEntry>();
+// Insertion order is report order: scope, then phase within it.
+const entries = new Map<string, Map<string, PhaseEntry>>();
 
 function entryFor(scope: string, phase: string, kind: PhaseEntry['kind']): PhaseEntry {
-  const key = `${scope}\u0000${phase}`;
-  let entry = entries.get(key);
+  let byPhase = entries.get(scope);
+  if (byPhase === undefined) {
+    byPhase = new Map();
+    entries.set(scope, byPhase);
+  }
+  let entry = byPhase.get(phase);
   if (entry === undefined) {
     entry = { scope, phase, kind, count: 0, totalMs: 0, maxMs: 0, maxLabel: undefined };
-    entries.set(key, entry);
+    byPhase.set(phase, entry);
   }
   return entry;
 }
@@ -144,15 +148,11 @@ function formatMs(ms: number): string {
  */
 export function renderPhaseTimings(): string[] {
   if (entries.size === 0) return [];
-  const byScope = new Map<string, PhaseEntry[]>();
-  for (const entry of entries.values()) {
-    const list = byScope.get(entry.scope) ?? [];
-    list.push(entry);
-    byScope.set(entry.scope, list);
-  }
-  const phaseWidth = Math.max(...[...entries.values()].map((e) => e.phase.length));
+  const all = [...entries.values()].flatMap((byPhase) => [...byPhase.values()]);
+  const phaseWidth = Math.max(...all.map((e) => e.phase.length));
   const lines: string[] = ['Phase timings (CDKD_PHASE_TIMINGS=1):'];
-  for (const [scope, list] of byScope) {
+  for (const [scope, byPhase] of entries) {
+    const list = [...byPhase.values()];
     const laps = list.filter((e) => e.kind === 'lap');
     const lapTotal = laps.reduce((sum, e) => sum + e.totalMs, 0);
     lines.push(`  ${scope}${laps.length > 0 ? ` (${formatMs(lapTotal)} wall)` : ''}`);

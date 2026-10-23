@@ -9,6 +9,7 @@ import {
   type ProgressEvent,
 } from '@aws-sdk/client-cloudcontrol';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { recordPhase } from '../utils/phase-timings.js';
 import { isDeepStrictEqual } from 'node:util';
 import { DescribeTableCommand } from '@aws-sdk/client-dynamodb';
 import {
@@ -2917,6 +2918,7 @@ export class CloudControlProvider implements ResourceProvider {
     const startTime = Date.now();
     let attempts = 0;
     let pollInterval = this.INITIAL_POLL_INTERVAL_MS;
+    let lastSleepMs = 0;
     // Hoisted out of the loop body deliberately: the identifier is re-bound per
     // pass, so without this the one fact worth reporting about an abandoned
     // wait — what the operation had already named — would be discarded with
@@ -3069,6 +3071,14 @@ export class CloudControlProvider implements ResourceProvider {
 
       switch (progressEvent.OperationStatus) {
         case 'SUCCESS':
+          // go-to-k/cdkd#5200: the sleep before this poll bounds how late the
+          // completion was seen. Inert unless CDKD_PHASE_TIMINGS=1.
+          recordPhase(
+            'cloud control polls',
+            `${operation.toLowerCase()}: last poll gap`,
+            attempts > 1 ? lastSleepMs : 0,
+            `${logicalId} after ${attempts} poll(s)`
+          );
           return progressEvent;
 
         case 'FAILED': {
@@ -3110,6 +3120,10 @@ export class CloudControlProvider implements ResourceProvider {
           // 1s → 1.5s → 2.25s → 3.4s → 5s → 7.5s → 10s (capped)
           // Most CC API operations complete in 1-5s, so slower ramp-up
           // polls more frequently during the common case.
+          if (progressEvent.RetryAfter !== undefined) {
+            recordPhase('cloud control polls', 'RetryAfter hint present', 0);
+          }
+          lastSleepMs = pollInterval;
           await this.sleep(pollInterval);
           pollInterval = Math.min(Math.ceil(pollInterval * 1.5), this.MAX_POLL_INTERVAL_MS);
           break;

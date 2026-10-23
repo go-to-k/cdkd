@@ -147,9 +147,25 @@ export async function executeDeployment(
   const phaseScope = phaseScopeForStack(stackName, engine.stackRegion);
   // Serialize per-resource state saves to avoid ETag conflicts from concurrent writes
   let saveChain: Promise<void> = Promise.resolve();
+  // go-to-k/cdkd#5200: at most ONE save waits behind the one in flight. A
+  // queued save builds its state from the live records when it STARTS, so it
+  // already carries every resource that completes before then, and a second
+  // queued save would write the same records again: a completion that finds a
+  // save queued joins it instead of queueing another S3 write.
+  let queuedSave: string[] | undefined;
   const saveStateAfterResource = (logicalId: string): void => {
     if (currentEtag === undefined) return;
+    if (queuedSave !== undefined) {
+      queuedSave.push(logicalId);
+      return;
+    }
+    const savedIds = [logicalId];
+    queuedSave = savedIds;
     saveChain = saveChain.then(async () => {
+      // Started: a completion from here on is not in this save's records, so
+      // it queues the next one. Before any await.
+      queuedSave = undefined;
+      const savedFor = savedIds.join(', ');
       try {
         const partialState: StackState = {
           version: STATE_SCHEMA_VERSION_CURRENT,
@@ -186,10 +202,10 @@ export async function executeDeployment(
           )
         );
         if (migrate) pendingMigration = false;
-        engine.logger.debug(safeMsg`State saved after ${logicalId}`);
+        engine.logger.debug(safeMsg`State saved after ${savedFor}`);
       } catch (error) {
         engine.logger.warn(
-          safeMsg`Failed to save state after ${logicalId}: ${asIsMessage(describeAwsFailure(error).detail)}`
+          safeMsg`Failed to save state after ${savedFor}: ${asIsMessage(describeAwsFailure(error).detail)}`
         );
       }
     });

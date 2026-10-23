@@ -339,10 +339,12 @@ describe('cdkd deploy refuses a malformed nested-template tree pre-flight (issue
   });
 
   // Every spy here fires exactly once on the well-formed path (asserted in the
-  // last case), so none of these absences can pass by never being reachable.
+  // last case, with the account lookup), so none of these absences can pass by
+  // never being reachable.
   const expectNothingStarted = (): void => {
     expect(expandMacrosSpy).not.toHaveBeenCalled();
-    expect(stsCtorSpy).not.toHaveBeenCalled();
+    // Not `stsCtorSpy`: the account lookup is a read that runs beside
+    // synthesis (go-to-k/cdkd#5200), so it may start before the refusal.
     expect(assetPublisherCtorSpy).not.toHaveBeenCalled();
     expect(lockManagerCtorSpy).not.toHaveBeenCalled();
     expect(runRecorderSpy).not.toHaveBeenCalled();
@@ -413,6 +415,31 @@ describe('cdkd deploy refuses a malformed nested-template tree pre-flight (issue
 
     expect(code).toBe(1);
     expectNothingStarted();
+  });
+
+  it('asks for the account id while synthesis runs, not after it (#5200)', async () => {
+    synthStacks.value = [makeStack('Root')];
+    const { Synthesizer } = await import('../../../src/synthesis/synthesizer.js');
+    let stsSentDuringSynth = false;
+    vi.mocked(Synthesizer).mockImplementationOnce(
+      () =>
+        ({
+          synthesize: vi.fn(async () => {
+            for (let i = 0; i < 50 && stsCtorSpy.mock.calls.length === 0; i++) {
+              await new Promise((r) => setTimeout(r, 2));
+            }
+            stsSentDuringSynth = stsCtorSpy.mock.calls.length > 0;
+            return { stacks: synthStacks.value };
+          }),
+          expandMacrosForStacks: expandMacrosSpy,
+        }) as never
+    );
+
+    const code = await runDeploy(['--yes']);
+
+    expect(code).toBeUndefined();
+    expect(stsSentDuringSynth).toBe(true);
+    expect(stsCtorSpy).toHaveBeenCalledTimes(1);
   });
 
   it('lets a well-formed nested tree through to the engine', async () => {

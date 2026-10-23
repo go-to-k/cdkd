@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { timePhaseSync } from '../utils/phase-timings.js';
+import { timePhase, timePhaseSync } from '../utils/phase-timings.js';
 import {
   S3Client,
   GetObjectCommand,
@@ -252,6 +252,8 @@ export class S3StateBackend {
    * process read or wrote holds, until a state save carrying it deletes it.
    */
   private readonly pendingStackInstanceSiblings = new Map<string, string>();
+  /** {@link prefetchStackInstanceSibling}'s reads, by sibling key; each taken once. */
+  private readonly siblingPrefetches = new Map<string, Promise<string | null>>();
 
   constructor(s3Client: S3Client, config: StateBackendConfig, clientOpts: S3ClientOptions = {}) {
     this.s3Client = s3Client;
@@ -727,14 +729,22 @@ export class S3StateBackend {
    * @param stackName Stack name
    * @param region Target region (load-bearing — part of the S3 key)
    * @param state State to save
-   * @param options Optimistic-lock ETag + legacy-migration flag
+   * @param options Optimistic-lock ETag + legacy-migration flag.
+   *   `deferCleanup`: the write-ahead stack instance id's sibling, which a
+   *   save carrying that id makes obsolete, is deleted in the background and
+   *   its promise handed here instead of awaited (go-to-k/cdkd#5200). The
+   *   caller awaits it before it releases the stack lock. It never rejects.
    * @returns New ETag (with quotes, e.g., `"abc123"`)
    */
   async saveState(
     stackName: string,
     region: string,
     state: StackState,
-    options: { expectedEtag?: string; migrateLegacy?: boolean } = {}
+    options: {
+      expectedEtag?: string;
+      migrateLegacy?: boolean;
+      deferCleanup?: (cleanup: Promise<void>) => void;
+    } = {}
   ): Promise<string> {
     await this.ensureClientForBucket();
     const newKey = this.getStateKey(stackName, region);
@@ -758,18 +768,20 @@ export class S3StateBackend {
       const bodyString = timePhaseSync('state saves (every stack)', 'serialize', () =>
         JSON.stringify(body, null, 2)
       );
-      const response = await this.s3Client.send(
-        new PutObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: newKey,
-          Body: bodyString,
-          ContentLength: Buffer.byteLength(bodyString),
-          ContentType: 'application/json',
-          // The legacy ETag is for a different key; only forward it when we're
-          // updating in-place at the new key.
-          ...(!migrateLegacy && expectedEtag && { IfMatch: expectedEtag }),
-        })
+      const response = await timePhase('state saves (every stack)', 'put state.json', async () =>
+        this.s3Client.send(
+          new PutObjectCommand({
+            Bucket: this.config.bucket,
+            ...(await this.ownerParam()),
+            Key: newKey,
+            Body: bodyString,
+            ContentLength: Buffer.byteLength(bodyString),
+            ContentType: 'application/json',
+            // The legacy ETag is for a different key; only forward it when we're
+            // updating in-place at the new key.
+            ...(!migrateLegacy && expectedEtag && { IfMatch: expectedEtag }),
+          })
+        )
       );
 
       if (!response.ETag) {
@@ -806,7 +818,9 @@ export class S3StateBackend {
 
       // The create-token ledger records that this lineage has a state record
       // (go-to-k/cdkd#4438). Never throws.
-      await notifyStateSaved(stackName, region);
+      await timePhase('state saves (every stack)', 'after save: ledger mark', () =>
+        notifyStateSaved(stackName, region)
+      );
       // go-to-k/cdkd#5064: the record now carries the write-ahead id, so its
       // sibling has done its job. Only when the saved body carries THAT id:
       // a save without it leaves the sibling for the re-run to read.
@@ -814,7 +828,13 @@ export class S3StateBackend {
       const pendingId = this.pendingStackInstanceSiblings.get(siblingKey);
       if (pendingId !== undefined && body.stackInstanceId === pendingId) {
         this.pendingStackInstanceSiblings.delete(siblingKey);
-        await this.dropStackInstanceSiblingAfterSave(stackName, region);
+        const cleanup = timePhase(
+          'state saves (every stack)',
+          'after save: drop instance-id sibling',
+          () => this.dropStackInstanceSiblingAfterSave(stackName, region)
+        );
+        if (options.deferCleanup !== undefined) options.deferCleanup(cleanup);
+        else await cleanup;
       }
       return response.ETag;
     } catch (error) {
@@ -2091,8 +2111,11 @@ export class S3StateBackend {
   ): Promise<string> {
     const key = this.getStackInstanceKey(stackName, region);
     const read = async (): Promise<string | null> => this.readSiblingId(key, stackName, region);
+    // The first read only: a lost race below reads the winner back afresh.
+    const prefetched = this.siblingPrefetches.get(key);
+    this.siblingPrefetches.delete(key);
     try {
-      const existing = await read();
+      const existing = await (prefetched ?? read());
       if (existing !== null) {
         this.pendingStackInstanceSiblings.set(key, existing);
         this.logger.debug(
@@ -2168,6 +2191,21 @@ export class S3StateBackend {
           : 'Nothing was changed; re-run once the state bucket can be read.'),
       normalized
     );
+  }
+
+  /**
+   * Start the read {@link stackInstanceIdForFirstWrite} opens with, so a
+   * first deploy's read overlaps its diff instead of waiting for the approval
+   * (go-to-k/cdkd#5200). The caller holds the stack lock, and only a lock
+   * holder writes the sibling, so the answer is still current when the write
+   * consults it. A failure is reported there, as an unprefetched read's is.
+   */
+  prefetchStackInstanceSibling(stackName: string, region: string): void {
+    const key = this.getStackInstanceKey(stackName, region);
+    if (this.siblingPrefetches.has(key)) return;
+    const read = this.readSiblingId(key, stackName, region);
+    read.catch(() => undefined);
+    this.siblingPrefetches.set(key, read);
   }
 
   /** The id the sibling at `key` holds, `null` when absent; a body this binary cannot read throws. */

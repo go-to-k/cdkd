@@ -424,6 +424,25 @@ async function deployCommand(
     return { stateBucket, preflightStateBackend, exportIndexStore };
   })();
 
+  // The account id the asset destinations are named from. It needs only the
+  // region and the credentials, so it is asked beside synthesis rather than
+  // after it (go-to-k/cdkd#5200); awaited where it is used, so a failure is
+  // reported at the same point as before.
+  const callerIdentityPromise = (async () => {
+    const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
+    const stsClient = new STSClient({
+      ...awsClientDefaults(),
+      region,
+    });
+    try {
+      return await stsClient.send(new GetCallerIdentityCommand({}));
+    } finally {
+      stsClient.destroy();
+    }
+  })();
+  // Handled where it is awaited; a run that fails before then never reads it.
+  callerIdentityPromise.catch(() => undefined);
+
   let deployInterrupted = false;
   const topLevelSigintHandler = () => {
     if (deployInterrupted) {
@@ -768,14 +787,7 @@ async function deployCommand(
     runClock.lap('macro expansion');
 
     // 3. Build work graph: asset-publish → stack deploy (DAG)
-    const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-    const stsClient = new STSClient({
-      ...awsClientDefaults(),
-      region,
-    });
-    const callerIdentity = await stsClient.send(new GetCallerIdentityCommand({}));
-    const accountId = callerIdentity.Account!;
-    stsClient.destroy();
+    const accountId = (await callerIdentityPromise).Account!;
     runClock.lap('caller identity');
 
     const assetPublisher = new AssetPublisher();
