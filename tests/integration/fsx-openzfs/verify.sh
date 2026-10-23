@@ -31,6 +31,11 @@
 #      succeeds, the values stay (64 / SSD / IPV4), the same file system is
 #      kept, and ONE warning names all three. WeeklyMaintenanceStartTime is
 #      added in the same deploy, so UpdateFileSystem fires beside them.
+#   2c. Re-deploy with CDKD_TEST_TP_REMOVAL=true too (issue #1160):
+#      ThroughputCapacity leaves the template. The CFn A/B measured
+#      CloudFormation keeping it on MULTI_AZ_1 only, so on this SINGLE_AZ_1
+#      file system the warning must claim nothing about CloudFormation, and
+#      the value (128) must stay on the same file system.
 #   3. Destroy + assert the file system is GONE from AWS (by id AND by the
 #      fixture's constant tag — an FSx file system bills per hour, so a
 #      leftover is never acceptable) and the cdkd state file is removed.
@@ -89,6 +94,12 @@ CLEANUP_TAG_VALUE="fsx-openzfs"
 # reading as "not fired".
 REMOVAL_NEEDLE="properties StorageCapacity, StorageType, NetworkType are no longer declared and keep their current AWS value, as CloudFormation leaves them"
 REMOVAL_SENTINEL="UpdateFileSystem keeps a setting it is not sent"
+# Phase 2c (issue #1160): a removed ThroughputCapacity on this SINGLE_AZ_1 file
+# system. CloudFormation was measured keeping it on MULTI_AZ_1 only, so the
+# line must claim nothing about CloudFormation (TP_REMOVAL_NEEDLE) and must not
+# carry the MULTI_AZ_1 claim (TP_OVERCLAIM_NEEDLE).
+TP_REMOVAL_NEEDLE="property OpenZFSConfiguration.ThroughputCapacity is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset"
+TP_OVERCLAIM_NEEDLE="property OpenZFSConfiguration.ThroughputCapacity is no longer declared and keeps its current AWS value, as CloudFormation leaves it"
 # The companion change in Phase 2b. The stack declares MAINT_TARGET, or
 # MAINT_ALT_TARGET under CDKD_TEST_MAINT_ALT=true -- picked when AWS already
 # holds MAINT_TARGET, so the companion assertion can never pass vacuously.
@@ -98,6 +109,7 @@ MAINT_ALT_TARGET="1:04:45"
 # cleanup on every exit path.
 PHASE2_LOG=""
 PHASE2B_LOG=""
+PHASE2C_LOG=""
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -131,6 +143,7 @@ cleanup() {
   set +eu
   [ -n "${PHASE2_LOG:-}" ] && rm -f "${PHASE2_LOG}"
   [ -n "${PHASE2B_LOG:-}" ] && rm -f "${PHASE2B_LOG}"
+  [ -n "${PHASE2C_LOG:-}" ] && rm -f "${PHASE2C_LOG}"
   if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
       --stack-region "${REGION}" --yes >/dev/null 2>&1
@@ -210,7 +223,7 @@ output_value() {
 
 # --- Phase 1: deploy baseline ------------------------------------------
 echo "==> Phase 1: deploy OpenZFS SINGLE_AZ_1 file system (this takes ~5-15 min)"
-env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL -u CDKD_TEST_MAINT_ALT node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL -u CDKD_TEST_MAINT_ALT -u CDKD_TEST_TP_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 FS_ID_P1="$(output_value FileSystemId)"
@@ -276,7 +289,7 @@ echo "    file system routed via SDK provider (provisionedBy=sdk)"
 echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (ThroughputCapacity 64->128, tag change + removal)"
 PHASE2_LOG="$(mktemp)"
 set +e
-env -u CDKD_TEST_REMOVAL -u CDKD_TEST_MAINT_ALT CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_REMOVAL -u CDKD_TEST_MAINT_ALT -u CDKD_TEST_TP_REMOVAL CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${PHASE2_LOG}"
 PHASE2_RC=${PIPESTATUS[0]}
 set -e
@@ -386,7 +399,7 @@ if [ "${MAINT_P2}" = "${MAINT_TARGET}" ]; then
 fi
 PHASE2B_LOG="$(mktemp)"
 set +e
-CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_MAINT_ALT="${MAINT_ALT}" node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_TP_REMOVAL CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_MAINT_ALT="${MAINT_ALT}" node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${PHASE2B_LOG}"
 PHASE2B_RC=${PIPESTATUS[0]}
 set -e
@@ -429,6 +442,58 @@ if [ "${MAINT_P2B}" != "${MAINT_TARGET}" ]; then
 fi
 echo "    removals left in place (${CAPACITY_P2B} / ${STORAGE_TYPE_P2B} / ${NETWORK_TYPE_P2B}) beside an applied change (maintenance ${MAINT_P2B})"
 
+# --- Phase 2c: ThroughputCapacity removal on SINGLE_AZ_1 (issue #1160) ---
+# The CFn A/B on #1160 measured CloudFormation keeping a removed
+# ThroughputCapacity on MULTI_AZ_1 only. On this SINGLE_AZ_1 file system cdkd
+# must leave the value in place and warn WITHOUT the CloudFormation claim. The
+# template is phase 2b's otherwise (same maintenance window), so ThroughputCapacity
+# is the deploy's only difference and nothing else reaches UpdateFileSystem.
+echo "==> Phase 2c: re-deploy with CDKD_TEST_TP_REMOVAL=true (ThroughputCapacity dropped on SINGLE_AZ_1)"
+TP_P2C_BEFORE="$(aws fsx describe-file-systems --file-system-ids "${FS_ID_P2B}" --region "${REGION}" \
+  --query 'FileSystems[0].OpenZFSConfiguration.ThroughputCapacity' --output text)"
+if [ "${TP_P2C_BEFORE}" != "128" ]; then
+  echo "FAIL [phase 2c]: expected the declared ThroughputCapacity 128 before the removal, got '${TP_P2C_BEFORE}'" >&2
+  exit 1
+fi
+PHASE2C_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_MAINT_ALT="${MAINT_ALT}" CDKD_TEST_TP_REMOVAL=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${PHASE2C_LOG}"
+PHASE2C_RC=${PIPESTATUS[0]}
+set -e
+if [ "${PHASE2C_RC}" -ne 0 ]; then
+  echo "FAIL [phase 2c]: removing ThroughputCapacity failed the deploy (exit ${PHASE2C_RC}); cdkd must leave it in place and warn" >&2
+  exit 1
+fi
+PHASE2C_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${PHASE2C_LOG}")"
+if grep -qF "${TP_OVERCLAIM_NEEDLE}" <<<"${PHASE2C_PLAIN}"; then
+  echo "FAIL [phase 2c]: the warning claims CloudFormation keeps a removed ThroughputCapacity on SINGLE_AZ_1, a shape the CFn A/B on #1160 never measured -- the MULTI_AZ_1 gate in src/provisioning/providers/fsx-filesystem-provider.ts (CFN_KEEPS_ON_REMOVAL_FOR_SHAPE) regressed" >&2
+  exit 1
+fi
+if ! grep -qF "${TP_REMOVAL_NEEDLE}" <<<"${PHASE2C_PLAIN}"; then
+  if grep -qF "${REMOVAL_SENTINEL}" <<<"${PHASE2C_PLAIN}"; then
+    echo "FAIL [phase 2c]: the removal warning fired without the expected wording '${TP_REMOVAL_NEEDLE}' -- the wording drifted and this needle needs updating" >&2
+  else
+    echo "FAIL [phase 2c]: removing ThroughputCapacity produced no warning (issue #1160: the removal was dropped silently)" >&2
+  fi
+  exit 1
+fi
+echo "    deploy warned that ThroughputCapacity is left in place, with no CloudFormation claim"
+
+FS_ID_P2C="$(output_value FileSystemId)"
+if [ "${FS_ID_P2B}" != "${FS_ID_P2C}" ]; then
+  echo "FAIL: file system was REPLACED in Phase 2c (${FS_ID_P2B} -> ${FS_ID_P2C})" >&2
+  exit 1
+fi
+TP_P2C_AFTER="$(aws fsx describe-file-systems --file-system-ids "${FS_ID_P2C}" --region "${REGION}" \
+  --query 'FileSystems[0].OpenZFSConfiguration.ThroughputCapacity' --output text)"
+if [ "${TP_P2C_AFTER}" != "${TP_P2C_BEFORE}" ]; then
+  echo "FAIL [phase 2c]: expected ThroughputCapacity ${TP_P2C_BEFORE} to stay (cdkd sends no reset), got '${TP_P2C_AFTER}'" >&2
+  exit 1
+fi
+echo "    ThroughputCapacity left in place (${TP_P2C_AFTER})"
+
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy (FSx deletion takes a few minutes)"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -446,4 +511,4 @@ echo "    no file system with the fixture tag remains"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — AWS::FSx::FileSystem OpenZFS variant: deploy + in-place update (incl. tag removal) + clean-drift + top-level removal (#1160) + destroy all passed"
+echo "[verify] PASS — AWS::FSx::FileSystem OpenZFS variant: deploy + in-place update (incl. tag removal) + clean-drift + top-level removal + ThroughputCapacity removal (#1160) + destroy all passed"
