@@ -67,4 +67,24 @@ describe('the cross-account state read and the SDK call log (go-to-k/cdkd#5219)'
     await s3.send(new HeadObjectCommand({ Bucket: 'b', Key: 'k' }));
     expect(sdkCallCounts()).toEqual({ 'S3Client.HeadObjectCommand': 1 });
   });
+
+  it('its S3 client hides the unknown-length warning with the log off', async () => {
+    await getCrossAccountStackState(
+      'arn:aws:iam::210987654321:role/Reader',
+      'Producer',
+      'us-east-1',
+      {} as never
+    );
+    // The SDK sends the warning to `console.warn` only for its default
+    // `NoOpLogger`; a logger of the client's own takes it on `warn`.
+    const logger = built[0]!.config.logger as { warn: (m: string) => void; constructor: unknown };
+    expect((logger.constructor as { name: string }).name).not.toBe('NoOpLogger');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      logger.warn('Are you using a Stream of unknown length as the Body of a PutObject request?');
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });

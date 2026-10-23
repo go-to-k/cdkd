@@ -38,6 +38,25 @@ async function headObject(client: S3Client): Promise<void> {
   await client.send(new HeadObjectCommand({ Bucket: 'b', Key: 'k' }));
 }
 
+/**
+ * Whether `client` hides the unknown-length warning. The SDK's
+ * `checkContentLengthHeader` sends it to `console.warn` when the client's
+ * logger is its default `NoOpLogger`, and to `logger.warn` otherwise -- so a
+ * client hides it when its logger is not a `NoOpLogger` and its `warn`
+ * prints nothing.
+ */
+function hidesUnknownLengthWarning(client: S3Client): boolean {
+  const logger = client.config.logger as { warn?: (m: string) => void; constructor: unknown };
+  if (logger.constructor.name === 'NoOpLogger' || typeof logger.warn !== 'function') return false;
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    logger.warn('Are you using a Stream of unknown length as the Body of a PutObject request?');
+    return warn.mock.calls.length === 0;
+  } finally {
+    warn.mockRestore();
+  }
+}
+
 afterEach(() => {
   delete process.env[SDK_CALL_LOG_ENV];
   resetSdkCallCounts();
@@ -73,6 +92,28 @@ describe('S3 clients and the SDK call log (go-to-k/cdkd#5219)', () => {
 
     expect(sdkCallCounts()).toEqual({});
   });
+
+  it.each([false, true])(
+    'the unknown-length warning stays hidden on both clients (call log on: %s)',
+    async (logOn) => {
+      if (logOn) process.env[SDK_CALL_LOG_ENV] = '/dev/null';
+      const fromAwsClients = new AwsClients({
+        region: 'us-east-1',
+        credentials: CREDENTIALS,
+      }).getS3Client();
+      const rebuilt = await rebuildClientForBucketRegion(
+        new S3Client({ region: 'us-east-1', credentials: CREDENTIALS }),
+        'b',
+        { credentials: CREDENTIALS }
+      );
+      // CONTROL: a client with no logger of its own does print it.
+      const bare = new S3Client({ region: 'us-east-1', credentials: CREDENTIALS });
+      expect(hidesUnknownLengthWarning(bare)).toBe(false);
+
+      expect(hidesUnknownLengthWarning(fromAwsClients)).toBe(true);
+      expect(hidesUnknownLengthWarning(rebuilt!)).toBe(true);
+    }
+  );
 
   it('quietS3Logger is silent on warn whether the log is on or off', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
