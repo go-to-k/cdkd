@@ -20,21 +20,22 @@ lanes' integs or merges at once, nor a merge during another lane's integ: it
 can move `main` under that batch (#4864). A turn blocked on a fixture fix
 yields to the next merge-ready lane. ANY turn holding HOURS tells the user
 unasked its ETA and queue. A subagent running a turn's integs, marker and
-ledger hands back INTERIM reports. Its brief (the runner never reads this file)
-makes marker and ledger due once the last PID exits, bans attribution lines in
-the ledger commit (#5104), and STOPs on an unreadable state record, never
-purging it (`/run-integ` step 7). A FAIL names the file EMITTING its message
-(`grep -rlF` a `${}`-free fragment over `src/` and the fixture): the PR is
-blamed when that file is in its diff, cleared when the grep hits only outside
-it, else UNATTRIBUTED (#4981). Size it for ONE context (§8-d probe alone, then
-fixture batches), each run's fixture, `pid=<N>`, log, state prefix appended as
-one line to `<scratch>/integ-<PR>.live` at launch. BEFORE dispatching, the
-PARENT runs `/run-integ` step 4's live-lock check and lists open PRs touching
-each fixture: a held one gets a lock watcher, not a runner
-(#5190). The PARENT arms a Monitor on those PIDs — read only from each line's `pid=`
-field (`grep -oE 'pid=[0-9]+'`); a bare digit grep matches a `mktemp` path's
-zeroes, and `kill -0 0000` always succeeds — and `SendMessage`s the runner as
-each exits, alarming too when no PID has run for 15 min unreported (#5135).
+ledger hands back INTERIM reports whatever its brief says. Its brief (the
+runner never reads this file) makes marker and ledger due once the last PID
+exits, bans attribution lines in the ledger commit (#5104), and STOPs on an
+unreadable state record, never purging (`/run-integ` step 7). A FAIL names
+the file EMITTING its message (`grep -rlF` a `${}`-free fragment over `src/`
+and the fixture): the PR is blamed when that file is in its diff, cleared when
+the grep hits only outside it, else UNATTRIBUTED (#4981). Size it for ONE
+context (§8-d probe alone, then fixture batches), each run's fixture,
+`pid=<N>`, log, state prefix appended as a line to `<scratch>/integ-<PR>.live` at
+launch. BEFORE dispatching, the PARENT runs `/run-integ` step 4's live-lock
+check and lists open PRs touching each fixture: a held one gets a lock watcher,
+not a runner (#5190). The PARENT Monitors those PIDs, read only from each
+line's `pid=` field (`grep -oE 'pid=[0-9]+'`; a bare digit grep matches a
+`mktemp` path's zeroes, and `kill -0 0000` always succeeds), `SendMessage`s
+the runner as each exits, and alarms when no PID has run for 15 min unreported
+(#5135).
 A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
 
 - The `integ-destroy` marker is read from the tree the command runs in, so a
@@ -70,10 +71,11 @@ on that yes:
 ```bash
 git reset --soft "$(git merge-base origin/main HEAD)"   # one commit
 # From another tree, `.claude/hooks/bughunt-clean-gate.sh` refuses `-C "$VAR"`
-# on a `git commit` / `gh pr create|merge` segment: use the LITERAL path.
+# on a `git commit` / `gh pr create|merge` segment: use the LITERAL path, in this
+# line's `$(git -C <path> merge-base ...)` too.
 # Never the origin/main TIP: --soft onto it stages a revert of main's newer files.
 # Message to a FILE named per BRANCH, never -m: inside -m "..." a backtick RUNS.
-# DERIVE, WRITE and COMMIT in ONE call -- shell state dies between tool calls.
+# DERIVE, WRITE and COMMIT in ONE call: shell state dies between calls.
 MSGREF=$(git branch --show-current | tr / -); MSGREF=${MSGREF:-$$}   # empty when detached
 MSGFILE="${TMPDIR:-/tmp}/cdkd-squash-${MSGREF}.txt"
 cat > "$MSGFILE" <<'EOF'
@@ -183,11 +185,11 @@ means the owner is presumed LIVE — leave it.
 MAIN-CHECKOUT — run THIS block, and not the next one:
 
 ```bash
-git worktree remove .claude/worktrees/<branch>   # --force if it refuses on artifacts
+git worktree remove .claude/worktrees/<branch>  # --force if it refuses on artifacts
 git worktree prune
-git branch -D <branch>                           # -D, not -d (squash); PR MERGED first
-git worktree list                                # every worktree THIS run added is gone
-git branch --list '<your prefix>*'               # ...and so is every branch it added
+git branch -D <branch>  # -D, not -d (squash); PR MERGED first
+git worktree list  # every worktree THIS run added is gone
+git branch --list '<your prefix>*'  # ...and so is every branch it added
 ```
 
 IN-PLACE — run THIS block INSTEAD for the launch tree. **It must not remove the
@@ -204,8 +206,8 @@ DIRTY=$(git status --porcelain)
 [ -z "$DIRTY" ] \
   && git switch --no-guess <LAUNCH_BRANCH> \
   && git branch -D <each branch this run created in THIS tree>  # AS-IS: no pull, no rebase, no fast-forward
-git branch --show-current      # must print <LAUNCH_BRANCH>
-git branch --list '<your prefix>*'             # ...and every branch this run added is gone
+git branch --show-current  # must print <LAUNCH_BRANCH>
+git branch --list '<your prefix>*'  # ...and every branch this run added is gone
 ```
 
 `--no-guess`: plain `git switch` re-creates a gone branch from `origin` and
@@ -239,4 +241,4 @@ done
 Every `OPEN` needs a comment saying the issue is now UNCLAIMED, what the merged
 PR closed, and what remains and why, carrying forward anything expensive the
 lane measured. **Write it AFTER the merge, or state the PR's ACTUAL state.**
-Then go on to §10.
+Then go on to §10 while the run's evidence still exists.
