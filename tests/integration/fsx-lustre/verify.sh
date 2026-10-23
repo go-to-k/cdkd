@@ -18,8 +18,9 @@
 #      (in-place update, no replacement).
 #   2b. Re-deploy with CDKD_TEST_REMOVAL=true (issue #1160): DataCompressionType
 #      is DROPPED from the template while WeeklyMaintenanceStartTime is added.
-#      Assert the deploy succeeds, warns naming the removed sub-property, the
-#      live compression stays LZ4 (cdkd sends no reset), and the companion
+#      Assert the deploy succeeds, warns naming the removed sub-property and
+#      saying CloudFormation keeps it too, the live compression stays LZ4 (cdkd
+#      sends no reset, as CloudFormation leaves it), and the companion
 #      maintenance window landed.
 #   2c. Fix-forward of a failed CREATE (issue #4606): a `--no-rollback`
 #      deploy adding OrphanFs (INJECT_FS_ORPHAN=true) runs under a role this
@@ -89,8 +90,8 @@ CLEANUP_TAG_VALUE="fsx-lustre"
 # Phase 2b (issue #1160): the provider's removal warning. The needle names the
 # removed sub-property; the sentinel is an independent substring of the same
 # line, so a reworded warning fails loudly instead of reading as "not fired".
-REMOVAL_NEEDLE="property LustreConfiguration.DataCompressionType is no longer declared"
-REMOVAL_SENTINEL="cdkd sends no reset"
+REMOVAL_NEEDLE="property LustreConfiguration.DataCompressionType is no longer declared and keeps its current AWS value, as CloudFormation leaves it"
+REMOVAL_SENTINEL="UpdateFileSystem keeps a setting it is not sent"
 # The companion change in Phase 2b. The stack declares MAINT_TARGET, or
 # MAINT_ALT_TARGET under CDKD_TEST_MAINT_ALT=true -- picked when AWS already
 # holds MAINT_TARGET, so the companion assertion can never pass vacuously.
@@ -384,10 +385,11 @@ echo "    update reached AWS (compression LZ4, env=changed, dropme removed)"
 # --- Phase 2b: removal of a mutable sub-property (issue #1160) ----------
 # DataCompressionType leaves the template while its live value is LZ4 (AWS's
 # non-default, asserted in Phase 2). UpdateFileSystem keeps a field it is not
-# sent and cdkd sends no reset, so: the deploy succeeds, the value STAYS LZ4,
-# and the deploy names the removal in a warning (pre-fix it was dropped
-# silently). WeeklyMaintenanceStartTime is ADDED in the same deploy, so
-# UpdateFileSystem demonstrably fires beside the removal.
+# sent and cdkd sends no reset, as CloudFormation leaves it (CFn A/B on issue
+# #1160), so: the deploy succeeds, the value STAYS LZ4, and the deploy names
+# the removal in a warning that says CloudFormation keeps it too.
+# WeeklyMaintenanceStartTime is ADDED in the same deploy, so UpdateFileSystem
+# demonstrably fires beside the removal.
 echo "==> Phase 2b: re-deploy with CDKD_TEST_REMOVAL=true (DataCompressionType dropped, maintenance window added)"
 MAINT_P2="$(aws fsx describe-file-systems --file-system-ids "${FS_ID_P2}" --region "${REGION}" \
   --query 'FileSystems[0].LustreConfiguration.WeeklyMaintenanceStartTime' --output text)"

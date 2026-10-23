@@ -144,7 +144,7 @@ export	2026-10-21T05:37:12Z	PASS	231	verify.sh	0 surviving state versions, CFn s
 export-nested-stack	2026-10-20T04:25:11Z	PASS	195	verify.sh	deploy+destroy clean, 0 orphans
 fallback-recreate-children	2026-10-17T05:11:06Z	PASS	115	verify.sh	rc ok, orph clean (ReplacementRunState refactor #5024)
 fifo-sqs-event-source	2026-10-16T16:36:24Z	PASS	105	verify.sh	PR #5012 (#5004) re-run on 5c17a4e7a (post-rebase, comment-only commits); rc ok, orph clean; scope/limit retained, CBD reset
-fsx-lustre	2026-10-20T03:13:30Z	PASS	2322	verify.sh	PR #5104 (#2319 EMR/FSx/EFS thrown-error wraps); rc 0, destroy clean, orph clean; private state bucket (peer's unreadable record blocks shared one)
+fsx-lustre	2026-10-22T12:22:38Z	PASS	2778	verify.sh	PR #5172: #1160 FSx removal-warning wording keeps-CloudFormation-too claim; rc 0, destroy 10 deleted 0 errors, FSx+VPC+S3 confirmed clean
 fsx-ontap	2026-10-02T10:50:28Z	PASS	1613	verify.sh	#1160 PR #4398; rc ok, orph clean, no final backup
 fsx-openzfs	2026-10-02T10:50:28Z	PASS	1232	verify.sh	#1160 PR #4398; rc ok; untagged OpenZFS final backup deleted by hand (#1113)
 fsx-windows	2026-10-02T10:50:28Z	PASS	4588	verify.sh	#1160 PR #4398; AD-joined rc ok, orph clean, no final backup
@@ -294,6 +294,10 @@ rds-aurora	2026-10-23T08:00:06Z	PASS	5765	verify.sh	PR #5186: rc=0, 0 err 0 orph
 rds-dbinstance-backfill	2026-10-23T06:57:48Z	PASS	1000	verify.sh	PR #5186: rc=0, 0 err 0 orph. Final snapshot taken: rdsdbinstancebackfillstack-backfillinstance-53e1fe0ab25c-final-20261023-064902 (issue #4030), deleted by cleanup. Full re-scan clean: 0 S3 state, 0 IAM, 0 Lambda, 0 DBInstances, 0 manual snapshots (pre-existing 0611 backfillinstance-pe700lx1indq snapshot removed by maintainer beforehand)
 rds-fix-forward-orphan	2026-10-22T11:55:53Z	PASS	3557	verify.sh	PR #5178; us-east-1; own state bucket; verify PASS, destroy 14 deleted 0 errors, orph clean
 rds-full-stack	2026-10-22T11:55:53Z	PASS	1065	verify.sh	PR #5178; us-east-1; verify PASS, destroy clean, 0 orphans
+rds-aurora	2026-10-22T13:40:35Z	FAIL	4609	verify.sh	PR #5172: #1160 DebugLogging+VpcSecurityGroupIds removal-warning assertions PASSED (new wording verified) both attempts; FAIL at unrelated Phase 2b issue #2204 compensation arm, reproduced 2/2 identically -- filed as #5184 race, not caused by #5172; AWS confirmed fully clean both times (0 orphans: clusters/instances/proxy/subnet-groups/VPC/secrets/snapshots/ENIs/S3)
+rds-dbinstance-backfill	2026-10-16T17:34:17Z	PASS	826	verify.sh	src b1367d11c; #5004 removal keeps + Port 5433->5434 Modify companion; rc ok, orph clean
+rds-fix-forward-orphan	2026-10-15T19:12:27Z	PASS	1157	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
+rds-full-stack	2026-10-20T06:36:25Z	PASS	1192	verify.sh	deploy+destroy clean, 0 orphans
 recreate-mixed-direction	2026-10-17T05:11:06Z	PASS	130	verify.sh	rc ok, orph clean (ReplacementRunState refactor #5024)
 recreate-nested-logical-id-collision	2026-10-16T16:59:47Z	PASS	150	verify.sh	rc ok, orph clean (stateless-mixins refactor #5015, rebased)
 recreate-parent-child-permission	2026-10-06T05:49:58Z	PASS	100	verify.sh	rc ok, orph clean (#4602 PR #4609)

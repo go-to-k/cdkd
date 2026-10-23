@@ -30,9 +30,9 @@
 #
 # #1160 (DBProxy removal kept + warned): the proxy sets DebugLogging=true in
 # phase 1 and DROPS it in phase 2. ModifyDBProxy keeps an omitted setting and
-# CloudFormation's DBProxy handler sends the same omission, so cdkd sends no
-# reset: phase 2 asserts the live DebugLogging is STILL true and the deploy
-# printed the warning naming DebugLogging as left in place.
+# CloudFormation keeps it too (CFn A/B on issue #1160), so cdkd sends no reset:
+# phase 2 asserts the live DebugLogging is STILL true and the deploy printed
+# the warning naming DebugLogging as left in place, as CloudFormation leaves it.
 #
 # #3993 (no Cloud Control final snapshot): the L2 AuroraCluster is routed via
 # Cloud Control (asserted, so the arm cannot pass vacuously), whose registry
@@ -610,14 +610,14 @@ DEPLOY_2_LOG=""
 printf '%s\n' "${DEPLOY_2_PLAIN}"
 
 # --- #1160 DBProxy removal: kept on AWS, and warned about -------------
-if ! grep -qF "${PROXY_LOGICAL} (AWS::RDS::DBProxy): property DebugLogging was removed from the template; ModifyDBProxy keeps a setting it is not sent" <<<"${DEPLOY_2_PLAIN}"; then
+if ! grep -qF "${PROXY_LOGICAL} (AWS::RDS::DBProxy): property DebugLogging was removed from the template and keeps its current AWS value, as CloudFormation leaves it; ModifyDBProxy keeps a setting it is not sent" <<<"${DEPLOY_2_PLAIN}"; then
   echo "FAIL: #1160: phase 2 dropped DebugLogging from ${PROXY_LOGICAL}, but the deploy printed no warning naming it as left in place" >&2
   exit 1
 fi
 POST_DEBUG=$(aws rds describe-db-proxies --db-proxy-name "${PROXY_NAME}" --region "${REGION}" \
   --query 'DBProxies[0].DebugLogging' --output text)
 if [ "${POST_DEBUG}" != "True" ]; then
-  echo "FAIL: #1160: after phase 2 dropped DebugLogging, live DebugLogging is '${POST_DEBUG}', expected True (cdkd sends no reset, matching CloudFormation's DBProxy handler)" >&2
+  echo "FAIL: #1160: after phase 2 dropped DebugLogging, live DebugLogging is '${POST_DEBUG}', expected True (cdkd sends no reset, as CloudFormation leaves it)" >&2
   exit 1
 fi
 echo "    OK: #1160: dropping DebugLogging kept the live value (True) and the deploy warned about it"

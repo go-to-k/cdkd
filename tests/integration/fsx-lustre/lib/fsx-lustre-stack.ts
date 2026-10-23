@@ -25,8 +25,9 @@ import type { Construct } from 'constructs';
  * REMOVAL phase (CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true, issue #1160):
  *   - DataCompressionType is DROPPED from the template (live value LZ4,
  *     AWS's non-default). UpdateFileSystem keeps a field it is not sent and
- *     cdkd sends no reset, so the value must stay LZ4 and the deploy must
- *     name the removal in a warning instead of dropping it silently.
+ *     cdkd sends no reset, as CloudFormation leaves it (CFn A/B on issue
+ *     #1160), so the value must stay LZ4 and the deploy must name the removal
+ *     in a warning saying CloudFormation keeps it too.
  *   - WeeklyMaintenanceStartTime is ADDED in the same deploy, a companion
  *     change proving UpdateFileSystem fired with the removal beside it.
  *
