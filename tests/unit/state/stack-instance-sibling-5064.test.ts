@@ -452,6 +452,60 @@ describe('the stack-instance.json sibling (go-to-k/cdkd#5064)', () => {
       expect(sent.map((c) => c.name)).toEqual(['PutObjectCommand']);
     });
 
+    it('a sibling this process wrote is removed by deleting its one version: no listing (#5200)', async () => {
+      const { client, sent } = makeClient({
+        [`GetObjectCommand ${SIBLING_KEY}`]: noSuchKey,
+        [`PutObjectCommand ${SIBLING_KEY}`]: () => ({ VersionId: 'v-sibling-1' }),
+        [`PutObjectCommand ${STATE_KEY}`]: () => ({ ETag: '"e1"' }),
+      });
+      const backend = backendFor(client);
+      const id = await backend.stackInstanceIdForFirstWrite(STACK, REGION, { writeAhead: true });
+      await backend.saveState(STACK, REGION, state(id));
+      const deletes = callsTo(sent, 'DeleteObjectCommand', SIBLING_KEY);
+      expect(deletes).toHaveLength(1);
+      expect(deletes[0]!.input['VersionId']).toBe('v-sibling-1');
+      expect(sent.some((c) => c.name === 'ListObjectVersionsCommand')).toBe(false);
+    });
+
+    it('a failed version delete falls back to the delete and the version purge', async () => {
+      const { client, sent } = makeClient({
+        [`GetObjectCommand ${SIBLING_KEY}`]: noSuchKey,
+        [`PutObjectCommand ${SIBLING_KEY}`]: () => ({ VersionId: 'v-sibling-1' }),
+        [`PutObjectCommand ${STATE_KEY}`]: () => ({ ETag: '"e1"' }),
+        [`DeleteObjectCommand ${SIBLING_KEY}`]: (input) => {
+          if (input['VersionId'] !== undefined) {
+            throw Object.assign(new Error('Access Denied'), {
+              name: 'AccessDenied',
+              $metadata: { httpStatusCode: 403 },
+            });
+          }
+          return {};
+        },
+      });
+      const backend = backendFor(client);
+      const id = await backend.stackInstanceIdForFirstWrite(STACK, REGION, { writeAhead: true });
+      await backend.saveState(STACK, REGION, state(id));
+      const deletes = callsTo(sent, 'DeleteObjectCommand', SIBLING_KEY);
+      expect(deletes.map((c) => c.input['VersionId'])).toEqual(['v-sibling-1', undefined]);
+      expect(
+        sent.some((c) => c.name === 'ListObjectVersionsCommand' && c.input['Prefix'] === SIBLING_KEY)
+      ).toBe(true);
+    });
+
+    it('a REUSED sibling (an earlier run wrote it) takes the delete and the version purge', async () => {
+      const { client, sent } = makeClient({
+        [`GetObjectCommand ${SIBLING_KEY}`]: () => bodyOf(stackInstanceSiblingBody(EARLIER_ID)),
+        [`PutObjectCommand ${STATE_KEY}`]: () => ({ ETag: '"e1"' }),
+      });
+      const backend = backendFor(client);
+      const id = await backend.stackInstanceIdForFirstWrite(STACK, REGION, { writeAhead: true });
+      await backend.saveState(STACK, REGION, state(id));
+      expect(callsTo(sent, 'DeleteObjectCommand', SIBLING_KEY)[0]!.input['VersionId']).toBeUndefined();
+      expect(
+        sent.some((c) => c.name === 'ListObjectVersionsCommand' && c.input['Prefix'] === SIBLING_KEY)
+      ).toBe(true);
+    });
+
     it('with deferCleanup, returns after the PUT and hands the sibling delete over (#5200)', async () => {
       let releaseDelete!: () => void;
       const deleteHeld = new Promise<void>((r) => {
