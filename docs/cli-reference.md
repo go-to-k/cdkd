@@ -44,7 +44,8 @@ two commands are explained in
 | **Inspect** | [`cdkd events`](cli-events.md) | Read what past deploys and destroys did. |
 | | [`cdkd state`](cli-state.md) | Read and operate on the state bucket, with no CDK app. |
 | | [`cdkd drift`](cli-drift.md) | Compare recorded state against live AWS resources. |
-| **Maintain** | [`cdkd gc`](cli-gc.md) | Delete assets no stack references any more. |
+| **Maintain** | [`cdkd refactor`](cli-refactor.md) | Keep a resource whose logical ID a construct rename changed. |
+| | [`cdkd gc`](cli-gc.md) | Delete assets no stack references any more. |
 | | [`cdkd scrub`](cli-scrub.md) | Remove resolved secret values from stored state. |
 | | [`cdkd export`](cli-export.md) | Hand a stack over to CloudFormation. |
 | **Run locally** | `cdkd local` | [Local Execution](local-emulation.md): run Lambda, API, ECS and other workloads on your machine. |

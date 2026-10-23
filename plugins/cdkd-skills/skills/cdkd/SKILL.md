@@ -53,7 +53,7 @@ Keep these ownership rules:
 
 - Use cdkd by default only for development and test workloads. Upstream explicitly describes it as not yet production-ready. For production, keep the existing AWS CDK CLI or another established production workflow unless the user explicitly approves cdkd after that limitation and the workload-specific risks are explained.
 - Do not run `cdkd deploy` against an existing CloudFormation-managed stack as an implicit migration. Continue using `cdk deploy`, or plan an explicit `cdkd import --migrate-from-cloudformation` operation.
-- Treat `cdkd import`, `cdkd export`, `cdkd orphan`, and `cdkd state orphan` as changes to the system of record. Explain the ownership change and obtain explicit confirmation before running them.
+- Treat `cdkd import`, `cdkd export`, `cdkd orphan`, `cdkd state orphan`, and `cdkd refactor` as changes to the system of record. Explain the ownership change and obtain explicit confirmation before running them.
 - Never edit the S3 state object by hand. Use cdkd state and recovery commands.
 
 To stop managing something WITHOUT deleting it from AWS, orphan it: `cdkd orphan '<stack/ConstructPath>'` drops one resource from cdkd state (the AWS resource stays), `cdkd state orphan '<stack>' --resource <logicalId>` drops one resource's record without the CDK app (also for a resource whose construct is already gone from the template), and `cdkd state orphan '<stack>'` removes the whole stack's state record (all AWS resources stay) — never run that bare form on a stack that is still deployed, since the next deploy re-creates or collides with every resource. Remove the corresponding construct from the CDK app in the same change — otherwise the next `cdkd deploy` re-creates what the template still declares.
@@ -113,6 +113,16 @@ To check mechanically whether the change would lose an existing resource, run th
 AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd diff '<stack>' --fail-on=destructive
 ```
 
+When a listed deletion is a renamed or moved construct — an old logical ID deleted and a new logical ID of the same type created in the same stack — keep the resource instead of letting the deploy replace it. Run `cdkd refactor` BEFORE deploying: it renames the resource's cdkd state record and touches no AWS resource. Show the dry-run plan to the user and get confirmation first:
+
+```bash
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd refactor '<stack>' --dry-run
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd refactor '<stack>'
+AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd diff '<stack>' --fail-on=destructive
+```
+
+It renames a pair only when the new resource then shows no change. Look-alikes it cannot tell apart (two identical queues) make it refuse and print a mapping file; ask the user which old logical ID is which new one, write that file, and pass it with `--override-file`. A resource whose properties also changed is refused: revert the property change, refactor, deploy, then reapply the property change. Moving a resource between stacks is not supported.
+
 `--fail-on` takes `any-change`, `broadening` (an IAM or security-group change that grants something new), `destructive`, or `never` (default); `--fail` / `--no-fail` are aliases for `any-change` / `never`.
 
 `cdkd deploy --require-approval=destructive` (or `broadening` / `any-change`) makes the deploy itself ask after the diff and before changing the stack; it is also read from `"requireApproval"` in `cdk.json`, where `"broadening"` (the AWS CDK CLI's default) is honoured. It asks only on a terminal: without one — an agent's non-interactive shell, or CI — that stack's deploy fails instead of asking. That failure is not "nothing changed" for the whole run: a nested stack is asked only when its parent's deploy reaches it, so the parent may already have changed and then rolls back (or keeps the changes under `--no-rollback`), and other stacks in the same run that do not depend on it still deploy. Treat the failure as the stop it is: check `cdkd state show` / `cdkd events` for what did change, report the destructive changes to the user, and do not add `--yes` (which approves without asking) unless the user approved that exact scope.
@@ -135,6 +145,7 @@ For example, a deploy followed by a website smoke test should use:
 
 ```bash
 AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd deploy '<stack>' --full-wait
+cdkd refactor '<stack>' --dry-run
 ```
 
 Do not report success solely because resources appeared in AWS. Require a zero command exit status and complete the relevant verification.
@@ -224,7 +235,7 @@ Keep the default `--older-than 30d` age guard unless the user explicitly accepts
 
 ## Guard destructive and migration commands
 
-Before `destroy`, `state destroy`, `orphan`, `import`, `export`, `drift --accept`, `drift --revert`, or `gc`:
+Before `destroy`, `state destroy`, `orphan`, `refactor`, `import`, `export`, `drift --accept`, `drift --revert`, or `gc`:
 
 1. Re-resolve the AWS identity, region, stack name, and current owner.
 2. Show the exact command and explain which resources or state records change.

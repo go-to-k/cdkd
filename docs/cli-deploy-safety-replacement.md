@@ -201,8 +201,10 @@ A replacement that moves an EventBridge rule to another bus, or changes
   or kept under `DeletionPolicy: Retain`. The deploy still refuses, because
   nothing in AWS tells the two situations apart.
 - **The holder is this stack's own resource under another logical ID**, as
-  after a construct was moved or renamed. The error names that ID. Give the
-  new resource another name, or deploy that ID's removal first.
+  after a construct was moved or renamed. The error names that ID. To keep
+  the resource, run [`cdkd refactor`](cli-refactor.md) before deploying.
+  Otherwise give the new resource another name, or deploy that ID's removal
+  first.
 - **An S3 bucket** gets no import command, because the lookup also finds
   buckets that other accounts own.
 - **A log group that something else already created**, such as a Lambda
