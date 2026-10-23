@@ -24,14 +24,19 @@ ledger hands back INTERIM reports whatever its brief says. Its brief (the runner
 never reads this file) makes marker and ledger due once the last PID exits
 and, like a lane's, bans
 attribution lines in the ledger commit (#5104); a state record it cannot read
-is a STOP, never a purge (`/run-integ` step 7). Size it for ONE context (§8-d
+is a STOP, never a purge (`/run-integ` step 7). It blames the PR for a FAIL
+only when `grep -rlF '<failing message>' src/` names a file the PR changed;
+otherwise its report and ledger row name the emitting file (#4981 was such a
+red-on-`main` fixture too). Size it for ONE context (§8-d
 probe alone, then fixture batches), each run's fixture, `pid=<N>`, log, state
-prefix appended as one line to `<scratch>/integ-<PR>.live` at launch. The
+prefix appended as one line to `<scratch>/integ-<PR>.live` at launch. BEFORE
+dispatching, the PARENT runs `/run-integ` step 4's live-lock check per fixture
+and lists open PRs whose files include `tests/integration/<fixture>/`: a held
+fixture waits under a lock watcher, not in an idle runner (#5190). The
 PARENT arms a Monitor on those PIDs — read only from each line's `pid=`
-field (`grep -oE 'pid=[0-9]+'`), never a bare digit grep, whose match on a
-`mktemp` log path's zeroes makes `kill -0 0000` signal the process group and
-always succeed — and `SendMessage`s the runner as each exits, alarming too
-when no PID has run for 15 min unreported (#5135).
+field (`grep -oE 'pid=[0-9]+'`); a bare digit grep matches a `mktemp` path's
+zeroes, and `kill -0 0000` always succeeds — and `SendMessage`s the runner as
+each exits, alarming too when no PID has run for 15 min unreported (#5135).
 A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
 
 - The `integ-destroy` marker is read from the tree the command runs in, so a
