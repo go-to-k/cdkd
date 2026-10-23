@@ -65,6 +65,7 @@ import {
   type ProtectionFlipRecord,
   deleteAfterProtectionFlipWithFinalSnapshot,
 } from './deletion-protection-compensation.js';
+import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
 
@@ -1620,58 +1621,69 @@ export class RDSProvider implements ResourceProvider {
       //     resettable.
       //   * Port / DBPortNumber — default is engine-dependent; no single
       //     safe reset value.
-      await this.getClient().send(
-        new ModifyDBInstanceCommand({
-          DBInstanceIdentifier: physicalId,
-          DBInstanceClass: properties['DBInstanceClass'] as string | undefined,
-          PubliclyAccessible: properties['PubliclyAccessible'] as boolean | undefined,
-          ApplyImmediately: true,
-          // AllocatedStorage is mutable on ModifyDBInstance (scale-up).
-          // AWS rejects scale-down except in narrow cases; cdkd forwards the
-          // user's value and lets AWS surface the rejection if any.
-          ...(properties['AllocatedStorage'] !== undefined && {
-            AllocatedStorage: Number(properties['AllocatedStorage']),
-          }),
-          // Removal keeps the live value, as CFn does (#5004 A/B).
-          DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
-          ...(newEngineVersion !== undefined && {
-            EngineVersion: newEngineVersion,
-            ...(allowMajorVersionUpgrade && { AllowMajorVersionUpgrade: true }),
-          }),
-          ...(properties['Port'] !== undefined && {
-            DBPortNumber: Number(properties['Port']),
-          }),
-          // #5153: only a changed password; any supplied one resets credentials.
-          ...(instancePassword !== undefined && { MasterUserPassword: instancePassword }),
-          ...(properties['VPCSecurityGroups'] !== undefined && {
-            VpcSecurityGroupIds: properties['VPCSecurityGroups'] as string[],
-          }),
-          // #609 security-cluster backfill — 5 mutable via ModifyDBInstance.
-          // `KmsKeyId` is intentionally NOT forwarded here (storage-encryption
-          // key is immutable post-create; a template change replaces the
-          // instance, which cdkd's diff layer schedules independently — same
-          // treatment as StorageEncrypted / MasterUsername above).
-          ...(sendCredentialSettings &&
-            masterUserSecret?.KmsKeyId !== undefined && {
-              MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
-            }),
-          ...(sendCredentialSettings &&
-            properties['ManageMasterUserPassword'] !== undefined && {
-              ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
-            }),
-          ...(properties['MonitoringRoleArn'] !== undefined && {
-            MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
-          }),
-          // Removal keeps the live interval, as CFn does (#5004 A/B).
-          ...(properties['MonitoringInterval'] != null && {
-            MonitoringInterval: Number(properties['MonitoringInterval']),
-          }),
-          // Removal keeps the live value, as CFn does (#5004 A/B).
-          EnableIAMDatabaseAuthentication: properties['EnableIAMDatabaseAuthentication'] as
-            | boolean
-            | undefined,
-        })
-      );
+      // #5194: a cluster change in the same deploy can leave this member not
+      // `available` for a moment; only that refusal is waited out and resent.
+      await modifyDbInstanceWhenAvailable({
+        send: () =>
+          this.getClient().send(
+            new ModifyDBInstanceCommand({
+              DBInstanceIdentifier: physicalId,
+              DBInstanceClass: properties['DBInstanceClass'] as string | undefined,
+              PubliclyAccessible: properties['PubliclyAccessible'] as boolean | undefined,
+              ApplyImmediately: true,
+              // AllocatedStorage is mutable on ModifyDBInstance (scale-up).
+              // AWS rejects scale-down except in narrow cases; cdkd forwards the
+              // user's value and lets AWS surface the rejection if any.
+              ...(properties['AllocatedStorage'] !== undefined && {
+                AllocatedStorage: Number(properties['AllocatedStorage']),
+              }),
+              // Removal keeps the live value, as CFn does (#5004 A/B).
+              DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
+              ...(newEngineVersion !== undefined && {
+                EngineVersion: newEngineVersion,
+                ...(allowMajorVersionUpgrade && { AllowMajorVersionUpgrade: true }),
+              }),
+              ...(properties['Port'] !== undefined && {
+                DBPortNumber: Number(properties['Port']),
+              }),
+              // #5153: only a changed password; any supplied one resets credentials.
+              ...(instancePassword !== undefined && { MasterUserPassword: instancePassword }),
+              ...(properties['VPCSecurityGroups'] !== undefined && {
+                VpcSecurityGroupIds: properties['VPCSecurityGroups'] as string[],
+              }),
+              // #609 security-cluster backfill — 5 mutable via ModifyDBInstance.
+              // `KmsKeyId` is intentionally NOT forwarded here (storage-encryption
+              // key is immutable post-create; a template change replaces the
+              // instance, which cdkd's diff layer schedules independently — same
+              // treatment as StorageEncrypted / MasterUsername above).
+              ...(sendCredentialSettings &&
+                masterUserSecret?.KmsKeyId !== undefined && {
+                  MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
+                }),
+              ...(sendCredentialSettings &&
+                properties['ManageMasterUserPassword'] !== undefined && {
+                  ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
+                }),
+              ...(properties['MonitoringRoleArn'] !== undefined && {
+                MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
+              }),
+              // Removal keeps the live interval, as CFn does (#5004 A/B).
+              ...(properties['MonitoringInterval'] != null && {
+                MonitoringInterval: Number(properties['MonitoringInterval']),
+              }),
+              // Removal keeps the live value, as CFn does (#5004 A/B).
+              EnableIAMDatabaseAuthentication: properties['EnableIAMDatabaseAuthentication'] as
+                | boolean
+                | undefined,
+            })
+          ),
+        readStatus: async () => (await this.describeDBInstance(physicalId))?.DBInstanceStatus,
+        sleep: (ms) => this.sleep(ms),
+        logger: this.logger,
+        label: 'RDS DBInstance',
+        logicalId,
+        remainingMs: enclosingDeadlineRemainingMs(),
+      });
 
       this.logger.debug(`Successfully updated DBInstance ${logicalId}`);
 

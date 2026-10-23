@@ -45,6 +45,7 @@ import {
   type ProtectionFlipRecord,
   deleteAfterProtectionFlipWithFinalSnapshot,
 } from './deletion-protection-compensation.js';
+import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
 
 /**
@@ -863,17 +864,28 @@ export class DocDBProvider implements ResourceProvider {
       //     no behavioral divergence.
       //   * PreferredMaintenanceWindow — AWS assigns a RANDOM window at
       //     create; no documented "reset to random" sentinel.
-      await this.getClient().send(
-        new ModifyDBInstanceCommand({
-          DBInstanceIdentifier: physicalId,
-          DBInstanceClass: properties['DBInstanceClass'] as string | undefined,
-          PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as
-            | string
-            | undefined,
-          AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
-          ApplyImmediately: true,
-        })
-      );
+      // #5194: a cluster change in the same deploy can leave this member not
+      // `available` for a moment; only that refusal is waited out and resent.
+      await modifyDbInstanceWhenAvailable({
+        send: () =>
+          this.getClient().send(
+            new ModifyDBInstanceCommand({
+              DBInstanceIdentifier: physicalId,
+              DBInstanceClass: properties['DBInstanceClass'] as string | undefined,
+              PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as
+                | string
+                | undefined,
+              AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
+              ApplyImmediately: true,
+            })
+          ),
+        readStatus: async () => (await this.describeDBInstance(physicalId))?.DBInstanceStatus,
+        sleep: (ms) => this.sleep(ms),
+        logger: this.logger,
+        label: 'DocDB DBInstance',
+        logicalId,
+        remainingMs: enclosingDeadlineRemainingMs(),
+      });
 
       this.logger.debug(`Successfully updated DocDB DBInstance ${logicalId}`);
 
