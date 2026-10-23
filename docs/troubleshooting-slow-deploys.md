@@ -44,6 +44,8 @@ went. It makes no AWS call of its own.
 CDKD_PHASE_TIMINGS=1 cdkd deploy MyStack
 ```
 
+Trimmed to its main lines:
+
 ```text
 Phase timings (CDKD_PHASE_TIMINGS=1):
   run (16.10s wall)
@@ -65,6 +67,7 @@ Phase timings (CDKD_PHASE_TIMINGS=1):
 | A line with `x<n>` | A repeated operation: its count, the total, and its slowest occurrence |
 | `resource DAG` | All resource operations, run in parallel |
 | `resource create` / `update` / `delete` | The provider calls, added up; they overlap, so the total can exceed the wall time |
+| `state saves`, `cloud control polls`, `provider waits` | Steps inside the state saves, the Cloud Control waits and a provider's own waits, added up across the run |
 
 When most of the time is in `resource DAG`, the slowest resource decides the
 deploy. Time in the other steps is cdkd's own work, mostly round trips to the
