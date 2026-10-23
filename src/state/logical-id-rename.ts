@@ -306,27 +306,35 @@ export function removeMovedRecords(state: StackState, moves: readonly LogicalIdM
  */
 export function insertMovedRecords(
   state: StackState,
-  moved: ReadonlyArray<LogicalIdMove & { record: ResourceState }>,
+  moved: ReadonlyArray<LogicalIdMove & { record: ResourceState; source?: string }>,
   template: CloudFormationTemplate
 ): StackState {
-  const byFrom = new Map(moved.map((m) => [m.from, m.to]));
+  // References resolve within the record's OWN source stack: two sources can
+  // move records sharing a logical id (one construct path, two stacks).
+  const renamesBySource = new Map<string | undefined, Map<string, string>>();
+  for (const m of moved) {
+    const group = renamesBySource.get(m.source) ?? new Map<string, string>();
+    group.set(m.from, m.to);
+    renamesBySource.set(m.source, group);
+  }
   const resources: Record<string, ResourceState> = {};
   for (const [logicalId, record] of Object.entries(state.resources)) {
     defineOwnKey(resources, logicalId, record);
   }
   const retired = state.retiredNameGenerations ?? {};
-  for (const { from, to, record } of moved) {
+  for (const { to, record, source } of moved) {
     if (hasOwnKey(state.resources, to) || hasOwnKey(resources, to)) {
       throw new Error(`Logical ID ${to} is already in the destination stack's state`);
     }
-    void from;
-    const renamed = rewriteRecordReferences(record, byFrom);
+    const group = renamesBySource.get(source)!;
+    const coMoved = new Set(group.values());
+    const renamed = rewriteRecordReferences(record, group);
     const kept =
       renamed !== null && typeof renamed === 'object' && Array.isArray(renamed.dependencies)
         ? {
             ...renamed,
             dependencies: renamed.dependencies.filter(
-              (dep) => typeof dep !== 'string' || [...byFrom.values()].includes(dep)
+              (dep) => typeof dep !== 'string' || coMoved.has(dep)
             ),
           }
         : renamed;

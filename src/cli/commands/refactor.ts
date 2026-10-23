@@ -666,10 +666,15 @@ export function moveOverridesOf(
     if (!accounts.has(env.account)) continue;
     for (const pair of mappingPairs(env.resources, revert)) {
       if (pair.fromStack === pair.toStack) continue;
-      out.push({ region: env.region, ...pair });
+      out.push({ region: env.region, env: envKey(env.account, env.region), ...pair });
     }
   }
   return out;
+}
+
+/** One environment's key: an account and a region. */
+export function envKey(account: string | undefined, region: string): string {
+  return JSON.stringify([account, region]);
 }
 
 async function refactorCommand(stacks: string[], options: RefactorOptions): Promise<void> {
@@ -856,7 +861,7 @@ async function refactorCommand(stacks: string[], options: RefactorOptions): Prom
       plans.length > 1
         ? await planMoves(
             plans,
-            (plan) => JSON.stringify([accountByPlan.get(plan), plan.region]),
+            (plan) => envKey(accountByPlan.get(plan), plan.region),
             moveOverridesOf(environments, new Set(accountByPlan.values()), options.revert === true)
           )
         : { moves: [], differing: [], refused: [], ambiguous: [] as AmbiguousMoveGroup[] };

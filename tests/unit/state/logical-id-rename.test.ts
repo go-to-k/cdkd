@@ -331,6 +331,21 @@ describe('removeMovedRecords / insertMovedRecords (go-to-k/cdkd#5202)', () => {
     expect(placed.nameGenerationHigh).toBe(5);
   });
 
+  it('resolves each moved record\'s references within its own source stack', () => {
+    // Two sources each move a `Table` and a record referencing it.
+    const out = insertMovedRecords(
+      stack({ resources: {} }),
+      [
+        { from: 'Table', to: 'TableA', record: record({ physicalId: 'ta' }), source: 'A' },
+        { from: 'User', to: 'UserA', record: record({ physicalId: 'ua', dependencies: ['Table'], properties: { T: { Ref: 'Table' } } }), source: 'A' },
+        { from: 'Table', to: 'TableB', record: record({ physicalId: 'tb' }), source: 'B' },
+      ],
+      { Resources: {} }
+    );
+    expect(out.resources['UserA']!.dependencies).toEqual(['TableA']);
+    expect(out.resources['UserA']!.properties).toEqual({ T: { Ref: 'TableA' } });
+  });
+
   it('throws on a destination id the destination already holds', () => {
     expect(() =>
       insertMovedRecords(stack({ resources: { NewQueue: record() } }), [{ from: 'A', to: 'NewQueue', record: record() }], template)

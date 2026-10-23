@@ -115,10 +115,12 @@ show the moved resource unchanged.
 - A stack that would both lose and gain a resource in one run is refused. Run
   the refactor once per direction.
 - Both stacks are locked, and the stack losing the resource is written first.
-  If writing the stack that gains it fails, the first stack is put back. If
-  that also fails, the resource stays in AWS but is in no cdkd state: adopt it
-  with [`cdkd import`](import.md), or restore the earlier `state.json` version
-  from the versioned state bucket.
+  If a later write fails, cdkd puts the stacks that gain resources back first,
+  then the stacks that lose them, so a resource is never recorded in two
+  stacks. The error says what each stack holds afterwards. If a stack cannot
+  be put back, a moved resource may be in no cdkd state: it is still in AWS,
+  so adopt it with [`cdkd import`](import.md), or restore the earlier
+  `state.json` version from the versioned state bucket.
 
 After a move, deploy the stack that gained the resource before the stacks that
 import from it. `cdkd deploy --all` orders stacks that way already.

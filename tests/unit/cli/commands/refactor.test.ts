@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from 'vite-plus/test';
 import {
   applyStackRefactor,
+  envKey,
   moveOverridesOf,
   overridesForStack,
   referencedLogicalIds,
@@ -301,6 +302,23 @@ describe('planStackRefactor', () => {
   });
 });
 
+describe('unpaired rows (the move candidates)', () => {
+  it('keeps a look-alike whose properties differ as a candidate and drops every row a rename took', async () => {
+    const topic = 'AWS::SNS::Topic';
+    const p = await plan(
+      stack({ OldT: rec({ T: 1 }, { resourceType: topic }), OldQ: rec({ T: 2 }), Gone: rec({ T: 3 }, { resourceType: 'AWS::SSM::Parameter' }) }),
+      fakeDiff({
+        NewT: { type: topic, props: { T: 1 } },
+        NewQ: { props: { T: 9 } },
+        Brand: { type: 'AWS::SNS::Subscription', props: {} },
+      })
+    );
+    expect(p.renames.map((r) => r.to)).toEqual(['NewT']);
+    expect(p.unpaired.creates.map((c) => c.logicalId).sort()).toEqual(['Brand', 'NewQ']);
+    expect(p.unpaired.deletes.map((d) => d.logicalId).sort()).toEqual(['Gone', 'OldQ']);
+  });
+});
+
 describe('stillChanging', () => {
   it('warns when a resource referencing a renamed one still changes', async () => {
     const t: CloudFormationTemplate = {
@@ -488,6 +506,25 @@ describe('sampleMappingFile', () => {
   });
 });
 
+describe('sampleMappingFile with moves', () => {
+  it('adds one environment per ambiguous move group, keyed by locations', () => {
+    const p0 = { ...thePlanFor('A'), ambiguous: [] };
+    const text = sampleMappingFile([], [
+      { group: { resourceType: queue, from: ['A.X', 'A.Y'], to: ['B.N'], plan: p0 }, account: '111' },
+    ]);
+    const env = JSON.parse(text).environments[0];
+    expect(env).toEqual({ account: '111', region: 'us-east-1', resources: { 'A.X': 'B.N', 'A.Y': 'B.N' } });
+  });
+});
+
+function thePlanFor(stackName: string): StackRefactorPlan {
+  return {
+    stackName, region: 'us-east-1', etag: '"e"', renames: [], differing: [], skipped: [], ambiguous: [],
+    refusedOverrides: [], stillChanging: [], template, unpaired: { creates: [], deletes: [] },
+    movesOut: [], movesIn: [], state: stack({}), diff: fakeDiff({}),
+  };
+}
+
 describe('overridesForStack', () => {
   const envs: MappingEnvironment[] = [
     { account: '111111111111', region: 'us-east-1', resources: { 'S.Old': 'S.New', 'T.A': 'T.B' } },
@@ -507,10 +544,10 @@ describe('overridesForStack', () => {
     ];
     expect(overridesForStack(envs2, 'S', '1', 'r', false)).toEqual([{ from: 'A', to: 'B' }]);
     expect(moveOverridesOf(envs2, new Set(['1']), false)).toEqual([
-      { region: 'r', fromStack: 'S', from: 'Old', toStack: 'T', to: 'New' },
+      { region: 'r', env: envKey('1', 'r'), fromStack: 'S', from: 'Old', toStack: 'T', to: 'New' },
     ]);
     expect(moveOverridesOf(envs2, new Set(['1']), true)).toEqual([
-      { region: 'r', fromStack: 'T', from: 'New', toStack: 'S', to: 'Old' },
+      { region: 'r', env: envKey('1', 'r'), fromStack: 'T', from: 'New', toStack: 'S', to: 'Old' },
     ]);
   });
 });

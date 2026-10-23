@@ -3201,10 +3201,15 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     // `refactor-move.ts` rewrites only records two places hand it: the plans
     // `planStackRefactor` built (guarded above), and the records
     // `applyMoveGroup` re-reads, which it guards before its own rewrite.
+    // Its failure recovery, defined below the apply, re-reads only to learn
+    // whether a save landed, and writes back only the guarded loaded records.
     const moveSrc = code('src/cli/commands/refactor-move.ts');
-    expect(moveSrc.split('getState(').length - 1, 'refactor-move.ts reads state outside applyMoveGroup').toBe(1);
     const applyAt = moveSrc.indexOf('export async function applyMoveGroup(');
     expect(applyAt).toBeGreaterThan(-1);
+    expect(
+      moveSrc.slice(0, applyAt).split('getState(').length - 1,
+      'refactor-move.ts reads state above applyMoveGroup, outside its guard'
+    ).toBe(0);
     const applyBody = moveSrc.slice(applyAt);
     expect(applyBody.indexOf('refuseMalformedOrphanRecords(')).toBeGreaterThan(-1);
     expect(applyBody.indexOf('refuseMalformedOrphanRecords(')).toBeLessThan(

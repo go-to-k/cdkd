@@ -42,6 +42,11 @@ import type { ProposedMove, StackRefactorPlan } from './refactor.js';
 export interface MoveOverride {
   /** The mapping environment's region; both stacks are in it. */
   region: string;
+  /**
+   * The mapping environment's key, in `envOf`'s spelling: both stacks must be
+   * in exactly this account and region.
+   */
+  env: string;
   fromStack: string;
   from: string;
   toStack: string;
@@ -76,6 +81,10 @@ export interface MovePlan {
   ambiguous: AmbiguousMoveGroup[];
 }
 
+/** A row's identity across a run: stack, region and logical id. */
+const rowKey = (stack: string, region: string, logicalId: string): string =>
+  JSON.stringify([stack, region, logicalId]);
+/** The `Stack.LogicalId` location a mapping file spells. */
 const location = (stack: string, logicalId: string): string => `${stack}.${logicalId}`;
 
 /**
@@ -129,8 +138,8 @@ export async function planMoves(
       refuse('both stacks must be selected and hold cdkd state; a refactor never creates a stack');
       continue;
     }
-    if (envOf(source) !== envOf(dest)) {
-      refuse('the two stacks are in different accounts or regions');
+    if (envOf(source) !== o.env || envOf(dest) !== o.env) {
+      refuse("the two stacks are not both in the mapping environment's account and region");
       continue;
     }
     const d = source.unpaired.deletes.find((x) => x.logicalId === o.from);
@@ -148,13 +157,13 @@ export async function planMoves(
     } else if (!isPairableType(d.resourceType)) {
       refuse(`cdkd refactor cannot move a ${d.resourceType} resource`);
     } else if (
-      takenFrom.has(location(o.fromStack, o.from)) ||
-      takenTo.has(location(o.toStack, o.to))
+      takenFrom.has(rowKey(o.fromStack, source.region, o.from)) ||
+      takenTo.has(rowKey(o.toStack, dest.region, o.to))
     ) {
       refuse('the mapping names one of these locations more than once');
     } else {
-      takenFrom.add(location(o.fromStack, o.from));
-      takenTo.add(location(o.toStack, o.to));
+      takenFrom.add(rowKey(o.fromStack, source.region, o.from));
+      takenTo.add(rowKey(o.toStack, dest.region, o.to));
       candidates.push(move(source, o.from, dest, o.to, d.resourceType, 'override'));
     }
   }
@@ -166,12 +175,12 @@ export async function planMoves(
     const envPlans = plans.filter((p) => envOf(p) === env);
     const deletes = envPlans.flatMap((plan) =>
       plan.unpaired.deletes
-        .filter((d) => !takenFrom.has(location(plan.stackName, d.logicalId)))
+        .filter((d) => !takenFrom.has(rowKey(plan.stackName, plan.region, d.logicalId)))
         .map((d) => ({ plan, row: d }))
     );
     const creates = envPlans.flatMap((plan) =>
       plan.unpaired.creates
-        .filter((c) => !takenTo.has(location(plan.stackName, c.logicalId)))
+        .filter((c) => !takenTo.has(rowKey(plan.stackName, plan.region, c.logicalId)))
         .map((c) => ({ plan, row: c }))
     );
     const types = [...new Set(creates.map((c) => c.row.resourceType))].sort();
@@ -253,6 +262,7 @@ export async function planMoves(
           from: m.from,
           to: m.to,
           record: planAt(m.fromStack, m.fromRegion)!.state.resources[m.from]!,
+          source: producerRecordKey(m.fromStack, m.fromRegion),
         })),
         dest.template
       );
@@ -429,6 +439,7 @@ export async function applyMoveGroup(input: {
             from: m.from,
             to: m.to,
             record: recordOf(m.fromStack, m.fromRegion, m.from),
+            source: producerRecordKey(m.fromStack, m.fromRegion),
           })),
           plan.template
         );
@@ -441,49 +452,27 @@ export async function applyMoveGroup(input: {
       ...plans.filter((p) => p.movesIn.length === 0),
       ...plans.filter((p) => p.movesIn.length > 0),
     ];
-    const written: Array<{ plan: StackRefactorPlan; etag: string }> = [];
+    const attempted: StackRefactorPlan[] = [];
     for (const plan of order) {
       const leaving = [...plan.renames.map((r) => r.from), ...plan.movesOut.map((m) => m.from)];
+      attempted.push(plan);
       try {
         if (leaving.length > 0) {
           await stateBackend.rotateCreateTokenNonce(plan.stackName, plan.region, leaving);
         }
-        const etag = await stateBackend.saveState(plan.stackName, plan.region, next.get(plan)!, {
+        await stateBackend.saveState(plan.stackName, plan.region, next.get(plan)!, {
           expectedEtag: plan.etag,
           ...(loaded.get(plan)!.migrationPending && { migrateLegacy: true }),
         });
-        written.push({ plan, etag });
       } catch (error) {
-        if (!written.some((w) => w.plan.movesOut.length > 0)) throw error;
-        // A save failed after a source dropped its record: put the sources
-        // back, so a resource is never left recorded nowhere.
-        const unrestored: string[] = [];
-        for (const w of written) {
-          if (w.plan.movesOut.length === 0) continue;
-          try {
-            await stateBackend.saveState(
-              w.plan.stackName,
-              w.plan.region,
-              loaded.get(w.plan)!.state,
-              {
-                expectedEtag: w.etag,
-              }
-            );
-          } catch {
-            unrestored.push(`${w.plan.stackName} (${w.plan.region})`);
-          }
-        }
-        throw new CdkdError(
-          safeMsg`cdkd refactor could not save stack ${plan.stackName} (${plan.region}): ` +
-            safeMsg`${(error as Error).message}. ` +
-            (unrestored.length === 0
-              ? 'The source stacks were restored, so no record moved; re-run cdkd refactor.'
-              : safeMsg`The source stacks ${unrestored.join(', ')} could not be restored: the ` +
-                'moved resources are still in AWS but in no cdkd state. Adopt each into the ' +
-                "destination stack with 'cdkd import', or restore the source's previous " +
-                'state.json version from the versioned state bucket.'),
-          'REFACTOR_PARTIAL'
-        );
+        throw await recoverAfterFailedSave({
+          failed: plan,
+          error,
+          attempted,
+          plans,
+          original: (p) => loaded.get(p)!,
+          stateBackend,
+        });
       }
     }
   } finally {
@@ -495,4 +484,103 @@ export async function applyMoveGroup(input: {
       });
     }
   }
+}
+
+/**
+ * Put a multi-stack refactor back after a save failed, under the locks the
+ * apply still holds, and say exactly what each stack holds now.
+ *
+ * The invariant is that no resource ends recorded in TWO stacks: the source's
+ * next deploy would delete the resource the destination owns. So every
+ * destination is put back first; a source is put back only when every
+ * destination that took a record from it is back at the record it was
+ * planned from. A source left as written is then the one record of the
+ * resources it gave away, which is a completed move, not a duplicate.
+ *
+ * Whether a save landed is read, not assumed: a save can fail after S3
+ * accepted the object (a response that never arrived), so each attempted
+ * stack is re-read, and a changed ETag under the lock is this run's write.
+ * Exported for its unit tests.
+ */
+export async function recoverAfterFailedSave(input: {
+  failed: StackRefactorPlan;
+  error: unknown;
+  attempted: readonly StackRefactorPlan[];
+  plans: readonly StackRefactorPlan[];
+  original: (plan: StackRefactorPlan) => { state: StackState; migrationPending?: boolean };
+  stateBackend: Pick<S3StateBackend, 'getState' | 'saveState'>;
+}): Promise<CdkdError> {
+  const { failed, error, attempted, plans, original, stateBackend } = input;
+  const label = (p: StackRefactorPlan): string => `${p.stackName} (${p.region})`;
+
+  /** Back at its planned record (true), or not known to be (false). */
+  const putBack = async (plan: StackRefactorPlan): Promise<boolean> => {
+    try {
+      const current = await stateBackend.getState(plan.stackName, plan.region);
+      if (current === null) return false;
+      if (current.etag === plan.etag) return true;
+      await stateBackend.saveState(plan.stackName, plan.region, original(plan).state, {
+        expectedEtag: current.etag,
+        ...(original(plan).migrationPending && { migrateLegacy: true }),
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const restored: string[] = [];
+  const keptMoved: string[] = [];
+  const unknown: string[] = [];
+  const destinationBack = new Map<StackRefactorPlan, boolean>();
+  for (const plan of plans) {
+    if (plan.movesIn.length === 0) continue;
+    const back = attempted.includes(plan) ? await putBack(plan) : true;
+    destinationBack.set(plan, back);
+    if (!back) unknown.push(label(plan));
+    else if (attempted.includes(plan)) restored.push(label(plan));
+  }
+  for (const plan of attempted) {
+    if (plan.movesIn.length > 0) continue;
+    if (plan.movesOut.length === 0) continue;
+    const destinations = plans.filter((d) =>
+      plan.movesOut.some((m) => m.toStack === d.stackName && m.toRegion === d.region)
+    );
+    if (!destinations.every((d) => destinationBack.get(d) === true)) {
+      // A destination may hold the moved records: the source keeps them out.
+      keptMoved.push(label(plan));
+      continue;
+    }
+    if (await putBack(plan)) restored.push(label(plan));
+    else unknown.push(label(plan));
+  }
+  const renamedOnly = attempted
+    .filter((p) => p !== failed && p.movesIn.length === 0 && p.movesOut.length === 0)
+    .map(label);
+
+  const lines = [
+    safeMsg`cdkd refactor could not save stack ${label(failed)}: ${(error as Error).message}.`,
+  ];
+  if (restored.length > 0) lines.push(safeMsg`Put back as planned: ${restored.join(', ')}.`);
+  if (renamedOnly.length > 0) {
+    lines.push(safeMsg`Renamed and kept (no move involved): ${renamedOnly.join(', ')}.`);
+  }
+  if (keptMoved.length > 0) {
+    lines.push(
+      safeMsg`Kept without the records they moved out, because a destination may hold them: ` +
+        safeMsg`${keptMoved.join(', ')}. Check each destination with 'cdkd state resources'; ` +
+        'a moved resource no stack records is still in AWS, so adopt it with cdkd import.'
+    );
+  }
+  if (unknown.length > 0) {
+    lines.push(
+      safeMsg`Could not be read back or put back: ${unknown.join(', ')}. A moved resource is ` +
+        'still in AWS; if no stack records it, adopt it with cdkd import, or restore the ' +
+        'earlier state.json version from the versioned state bucket.'
+    );
+  }
+  if (keptMoved.length === 0 && unknown.length === 0) {
+    lines.push('No record moved; re-run cdkd refactor.');
+  }
+  return new CdkdError(lines.join('\n'), 'REFACTOR_PARTIAL');
 }
