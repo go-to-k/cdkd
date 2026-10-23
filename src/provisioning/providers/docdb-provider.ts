@@ -20,6 +20,7 @@ import { generatedNameFor } from '../resource-name.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
+  CreateContext,
   ResourceCreateResult,
   ResourceUpdateResult,
   UpdateContext,
@@ -35,7 +36,12 @@ import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { refuseMalformedDesiredTags } from '../tag-list.js';
 import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
-import { applyDocDBTagDiff, attachDocDBTags, isDocDBNotFoundError } from './docdb-shared.js';
+import {
+  applyDocDBTagDiff,
+  attachDocDBTags,
+  isDocDBNotFoundError,
+  wrapDocDBFailure,
+} from './docdb-shared.js';
 import {
   ProtectionFlipRegistry,
   deleteWithProtectionCompensation,
@@ -295,13 +301,15 @@ export class DocDBProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    const mask = context?.maskSecrets;
     switch (resourceType) {
       case 'AWS::DocDB::DBCluster':
-        return this.createDBCluster(logicalId, resourceType, properties);
+        return this.createDBCluster(logicalId, resourceType, properties, mask);
       case 'AWS::DocDB::DBInstance':
-        return this.createDBInstance(logicalId, resourceType, properties);
+        return this.createDBInstance(logicalId, resourceType, properties, mask);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -335,7 +343,8 @@ export class DocDBProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       default:
         throw new ProvisioningError(
@@ -369,12 +378,28 @@ export class DocDBProvider implements ResourceProvider {
     }
   }
 
+  // ─── Failure wrap ─────────────────────────────────────────────────
+
+  /**
+   * The failure wrap the create, update and delete catches throw
+   * ({@link wrapDocDBFailure}, go-to-k/cdkd#2319). A method, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   */
+  private wrapCaughtError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapDocDBFailure(this.logger, mask, error, build);
+  }
+
   // ─── DBCluster ────────────────────────────────────────────────────
 
   private async createDBCluster(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DocDB DBCluster ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -446,12 +471,17 @@ export class DocDBProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create DocDB DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              dbClusterIdentifier,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create DocDB DBCluster ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  dbClusterIdentifier,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#4583: the cluster exists and no state record will hold
       // it; never before CreateDBCluster returned (another owner's name).
@@ -588,12 +618,17 @@ export class DocDBProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update DocDB DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update DocDB DBCluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -748,12 +783,17 @@ export class DocDBProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete DocDB DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete DocDB DBCluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -763,7 +803,8 @@ export class DocDBProvider implements ResourceProvider {
   private async createDBInstance(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DocDB DBInstance ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -821,12 +862,17 @@ export class DocDBProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create DocDB DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              dbInstanceIdentifier,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create DocDB DBInstance ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  dbInstanceIdentifier,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#4583: the instance exists and no state record will hold
       // it; never before CreateDBInstance returned (another owner's name).
@@ -848,7 +894,8 @@ export class DocDBProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating DocDB DBInstance ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -910,12 +957,17 @@ export class DocDBProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update DocDB DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update DocDB DBInstance ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -967,12 +1019,17 @@ export class DocDBProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete DocDB DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete DocDB DBInstance ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

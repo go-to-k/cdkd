@@ -19,6 +19,9 @@
 #      journal carries each as a proven orphan under its identifier, with the
 #      resource id its create call returned as the identity the settle
 #      compares (go-to-k/cdkd#4655).
+#      Each persisted RESOURCE_FAILED event names the AWS failure by its
+#      class plus the --verbose pointer, with no account id or AWS text
+#      (go-to-k/cdkd#2319).
 #   3. The fix-forward: WITH_ORPHANS=true ORPHAN_FIX_FORWARD=true keeps both
 #      logical ids under other identifiers (`-b`). Asserted: the deploy exits
 #      0, deletes both earlier resources (`deleting partially-created ...`),
@@ -410,6 +413,46 @@ esac
 assert_journaled OrphanCluster "${CLUSTER_A}" "${CLUSTER_A_RID}"
 assert_journaled OrphanInstance "${DB_A}" "${DB_A_RID}"
 echo "[verify] step 2 ok: ${CLUSTER_A} and ${DB_A} are in AWS, journaled with their resource ids, with no state record"
+
+# go-to-k/cdkd#2319: each failed CREATE's persisted RESOURCE_FAILED event names
+# the AWS failure by its class plus the --verbose pointer. AWS's text for the
+# explicit deny names this account and the deny role's ARN, and the
+# deployments/*.jsonl store outlives the run, so neither may reach it.
+EVENT_KEYS_2="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+  --prefix "${STATE_PREFIX}deployments/" --output json \
+  | jq -r '.Contents // [] | .[].Key | select(endswith(".jsonl"))')"
+# Inside LOG_DIR, which `cleanup` removes on every exit: it holds AWS text.
+FAILED_2="${LOG_DIR}/failed-events-2.jsonl"
+: > "${FAILED_2}"
+while IFS= read -r event_key || [ -n "${event_key}" ]; do
+  [ -n "${event_key}" ] || continue
+  aws s3 cp "s3://${STATE_BUCKET}/${event_key}" - --quiet \
+    | jq -c 'select(.eventType == "RESOURCE_FAILED")' >> "${FAILED_2}"
+done <<< "${EVENT_KEYS_2}"
+assert_failed_event_redacted() { # usage: assert_failed_event_redacted <logicalId> <wrap prefix>
+  local msg shown
+  msg="$(jq -r --arg l "$1" 'select(.logicalId == $l) | .error.message // empty' "${FAILED_2}" | tail -n 1)"
+  # Never print this account's id or the deny role's name on a FAIL.
+  shown="$(printf '%s' "${msg}" | sed -e "s/${ACCOUNT_ID}/<account>/g" -e "s/${DENY_ROLE}/<deny-role>/g")"
+  if [ -z "${msg}" ]; then
+    echo "[verify] FAIL: no RESOURCE_FAILED event with an error message for $1 under s3://${STATE_BUCKET}/${STATE_PREFIX}deployments/ after step 2 (the #2319 checks below would pass for free)" >&2
+    exit 1
+  fi
+  if ! printf '%s' "${msg}" | grep -qE "$2: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
+    echo "[verify] FAIL: $1's RESOURCE_FAILED message is not '$2: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed: ${shown}" >&2
+    exit 1
+  fi
+  if printf '%s' "${msg}" | grep -qF "${ACCOUNT_ID}" \
+    || printf '%s' "${msg}" | grep -qiF "not authorized" \
+    || printf '%s' "${msg}" | grep -qF "${DENY_ROLE}"; then
+    echo "[verify] FAIL: $1's RESOURCE_FAILED message quotes AWS's text (account id, deny role or 'not authorized') (#2319); observed: ${shown}" >&2
+    exit 1
+  fi
+}
+assert_failed_event_redacted OrphanCluster "Failed to create Neptune DBCluster OrphanCluster"
+assert_failed_event_redacted OrphanInstance "Failed to create Neptune DBInstance OrphanInstance"
+rm -f "${FAILED_2}"
+echo "[verify] step 2 ok: both RESOURCE_FAILED events name the AWS failure by its class, with no account id or AWS text"
 
 # A user fixes forward minutes later, once both are up; a Neptune resource
 # still `creating` may refuse its delete, which is not what this step measures.

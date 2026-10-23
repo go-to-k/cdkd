@@ -19,7 +19,12 @@ import {
 import { DescribeSecurityGroupsCommand, EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
 import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
-import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
@@ -30,6 +35,7 @@ import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-help
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
+  CreateContext,
   ResourceCreateResult,
   ResourceUpdateResult,
   UpdateContext,
@@ -268,15 +274,17 @@ export class NeptuneProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    const mask = context?.maskSecrets;
     switch (resourceType) {
       case 'AWS::Neptune::DBSubnetGroup':
-        return this.createDBSubnetGroup(logicalId, resourceType, properties);
+        return this.createDBSubnetGroup(logicalId, resourceType, properties, mask);
       case 'AWS::Neptune::DBCluster':
-        return this.createDBCluster(logicalId, resourceType, properties);
+        return this.createDBCluster(logicalId, resourceType, properties, mask);
       case 'AWS::Neptune::DBInstance':
-        return this.createDBInstance(logicalId, resourceType, properties);
+        return this.createDBInstance(logicalId, resourceType, properties, mask);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -301,7 +309,8 @@ export class NeptuneProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       case 'AWS::Neptune::DBCluster':
         return this.updateDBCluster(
@@ -318,7 +327,8 @@ export class NeptuneProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       default:
         throw new ProvisioningError(
@@ -359,7 +369,8 @@ export class NeptuneProvider implements ResourceProvider {
   private async createDBSubnetGroup(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Neptune DBSubnetGroup ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -392,12 +403,17 @@ export class NeptuneProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Neptune DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        dbSubnetGroupName,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Neptune DBSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            dbSubnetGroupName,
+            cause
+          )
       );
     }
   }
@@ -407,7 +423,8 @@ export class NeptuneProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Neptune DBSubnetGroup ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -462,12 +479,17 @@ export class NeptuneProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Neptune DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Neptune DBSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -501,12 +523,17 @@ export class NeptuneProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Neptune DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Neptune DBSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -516,7 +543,8 @@ export class NeptuneProvider implements ResourceProvider {
   private async createDBCluster(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Neptune DBCluster ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -594,12 +622,17 @@ export class NeptuneProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create Neptune DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              dbClusterIdentifier,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create Neptune DBCluster ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  dbClusterIdentifier,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#4583: the cluster exists and no state record will hold
       // it; never before CreateDBCluster returned (another owner's name).
@@ -733,12 +766,17 @@ export class NeptuneProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Neptune DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Neptune DBCluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -893,12 +931,17 @@ export class NeptuneProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Neptune DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Neptune DBCluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -908,7 +951,8 @@ export class NeptuneProvider implements ResourceProvider {
   private async createDBInstance(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Neptune DBInstance ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -969,12 +1013,17 @@ export class NeptuneProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create Neptune DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              dbInstanceIdentifier,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create Neptune DBInstance ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  dbInstanceIdentifier,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#4583: the instance exists and no state record will hold
       // it; never before CreateDBInstance returned (another owner's name).
@@ -996,7 +1045,8 @@ export class NeptuneProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Neptune DBInstance ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -1063,12 +1113,17 @@ export class NeptuneProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Neptune DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Neptune DBInstance ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1195,17 +1250,55 @@ export class NeptuneProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Neptune DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Neptune DBInstance ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────
+
+  /**
+   * The failure wrap the DBSubnetGroup / DBCluster / DBInstance create, update
+   * and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}), so a create-first
+   * replacement still recognises the collision. A cdkd-authored or transport
+   * error keeps its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like
+   * an AWS one, unstamped (it has no chain). The delete catches test not-found
+   * before they wrap.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
 
   /**
    * Apply a diff between old and new CFn-shape Tags arrays via Neptune's

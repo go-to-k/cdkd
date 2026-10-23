@@ -115,7 +115,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { assertRegionMatch } from '../region-check.js';
-import type { ResourceProvider, UpdateContext } from '../../types/resource.js';
+import type { CreateContext, ResourceProvider, UpdateContext } from '../../types/resource.js';
 
 export class DocDBSubnetGroupProvider implements ResourceProvider {
   private docdbClient?: DocDBClient;
@@ -184,7 +184,8 @@ physical id and its attributes.
 async create(
   logicalId: string,
   resourceType: string,
-  properties: Record<string, unknown>
+  properties: Record<string, unknown>,
+  context?: CreateContext
 ): Promise<ResourceCreateResult> {
   this.logger.debug(safeMsg`Creating DocDB DBSubnetGroup ${logicalId}`);
   // A malformed Tags value is refused before any call.
@@ -216,13 +217,17 @@ async create(
     };
   } catch (error) {
     const cause = error instanceof Error ? error : undefined;
-    const message = error instanceof Error ? error.message : String(error);
-    throw new ProvisioningError(
-      `Failed to create DocDB DBSubnetGroup ${logicalId}: ${message}`,
-      resourceType,
-      logicalId,
-      dbSubnetGroupName,
-      cause
+    throw this.wrapCaughtError(
+      context?.maskSecrets,
+      error,
+      (text) =>
+        new ProvisioningError(
+          `Failed to create DocDB DBSubnetGroup ${logicalId}: ${text}`,
+          resourceType,
+          logicalId,
+          dbSubnetGroupName,
+          cause
+        )
     );
   }
 }
@@ -257,6 +262,30 @@ Five things in this method apply to every provider:
 - **The error.** Put every AWS call inside a `try`, and rethrow a failure as
   `ProvisioningError` with the type, the logical id, the physical id and the
   original error as the cause. The user then sees which resource failed.
+  The thrown message is saved in `deployments/{runId}.jsonl`, and AWS's text
+  for an access denial names the caller's role, so the message must not
+  quote AWS. Define `wrapCaughtError` as a private method of the provider:
+  `gen-update-wrap-coverage` recognises a `this.<method>(...)` call that
+  returns a `ProvisioningError` as a wrap. For an AWS-authored failure it
+  puts the error's class and a `--verbose` pointer in the message, and sends
+  AWS's text, masked, to the debug log. The body is a few lines; here
+  `wrapDocDBFailure` in `docdb-shared.ts` holds it, and `wrapCaughtError` in
+  `rds-provider.ts` is the same body inline:
+
+  ```ts
+  private wrapCaughtError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+  ```
 - **The log line.** `safeMsg` keeps a value from the template on one line, so
   the value cannot forge a log row.
 
