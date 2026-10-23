@@ -5,11 +5,12 @@ description: "Keep a resource whose logical ID a construct rename changed, inste
 
 # cdkd refactor
 
-Renaming a construct, or moving it under another parent construct, changes its
-CloudFormation logical ID. On the next `cdkd deploy`, the old logical ID is
-deleted and the new one is created, so the AWS resource is replaced: a bucket,
-table or database loses its data. `cdkd refactor` keeps the resource instead.
-It is cdkd's counterpart of `cdk refactor`.
+Renaming a construct, moving it under another parent construct, or moving it
+to another stack changes its CloudFormation logical ID or its stack. On the
+next `cdkd deploy`, the old resource is deleted and a new one is created, so
+the AWS resource is replaced: a bucket, table or database loses its data.
+`cdkd refactor` keeps the resource instead. It is cdkd's counterpart of
+`cdk refactor`.
 
 ```bash
 # show what would be renamed
@@ -20,6 +21,9 @@ cdkd refactor MyStack
 
 # then confirm the renamed resources show no change
 cdkd diff MyStack
+
+# a resource moved from one stack to another: select both stacks
+cdkd refactor OldStack NewStack
 ```
 
 Run it after you change the CDK code and before you deploy.
@@ -93,8 +97,33 @@ detection finds an ambiguous group, `cdkd refactor` prints a mapping file for
 it to edit. `--revert` applies the file in reverse, which renames the records
 back after the code change is undone.
 
-Moving a resource between two stacks is not supported; a mapping that does so
-is refused.
+A key and its value may name two different stacks, which moves the resource
+between them.
+
+## Moving a resource between stacks
+
+When the run selects two or more stacks, a resource that one stack's template
+no longer declares can move to another stack whose template newly declares a
+resource of the same type. The rule is the same: the destination's diff must
+show the moved resource unchanged.
+
+- Both stacks must be selected, hold cdkd state already, and be in the same
+  account and region. A refactor never creates a stack: deploy the new stack
+  first.
+- Look-alikes across stacks are reported as ambiguous; name them in the
+  mapping file.
+- A stack that would both lose and gain a resource in one run is refused. Run
+  the refactor once per direction.
+- Both stacks are locked, and the stack losing the resource is written first.
+  If a later write fails, cdkd puts the stacks that gain resources back first,
+  then the stacks that lose them, so a resource is never recorded in two
+  stacks. The error says what each stack holds afterwards. If a stack cannot
+  be put back, a moved resource may be in no cdkd state: it is still in AWS,
+  so adopt it with [`cdkd import`](import.md), or restore the earlier
+  `state.json` version from the versioned state bucket.
+
+After a move, deploy the stack that gained the resource before the stacks that
+import from it. `cdkd deploy --all` orders stacks that way already.
 
 ## When it refuses
 
@@ -108,6 +137,8 @@ Nothing is written when `cdkd refactor` refuses:
 - The state changed between planning and writing: re-run `cdkd refactor`.
 - A mapping-file pair is not a removed and an added resource of one type, or
   its properties changed.
+- A move names a stack that is not selected or has no state, crosses accounts
+  or regions, or would make one stack both lose and gain a resource.
 
 ## Options
 

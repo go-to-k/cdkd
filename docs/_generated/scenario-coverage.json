@@ -2116,6 +2116,11 @@
       "scenarios": []
     },
     {
+      "name": "refactor-move",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "remove-protection",
       "annotated": true,
       "scenarios": [
@@ -3544,6 +3549,7 @@
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
     "refactor-command",
+    "refactor-move",
     "remove-protection-compensation",
     "remove-protection-journaled-orphan",
     "rename-refactor",

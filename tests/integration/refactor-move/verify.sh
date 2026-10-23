@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+# verify.sh — `cdkd refactor` moving resources between stacks (go-to-k/cdkd#5202).
+#
+# Generation "a": the table (explicit name, holds a data item) and the queue
+# (cdkd-generated name) live in CdkdRefactorMoveSource. Generation "b"
+# (CDKD_TEST_UPDATE=true) declares them in CdkdRefactorMoveDest instead, and the
+# source's SSM parameter imports them across stacks. Without a refactor the
+# source's deploy deletes both and the destination's creates new ones. With
+# `cdkd refactor --all` both records move, and `cdkd deploy --all` keeps them.
+#
+# The run uses a NON-default --state-prefix.
+#
+# Phases:
+#   1. Deploy generation "a" (both stacks); record physical ids; write an item.
+#   2. Under generation "b":
+#      a. `cdkd refactor --all --dry-run` plans both moves, writes nothing.
+#      b. `cdkd refactor --all --yes` moves both records.
+#      c. The destination holds them under the same physical ids; the source
+#         holds neither.
+#      d. `cdkd deploy --all` keeps every physical id, the queue's creation
+#         time, the data item and the parameter's Version.
+#      e. `cdkd diff --all --fail` reports no change.
+#   3. Destroy both stacks; everything and both state records are gone.
+#
+# Required env vars:
+#   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
+#   AWS_REGION   — defaults to us-east-1
+
+set -euo pipefail
+
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
+cd "$(dirname "$0")"
+
+SRC="CdkdRefactorMoveSource"
+DST="CdkdRefactorMoveDest"
+REGION="${AWS_REGION:-us-east-1}"
+PREFIX="cdkd-integ-refactor-move"
+SRC_KEY="${PREFIX}/${SRC}/${REGION}/state.json"
+DST_KEY="${PREFIX}/${DST}/${REGION}/state.json"
+PFX="cdkd-refactor-move"
+TABLE="${PFX}-data"
+PARAM_NAME="/cdkd-integ/${PFX}/wiring"
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
+
+cdkd() { node "${LOCAL_DIST}" "$@"; }
+
+STATE_FLAGS=(--state-bucket "${STATE_BUCKET:-}" --state-prefix "${PREFIX}" --region "${REGION}")
+
+# A state object's ETag (quotes included), or "absent".
+state_etag() { # usage: state_etag <key>
+  local out
+  if out="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "$1" \
+      --query ETag --output text 2>&1)"; then
+    printf '%s' "${out}"
+    return 0
+  fi
+  if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    printf 'absent'
+    return 0
+  fi
+  echo "FAIL: head-object undetermined: ${out}" >&2
+  return 1
+}
+
+# The physical id of the ONE state resource whose logical id starts with $1.
+physical_id_of() { # usage: physical_id_of <logical-id-prefix> <resources-listing>
+  local matches
+  matches="$(printf '%s\n' "$2" | awk -v p="$1" 'index($1, p) == 1 { print $3 }')"
+  if [ "$(printf '%s\n' "${matches}" | grep -c .)" != "1" ]; then
+    echo "FAIL: expected exactly one state resource starting with $1, got: ${matches:-<none>}" >&2
+    return 1
+  fi
+  printf '%s' "${matches}"
+}
+
+# The logical id of the ONE state resource whose logical id starts with $1.
+logical_id_of() { # usage: logical_id_of <logical-id-prefix> <resources-listing>
+  local matches
+  matches="$(printf '%s\n' "$2" | awk -v p="$1" 'index($1, p) == 1 { print $1 }')"
+  if [ "$(printf '%s\n' "${matches}" | grep -c .)" != "1" ]; then
+    echo "FAIL: expected exactly one logical id starting with $1, got: ${matches:-<none>}" >&2
+    return 1
+  fi
+  printf '%s' "${matches}"
+}
+
+assert_table_deleted() { # usage: assert_table_deleted <table-name> <context>
+  local table="$1" ctx="$2" status
+  if gone_probe aws dynamodb describe-table --table-name "${table}" --region "${REGION}"; then
+    status="GONE"
+  elif ! status="$(aws dynamodb describe-table --table-name "${table}" --region "${REGION}" \
+      --query 'Table.TableStatus' --output text 2>&1)"; then
+    # TOCTOU: the table can vanish between gone_probe and this requery.
+    printf '%s' "${status}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+      && status="GONE" \
+      || { echo "FAIL: describe-table requery undetermined (${ctx}): ${status}" >&2; exit 1; }
+  fi
+  if [ "${status}" != "GONE" ] && [ "${status}" != "DELETING" ]; then
+    echo "FAIL: table ${table} still exists (status ${status}) ${ctx}" >&2
+    exit 1
+  fi
+  echo "    table ${table} deleted (status: ${status})"
+}
+
+cleanup() {
+  echo "==> Cleanup: dropping any leftover state + AWS resources"
+  set +eu
+  if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    for s in "${SRC}" "${DST}"; do
+      node "${LOCAL_DIST}" state destroy "${s}" --state-bucket "${STATE_BUCKET:-}" \
+        --state-prefix "${PREFIX}" --region "${REGION}" --yes >/dev/null 2>&1
+    done
+  fi
+  aws dynamodb delete-table --table-name "${TABLE}" --region "${REGION}" >/dev/null 2>&1
+  for s in "${SRC}" "${DST}"; do
+    for url in $(aws sqs list-queues --queue-name-prefix "${s}-" --region "${REGION}" \
+        --query 'QueueUrls[]' --output text 2>/dev/null); do
+      [ "${url}" != "None" ] && aws sqs delete-queue --queue-url "${url}" --region "${REGION}" >/dev/null 2>&1
+    done
+  done
+  for arn in $(aws sns list-topics --region "${REGION}" --query 'Topics[].TopicArn' --output text 2>/dev/null); do
+    case "${arn}" in
+      *":${DST}-"?*) aws sns delete-topic --topic-arn "${arn}" --region "${REGION}" >/dev/null 2>&1 ;;
+    esac
+  done
+  aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1
+  if [ -n "${STATE_BUCKET:-}" ]; then
+    for s in "${SRC}" "${DST}"; do
+      aws s3 rm "s3://${STATE_BUCKET}/${PREFIX}/${s}/${REGION}/state.json" >/dev/null 2>&1 || true
+      aws s3 rm "s3://${STATE_BUCKET}/${PREFIX}/${s}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    done
+  fi
+  set -eu
+}
+
+trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
+
+if [ -z "${STATE_BUCKET:-}" ]; then
+  echo "FAIL: STATE_BUCKET env var is required" >&2
+  exit 1
+fi
+
+if [ ! -f "${LOCAL_DIST}" ]; then
+  echo "FAIL: local binary not built at ${LOCAL_DIST} — run 'vp run build' from repo root first" >&2
+  exit 1
+fi
+
+echo "==> Installing fixture deps"
+if [ ! -d node_modules ]; then
+  npm install
+fi
+
+echo "==> Pre-run cleanup"
+cleanup
+
+# --- Phase 1: deploy generation "a" ------------------------------------------
+echo "==> Phase 1: deploy generation a"
+env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy --all \
+  --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX}" --region "${REGION}" --yes
+
+RES_SRC_A="$(cdkd state resources "${SRC}" "${STATE_FLAGS[@]}")"
+TABLE_ID="$(logical_id_of Table "${RES_SRC_A}")"
+QUEUE_ID="$(logical_id_of Queue "${RES_SRC_A}")"
+TABLE_PID="$(physical_id_of Table "${RES_SRC_A}")"
+QUEUE_PID="$(physical_id_of Queue "${RES_SRC_A}")"
+[ "${TABLE_PID}" = "${TABLE}" ] || { echo "FAIL: table physical id ${TABLE_PID} != ${TABLE}" >&2; exit 1; }
+[ -n "${QUEUE_PID}" ] || { echo "FAIL: QUEUE_PID is empty" >&2; exit 1; }
+echo "    source holds table ${TABLE_PID} (${TABLE_ID}) and queue ${QUEUE_PID} (${QUEUE_ID})"
+
+aws dynamodb put-item --table-name "${TABLE}" --region "${REGION}" \
+  --item '{"pk":{"S":"keep-me"},"v":{"S":"survives the move"}}'
+PARAM_VERSION_A="$(aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}" \
+  --query 'Parameter.Version' --output text)"
+QUEUE_CREATED_A="$(aws sqs get-queue-attributes --queue-url "${QUEUE_PID}" --region "${REGION}" \
+  --attribute-names CreatedTimestamp --query 'Attributes.CreatedTimestamp' --output text)"
+
+# --- Phase 2: generation "b" -------------------------------------------------
+export CDKD_TEST_UPDATE=true
+
+echo "==> Phase 2a: refactor --dry-run plans both moves and writes nothing"
+SRC_ETAG="$(state_etag "${SRC_KEY}")"
+DST_ETAG="$(state_etag "${DST_KEY}")"
+OUT_2A="$(cdkd refactor --all "${STATE_FLAGS[@]}" --dry-run 2>&1)"
+printf '%s\n' "${OUT_2A}"
+for pair in "${SRC}.${TABLE_ID} -> ${DST}." "${SRC}.${QUEUE_ID} -> ${DST}."; do
+  printf '%s\n' "${OUT_2A}" | grep -qF "  ${pair}" || { echo "FAIL: plan lacks the move ${pair}" >&2; exit 1; }
+done
+if printf '%s\n' "${OUT_2A}" | grep -qE '^  (Not moved|Not refactored|Refused|Ambiguous|Warning:)'; then
+  echo "FAIL: the move plan carries a warning or refusal" >&2
+  exit 1
+fi
+printf '%s' "${OUT_2A}" | grep -q 'state was NOT written' \
+  || { echo "FAIL: dry run did not say it wrote nothing" >&2; exit 1; }
+[ "$(state_etag "${SRC_KEY}")" = "${SRC_ETAG}" ] || { echo "FAIL: source state changed during a dry run" >&2; exit 1; }
+[ "$(state_etag "${DST_KEY}")" = "${DST_ETAG}" ] || { echo "FAIL: destination state changed during a dry run" >&2; exit 1; }
+
+echo "==> Phase 2b: refactor"
+OUT_2B="$(cdkd refactor --all "${STATE_FLAGS[@]}" --yes 2>&1)"
+printf '%s\n' "${OUT_2B}"
+printf '%s' "${OUT_2B}" | grep -q "Refactored 2 resource(s) across 2 stack(s)" \
+  || { echo "FAIL: refactor did not report the 2 moves" >&2; exit 1; }
+
+echo "==> Phase 2c: the destination holds both records under the same physical ids"
+RES_SRC_B="$(cdkd state resources "${SRC}" "${STATE_FLAGS[@]}")"
+RES_DST_B="$(cdkd state resources "${DST}" "${STATE_FLAGS[@]}")"
+[ "$(physical_id_of Table "${RES_DST_B}")" = "${TABLE_PID}" ] || { echo "FAIL: table did not move" >&2; exit 1; }
+[ "$(physical_id_of Queue "${RES_DST_B}")" = "${QUEUE_PID}" ] || { echo "FAIL: queue did not move" >&2; exit 1; }
+for id in "${TABLE_ID}" "${QUEUE_ID}"; do
+  if printf '%s\n' "${RES_SRC_B}" | awk '{ print $1 }' | grep -qxF "${id}"; then
+    echo "FAIL: the source still holds ${id}" >&2
+    exit 1
+  fi
+done
+logical_id_of Wiring "${RES_SRC_B}" >/dev/null
+
+echo "==> Phase 2d: deploy generation b keeps every resource"
+cdkd deploy --all "${STATE_FLAGS[@]}" --yes
+RES_DST_D="$(cdkd state resources "${DST}" "${STATE_FLAGS[@]}")"
+[ "$(physical_id_of Queue "${RES_DST_D}")" = "${QUEUE_PID}" ] || { echo "FAIL: deploy replaced the queue" >&2; exit 1; }
+[ "$(physical_id_of Table "${RES_DST_D}")" = "${TABLE_PID}" ] || { echo "FAIL: deploy replaced the table" >&2; exit 1; }
+QUEUE_CREATED_D="$(aws sqs get-queue-attributes --queue-url "${QUEUE_PID}" --region "${REGION}" \
+  --attribute-names CreatedTimestamp --query 'Attributes.CreatedTimestamp' --output text)"
+[ "${QUEUE_CREATED_D}" = "${QUEUE_CREATED_A}" ] || { echo "FAIL: queue was re-created" >&2; exit 1; }
+ITEM="$(aws dynamodb get-item --table-name "${TABLE}" --region "${REGION}" \
+  --key '{"pk":{"S":"keep-me"}}' --query 'Item.v.S' --output text)"
+[ "${ITEM}" = "survives the move" ] || { echo "FAIL: table data lost (got ${ITEM})" >&2; exit 1; }
+PARAM_VERSION_D="$(aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}" \
+  --query 'Parameter.Version' --output text)"
+[ "${PARAM_VERSION_D}" = "${PARAM_VERSION_A}" ] \
+  || { echo "FAIL: SSM parameter was updated (Version ${PARAM_VERSION_A} -> ${PARAM_VERSION_D})" >&2; exit 1; }
+echo "    queue, table, data item and parameter Version unchanged"
+
+echo "==> Phase 2e: diff reports no change"
+cdkd diff --all "${STATE_FLAGS[@]}" --fail
+
+# --- Phase 3: destroy --------------------------------------------------------
+echo "==> Phase 3: destroy"
+cdkd destroy --all "${STATE_FLAGS[@]}" --force
+assert_table_deleted "${TABLE}" "after destroy"
+assert_gone "queue ${QUEUE_PID} still exists after destroy" \
+  aws sqs get-queue-attributes --queue-url "${QUEUE_PID}" --region "${REGION}"
+assert_gone "parameter ${PARAM_NAME} still exists after destroy" \
+  aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}"
+assert_gone "state file ${SRC_KEY} still exists after destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${SRC_KEY}"
+assert_gone "state file ${DST_KEY} still exists after destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${DST_KEY}"
+echo "    all resources + both state records removed"
+
+echo "[verify] PASS — cdkd refactor: table and queue moved between stacks in state only, deploy kept both, destroy clean"
