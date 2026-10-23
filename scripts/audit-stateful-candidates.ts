@@ -389,6 +389,12 @@ export const NOT_GUARDED: ReadonlyMap<string, string> = new Map([
       'and loses nothing the API cannot serve again.',
   ],
   [
+    'AWS::ECS::Gateway',
+    '(a) DECLARED CONTENT: every property is configuration in the template (subnets, ' +
+      'port, protocol, scheme, name) or read-only status; its one signal is a ' +
+      'deletion-protection flag. Nothing a recreate loses is stored.',
+  ],
+  [
     'AWS::SageMaker::CodeRepository',
     '(b) A POINTER: it registers a Git repository URL (and a Secrets Manager secret ' +
       'for its credentials) with SageMaker. The repository and the secret outlive it; ' +

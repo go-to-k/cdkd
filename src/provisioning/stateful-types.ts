@@ -350,6 +350,7 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   'AWS::DocDBElastic::ClusterSnapshot',
   'AWS::ElastiCache::Snapshot',
   'AWS::FSx::Backup',
+  'AWS::FSx::Snapshot',
   'AWS::MemoryDB::Snapshot',
   'AWS::Redshift::Snapshot',
   'AWS::Timestream::InfluxDBBackup',
@@ -358,18 +359,25 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // data repository.
   'AWS::StorageGateway::Volume',
   'AWS::FSx::FileCache',
+  // Types AWS made provisionable since the previous refresh, so cdkd no longer
+  // refuses them at pre-flight and a replace now reaches them. The scan does
+  // not propose them (no signal in their schemas), but each holds the user's
+  // data: a Managed Microsoft AD its users and groups, a notebook instance
+  // and a Cloud9 EC2 environment their storage volume.
+  'AWS::DirectoryService::MicrosoftAD',
+  'AWS::SageMaker::NotebookInstance',
+  'AWS::Cloud9::EnvironmentEC2',
   // Proposed by the same refresh, and guarded on the fail-safe the script's
   // NOT_GUARDED states: none of (a) declared content, (b) pointer or (c) no
   // content is provable from the schema. A registry's entries, a stream
   // channel's buffered records, a host key AWS generated (the server's
-  // identity to every client that pinned it), a bus's archive-free events, a
-  // gateway's, domain's, notify configuration's and agent profile's
+  // identity to every client that pinned it), a bus's stored events, a
+  // domain's, notify configuration's and agent profile's
   // server-side state are each lost on a recreate, or may be.
   'AWS::AgentRegistry::Registry',
   'AWS::Kinesis::Channel',
   'AWS::Transfer::HostKey',
   'AWS::EventsV2::EventBus',
-  'AWS::ECS::Gateway',
   'AWS::HealthAgent::Domain',
   'AWS::SMSVOICE::NotifyConfiguration',
   'AWS::WellArchitected::AgentProfile',

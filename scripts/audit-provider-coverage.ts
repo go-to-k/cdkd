@@ -408,9 +408,9 @@ export async function partitionCoverage(
           const provisioningType =
             options.knownProvisioningTypes?.get(typeName) ??
             (await describeTypeWithRetry(client, typeName, {
-            ...(options.retryDelaysMs && { retryDelaysMs: options.retryDelaysMs }),
-            ...(options.sleep && { sleep: options.sleep }),
-          }));
+              ...(options.retryDelaysMs && { retryDelaysMs: options.retryDelaysMs }),
+              ...(options.sleep && { sleep: options.sleep }),
+            }));
           tier = classifyProvisioningType(provisioningType);
         } catch (err) {
           const handled = onError(typeName, err);
