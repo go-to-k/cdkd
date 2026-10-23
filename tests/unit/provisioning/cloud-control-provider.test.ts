@@ -2551,3 +2551,75 @@ describe('CloudControlProvider update: GuardDuty detector read-back keys (go-to-
     expect(updateCalls()).toEqual([]);
   });
 });
+
+describe('CloudControlProvider - phase timings of a wait (go-to-k/cdkd#5200)', () => {
+  let provider: CloudControlProvider;
+  let saved: string | undefined;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockCloudControlConfigRegion.mockResolvedValue('us-east-1');
+    provider = new CloudControlProvider();
+    vi.useFakeTimers();
+    saved = process.env['CDKD_PHASE_TIMINGS'];
+    (await import('../../../src/utils/phase-timings.js')).resetPhaseTimings();
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    if (saved === undefined) delete process.env['CDKD_PHASE_TIMINGS'];
+    else process.env['CDKD_PHASE_TIMINGS'] = saved;
+    (await import('../../../src/utils/phase-timings.js')).resetPhaseTimings();
+  });
+
+  // Two IN_PROGRESS polls (sleeps of 1s, then 1.5s), then SUCCESS; the first
+  // IN_PROGRESS event carries a RetryAfter hint.
+  function wireDeleteSucceedsOnThirdPoll(): void {
+    let polls = 0;
+    mockCloudControlSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+      const name = cmd.constructor.name;
+      if (name === 'DeleteResourceCommand') {
+        return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-del' } });
+      }
+      if (name === 'GetResourceRequestStatusCommand') {
+        polls += 1;
+        if (polls < 3) {
+          return Promise.resolve({
+            ProgressEvent: {
+              OperationStatus: 'IN_PROGRESS',
+              ...(polls === 1 && { RetryAfter: new Date(0) }),
+            },
+          });
+        }
+        return Promise.resolve({ ProgressEvent: { OperationStatus: 'SUCCESS' } });
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  async function runDelete(): Promise<void> {
+    const done = provider.delete('MyTopic', 'arn:aws:sns:us-east-1:123:t', 'AWS::SNS::Topic', {}, {
+      expectedRegion: 'us-east-1',
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await done;
+  }
+
+  it('records the gap before the poll that saw SUCCESS, and a RetryAfter hint', async () => {
+    process.env['CDKD_PHASE_TIMINGS'] = '1';
+    wireDeleteSucceedsOnThirdPoll();
+    await runDelete();
+    const { renderPhaseTimings } = await import('../../../src/utils/phase-timings.js');
+    const report = renderPhaseTimings().join('\n');
+    expect(report).toMatch(/delete: last poll gap\s+1\.50s/);
+    expect(report).toContain('RetryAfter hint, ahead of now');
+  });
+
+  it('records nothing when the report is off', async () => {
+    delete process.env['CDKD_PHASE_TIMINGS'];
+    wireDeleteSucceedsOnThirdPoll();
+    await runDelete();
+    const { renderPhaseTimings } = await import('../../../src/utils/phase-timings.js');
+    expect(renderPhaseTimings()).toEqual([]);
+  });
+});

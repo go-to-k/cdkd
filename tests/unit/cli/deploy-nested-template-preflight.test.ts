@@ -339,10 +339,12 @@ describe('cdkd deploy refuses a malformed nested-template tree pre-flight (issue
   });
 
   // Every spy here fires exactly once on the well-formed path (asserted in the
-  // last case), so none of these absences can pass by never being reachable.
+  // last case, with the account lookup), so none of these absences can pass by
+  // never being reachable.
   const expectNothingStarted = (): void => {
     expect(expandMacrosSpy).not.toHaveBeenCalled();
-    expect(stsCtorSpy).not.toHaveBeenCalled();
+    // Not `stsCtorSpy`: the account lookup is a read that runs beside
+    // synthesis (go-to-k/cdkd#5200), so it may start before the refusal.
     expect(assetPublisherCtorSpy).not.toHaveBeenCalled();
     expect(lockManagerCtorSpy).not.toHaveBeenCalled();
     expect(runRecorderSpy).not.toHaveBeenCalled();
@@ -413,6 +415,76 @@ describe('cdkd deploy refuses a malformed nested-template tree pre-flight (issue
 
     expect(code).toBe(1);
     expectNothingStarted();
+  });
+
+  it('asks for the account id while synthesis runs, not after it (#5200)', async () => {
+    synthStacks.value = [makeStack('Root')];
+    const { Synthesizer } = await import('../../../src/synthesis/synthesizer.js');
+    let stsSentDuringSynth = false;
+    vi.mocked(Synthesizer).mockImplementationOnce(
+      () =>
+        ({
+          synthesize: vi.fn(async () => {
+            for (let i = 0; i < 50 && stsCtorSpy.mock.calls.length === 0; i++) {
+              await new Promise((r) => setTimeout(r, 2));
+            }
+            stsSentDuringSynth = stsCtorSpy.mock.calls.length > 0;
+            return { stacks: synthStacks.value };
+          }),
+          expandMacrosForStacks: expandMacrosSpy,
+        }) as never
+    );
+
+    const code = await runDeploy(['--yes']);
+
+    expect(code).toBeUndefined();
+    expect(stsSentDuringSynth).toBe(true);
+    expect(stsCtorSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failing account lookup fails the run where it is used, and a run refused first leaves no unhandled rejection', async () => {
+    const { STSClient } = await import('@aws-sdk/client-sts');
+    const failingSts = () =>
+      ({
+        send: vi.fn(async () => {
+          stsCtorSpy();
+          throw new Error('The security token included in the request is expired');
+        }),
+        destroy: vi.fn(),
+      }) as never;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    let restoreSts = (): void => undefined;
+    try {
+      // Refused before the lookup is read.
+      const bad = writeTemplate('bad.json', { Self: 'bad.json' });
+      synthStacks.value = [makeStack('Root', { nestedTemplates: { Bad: bad } })];
+      // Every STS client fails: the region resolution's throwaway one never sends.
+      const previous = vi.mocked(STSClient).getMockImplementation();
+      vi.mocked(STSClient).mockImplementation(failingSts);
+      restoreSts = () => vi.mocked(STSClient).mockImplementation(previous!);
+      expect(await runDeploy(['--yes'])).toBe(1);
+      expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        'under stack Root contains a cycle'
+      );
+
+      // Read: the lookup's own error fails the run, before any asset or engine.
+      errorSpy.mockClear();
+      synthStacks.value = [makeStack('Root')];
+      expect(await runDeploy(['--yes'])).toBe(1);
+      expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        'security token included in the request is expired'
+      );
+      expect(engineCtorSpy).not.toHaveBeenCalled();
+      await new Promise((r) => setTimeout(r, 10));
+      expect(unhandled).toEqual([]);
+    } finally {
+      restoreSts();
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 
   it('lets a well-formed nested tree through to the engine', async () => {
