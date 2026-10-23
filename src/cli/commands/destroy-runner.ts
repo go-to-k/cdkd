@@ -1,5 +1,5 @@
 import { refusePendingMovesOut } from '../../state/pending-moves.js';
-import { readRefactorMarkerOnce, refuseRefactorMarker } from '../../state/refactor-marker.js';
+import { readRefactorMarker, refuseRefactorMarker } from '../../state/refactor-marker.js';
 import * as readline from 'node:readline/promises';
 import {
   pasteableCommand,
@@ -879,12 +879,7 @@ async function destroyStackInRegion(
   // (go-to-k/cdkd#5212): the destination may already hold them, so deleting
   // them here would delete another stack's resources.
   refusePendingMovesOut(state, stackName, regionForState, 'cdkd destroy');
-  refuseRefactorMarker(
-    await readRefactorMarkerOnce(ctx.stateBackend),
-    stackName,
-    regionForState,
-    'cdkd destroy'
-  );
+  // (The refactor marker is read once, under the lock, below.)
   // BELOW the bag guard (which proves the bag can be counted) and ABOVE the
   // delete loop and every `deleteState` (issue #3328, review round 1). NOT
   // "above the fast path" as a discriminating claim — the guard returns early
@@ -1629,6 +1624,25 @@ async function destroyStackInRegion(
     // for a cross-region stack.
     onAcquireFailure: restoreBaseRegionAndClients,
   });
+
+  // go-to-k/cdkd#5212: the refactor marker again, under the lock. The check
+  // above ran before the confirmation prompt; a move started since is caught
+  // here. (A move that FINISHED in that window is the general
+  // destroy-snapshot race, go-to-k/cdkd#5220.)
+  try {
+    refuseRefactorMarker(
+      await readRefactorMarker(ctx.stateBackend),
+      stackName,
+      regionForState,
+      'cdkd destroy'
+    );
+  } catch (error) {
+    await lock.release({
+      failureMessage: 'Failed to release lock after a refactor-marker refusal',
+    });
+    restoreBaseRegionAndClients();
+    throw error;
+  }
 
   // Second strong-reference scan, now under the producer's lock. The
   // pre-flight scan above is a UX optimization (fast-fail before the

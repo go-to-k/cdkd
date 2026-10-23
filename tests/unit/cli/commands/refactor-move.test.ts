@@ -8,6 +8,7 @@
 import { describe, expect, it, vi } from 'vite-plus/test';
 import {
   applyMoveGroup,
+  finishInterruptedMoves,
   finishPendingMoves,
   planMoves,
   renderMovePlan,
@@ -405,6 +406,12 @@ describe('applyMoveGroup', () => {
     finishPendingMoves({
       stackName: name,
       region: 'r',
+      // As `cdkd refactor` feeds it: the moves the shared marker lists.
+      markerMoves: w
+        .markerMoves()
+        .filter((m) => m.fromStack === name)
+        .map((m) => ({ from: m.from, toStack: m.toStack, toRegion: 'r', to: m.to, startedAt: 1 })),
+      declaresInDestination: () => true,
       stateBackend: w.stateBackend as never,
       lockManager: w.lockManager as never,
       recovery: { stateBucket: 'bkt', statePrefix: 'pfx' },
@@ -494,15 +501,9 @@ describe('applyMoveGroup', () => {
     // The shared marker still lists the move, so a deploy of EITHER stack refuses.
     expect(w.markerMoves()).toEqual([expect.objectContaining({ fromStack: 'A', from: 'Old', toStack: 'B', to: 'New' })]);
     await finish(w, 'A');
-    assertSafe(w, ['p1']);
-    const a = w.records.get('A')!.state;
-    if (a.pendingMovesOut === undefined && !('Old' in a.resources)) {
-      expect(w.holders('p1')).toEqual(['B']);
-    } else {
-      // The mark never landed: nothing moved, and the source still holds it.
-      expect(w.holders('p1')).toEqual(['A']);
-      expect(a.pendingMovesOut).toBeUndefined();
-    }
+    // Whichever write failed, the next refactor completes the move.
+    expect(w.holders('p1')).toEqual(['B']);
+    expect(w.records.get('A')!.state.pendingMovesOut).toBeUndefined();
   });
 
   it('keeps every resource safe when one of two destinations fails, and finishes both', async () => {
@@ -580,7 +581,8 @@ describe('finishPendingMoves', () => {
     const records = new Map<string, { state: StackState; etag: string }>();
     for (const [name, st] of Object.entries(stacks)) if (st) records.set(name, { state: st, etag: `"${name}"` });
     let n = 0;
-    return {
+    const out = {
+      declared: undefined as Set<string> | undefined,
       records,
       stateBackend: {
         getState: vi.fn(async (name: string) => {
@@ -596,6 +598,7 @@ describe('finishPendingMoves', () => {
       },
       lockManager: { acquireLock: vi.fn(async () => true), releaseLock: vi.fn(async () => undefined) },
     };
+    return out;
   }
   const mark = { from: 'Old', toStack: 'B', toRegion: 'r', to: 'New', startedAt: 1 };
   const run = (b: ReturnType<typeof backend>, markerMoves?: typeof mark[]) =>
@@ -603,6 +606,8 @@ describe('finishPendingMoves', () => {
       stackName: 'A',
       region: 'r',
       ...(markerMoves !== undefined && { markerMoves }),
+      declaresInDestination: (_s: string, _r: string, id: string, type: string) =>
+        b.declared === undefined || b.declared.has(`${id}:${type}`),
       stateBackend: b.stateBackend as never,
       lockManager: b.lockManager as never,
       recovery: { stateBucket: 'bkt', statePrefix: 'pfx' },
@@ -611,6 +616,28 @@ describe('finishPendingMoves', () => {
   const marked = (resources: Record<string, ResourceState>, pending = [mark]): StackState => ({
     ...stack('A', resources),
     pendingMovesOut: pending as never,
+  });
+
+  it('refuses to add a record the destination template does not declare with its type', async () => {
+    const b = backend({ A: marked({ Old: rec('p1') }), B: stack('B', {}) });
+    b.declared = new Set(['New:AWS::SNS::Topic']);
+    await expect(run(b)).rejects.toThrow(/does not declare New as a AWS::SQS::Queue/);
+    expect(b.stateBackend.saveState).not.toHaveBeenCalled();
+    expect(b.records.get('A')!.state.pendingMovesOut).toHaveLength(1);
+  });
+
+  it('writes the moves that finish and keeps the mark of the one refused beside them', async () => {
+    const mark2 = { from: 'Old2', toStack: 'B', toRegion: 'r', to: 'New2', startedAt: 1 };
+    const b = backend({
+      A: marked({ Old: rec('p1'), Old2: rec('p2') }, [mark, mark2]),
+      B: stack('B', { New: rec('other') }),
+    });
+    const err = (await run(b).catch((e: unknown) => e)) as Error & { finishedMoves?: unknown[] };
+    expect(err.message).toMatch(/already holds a different resource under New/);
+    expect(err.finishedMoves).toEqual([expect.objectContaining({ from: 'Old2', to: 'New2' })]);
+    expect(Object.keys(b.records.get('A')!.state.resources)).toEqual(['Old']);
+    expect(b.records.get('A')!.state.pendingMovesOut).toEqual([mark]);
+    expect(b.records.get('B')!.state.resources['New2']!.physicalId).toBe('p2');
   });
 
   it('only drops the source record when the destination already holds it', async () => {
@@ -677,7 +704,9 @@ describe('finishPendingMoves', () => {
   it('finishes a marker move when the source record is absent and the destination already holds it', async () => {
     const b = backend({ B: stack('B', { New: rec('p1') }) });
     const result = await run(b, [mark]);
-    expect(result.finished).toEqual([{ fromStack: 'A', fromRegion: 'r', ...mark }]);
+    expect(result.finished).toEqual([
+      { fromStack: 'A', fromRegion: 'r', from: 'Old', toStack: 'B', toRegion: 'r', to: 'New' },
+    ]);
     expect(b.stateBackend.saveState).not.toHaveBeenCalled();
   });
 
@@ -685,5 +714,96 @@ describe('finishPendingMoves', () => {
     const b = backend({ B: stack('B', {}) });
     await expect(run(b, [mark])).rejects.toThrow(/has no cdkd state any more/);
     expect(b.stateBackend.saveState).not.toHaveBeenCalled();
+  });
+});
+
+describe('finishInterruptedMoves', () => {
+  function env(opts: { marker?: unknown; stacks: Record<string, StackState> }) {
+    const records = new Map<string, { state: StackState; etag: string }>();
+    for (const [name, st] of Object.entries(opts.stacks)) records.set(name, { state: st, etag: `"${name}"` });
+    let marker: { body: unknown; etag: string } | null =
+      opts.marker === undefined ? null : { body: opts.marker, etag: '"m0"' };
+    let n = 0;
+    const stateBackend = {
+      refactorMarkerKey: () => 'pfx/_refactor/pending.json',
+      getRefactorMarker: vi.fn(async () => (marker === null ? null : structuredClone(marker))),
+      saveRefactorMarker: vi.fn(async (body: { moves: unknown[] }, etag: string | null) => {
+        if ((marker?.etag ?? null) !== etag) return 'conflict' as const;
+        marker = body.moves.length === 0 ? null : { body, etag: `"m${++n}"` };
+        return 'saved' as const;
+      }),
+      getState: vi.fn(async (name: string) => {
+        const r = records.get(name);
+        return r ? { state: structuredClone(r.state), etag: r.etag } : null;
+      }),
+      saveState: vi.fn(async (name: string, _r: string, state: StackState, o: { expectedEtag?: string }) => {
+        if (records.get(name)?.etag !== o.expectedEtag) throw new Error('PreconditionFailed');
+        n += 1;
+        records.set(name, { state: structuredClone(state), etag: `"${name}-${n}"` });
+        return `"${name}-${n}"`;
+      }),
+    };
+    const templates: Record<string, { Resources: Record<string, { Type: string }> }> = {
+      B: { Resources: { New: { Type: queue } } },
+    };
+    const run = (selected: string[], dryRun = false) =>
+      finishInterruptedMoves({
+        selected: selected.map((stackName) => ({ stackName, region: 'r' })),
+        templateOf: (name) => templates[name] as never,
+        dryRun,
+        stateBackend: stateBackend as never,
+        lockManager: { acquireLock: vi.fn(async () => true), releaseLock: vi.fn(async () => undefined) } as never,
+        recovery: { stateBucket: 'bkt', statePrefix: 'pfx' },
+        contentionMessage: async () => 'locked',
+      });
+    return { records, stateBackend, run, marker: () => marker };
+  }
+  const listed = {
+    moves: [{ fromStack: 'A', fromRegion: 'r', from: 'Old', toStack: 'B', toRegion: 'r', to: 'New', startedAt: 1 }],
+  };
+
+  it('finishes a listed move when only the DESTINATION is selected, and unlists it', async () => {
+    const e = env({ marker: listed, stacks: { A: stack('A', { Old: rec('p1') }), B: stack('B', {}) } });
+    const { finished } = await e.run(['B']);
+    expect(finished.map((f) => `${f.fromStack}.${f.from}->${f.toStack}.${f.to}`)).toEqual(['A.Old->B.New']);
+    expect(e.records.get('B')!.state.resources['New']!.physicalId).toBe('p1');
+    expect(e.records.get('A')!.state.resources).toEqual({});
+    expect(e.marker()).toBeNull();
+  });
+
+  it('ignores a listed move that involves no selected stack', async () => {
+    const e = env({ marker: listed, stacks: { A: stack('A', { Old: rec('p1') }), B: stack('B', {}), C: stack('C', {}) } });
+    expect((await e.run(['C'])).finished).toEqual([]);
+    expect(e.stateBackend.saveState).not.toHaveBeenCalled();
+    expect(e.marker()).not.toBeNull();
+  });
+
+  it('writes nothing under --dry-run and lists what it would finish', async () => {
+    const e = env({ marker: listed, stacks: { A: stack('A', { Old: rec('p1') }), B: stack('B', {}) } });
+    const { finished, pending } = await e.run(['A'], true);
+    expect(finished).toEqual([]);
+    expect(pending).toEqual([expect.objectContaining({ from: 'Old', to: 'New' })]);
+    expect(e.stateBackend.saveState).not.toHaveBeenCalled();
+    expect(e.stateBackend.saveRefactorMarker).not.toHaveBeenCalled();
+  });
+
+  it('refuses a marker it cannot read, writing nothing', async () => {
+    const e = env({ marker: 'torn', stacks: { A: stack('A', {}) } });
+    await expect(e.run(['A'])).rejects.toThrow(/cannot be read/);
+    expect(e.stateBackend.saveState).not.toHaveBeenCalled();
+  });
+
+  it('unlists the moves that finished when a sibling move is refused', async () => {
+    const both = {
+      moves: [
+        ...listed.moves,
+        { fromStack: 'A', fromRegion: 'r', from: 'Old2', toStack: 'B', toRegion: 'r', to: 'Gone', startedAt: 1 },
+      ],
+    };
+    const e = env({ marker: both, stacks: { A: stack('A', { Old: rec('p1'), Old2: rec('p2') }), B: stack('B', {}) } });
+    // `Gone` is not in the destination template: that move is refused.
+    await expect(e.run(['A'])).rejects.toThrow(/does not declare Gone/);
+    expect((e.marker()!.body as { moves: Array<{ from: string }> }).moves.map((m) => m.from)).toEqual(['Old2']);
+    expect(e.records.get('B')!.state.resources['New']!.physicalId).toBe('p1');
   });
 });

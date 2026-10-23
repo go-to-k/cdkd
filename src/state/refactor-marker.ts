@@ -63,53 +63,58 @@ export type MarkerVerdict =
   | { kind: 'malformed'; key: string };
 
 /**
- * One read per marker key per process: every stack of a deploy or destroy run
- * shares it. Keyed by the backend's marker key, so two state prefixes in one
- * run each read their own.
- */
-const reads = new Map<string, Promise<MarkerVerdict>>();
-
-/**
- * The marker's verdict for this run. A read refused for lack of permission is
+ * The marker's verdict, read now. A read refused for lack of permission is
  * treated as no marker, with a debug line: a principal whose policy is scoped
  * to its own stacks' keys must keep deploying, and such a principal cannot
- * write the marker either. Any other failure propagates, as a state read's
- * would.
+ * write the marker either -- but it then runs WITHOUT the destination guard
+ * this marker provides, which the line says. (A missing key under a policy
+ * without `s3:ListBucket` also answers 403, and "no marker" is right there
+ * too.) Any other failure propagates, as a state read's would. A backend
+ * without the marker methods (an embedder's own) reports none.
  */
-export function readRefactorMarkerOnce(backend: Partial<MarkerBackend>): Promise<MarkerVerdict> {
-  // A backend that cannot hold the marker (an embedder's own implementation)
-  // has no move in progress to report.
+export async function readRefactorMarker(backend: Partial<MarkerBackend>): Promise<MarkerVerdict> {
   if (
     typeof backend.getRefactorMarker !== 'function' ||
     typeof backend.refactorMarkerKey !== 'function'
   ) {
-    return Promise.resolve({ kind: 'none' });
+    return { kind: 'none' };
   }
-  const getRefactorMarker = backend.getRefactorMarker.bind(backend);
+  const key = backend.refactorMarkerKey();
+  let marker: Awaited<ReturnType<MarkerBackend['getRefactorMarker']>>;
+  try {
+    marker = await backend.getRefactorMarker();
+  } catch (error) {
+    const name = (error as { name?: string }).name;
+    const status = (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
+    if (name === 'AccessDenied' || status === 403) {
+      getLogger().debug(
+        safeMsg`Refactor marker ${key} is not readable (access denied); treating it as absent, ` +
+          'so this run does not check for an unfinished cdkd refactor move.'
+      );
+      return { kind: 'none' };
+    }
+    throw error;
+  }
+  if (marker === null) return { kind: 'none' };
+  const { moves, malformed } = refactorMarkerMovesOf(marker.body);
+  if (malformed) return { kind: 'malformed', key };
+  return moves.length === 0 ? { kind: 'none' } : { kind: 'moves', moves };
+}
+
+/**
+ * {@link readRefactorMarker}, shared per marker key for the life of the
+ * PROCESS. For a preview only (`cdkd diff`), where a verdict a few seconds
+ * old decides nothing irreversible; a command that acts reads under its lock
+ * with {@link readRefactorMarker}.
+ */
+const reads = new Map<string, Promise<MarkerVerdict>>();
+
+export function readRefactorMarkerOnce(backend: Partial<MarkerBackend>): Promise<MarkerVerdict> {
+  if (typeof backend.refactorMarkerKey !== 'function') return readRefactorMarker(backend);
   const key = backend.refactorMarkerKey();
   let pending = reads.get(key);
   if (pending === undefined) {
-    pending = (async (): Promise<MarkerVerdict> => {
-      let marker: Awaited<ReturnType<MarkerBackend['getRefactorMarker']>>;
-      try {
-        marker = await getRefactorMarker();
-      } catch (error) {
-        const name = (error as { name?: string; Code?: string }).name;
-        const status = (error as { $metadata?: { httpStatusCode?: number } }).$metadata
-          ?.httpStatusCode;
-        if (name === 'AccessDenied' || status === 403) {
-          getLogger().debug(
-            safeMsg`Refactor marker ${key} is not readable (access denied); treating it as absent.`
-          );
-          return { kind: 'none' };
-        }
-        throw error;
-      }
-      if (marker === null) return { kind: 'none' };
-      const { moves, malformed } = refactorMarkerMovesOf(marker.body);
-      if (malformed) return { kind: 'malformed', key };
-      return moves.length === 0 ? { kind: 'none' } : { kind: 'moves', moves };
-    })();
+    pending = readRefactorMarker(backend);
     reads.set(key, pending);
     // A failed read is not cached: the next stack retries it.
     pending.catch(() => reads.delete(key));

@@ -4,11 +4,11 @@
  * whose template newly declares a resource of the same type, when the
  * destination's diff then shows that resource unchanged.
  *
- * Planning reads only. The apply records each move in its SOURCE record
- * before writing anything else, so an interruption at any point leaves a
- * state whose source names the unfinished move: that stack's deploy and
- * destroy refuse, and the next `cdkd refactor` of it finishes the move
- * (go-to-k/cdkd#5212).
+ * Planning reads only. The apply lists each move in the shared refactor
+ * marker before writing any record, then marks it in the SOURCE record, so an
+ * interruption at any point leaves the move listed: the deploy and destroy of
+ * BOTH stacks refuse, and the next `cdkd refactor` with either stack selected
+ * finishes it (go-to-k/cdkd#5212).
  */
 import { CdkdError } from '../../utils/error-handler.js';
 import { displayAwsMessage, safeMsg } from '../../utils/display-safe.js';
@@ -35,8 +35,10 @@ import { producerRecordKey } from '../../state/record-keys.js';
 import type { LockManager } from '../../state/lock-manager.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { PendingMoveOut, ResourceState, StackState } from '../../types/state.js';
-import { pendingMovesOutOf } from '../../state/pending-moves.js';
+import { hasPendingMovesOut, pendingMovesOutOf } from '../../state/pending-moves.js';
+import type { CloudFormationTemplate } from '../../types/resource.js';
 import {
+  refactorMarkerMovesOf,
   sameMove,
   updateRefactorMarker,
   type RefactorMarkerMove,
@@ -400,19 +402,22 @@ function withoutMarks(state: StackState, done: ReadonlySet<string>): StackState 
  * Apply every plan of a run that moves a record between stacks
  * (go-to-k/cdkd#5202, made interruption-safe by go-to-k/cdkd#5212):
  *
- * 1. lock every stack (in a fixed order, so two runs cannot deadlock) and
- *    re-read each record, refusing unless its ETag is the one planned from;
+ * - lock every stack (in a fixed order, so two runs cannot deadlock) and
+ *   re-read each record, refusing unless its ETag is the one planned from;
+ * 1. list every move in the shared refactor marker;
  * 2. save each SOURCE with its renames and a `pendingMovesOut` entry per
  *    moving record, the record still in `resources` (rename-only stacks are
  *    saved here too, complete);
  * 3. save each DESTINATION with its renames and the moved records;
- * 4. save each source again without the moved records and their entries.
+ * 4. save each source again without the moved records and their entries;
+ * 5. unlist the moves.
  *
- * From step 2 on, the source's own record says a move is unfinished, and
- * `cdkd deploy` / `cdkd destroy` of that stack refuse while it does: a record
- * held by both stacks can never be deleted by the source. A failure or an
- * interruption at any step leaves a state the next `cdkd refactor` of the
- * source finishes ({@link finishPendingMoves}). Nothing here touches AWS.
+ * From step 1 on, `cdkd deploy` / `cdkd destroy` of either stack refuse: a
+ * record held by both stacks can never be deleted by the source, and a
+ * destination whose record knows nothing yet cannot create the resource
+ * again. A failure or an interruption at any step leaves a state the next
+ * `cdkd refactor` with either stack selected finishes
+ * ({@link finishInterruptedMoves}). Nothing here touches AWS.
  */
 export async function applyMoveGroup(input: {
   plans: readonly StackRefactorPlan[];
@@ -589,15 +594,15 @@ function refuseReadForWrite(
 }
 
 /** Hold the locks of `plans` (already in lock order) around `fn`, releasing every one taken. */
-async function withLocks<T>(
-  plans: ReadonlyArray<{ stackName: string; region: string }>,
+async function withLocks<P extends { stackName: string; region: string }, T>(
+  plans: readonly P[],
   lockManager: Pick<LockManager, 'acquireLock' | 'releaseLock'>,
-  contentionMessage: (plan: never) => Promise<string>,
+  contentionMessage: (plan: P) => Promise<string>,
   fn: () => Promise<T>
 ): Promise<T> {
   const logger = getLogger();
   const owner = `${process.env['USER'] || 'unknown'}@${process.env['HOSTNAME'] || 'host'}:${process.pid}`;
-  const locked: Array<{ stackName: string; region: string }> = [];
+  const locked: P[] = [];
   try {
     for (const plan of plans) {
       const acquired = await lockManager.acquireLock(
@@ -606,7 +611,7 @@ async function withLocks<T>(
         owner,
         'refactor'
       );
-      if (!acquired) throw new Error(await contentionMessage(plan as never));
+      if (!acquired) throw new Error(await contentionMessage(plan));
       locked.push(plan);
     }
     return await fn();
@@ -659,12 +664,32 @@ export async function finishPendingMoves(input: {
    * there; they are finished exactly as a marked move is.
    */
   markerMoves?: readonly PendingMoveOut[];
+  /**
+   * Whether the destination's synthesized template declares `logicalId` with
+   * `resourceType`. A record is added to a destination only when it does: a
+   * move is otherwise trusted on its listing alone, and a crafted listing
+   * could carry another stack's record into this one.
+   */
+  declaresInDestination: (
+    stackName: string,
+    region: string,
+    logicalId: string,
+    resourceType: string
+  ) => boolean;
   stateBackend: Pick<S3StateBackend, 'getState' | 'saveState'>;
   lockManager: Pick<LockManager, 'acquireLock' | 'releaseLock'>;
   recovery: LockRecoveryContext;
   contentionMessage: (stack: { stackName: string; region: string }) => Promise<string>;
 }): Promise<{ finished: FinishedMove[] }> {
   const { stackName, region, stateBackend, lockManager, recovery, contentionMessage } = input;
+  const finishedOf = (m: PendingMoveOut): FinishedMove => ({
+    fromStack: stackName,
+    fromRegion: region,
+    from: m.from,
+    toStack: m.toStack,
+    toRegion: m.toRegion,
+    to: m.to,
+  });
   const first = await stateBackend.getState(stackName, region);
   if (!first) {
     // The source's record is gone (destroyed after the move started). A
@@ -675,7 +700,7 @@ export async function finishPendingMoves(input: {
     for (const m of input.markerMoves ?? []) {
       const dest = await stateBackend.getState(m.toStack, m.toRegion);
       if (dest !== null && Object.hasOwn(dest.state.resources, m.to)) {
-        finished.push({ fromStack: stackName, fromRegion: region, ...m });
+        finished.push(finishedOf(m));
       } else {
         stuck.push(safeMsg`${stackName}.${m.from} -> ${m.toStack}.${m.to}`);
       }
@@ -717,110 +742,251 @@ export async function finishPendingMoves(input: {
     });
   const ordered = [...stacks.values()].sort((a, b) => (keyOf(a) < keyOf(b) ? -1 : 1));
 
-  return withLocks(
-    ordered,
-    lockManager,
-    contentionMessage as (p: never) => Promise<string>,
-    async () => {
-      const read = new Map<
-        string,
-        { state: StackState; etag: string; migrationPending?: boolean }
-      >();
-      for (const s of ordered) {
-        const data = await stateBackend.getState(s.stackName, s.region);
-        if (data) {
-          refuseReadForWrite(data.state, s.stackName, s.region, recovery);
-          read.set(keyOf(s), {
-            state: data.state,
-            etag: data.etag,
-            ...(data.migrationPending && { migrationPending: true }),
-          });
-        }
+  return withLocks(ordered, lockManager, contentionMessage, async () => {
+    const read = new Map<string, { state: StackState; etag: string; migrationPending?: boolean }>();
+    for (const s of ordered) {
+      const data = await stateBackend.getState(s.stackName, s.region);
+      if (data) {
+        refuseReadForWrite(data.state, s.stackName, s.region, recovery);
+        read.set(keyOf(s), {
+          state: data.state,
+          etag: data.etag,
+          ...(data.migrationPending && { migrationPending: true }),
+        });
       }
-      const source = read.get(keyOf({ stackName, region }));
-      if (!source) return { finished: [] };
-      const currentMarked = pendingMovesOutOf(source.state).moves;
-      const current = [
-        ...currentMarked,
-        ...(input.markerMoves ?? []).filter((m) => !currentMarked.some((n) => n.from === m.from)),
-      ];
-      const refusals: string[] = [];
-      const finished: FinishedMove[] = [];
-      const additions = new Map<
-        string,
-        Array<{ from: string; to: string; record: ResourceState; source: string }>
-      >();
-      for (const m of current) {
-        const destKey = keyOf({ stackName: m.toStack, region: m.toRegion });
-        const dest = read.get(destKey);
-        const record = Object.hasOwn(source.state.resources, m.from)
-          ? source.state.resources[m.from]
+    }
+    const source = read.get(keyOf({ stackName, region }));
+    if (!source) return { finished: [] };
+    const currentMarked = pendingMovesOutOf(source.state).moves;
+    const current = [
+      ...currentMarked,
+      ...(input.markerMoves ?? []).filter((m) => !currentMarked.some((n) => n.from === m.from)),
+    ];
+    const refusals: string[] = [];
+    const finished: FinishedMove[] = [];
+    const additions = new Map<
+      string,
+      Array<{ from: string; to: string; record: ResourceState; source: string }>
+    >();
+    for (const m of current) {
+      const destKey = keyOf({ stackName: m.toStack, region: m.toRegion });
+      const dest = read.get(destKey);
+      const record = Object.hasOwn(source.state.resources, m.from)
+        ? source.state.resources[m.from]
+        : undefined;
+      const held =
+        dest !== undefined && Object.hasOwn(dest.state.resources, m.to)
+          ? dest.state.resources[m.to]
           : undefined;
-        const held =
-          dest !== undefined && Object.hasOwn(dest.state.resources, m.to)
-            ? dest.state.resources[m.to]
-            : undefined;
-        const describe = safeMsg`${stackName}.${m.from} -> ${m.toStack}.${m.to}`;
-        if (dest === undefined) {
-          refusals.push(safeMsg`${describe}: ${m.toStack} (${m.toRegion}) has no cdkd state`);
-        } else if (record === undefined) {
-          if (held === undefined) {
-            refusals.push(
-              safeMsg`${describe}: neither stack records the resource; adopt it into ${m.toStack} with cdkd import`
-            );
-          } else {
-            finished.push({ fromStack: stackName, fromRegion: region, ...m, toRegion: m.toRegion });
-          }
-        } else if (held === undefined) {
-          const list = additions.get(destKey) ?? [];
-          list.push({ from: m.from, to: m.to, record, source: keyOf({ stackName, region }) });
-          additions.set(destKey, list);
-          finished.push({ fromStack: stackName, fromRegion: region, ...m });
-        } else if (held.physicalId !== record.physicalId) {
+      const describe = safeMsg`${stackName}.${m.from} -> ${m.toStack}.${m.to}`;
+      if (dest === undefined) {
+        refusals.push(safeMsg`${describe}: ${m.toStack} (${m.toRegion}) has no cdkd state`);
+      } else if (record === undefined) {
+        if (held === undefined) {
           refusals.push(
-            safeMsg`${describe}: ${m.toStack} already holds a different resource under ${m.to} ` +
-              '(created by a deploy before the move finished). Delete or orphan that resource in ' +
-              safeMsg`${m.toStack}, then re-run cdkd refactor`
+            safeMsg`${describe}: neither stack records the resource; adopt it into ${m.toStack} with cdkd import`
           );
         } else {
-          finished.push({ fromStack: stackName, fromRegion: region, ...m });
+          finished.push(finishedOf(m));
         }
-      }
-      for (const [destKey, list] of additions) {
-        const dest = read.get(destKey)!;
-        const s = stacks.get(destKey)!;
-        await stateBackend.saveState(
-          s.stackName,
-          s.region,
-          insertMovedRecords(dest.state, list, { Resources: {} }),
-          { expectedEtag: dest.etag, ...(dest.migrationPending && { migrateLegacy: true }) }
+      } else if (
+        held === undefined &&
+        !input.declaresInDestination(m.toStack, m.toRegion, m.to, record.resourceType)
+      ) {
+        refusals.push(
+          safeMsg`${describe}: ${m.toStack}'s template does not declare ${m.to} as a ` +
+            safeMsg`${record.resourceType}, so the record is not moved there. Check the move, ` +
+            'and the CDK app the run synthesized'
         );
-      }
-      if (finished.length > 0) {
-        const done = new Set(finished.map((f) => f.from));
-        const leaving = finished
-          .filter((f) => Object.hasOwn(source.state.resources, f.from))
-          .map(({ from, to }) => ({ from, to }));
-        await stateBackend.saveState(
-          stackName,
-          region,
-          withoutMarks(
-            leaving.length > 0 ? removeMovedRecords(source.state, leaving) : source.state,
-            done
-          ),
-          { expectedEtag: source.etag, ...(source.migrationPending && { migrateLegacy: true }) }
+      } else if (held === undefined) {
+        const list = additions.get(destKey) ?? [];
+        list.push({ from: m.from, to: m.to, record, source: keyOf({ stackName, region }) });
+        additions.set(destKey, list);
+        finished.push(finishedOf(m));
+      } else if (held.physicalId !== record.physicalId) {
+        refusals.push(
+          safeMsg`${describe}: ${m.toStack} already holds a different resource under ${m.to} ` +
+            '(created by a deploy before the move finished). Delete or orphan that resource in ' +
+            safeMsg`${m.toStack}, then re-run cdkd refactor`
         );
+      } else {
+        finished.push(finishedOf(m));
       }
-      if (refusals.length > 0) {
-        throw new CdkdError(
-          safeMsg`cdkd refactor could not finish ${refusals.length} interrupted move(s) out of ` +
-            safeMsg`${stackName} (${region}); they stay recorded, so its deploy and destroy keep ` +
-            'refusing:\n' +
-            refusals.map((r) => `  ${r}.`).join('\n'),
-          'REFACTOR_REFUSED'
-        );
-      }
-      return { finished };
     }
-  );
+    for (const [destKey, list] of additions) {
+      const dest = read.get(destKey)!;
+      const s = stacks.get(destKey)!;
+      await stateBackend.saveState(
+        s.stackName,
+        s.region,
+        insertMovedRecords(dest.state, list, { Resources: {} }),
+        { expectedEtag: dest.etag, ...(dest.migrationPending && { migrateLegacy: true }) }
+      );
+    }
+    if (finished.length > 0) {
+      const done = new Set(finished.map((f) => f.from));
+      const leaving = finished
+        .filter((f) => Object.hasOwn(source.state.resources, f.from))
+        .map(({ from, to }) => ({ from, to }));
+      await stateBackend.saveState(
+        stackName,
+        region,
+        withoutMarks(
+          leaving.length > 0 ? removeMovedRecords(source.state, leaving) : source.state,
+          done
+        ),
+        { expectedEtag: source.etag, ...(source.migrationPending && { migrateLegacy: true }) }
+      );
+    }
+    if (refusals.length > 0) {
+      const error = new CdkdError(
+        safeMsg`cdkd refactor could not finish ${refusals.length} interrupted move(s) out of ` +
+          safeMsg`${stackName} (${region}); they stay recorded, so the deploy and destroy of ` +
+          'both stacks keep refusing' +
+          (finished.length > 0 ? safeMsg` (${finished.length} other move(s) were finished)` : '') +
+          ':\n' +
+          refusals.map((r) => `  ${r}.`).join('\n'),
+        'REFACTOR_REFUSED'
+      );
+      // The moves that DID finish are written; the caller unlists them.
+      Object.assign(error, { finishedMoves: finished });
+      throw error;
+    }
+    return { finished };
+  });
+}
+
+/**
+ * Finish, before anything is planned, every interrupted move that involves a
+ * stack of this run (go-to-k/cdkd#5212). A move is known from its source
+ * record's mark or from the shared marker (which a run killed before marking
+ * the source leaves alone); one whose source OR destination is selected is
+ * finished, and each finished move is unlisted. Under `dryRun` nothing is
+ * written: the moves that would be finished are returned as `pending`.
+ * Exported for its unit tests.
+ */
+export async function finishInterruptedMoves(input: {
+  selected: ReadonlyArray<{ stackName: string; region: string }>;
+  templateOf: (stackName: string, region: string) => CloudFormationTemplate | undefined;
+  dryRun: boolean;
+  stateBackend: Pick<
+    S3StateBackend,
+    'getState' | 'saveState' | 'getRefactorMarker' | 'saveRefactorMarker' | 'refactorMarkerKey'
+  >;
+  lockManager: Pick<LockManager, 'acquireLock' | 'releaseLock'>;
+  recovery: LockRecoveryContext;
+  contentionMessage: (stack: { stackName: string; region: string }) => Promise<string>;
+}): Promise<{ finished: FinishedMove[]; pending: FinishedMove[] }> {
+  const { stateBackend } = input;
+  const marker = await stateBackend.getRefactorMarker();
+  const parsed =
+    marker === null ? { moves: [], malformed: false } : refactorMarkerMovesOf(marker.body);
+  if (parsed.malformed) {
+    throw new CdkdError(
+      safeMsg`The cdkd refactor marker ${stateBackend.refactorMarkerKey()} cannot be read, so ` +
+        'cdkd refactor cannot tell which moves are unfinished; nothing was written. Inspect it ' +
+        'in the state bucket, and delete it once no move is in progress.',
+      'REFACTOR_REFUSED'
+    );
+  }
+  const keyOf = (stackName: string, region: string): string => producerRecordKey(stackName, region);
+  const selected = new Set(input.selected.map((s) => keyOf(s.stackName, s.region)));
+  const sources = new Map<
+    string,
+    { stackName: string; region: string; markerMoves: PendingMoveOut[]; marked: PendingMoveOut[] }
+  >();
+  for (const s of input.selected) {
+    const current = await stateBackend.getState(s.stackName, s.region);
+    const marked = current ? pendingMovesOutOf(current.state).moves : [];
+    if (current && hasPendingMovesOut(current.state)) {
+      sources.set(keyOf(s.stackName, s.region), { ...s, markerMoves: [], marked });
+    }
+  }
+  for (const m of parsed.moves) {
+    if (
+      !selected.has(keyOf(m.fromStack, m.fromRegion)) &&
+      !selected.has(keyOf(m.toStack, m.toRegion))
+    ) {
+      continue;
+    }
+    const key = keyOf(m.fromStack, m.fromRegion);
+    const entry = sources.get(key) ?? {
+      stackName: m.fromStack,
+      region: m.fromRegion,
+      markerMoves: [],
+      marked: [],
+    };
+    entry.markerMoves.push({
+      from: m.from,
+      toStack: m.toStack,
+      toRegion: m.toRegion,
+      to: m.to,
+      startedAt: m.startedAt,
+    });
+    sources.set(key, entry);
+  }
+  const declaresInDestination = (
+    stackName: string,
+    region: string,
+    logicalId: string,
+    resourceType: string
+  ): boolean => {
+    const template = input.templateOf(stackName, region);
+    const resources = template?.Resources ?? {};
+    return (
+      Object.hasOwn(resources, logicalId) &&
+      (resources[logicalId] as { Type?: unknown }).Type === resourceType
+    );
+  };
+
+  const finished: FinishedMove[] = [];
+  const pending: FinishedMove[] = [];
+  for (const source of sources.values()) {
+    if (input.dryRun) {
+      for (const m of [
+        ...source.marked,
+        ...source.markerMoves.filter((x) => !source.marked.some((y) => y.from === x.from)),
+      ]) {
+        pending.push({
+          fromStack: source.stackName,
+          fromRegion: source.region,
+          from: m.from,
+          toStack: m.toStack,
+          toRegion: m.toRegion,
+          to: m.to,
+        });
+      }
+      continue;
+    }
+    let result: { finished: FinishedMove[] };
+    try {
+      result = await finishPendingMoves({
+        stackName: source.stackName,
+        region: source.region,
+        markerMoves: source.markerMoves,
+        declaresInDestination,
+        stateBackend,
+        lockManager: input.lockManager,
+        recovery: input.recovery,
+        contentionMessage: input.contentionMessage,
+      });
+    } catch (error) {
+      // Some moves of this source may have finished before the refusal;
+      // they are written, so unlist them before the refusal surfaces.
+      const done = (error as { finishedMoves?: FinishedMove[] }).finishedMoves ?? [];
+      if (done.length > 0) {
+        await updateRefactorMarker(stateBackend, (moves) =>
+          moves.filter((m) => !done.some((f) => sameMove(m, f)))
+        );
+      }
+      throw error;
+    }
+    if (result.finished.length > 0) {
+      await updateRefactorMarker(stateBackend, (moves) =>
+        moves.filter((m) => !result.finished.some((f) => sameMove(m, f)))
+      );
+    }
+    finished.push(...result.finished);
+  }
+  return { finished, pending };
 }

@@ -147,9 +147,13 @@ closed terminal, the move is still listed:
   what the other stack holds, adds the resource there if it is missing, and
   then drops it from the first stack.
 
-Every `cdkd deploy` and `cdkd destroy` reads `_refactor/pending.json` once,
-at the same time as its first state record, so it adds no wait. A policy that
-denies reading it is treated as no move in progress.
+Every `cdkd deploy` reads `_refactor/pending.json` for each stack at the same
+time as that stack's state record, under its lock, so it adds no wait.
+`cdkd destroy` reads it under each stack's lock. A policy that denies reading
+it is treated as no move in progress, and that run does not check for one.
+
+With `--dry-run`, `cdkd refactor` lists the interrupted moves it would finish
+and writes nothing.
 
 If a stack named in the list was changed by hand, or by an older cdkd, so that
 both stacks hold a different resource under the moved logical ID,
@@ -169,8 +173,9 @@ Nothing is written when `cdkd refactor` refuses:
   successful `cdkd deploy` first.
 - The detection found an ambiguous group no mapping file names.
 - The stack is locked by another run.
-- An interrupted move out of the stack cannot be finished; the error names
-  which one and why.
+- An interrupted move involving the stack cannot be finished; the error names
+  which one and why. Moves of the same stack that could be finished are
+  written, and only the refused ones stay recorded.
 - The state changed between planning and writing: re-run `cdkd refactor`.
 - A mapping-file pair is not a removed and an added resource of one type, or
   its properties changed.

@@ -1,5 +1,5 @@
 import { refusePendingMovesOut } from '../../state/pending-moves.js';
-import { readRefactorMarkerOnce, refuseRefactorMarker } from '../../state/refactor-marker.js';
+import { readRefactorMarker, refuseRefactorMarker } from '../../state/refactor-marker.js';
 import { retryCarriedSupersededResources } from './superseded-retry.js';
 import { supersededResourcesOf } from '../superseded-resources.js';
 import {
@@ -224,9 +224,13 @@ export async function doDeployWithPrefetch(
       engine.stateBackend.loadRollbackJournal(stackName, engine.stackRegion)
     );
     journalRead.catch(() => undefined);
-    // The refactor marker (go-to-k/cdkd#5212) is read beside it too.
-    const refactorMarker = readRefactorMarkerOnce(engine.stateBackend);
-    const currentStateData = await engine.stateBackend.getState(stackName, engine.stackRegion);
+    // The refactor marker (go-to-k/cdkd#5212) is read beside the state too,
+    // under this stack's lock, so it adds no wait and cannot be older than the
+    // lock: a refactor that started after this run did is seen.
+    const [currentStateData, refactorMarker] = await Promise.all([
+      engine.stateBackend.getState(stackName, engine.stackRegion),
+      readRefactorMarker(engine.stateBackend),
+    ]);
     clock.lap('state load');
     // The create-token ledger replaces one that outlived its state record
     // (go-to-k/cdkd#4438).
@@ -389,7 +393,7 @@ export async function doDeployWithPrefetch(
     refusePendingMovesOut(currentState, stackName, engine.stackRegion, 'cdkd deploy');
     // And a move whose DESTINATION is this stack: its record knows nothing of
     // the move, and this deploy would create the resource a second time.
-    refuseRefactorMarker(await refactorMarker, stackName, engine.stackRegion, 'cdkd deploy');
+    refuseRefactorMarker(refactorMarker, stackName, engine.stackRegion, 'cdkd deploy');
     // State schema v12: the loaded outputs bag and its provenance, for a save
     // that carries that bag forward. After the refusals, which own the first
     // read of the bag.
