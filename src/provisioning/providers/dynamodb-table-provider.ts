@@ -1,3 +1,4 @@
+import { timePhase } from '../../utils/phase-timings.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
   DynamoDBClient,
@@ -2201,7 +2202,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
       this.logger.debug(`CreateTable initiated for ${tableName}, waiting for ACTIVE status`);
 
       // Poll until table is ACTIVE
-      const tableInfo = await this.waitForTableActive(tableName);
+      // go-to-k/cdkd#5200: inert unless CDKD_PHASE_TIMINGS=1.
+      const tableInfo = await timePhase(
+        'provider waits',
+        'DynamoDB table: wait for ACTIVE',
+        () => this.waitForTableActive(tableName),
+        logicalId
+      );
 
       // PointInTimeRecoverySpecification and TimeToLiveSpecification do NOT
       // ride on CreateTable — both are separate post-ACTIVE API calls

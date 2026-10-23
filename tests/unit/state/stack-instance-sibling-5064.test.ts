@@ -312,6 +312,82 @@ describe('the stack-instance.json sibling (go-to-k/cdkd#5064)', () => {
     });
   });
 
+  describe('prefetchStackInstanceSibling (#5200)', () => {
+    it('serves the first write its read, so the write makes no second read', async () => {
+      const { client, sent } = makeClient({ [`GetObjectCommand ${SIBLING_KEY}`]: noSuchKey });
+      const backend = backendFor(client);
+      backend.prefetchStackInstanceSibling(STACK, REGION);
+      const id = await backend.stackInstanceIdForFirstWrite(STACK, REGION, { writeAhead: true });
+      expect(isStackInstanceId(id)).toBe(true);
+      expect(callsTo(sent, 'GetObjectCommand', SIBLING_KEY)).toHaveLength(1);
+      expect(callsTo(sent, 'PutObjectCommand', SIBLING_KEY)).toHaveLength(1);
+    });
+
+    it('a prefetched id an earlier run wrote is reused, and nothing is written', async () => {
+      const { client, sent } = makeClient({
+        [`GetObjectCommand ${SIBLING_KEY}`]: () => bodyOf(stackInstanceSiblingBody(EARLIER_ID)),
+      });
+      const backend = backendFor(client);
+      backend.prefetchStackInstanceSibling(STACK, REGION);
+      await expect(
+        backend.stackInstanceIdForFirstWrite(STACK, REGION, { writeAhead: true })
+      ).resolves.toBe(EARLIER_ID);
+      expect(callsTo(sent, 'PutObjectCommand', SIBLING_KEY)).toHaveLength(0);
+    });
+
+    it('a prefetched read that failed refuses at the write, as an unprefetched one does', async () => {
+      const { client, sent } = makeClient({
+        [`GetObjectCommand ${SIBLING_KEY}`]: () => {
+          throw Object.assign(new Error('Access Denied'), {
+            name: 'AccessDenied',
+            $metadata: { httpStatusCode: 403 },
+          });
+        },
+      });
+      const backend = backendFor(client);
+      backend.prefetchStackInstanceSibling(STACK, REGION);
+      await expect(
+        backend.stackInstanceIdForFirstWrite(STACK, REGION, { writeAhead: true })
+      ).rejects.toBeInstanceOf(StateError);
+      expect(callsTo(sent, 'PutObjectCommand', SIBLING_KEY)).toHaveLength(0);
+    });
+
+    it('is consumed once: a second first-write reads the sibling afresh', async () => {
+      let reads = 0;
+      const { client, sent } = makeClient({
+        [`GetObjectCommand ${SIBLING_KEY}`]: () => {
+          reads += 1;
+          return reads === 1 ? noSuchKey() : bodyOf(stackInstanceSiblingBody(EARLIER_ID));
+        },
+      });
+      const backend = backendFor(client);
+      backend.prefetchStackInstanceSibling(STACK, REGION);
+      await backend.stackInstanceIdForFirstWrite(STACK, REGION, { writeAhead: true });
+      // A stale prefetch ("absent") would mint a second id here.
+      await expect(
+        backend.stackInstanceIdForFirstWrite(STACK, REGION, { writeAhead: true })
+      ).resolves.toBe(EARLIER_ID);
+      expect(callsTo(sent, 'GetObjectCommand', SIBLING_KEY)).toHaveLength(2);
+    });
+
+    it('a lost race still reads the winner back afresh', async () => {
+      let reads = 0;
+      const { client, sent } = makeClient({
+        [`GetObjectCommand ${SIBLING_KEY}`]: () => {
+          reads += 1;
+          return reads === 1 ? noSuchKey() : bodyOf(stackInstanceSiblingBody(EARLIER_ID));
+        },
+        [`PutObjectCommand ${SIBLING_KEY}`]: preconditionFailed,
+      });
+      const backend = backendFor(client);
+      backend.prefetchStackInstanceSibling(STACK, REGION);
+      await expect(
+        backend.stackInstanceIdForFirstWrite(STACK, REGION, { writeAhead: true })
+      ).resolves.toBe(EARLIER_ID);
+      expect(callsTo(sent, 'GetObjectCommand', SIBLING_KEY)).toHaveLength(2);
+    });
+  });
+
   describe('readStackInstanceSibling (read only)', () => {
     it('returns the id an earlier run wrote ahead with one read: no mint, no write, no post-save delete', async () => {
       const { client, sent } = makeClient({
@@ -392,6 +468,109 @@ describe('the stack-instance.json sibling (go-to-k/cdkd#5064)', () => {
         expectedEtag: '"e0"',
       });
       expect(sent.map((c) => c.name)).toEqual(['PutObjectCommand']);
+    });
+
+    it('a sibling this process wrote is removed by deleting its version, then purged (#5200)', async () => {
+      const { client, sent } = makeClient({
+        [`GetObjectCommand ${SIBLING_KEY}`]: noSuchKey,
+        [`PutObjectCommand ${SIBLING_KEY}`]: () => ({ VersionId: 'v-sibling-1' }),
+        [`PutObjectCommand ${STATE_KEY}`]: () => ({ ETag: '"e1"' }),
+      });
+      const backend = backendFor(client);
+      const id = await backend.stackInstanceIdForFirstWrite(STACK, REGION, { writeAhead: true });
+      await backend.saveState(STACK, REGION, state(id));
+      const deletes = callsTo(sent, 'DeleteObjectCommand', SIBLING_KEY);
+      expect(deletes).toHaveLength(1);
+      expect(deletes[0]!.input['VersionId']).toBe('v-sibling-1');
+      // No plain delete (no delete marker), and the earlier lifetimes'
+      // versions are still purged.
+      expect(
+        sent.some((c) => c.name === 'ListObjectVersionsCommand' && c.input['Prefix'] === SIBLING_KEY)
+      ).toBe(true);
+    });
+
+    it('a failed version delete falls back to the delete and the version purge', async () => {
+      const { client, sent } = makeClient({
+        [`GetObjectCommand ${SIBLING_KEY}`]: noSuchKey,
+        [`PutObjectCommand ${SIBLING_KEY}`]: () => ({ VersionId: 'v-sibling-1' }),
+        [`PutObjectCommand ${STATE_KEY}`]: () => ({ ETag: '"e1"' }),
+        [`DeleteObjectCommand ${SIBLING_KEY}`]: (input) => {
+          if (input['VersionId'] !== undefined) {
+            throw Object.assign(new Error('Access Denied'), {
+              name: 'AccessDenied',
+              $metadata: { httpStatusCode: 403 },
+            });
+          }
+          return {};
+        },
+      });
+      const backend = backendFor(client);
+      const id = await backend.stackInstanceIdForFirstWrite(STACK, REGION, { writeAhead: true });
+      await backend.saveState(STACK, REGION, state(id));
+      const deletes = callsTo(sent, 'DeleteObjectCommand', SIBLING_KEY);
+      expect(deletes.map((c) => c.input['VersionId'])).toEqual(['v-sibling-1', undefined]);
+      expect(
+        sent.some((c) => c.name === 'ListObjectVersionsCommand' && c.input['Prefix'] === SIBLING_KEY)
+      ).toBe(true);
+    });
+
+    it('a REUSED sibling (an earlier run wrote it) takes the delete and the version purge', async () => {
+      const { client, sent } = makeClient({
+        [`GetObjectCommand ${SIBLING_KEY}`]: () => bodyOf(stackInstanceSiblingBody(EARLIER_ID)),
+        [`PutObjectCommand ${STATE_KEY}`]: () => ({ ETag: '"e1"' }),
+      });
+      const backend = backendFor(client);
+      const id = await backend.stackInstanceIdForFirstWrite(STACK, REGION, { writeAhead: true });
+      await backend.saveState(STACK, REGION, state(id));
+      expect(callsTo(sent, 'DeleteObjectCommand', SIBLING_KEY)[0]!.input['VersionId']).toBeUndefined();
+      expect(
+        sent.some((c) => c.name === 'ListObjectVersionsCommand' && c.input['Prefix'] === SIBLING_KEY)
+      ).toBe(true);
+    });
+
+    it('with deferCleanup, returns after the PUT and hands the sibling delete over (#5200)', async () => {
+      let releaseDelete!: () => void;
+      const deleteHeld = new Promise<void>((r) => {
+        releaseDelete = r;
+      });
+      const { client, sent } = makeClient({
+        [`GetObjectCommand ${SIBLING_KEY}`]: noSuchKey,
+        [`PutObjectCommand ${STATE_KEY}`]: () => ({ ETag: '"e1"' }),
+        [`DeleteObjectCommand ${SIBLING_KEY}`]: async () => {
+          await deleteHeld;
+          return {};
+        },
+      });
+      const backend = backendFor(client);
+      const id = await backend.stackInstanceIdForFirstWrite(STACK, REGION, { writeAhead: true });
+      let handed: Promise<void> | undefined;
+      // Resolves although the sibling delete is still held open.
+      await expect(
+        backend.saveState(STACK, REGION, state(id), {
+          deferCleanup: (cleanup) => {
+            handed = cleanup;
+          },
+        })
+      ).resolves.toBe('"e1"');
+      expect(handed).toBeDefined();
+      expect(callsTo(sent, 'DeleteObjectCommand', SIBLING_KEY)).toHaveLength(1);
+      releaseDelete();
+      await handed;
+      expect(
+        sent.some((c) => c.name === 'ListObjectVersionsCommand' && c.input['Prefix'] === SIBLING_KEY)
+      ).toBe(true);
+    });
+
+    it('with deferCleanup, a save with no sibling to drop hands nothing over', async () => {
+      const { client } = makeClient({
+        [`PutObjectCommand ${STATE_KEY}`]: () => ({ ETag: '"e1"' }),
+      });
+      const deferCleanup = vi.fn();
+      await backendFor(client).saveState(STACK, REGION, state(EARLIER_ID), {
+        expectedEtag: '"e0"',
+        deferCleanup,
+      });
+      expect(deferCleanup).not.toHaveBeenCalled();
     });
 
     it('a failed sibling delete does not fail the save', async () => {

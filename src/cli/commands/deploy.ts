@@ -16,6 +16,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { PhaseClock, renderPhaseTimings, timePhase } from '../../utils/phase-timings.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
 import { nullPrototypeRecord } from '../../utils/own-keys.js';
@@ -190,9 +191,14 @@ async function deployCommand(
     requireApproval?: RequireApprovalLevel;
   }
 ): Promise<void> {
+  // go-to-k/cdkd#5200: inert unless CDKD_PHASE_TIMINGS=1. The first lap runs
+  // from the process's start, so it holds Node's startup and the module load.
+  const runClock = new PhaseClock('run', { fromProcessStart: true });
+  runClock.lap('node startup + module load');
   // Awaited first, so provider construction below stays synchronous once the
   // stack client scope / globals are set (see `loadProviderClasses`).
   const providerClasses = await loadProviderClasses();
+  runClock.lap('provider load');
   const logger = getLogger();
 
   if (options.verbose) {
@@ -418,6 +424,25 @@ async function deployCommand(
     return { stateBucket, preflightStateBackend, exportIndexStore };
   })();
 
+  // The account id the asset destinations are named from. It needs only the
+  // region and the credentials, so it is asked beside synthesis rather than
+  // after it (go-to-k/cdkd#5200); awaited where it is used, so a failure is
+  // reported at the same point as before.
+  const callerIdentityPromise = (async () => {
+    const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
+    const stsClient = new STSClient({
+      ...awsClientDefaults(),
+      region,
+    });
+    try {
+      return await stsClient.send(new GetCallerIdentityCommand({}));
+    } finally {
+      stsClient.destroy();
+    }
+  })();
+  // Handled where it is awaited; a run that fails before then never reads it.
+  callerIdentityPromise.catch(() => undefined);
+
   let deployInterrupted = false;
   const topLevelSigintHandler = () => {
     if (deployInterrupted) {
@@ -481,10 +506,14 @@ async function deployCommand(
       // slow this deploy with a CFn round-trip.
       deferMacroExpansion: true,
     };
+    runClock.lap('config, region, credentials');
     const [result, statePrep] = await Promise.all([
-      synthesizer.synthesize(synthOptions),
-      statePrepPromise,
+      timePhase('run', 'synth (beside the state bucket prep)', () =>
+        synthesizer.synthesize(synthOptions)
+      ),
+      timePhase('run', 'state bucket prep (beside synth)', () => statePrepPromise),
     ]);
+    runClock.lap('synth + state bucket prep');
     const { stateBucket, preflightStateBackend, exportIndexStore } = statePrep;
     preflightBackendForCleanup = preflightStateBackend;
     // The deferred macro-expander (expandMacrosForStacks, below) needs the
@@ -753,17 +782,13 @@ async function deployCommand(
     // macro injecting an ImportValue) no longer contributes an
     // inferred edge — expansion requires selection, which requires the
     // inference, so the cycle is broken in favor of selection scoping.
+    runClock.lap('stack selection, stack regions');
     await synthesizer.expandMacrosForStacks(targetStacks, synthOptions);
+    runClock.lap('macro expansion');
 
     // 3. Build work graph: asset-publish → stack deploy (DAG)
-    const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-    const stsClient = new STSClient({
-      ...awsClientDefaults(),
-      region,
-    });
-    const callerIdentity = await stsClient.send(new GetCallerIdentityCommand({}));
-    const accountId = callerIdentity.Account!;
-    stsClient.destroy();
+    const accountId = (await callerIdentityPromise).Account!;
+    runClock.lap('caller identity');
 
     const assetPublisher = new AssetPublisher();
     // Issue #1002 — per-region asset-mode detection (legacy vs cdkd-assets).
@@ -1626,6 +1651,7 @@ async function deployCommand(
       }
     }
 
+    runClock.lap('work graph build, recreate checks');
     // Execute work graph
     await workGraph.execute(
       {
@@ -1635,7 +1661,7 @@ async function deployCommand(
       },
       async (node) => {
         if (node.type === 'asset-build' || node.type === 'asset-publish') {
-          await assetPublisher.executeNode(node);
+          await timePhase('run', node.type, () => assetPublisher.executeNode(node), node.id);
         } else {
           const { stack: stackInfo } = node.data as { stack: (typeof targetStacks)[0] };
 
@@ -1687,10 +1713,13 @@ async function deployCommand(
       );
     }
   } finally {
+    runClock.lap('assets + stacks, summary');
     unforwardSigterm();
     process.removeListener('SIGINT', topLevelSigintHandler);
     awsClients.destroy();
     preflightBackendForCleanup?.destroyClient();
+    // go-to-k/cdkd#5200: on every path, so a failed deploy reports too.
+    for (const line of renderPhaseTimings()) logger.info(line);
   }
 }
 

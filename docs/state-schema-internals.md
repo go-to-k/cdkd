@@ -1309,16 +1309,19 @@ cdkd never logs it, and `cdkd state show --json` prints `<withheld>` in its
 place.
 
 A first deploy writes `state.json` only at its end, so the id is first
-written to the `stack-instance.json` sibling: under the stack lock, once the
-deploy is going ahead (past the first deploy's state gate, the destructive-plan
-check and `--require-approval`, so a refused or declined deploy writes
-nothing) and before its first save and first create, the deploy reads the
-sibling and reuses its id, or mints one and writes it with `If-None-Match: *`
-(a 409 is retried once; a lost race reads the winner back). A re-run after a crash
+written to the `stack-instance.json` sibling. Under the stack lock, the deploy
+reads the sibling beside its diff, and once it is going ahead (past the first
+deploy's state gate, the destructive-plan check and `--require-approval`, so a
+refused or declined deploy writes nothing) and before its first save and first
+create, it reuses the id that read found, or mints one and writes it with
+`If-None-Match: *` (a 409 is retried once; a lost race reads the winner back). A re-run after a crash
 therefore reuses the id and never mints a fresh one. The sibling is read only
 while `state.json` is absent, so a deploy of a stack with a record makes no
 extra call; `--dry-run` reads and writes nothing. The first state save
-carrying the id deletes the sibling and purges its earlier versions;
+carrying the id deletes the sibling: the one version this deploy wrote, when
+it wrote one, else the object and its earlier versions. A deploy runs that
+delete beside its post-save writes and finishes it before the lock is
+released;
 `deleteState` deletes it too, before the record and fail-closed, so a stack
 created again gets a new id. A sibling this binary cannot read refuses the
 deploy, naming the stack. `cdkd import` creating a record reads the sibling

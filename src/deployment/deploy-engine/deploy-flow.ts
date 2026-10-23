@@ -27,6 +27,7 @@ import {
   settleJournalAfterSuccess,
 } from './rollback.js';
 import { journalCanOwnResources } from '../../state/cross-prefix-stack-scan.js';
+import { PhaseClock, phaseScopeForStack } from '../../utils/phase-timings.js';
 import { loadKeptInHistory } from '../kept-in-history.js';
 import { DeploymentEventsReader } from '../../state/deployment-events-store.js';
 import { poisonRenderedSpellingsCollidingIn } from '../intrinsic-resolver/parameter-secrets.js';
@@ -135,6 +136,8 @@ export async function doDeployWithPrefetch(
   createOnlyPrefetch: CreateOnlyPrefetch
 ): Promise<DeployResult> {
   const startTime = Date.now();
+  // go-to-k/cdkd#5200: inert unless CDKD_PHASE_TIMINGS=1.
+  const clock = new PhaseClock(phaseScopeForStack(stackName, engine.stackRegion));
   engine.logger.debug(safeMsg`Starting deployment for stack: ${displayStackName(stackName)}`);
 
   // Live progress renderer: shows in-flight resources as a multi-line area
@@ -185,6 +188,7 @@ export async function doDeployWithPrefetch(
     process.removeListener('SIGINT', sigintHandler);
     throw error;
   }
+  clock.lap('lock acquire');
 
   // go-to-k/cdkd#4705 review P4 / G-6: a first deploy's state gate runs
   // overlapped with the work before the plan is acted on. When that work
@@ -194,6 +198,10 @@ export async function doDeployWithPrefetch(
   // The exports index read step 1b starts (#4837); awaited before the lock
   // goes, like the journal purge. Never rejects.
   let exportsPrefetch: Promise<void> | undefined;
+  // The final save's background cleanup (go-to-k/cdkd#5200): on a first
+  // deploy, the write-ahead instance id's sibling. Awaited beside the
+  // post-save writes and again before the lock goes. Never rejects.
+  let finalSaveCleanup: Promise<void> | undefined;
   // go-to-k/cdkd#4705: this run found no record (a first deploy), and it
   // failed -- the `finally` then checks whether it left one.
   let firstDeploy = false;
@@ -206,8 +214,16 @@ export async function doDeployWithPrefetch(
     // commands had the identical shape and only one of them was fixed.
     renderer.start();
 
-    // 1. Load current state
+    // 1. Load current state. The rollback journal step 1b reads is read
+    // beside it (go-to-k/cdkd#5200): both are reads under the lock, and
+    // nothing between the two writes the journal. Its failure is 1b's to
+    // handle, so it is caught here and rethrown there.
+    const journalRead = Promise.resolve().then(() =>
+      engine.stateBackend.loadRollbackJournal(stackName, engine.stackRegion)
+    );
+    journalRead.catch(() => undefined);
     const currentStateData = await engine.stateBackend.getState(stackName, engine.stackRegion);
+    clock.lap('state load');
     // The create-token ledger replaces one that outlived its state record
     // (go-to-k/cdkd#4438).
     noteDeployStateRecord(currentStateData?.state !== undefined);
@@ -260,6 +276,12 @@ export async function doDeployWithPrefetch(
     // Its failure is the guard's to report (it refuses on unreadable
     // evidence); the warning below only reads a successful answer.
     const retainedForWarning = retainedAtFirstDeploy?.catch(() => null);
+    // go-to-k/cdkd#5200: the read `resolveStackInstanceId` opens with, started
+    // now so it overlaps the diff; the write-ahead itself still waits for the
+    // approval. Optional for the test doubles.
+    if (idArrivesLater && !engine.options.dryRun) {
+      engine.stateBackend.prefetchStackInstanceSibling?.(stackName, engine.stackRegion);
+    }
     engine.rebaseline(currentState.resources ?? {});
     engine.runProducerRegionEvidence = () =>
       producerRegionEvidence(engine.rollbackDeps(), currentState);
@@ -392,6 +414,7 @@ export async function doDeployWithPrefetch(
         await gate;
       }
     }
+    clock.lap('state checks + loaded-state gate');
 
     // go-to-k/cdkd#4837: reads and a purge the success path would otherwise
     // make after the last resource, started here beside the deploy instead
@@ -428,7 +451,7 @@ export async function doDeployWithPrefetch(
     let journalAtStart: Awaited<ReturnType<typeof engine.stateBackend.loadRollbackJournal>> = null;
     let journalReadError: unknown;
     try {
-      journalAtStart = await engine.stateBackend.loadRollbackJournal(stackName, engine.stackRegion);
+      journalAtStart = await journalRead;
     } catch (error) {
       journalReadError = error ?? new Error('unreadable rollback journal');
     }
@@ -915,6 +938,7 @@ export async function doDeployWithPrefetch(
       sources: maskedInputSourcesForDiff,
       rebaselined: new Map<string, Record<string, string>>(),
     };
+    clock.lap('journal, parameters, conditions, DAG build');
     const changes = await engine.diffCalculator.calculateDiff(
       currentState,
       effectiveTemplate,
@@ -1012,6 +1036,7 @@ export async function doDeployWithPrefetch(
         ),
       }
     );
+    clock.lap('diff');
     // The diff was the prefetch's only consumer: withdraw what it did not
     // need, so it stops spending the account's DescribeType quota that the
     // deploy's own (write-only) lookups draw on.
@@ -1190,6 +1215,7 @@ export async function doDeployWithPrefetch(
     };
     const hasChanges = engine.diffCalculator.hasChanges(changes);
 
+    clock.lap('post-diff checks');
     if (!hasChanges) {
       engine.logger.info('No changes detected. Stack is up to date.');
       startProvenanceCapture();
@@ -1581,6 +1607,7 @@ export async function doDeployWithPrefetch(
             currentState.resources,
             currentEtag === undefined
           );
+      clock.lap('no-change path');
 
       return {
         stackName,
@@ -1773,6 +1800,7 @@ export async function doDeployWithPrefetch(
     // ({@link IntrinsicFunctionResolver.getPhysicalIdFallbackCount}).
     engine.resolver.resetPhysicalIdFallbackCount();
 
+    clock.lap('plan checks, approval');
     await resolveStackInstanceId();
     if (idArrivesLater) {
       startGeneratedNameGuard();
@@ -1794,6 +1822,7 @@ export async function doDeployWithPrefetch(
     const totalOperations = createChanges.length + updateChanges.length + deleteChanges.length;
     const progress = { current: 0, total: totalOperations };
 
+    clock.lap('first-deploy instance id, name guard');
     // 6. Execute deployment (event-driven DAG dispatch with partial state saves)
     const {
       state: newState,
@@ -1821,6 +1850,7 @@ export async function doDeployWithPrefetch(
           )
         )
     );
+    clock.lap('resource DAG');
 
     // 7a. Drain in-flight readCurrentState promises so each resource's
     // observedProperties lands in newState before we persist it. By
@@ -1840,6 +1870,7 @@ export async function doDeployWithPrefetch(
       // Best-effort: never in the way of the save it serves.
     }
     await engine.observedCapture.drainObservedCaptures(newState.resources);
+    clock.lap('observed-state drain');
 
     // A part the drain cap stopped waiting for can record its secret after
     // the outputs pass redacted `newState.outputs`, and the drain above is
@@ -1867,11 +1898,17 @@ export async function doDeployWithPrefetch(
         // The record joins here, on the save that ends a successful deploy
         // (go-to-k/cdkd#4479): `executeDeployment` builds its states field by
         // field, so none of its saves carries it.
-        engine.withParentInfo(conditionVerdicts ? { ...newState, conditionVerdicts } : newState)
+        engine.withParentInfo(conditionVerdicts ? { ...newState, conditionVerdicts } : newState),
+        {
+          deferCleanup: (cleanup) => {
+            finalSaveCleanup = cleanup;
+          },
+        }
       ),
       flushKeptForReadoption(engine),
     ]);
     engine.logger.debug(safeMsg`State saved (ETag: ${newEtag})`);
+    clock.lap('final state save');
     // go-to-k/cdkd#4438: the record now names every resource this deploy
     // created, so their create-token `sent` entries have done their job.
     // go-to-k/cdkd#4705: likewise a kept resource this deploy took back: its
@@ -1955,7 +1992,9 @@ export async function doDeployWithPrefetch(
           )
         : Promise.resolve(),
       ledgerAndKeptCleanup,
+      finalSaveCleanup,
     ]);
+    clock.lap('journal settle, exports index');
 
     const durationMs = Date.now() - startTime;
     const unchangedCount =
@@ -2037,7 +2076,7 @@ export async function doDeployWithPrefetch(
     // finishes before the lock goes and before the caller destroys the
     // client, on every path, not only the success settle that awaits the
     // purge. Neither rejects.
-    await Promise.all([engine.absentJournalVersionPurge, exportsPrefetch]);
+    await Promise.all([engine.absentJournalVersionPurge, exportsPrefetch, finalSaveCleanup]);
 
     // go-to-k/cdkd#4705: a first deploy that failed and left nothing that can
     // own a resource -- no record, and no rollback journal holding a completed
@@ -2078,5 +2117,6 @@ export async function doDeployWithPrefetch(
         safeMsg`Failed to release lock: ${asIsMessage(describeAwsFailure(lockError).detail)}`
       );
     }
+    clock.lap('teardown + lock release');
   }
 }

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { timePhase, timePhaseSync } from '../utils/phase-timings.js';
 import {
   S3Client,
   GetObjectCommand,
@@ -251,6 +252,10 @@ export class S3StateBackend {
    * process read or wrote holds, until a state save carrying it deletes it.
    */
   private readonly pendingStackInstanceSiblings = new Map<string, string>();
+  /** {@link prefetchStackInstanceSibling}'s reads, by sibling key; each taken once. */
+  private readonly siblingPrefetches = new Map<string, Promise<string | null>>();
+  /** The version each sibling this process wrote got, by sibling key (go-to-k/cdkd#5200). */
+  private readonly siblingVersionsWritten = new Map<string, string>();
 
   constructor(s3Client: S3Client, config: StateBackendConfig, clientOpts: S3ClientOptions = {}) {
     this.s3Client = s3Client;
@@ -726,14 +731,22 @@ export class S3StateBackend {
    * @param stackName Stack name
    * @param region Target region (load-bearing — part of the S3 key)
    * @param state State to save
-   * @param options Optimistic-lock ETag + legacy-migration flag
+   * @param options Optimistic-lock ETag + legacy-migration flag.
+   *   `deferCleanup`: the write-ahead stack instance id's sibling, which a
+   *   save carrying that id makes obsolete, is deleted in the background and
+   *   its promise handed here instead of awaited (go-to-k/cdkd#5200). The
+   *   caller awaits it before it releases the stack lock. It never rejects.
    * @returns New ETag (with quotes, e.g., `"abc123"`)
    */
   async saveState(
     stackName: string,
     region: string,
     state: StackState,
-    options: { expectedEtag?: string; migrateLegacy?: boolean } = {}
+    options: {
+      expectedEtag?: string;
+      migrateLegacy?: boolean;
+      deferCleanup?: (cleanup: Promise<void>) => void;
+    } = {}
   ): Promise<string> {
     await this.ensureClientForBucket();
     const newKey = this.getStateKey(stackName, region);
@@ -753,19 +766,24 @@ export class S3StateBackend {
         `Saving state: ${this.stackRef(stackName, region)}${expectedEtag ? `, expected ETag: ${expectedEtag}` : ''}`
       );
 
-      const bodyString = JSON.stringify(body, null, 2);
-      const response = await this.s3Client.send(
-        new PutObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: newKey,
-          Body: bodyString,
-          ContentLength: Buffer.byteLength(bodyString),
-          ContentType: 'application/json',
-          // The legacy ETag is for a different key; only forward it when we're
-          // updating in-place at the new key.
-          ...(!migrateLegacy && expectedEtag && { IfMatch: expectedEtag }),
-        })
+      // go-to-k/cdkd#5200: inert unless CDKD_PHASE_TIMINGS=1.
+      const bodyString = timePhaseSync('state saves (every stack)', 'serialize', () =>
+        JSON.stringify(body, null, 2)
+      );
+      const response = await timePhase('state saves (every stack)', 'put state.json', async () =>
+        this.s3Client.send(
+          new PutObjectCommand({
+            Bucket: this.config.bucket,
+            ...(await this.ownerParam()),
+            Key: newKey,
+            Body: bodyString,
+            ContentLength: Buffer.byteLength(bodyString),
+            ContentType: 'application/json',
+            // The legacy ETag is for a different key; only forward it when we're
+            // updating in-place at the new key.
+            ...(!migrateLegacy && expectedEtag && { IfMatch: expectedEtag }),
+          })
+        )
       );
 
       if (!response.ETag) {
@@ -800,18 +818,29 @@ export class S3StateBackend {
         }
       }
 
-      // The create-token ledger records that this lineage has a state record
-      // (go-to-k/cdkd#4438). Never throws.
-      await notifyStateSaved(stackName, region);
       // go-to-k/cdkd#5064: the record now carries the write-ahead id, so its
       // sibling has done its job. Only when the saved body carries THAT id:
-      // a save without it leaves the sibling for the re-run to read.
+      // a save without it leaves the sibling for the re-run to read. Started
+      // before the ledger mark below, which writes a different object.
+      // Never rejects.
       const siblingKey = this.getStackInstanceKey(stackName, region);
       const pendingId = this.pendingStackInstanceSiblings.get(siblingKey);
+      let siblingCleanup: Promise<void> | undefined;
       if (pendingId !== undefined && body.stackInstanceId === pendingId) {
         this.pendingStackInstanceSiblings.delete(siblingKey);
-        await this.dropStackInstanceSiblingAfterSave(stackName, region);
+        siblingCleanup = timePhase(
+          'state saves (every stack)',
+          'after save: drop instance-id sibling',
+          () => this.dropStackInstanceSiblingAfterSave(stackName, region)
+        );
+        if (options.deferCleanup !== undefined) options.deferCleanup(siblingCleanup);
       }
+      // The create-token ledger records that this lineage has a state record
+      // (go-to-k/cdkd#4438). Never throws.
+      await timePhase('state saves (every stack)', 'after save: ledger mark', () =>
+        notifyStateSaved(stackName, region)
+      );
+      if (options.deferCleanup === undefined) await siblingCleanup;
       return response.ETag;
     } catch (error) {
       if ((error as { name: string }).name === 'PreconditionFailed') {
@@ -2087,8 +2116,11 @@ export class S3StateBackend {
   ): Promise<string> {
     const key = this.getStackInstanceKey(stackName, region);
     const read = async (): Promise<string | null> => this.readSiblingId(key, stackName, region);
+    // The first read only: a lost race below reads the winner back afresh.
+    const prefetched = this.siblingPrefetches.get(key);
+    this.siblingPrefetches.delete(key);
     try {
-      const existing = await read();
+      const existing = await (prefetched ?? read());
       if (existing !== null) {
         this.pendingStackInstanceSiblings.set(key, existing);
         this.logger.debug(
@@ -2100,7 +2132,7 @@ export class S3StateBackend {
       if (!options.writeAhead) return minted;
       await this.ensureClientForBucket();
       const body = stackInstanceSiblingBody(minted);
-      const put = async (): Promise<unknown> =>
+      const put = async (): Promise<{ VersionId?: string | undefined }> =>
         this.s3Client.send(
           new PutObjectCommand({
             Bucket: this.config.bucket,
@@ -2112,14 +2144,15 @@ export class S3StateBackend {
             IfNoneMatch: '*',
           })
         );
+      let written: { VersionId?: string | undefined } | undefined;
       try {
         try {
-          await put();
+          written = await put();
         } catch (error) {
           // 409 ConditionalRequestConflict is a concurrent write in flight, not
           // "one exists": asked once more, it answers (as `ensureRetainedTombstone`).
           if (!isConditionalConflict(error)) throw error;
-          await put();
+          written = await put();
         }
       } catch (error) {
         if (isNotImplemented(error)) {
@@ -2137,6 +2170,12 @@ export class S3StateBackend {
         return winner;
       }
       this.pendingStackInstanceSiblings.set(key, minted);
+      // The ONE version of the sibling, which this write created: the post-save
+      // drop removes exactly it (go-to-k/cdkd#5200).
+      const versionId = written?.VersionId;
+      if (typeof versionId === 'string' && versionId !== '' && versionId !== 'null') {
+        this.siblingVersionsWritten.set(key, versionId);
+      }
       return minted;
     } catch (error) {
       if (error instanceof StateError) throw error;
@@ -2164,6 +2203,21 @@ export class S3StateBackend {
           : 'Nothing was changed; re-run once the state bucket can be read.'),
       normalized
     );
+  }
+
+  /**
+   * Start the read {@link stackInstanceIdForFirstWrite} opens with, so a
+   * first deploy's read overlaps its diff instead of waiting for the approval
+   * (go-to-k/cdkd#5200). The caller holds the stack lock, and only a lock
+   * holder writes the sibling, so the answer is still current when the write
+   * consults it. A failure is reported there, as an unprefetched read's is.
+   */
+  prefetchStackInstanceSibling(stackName: string, region: string): void {
+    const key = this.getStackInstanceKey(stackName, region);
+    if (this.siblingPrefetches.has(key)) return;
+    const read = this.readSiblingId(key, stackName, region);
+    read.catch(() => undefined);
+    this.siblingPrefetches.set(key, read);
   }
 
   /** The id the sibling at `key` holds, `null` when absent; a body this binary cannot read throws. */
@@ -2251,13 +2305,43 @@ export class S3StateBackend {
     stackName: string,
     region: string
   ): Promise<void> {
-    try {
-      await this.deleteStackInstanceSibling(stackName, region);
-    } catch (error) {
-      this.logger.debug(
-        safeMsg`Could not delete the write-ahead stack instance id of ${displayStackName(stackName)}: ${describeAwsFailure(error).summary}`
-      );
-      return;
+    // go-to-k/cdkd#5200: a sibling this process wrote is deleted by the
+    // version its write created, which removes it without writing a delete
+    // marker. Its `If-None-Match: *` write succeeded, so nothing current sat
+    // under it (at most an earlier lifetime's delete marker), and removing it
+    // brings no older copy back. The purge below still runs, for versions an
+    // earlier lifetime's purge left. Any doubt takes the general path.
+    const key = this.getStackInstanceKey(stackName, region);
+    const versionId = this.siblingVersionsWritten.get(key);
+    this.siblingVersionsWritten.delete(key);
+    let deleted = false;
+    if (versionId !== undefined) {
+      try {
+        await this.ensureClientForBucket();
+        await this.s3Client.send(
+          new DeleteObjectCommand({
+            Bucket: this.config.bucket,
+            ...(await this.ownerParam()),
+            Key: key,
+            VersionId: versionId,
+          })
+        );
+        deleted = true;
+      } catch (error) {
+        this.logger.debug(
+          safeMsg`Could not delete the written version of the write-ahead stack instance id of ${displayStackName(stackName)}: ${describeAwsFailure(error).summary}`
+        );
+      }
+    }
+    if (!deleted) {
+      try {
+        await this.deleteStackInstanceSibling(stackName, region);
+      } catch (error) {
+        this.logger.debug(
+          safeMsg`Could not delete the write-ahead stack instance id of ${displayStackName(stackName)}: ${describeAwsFailure(error).summary}`
+        );
+        return;
+      }
     }
     await this.purgeNoncurrentVersions([this.getStackInstanceKey(stackName, region)], {
       objectDescription: STACK_INSTANCE_OBJECT_DESCRIPTION,
