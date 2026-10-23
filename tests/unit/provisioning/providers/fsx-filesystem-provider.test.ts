@@ -2408,6 +2408,223 @@ describe('FSxFileSystemProvider update removal (#1160)', () => {
     ]);
   });
 
+  // The OpenZFS removals the CFn A/B on issue #1160 (2026-10-24) measured on
+  // ONE shape each: ThroughputCapacity on MULTI_AZ_1 SSD and INTELLIGENT_TIERING,
+  // ReadCacheConfiguration on MULTI_AZ_1 INTELLIGENT_TIERING, and
+  // EndpointIpv6AddressRange on MULTI_AZ_1 SSD in the same update as a
+  // NetworkType removal. Every other shape keeps the line claiming nothing.
+  const keepsLine = (names: string): string =>
+    names.includes(', ')
+      ? `MyFs (AWS::FSx::FileSystem): properties ${names} are no longer declared and keep their current AWS value, as CloudFormation leaves them; UpdateFileSystem keeps a setting it is not sent. Declare the intended value explicitly to change it.`
+      : `MyFs (AWS::FSx::FileSystem): property ${names} is no longer declared and keeps its current AWS value, as CloudFormation leaves it; UpdateFileSystem keeps a setting it is not sent. Declare the intended value explicitly to change it.`;
+  const neutralLine = (names: string): string =>
+    names.includes(', ')
+      ? `MyFs (AWS::FSx::FileSystem): properties ${names} are no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`
+      : `MyFs (AWS::FSx::FileSystem): property ${names} is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`;
+  const openZfs = (
+    deploymentType: string,
+    top: Record<string, unknown>,
+    sub: Record<string, unknown>
+  ): Record<string, unknown> => ({
+    ...OPENZFS_PROPS,
+    ...top,
+    OpenZFSConfiguration: { DeploymentType: deploymentType, ThroughputCapacity: 160, ...sub },
+  });
+  const IPV6_RANGE = 'fd00:ec2::/118';
+  const READ_CACHE = { SizingMode: 'USER_PROVISIONED', SizeGiB: 128 };
+
+  for (const [title, prev, desired, expected] of [
+    [
+      'ThroughputCapacity on MULTI_AZ_1 SSD',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, {}),
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, { ThroughputCapacity: undefined }),
+      keepsLine('OpenZFSConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'ThroughputCapacity on MULTI_AZ_1 INTELLIGENT_TIERING',
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, {}),
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, { ThroughputCapacity: undefined }),
+      keepsLine('OpenZFSConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'ThroughputCapacity on MULTI_AZ_1 with StorageType undeclared',
+      openZfs('MULTI_AZ_1', {}, {}),
+      openZfs('MULTI_AZ_1', {}, { ThroughputCapacity: undefined }),
+      keepsLine('OpenZFSConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'ThroughputCapacity on SINGLE_AZ_1 (unmeasured)',
+      openZfs('SINGLE_AZ_1', { StorageType: 'SSD' }, {}),
+      openZfs('SINGLE_AZ_1', { StorageType: 'SSD' }, { ThroughputCapacity: undefined }),
+      neutralLine('OpenZFSConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'ThroughputCapacity on SINGLE_AZ_HA_2 (unmeasured)',
+      openZfs('SINGLE_AZ_HA_2', {}, {}),
+      openZfs('SINGLE_AZ_HA_2', {}, { ThroughputCapacity: undefined }),
+      neutralLine('OpenZFSConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'ThroughputCapacity on MULTI_AZ_1 while StorageType changes in the same deploy (unmeasured)',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, {}),
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, { ThroughputCapacity: undefined }),
+      neutralLine('OpenZFSConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'ReadCacheConfiguration on MULTI_AZ_1 INTELLIGENT_TIERING',
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, { ReadCacheConfiguration: READ_CACHE }),
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, {}),
+      keepsLine('OpenZFSConfiguration.ReadCacheConfiguration'),
+    ],
+    [
+      'ReadCacheConfiguration on SINGLE_AZ_2 INTELLIGENT_TIERING (unmeasured)',
+      openZfs('SINGLE_AZ_2', { StorageType: 'INTELLIGENT_TIERING' }, { ReadCacheConfiguration: READ_CACHE }),
+      openZfs('SINGLE_AZ_2', { StorageType: 'INTELLIGENT_TIERING' }, {}),
+      neutralLine('OpenZFSConfiguration.ReadCacheConfiguration'),
+    ],
+    [
+      'ReadCacheConfiguration on MULTI_AZ_1 with StorageType undeclared (unmeasured)',
+      openZfs('MULTI_AZ_1', {}, { ReadCacheConfiguration: READ_CACHE }),
+      openZfs('MULTI_AZ_1', {}, {}),
+      neutralLine('OpenZFSConfiguration.ReadCacheConfiguration'),
+    ],
+    [
+      'ReadCacheConfiguration on MULTI_AZ_1 while StorageType leaves INTELLIGENT_TIERING (unmeasured)',
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, { ReadCacheConfiguration: READ_CACHE }),
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, {}),
+      neutralLine('OpenZFSConfiguration.ReadCacheConfiguration'),
+    ],
+    [
+      'ThroughputCapacity and ReadCacheConfiguration together on MULTI_AZ_1 INTELLIGENT_TIERING (unmeasured: each was removed alone)',
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, { ReadCacheConfiguration: READ_CACHE }),
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, { ThroughputCapacity: undefined }),
+      neutralLine('OpenZFSConfiguration.ThroughputCapacity, OpenZFSConfiguration.ReadCacheConfiguration'),
+    ],
+    [
+      'ThroughputCapacity beside a measured WeeklyMaintenanceStartTime removal on MULTI_AZ_1 SSD (unmeasured: removed alone)',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, { WeeklyMaintenanceStartTime: '1:05:00' }),
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, { ThroughputCapacity: undefined }),
+      neutralLine(
+        'OpenZFSConfiguration.ThroughputCapacity, OpenZFSConfiguration.WeeklyMaintenanceStartTime'
+      ),
+    ],
+    [
+      'ThroughputCapacity on MULTI_AZ_1 SSD while NetworkType stays DUAL (unmeasured: CloudFormation refused every such update)',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD', NetworkType: 'DUAL' }, {}),
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD', NetworkType: 'DUAL' }, { ThroughputCapacity: undefined }),
+      neutralLine('OpenZFSConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'ReadCacheConfiguration on MULTI_AZ_1 INTELLIGENT_TIERING while NetworkType stays DUAL (unmeasured)',
+      openZfs(
+        'MULTI_AZ_1',
+        { StorageType: 'INTELLIGENT_TIERING', NetworkType: 'DUAL' },
+        { ReadCacheConfiguration: READ_CACHE }
+      ),
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING', NetworkType: 'DUAL' }, {}),
+      neutralLine('OpenZFSConfiguration.ReadCacheConfiguration'),
+    ],
+    [
+      'NetworkType alone on MULTI_AZ_1 SSD with EndpointIpv6AddressRange kept (CloudFormation refused it)',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD', NetworkType: 'DUAL' }, { EndpointIpv6AddressRange: IPV6_RANGE }),
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, { EndpointIpv6AddressRange: IPV6_RANGE }),
+      neutralLine('NetworkType'),
+    ],
+    [
+      'NetworkType alone on MULTI_AZ_1 SSD with no EndpointIpv6AddressRange',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD', NetworkType: 'DUAL' }, {}),
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, {}),
+      keepsLine('NetworkType'),
+    ],
+    [
+      'EndpointIpv6AddressRange with NetworkType on MULTI_AZ_1 SSD',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD', NetworkType: 'DUAL' }, { EndpointIpv6AddressRange: IPV6_RANGE }),
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, {}),
+      keepsLine('NetworkType, OpenZFSConfiguration.EndpointIpv6AddressRange'),
+    ],
+    [
+      'EndpointIpv6AddressRange with NetworkType and StorageType on MULTI_AZ_1 SSD (unmeasured)',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD', NetworkType: 'DUAL' }, { EndpointIpv6AddressRange: IPV6_RANGE }),
+      openZfs('MULTI_AZ_1', {}, {}),
+      neutralLine('StorageType, NetworkType, OpenZFSConfiguration.EndpointIpv6AddressRange'),
+    ],
+    [
+      'EndpointIpv6AddressRange alone, NetworkType still declared (unmeasured: CloudFormation refused that update)',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD', NetworkType: 'DUAL' }, { EndpointIpv6AddressRange: IPV6_RANGE }),
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD', NetworkType: 'DUAL' }, {}),
+      neutralLine('OpenZFSConfiguration.EndpointIpv6AddressRange'),
+    ],
+    [
+      'EndpointIpv6AddressRange with NetworkType on MULTI_AZ_1 INTELLIGENT_TIERING (unmeasured)',
+      openZfs(
+        'MULTI_AZ_1',
+        { StorageType: 'INTELLIGENT_TIERING', NetworkType: 'DUAL' },
+        { EndpointIpv6AddressRange: IPV6_RANGE }
+      ),
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, {}),
+      neutralLine('NetworkType, OpenZFSConfiguration.EndpointIpv6AddressRange'),
+    ],
+    [
+      'a shape-measured removal beside one unmeasured on INTELLIGENT_TIERING',
+      openZfs(
+        'MULTI_AZ_1',
+        { StorageType: 'INTELLIGENT_TIERING' },
+        { WeeklyMaintenanceStartTime: '1:05:00' }
+      ),
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, { ThroughputCapacity: undefined }),
+      neutralLine(
+        'OpenZFSConfiguration.ThroughputCapacity, OpenZFSConfiguration.WeeklyMaintenanceStartTime'
+      ),
+    ],
+  ] as const) {
+    it(`sends nothing for the removal and words it by its measured shape: ${title}`, async () => {
+      routeSend({
+        UpdateFileSystemCommand: {},
+        DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+      });
+      // A key spelled `undefined` in a fixture is a removal: drop it.
+      const desiredClean = JSON.parse(JSON.stringify(desired)) as Record<string, unknown>;
+      // A removed StorageType is left in place, so only a declared new value is sent.
+      const migratesStorageType =
+        desiredClean['StorageType'] !== undefined &&
+        prev['StorageType'] !== desiredClean['StorageType'];
+
+      const result = await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desiredClean, prev);
+
+      expect(result.wasReplaced).toBe(false);
+      // Only a StorageType migration has anything to send, and never a
+      // variant block: the removed sub-property is not sent.
+      expect(callsOf(UpdateFileSystemCommand).map((call) => call.input)).toEqual(
+        migratesStorageType
+          ? [{ FileSystemId: FS_ID, StorageType: desiredClean['StorageType'] }]
+          : []
+      );
+      expect(warnings()).toEqual([expected]);
+    });
+  }
+
+  it('still claims nothing about CloudFormation for a rollback revert of a shape-measured removal', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+    const prev = openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, {});
+    const { ThroughputCapacity: _tc, ...rest } = prev['OpenZFSConfiguration'] as Record<
+      string,
+      unknown
+    >;
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      { ...prev, OpenZFSConfiguration: rest },
+      prev,
+      { replayingState: true }
+    );
+
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): property OpenZFSConfiguration.ThroughputCapacity is absent from the state being restored; UpdateFileSystem keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.',
+    ]);
+  });
+
   it('still expresses a removed RouteTableIds as a RemoveRouteTableIds delta (no warning)', async () => {
     routeSend({
       UpdateFileSystemCommand: {},

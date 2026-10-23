@@ -38,6 +38,13 @@ import type { Construct } from 'constructs';
  *     nothing is reset, not a non-default value surviving.
  *   - WeeklyMaintenanceStartTime is ADDED in the same deploy, a companion
  *     change proving UpdateFileSystem fired with the removals beside it.
+ *
+ * THROUGHPUT REMOVAL phase (the REMOVAL phase's env plus
+ * CDKD_TEST_TP_REMOVAL=true, issue #1160):
+ *   - ThroughputCapacity (128) is DROPPED. The CFn A/B on issue #1160 measured
+ *     CloudFormation keeping it on MULTI_AZ_1 only, never on this SINGLE_AZ_1
+ *     shape, so cdkd must leave the value in place and warn WITHOUT claiming
+ *     what CloudFormation does.
  */
 export class FsxOpenZfsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -46,6 +53,7 @@ export class FsxOpenZfsStack extends cdk.Stack {
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
     const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
     const isMaintAlt = process.env.CDKD_TEST_MAINT_ALT === 'true';
+    const isTpRemoval = process.env.CDKD_TEST_TP_REMOVAL === 'true';
 
     // VPC with 1 AZ, public subnet only, no NAT (cheapest legal shape).
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -68,8 +76,9 @@ export class FsxOpenZfsStack extends cdk.Stack {
       subnetIds: [vpc.publicSubnets[0].subnetId],
       openZfsConfiguration: {
         deploymentType: 'SINGLE_AZ_1',
-        // 64 MB/s baseline; the UPDATE phase scales it to 128.
-        throughputCapacity: isUpdate ? 128 : 64,
+        // 64 MB/s baseline; the UPDATE phase scales it to 128, and the
+        // THROUGHPUT REMOVAL phase drops it (issue #1160).
+        ...(!isTpRemoval && { throughputCapacity: isUpdate ? 128 : 64 }),
         // Sunday 03:30 UTC, or Monday 04:45 under CDKD_TEST_MAINT_ALT=true,
         // which verify.sh picks when AWS already holds the first.
         ...(isRemoval && { weeklyMaintenanceStartTime: isMaintAlt ? '1:04:45' : '7:03:30' }),

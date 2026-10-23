@@ -48,6 +48,15 @@ Windows-managed-AD / multi-AZ-ONTAP integ is an optional cost-gated follow-up.
    nothing is reset. It does not prove that a non-default value survives: the
    unit suite asserts cdkd sends no field for an `HDD` or `DUAL` removal, and
    the CFn A/B on #1160 measured those values staying.
+2c. **ThroughputCapacity removal** (`CDKD_TEST_TP_REMOVAL=true`, issue #1160):
+   `ThroughputCapacity` (128) is dropped from phase 2b's template. The CFn A/B
+   on #1160 measured CloudFormation keeping it on `MULTI_AZ_1` only, never on
+   this fixture's `SINGLE_AZ_1`. So the phase asserts that the deploy
+   succeeds, the same file system keeps 128, and the warning names the removal
+   WITHOUT claiming what CloudFormation does. It does not exercise the
+   `MULTI_AZ_1` claim, nor `ReadCacheConfiguration` (`INTELLIGENT_TIERING`
+   only) or `EndpointIpv6AddressRange` (Multi-AZ dual-stack only): those are
+   unit-tested, since this fixture is the cheapest `SINGLE_AZ_1` shape.
 3. **Destroy** and assert the file system + VPC are gone from AWS and the
    cdkd state file is removed. A leftover FSx file system is never acceptable
    (per-hour billing) — the cleanup trap force-deletes any file system

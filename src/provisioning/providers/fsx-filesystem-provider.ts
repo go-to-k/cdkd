@@ -280,6 +280,8 @@ const TOP_LEVEL_LEFT_IN_PLACE_PROPS = [
  * SINGLE_AZ_1 SSD, NetworkType DUAL) to the rest of that type's SSD / HDD
  * deployments; an `INTELLIGENT_TIERING` file system is a different storage
  * class nobody measured, so it never gets the claim ({@link cfnKeepsOnRemoval}).
+ * The OpenZFS sub-properties measured on one narrower shape only are not here
+ * ({@link CFN_KEEPS_ON_REMOVAL_FOR_SHAPE}).
  */
 const CFN_KEEPS_ON_REMOVAL: ReadonlySet<string> = new Set([
   'LustreConfiguration.AutoImportPolicy',
@@ -309,18 +311,115 @@ interface RemovalClaimShape {
   fileSystemType: unknown;
   /** The previous AND desired `StorageType` (a migration has two). */
   storageTypes: readonly unknown[];
+  /** The previous AND desired `<Variant>Configuration.DeploymentType`. */
+  deploymentTypes: readonly unknown[];
+  /** The desired `NetworkType`. */
+  desiredNetworkType: unknown;
+  /** The desired `OpenZFSConfiguration.EndpointIpv6AddressRange`. */
+  desiredEndpointIpv6AddressRange: unknown;
 }
 
+/** Every side of the shape is an OpenZFS `MULTI_AZ_1` file system. */
+const isOpenZfsMultiAz1 = (shape: RemovalClaimShape): boolean =>
+  shape.fileSystemType === 'OPENZFS' &&
+  shape.deploymentTypes.every((deploymentType) => deploymentType === 'MULTI_AZ_1');
+
+/** The same deploy does not migrate `StorageType`. */
+const keepsStorageType = (shape: RemovalClaimShape): boolean =>
+  JSON.stringify(shape.storageTypes[0]) === JSON.stringify(shape.storageTypes[1]);
+
 /**
- * Whether CloudFormation is measured to keep `name` on removal for this shape.
- * Never when either side's `StorageType` is `INTELLIGENT_TIERING`: no measured
- * shape had it.
+ * Removals CloudFormation is measured to keep on ONE narrower shape only, each
+ * judged by its own predicate instead of {@link CFN_KEEPS_ON_REMOVAL}'s rule
+ * (issue #1160). CFn A/B us-east-1 2026-10-24, every removal `UPDATE_COMPLETE`
+ * with the same FileSystemId, the value read back unchanged and no
+ * administrative action. While the template still declared `NetworkType`
+ * `DUAL`, EVERY CloudFormation update failed (`Network type is already DUAL`),
+ * so each row below was measured with `NetworkType` no longer `DUAL`:
+ * - `ThroughputCapacity`: kept on OpenZFS MULTI_AZ_1 with SSD (320) and with
+ *   INTELLIGENT_TIERING (160), the deploy's only removal. SINGLE_AZ_1,
+ *   SINGLE_AZ_2 and SINGLE_AZ_HA_* are unmeasured, and so is a removal beside
+ *   another one.
+ * - `ReadCacheConfiguration`: kept on OpenZFS MULTI_AZ_1 INTELLIGENT_TIERING
+ *   (USER_PROVISIONED, 128 GiB), the deploy's only removal, so both sides must
+ *   declare INTELLIGENT_TIERING.
+ * - `EndpointIpv6AddressRange`: kept on OpenZFS MULTI_AZ_1 SSD dual-stack, in
+ *   the SAME update that removed `NetworkType` (removing `NetworkType` alone
+ *   with the range still set failed), so the claim is made only when this
+ *   deploy removes `NetworkType` as well.
  */
-const cfnKeepsOnRemoval = (name: string, shape: RemovalClaimShape): boolean =>
-  !shape.storageTypes.includes('INTELLIGENT_TIERING') &&
-  (CFN_KEEPS_ON_REMOVAL.has(name) ||
-    (typeof shape.fileSystemType === 'string' &&
-      CFN_KEEPS_TOP_LEVEL_ON_REMOVAL.get(shape.fileSystemType)?.has(name) === true));
+const CFN_KEEPS_ON_REMOVAL_FOR_SHAPE: ReadonlyMap<
+  string,
+  (shape: RemovalClaimShape, removed: readonly string[]) => boolean
+> = new Map([
+  [
+    'OpenZFSConfiguration.ThroughputCapacity',
+    (shape: RemovalClaimShape, removed: readonly string[]) =>
+      removed.length === 1 &&
+      isOpenZfsMultiAz1(shape) &&
+      keepsStorageType(shape) &&
+      shape.desiredNetworkType !== 'DUAL',
+  ],
+  [
+    'OpenZFSConfiguration.ReadCacheConfiguration',
+    // The single-removal test is implied today: on INTELLIGENT_TIERING no other
+    // name can claim beside it (ThroughputCapacity needs a single removal too,
+    // and every other claim excludes INTELLIGENT_TIERING). It stays so this
+    // claim keeps to its measured shape if one of those is ever widened.
+    (shape: RemovalClaimShape, removed: readonly string[]) =>
+      removed.length === 1 &&
+      isOpenZfsMultiAz1(shape) &&
+      shape.storageTypes.every((storageType) => storageType === 'INTELLIGENT_TIERING') &&
+      shape.desiredNetworkType !== 'DUAL',
+  ],
+  [
+    'OpenZFSConfiguration.EndpointIpv6AddressRange',
+    // The INTELLIGENT_TIERING test is implied today by the co-removed
+    // NetworkType's own claim, which excludes it; it stays so this claim keeps
+    // to its measured SSD shape if that one is ever widened.
+    (shape: RemovalClaimShape, removed: readonly string[]) =>
+      isOpenZfsMultiAz1(shape) &&
+      keepsStorageType(shape) &&
+      !shape.storageTypes.includes('INTELLIGENT_TIERING') &&
+      removed.includes('NetworkType'),
+  ],
+]);
+
+/**
+ * A removal CloudFormation is measured to REFUSE, so the generic claim must
+ * not cover it: on OpenZFS MULTI_AZ_1, removing `NetworkType` while
+ * `EndpointIpv6AddressRange` stays declared failed (`The
+ * EndpointIpv6AddressRange option is only supported on Multi-AZ file system
+ * when updating network type to DUAL`; CFn A/B us-east-1 2026-10-24).
+ */
+const cfnRefusesRemoval = (name: string, shape: RemovalClaimShape): boolean =>
+  name === 'NetworkType' &&
+  isOpenZfsMultiAz1(shape) &&
+  shape.desiredEndpointIpv6AddressRange !== undefined;
+
+/**
+ * Whether CloudFormation is measured to keep `name` on removal for this shape,
+ * `removed` being every name this deploy leaves in place. A name in
+ * {@link CFN_KEEPS_ON_REMOVAL_FOR_SHAPE} is judged by its own predicate only.
+ * Any other name: never on a shape CloudFormation refuses
+ * ({@link cfnRefusesRemoval}), and never when either side's `StorageType` is
+ * `INTELLIGENT_TIERING`, since no measured shape had it.
+ */
+const cfnKeepsOnRemoval = (
+  name: string,
+  shape: RemovalClaimShape,
+  removed: readonly string[]
+): boolean => {
+  const narrow = CFN_KEEPS_ON_REMOVAL_FOR_SHAPE.get(name);
+  if (narrow) return narrow(shape, removed);
+  return (
+    !cfnRefusesRemoval(name, shape) &&
+    !shape.storageTypes.includes('INTELLIGENT_TIERING') &&
+    (CFN_KEEPS_ON_REMOVAL.has(name) ||
+      (typeof shape.fileSystemType === 'string' &&
+        CFN_KEEPS_TOP_LEVEL_ON_REMOVAL.get(shape.fileSystemType)?.has(name) === true))
+  );
+};
 
 /**
  * The ONE warning line for properties whose removal cdkd leaves in place
@@ -345,7 +444,7 @@ const leftInPlaceWarning = (
   if (caller === 'rollback') {
     return safeMsg`${logicalId} (AWS::FSx::FileSystem): ${subject} ${names.join(', ')} ${verb} absent from the state being restored; UpdateFileSystem keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.`;
   }
-  return names.every((name) => cfnKeepsOnRemoval(name, shape))
+  return names.every((name) => cfnKeepsOnRemoval(name, shape, names))
     ? safeMsg`${logicalId} (AWS::FSx::FileSystem): ${subject} ${names.join(', ')} ${verb} no longer declared and ${one ? 'keeps its' : 'keep their'} current AWS value, as CloudFormation leaves ${one ? 'it' : 'them'}; UpdateFileSystem keeps a setting it is not sent. Declare the intended value explicitly to change it.`
     : safeMsg`${logicalId} (AWS::FSx::FileSystem): ${subject} ${names.join(', ')} ${verb} no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`;
 };
@@ -1122,6 +1221,20 @@ export class FSxFileSystemProvider implements ResourceProvider {
           {
             fileSystemType: properties['FileSystemType'] ?? previousProperties['FileSystemType'],
             storageTypes: [previousProperties['StorageType'], properties['StorageType']],
+            deploymentTypes: [previousProperties, properties].map((side) =>
+              variantConfigKey
+                ? (side[variantConfigKey] as Record<string, unknown> | undefined)?.[
+                    'DeploymentType'
+                  ]
+                : undefined
+            ),
+            desiredNetworkType: properties['NetworkType'],
+            desiredEndpointIpv6AddressRange:
+              variantConfigKey === 'OpenZFSConfiguration'
+                ? (properties[variantConfigKey] as Record<string, unknown> | undefined)?.[
+                    'EndpointIpv6AddressRange'
+                  ]
+                : undefined,
           }
         )
       );
