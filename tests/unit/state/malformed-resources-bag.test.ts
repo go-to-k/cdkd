@@ -3211,9 +3211,22 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       'refactor-move.ts reads state above applyMoveGroup, outside its guard'
     ).toBe(0);
     const applyBody = moveSrc.slice(applyAt);
-    expect(applyBody.indexOf('refuseMalformedOrphanRecords(')).toBeGreaterThan(-1);
-    expect(applyBody.indexOf('refuseMalformedOrphanRecords(')).toBeLessThan(
+    // Both writers there (the apply and the interrupted-move finish) guard
+    // through `refuseReadForWrite`, which runs the row guard.
+    expect(applyBody.indexOf('refuseReadForWrite(')).toBeGreaterThan(-1);
+    expect(applyBody.indexOf('refuseReadForWrite(')).toBeLessThan(
       applyBody.indexOf('applyLogicalIdRenames(')
+    );
+    const guardAt = moveSrc.indexOf('function refuseReadForWrite(');
+    expect(guardAt).toBeGreaterThan(-1);
+    expect(moveSrc.slice(guardAt, moveSrc.indexOf('\n}\n', guardAt))).toContain(
+      'refuseMalformedOrphanRecords('
+    );
+    const finishAt = moveSrc.indexOf('export async function finishPendingMoves(');
+    expect(finishAt).toBeGreaterThan(-1);
+    const finishBody = moveSrc.slice(finishAt);
+    expect(finishBody.indexOf('refuseReadForWrite(')).toBeLessThan(
+      finishBody.indexOf('insertMovedRecords(')
     );
     // `diff.ts` is excluded because it RECEIVES the repaired state rather than
     // loading one. The moment it loads state itself the exclusion is wrong, and

@@ -1,3 +1,4 @@
+import { refusePendingMovesOut } from '../../state/pending-moves.js';
 import * as readline from 'node:readline/promises';
 import {
   pasteableCommand,
@@ -873,6 +874,10 @@ async function destroyStackInRegion(
   // unusable row does there depends on which part is torn, which is why this is
   // a refusal rather than a drop.
   refuseMalformedOrphanRecordsForDestroy(state, stackName, regionForState, refusalRecovery);
+  // An unfinished `cdkd refactor` moving resources out of this stack
+  // (go-to-k/cdkd#5212): the destination may already hold them, so deleting
+  // them here would delete another stack's resources.
+  refusePendingMovesOut(state, stackName, regionForState, 'cdkd destroy');
   // BELOW the bag guard (which proves the bag can be counted) and ABOVE the
   // delete loop and every `deleteState` (issue #3328, review round 1). NOT
   // "above the fast path" as a discriminating claim — the guard returns early
@@ -1122,6 +1127,7 @@ async function destroyStackInRegion(
           regionForState,
           refusalRecovery
         );
+        refusePendingMovesOut(recheck.state, stackName, regionForState, 'cdkd destroy');
       }
       const recheckResources = recheck ? Object.keys(recheck.state.resources).length : 0;
       const recheckOrphans = recheck ? (recheck.state.orphans ?? []).length : 0;

@@ -1,3 +1,4 @@
+import { hasPendingMovesOut, pendingMovesRefusalMessage } from '../../state/pending-moves.js';
 import { stripControlChars, stripForDisplay } from '../../utils/regexp.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { displayIdent, displayStackName, safeMsg } from '../../utils/display-safe.js';
@@ -780,6 +781,13 @@ async function loadStateOrEmpty(
       unreadableContainers.push('orphans');
       // `refuseMalformedOrphans` refuses the deploy over it (go-to-k/cdkd#3512).
       deployRefusals.push(DEPLOY_REFUSES_ORPHANS_CONTAINER_REASON);
+    }
+    // An unfinished `cdkd refactor` move out of this stack (go-to-k/cdkd#5212):
+    // `refusePendingMovesOut` refuses the deploy, so the preview says so.
+    if (hasPendingMovesOut(result.state)) {
+      deployRefusals.push(
+        pendingMovesRefusalMessage(result.state, stackName, region, 'cdkd deploy')
+      );
     }
     // The `exportNames` FIELD, said out loud (go-to-k/cdkd#3192 review). The
     // predicate fails closed wherever it is read, which is right — it serves

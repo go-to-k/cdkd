@@ -29,6 +29,7 @@ interface StackState {
   outputReferenceProvenance?: Record<string, Record<string, ReferenceProvenance>>; // v12+: key -> token
   stackInstanceId?: string;       // v13+: this lifetime's id; absent = legacy, forever
   retiredNameGenerations?: Record<string, number>; // v13+: logical id -> generation it left at
+  pendingMovesOut?: PendingMoveOut[]; // no bump: an unfinished `cdkd refactor` move out (ids only); deploy/destroy refuse while present (#5212)
   lastModified: number;
 }
 

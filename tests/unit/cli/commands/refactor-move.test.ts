@@ -6,7 +6,12 @@
  * two stacks and never silently in none.
  */
 import { describe, expect, it, vi } from 'vite-plus/test';
-import { applyMoveGroup, planMoves, renderMovePlan } from '../../../../src/cli/commands/refactor-move.js';
+import {
+  applyMoveGroup,
+  finishPendingMoves,
+  planMoves,
+  renderMovePlan,
+} from '../../../../src/cli/commands/refactor-move.js';
 import type { RefactorDiffFn, StackRefactorPlan } from '../../../../src/cli/commands/refactor.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../../src/types/state.js';
 
@@ -299,34 +304,37 @@ describe('applyMoveGroup', () => {
   function world(stacks: Record<string, Record<string, ResourceState>>) {
     const order: string[] = [];
     const records = new Map<string, { state: StackState; etag: string; migrationPending?: boolean }>();
+    // `getState` of a stack with no record answers null, as S3 does.
     for (const [name, resources] of Object.entries(stacks)) {
       records.set(name, { state: stack(name, resources), etag: `"${name}"` });
     }
     const failures = new Map<string, { nth: number; landed: boolean }>();
     const saves = new Map<string, number>();
     let journal = false;
+    const saveImpl = async (name: string, _r: string, state: StackState, o: { expectedEtag?: string }) => {
+      const n = (saves.get(name) ?? 0) + 1;
+      saves.set(name, n);
+      order.push(`save:${name}`);
+      const fail = failures.get(name);
+      const r = records.get(name)!;
+      if (o.expectedEtag !== r.etag) throw new Error('PreconditionFailed');
+      if (fail !== undefined && fail.nth === n && !fail.landed) throw new Error('AccessDenied');
+      records.set(name, { state: structuredClone(state), etag: `"${name}-${n}"` });
+      if (fail !== undefined && fail.nth === n && fail.landed) throw new Error('socket hang up');
+      return `"${name}-${n}"`;
+    };
     const stateBackend = {
       getState: vi.fn(async (name: string) => {
         order.push(`get:${name}`);
-        const r = records.get(name)!;
+        const r = records.get(name);
+        if (r === undefined) return null;
         return { state: structuredClone(r.state), etag: r.etag, ...(r.migrationPending && { migrationPending: true }) };
       }),
       loadRollbackJournal: vi.fn(async () => (journal ? ({} as never) : null)),
       rotateCreateTokenNonce: vi.fn(async (name: string) => {
         order.push(`rotate:${name}`);
       }),
-      saveState: vi.fn(async (name: string, _r: string, state: StackState, o: { expectedEtag?: string }) => {
-        const n = (saves.get(name) ?? 0) + 1;
-        saves.set(name, n);
-        order.push(`save:${name}`);
-        const fail = failures.get(name);
-        const r = records.get(name)!;
-        if (o.expectedEtag !== r.etag) throw new Error('PreconditionFailed');
-        if (fail !== undefined && fail.nth === n && !fail.landed) throw new Error('AccessDenied');
-        records.set(name, { state: structuredClone(state), etag: `"${name}-${n}"` });
-        if (fail !== undefined && fail.nth === n && fail.landed) throw new Error('socket hang up');
-        return `"${name}-${n}"`;
-      }),
+      saveState: vi.fn(saveImpl),
     };
     const lockManager = {
       acquireLock: vi.fn(async (name: string) => {
@@ -359,21 +367,60 @@ describe('applyMoveGroup', () => {
         .map(([name]) => name)
         .sort();
     return {
-      order, records, plans, move, run, holders, stateBackend, lockManager,
+      order, records, plans, move, run, holders, stateBackend, lockManager, saveImpl,
       failSave: (name: string, nth: number, landed = false) => failures.set(name, { nth, landed }),
       setJournal: () => { journal = true; },
     };
   }
 
-  it('locks in a fixed order and saves the source before the destination', async () => {
+  /** Every resource is recorded; one recorded twice is marked as moving by its source. */
+  function assertSafe(w: ReturnType<typeof world>, physicalIds: string[]): void {
+    for (const pid of physicalIds) {
+      const holders = w.holders(pid);
+      expect(holders.length, `${pid} is recorded nowhere`).toBeGreaterThan(0);
+      if (holders.length > 1) {
+        const marked = holders.filter((name) =>
+          (w.records.get(name)!.state.pendingMovesOut ?? []).some(
+            (m) => w.records.get(name)!.state.resources[m.from]?.physicalId === pid
+          )
+        );
+        expect(marked, `${pid} is in ${holders.join(', ')} with no source marking the move`).toHaveLength(1);
+      }
+    }
+  }
+
+  const finish = (w: ReturnType<typeof world>, name: string) =>
+    finishPendingMoves({
+      stackName: name,
+      region: 'r',
+      stateBackend: w.stateBackend as never,
+      lockManager: w.lockManager as never,
+      recovery: { stateBucket: 'bkt', statePrefix: 'pfx' },
+      contentionMessage: async (x) => `locked: ${x.stackName}`,
+    });
+
+  it('marks the source, adds to the destination, then unmarks the source', async () => {
     const w = world({ A: { Old: rec('p1'), Keep: rec('pk', { dependencies: ['Old'] }) }, B: { Other: rec('po') } });
     w.move(mv('A', 'Old', 'B', 'New'));
+    const saved: Array<{ name: string; state: StackState }> = [];
+    w.stateBackend.saveState.mockImplementationOnce(async (name, region, state, o) => {
+      saved.push({ name, state: structuredClone(state) });
+      return w.saveImpl(name, region, state, o);
+    });
     await w.run();
-    expect(w.order).toEqual(['lock:A', 'lock:B', 'get:A', 'get:B', 'rotate:A', 'save:A', 'save:B', 'unlock:B', 'unlock:A']);
-    expect(Object.keys(w.records.get('A')!.state.resources)).toEqual(['Keep']);
-    expect(w.records.get('A')!.state.resources['Keep']!.dependencies).toEqual([]);
+    expect(w.order).toEqual([
+      'lock:A', 'lock:B', 'get:A', 'get:B', 'rotate:A', 'save:A', 'save:B', 'save:A', 'unlock:B', 'unlock:A',
+    ]);
+    // The first write keeps the record and names the move.
+    expect(Object.keys(saved[0]!.state.resources).sort()).toEqual(['Keep', 'Old']);
+    expect(saved[0]!.state.pendingMovesOut).toEqual([
+      { from: 'Old', toStack: 'B', toRegion: 'r', to: 'New', startedAt: expect.any(Number) },
+    ]);
+    const finalA = w.records.get('A')!.state;
+    expect(Object.keys(finalA.resources)).toEqual(['Keep']);
+    expect(finalA.resources['Keep']!.dependencies).toEqual([]);
+    expect(finalA.pendingMovesOut).toBeUndefined();
     expect(w.records.get('B')!.state.resources['New']!.physicalId).toBe('p1');
-    expect(w.stateBackend.rotateCreateTokenNonce).toHaveBeenCalledWith('A', 'r', ['Old']);
   });
 
   it('applies a stack\'s own rename together with a move', async () => {
@@ -385,6 +432,7 @@ describe('applyMoveGroup', () => {
     expect(Object.keys(w.records.get('A')!.state.resources)).toEqual(['Ren2']);
     expect(Object.keys(w.records.get('B')!.state.resources).sort()).toEqual(['BRen2', 'New']);
     expect(w.stateBackend.rotateCreateTokenNonce).toHaveBeenCalledWith('A', 'r', ['Ren', 'Old']);
+    expect(w.stateBackend.rotateCreateTokenNonce).toHaveBeenCalledWith('B', 'r', ['BRen']);
   });
 
   it('writes nothing when any record changed after planning, and unlocks every stack', async () => {
@@ -413,85 +461,55 @@ describe('applyMoveGroup', () => {
     expect(saveA[3]).toEqual({ expectedEtag: '"A"', migrateLegacy: true });
   });
 
-  it('puts the source back when the destination save fails', async () => {
+  // Every write of the run, failing before or after it lands: the records stay
+  // safe, and the next refactor of the source finishes the move.
+  it.each([
+    ['the marked source', 'A', 1, false],
+    ['the marked source (landed)', 'A', 1, true],
+    ['the destination', 'B', 1, false],
+    ['the destination (landed)', 'B', 1, true],
+    ['the unmarked source', 'A', 2, false],
+    ['the unmarked source (landed)', 'A', 2, true],
+  ])('a failed save of %s leaves safe records the next refactor finishes', async (_label, name, nth, landed) => {
     const w = world({ A: { Old: rec('p1') }, B: {} });
     w.move(mv('A', 'Old', 'B', 'New'));
-    w.failSave('B', 1);
-    await expect(w.run()).rejects.toThrow(/No record moved/);
-    expect(w.holders('p1')).toEqual(['A']);
+    w.failSave(name, nth, landed);
+    await expect(w.run()).rejects.toThrow(/could not save stack/);
+    assertSafe(w, ['p1']);
+    await finish(w, 'A');
+    assertSafe(w, ['p1']);
+    const a = w.records.get('A')!.state;
+    if (a.pendingMovesOut === undefined && !('Old' in a.resources)) {
+      expect(w.holders('p1')).toEqual(['B']);
+    } else {
+      // The mark never landed: nothing moved, and the source still holds it.
+      expect(w.holders('p1')).toEqual(['A']);
+      expect(a.pendingMovesOut).toBeUndefined();
+    }
   });
 
-  it('puts a destination back whose save landed but reported failure, then the source', async () => {
-    const w = world({ A: { Old: rec('p1') }, B: {} });
-    w.move(mv('A', 'Old', 'B', 'New'));
-    w.failSave('B', 1, true);
-    await expect(w.run()).rejects.toThrow(/Put back as planned/);
-    expect(w.holders('p1')).toEqual(['A']);
-  });
-
-  it('never records a resource in two stacks when one of two destinations fails', async () => {
+  it('keeps every resource safe when one of two destinations fails, and finishes both', async () => {
     const w = world({ S: { X: rec('px'), Y: rec('py') }, D1: {}, D2: {} });
     w.move(mv('S', 'X', 'D1', 'X2'));
     w.move(mv('S', 'Y', 'D2', 'Y2'));
     w.failSave('D2', 1);
-    await expect(w.run()).rejects.toThrow(/No record moved/);
-    expect(w.holders('px')).toEqual(['S']);
-    expect(w.holders('py')).toEqual(['S']);
-  });
-
-  it('keeps the source without the record when a destination cannot be put back', async () => {
-    const w = world({ S: { X: rec('px'), Y: rec('py') }, D1: {}, D2: {} });
-    w.move(mv('S', 'X', 'D1', 'X2'));
-    w.move(mv('S', 'Y', 'D2', 'Y2'));
-    w.failSave('D2', 1);
-    w.failSave('D1', 2); // the put-back of D1
-    await expect(w.run()).rejects.toThrow(/Kept without the records they moved out/);
-    // Each resource is recorded exactly once or not at all -- never twice.
+    await expect(w.run()).rejects.toThrow(/Re-run 'cdkd refactor S'/);
+    assertSafe(w, ['px', 'py']);
+    expect(w.records.get('S')!.state.pendingMovesOut).toHaveLength(2);
+    const { finished } = await finish(w, 'S');
+    expect(finished.map((f) => f.to).sort()).toEqual(['X2', 'Y2']);
     expect(w.holders('px')).toEqual(['D1']);
-    expect(w.holders('py')).toEqual([]);
+    expect(w.holders('py')).toEqual(['D2']);
+    expect(w.records.get('S')!.state.pendingMovesOut).toBeUndefined();
   });
 
-  it('names cdkd import when the source cannot be put back either', async () => {
-    const w = world({ A: { Old: rec('p1') }, B: {} });
-    w.move(mv('A', 'Old', 'B', 'New'));
-    w.failSave('B', 1);
-    w.failSave('A', 2);
-    await expect(w.run()).rejects.toThrow(/cdkd import/);
-    expect(w.holders('p1')).toEqual([]);
-  });
-
-  it('names a rename-only stack written before the failure as kept', async () => {
+  it('names what it wrote before a failure', async () => {
     const w = world({ A: { Old: rec('p1') }, B: {}, C: { Ren: rec('pc') } });
     w.move(mv('A', 'Old', 'B', 'New'));
     w.plans.get('C')!.renames.push({ from: 'Ren', to: 'Ren2', resourceType: queue, source: 'detected' });
     w.failSave('B', 1);
-    await expect(w.run()).rejects.toThrow(/Renamed and kept \(no move involved\): C \(r\)/);
+    await expect(w.run()).rejects.toThrow(/Written before the failure: A \(r\), C \(r\)/);
     expect(Object.keys(w.records.get('C')!.state.resources)).toEqual(['Ren2']);
-    expect(w.holders('p1')).toEqual(['A']);
-  });
-
-  it('keeps the source out when a destination cannot be read back', async () => {
-    const w = world({ A: { Old: rec('p1') }, B: {} });
-    w.move(mv('A', 'Old', 'B', 'New'));
-    w.failSave('B', 1, true);
-    const real = w.stateBackend.getState.getMockImplementation()!;
-    let reads = 0;
-    w.stateBackend.getState.mockImplementation(async (name: string) => {
-      if (name === 'B' && ++reads > 1) return null as never;
-      return real(name);
-    });
-    await expect(w.run()).rejects.toThrow(/Could not be read back or put back: B \(r\)/);
-    // B holds the record; A must not get it back, or it would be in two stacks.
-    expect(w.holders('p1')).toEqual(['B']);
-  });
-
-  it('reports a failed first source save without moving anything', async () => {
-    const w = world({ A: { Old: rec('p1') }, B: {} });
-    w.move(mv('A', 'Old', 'B', 'New'));
-    w.failSave('A', 1);
-    await expect(w.run()).rejects.toThrow(/No record moved/);
-    expect(w.holders('p1')).toEqual(['A']);
-    expect(w.stateBackend.saveState.mock.calls.map((c) => c[0])).toEqual(['A']);
   });
 
   it('releases the locks it took and writes nothing under contention', async () => {
@@ -504,5 +522,93 @@ describe('applyMoveGroup', () => {
     await expect(w.run()).rejects.toThrow('locked: B');
     expect(w.stateBackend.getState).not.toHaveBeenCalled();
     expect(w.order.filter((x) => x.startsWith('unlock'))).toEqual(['unlock:A']);
+  });
+});
+
+describe('finishPendingMoves', () => {
+  function backend(stacks: Record<string, StackState | undefined>) {
+    const records = new Map<string, { state: StackState; etag: string }>();
+    for (const [name, st] of Object.entries(stacks)) if (st) records.set(name, { state: st, etag: `"${name}"` });
+    let n = 0;
+    return {
+      records,
+      stateBackend: {
+        getState: vi.fn(async (name: string) => {
+          const r = records.get(name);
+          return r ? { state: structuredClone(r.state), etag: r.etag } : null;
+        }),
+        saveState: vi.fn(async (name: string, _r: string, state: StackState, o: { expectedEtag?: string }) => {
+          if (records.get(name)?.etag !== o.expectedEtag) throw new Error('PreconditionFailed');
+          n += 1;
+          records.set(name, { state: structuredClone(state), etag: `"${name}-${n}"` });
+          return `"${name}-${n}"`;
+        }),
+      },
+      lockManager: { acquireLock: vi.fn(async () => true), releaseLock: vi.fn(async () => undefined) },
+    };
+  }
+  const mark = { from: 'Old', toStack: 'B', toRegion: 'r', to: 'New', startedAt: 1 };
+  const run = (b: ReturnType<typeof backend>) =>
+    finishPendingMoves({
+      stackName: 'A',
+      region: 'r',
+      stateBackend: b.stateBackend as never,
+      lockManager: b.lockManager as never,
+      recovery: { stateBucket: 'bkt', statePrefix: 'pfx' },
+      contentionMessage: async () => 'locked',
+    });
+  const marked = (resources: Record<string, ResourceState>, pending = [mark]): StackState => ({
+    ...stack('A', resources),
+    pendingMovesOut: pending as never,
+  });
+
+  it('only drops the source record when the destination already holds it', async () => {
+    const b = backend({ A: marked({ Old: rec('p1') }), B: stack('B', { New: rec('p1') }) });
+    expect((await run(b)).finished).toHaveLength(1);
+    expect(b.records.get('A')!.state.resources).toEqual({});
+    expect(b.records.get('A')!.state.pendingMovesOut).toBeUndefined();
+    expect(b.stateBackend.saveState.mock.calls.map((c) => c[0])).toEqual(['A']);
+  });
+
+  it('adds the record to the destination first, then drops it from the source', async () => {
+    const b = backend({ A: marked({ Old: rec('p1') }), B: stack('B', {}) });
+    await run(b);
+    expect(b.stateBackend.saveState.mock.calls.map((c) => c[0])).toEqual(['B', 'A']);
+    expect(b.records.get('B')!.state.resources['New']!.physicalId).toBe('p1');
+    expect(b.records.get('A')!.state.resources).toEqual({});
+  });
+
+  it('refuses, keeping the mark, when the destination holds a different resource under the id', async () => {
+    const b = backend({ A: marked({ Old: rec('p1') }), B: stack('B', { New: rec('other') }) });
+    await expect(run(b)).rejects.toThrow(/already holds a different resource under New/);
+    expect(b.records.get('A')!.state.pendingMovesOut).toHaveLength(1);
+    expect(b.records.get('A')!.state.resources['Old']).toBeDefined();
+  });
+
+  it('drops a mark whose record the source no longer holds when the destination does', async () => {
+    const b = backend({ A: marked({}), B: stack('B', { New: rec('p1') }) });
+    await run(b);
+    expect(b.records.get('A')!.state.pendingMovesOut).toBeUndefined();
+  });
+
+  it.each([
+    ['neither stack records the resource', { A: marked({}), B: stack('B', {}) }, /neither stack records the resource/],
+    ['the destination has no state', { A: marked({ Old: rec('p1') }), B: undefined }, /has no cdkd state/],
+  ])('refuses when %s', async (_label, stacks, reason) => {
+    const b = backend(stacks as Record<string, StackState | undefined>);
+    await expect(run(b)).rejects.toThrow(reason);
+    expect(b.records.get('A')!.state.pendingMovesOut).toHaveLength(1);
+  });
+
+  it('refuses a malformed pending-moves field and writes nothing', async () => {
+    const b = backend({ A: { ...stack('A', {}), pendingMovesOut: 'torn' as never }, B: stack('B', {}) });
+    await expect(run(b)).rejects.toThrow(/cannot read/);
+    expect(b.stateBackend.saveState).not.toHaveBeenCalled();
+  });
+
+  it('finishes nothing on a record with no pending move', async () => {
+    const b = backend({ A: stack('A', { Old: rec('p1') }) });
+    expect((await run(b)).finished).toEqual([]);
+    expect(b.lockManager.acquireLock).not.toHaveBeenCalled();
   });
 });

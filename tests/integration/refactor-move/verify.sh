@@ -14,12 +14,17 @@
 #   1. Deploy generation "a" (both stacks); record physical ids; write an item.
 #   2. Under generation "b":
 #      a. `cdkd refactor --all --dry-run` plans both moves, writes nothing.
-#      b. `cdkd refactor --all --yes` moves both records.
-#      c. The destination holds them under the same physical ids; the source
-#         holds neither.
-#      d. `cdkd deploy --all` keeps every physical id, the queue's creation
+#      b. The records a refactor KILLED mid-move leaves are written by hand
+#         (go-to-k/cdkd#5212): the table after the first write, the queue
+#         after the second.
+#      c. `cdkd deploy` / `cdkd destroy` of the source refuse and `cdkd diff`
+#         exits 3; the table and its item are untouched.
+#      d. `cdkd refactor --all --yes` finishes both moves.
+#      e. The destination holds them under the same physical ids; the source
+#         holds neither and records no unfinished move.
+#      f. `cdkd deploy --all` keeps every physical id, the queue's creation
 #         time, the data item and the parameter's Version.
-#      e. `cdkd diff --all --fail` reports no change.
+#      g. `cdkd diff --all --fail` reports no change.
 #   3. Destroy both stacks; everything and both state records are gone.
 #
 # Required env vars:
@@ -227,13 +232,81 @@ printf '%s' "${OUT_2A}" | grep -q 'state was NOT written' \
 [ "$(state_etag "${SRC_KEY}")" = "${SRC_ETAG}" ] || { echo "FAIL: source state changed during a dry run" >&2; exit 1; }
 [ "$(state_etag "${DST_KEY}")" = "${DST_ETAG}" ] || { echo "FAIL: destination state changed during a dry run" >&2; exit 1; }
 
-echo "==> Phase 2b: refactor"
-OUT_2B="$(cdkd refactor --all "${STATE_FLAGS[@]}" --yes 2>&1)"
-printf '%s\n' "${OUT_2B}"
-printf '%s' "${OUT_2B}" | grep -q "Refactored 2 resource(s) across 2 stack(s)" \
-  || { echo "FAIL: refactor did not report the 2 moves" >&2; exit 1; }
+# --- Phase 2b: an interrupted move (go-to-k/cdkd#5212) ------------------------
+# Write, by hand, the two records a refactor killed mid-move leaves:
+#   - the table: interrupted after the FIRST write (the source marks the move
+#     and still holds the record; the destination knows nothing);
+#   - the queue: interrupted after the SECOND write (the source still marks
+#     and holds it; the destination already holds it too).
+echo "==> Phase 2b: simulate a refactor killed mid-move"
+DST_TABLE_ID="$(node -e '
+  const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const ids = Object.keys(t.Resources).filter((id) => t.Resources[id].Type === "AWS::DynamoDB::Table");
+  if (ids.length !== 1) { console.error(`expected one table, got ${ids}`); process.exit(1); }
+  process.stdout.write(ids[0]);
+' "$(cdkd synth "${DST}" --region "${REGION}" >/dev/null && echo "cdk.out/${DST}.template.json")")"
+DST_QUEUE_ID="$(node -e '
+  const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const ids = Object.keys(t.Resources).filter((id) => t.Resources[id].Type === "AWS::SQS::Queue");
+  if (ids.length !== 1) { console.error(`expected one queue, got ${ids}`); process.exit(1); }
+  process.stdout.write(ids[0]);
+' "cdk.out/${DST}.template.json")"
+[ -n "${DST_TABLE_ID}" ] && [ -n "${DST_QUEUE_ID}" ] || { echo "FAIL: destination ids not found" >&2; exit 1; }
+WORK="$(mktemp -d)"
+aws s3 cp "s3://${STATE_BUCKET}/${SRC_KEY}" "${WORK}/src.json" --only-show-errors
+aws s3 cp "s3://${STATE_BUCKET}/${DST_KEY}" "${WORK}/dst.json" --only-show-errors
+node -e '
+  const fs = require("fs");
+  const [srcPath, dstPath, dst, region, tableId, queueId, dstTable, dstQueue] = process.argv.slice(1);
+  const src = JSON.parse(fs.readFileSync(srcPath, "utf8"));
+  const dstState = JSON.parse(fs.readFileSync(dstPath, "utf8"));
+  src.pendingMovesOut = [
+    { from: tableId, toStack: dst, toRegion: region, to: dstTable, startedAt: Date.now() },
+    { from: queueId, toStack: dst, toRegion: region, to: dstQueue, startedAt: Date.now() },
+  ];
+  dstState.resources[dstQueue] = src.resources[queueId];
+  fs.writeFileSync(srcPath, JSON.stringify(src));
+  fs.writeFileSync(dstPath, JSON.stringify(dstState));
+' "${WORK}/src.json" "${WORK}/dst.json" "${DST}" "${REGION}" "${TABLE_ID}" "${QUEUE_ID}" "${DST_TABLE_ID}" "${DST_QUEUE_ID}"
+aws s3 cp "${WORK}/src.json" "s3://${STATE_BUCKET}/${SRC_KEY}" --only-show-errors --content-type application/json
+aws s3 cp "${WORK}/dst.json" "s3://${STATE_BUCKET}/${DST_KEY}" --only-show-errors --content-type application/json
+rm -rf "${WORK}"
 
-echo "==> Phase 2c: the destination holds both records under the same physical ids"
+echo "==> Phase 2c: deploy, destroy and diff of the source refuse while the move is unfinished"
+set +e
+OUT_DEPLOY="$(cdkd deploy "${SRC}" "${STATE_FLAGS[@]}" --yes 2>&1)"; rc_deploy=$?
+OUT_DESTROY="$(cdkd destroy "${SRC}" "${STATE_FLAGS[@]}" --force 2>&1)"; rc_destroy=$?
+cdkd diff "${SRC}" "${STATE_FLAGS[@]}" >/dev/null 2>&1; rc_diff=$?
+set -e
+[ "${rc_deploy}" -ne 0 ] || { echo "FAIL: deploy of the source ran over an unfinished move" >&2; exit 1; }
+[ "${rc_destroy}" -ne 0 ] || { echo "FAIL: destroy of the source ran over an unfinished move" >&2; exit 1; }
+[ "${rc_diff}" -eq 3 ] || { echo "FAIL: diff of the source exited ${rc_diff}, not 3" >&2; exit 1; }
+for out in "${OUT_DEPLOY}" "${OUT_DESTROY}"; do
+  printf '%s' "${out}" | grep -q "did not finish" \
+    || { echo "FAIL: a refusal does not name the unfinished move: ${out}" >&2; exit 1; }
+done
+# Nothing was deleted: the table still answers, with its item.
+ITEM_2C="$(aws dynamodb get-item --table-name "${TABLE}" --region "${REGION}" \
+  --key '{"pk":{"S":"keep-me"}}' --query 'Item.v.S' --output text)"
+[ "${ITEM_2C}" = "survives the move" ] || { echo "FAIL: the refused commands touched the table" >&2; exit 1; }
+echo "    deploy and destroy refused, diff exited 3, the table and its item are intact"
+
+echo "==> Phase 2d: refactor finishes both interrupted moves"
+OUT_2D="$(cdkd refactor --all "${STATE_FLAGS[@]}" --yes 2>&1)"
+printf '%s\n' "${OUT_2D}"
+for pair in "${SRC}.${TABLE_ID} -> ${DST}.${DST_TABLE_ID}" "${SRC}.${QUEUE_ID} -> ${DST}.${DST_QUEUE_ID}"; do
+  printf '%s' "${OUT_2D}" | grep -qF "Finished an interrupted move: ${pair}" \
+    || { echo "FAIL: refactor did not finish ${pair}" >&2; exit 1; }
+done
+if node -e '
+  const s = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  process.exit(s.pendingMovesOut === undefined ? 1 : 0);
+' < <(aws s3 cp "s3://${STATE_BUCKET}/${SRC_KEY}" - --only-show-errors); then
+  echo "FAIL: the source still records an unfinished move" >&2
+  exit 1
+fi
+
+echo "==> Phase 2e: the destination holds both records under the same physical ids"
 RES_SRC_B="$(cdkd state resources "${SRC}" "${STATE_FLAGS[@]}")"
 RES_DST_B="$(cdkd state resources "${DST}" "${STATE_FLAGS[@]}")"
 [ "$(physical_id_of Table "${RES_DST_B}")" = "${TABLE_PID}" ] || { echo "FAIL: table did not move" >&2; exit 1; }
@@ -246,7 +319,7 @@ for id in "${TABLE_ID}" "${QUEUE_ID}"; do
 done
 logical_id_of Wiring "${RES_SRC_B}" >/dev/null
 
-echo "==> Phase 2d: deploy generation b keeps every resource"
+echo "==> Phase 2f: deploy generation b keeps every resource"
 cdkd deploy --all "${STATE_FLAGS[@]}" --yes
 RES_DST_D="$(cdkd state resources "${DST}" "${STATE_FLAGS[@]}")"
 [ "$(physical_id_of Queue "${RES_DST_D}")" = "${QUEUE_PID}" ] || { echo "FAIL: deploy replaced the queue" >&2; exit 1; }
@@ -263,7 +336,7 @@ PARAM_VERSION_D="$(aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGI
   || { echo "FAIL: SSM parameter was updated (Version ${PARAM_VERSION_A} -> ${PARAM_VERSION_D})" >&2; exit 1; }
 echo "    queue, table, data item and parameter Version unchanged"
 
-echo "==> Phase 2e: diff reports no change"
+echo "==> Phase 2g: diff reports no change"
 cdkd diff --all "${STATE_FLAGS[@]}" --fail
 
 # --- Phase 3: destroy --------------------------------------------------------

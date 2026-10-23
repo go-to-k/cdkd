@@ -1,3 +1,4 @@
+import { refusePendingMovesOut } from '../../state/pending-moves.js';
 import { retryCarriedSupersededResources } from './superseded-retry.js';
 import { supersededResourcesOf } from '../superseded-resources.js';
 import {
@@ -378,6 +379,11 @@ export async function doDeployWithPrefetch(
       engine.stackRegion,
       engine.options.refusalRecovery
     );
+    // An unfinished `cdkd refactor` moving resources out of this stack
+    // (go-to-k/cdkd#5212): the destination may already hold them, and this
+    // deploy would DELETE each one the template no longer declares. One field
+    // test on the record already loaded; no extra call.
+    refusePendingMovesOut(currentState, stackName, engine.stackRegion, 'cdkd deploy');
     // State schema v12: the loaded outputs bag and its provenance, for a save
     // that carries that bag forward. After the refusals, which own the first
     // read of the bag.

@@ -27,6 +27,8 @@ cdkd refactor OldStack NewStack
 ```
 
 Run it after you change the CDK code and before you deploy.
+[Keep Resources When You Rename or Move Constructs](refactor.md) walks through
+it step by step.
 
 ## What it changes
 
@@ -114,16 +116,45 @@ show the moved resource unchanged.
   mapping file.
 - A stack that would both lose and gain a resource in one run is refused. Run
   the refactor once per direction.
-- Both stacks are locked, and the stack losing the resource is written first.
-  If a later write fails, cdkd puts the stacks that gain resources back first,
-  then the stacks that lose them, so a resource is never recorded in two
-  stacks. The error says what each stack holds afterwards. If a stack cannot
-  be put back, a moved resource may be in no cdkd state: it is still in AWS,
-  so adopt it with [`cdkd import`](import.md), or restore the earlier
-  `state.json` version from the versioned state bucket.
+- Both stacks are locked. See
+  [If a refactor is interrupted](#if-a-refactor-is-interrupted) for how a move
+  survives a failure or a killed process.
 
 After a move, deploy the stack that gained the resource before the stacks that
 import from it. `cdkd deploy --all` orders stacks that way already.
+
+## If a refactor is interrupted
+
+`cdkd refactor` never leaves a stack's state half written:
+
+- A rename is one write of the stack's `state.json`. It either happened or it
+  did not.
+- Ctrl+C or `SIGTERM` during the writes is held until they finish, a few
+  writes taking well under a second. The command then stops and says so.
+- A move between stacks is written in three steps. First the stack losing the
+  resource records that the move has started, and keeps the resource. Then the
+  stack gaining it adds it. Then the first stack drops it.
+
+If a move stops part way, through a network failure, a killed process or a
+closed terminal, the stack losing the resource still records the unfinished
+move:
+
+- `cdkd deploy` and `cdkd destroy` of that stack refuse, because the other
+  stack may already hold the resource and deleting it here would delete that
+  stack's resource. `cdkd diff` exits with code `3` and says why.
+- Run `cdkd refactor <that stack>` to finish the move. It checks what the
+  other stack holds, adds the resource there if it is missing, and then drops
+  it from the first stack.
+
+One case needs a decision from you. If the process stopped right after the
+first step and the stack gaining the resource was deployed before you re-ran
+the refactor, that deploy created a second resource under the new logical ID.
+`cdkd refactor` then refuses and names both. Delete or
+[orphan](orphan-vs-destroy.md) the new resource in that stack, then re-run
+`cdkd refactor`.
+
+The state bucket also keeps earlier versions of every `state.json`, so a
+record can be restored by hand.
 
 ## When it refuses
 
@@ -134,6 +165,8 @@ Nothing is written when `cdkd refactor` refuses:
   successful `cdkd deploy` first.
 - The detection found an ambiguous group no mapping file names.
 - The stack is locked by another run.
+- An interrupted move out of the stack cannot be finished; the error names
+  which one and why.
 - The state changed between planning and writing: re-run `cdkd refactor`.
 - A mapping-file pair is not a removed and an added resource of one type, or
   its properties changed.
