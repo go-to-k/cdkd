@@ -166,6 +166,38 @@ describe('applyLogicalIdRenames', () => {
     expect(before.skippedOutputs).toEqual({ X: 'sha256:abc' });
   });
 
+  it('rewrites the references held by rollback-orphan and superseded records', () => {
+    const out = applyLogicalIdRenames(
+      stack({
+        resources: { OldQueue: record() },
+        orphans: [{ logicalId: 'Kept', orphanedAt: 1, state: record({ dependencies: ['OldQueue'] }) }],
+        supersededResources: [
+          { logicalId: 'Other', supersededAt: 1, state: record({ properties: { Q: { Ref: 'OldQueue' } } }) },
+        ],
+      }),
+      [{ from: 'OldQueue', to: 'NewQueue' }],
+      template
+    );
+    expect(out.orphans![0]!.logicalId).toBe('Kept');
+    expect(out.orphans![0]!.state.dependencies).toEqual(['NewQueue']);
+    expect(out.supersededResources![0]!.logicalId).toBe('Other');
+    expect(out.supersededResources![0]!.state.properties).toEqual({ Q: { Ref: 'NewQueue' } });
+  });
+
+  it('keeps a non-string dependency entry verbatim', () => {
+    const out = applyLogicalIdRenames(
+      stack({
+        resources: {
+          OldQueue: record(),
+          Sib: record({ dependencies: ['OldQueue', 7 as unknown as string] }),
+        },
+      }),
+      [{ from: 'OldQueue', to: 'NewQueue' }],
+      template
+    );
+    expect(out.resources['Sib']!.dependencies).toEqual(['NewQueue', 7]);
+  });
+
   it('leaves an unreadable sibling entry verbatim', () => {
     const out = applyLogicalIdRenames(
       stack({

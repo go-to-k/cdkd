@@ -262,7 +262,11 @@ for pair in "${OLD_TABLE_ID} -> ${NEW_TABLE_ID}" "${OLD_QUEUE_ID} -> ${NEW_QUEUE
   printf '%s' "${OUT_2C}" | grep -qF "${pair}" || { echo "FAIL: plan lacks ${pair}" >&2; exit 1; }
 done
 # Plan lines are indented two spaces; cdkd's own notices (the --region
-# deprecation warning) are not, and must not trip this.
+# deprecation warning) are not, and must not trip this. The positive anchor
+# proves the plan lines still carry that indent, so a drift in it fails here
+# instead of making the negative grep pass vacuously.
+printf '%s\n' "${OUT_2C}" | grep -qE "^  ${OLD_TABLE_ID} -> ${NEW_TABLE_ID}  " \
+  || { echo "FAIL: plan lines are no longer two-space indented; the check below would be vacuous" >&2; exit 1; }
 if printf '%s\n' "${OUT_2C}" | grep -qE '^  (Warning:|Not refactored|Refused|Ambiguous)'; then
   echo "FAIL: the mapped plan carries a warning or refusal" >&2
   exit 1
@@ -277,6 +281,10 @@ printf '%s\n' "${OUT_2D}"
 printf '%s' "${OUT_2D}" | grep -q "Refactored 4 resource(s) in stack ${STACK}" \
   || { echo "FAIL: refactor did not report 4 renames" >&2; exit 1; }
 [ "$(state_etag)" != "${ETAG_BEFORE}" ] || { echo "FAIL: refactor did not write state" >&2; exit 1; }
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${DEFAULT_STATE_KEY}"; then
+  echo "FAIL: cdkd refactor wrote a state record under the default prefix (${DEFAULT_STATE_KEY})" >&2
+  exit 1
+fi
 
 echo "==> Phase 2e: state holds the new logical ids under the same physical ids"
 RES_B="$(cdkd state resources "${STACK}" "${STATE_FLAGS[@]}")"

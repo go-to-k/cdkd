@@ -11,6 +11,7 @@ import {
   referencedLogicalIds,
   planStackRefactor,
   renderRefactorPlan,
+  sampleMappingFile,
   type RefactorDiffFn,
   type StackRefactorPlan,
 } from '../../../../src/cli/commands/refactor.js';
@@ -144,6 +145,93 @@ describe('planStackRefactor', () => {
     );
   });
 
+  it('skips a detected rename whose old id a rollback-orphan record names, and refuses a named one', async () => {
+    const orphans = [{ logicalId: 'Old', orphanedAt: 1, state: rec({ T: 1 }, { physicalId: 'x' }) }];
+    const detected = await plan(stack({ Old: rec({ T: 1 }) }, { orphans }), fakeDiff({ New: { props: { T: 1 } } }));
+    expect(detected.renames).toEqual([]);
+    expect(detected.refusedOverrides).toEqual([]);
+    expect(detected.skipped).toEqual([
+      { rename: expect.objectContaining({ from: 'Old', to: 'New' }), reason: expect.stringMatching(/rollback-orphan/) },
+    ]);
+    expect(renderRefactorPlan(detected).join('\n')).toMatch(/Not refactored: Old -> New .*rollback-orphan/);
+    const named = await plan(stack({ Old: rec({ T: 1 }) }, { orphans }), fakeDiff({ New: { props: { T: 1 } } }), [
+      { from: 'Old', to: 'New' },
+    ]);
+    expect(named.refusedOverrides).toEqual([
+      expect.objectContaining({ from: 'Old', to: 'New', reason: expect.stringMatching(/rollback-orphan/) }),
+    ]);
+  });
+
+  it('drops a rename a later pass invalidates (the cascade)', async () => {
+    // B is unchanged only while A is renamed too; A itself changed.
+    const diff: RefactorDiffFn = async (state) => {
+      const changes = new Map<string, ResourceChange>();
+      const has = (id: string) => state.resources[id] !== undefined;
+      changes.set('A2', {
+        logicalId: 'A2',
+        resourceType: 'AWS::SNS::Topic',
+        changeType: has('A2') ? 'UPDATE' : 'CREATE',
+        desiredProperties: {},
+        propertyChanges: has('A2') ? [{ path: 'X', oldValue: 1, newValue: 2, requiresReplacement: false }] : [],
+      });
+      changes.set('B2', {
+        logicalId: 'B2',
+        resourceType: queue,
+        changeType: !has('B2') ? 'CREATE' : has('A2') ? 'NO_CHANGE' : 'UPDATE',
+        desiredProperties: {},
+      });
+      for (const id of Object.keys(state.resources)) {
+        if (id !== 'A2' && id !== 'B2') {
+          changes.set(id, { logicalId: id, changeType: 'DELETE', resourceType: state.resources[id]!.resourceType });
+        }
+      }
+      return { changes, blocking: [] };
+    };
+    const p = await plan(stack({ A: rec({}, { resourceType: 'AWS::SNS::Topic' }), B: rec({}) }), diff);
+    expect(p.renames).toEqual([]);
+    expect(p.differing.map((d) => d.rename.to).sort()).toEqual(['A2', 'B2']);
+  });
+
+  it('splits look-alikes that differ only in what they reference with the diff itself', async () => {
+    // Both CREATE rows carry an unresolved Ref, so the proposal sees them as
+    // equal; only the pairing that keeps each physical id shows no change.
+    const want: Record<string, string> = { NewA: 'pa', NewB: 'pb' };
+    const diff = (async (state: StackState) => {
+      const changes = new Map<string, ResourceChange>();
+      for (const id of Object.keys(want)) {
+        const r = state.resources[id];
+        changes.set(id, {
+          logicalId: id,
+          resourceType: queue,
+          changeType: r === undefined ? 'CREATE' : r.physicalId === want[id] ? 'NO_CHANGE' : 'UPDATE',
+          desiredProperties: { Target: { Ref: 'X' } },
+        });
+      }
+      for (const id of Object.keys(state.resources)) {
+        if (!(id in want)) changes.set(id, { logicalId: id, changeType: 'DELETE', resourceType: queue });
+      }
+      return { changes, blocking: [] };
+    }) as RefactorDiffFn;
+    const p = await plan(
+      stack({ OldA: rec({ Target: 'ta' }, { physicalId: 'pa' }), OldB: rec({ Target: 'tb' }, { physicalId: 'pb' }) }),
+      diff
+    );
+    expect(p.ambiguous).toEqual([]);
+    expect(p.renames.map((r) => [r.from, r.to]).sort()).toEqual([
+      ['OldA', 'NewA'],
+      ['OldB', 'NewB'],
+    ]);
+  });
+
+  it.each([
+    ['an unreadable orphans container', { orphans: 'torn' as never }],
+    ['an unreadable orphan row', { orphans: [null] as never }],
+  ])('refuses %s before diffing', async (_label, extra) => {
+    const diff = fakeDiff({ New: { props: { T: 1 } } });
+    await expect(plan(stack({ Old: rec({ T: 1 }) }, extra), diff)).rejects.toThrow();
+    expect(diff.calls).toHaveLength(0);
+  });
+
   it('never pairs a CREATE row a rollback-orphan record will be re-adopted under', async () => {
     const orphanState = rec({ T: 1 }, { physicalId: 'orphaned' });
     const p = await plan(
@@ -210,18 +298,24 @@ describe('applyStackRefactor', () => {
     etag: '"e1"',
     renames: [{ from: 'Old', to: 'New', resourceType: queue, source: 'detected' }],
     differing: [],
+    skipped: [],
     ambiguous: [],
     refusedOverrides: [],
     stillChanging: [],
     template,
   });
 
-  function doubles(etag = '"e1"', acquired = true) {
+  function doubles(etag = '"e1"', acquired = true, opts: { journal?: boolean; absent?: boolean; migrationPending?: boolean } = {}) {
     const order: string[] = [];
     const stateBackend = {
       getState: vi.fn(async () => {
         order.push('get');
-        return { state: stack({ Old: rec({ T: 1 }) }), etag, migrationPending: false };
+        if (opts.absent) return null;
+        return { state: stack({ Old: rec({ T: 1 }) }), etag, migrationPending: opts.migrationPending ?? false };
+      }),
+      loadRollbackJournal: vi.fn(async () => {
+        order.push('journal');
+        return opts.journal ? ({ journalVersion: 1, segments: [] } as never) : null;
       }),
       saveState: vi.fn(async () => {
         order.push('save');
@@ -254,7 +348,7 @@ describe('applyStackRefactor', () => {
   it('locks, re-reads, rotates create tokens, saves conditionally, unlocks', async () => {
     const d = doubles();
     await run(d);
-    expect(d.order).toEqual(['lock', 'get', 'rotate', 'save', 'unlock']);
+    expect(d.order).toEqual(['lock', 'get', 'journal', 'rotate', 'save', 'unlock']);
     const [, , saved, opts] = d.stateBackend.saveState.mock.calls[0] as unknown as [
       string,
       string,
@@ -274,6 +368,27 @@ describe('applyStackRefactor', () => {
     expect(d.order.at(-1)).toBe('unlock');
   });
 
+  it('writes nothing when a rollback journal appeared after planning', async () => {
+    const d = doubles('"e1"', true, { journal: true });
+    await expect(run(d)).rejects.toThrow(/rollback journal/);
+    expect(d.stateBackend.saveState).not.toHaveBeenCalled();
+    expect(d.stateBackend.rotateCreateTokenNonce).not.toHaveBeenCalled();
+    expect(d.order.at(-1)).toBe('unlock');
+  });
+
+  it('writes nothing when the record was deleted after planning', async () => {
+    const d = doubles('"e1"', true, { absent: true });
+    await expect(run(d)).rejects.toThrow(/changed after cdkd refactor planned it/);
+    expect(d.stateBackend.saveState).not.toHaveBeenCalled();
+  });
+
+  it('migrates a legacy-layout record on the save, as every writer does', async () => {
+    const d = doubles('"e1"', true, { migrationPending: true });
+    await run(d);
+    const opts = (d.stateBackend.saveState.mock.calls[0] as unknown as [string, string, StackState, Record<string, unknown>])[3];
+    expect(opts).toEqual({ expectedEtag: '"e1"', migrateLegacy: true });
+  });
+
   it('writes nothing and releases no foreign lock under contention', async () => {
     const d = doubles('"e1"', false);
     await expect(run(d)).rejects.toThrow('locked by someone');
@@ -286,6 +401,25 @@ describe('applyStackRefactor', () => {
     d.stateBackend.saveState.mockRejectedValueOnce(new Error('PreconditionFailed'));
     await expect(run(d)).rejects.toThrow('PreconditionFailed');
     expect(d.order.at(-1)).toBe('unlock');
+  });
+});
+
+describe('sampleMappingFile', () => {
+  it('writes one environment per ambiguous stack with its own account and region', () => {
+    const base = {
+      etag: '"e"', renames: [], differing: [], skipped: [], refusedOverrides: [], stillChanging: [], template,
+    };
+    const text = sampleMappingFile([
+      { plan: { ...base, stackName: 'S', region: 'us-east-1', ambiguous: [{ resourceType: queue, from: ['A', 'B'], to: ['C', 'D'] }] }, account: '111' },
+      { plan: { ...base, stackName: 'T', region: 'eu-west-1', ambiguous: [] }, account: '222' },
+      { plan: { ...base, stackName: 'U', region: 'eu-west-1', ambiguous: [{ resourceType: queue, from: ['E'], to: ['F', 'G'] }] }, account: '333' },
+    ]);
+    expect(JSON.parse(text)).toEqual({
+      environments: [
+        { account: '111', region: 'us-east-1', resources: { 'S.A': 'S.C', 'S.B': 'S.D' } },
+        { account: '333', region: 'eu-west-1', resources: { 'U.E': 'U.F' } },
+      ],
+    });
   });
 });
 

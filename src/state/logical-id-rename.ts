@@ -31,7 +31,8 @@ export interface LogicalIdRename {
  *   `Fn::Sub` naming an old id that its `properties` or `attributes` still
  *   hold unresolved, are rewritten to the new id.
  * - A superseded record (`supersededResources`) labelled with an old id is
- *   relabelled, as its replacement's record moved.
+ *   relabelled, as its replacement's record moved; it and every rollback-orphan
+ *   record have their references rewritten as the live records do.
  * - `skippedOutputs` is DROPPED, as by every writer that rebuilds state
  *   outside a deploy (the flat rule on that field's doc).
  *
@@ -90,11 +91,25 @@ export function applyLogicalIdRenames(
     ...stackInstanceIdCarriedFrom(state),
     resources,
     ...retired,
-    ...(state.supersededResources !== undefined && {
+    ...(Array.isArray(state.supersededResources) && {
       supersededResources: state.supersededResources.map((entry) => {
+        if (entry === null || typeof entry !== 'object') return entry;
         const to = byFrom.get(entry.logicalId);
-        return to === undefined ? entry : { ...entry, logicalId: to };
+        return {
+          ...entry,
+          ...(to !== undefined && { logicalId: to }),
+          state: rewriteRecordReferences(entry.state, byFrom),
+        };
       }),
+    }),
+    // A rollback-orphan record keeps its own logical id (the refactor refuses
+    // to rename one), but a dependency it names may be a renamed id.
+    ...(Array.isArray(state.orphans) && {
+      orphans: state.orphans.map((entry) =>
+        entry === null || typeof entry !== 'object'
+          ? entry
+          : { ...entry, state: rewriteRecordReferences(entry.state, byFrom) }
+      ),
     }),
     lastModified: Date.now(),
   };

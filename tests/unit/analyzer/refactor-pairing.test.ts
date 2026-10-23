@@ -42,6 +42,15 @@ describe('proposeRenames', () => {
     ]);
   });
 
+  it('leaves a CREATE with no matching record alone beside one that pairs', () => {
+    const p = proposeRenames(
+      [c('NewA', { T: 1 }), c('Brand', { T: 7 })],
+      [d('OldA', { T: 1 }), d('Gone', { T: 9 })]
+    );
+    expect(p.renames.map((r) => [r.from, r.to])).toEqual([['OldA', 'NewA']]);
+    expect(p.ambiguous).toEqual([]);
+  });
+
   it('reports identical look-alikes as ambiguous instead of guessing', () => {
     const p = proposeRenames(
       [c('NewA', { Timeout: 1 }), c('NewB', { Timeout: 1 })],
@@ -113,6 +122,11 @@ describe('looselyEqual', () => {
     expect(looselyEqual({ Q: { 'Fn::GetAtt': ['X', 'Arn'] } }, { Q: ['a'] })).toBe(true);
   });
 
+  it('ignores keys whose value is undefined on either side', () => {
+    expect(looselyEqual({ T: 1, U: undefined }, { T: 1 })).toBe(true);
+    expect(looselyEqual({ T: 1 }, { T: 1, U: undefined })).toBe(true);
+  });
+
   it('compares literals, key sets and array lengths', () => {
     expect(looselyEqual({ T: 1 }, { T: 2 })).toBe(false);
     expect(looselyEqual({ T: 1 }, { T: 1, U: 2 })).toBe(false);
@@ -149,6 +163,12 @@ describe('parseMappingFile / mappingPairs', () => {
     ['a duplicate destination', '{"environments":[{"account":"a","region":"r","resources":{"S.A":"S.C","S.B":"S.C"}}]}'],
   ])('refuses %s', (_label, body) => {
     expect(() => parseMappingFile(body)).toThrow();
+  });
+
+  it('refuses a malformed location at parse time', () => {
+    expect(() =>
+      parseMappingFile('{"environments":[{"account":"a","region":"r","resources":{"Old":"S.New"}}]}')
+    ).toThrow(/StackName/);
   });
 
   it('refuses a location without a stack', () => {

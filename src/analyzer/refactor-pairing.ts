@@ -248,6 +248,8 @@ export function parseMappingFile(text: string): MappingEnvironment[] {
       if (typeof to !== 'string') {
         throw new Error(`environments[${i}].resources values must be strings`);
       }
+      splitLocation(from);
+      splitLocation(to);
       if (destinations.has(to)) {
         throw new Error(`environments[${i}].resources names one destination more than once`);
       }

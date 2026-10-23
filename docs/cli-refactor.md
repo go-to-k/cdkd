@@ -46,10 +46,15 @@ the new resource is unchanged: diffing the template against the renamed state
 shows no change for it. That is the same comparison `cdkd deploy` makes, so a
 refactor never keeps a pair the next deploy would update.
 
+When several resources of one type were renamed, cdkd first pairs them by
+their properties. Resources that still look alike, for example two roles that
+differ only in the policies they reference, are tried against each other with
+the same diff, and each one that matches exactly one way is renamed.
+
 | Situation | What cdkd refactor does |
 | --- | --- |
 | One removed and one added resource of a type, unchanged | Renames it |
-| Several of a type, each matching exactly one by its properties | Renames each |
+| Several of a type, each matching exactly one old resource | Renames each |
 | Two or more that match equally (for example two identical queues) | Reports them as ambiguous and writes nothing; name the pairs with `--override-file` |
 | The resource was renamed and its properties also changed | Leaves it, and says so; see below |
 | An `AWS::CloudFormation::Stack` (nested stack) row | Never renamed |
