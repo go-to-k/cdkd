@@ -26,12 +26,26 @@ import type { Construct } from 'constructs';
  *     OpenZFSConfiguration sub-property)
  *   - Tag value change + tag REMOVAL (TagResource / UntagResource)
  * Both must keep the FileSystemId unchanged (no replacement).
+ *
+ * REMOVAL phase (CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true, issue #1160):
+ *   - StorageCapacity (64), StorageType (SSD) and NetworkType (IPV4), declared
+ *     until now, are DROPPED from the template. UpdateFileSystem keeps a field
+ *     it is not sent and cdkd sends no reset, as CloudFormation leaves them
+ *     (CFn A/B on issue #1160), so the values must stay and the deploy must
+ *     name the three removals in one warning saying CloudFormation keeps them.
+ *     SSD and IPV4 are AWS's defaults here: this VPC has no IPv6, and
+ *     the SINGLE_AZ_1 file system is SSD, so the arm proves the warning and that
+ *     nothing is reset, not a non-default value surviving.
+ *   - WeeklyMaintenanceStartTime is ADDED in the same deploy, a companion
+ *     change proving UpdateFileSystem fired with the removals beside it.
  */
 export class FsxOpenZfsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+    const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
+    const isMaintAlt = process.env.CDKD_TEST_MAINT_ALT === 'true';
 
     // VPC with 1 AZ, public subnet only, no NAT (cheapest legal shape).
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -48,13 +62,17 @@ export class FsxOpenZfsStack extends cdk.Stack {
 
     const fileSystem = new fsx.CfnFileSystem(this, 'Fs', {
       fileSystemType: 'OPENZFS',
-      // Smallest legal OpenZFS SINGLE_AZ_1 capacity.
-      storageCapacity: 64,
+      // Smallest legal OpenZFS SINGLE_AZ_1 capacity. The three top-level
+      // settings are dropped in the REMOVAL phase (issue #1160).
+      ...(isRemoval ? {} : { storageCapacity: 64, storageType: 'SSD', networkType: 'IPV4' }),
       subnetIds: [vpc.publicSubnets[0].subnetId],
       openZfsConfiguration: {
         deploymentType: 'SINGLE_AZ_1',
         // 64 MB/s baseline; the UPDATE phase scales it to 128.
         throughputCapacity: isUpdate ? 128 : 64,
+        // Sunday 03:30 UTC, or Monday 04:45 under CDKD_TEST_MAINT_ALT=true,
+        // which verify.sh picks when AWS already holds the first.
+        ...(isRemoval && { weeklyMaintenanceStartTime: isMaintAlt ? '1:04:45' : '7:03:30' }),
         // Default root volume — exercises the RootVolumeConfiguration create
         // mapping (record size + compression).
         rootVolumeConfiguration: {

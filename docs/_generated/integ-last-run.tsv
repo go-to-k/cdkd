@@ -146,7 +146,7 @@ fallback-recreate-children	2026-10-17T05:11:06Z	PASS	115	verify.sh	rc ok, orph c
 fifo-sqs-event-source	2026-10-16T16:36:24Z	PASS	105	verify.sh	PR #5012 (#5004) re-run on 5c17a4e7a (post-rebase, comment-only commits); rc ok, orph clean; scope/limit retained, CBD reset
 fsx-lustre	2026-10-22T12:22:38Z	PASS	2778	verify.sh	PR #5172: #1160 FSx removal-warning wording keeps-CloudFormation-too claim; rc 0, destroy 10 deleted 0 errors, FSx+VPC+S3 confirmed clean
 fsx-ontap	2026-10-02T10:50:28Z	PASS	1613	verify.sh	#1160 PR #4398; rc ok, orph clean, no final backup
-fsx-openzfs	2026-10-02T10:50:28Z	PASS	1232	verify.sh	#1160 PR #4398; rc ok; untagged OpenZFS final backup deleted by hand (#1113)
+fsx-openzfs	2026-10-23T17:35:06Z	PASS	1296	verify.sh	rc ok, orph clean, probe RED at phase 2b needle
 fsx-windows	2026-10-02T10:50:28Z	PASS	4588	verify.sh	#1160 PR #4398; AD-joined rc ok, orph clean, no final backup
 full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 gc-custom-asset-names	2026-10-05T08:20:47Z	PASS	163	verify.sh	rc ok, orph clean; us-east-2, run alone (a parallel batch's locks make gc refuse) (#2624 PR #4573)

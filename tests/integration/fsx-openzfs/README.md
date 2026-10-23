@@ -35,6 +35,19 @@ Windows-managed-AD / multi-AZ-ONTAP integ is an optional cost-gated follow-up.
    (`UpdateFileSystem` — a mutable `OpenZFSConfiguration` sub-property), tag
    value change AND tag removal (`TagResource` / `UntagResource`). Asserts the
    FileSystemId is unchanged (in-place, no replacement).
+2b. **Removal** (`CDKD_TEST_REMOVAL=true`, issue #1160): `StorageCapacity`
+   (64), `StorageType` (`SSD`) and `NetworkType` (`IPV4`) are dropped from the
+   template. CloudFormation keeps each of them (CFn A/B on #1160), and cdkd
+   sends no reset either. The phase asserts that the deploy succeeds, the same
+   file system is kept, the three values are unchanged, and ONE warning names
+   all three with the "as CloudFormation leaves them" wording.
+   `WeeklyMaintenanceStartTime` is added in the same deploy, so
+   `UpdateFileSystem` demonstrably fires beside the removals. `SSD` and `IPV4`
+   are AWS's defaults here: the VPC has no IPv6, and the fixture's
+   `SINGLE_AZ_1` file system is `SSD`. So the phase proves the warning and that
+   nothing is reset. It does not prove that a non-default value survives: the
+   unit suite asserts cdkd sends no field for an `HDD` or `DUAL` removal, and
+   the CFn A/B on #1160 measured those values staying.
 3. **Destroy** and assert the file system + VPC are gone from AWS and the
    cdkd state file is removed. A leftover FSx file system is never acceptable
    (per-hour billing) — the cleanup trap force-deletes any file system

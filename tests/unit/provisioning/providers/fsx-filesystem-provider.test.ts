@@ -942,7 +942,7 @@ describe('FSxFileSystemProvider update', () => {
         ...LUSTRE_PROPS,
         StorageType: 'INTELLIGENT_TIERING',
         FileSystemTypeVersion: '2.15',
-        NetworkType: 'DUAL_STACK',
+        NetworkType: 'DUAL',
         LustreConfiguration: {
           DeploymentType: 'SCRATCH_2',
           MetadataConfiguration: { Mode: 'USER_PROVISIONED', Iops: '6000' },
@@ -956,7 +956,7 @@ describe('FSxFileSystemProvider update', () => {
       FileSystemId: FS_ID,
       StorageType: 'INTELLIGENT_TIERING',
       FileSystemTypeVersion: '2.15',
-      NetworkType: 'DUAL_STACK',
+      NetworkType: 'DUAL',
       LustreConfiguration: {
         MetadataConfiguration: { Mode: 'USER_PROVISIONED', Iops: 6000 },
       },
@@ -2431,48 +2431,105 @@ describe('FSxFileSystemProvider update removal (#1160)', () => {
     expect(childLogger.warn).not.toHaveBeenCalled();
   });
 
-  for (const [key, value] of [
-    ['StorageCapacity', 2400],
-    ['StorageType', 'HDD'],
-    ['FileSystemTypeVersion', '2.15'],
-    ['NetworkType', 'DUAL'],
+  // [base, key, value, CloudFormation measured to keep it for this
+  // FileSystemType] — the CFn A/B on issue #1160 measured Lustre and OpenZFS
+  // only, and NetworkType on OpenZFS only.
+  for (const [base, key, value, measured] of [
+    [LUSTRE_PROPS, 'StorageCapacity', 2400, true],
+    [LUSTRE_PROPS, 'StorageType', 'HDD', true],
+    [LUSTRE_PROPS, 'FileSystemTypeVersion', '2.15', true],
+    [LUSTRE_PROPS, 'NetworkType', 'DUAL', false],
+    [OPENZFS_PROPS, 'StorageCapacity', 128, true],
+    [OPENZFS_PROPS, 'StorageType', 'SSD', true],
+    [OPENZFS_PROPS, 'NetworkType', 'DUAL', true],
+    [WINDOWS_PROPS, 'StorageCapacity', 64, false],
+    [WINDOWS_PROPS, 'StorageType', 'HDD', false],
+    [ONTAP_PROPS, 'NetworkType', 'DUAL', false],
   ] as const) {
-    it(`issues no UpdateFileSystem when top-level ${key} is the only removal`, async () => {
+    it(`issues no UpdateFileSystem when top-level ${key} is the only removal (${base.FileSystemType})`, async () => {
       routeSend({
         UpdateFileSystemCommand: {},
         DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
       });
 
-      const { [key]: _removed, ...desired } = { ...LUSTRE_PROPS, [key]: value } as Record<
-        string,
-        unknown
-      >;
-      const result = await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desired, {
-        ...LUSTRE_PROPS,
-        [key]: value,
-      });
+      const prev = { ...base, [key]: value } as Record<string, unknown>;
+      const { [key]: _removed, ...desired } = prev;
+      const result = await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desired, prev);
 
       expect(result).toEqual({ physicalId: FS_ID, wasReplaced: false });
       expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
       // Named by the provider's own line, which claims no CloudFormation reset;
       // it says CloudFormation keeps the value only where that is measured.
       expect(warnings()).toEqual([
-        key === 'FileSystemTypeVersion'
+        measured
           ? `MyFs (AWS::FSx::FileSystem): property ${key} is no longer declared and keeps its current AWS value, as CloudFormation leaves it; UpdateFileSystem keeps a setting it is not sent. Declare the intended value explicitly to change it.`
           : `MyFs (AWS::FSx::FileSystem): property ${key} is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`,
       ]);
     });
   }
 
+  // INTELLIGENT_TIERING is a storage class no CFn A/B measured, so neither a
+  // removed StorageType of that value nor a removal on such a file system gets
+  // the "as CloudFormation leaves it" claim.
+  for (const [base, removedKey, extra] of [
+    [OPENZFS_PROPS, 'StorageType', {}],
+    [LUSTRE_PROPS, 'StorageCapacity', { StorageType: 'INTELLIGENT_TIERING' }],
+  ] as const) {
+    it(`claims nothing about CloudFormation for an INTELLIGENT_TIERING ${base.FileSystemType} file system (${removedKey} removed)`, async () => {
+      routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+      const prev = {
+        ...base,
+        ...extra,
+        ...(removedKey === 'StorageType' && { StorageType: 'INTELLIGENT_TIERING' }),
+      } as Record<string, unknown>;
+      const { [removedKey]: _removed, ...desired } = prev;
+
+      await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desired, prev);
+
+      expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+      expect(warnings()).toEqual([
+        `MyFs (AWS::FSx::FileSystem): property ${removedKey} is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`,
+      ]);
+    });
+  }
+
+  it('claims nothing about CloudFormation when the same deploy migrates StorageType to INTELLIGENT_TIERING', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+    const prev = { ...OPENZFS_PROPS, StorageType: 'SSD', NetworkType: 'DUAL' };
+    const { NetworkType: _nt, ...rest } = prev;
+    const desired = { ...rest, StorageType: 'INTELLIGENT_TIERING' };
+
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desired, prev);
+
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): property NetworkType is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.',
+    ]);
+  });
+
+  it('claims nothing about CloudFormation for a FileSystemType naming an Object prototype key', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+    const prev = { ...LUSTRE_PROPS, FileSystemType: 'constructor', StorageType: 'HDD' };
+    const { StorageType: _st, ...desired } = prev;
+
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desired, prev);
+
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): property StorageType is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.',
+    ]);
+  });
+
   it('names top-level and sub-property removals in ONE warning', async () => {
     routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
 
     const prev = {
       ...LUSTRE_PROPS,
-      NetworkType: 'DUAL',
+      StorageType: 'HDD',
       LustreConfiguration: { DeploymentType: 'SCRATCH_2', DataCompressionType: 'LZ4' },
     };
-    const { NetworkType: _nt, ...desired } = {
+    const { StorageType: _st, ...desired } = {
       ...prev,
       LustreConfiguration: { DeploymentType: 'SCRATCH_2' },
     };
@@ -2481,8 +2538,28 @@ describe('FSxFileSystemProvider update removal (#1160)', () => {
     expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
     expect(warnings()).toHaveLength(1);
     expect(warnings()[0]).toContain(
-      'properties NetworkType, LustreConfiguration.DataCompressionType are no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.'
+      'properties StorageType, LustreConfiguration.DataCompressionType are no longer declared and keep their current AWS value, as CloudFormation leaves them; UpdateFileSystem keeps a setting it is not sent. Declare the intended value explicitly to change it.'
     );
+  });
+
+  it('claims nothing about CloudFormation when a measured top-level removal shares the line with an unmeasured one', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+
+    const prev = {
+      ...LUSTRE_PROPS,
+      StorageType: 'SSD',
+      LustreConfiguration: { DeploymentType: 'PERSISTENT_2', AutomaticBackupRetentionDays: 7 },
+    };
+    const { StorageType: _st, ...desired } = {
+      ...prev,
+      LustreConfiguration: { DeploymentType: 'PERSISTENT_2' },
+    };
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desired, prev);
+
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): properties StorageType, LustreConfiguration.AutomaticBackupRetentionDays are no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.',
+    ]);
   });
 
   it('words a top-level removal for a rollback revert, and is silent on drift --revert', async () => {
