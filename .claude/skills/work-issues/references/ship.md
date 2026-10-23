@@ -3,7 +3,7 @@
 ## 9. Ship: merge → pull → rebuild → cleanup
 
 The PARENT's serialization point: run your own review round on a merge-ready
-lane (`references/verify.md` §8-i — before EVERY merge, even when the lane's
+lane (`verify.md` §8-i — before EVERY merge, even when the lane's
 reviewers passed; #3906), grant it its turn only once that round is
 CLEAN (one lane at a time), then run `/run-integ` and
 `gh pr merge` yourself FROM THAT LANE'S WORKTREE — never the lane agent. The
@@ -12,7 +12,7 @@ to `AskUserQuestion`, never a reworded retry (#4059); only
 `/run-integ` step 9's one retry (marker set or ledger push) is exempt.
 Ship from a SECOND sibling on the PR's branch while that tree holds a follow-up
 (`git -C <MAIN_CHECKOUT> worktree add <MAIN_CHECKOUT>/.claude/worktrees/<name> <branch>`),
-running BOTH the integ and the merge there (the marker is per tree). A fix
+running BOTH the integ and the merge there. A fix
 round DURING that tree's integ edits a `--detach` sibling, pushes
 `HEAD:<branch>` (bash reads `verify.sh` live), and fast-forwards that tree
 before the marker, re-running an integ the fix touches (#4561). Never two
@@ -31,18 +31,19 @@ context (§8-d probe alone, then fixture batches), each run's fixture,
 `pid=<N>`, log, state prefix appended as a line to `<scratch>/integ-<PR>.live` at
 launch. BEFORE dispatching, the PARENT runs `/run-integ` step 4's live-lock
 check and lists open PRs touching each fixture: a held one gets a lock watcher,
-not a runner (#5190). The PARENT Monitors those PIDs, read only from each
-line's `pid=` field (`grep -oE 'pid=[0-9]+'`; a bare digit grep matches a
-`mktemp` path's zeroes, and `kill -0 0000` always succeeds), `SendMessage`s
-the runner as each exits, and alarms when no PID has run for 15 min unreported
-(#5135).
+not a runner (#5190). The PARENT Monitors those PIDs (`timeout_ms` 1800000,
+re-armed on expiry; in `bash -c`: zsh won't split `$pids`),
+read only from each line's `pid=` field (`grep -oE 'pid=[0-9]+'`; a bare digit
+grep matches a `mktemp` path's zeroes, and `kill -0 0000` always succeeds),
+`SendMessage`s the runner as each exits, and alarms when no PID has run for 15
+min unreported (#5135).
 A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
 
 - The `integ-destroy` marker is read from the tree the command runs in, so a
   merge from the main tree consults the WRONG store (#2363); read
   it by hand with `mise exec -- markgate`, as PATH's may predate `hash: diff`. Its
   `hash: diff` covers this branch's delta against `origin/main`, so run the
-  integ AFTER the flatten/rebase below (`references/verify.md` §8-b says which
+  integ AFTER the flatten/rebase below (`verify.md` §8-b says which
   rebases stale it). While a scoped file this branch changes is busy on `main`
   (#4183), run the set as ONE parallel batch (building fixtures per
   `/run-integ` step 1), then set the marker, record, push and merge without
@@ -53,8 +54,8 @@ A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
 ### Flatten, then rebase
 
 **FLATTEN BEFORE YOU REBASE — the default step, not a remedy.** The integ ledger
-`docs/_generated/integ-last-run.tsv` gains a row at the same place on every lane
-that ran one, so a commit-by-commit rebase re-conflicts once per commit; the
+gains a row at the same place on every lane that ran one, so a commit-by-commit
+rebase re-conflicts once per commit; the
 repo squash-merges, so flattening loses nothing. Both rewrite a PUSHED branch,
 so FIRST push plainly until `git rev-list origin/<branch>..HEAD` is empty (a
 denied plain push is re-authorized, never routed round through the arm). Then,
