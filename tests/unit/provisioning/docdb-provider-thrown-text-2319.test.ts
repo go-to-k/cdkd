@@ -109,7 +109,14 @@ const cases: Array<{ wrap: string; make: () => Provider; run: (p: Provider) => P
       wrap: 'Failed to update DocDB DBCluster Db',
       make: dbp,
       run: (p) =>
-        p.update('Db', 'db-1', 'AWS::DocDB::DBCluster', CLUSTER, { ...CLUSTER, BackupRetentionPeriod: 1 }, { maskSecrets: mask }),
+        p.update(
+          'Db',
+          'db-1',
+          'AWS::DocDB::DBCluster',
+          CLUSTER,
+          { ...CLUSTER, BackupRetentionPeriod: 1 },
+          { maskSecrets: mask }
+        ),
     },
     {
       wrap: 'Failed to delete DocDB DBCluster Db',
@@ -127,7 +134,14 @@ const cases: Array<{ wrap: string; make: () => Provider; run: (p: Provider) => P
       wrap: 'Failed to update DocDB DBInstance In',
       make: dbp,
       run: (p) =>
-        p.update('In', 'in-1', 'AWS::DocDB::DBInstance', INSTANCE, { ...INSTANCE, DBInstanceClass: 'db.r5.xlarge' }, { maskSecrets: mask }),
+        p.update(
+          'In',
+          'in-1',
+          'AWS::DocDB::DBInstance',
+          INSTANCE,
+          { ...INSTANCE, DBInstanceClass: 'db.r5.xlarge' },
+          { maskSecrets: mask }
+        ),
     },
     {
       wrap: 'Failed to delete DocDB DBInstance In',
@@ -212,6 +226,45 @@ describe('DocDB providers thrown wraps withhold AWS text (#2319)', () => {
     expect(failure.message).toBe(
       `Failed to create DocDB DBCluster Db: DBClusterAlreadyExistsFault. ${VERBOSE_POINTER} AWS reports that it already exists.`
     );
+  });
+
+  it('restates an "already exists" from CreateDBSubnetGroup', async () => {
+    mockSend.mockRejectedValue(
+      Object.assign(new Error('DB subnet group already exists'), {
+        name: 'DBSubnetGroupAlreadyExistsFault',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 400 },
+      })
+    );
+
+    const failure = await caught(sgp().create('Sg', 'AWS::DocDB::DBSubnetGroup', SG));
+
+    expect(failure.message).toBe(
+      `Failed to create DocDB DBSubnetGroup Sg: DBSubnetGroupAlreadyExistsFault. ${VERBOSE_POINTER} AWS reports that it already exists.`
+    );
+    expect(failure.message).not.toContain('DB subnet group already exists');
+  });
+
+  // A transport error the SDK retried carries `$metadata` with only the retry
+  // counters (no `$fault`, no `httpStatusCode`): cdkd-side text, kept and masked.
+  it('a retried transport error keeps its text, masked', async () => {
+    mockSend.mockRejectedValue(
+      Object.assign(new Error('socket hang up near s3cr3t'), {
+        name: 'TimeoutError',
+        $metadata: { attempts: 3, totalRetryDelay: 120 },
+      })
+    );
+
+    const failure = await caught(
+      sgp().create('Sg', 'AWS::DocDB::DBSubnetGroup', SG, { maskSecrets: mask })
+    );
+
+    expect(failure.message).toBe(
+      `Failed to create DocDB DBSubnetGroup Sg: socket hang up near ***`
+    );
+    expect(failure.message).not.toContain('TimeoutError');
+    expect(failure.message).not.toContain(VERBOSE_POINTER);
+    expect(failure.message).not.toContain('s3cr3t');
   });
 
   // The #5161 leak shape: a failure AFTER the create returned (a denied status

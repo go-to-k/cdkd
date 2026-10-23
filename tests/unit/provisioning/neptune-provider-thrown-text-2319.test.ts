@@ -201,6 +201,45 @@ describe('NeptuneProvider thrown wraps withhold AWS text (#2319)', () => {
     );
   });
 
+  it('restates an "already exists" from CreateDBSubnetGroup', async () => {
+    mockSend.mockRejectedValue(
+      Object.assign(new Error('DB subnet group already exists'), {
+        name: 'DBSubnetGroupAlreadyExistsFault',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 400 },
+      })
+    );
+
+    const failure = await caught(provider.create('Sg', 'AWS::Neptune::DBSubnetGroup', SG));
+
+    expect(failure.message).toBe(
+      `Failed to create Neptune DBSubnetGroup Sg: DBSubnetGroupAlreadyExistsFault. ${VERBOSE_POINTER} AWS reports that it already exists.`
+    );
+    expect(failure.message).not.toContain('DB subnet group already exists');
+  });
+
+  // A transport error the SDK retried carries `$metadata` with only the retry
+  // counters (no `$fault`, no `httpStatusCode`): cdkd-side text, kept and masked.
+  it('a retried transport error keeps its text, masked', async () => {
+    mockSend.mockRejectedValue(
+      Object.assign(new Error('socket hang up near s3cr3t'), {
+        name: 'TimeoutError',
+        $metadata: { attempts: 3, totalRetryDelay: 120 },
+      })
+    );
+
+    const failure = await caught(
+      provider.create('Sg', 'AWS::Neptune::DBSubnetGroup', SG, { maskSecrets: mask })
+    );
+
+    expect(failure.message).toBe(
+      `Failed to create Neptune DBSubnetGroup Sg: socket hang up near ***`
+    );
+    expect(failure.message).not.toContain('TimeoutError');
+    expect(failure.message).not.toContain(VERBOSE_POINTER);
+    expect(failure.message).not.toContain('s3cr3t');
+  });
+
   // The #5161 leak shape: a failure AFTER the create returned (a denied status
   // read while waiting for `available`) must still reach the wrap, mark intact.
   it.each([
