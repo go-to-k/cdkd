@@ -1,4 +1,5 @@
 import { findDestructiveChanges } from '../analyzer/destructive-changes.js';
+import { findRefactorHints, hintSidesOf, withMovedTo } from '../analyzer/refactor-hints.js';
 import { diffSecurity } from '../analyzer/security-diff.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceChange, ResourceState } from '../types/state.js';
@@ -61,13 +62,24 @@ export async function requireDeploymentApproval(args: {
   const changes = [...args.changes].filter(
     (c) => c.changeType !== 'NO_CHANGE' && !isNoEchoPromotionOnly(c)
   );
-  const destructiveChanges = findDestructiveChanges(
+  const found = findDestructiveChanges(
     args.stackName,
     changes,
     args.records,
     args.template,
     new Set(args.recreateTargetIds ?? [])
   );
+  // go-to-k/cdkd#5203: a removal `cdkd refactor` would keep as a rename in
+  // this stack names where it reappears. Only this stack's rows are in hand
+  // here, so a move to ANOTHER stack is shown by `cdkd diff`, not this prompt.
+  const destructiveChanges = found.some((c) => c.impact === 'WILL_DESTROY')
+    ? withMovedTo(
+        found,
+        findRefactorHints([
+          { id: 'self', stackName: args.stackName, env: '', ...hintSidesOf(changes) },
+        ]).get('self')
+      )
+    : found;
   const onlyNestedUpdates = changes.every(
     (c) => c.changeType === 'UPDATE' && c.resourceType === NESTED_STACK_TYPE
   );

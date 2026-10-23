@@ -1,4 +1,5 @@
 import { Command, InvalidArgumentError, Option } from 'commander';
+import { findRefactorHints, hintSidesOf, withMovedTo } from '../../analyzer/refactor-hints.js';
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
 import { orphanRecordsPrintingBag } from '../../deployment/secret-name-needles.js';
 import {
@@ -535,6 +536,8 @@ async function diffCommand(
 
     // 4. Build a diff tree per target stack (nested children only when --recursive).
     const trees: DiffTreeNode[] = [];
+    // The environment of each tree, for the refactor hints below.
+    const treeEnvs: string[] = [];
     const producerLookup = producerLookupOver(allStacks);
     // A name two selected stacks share is shown with its CDK path (#5176).
     const sharedNames = new Set(
@@ -590,7 +593,27 @@ async function diffCommand(
           refusalRecovery,
         })
       );
+      treeEnvs.push(`${stackInfo.account ?? ''}/${stackRegion}`);
     }
+
+    // go-to-k/cdkd#5203: a removed resource a `cdkd refactor` would keep --
+    // renamed in its stack, or moved to another selected stack of the same
+    // environment -- is shown with where it reappears. Rows already in hand;
+    // no AWS call.
+    const hints = findRefactorHints(
+      trees.map((tree, i) => ({
+        id: String(i),
+        stackName: tree.stackName,
+        env: treeEnvs[i]!,
+        ...hintSidesOf(tree.changes.values()),
+      }))
+    );
+    trees.forEach((tree, i) => {
+      const forTree = hints.get(String(i));
+      if (forTree === undefined) return;
+      tree.refactorHints = forTree;
+      tree.destructiveChanges = withMovedTo(tree.destructiveChanges, forTree);
+    });
 
     // 5. Emit results — JSON payload (nested when --recursive) or human blocks.
     // Escaped, not sanitised (go-to-k/cdkd#4045): a state value carrying DEL,

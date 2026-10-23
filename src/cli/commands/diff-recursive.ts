@@ -1,4 +1,5 @@
 import { hasPendingMovesOut, pendingMovesRefusalMessage } from '../../state/pending-moves.js';
+import { movedToHint, type MovedTo } from '../../analyzer/refactor-hints.js';
 import {
   readRefactorMarkerOnce,
   refactorMarkerRefusalMessage,
@@ -316,6 +317,12 @@ export interface DiffTreeNode {
    * template inspection).
    */
   ccApiRoutes: Map<string, string[]>;
+  /**
+   * DELETE rows a `cdkd refactor` would keep, and where each reappears
+   * (go-to-k/cdkd#5203). Set by `cdkd diff` on the stacks it selected, once
+   * every tree is built; absent elsewhere.
+   */
+  refactorHints?: ReadonlyMap<string, MovedTo>;
   /**
    * Per-key changes to this node's persisted `Outputs` bag (issue #1921).
    *
@@ -4369,6 +4376,8 @@ export interface DiffChangeJson {
    * `[via CC API: <prop list>]` annotation).
    */
   ccApi?: string[];
+  /** A DELETE a `cdkd refactor` would keep: where the resource reappears (go-to-k/cdkd#5203). */
+  movedTo?: MovedTo;
 }
 
 /** Serializable Outputs change record for `--json` (issue #1921). */
@@ -4486,6 +4495,7 @@ export interface DestructiveChangeJson {
   resourceType: string;
   constructPath?: string;
   impact: DestructiveImpact;
+  movedTo?: MovedTo;
 }
 
 /**
@@ -4499,6 +4509,8 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
   for (const change of node.changes.values()) {
     if (change.changeType === 'NO_CHANGE') continue;
     const ccApi = node.ccApiRoutes.get(change.logicalId);
+    const movedTo =
+      change.changeType === 'DELETE' ? node.refactorHints?.get(change.logicalId) : undefined;
     changes.push({
       logicalId: change.logicalId,
       changeType: change.changeType,
@@ -4510,6 +4522,7 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
         ? { attributeChanges: change.attributeChanges }
         : {}),
       ...(ccApi && ccApi.length > 0 ? { ccApi } : {}),
+      ...(movedTo !== undefined && { movedTo }),
     });
   }
   return {
@@ -4542,11 +4555,12 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
     unreadableContainers: node.unreadableContainers,
     unreadableOrphans: node.unreadableOrphans,
     destructiveChanges: node.destructiveChanges.map(
-      ({ logicalId, resourceType, constructPath, impact }) => ({
+      ({ logicalId, resourceType, constructPath, impact, movedTo }) => ({
         logicalId,
         resourceType,
         ...(constructPath !== undefined && { constructPath }),
         impact,
+        ...(movedTo !== undefined && { movedTo }),
       })
     ),
     children: node.children.map(diffTreeToJson),
@@ -4697,7 +4711,8 @@ export function renderChangeLines(
   changes: Map<string, ResourceChange>,
   logFn: (msg: string) => void,
   ccApiRoutes?: Map<string, string[]>,
-  adoptedOrphans?: readonly string[]
+  adoptedOrphans?: readonly string[],
+  refactorHints?: ReadonlyMap<string, MovedTo>
 ): { create: number; update: number; delete: number } {
   let createCount = 0;
   let updateCount = 0;
@@ -4802,7 +4817,13 @@ export function renderChangeLines(
       }
       case 'DELETE':
         deleteCount++;
-        logFn(`  [-] ${logicalId} (${change.resourceType})`);
+        {
+          const movedTo = refactorHints?.get(logicalId);
+          logFn(
+            `  [-] ${logicalId} (${change.resourceType})` +
+              (movedTo !== undefined ? movedToHint(movedTo) : '')
+          );
+        }
         break;
     }
   }
@@ -4977,7 +4998,13 @@ export function renderDiffTree(
       create,
       update,
       delete: del,
-    } = renderChangeLines(node.changes, logFn, node.ccApiRoutes, node.adoptedOrphans);
+    } = renderChangeLines(
+      node.changes,
+      logFn,
+      node.ccApiRoutes,
+      node.adoptedOrphans,
+      node.refactorHints
+    );
     const outputs = renderOutputChangeLines(node.outputChanges, logFn);
     logFn(`\n${create} to create, ${update} to update, ${del} to delete`);
     // A SECOND summary line rather than extra terms on the first: the resource
