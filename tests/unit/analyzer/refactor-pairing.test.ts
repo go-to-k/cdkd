@@ -165,10 +165,11 @@ describe('parseMappingFile / mappingPairs', () => {
     expect(() => parseMappingFile(body)).toThrow();
   });
 
-  it('refuses a malformed location at parse time', () => {
-    expect(() =>
-      parseMappingFile('{"environments":[{"account":"a","region":"r","resources":{"Old":"S.New"}}]}')
-    ).toThrow(/StackName/);
+  it.each([
+    ['from', '{"environments":[{"account":"a","region":"r","resources":{"Old":"S.New"}}]}'],
+    ['to', '{"environments":[{"account":"a","region":"r","resources":{"S.Old":"New."}}]}'],
+  ])('refuses a malformed %s location at parse time', (_side, body) => {
+    expect(() => parseMappingFile(body)).toThrow(/StackName/);
   });
 
   it('refuses a location without a stack', () => {

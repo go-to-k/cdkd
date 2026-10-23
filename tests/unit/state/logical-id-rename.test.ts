@@ -184,6 +184,20 @@ describe('applyLogicalIdRenames', () => {
     expect(out.supersededResources![0]!.state.properties).toEqual({ Q: { Ref: 'NewQueue' } });
   });
 
+  it('keeps a null orphan or superseded entry verbatim', () => {
+    const out = applyLogicalIdRenames(
+      stack({
+        resources: { OldQueue: record() },
+        orphans: [null as never],
+        supersededResources: [null as never],
+      }),
+      [{ from: 'OldQueue', to: 'NewQueue' }],
+      template
+    );
+    expect(out.orphans).toEqual([null]);
+    expect(out.supersededResources).toEqual([null]);
+  });
+
   it('keeps a non-string dependency entry verbatim', () => {
     const out = applyLogicalIdRenames(
       stack({

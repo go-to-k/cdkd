@@ -232,6 +232,64 @@ describe('planStackRefactor', () => {
     expect(diff.calls).toHaveLength(0);
   });
 
+  /**
+   * A diff double for look-alikes: every CREATE row carries an unresolved
+   * Ref (so the proposal cannot split them), and a renamed id is NO_CHANGE
+   * when its record's physical id is one `want` accepts for it.
+   */
+  function lookAlikeDiff(want: Record<string, readonly string[]>): RefactorDiffFn & { calls: number } {
+    const fn = (async (state: StackState) => {
+      fn.calls += 1;
+      const changes = new Map<string, ResourceChange>();
+      for (const id of Object.keys(want)) {
+        const r = state.resources[id];
+        changes.set(id, {
+          logicalId: id,
+          resourceType: queue,
+          changeType: r === undefined ? 'CREATE' : want[id]!.includes(r.physicalId) ? 'NO_CHANGE' : 'UPDATE',
+          desiredProperties: { Target: { Ref: 'X' } },
+        });
+      }
+      for (const id of Object.keys(state.resources)) {
+        if (!(id in want)) changes.set(id, { logicalId: id, changeType: 'DELETE', resourceType: queue });
+      }
+      return { changes, blocking: [] };
+    }) as RefactorDiffFn & { calls: number };
+    fn.calls = 0;
+    return fn;
+  }
+
+  it('splits what it can and leaves the rest of a group ambiguous', async () => {
+    // NewA matches only OldA; NewB and NewC each match both OldB and OldC.
+    const diff = lookAlikeDiff({ NewA: ['pa'], NewB: ['pb', 'pc'], NewC: ['pb', 'pc'] });
+    const p = await plan(
+      stack({
+        OldA: rec({ Target: 'a' }, { physicalId: 'pa' }),
+        OldB: rec({ Target: 'b' }, { physicalId: 'pb' }),
+        OldC: rec({ Target: 'c' }, { physicalId: 'pc' }),
+      }),
+      diff
+    );
+    expect(p.renames.map((r) => [r.from, r.to])).toEqual([['OldA', 'NewA']]);
+    expect(p.ambiguous).toEqual([{ resourceType: queue, from: ['OldB', 'OldC'], to: ['NewB', 'NewC'] }]);
+  });
+
+  it('leaves a group past the trial budget ambiguous without trying it', async () => {
+    const want: Record<string, string[]> = {};
+    const records: Record<string, ResourceState> = {};
+    for (let i = 0; i < 9; i++) {
+      want[`New${i}`] = [`p${i}`];
+      records[`Old${i}`] = rec({ Target: `t${i}` }, { physicalId: `p${i}` });
+    }
+    const diff = lookAlikeDiff(want);
+    const p = await plan(stack(records), diff);
+    expect(p.renames).toEqual([]);
+    expect(p.ambiguous).toHaveLength(1);
+    expect(p.ambiguous[0]!.to).toHaveLength(9);
+    // The base diff only: 81 trials exceed the budget of 64, so none ran.
+    expect(diff.calls).toBe(1);
+  });
+
   it('never pairs a CREATE row a rollback-orphan record will be re-adopted under', async () => {
     const orphanState = rec({ T: 1 }, { physicalId: 'orphaned' });
     const p = await plan(

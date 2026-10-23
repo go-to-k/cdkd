@@ -49,7 +49,10 @@ refactor never keeps a pair the next deploy would update.
 When several resources of one type were renamed, cdkd first pairs them by
 their properties. Resources that still look alike, for example two roles that
 differ only in the policies they reference, are tried against each other with
-the same diff, and each one that matches exactly one way is renamed.
+the same diff, and each one that matches exactly one way is renamed. A very large
+group of look-alikes is reported as ambiguous instead; name its pairs with
+`--override-file`. Each try is one more diff of the stack, so a
+refactor with look-alikes takes longer than one without.
 
 | Situation | What cdkd refactor does |
 | --- | --- |
