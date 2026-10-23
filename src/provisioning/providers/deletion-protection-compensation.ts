@@ -899,20 +899,24 @@ const TERMINAL_DB_STATUSES: ReadonlySet<string> = new Set([
   'deleting',
   'failed',
   'stopped',
-  'stopping',
-  'starting',
   'storage-full',
   'insufficient-capacity',
   'restore-error',
 ]);
 
-/** Whether `status` is one {@link TERMINAL_DB_STATUSES} names, or an `inaccessible-*` / `incompatible-*` one. */
+/**
+ * Whether `status` is one {@link TERMINAL_DB_STATUSES} names, or an
+ * `inaccessible-*`, `incompatible-*` or `*-failed` one (`cloning-failed`,
+ * `migration-failed`, ...). `starting` and `stopping` are transitional: each
+ * ends on its own (`available`, then `stopped`, which is terminal).
+ */
 export function isTerminalDbStatus(status: string | undefined): boolean {
   if (status === undefined) return false;
   return (
     TERMINAL_DB_STATUSES.has(status) ||
     status.startsWith('inaccessible-') ||
-    status.startsWith('incompatible-')
+    status.startsWith('incompatible-') ||
+    status.endsWith('-failed')
   );
 }
 
@@ -938,9 +942,11 @@ export function isTerminalDbStatus(status: string | undefined): boolean {
  * window and still refuse the delete, which
  * {@link deleteAfterProtectionFlipWithFinalSnapshot} recovers from.
  *
- * Fails closed: when the resource is still transitional or reads the guard ON
+ * Fails closed: when the resource is still `modifying` or reads the guard ON
  * at the budget's bound ({@link finalSnapshotWaitBudgetMs}), it throws, the
- * delete is never sent, and the compensation puts the guard back. A settled
+ * delete is never sent, and the compensation puts the guard back. Any other
+ * transitional status still read at the bound with the guard off sends the
+ * delete, as before #5184. A settled
  * read still inside the grace window at the bound lets the delete through,
  * since nothing showed it is not ready. An AWS failure of a read propagates
  * as-is; a gone resource's `DB*NotFoundFault` is one, and the provider's delete
@@ -980,6 +986,17 @@ async function settleBeforeFinalSnapshot(
     const step = inGrace ? Math.min(delay, FLIP_TRANSITION_GRACE_MS - graceSleptMs) : delay;
     if (Date.now() - startTime + step >= budgetMs) {
       if (settled) return;
+      // A long transition other than the flip's own `modifying` (an instance's
+      // `storage-optimization` can last hours) is AWS's to accept or refuse,
+      // as before #5184; a refusal then fails closed, since the retry shares
+      // this exhausted budget.
+      if (
+        current.deletionProtection === false &&
+        current.status !== undefined &&
+        current.status !== 'modifying'
+      ) {
+        return;
+      }
       break;
     }
     opts.logger.debug(

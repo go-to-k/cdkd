@@ -129,6 +129,21 @@ describe('waitForFlipToSettleBeforeFinalSnapshot (#5184)', () => {
     expect(reads).toHaveLength(3);
   });
 
+  it('sends at the bound when a transitional status other than modifying outlasts it (pre-#5184 behaviour)', async () => {
+    const { error, reads } = await run([OFF('storage-optimization')], { maxWaitMs: 60_000 });
+
+    expect(error).toBeUndefined();
+    expect(reads.length).toBeGreaterThan(1);
+  });
+
+  it('treats a read with no status as transitional: waits, and fails closed at the bound', async () => {
+    const { error } = await run([{ deletionProtection: false, status: undefined }], {
+      maxWaitMs: 60_000,
+    });
+
+    expect(error?.message).toContain("did not return to 'available'");
+  });
+
   it('ends at once on a terminal status with the guard off', async () => {
     const { error, reads, sleeps } = await run([OFF('stopped')]);
 
@@ -218,8 +233,6 @@ describe('isTerminalDbStatus (#5184)', () => {
       'deleting',
       'failed',
       'stopped',
-      'stopping',
-      'starting',
       'storage-full',
       'insufficient-capacity',
       'restore-error',
@@ -227,6 +240,8 @@ describe('isTerminalDbStatus (#5184)', () => {
       'inaccessible-encryption-credentials-recoverable',
       'incompatible-parameters',
       'incompatible-network',
+      'cloning-failed',
+      'migration-failed',
     ]) {
       expect(isTerminalDbStatus(status), status).toBe(true);
     }
@@ -241,6 +256,8 @@ describe('isTerminalDbStatus (#5184)', () => {
       'storage-optimization',
       'resetting-master-credentials',
       'renaming',
+      'starting',
+      'stopping',
       'some-status-aws-adds-later',
       undefined,
     ]) {
