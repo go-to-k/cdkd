@@ -131,26 +131,30 @@ import from it. `cdkd deploy --all` orders stacks that way already.
   did not.
 - Ctrl+C or `SIGTERM` during the writes is held until they finish, a few
   writes taking well under a second. The command then stops and says so.
-- A move between stacks is written in three steps. First the stack losing the
-  resource records that the move has started, and keeps the resource. Then the
-  stack gaining it adds it. Then the first stack drops it.
+- A move between stacks is written in steps. First cdkd lists the move in
+  `_refactor/pending.json` under the state prefix. Then the stack losing the
+  resource records the move too, and keeps the resource. Then the stack
+  gaining it adds it, the first stack drops it, and the list entry is removed.
 
 If a move stops part way, through a network failure, a killed process or a
-closed terminal, the stack losing the resource still records the unfinished
-move:
+closed terminal, the move is still listed:
 
-- `cdkd deploy` and `cdkd destroy` of that stack refuse, because the other
-  stack may already hold the resource and deleting it here would delete that
-  stack's resource. `cdkd diff` exits with code `3` and says why.
-- Run `cdkd refactor <that stack>` to finish the move. It checks what the
-  other stack holds, adds the resource there if it is missing, and then drops
-  it from the first stack.
+- `cdkd deploy` and `cdkd destroy` of either stack refuse. The stack losing
+  the resource would delete a resource the other stack may already hold, and
+  the stack gaining it would create the resource a second time. `cdkd diff`
+  exits with code `3` and says why.
+- Run `cdkd refactor` with either stack selected to finish the move. It checks
+  what the other stack holds, adds the resource there if it is missing, and
+  then drops it from the first stack.
 
-One case needs a decision from you. If the process stopped right after the
-first step and the stack gaining the resource was deployed before you re-ran
-the refactor, that deploy created a second resource under the new logical ID.
-`cdkd refactor` then refuses and names both. Delete or
-[orphan](orphan-vs-destroy.md) the new resource in that stack, then re-run
+Every `cdkd deploy` and `cdkd destroy` reads `_refactor/pending.json` once,
+at the same time as its first state record, so it adds no wait. A policy that
+denies reading it is treated as no move in progress.
+
+If a stack named in the list was changed by hand, or by an older cdkd, so that
+both stacks hold a different resource under the moved logical ID,
+`cdkd refactor` refuses and names both. Delete or
+[orphan](orphan-vs-destroy.md) the extra resource, then re-run
 `cdkd refactor`.
 
 The state bucket also keeps earlier versions of every `state.json`, so a

@@ -36,6 +36,11 @@ import type { LockManager } from '../../state/lock-manager.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { PendingMoveOut, ResourceState, StackState } from '../../types/state.js';
 import { pendingMovesOutOf } from '../../state/pending-moves.js';
+import {
+  sameMove,
+  updateRefactorMarker,
+  type RefactorMarkerMove,
+} from '../../state/refactor-marker.js';
 import { stackInstanceIdCarriedFrom } from '../../types/state.js';
 import type { ProposedMove, StackRefactorPlan } from './refactor.js';
 
@@ -352,7 +357,12 @@ export function renderMovePlan(plan: MovePlan): string[] {
 
 type MoveBackend = Pick<
   S3StateBackend,
-  'getState' | 'saveState' | 'rotateCreateTokenNonce' | 'loadRollbackJournal'
+  | 'getState'
+  | 'saveState'
+  | 'rotateCreateTokenNonce'
+  | 'loadRollbackJournal'
+  | 'getRefactorMarker'
+  | 'saveRefactorMarker'
 >;
 
 const lockKey = (p: StackRefactorPlan): string => producerRecordKey(p.stackName, p.region);
@@ -482,6 +492,26 @@ export async function applyMoveGroup(input: {
       }
     };
 
+    // Step 1: the shared marker, before any record (go-to-k/cdkd#5212): from
+    // here on a deploy or destroy of ANY stack a move involves refuses,
+    // including a destination whose own record knows nothing of the move.
+    const markerMoves: RefactorMarkerMove[] = plans.flatMap((p) =>
+      p.movesOut.map((m) => ({
+        fromStack: m.fromStack,
+        fromRegion: m.fromRegion,
+        from: m.from,
+        toStack: m.toStack,
+        toRegion: m.toRegion,
+        to: m.to,
+        startedAt,
+      }))
+    );
+    if (markerMoves.length > 0) {
+      await updateRefactorMarker(stateBackend, (moves) => [
+        ...moves.filter((m) => !markerMoves.some((n) => sameMove(m, n))),
+        ...markerMoves,
+      ]);
+    }
     // Step 2: the sources, marked, and the rename-only stacks.
     const sourceEtags = new Map<StackRefactorPlan, string>();
     const marked = new Map<StackRefactorPlan, StackState>();
@@ -525,6 +555,23 @@ export async function applyMoveGroup(input: {
         new Set(plan.movesOut.map((m) => m.from))
       );
       await save(plan, state, sourceEtags.get(plan)!);
+    }
+    // Step 5: the marker, without these moves. A failure here leaves every
+    // record complete and the marker stale: the next `cdkd refactor` of a
+    // source finds nothing to do and clears it.
+    if (markerMoves.length > 0) {
+      try {
+        await updateRefactorMarker(stateBackend, (moves) =>
+          moves.filter((m) => !markerMoves.some((n) => sameMove(m, n)))
+        );
+      } catch (error) {
+        throw new CdkdError(
+          safeMsg`Every record of the refactor was written, but the refactor marker could not ` +
+            safeMsg`be cleared: ${(error as Error).message}. Until it is, deploy and destroy of ` +
+            'the moved stacks refuse; re-run cdkd refactor to clear it.',
+          'REFACTOR_PARTIAL'
+        );
+      }
     }
   });
 }
@@ -606,6 +653,12 @@ export interface FinishedMove {
 export async function finishPendingMoves(input: {
   stackName: string;
   region: string;
+  /**
+   * Moves out of this stack the shared refactor marker lists. A run killed
+   * after writing the marker and before marking the source leaves them only
+   * there; they are finished exactly as a marked move is.
+   */
+  markerMoves?: readonly PendingMoveOut[];
   stateBackend: Pick<S3StateBackend, 'getState' | 'saveState'>;
   lockManager: Pick<LockManager, 'acquireLock' | 'releaseLock'>;
   recovery: LockRecoveryContext;
@@ -613,8 +666,36 @@ export async function finishPendingMoves(input: {
 }): Promise<{ finished: FinishedMove[] }> {
   const { stackName, region, stateBackend, lockManager, recovery, contentionMessage } = input;
   const first = await stateBackend.getState(stackName, region);
-  if (!first) return { finished: [] };
-  const { moves, malformed } = pendingMovesOutOf(first.state);
+  if (!first) {
+    // The source's record is gone (destroyed after the move started). A
+    // marker move whose destination holds the record is finished; any other
+    // cannot be, and stays listed so the destination keeps refusing.
+    const finished: FinishedMove[] = [];
+    const stuck: string[] = [];
+    for (const m of input.markerMoves ?? []) {
+      const dest = await stateBackend.getState(m.toStack, m.toRegion);
+      if (dest !== null && Object.hasOwn(dest.state.resources, m.to)) {
+        finished.push({ fromStack: stackName, fromRegion: region, ...m });
+      } else {
+        stuck.push(safeMsg`${stackName}.${m.from} -> ${m.toStack}.${m.to}`);
+      }
+    }
+    if (stuck.length > 0) {
+      throw new CdkdError(
+        safeMsg`cdkd refactor cannot finish ${stuck.join(', ')}: ${stackName} (${region}) has ` +
+          'no cdkd state any more and the destination does not record the resource. If the ' +
+          'resource is still in AWS, adopt it into the destination with cdkd import; then remove ' +
+          'the move from the refactor marker in the state bucket.',
+        'REFACTOR_REFUSED'
+      );
+    }
+    return { finished };
+  }
+  const { moves: marked, malformed } = pendingMovesOutOf(first.state);
+  const moves = [
+    ...marked,
+    ...(input.markerMoves ?? []).filter((m) => !marked.some((n) => n.from === m.from)),
+  ];
   if (malformed) {
     throw new CdkdError(
       safeMsg`Stack ${stackName} (${region}) records an unfinished cdkd refactor move this ` +
@@ -658,7 +739,11 @@ export async function finishPendingMoves(input: {
       }
       const source = read.get(keyOf({ stackName, region }));
       if (!source) return { finished: [] };
-      const current = pendingMovesOutOf(source.state).moves;
+      const currentMarked = pendingMovesOutOf(source.state).moves;
+      const current = [
+        ...currentMarked,
+        ...(input.markerMoves ?? []).filter((m) => !currentMarked.some((n) => n.from === m.from)),
+      ];
       const refusals: string[] = [];
       const finished: FinishedMove[] = [];
       const additions = new Map<

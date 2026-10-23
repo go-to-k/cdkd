@@ -1569,6 +1569,86 @@ export class S3StateBackend {
    * one state prefix of this bucket the stack and region belong to. Outside
    * every prefix, so no `--state-prefix` can address it.
    */
+  /**
+   * `{prefix}/_refactor/pending.json` (go-to-k/cdkd#5212): the moves a
+   * `cdkd refactor` has started between stacks of this prefix and not yet
+   * finished. Written BEFORE the first state write of a move and removed
+   * after the last, so a run interrupted anywhere in between leaves it; every
+   * `cdkd deploy` / `cdkd destroy` reads it once per run (beside its own state
+   * read) and refuses a stack a listed move involves. Ids only. Not a
+   * `state.json`, so state listings and gc skip it.
+   */
+  refactorMarkerKey(): string {
+    return `${this.config.prefix}/_refactor/pending.json`;
+  }
+
+  /** The refactor marker with its ETag, or null when there is none. */
+  async getRefactorMarker(): Promise<{ body: unknown; etag: string } | null> {
+    await this.ensureClientForBucket();
+    try {
+      const response = await this.s3Client.send(
+        new GetObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: this.refactorMarkerKey(),
+        })
+      );
+      const text = (await response.Body?.transformToString()) ?? '';
+      let body: unknown;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = undefined;
+      }
+      return { body, etag: response.ETag ?? '' };
+    } catch (error) {
+      if (isNoSuchKey(error) || (error as { name?: string }).name === 'NotFound') return null;
+      throw error;
+    }
+  }
+
+  /**
+   * Write the refactor marker conditionally: create it when `etag` is null
+   * (`If-None-Match: *`), replace the version read otherwise (`If-Match`), and
+   * delete it (conditionally) when `body` lists nothing. `'conflict'` when
+   * another run changed it in between.
+   */
+  async saveRefactorMarker(
+    body: { moves: unknown[] },
+    etag: string | null
+  ): Promise<'saved' | 'conflict'> {
+    await this.ensureClientForBucket();
+    const key = this.refactorMarkerKey();
+    try {
+      if (body.moves.length === 0) {
+        if (etag === null) return 'saved';
+        await this.s3Client.send(
+          new DeleteObjectCommand({
+            Bucket: this.config.bucket,
+            ...(await this.ownerParam()),
+            Key: key,
+            IfMatch: etag,
+          })
+        );
+        return 'saved';
+      }
+      await this.s3Client.send(
+        new PutObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: key,
+          Body: JSON.stringify(body, null, 2),
+          ContentType: 'application/json',
+          ...(etag === null ? { IfNoneMatch: '*' } : { IfMatch: etag }),
+        })
+      );
+      return 'saved';
+    } catch (error) {
+      if (isConditionFailure(error)) return 'conflict';
+      throw error;
+    }
+  }
+
   registryMarkerKey(stackName: string, region: string): string {
     return `${REGISTRY_ROOT}/${region}/${stackName}.json`;
   }

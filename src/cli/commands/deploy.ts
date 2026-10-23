@@ -1,3 +1,4 @@
+import { readRefactorMarkerOnce } from '../../state/refactor-marker.js';
 import { Command } from 'commander';
 import {
   appOptions,
@@ -389,6 +390,9 @@ async function deployCommand(
     await preflightStateBackend.verifyBucketExists({
       existenceAlreadyProbed: stateBucketExistenceConfirmed(resolvedStateBucket),
     });
+    // The refactor marker (go-to-k/cdkd#5212), read once for the run while
+    // synthesis runs, so no stack's deploy waits on it.
+    void readRefactorMarkerOnce(preflightStateBackend).catch(() => undefined);
 
     // Shared exports index store for this deploy session. Lifecycle: created
     // here once and threaded through every per-stack DeployEngine so its

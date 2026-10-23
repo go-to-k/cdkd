@@ -1,3 +1,4 @@
+import { readRefactorMarkerOnce } from '../../state/refactor-marker.js';
 import { Command } from 'commander';
 import { CrossPrefixGuard } from '../../state/stack-registry.js';
 import {
@@ -388,6 +389,9 @@ async function destroyCommand(
     stateBackendForCleanup = stateBackend;
     // Fail fast if the state bucket is missing, before synth or any destructive work.
     await stateBackend.verifyBucketExists();
+    // The refactor marker (go-to-k/cdkd#5212), read once for the run while
+    // synthesis runs, so no stack's destroy waits on it.
+    void readRefactorMarkerOnce(stateBackend).catch(() => undefined);
     const lockManager = new LockManager(awsClients.s3, stateConfig);
     // Exports index store for post-destroy invalidation of this stack's
     // entries. Strong-reference safety checks scan state.json directly

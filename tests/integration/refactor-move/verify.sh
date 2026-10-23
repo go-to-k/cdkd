@@ -73,6 +73,7 @@ REGION="${AWS_REGION:-us-east-1}"
 PREFIX="cdkd-integ-refactor-move"
 SRC_KEY="${PREFIX}/${SRC}/${REGION}/state.json"
 DST_KEY="${PREFIX}/${DST}/${REGION}/state.json"
+MARKER_KEY="${PREFIX}/_refactor/pending.json"
 PFX="cdkd-refactor-move"
 TABLE="${PFX}-data"
 PARAM_NAME="/cdkd-integ/${PFX}/wiring"
@@ -164,7 +165,9 @@ cleanup() {
     for s in "${SRC}" "${DST}"; do
       aws s3 rm "s3://${STATE_BUCKET}/${PREFIX}/${s}/${REGION}/state.json" >/dev/null 2>&1 || true
       aws s3 rm "s3://${STATE_BUCKET}/${PREFIX}/${s}/${REGION}/lock.json" >/dev/null 2>&1 || true
+      aws s3 rm "s3://${STATE_BUCKET}/${PREFIX}/${s}/${REGION}/create-tokens.json" >/dev/null 2>&1 || true
     done
+    aws s3 rm "s3://${STATE_BUCKET}/${PREFIX}/_refactor/pending.json" >/dev/null 2>&1 || true
   fi
   set -eu
 }
@@ -233,11 +236,12 @@ printf '%s' "${OUT_2A}" | grep -q 'state was NOT written' \
 [ "$(state_etag "${DST_KEY}")" = "${DST_ETAG}" ] || { echo "FAIL: destination state changed during a dry run" >&2; exit 1; }
 
 # --- Phase 2b: an interrupted move (go-to-k/cdkd#5212) ------------------------
-# Write, by hand, the two records a refactor killed mid-move leaves:
-#   - the table: interrupted after the FIRST write (the source marks the move
-#     and still holds the record; the destination knows nothing);
-#   - the queue: interrupted after the SECOND write (the source still marks
-#     and holds it; the destination already holds it too).
+# Write, by hand, the records a refactor killed mid-move leaves. Both moves
+# are listed in the shared marker (the FIRST write of a move):
+#   - the table: interrupted right after that first write (the source neither
+#     marks nor drops it; the destination knows nothing);
+#   - the queue: interrupted after the destination write (the source marks
+#     and still holds it; the destination holds it too).
 echo "==> Phase 2b: simulate a refactor killed mid-move"
 DST_TABLE_ID="$(node -e '
   const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
@@ -261,27 +265,43 @@ node -e '
   const src = JSON.parse(fs.readFileSync(srcPath, "utf8"));
   const dstState = JSON.parse(fs.readFileSync(dstPath, "utf8"));
   src.pendingMovesOut = [
-    { from: tableId, toStack: dst, toRegion: region, to: dstTable, startedAt: Date.now() },
     { from: queueId, toStack: dst, toRegion: region, to: dstQueue, startedAt: Date.now() },
   ];
   dstState.resources[dstQueue] = src.resources[queueId];
   fs.writeFileSync(srcPath, JSON.stringify(src));
   fs.writeFileSync(dstPath, JSON.stringify(dstState));
+  const move = (from, to) => ({ fromStack: src.stackName, fromRegion: region, from, toStack: dst, toRegion: region, to, startedAt: Date.now() });
+  fs.writeFileSync(
+    srcPath.replace(/src\.json$/, "marker.json"),
+    JSON.stringify({ moves: [move(tableId, dstTable), move(queueId, dstQueue)] })
+  );
 ' "${WORK}/src.json" "${WORK}/dst.json" "${DST}" "${REGION}" "${TABLE_ID}" "${QUEUE_ID}" "${DST_TABLE_ID}" "${DST_QUEUE_ID}"
 aws s3 cp "${WORK}/src.json" "s3://${STATE_BUCKET}/${SRC_KEY}" --only-show-errors --content-type application/json
 aws s3 cp "${WORK}/dst.json" "s3://${STATE_BUCKET}/${DST_KEY}" --only-show-errors --content-type application/json
+aws s3 cp "${WORK}/marker.json" "s3://${STATE_BUCKET}/${MARKER_KEY}" --only-show-errors --content-type application/json
 rm -rf "${WORK}"
 
 echo "==> Phase 2c: deploy, destroy and diff of the source refuse while the move is unfinished"
 set +e
 OUT_DEPLOY="$(cdkd deploy "${SRC}" "${STATE_FLAGS[@]}" --yes 2>&1)"; rc_deploy=$?
 OUT_DESTROY="$(cdkd destroy "${SRC}" "${STATE_FLAGS[@]}" --force 2>&1)"; rc_destroy=$?
+OUT_DEPLOY_DST="$(cdkd deploy "${DST}" "${STATE_FLAGS[@]}" --yes 2>&1)"; rc_deploy_dst=$?
 cdkd diff "${SRC}" "${STATE_FLAGS[@]}" >/dev/null 2>&1; rc_diff=$?
+cdkd diff "${DST}" "${STATE_FLAGS[@]}" >/dev/null 2>&1; rc_diff_dst=$?
 set -e
 [ "${rc_deploy}" -ne 0 ] || { echo "FAIL: deploy of the source ran over an unfinished move" >&2; exit 1; }
 [ "${rc_destroy}" -ne 0 ] || { echo "FAIL: destroy of the source ran over an unfinished move" >&2; exit 1; }
 [ "${rc_diff}" -eq 3 ] || { echo "FAIL: diff of the source exited ${rc_diff}, not 3" >&2; exit 1; }
-for out in "${OUT_DEPLOY}" "${OUT_DESTROY}"; do
+[ "${rc_deploy_dst}" -ne 0 ] || { echo "FAIL: deploy of the destination ran over an unfinished move" >&2; exit 1; }
+[ "${rc_diff_dst}" -eq 3 ] || { echo "FAIL: diff of the destination exited ${rc_diff_dst}, not 3" >&2; exit 1; }
+# The destination must refuse BEFORE creating anything: no create was tried.
+for out in "${OUT_DEPLOY}" "${OUT_DEPLOY_DST}"; do
+  if printf '%s' "${out}" | grep -qiE 'Failed to create|ResourceInUseException|already exists'; then
+    echo "FAIL: a deploy tried to create a moved resource: ${out}" >&2
+    exit 1
+  fi
+done
+for out in "${OUT_DEPLOY}" "${OUT_DESTROY}" "${OUT_DEPLOY_DST}"; do
   printf '%s' "${out}" | grep -q "did not finish" \
     || { echo "FAIL: a refusal does not name the unfinished move: ${out}" >&2; exit 1; }
 done
@@ -305,6 +325,8 @@ if node -e '
   echo "FAIL: the source still records an unfinished move" >&2
   exit 1
 fi
+assert_gone "the refactor marker ${MARKER_KEY} is still listed after the moves finished" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}"
 
 echo "==> Phase 2e: the destination holds both records under the same physical ids"
 RES_SRC_B="$(cdkd state resources "${SRC}" "${STATE_FLAGS[@]}")"

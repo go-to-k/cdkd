@@ -1,4 +1,8 @@
 import { hasPendingMovesOut, pendingMovesRefusalMessage } from '../../state/pending-moves.js';
+import {
+  readRefactorMarkerOnce,
+  refactorMarkerRefusalMessage,
+} from '../../state/refactor-marker.js';
 import { stripControlChars, stripForDisplay } from '../../utils/regexp.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { displayIdent, displayStackName, safeMsg } from '../../utils/display-safe.js';
@@ -665,7 +669,16 @@ async function loadStateOrEmpty(
   unreadableContainers: UnreadableContainer[];
   deployRefusals: string[];
 }> {
+  const refactorMarker = readRefactorMarkerOnce(stateBackend);
   const result = await stateBackend.getState(stackName, region);
+  // The refactor marker (go-to-k/cdkd#5212) refuses a deploy of a stack an
+  // unfinished move involves, record or not, so the preview says so too.
+  const markerRefusal = refactorMarkerRefusalMessage(
+    await refactorMarker,
+    stackName,
+    region,
+    'cdkd deploy'
+  );
   if (result) {
     // What the repairs below take OUT of the record, returned beside it so the
     // node can report it (see `DiffTreeNode.unreadable`): the dropped entries'
@@ -789,6 +802,7 @@ async function loadStateOrEmpty(
         pendingMovesRefusalMessage(result.state, stackName, region, 'cdkd deploy')
       );
     }
+    if (markerRefusal !== undefined) deployRefusals.push(markerRefusal);
     // The `exportNames` FIELD, said out loud (go-to-k/cdkd#3192 review). The
     // predicate fails closed wherever it is read, which is right — it serves
     // five commands and holds no stack identity — but a LOUD wrong answer
@@ -825,7 +839,7 @@ async function loadStateOrEmpty(
     },
     unreadable: [],
     unreadableContainers: [],
-    deployRefusals: [],
+    deployRefusals: markerRefusal === undefined ? [] : [markerRefusal],
   };
 }
 

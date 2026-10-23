@@ -1,4 +1,5 @@
 import { refusePendingMovesOut } from '../../state/pending-moves.js';
+import { readRefactorMarkerOnce, refuseRefactorMarker } from '../../state/refactor-marker.js';
 import * as readline from 'node:readline/promises';
 import {
   pasteableCommand,
@@ -878,6 +879,12 @@ async function destroyStackInRegion(
   // (go-to-k/cdkd#5212): the destination may already hold them, so deleting
   // them here would delete another stack's resources.
   refusePendingMovesOut(state, stackName, regionForState, 'cdkd destroy');
+  refuseRefactorMarker(
+    await readRefactorMarkerOnce(ctx.stateBackend),
+    stackName,
+    regionForState,
+    'cdkd destroy'
+  );
   // BELOW the bag guard (which proves the bag can be counted) and ABOVE the
   // delete loop and every `deleteState` (issue #3328, review round 1). NOT
   // "above the fast path" as a discriminating claim — the guard returns early

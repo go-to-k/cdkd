@@ -81,11 +81,16 @@ import { makeCanonicalizePropertiesFn } from '../../provisioning/canonicalize-pr
 import { getAccountInfo } from '../../deployment/intrinsic-resolver/account-drain.js';
 import { producerLookupOver } from '../../deployment/intrinsic-resolver/cdk-cross-account-ref.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
-import type { ResourceChange, StackState } from '../../types/state.js';
+import type { PendingMoveOut, ResourceChange, StackState } from '../../types/state.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { computeStackDiff } from './diff-recursive.js';
 import { withDeferredInterrupts } from '../../utils/deferred-interrupts.js';
 import { hasPendingMovesOut } from '../../state/pending-moves.js';
+import {
+  refactorMarkerMovesOf,
+  sameMove,
+  updateRefactorMarker,
+} from '../../state/refactor-marker.js';
 import {
   applyMoveGroup,
   finishPendingMoves,
@@ -799,29 +804,86 @@ async function refactorCommand(stacks: string[], options: RefactorOptions): Prom
 
     // An earlier `cdkd refactor` interrupted mid-move (go-to-k/cdkd#5212):
     // finish every one of them before ANY stack is planned, since finishing
-    // one writes its destination's record too.
+    // one writes its destination's record too. A move is known from its
+    // source record's mark or from the shared marker (which a run killed
+    // before marking the source leaves alone); one involving any selected
+    // stack, as source or destination, is finished.
+    const marker = await stateBackend.getRefactorMarker();
+    const markerParsed =
+      marker === null ? { moves: [], malformed: false } : refactorMarkerMovesOf(marker.body);
+    if (markerParsed.malformed) {
+      throw new CdkdError(
+        safeMsg`The cdkd refactor marker ${stateBackend.refactorMarkerKey()} cannot be read, so ` +
+          'cdkd refactor cannot tell which moves are unfinished; nothing was written. Inspect it ' +
+          'in the state bucket, and delete it once no move is in progress.',
+        'REFACTOR_REFUSED'
+      );
+    }
+    const sources = new Map<
+      string,
+      { stackName: string; region: string; markerMoves: PendingMoveOut[] }
+    >();
+    const sourceKey = (stackName: string, region: string): string =>
+      JSON.stringify([stackName, region]);
+    const selected = new Set<string>();
     for (const stackInfo of targetStacks) {
       const stackRegion = await regionForStack(stackInfo.stackName, stackInfo.region);
+      selected.add(sourceKey(stackInfo.stackName, stackRegion));
       const current = await stateBackend.getState(stackInfo.stackName, stackRegion);
-      if (!current || !hasPendingMovesOut(current.state)) continue;
-      const { finished } = await withDeferredInterrupts(
-        () =>
-          finishPendingMoves({
-            stackName: stackInfo.stackName,
-            region: stackRegion,
-            stateBackend,
-            lockManager,
-            recovery,
-            contentionMessage: (st) =>
-              buildLockContentionMessage({
-                lockManager,
-                stackName: st.stackName,
-                region: st.region,
-                recovery,
-              }),
-          }),
-        holdNotice
-      );
+      if (current && hasPendingMovesOut(current.state)) {
+        sources.set(sourceKey(stackInfo.stackName, stackRegion), {
+          stackName: stackInfo.stackName,
+          region: stackRegion,
+          markerMoves: [],
+        });
+      }
+    }
+    for (const m of markerParsed.moves) {
+      if (
+        !selected.has(sourceKey(m.fromStack, m.fromRegion)) &&
+        !selected.has(sourceKey(m.toStack, m.toRegion))
+      ) {
+        continue;
+      }
+      const key = sourceKey(m.fromStack, m.fromRegion);
+      const entry = sources.get(key) ?? {
+        stackName: m.fromStack,
+        region: m.fromRegion,
+        markerMoves: [],
+      };
+      entry.markerMoves.push({
+        from: m.from,
+        toStack: m.toStack,
+        toRegion: m.toRegion,
+        to: m.to,
+        startedAt: m.startedAt,
+      });
+      sources.set(key, entry);
+    }
+    for (const source of sources.values()) {
+      const { finished } = await withDeferredInterrupts(async () => {
+        const result = await finishPendingMoves({
+          stackName: source.stackName,
+          region: source.region,
+          markerMoves: source.markerMoves,
+          stateBackend,
+          lockManager,
+          recovery,
+          contentionMessage: (st) =>
+            buildLockContentionMessage({
+              lockManager,
+              stackName: st.stackName,
+              region: st.region,
+              recovery,
+            }),
+        });
+        if (result.finished.length > 0) {
+          await updateRefactorMarker(stateBackend, (moves) =>
+            moves.filter((m) => !result.finished.some((f) => sameMove(m, f)))
+          );
+        }
+        return result;
+      }, holdNotice);
       for (const f of finished) {
         logger.info(
           safeMsg`Finished an interrupted move: ${f.fromStack}.${f.from} -> ${f.toStack}.${f.to}`

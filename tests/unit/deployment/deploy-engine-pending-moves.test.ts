@@ -12,6 +12,7 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
+import { resetRefactorMarkerReadsForTest } from '../../../src/state/refactor-marker.js';
 
 // No real AWS client: the create-only DescribeType prefetch reads the
 // process-global client factory (see _inert-cloudformation-client.ts).
@@ -88,6 +89,7 @@ describe('cdkd deploy refuses an unfinished refactor move (go-to-k/cdkd#5212)', 
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetRefactorMarkerReadsForTest();
     stateBackend = { getState: vi.fn(), saveState: vi.fn().mockResolvedValue('etag-new') };
     provider = {
       create: vi.fn().mockResolvedValue({ physicalId: 'p' }),
@@ -154,5 +156,40 @@ describe('cdkd deploy refuses an unfinished refactor move (go-to-k/cdkd#5212)', 
     stateBackend.getState.mockResolvedValue({ state: makeState({}), etag: 'etag-old' });
     await expect(makeEngine().deploy(STACK, template)).resolves.toBeDefined();
     expect(provider.delete).toHaveBeenCalled();
+  });
+
+  it('refuses a move whose DESTINATION is this stack, found only in the shared refactor marker', async () => {
+    // The record itself has no `pendingMovesOut` (this stack never started a
+    // move out) -- but the shared marker lists a move INTO this stack from
+    // another source, which this stack's own record knows nothing of.
+    stateBackend.getState.mockResolvedValue({ state: makeState({}), etag: 'etag-old' });
+    (stateBackend as unknown as Record<string, unknown>)['refactorMarkerKey'] = () =>
+      'cdkd/_refactor/pending.json';
+    (stateBackend as unknown as Record<string, unknown>)['getRefactorMarker'] = vi
+      .fn()
+      .mockResolvedValue({
+        body: {
+          moves: [
+            {
+              fromStack: 'Src',
+              fromRegion: REGION,
+              from: 'X',
+              toStack: STACK,
+              toRegion: REGION,
+              to: 'Moved',
+              startedAt: 1,
+            },
+          ],
+        },
+        etag: '"e"',
+      });
+
+    const err = (await makeEngine()
+      .deploy(STACK, template)
+      .catch((e: unknown) => e)) as CdkdError;
+    expect(err).toBeInstanceOf(CdkdError);
+    expect(err.code).toBe('REFACTOR_UNFINISHED');
+    for (const fn of Object.values(provider)) expect(fn).not.toHaveBeenCalled();
+    expect(stateBackend.saveState).not.toHaveBeenCalled();
   });
 });

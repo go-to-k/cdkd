@@ -30,6 +30,7 @@ import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+import { resetRefactorMarkerReadsForTest } from '../../../src/state/refactor-marker.js';
 
 const STACK = 'S';
 const REGION = 'us-east-1';
@@ -71,10 +72,38 @@ function backendHolding(states: Record<string, StackState>): S3StateBackend {
   } as unknown as S3StateBackend;
 }
 
+const MARKER_MOVE = {
+  fromStack: 'Src',
+  fromRegion: REGION,
+  from: 'X',
+  toStack: STACK,
+  toRegion: REGION,
+  to: 'Moved',
+  startedAt: 1,
+};
+
+function backendHoldingWithMarker(
+  states: Record<string, StackState>,
+  marker: { body: unknown; etag: string } | null
+): S3StateBackend {
+  return {
+    getState: async (stackName: string) => {
+      const state = states[stackName];
+      return state ? { state, etag: 'fake' } : null;
+    },
+    refactorMarkerKey: () => 'cdkd/_refactor/pending.json',
+    getRefactorMarker: async () => marker,
+  } as unknown as S3StateBackend;
+}
+
 type PreviewOrphanAdoption = Parameters<typeof buildDiffTree>[0]['previewOrphanAdoption'];
 const adoptNothing = (async () => ({ adopted: {}, refusals: [] })) as unknown as PreviewOrphanAdoption;
 
 async function diff(state: StackState) {
+  return diffWithBackend(backendHolding({ [STACK]: state }));
+}
+
+async function diffWithBackend(stateBackend: S3StateBackend) {
   return buildDiffTree({
     stackName: STACK,
     displayName: STACK,
@@ -82,7 +111,7 @@ async function diff(state: StackState) {
     template: TPL,
     nestedTemplates: {},
     recursive: false,
-    stateBackend: backendHolding({ [STACK]: state }),
+    stateBackend,
     diffCalculator: new DiffCalculator(),
     isNestedChild: false,
     previewOrphanAdoption: adoptNothing,
@@ -92,6 +121,7 @@ async function diff(state: StackState) {
 describe("cdkd diff blocks over an unfinished cdkd refactor move (go-to-k/cdkd#5212)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetRefactorMarkerReadsForTest();
   });
 
   it('puts exactly one blocking reason naming cdkd refactor, REFACTOR-free prose "did not finish"', async () => {
@@ -109,5 +139,25 @@ describe("cdkd diff blocks over an unfinished cdkd refactor move (go-to-k/cdkd#5
 
     expect(node.blocking).toEqual([]);
     expect(countBlocking(node)).toBe(0);
+  });
+
+  it('blocks when the shared marker (not the record) lists a move whose destination is the diffed stack', async () => {
+    const node = await diffWithBackend(
+      backendHoldingWithMarker(
+        { [STACK]: record() },
+        { body: { moves: [MARKER_MOVE] }, etag: '"e"' }
+      )
+    );
+
+    expect(node.blocking.length).toBeGreaterThanOrEqual(1);
+    expect(node.blocking.some((r) => r.includes('did not finish'))).toBe(true);
+  });
+
+  it('still reports the marker reason when the diffed stack has no state record at all', async () => {
+    const node = await diffWithBackend(
+      backendHoldingWithMarker({}, { body: { moves: [MARKER_MOVE] }, etag: '"e"' })
+    );
+
+    expect(node.blocking.some((r) => r.includes('did not finish'))).toBe(true);
   });
 });

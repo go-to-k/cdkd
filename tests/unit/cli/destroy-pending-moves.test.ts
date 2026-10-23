@@ -54,6 +54,7 @@ vi.mock('../../../src/utils/live-renderer.js', () => {
 
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
+import { resetRefactorMarkerReadsForTest } from '../../../src/state/refactor-marker.js';
 
 const REGION = 'us-east-1';
 const STACK = 'TestStack';
@@ -113,7 +114,10 @@ function makeCtx() {
 }
 
 describe('runDestroyForStack refuses an unfinished cdkd refactor move (go-to-k/cdkd#5212)', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetRefactorMarkerReadsForTest();
+  });
 
   it('refuses with REFACTOR_UNFINISHED, naming cdkd destroy, and touches nothing', async () => {
     const h = makeCtx();
@@ -128,6 +132,39 @@ describe('runDestroyForStack refuses an unfinished cdkd refactor move (go-to-k/c
     const err = thrown as CdkdError;
     expect(err.code).toBe('REFACTOR_UNFINISHED');
     expect(err.message).toContain('cdkd destroy');
+    expect(h.getProviderFor, 'no provider delete must be chosen').not.toHaveBeenCalled();
+    expect(h.deleteState, 'the record must not be removed').not.toHaveBeenCalled();
+  });
+
+  it('refuses when the shared marker (not the record) lists a move whose destination is this stack', async () => {
+    const h = makeCtx();
+    const state = stateWith({ A: RES_A, B: RES_B });
+    (h.ctx.stateBackend as unknown as Record<string, unknown>)['refactorMarkerKey'] = () =>
+      'cdkd/_refactor/pending.json';
+    (h.ctx.stateBackend as unknown as Record<string, unknown>)['getRefactorMarker'] = vi
+      .fn()
+      .mockResolvedValue({
+        body: {
+          moves: [
+            {
+              fromStack: 'Src',
+              fromRegion: REGION,
+              from: 'X',
+              toStack: STACK,
+              toRegion: REGION,
+              to: 'Moved',
+              startedAt: 1,
+            },
+          ],
+        },
+        etag: '"e"',
+      });
+
+    const thrown = await runDestroyForStack(STACK, state, h.ctx).catch((e: unknown) => e);
+
+    expect(thrown).toBeInstanceOf(CdkdError);
+    const err = thrown as CdkdError;
+    expect(err.code).toBe('REFACTOR_UNFINISHED');
     expect(h.getProviderFor, 'no provider delete must be chosen').not.toHaveBeenCalled();
     expect(h.deleteState, 'the record must not be removed').not.toHaveBeenCalled();
   });

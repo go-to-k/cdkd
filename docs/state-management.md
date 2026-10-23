@@ -69,7 +69,8 @@ s3://cdkd-state-{accountId}/
 │   │   ├── create-tokens.json         create-token ledger
 │   │   ├── stack-instance.json        a first deploy's stack instance id
 │   │   └── deployments/               deployment event history
-│   └── _index/{region}/exports.json   exports index
+│   ├── _index/{region}/exports.json   exports index
+│   └── _refactor/pending.json         unfinished refactor moves
 ├── cdkd-bootstrap/{region}.json       asset-storage marker
 ├── custom-resource-responses/         one object per custom resource call
 └── cdkd-migrate-tmp/                  transient CloudFormation templates
@@ -87,6 +88,7 @@ one feature each:
 | `stack-instance.json` | A first deploy's [stack instance id](state-management-schema-versions.md#stackinstanceid-the-lifetime-of-a-stack), written before its first create | Deleted once `state.json` holds the id, or with `state.json` |
 | `deployments/` | [Deployment events](deployment-events.md) | Kept after a destroy unless you pass `--purge-events` |
 | `_index/{region}/exports.json` | Exported values of every stack in the region | Rewritten by each deploy |
+| `_refactor/pending.json` | The moves a [`cdkd refactor`](cli-refactor.md#if-a-refactor-is-interrupted) started between stacks and has not finished | Deleted when the last listed move finishes |
 | `cdkd-bootstrap/{region}.json` | The region's asset bucket and ECR repository names | `cdkd bootstrap --destroy` |
 | `custom-resource-responses/{requestId}.json` | One custom resource handler's response | Deleted after the call, or by a [lifecycle rule](cli-bootstrap.md#re-running-bootstrap) within days |
 | `cdkd-migrate-tmp/` | A template too large to send inline to CloudFormation | Deleted by the command that uploaded it |

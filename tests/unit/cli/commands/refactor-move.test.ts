@@ -323,7 +323,17 @@ describe('applyMoveGroup', () => {
       if (fail !== undefined && fail.nth === n && fail.landed) throw new Error('socket hang up');
       return `"${name}-${n}"`;
     };
+    let marker: { body: unknown; etag: string } | null = null;
+    let markerVersion = 0;
     const stateBackend = {
+      getRefactorMarker: vi.fn(async () => (marker === null ? null : structuredClone(marker))),
+      saveRefactorMarker: vi.fn(async (body: { moves: unknown[] }, etag: string | null) => {
+        order.push('marker');
+        if ((marker === null ? null : marker.etag) !== etag) return 'conflict' as const;
+        markerVersion += 1;
+        marker = body.moves.length === 0 ? null : { body: structuredClone(body), etag: `"m${markerVersion}"` };
+        return 'saved' as const;
+      }),
       getState: vi.fn(async (name: string) => {
         order.push(`get:${name}`);
         const r = records.get(name);
@@ -366,8 +376,10 @@ describe('applyMoveGroup', () => {
         .filter(([, r]) => Object.values(r.state.resources).some((x) => x.physicalId === physicalId))
         .map(([name]) => name)
         .sort();
+    const markerMoves = (): Array<{ fromStack: string; from: string; toStack: string; to: string }> =>
+      marker === null ? [] : ((marker.body as { moves: never[] }).moves ?? []);
     return {
-      order, records, plans, move, run, holders, stateBackend, lockManager, saveImpl,
+      order, records, plans, move, run, holders, stateBackend, lockManager, saveImpl, markerMoves,
       failSave: (name: string, nth: number, landed = false) => failures.set(name, { nth, landed }),
       setJournal: () => { journal = true; },
     };
@@ -409,8 +421,11 @@ describe('applyMoveGroup', () => {
     });
     await w.run();
     expect(w.order).toEqual([
-      'lock:A', 'lock:B', 'get:A', 'get:B', 'rotate:A', 'save:A', 'save:B', 'save:A', 'unlock:B', 'unlock:A',
+      'lock:A', 'lock:B', 'get:A', 'get:B', 'marker', 'rotate:A', 'save:A', 'save:B', 'save:A', 'marker',
+      'unlock:B', 'unlock:A',
     ]);
+    // The marker is written before any record and cleared after the last.
+    expect(w.markerMoves()).toEqual([]);
     // The first write keeps the record and names the move.
     expect(Object.keys(saved[0]!.state.resources).sort()).toEqual(['Keep', 'Old']);
     expect(saved[0]!.state.pendingMovesOut).toEqual([
@@ -476,6 +491,8 @@ describe('applyMoveGroup', () => {
     w.failSave(name, nth, landed);
     await expect(w.run()).rejects.toThrow(/could not save stack/);
     assertSafe(w, ['p1']);
+    // The shared marker still lists the move, so a deploy of EITHER stack refuses.
+    expect(w.markerMoves()).toEqual([expect.objectContaining({ fromStack: 'A', from: 'Old', toStack: 'B', to: 'New' })]);
     await finish(w, 'A');
     assertSafe(w, ['p1']);
     const a = w.records.get('A')!.state;
@@ -495,12 +512,45 @@ describe('applyMoveGroup', () => {
     w.failSave('D2', 1);
     await expect(w.run()).rejects.toThrow(/Re-run 'cdkd refactor S'/);
     assertSafe(w, ['px', 'py']);
+    expect(w.markerMoves()).toHaveLength(2);
     expect(w.records.get('S')!.state.pendingMovesOut).toHaveLength(2);
     const { finished } = await finish(w, 'S');
     expect(finished.map((f) => f.to).sort()).toEqual(['X2', 'Y2']);
     expect(w.holders('px')).toEqual(['D1']);
     expect(w.holders('py')).toEqual(['D2']);
     expect(w.records.get('S')!.state.pendingMovesOut).toBeUndefined();
+  });
+
+  it('writes nothing when the marker cannot be read as moves', async () => {
+    const w = world({ A: { Old: rec('p1') }, B: {} });
+    w.move(mv('A', 'Old', 'B', 'New'));
+    w.stateBackend.getRefactorMarker.mockResolvedValue({ body: 'torn', etag: '"x"' });
+    await expect(w.run()).rejects.toThrow(/marker .*cannot be/);
+    expect(w.stateBackend.saveState).not.toHaveBeenCalled();
+  });
+
+  it('retries a marker write that lost a race with another run', async () => {
+    const w = world({ A: { Old: rec('p1') }, B: {} });
+    w.move(mv('A', 'Old', 'B', 'New'));
+    w.stateBackend.saveRefactorMarker.mockResolvedValueOnce('conflict');
+    await w.run();
+    expect(w.holders('p1')).toEqual(['B']);
+    expect(w.markerMoves()).toEqual([]);
+  });
+
+  it('says the records are complete when only clearing the marker fails', async () => {
+    const w = world({ A: { Old: rec('p1') }, B: {} });
+    w.move(mv('A', 'Old', 'B', 'New'));
+    const real = w.stateBackend.saveRefactorMarker.getMockImplementation()!;
+    let n = 0;
+    w.stateBackend.saveRefactorMarker.mockImplementation(async (body, etag) => {
+      n += 1;
+      if (n > 1) throw new Error('throttled');
+      return real(body, etag);
+    });
+    await expect(w.run()).rejects.toThrow(/Every record of the refactor was written/);
+    expect(w.holders('p1')).toEqual(['B']);
+    expect(w.markerMoves()).toHaveLength(1);
   });
 
   it('names what it wrote before a failure', async () => {
@@ -548,10 +598,11 @@ describe('finishPendingMoves', () => {
     };
   }
   const mark = { from: 'Old', toStack: 'B', toRegion: 'r', to: 'New', startedAt: 1 };
-  const run = (b: ReturnType<typeof backend>) =>
+  const run = (b: ReturnType<typeof backend>, markerMoves?: typeof mark[]) =>
     finishPendingMoves({
       stackName: 'A',
       region: 'r',
+      ...(markerMoves !== undefined && { markerMoves }),
       stateBackend: b.stateBackend as never,
       lockManager: b.lockManager as never,
       recovery: { stateBucket: 'bkt', statePrefix: 'pfx' },
@@ -610,5 +661,29 @@ describe('finishPendingMoves', () => {
     const b = backend({ A: stack('A', { Old: rec('p1') }) });
     expect((await run(b)).finished).toEqual([]);
     expect(b.lockManager.acquireLock).not.toHaveBeenCalled();
+  });
+
+  it('finishes a move found only in the shared refactor marker (source record unmarked)', async () => {
+    // `A`'s own record holds `Old` but carries no `pendingMovesOut` -- the
+    // move is known only through the shared marker a killed run left behind.
+    const b = backend({ A: stack('A', { Old: rec('p1') }), B: stack('B', {}) });
+    const result = await run(b, [mark]);
+    expect(result.finished).toHaveLength(1);
+    expect(b.stateBackend.saveState.mock.calls.map((c) => c[0])).toEqual(['B', 'A']);
+    expect(b.records.get('B')!.state.resources['New']!.physicalId).toBe('p1');
+    expect(b.records.get('A')!.state.resources).toEqual({});
+  });
+
+  it('finishes a marker move when the source record is absent and the destination already holds it', async () => {
+    const b = backend({ B: stack('B', { New: rec('p1') }) });
+    const result = await run(b, [mark]);
+    expect(result.finished).toEqual([{ fromStack: 'A', fromRegion: 'r', ...mark }]);
+    expect(b.stateBackend.saveState).not.toHaveBeenCalled();
+  });
+
+  it('rejects a marker move when the source record is absent and the destination lacks it too', async () => {
+    const b = backend({ B: stack('B', {}) });
+    await expect(run(b, [mark])).rejects.toThrow(/has no cdkd state any more/);
+    expect(b.stateBackend.saveState).not.toHaveBeenCalled();
   });
 });
