@@ -76,6 +76,7 @@ cross-stack-cfn-fallback	2026-10-18T11:16:06Z	PASS	125	verify.sh	#5043 rebased r
 cross-stack-references	2026-10-23T16:19:17Z	PASS	55	standard	deploy+destroy clean, 0 orphans
 cross-stack-references	2026-10-23T18:46:05Z	PASS	60	standard	deploy+destroy clean, 0 orphans; regression check for fix/refactor-interrupt@b5f2dee1d (/pick-integ P1)
 cross-stack-references	2026-10-23T19:28:54Z	PASS	65	standard	deploy+diff(no change)+destroy clean, 0 orphans; regression check for fix/refactor-interrupt@2c9088825 (/pick-integ P1)
+cross-stack-references	2026-10-23T20:25:43Z	PASS	60	standard	deploy+diff(no change)+destroy clean, 0 orphans; regression check for fix/refactor-interrupt@e7af89b9e
 cross-stack-secret-import	2026-10-23T02:59:31Z	PASS	656	verify.sh	rc ok, orph clean, 0 surviving secret versions (regression net #5193)
 custom-resource-getatt-data	2026-10-09T09:36:48Z	PASS	95	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)
 custom-resource-masked-service-token	2026-10-15T02:06:45Z	PASS	161	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
@@ -272,12 +273,12 @@ multi-resource	2026-10-23T16:19:29Z	PASS	76	standard	destroy 0 errors, 0 orphans
 multi-stack-deps	2026-10-23T16:19:51Z	PASS	93	standard	all 3 stacks destroyed 0 errors, 0 orphans
 neptune-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	2280	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
 multi-resource	2026-10-21T05:39:15Z	PASS	79	standard	destroy 0 errors, 0 orphans; PR 5135
-multi-stack-deps	2026-10-23T19:35:30Z	PASS	130	standard	deploy+diff(no change)+destroy clean all 3 stacks, 0 orphans; regression check for fix/refactor-interrupt@2c9088825 (/pick-integ P1)
+multi-stack-deps	2026-10-23T20:31:27Z	PASS	105	standard	deploy+diff(no change)+destroy clean all 3 stacks, 0 orphans; regression check for fix/refactor-interrupt@e7af89b9e
 neptune-fix-forward-orphan	2026-10-15T19:44:42Z	PASS	3092	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 nested-required-preflight	2026-10-11T09:33:22Z	PASS	55	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 nested-stack	2026-10-13T02:41:29Z	PASS	65	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 nested-stack-3level	2026-10-15T09:24:20Z	PASS	490	verify.sh	PR #4939 (#4929) 504262f2b; own state bucket; rc ok, no seeded secret in any version, orph clean
-nested-stack-deep	2026-10-23T19:32:13Z	PASS	130	verify.sh	rc ok, orph clean; regression check for fix/refactor-interrupt@2c9088825 (/pick-integ P2, nested-stack pick)
+nested-stack-deep	2026-10-23T20:28:39Z	PASS	116	verify.sh	rc ok, orph clean; regression check for fix/refactor-interrupt@e7af89b9e
 nested-stack-replace-guard	2026-10-12T05:36:03Z	PASS	61	verify.sh	PR #4812 head build, rc ok, orph clean
 nested-stack-rollback	2026-10-20T10:30:19Z	PASS	124	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 nested-stack-secret	2026-10-18T13:32:15Z	PASS	360	verify.sh	PR #5052 (stage2 RedactionContext refactor) b22bc1158; pnpm/mise shim used; rc 0, destroy 0 errors, 0 surviving state versions
@@ -315,6 +316,7 @@ remove-protection	2026-10-23T17:17:04Z	PASS	2113	verify.sh	--remove-protection d
 refactor-command	2026-10-23T18:43:40Z	PASS	105	verify.sh	rc ok, orph clean, regression check on fix/refactor-interrupt@b5f2dee1d (#5201)
 refactor-move	2026-10-23T18:39:26Z	FAIL	95	verify.sh	Phase2c: deploy SRC cascaded into deploying DST (cross-stack dep) before SRC's own pendingMovesOut refusal ran; DST create hit ResourceInUseException; orphan create-tokens.json deleted (#5212)
 refactor-command	2026-10-23T19:26:50Z	PASS	105	verify.sh	rc ok, orph clean, regression check on fix/refactor-interrupt@2c9088825 (#5201)
+refactor-command	2026-10-23T20:23:40Z	PASS	105	verify.sh	rc ok, orph clean, regression check on fix/refactor-interrupt@e7af89b9e (#5201)
 refactor-move	2026-10-23T20:21:04Z	PASS	151	verify.sh	rc ok, orph clean; re-run on e7af89b9e (lock-scoped marker read + dest template check + read-only dry-run) (#5212)
 remove-protection	2026-10-22T15:37:12Z	PASS	2120	verify.sh	rc ok, orph clean
 remove-protection-compensation	2026-10-22T15:37:12Z	PASS	251	verify.sh	rc ok, orph clean

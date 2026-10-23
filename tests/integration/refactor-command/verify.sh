@@ -72,7 +72,9 @@ DEFAULT_STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 PFX="cdkd-refactor-command"
 TABLE="${PFX}-data"
 PARAM_NAME="/cdkd-integ/${PFX}/wiring"
-MAP_FILE="${PWD}/refactor-map.json"
+# Outside the fixture tree: the file names the AWS account id.
+MAP_DIR="$(mktemp -d)"
+MAP_FILE="${MAP_DIR}/refactor-map.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cdkd() { node "${LOCAL_DIST}" "$@"; }
@@ -136,7 +138,7 @@ cleanup() {
     esac
   done
   aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1
-  rm -f "${MAP_FILE}"
+  rm -rf "${MAP_DIR}"
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/${PREFIX}/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
