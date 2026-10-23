@@ -249,6 +249,12 @@ export class ApiGatewayProvider implements ResourceProvider {
           'StageDescription',
           'CFn-only convenience for inline-creating a Stage; declare AWS::ApiGateway::Stage with the Description property instead',
         ],
+        [
+          // Issue #2762, measured in us-east-1 (request 2571bd53-7f09-4cbd-9c38-0bff4edf32ec):
+          // a stage-less CreateDeployment with canarySettings is refused on both routes.
+          'DeploymentCanarySettings',
+          'API Gateway requires StageName for a canary deployment ("Non null and non empty stageName must be provided for canary deployment"), and StageName is not handled here, so a valid canary Deployment routes to Cloud Control; declare AWS::ApiGateway::Stage with CanarySetting for an SDK-routed canary',
+        ],
       ]),
     ],
   ]);

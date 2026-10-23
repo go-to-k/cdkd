@@ -2111,6 +2111,11 @@
       ]
     },
     {
+      "name": "refactor-command",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "remove-protection",
       "annotated": true,
       "scenarios": [
@@ -3538,6 +3543,7 @@
     "recreate-target-readers",
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
+    "refactor-command",
     "remove-protection-compensation",
     "remove-protection-journaled-orphan",
     "rename-refactor",

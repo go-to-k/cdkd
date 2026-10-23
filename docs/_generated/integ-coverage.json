@@ -1165,6 +1165,7 @@
         "multi-resource",
         "multi-stack-deps",
         "perf-cross-backend-check",
+        "refactor-command",
         "remove-protection",
         "rename-refactor",
         "rollback-same-id-recreate",
@@ -1261,6 +1262,9 @@
         "perf-cross-backend-check": [
           "l2",
           "literal"
+        ],
+        "refactor-command": [
+          "l2"
         ],
         "remove-protection": [
           "l2",
@@ -6835,6 +6839,7 @@
         "noecho-parameter-masking",
         "partial-create-handback",
         "perf-cross-backend-check",
+        "refactor-command",
         "replacement-fanout",
         "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
@@ -6965,6 +6970,9 @@
         "perf-cross-backend-check": [
           "l2",
           "literal"
+        ],
+        "refactor-command": [
+          "l2"
         ],
         "replacement-fanout": [
           "l2",
@@ -7119,6 +7127,7 @@
         "noecho-parameter-masking",
         "perf-cross-backend-check",
         "pipes-fix-forward-orphan",
+        "refactor-command",
         "rename-refactor",
         "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
@@ -7288,6 +7297,9 @@
         ],
         "pipes-fix-forward-orphan": [
           "l1"
+        ],
+        "refactor-command": [
+          "l2"
         ],
         "rename-refactor": [
           "l2",
@@ -7491,6 +7503,7 @@
         "recreate-nested-logical-id-collision",
         "recreate-target-readers",
         "redshift-cluster-getatt",
+        "refactor-command",
         "remove-protection-journaled-orphan",
         "rename-refactor",
         "replacement-fanout",
@@ -7785,6 +7798,9 @@
         ],
         "redshift-cluster-getatt": [
           "l1"
+        ],
+        "refactor-command": [
+          "l2"
         ],
         "remove-protection-journaled-orphan": [
           "l1",

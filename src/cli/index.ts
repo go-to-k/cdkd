@@ -16,6 +16,7 @@ const SUBCOMMANDS = new Set([
   'destroy',
   'gc',
   'orphan',
+  'refactor',
   'import',
   'export',
   'publish-assets',

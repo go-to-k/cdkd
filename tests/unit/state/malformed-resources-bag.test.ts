@@ -3075,6 +3075,9 @@ const ORPHAN_READER_FILES = [
   // go-to-k/cdkd#4600: the success deploy's foreign-holder scan reads other
   // stacks' rollback-orphan records.
   'src/deployment/rollback-executor/journaled-orphans.ts',
+  // go-to-k/cdkd#5201: `cdkd refactor` reads the records to keep their ids out
+  // of a rename, and rewrites their references.
+  'src/cli/commands/refactor.ts',
 ] as const;
 
 describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)', () => {
@@ -3101,6 +3104,7 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     // orphans its replay minted.
     'src/deployment/nested-child-journal.ts': 'orphansAfterRollback(',
     'src/deployment/rollback-executor/journaled-orphans.ts': 'state.orphans ?? []',
+    'src/cli/commands/refactor.ts': 'Array.isArray(state.orphans)',
   };
   const SPELLINGS = [
     'refuseMalformedOrphans(',
@@ -3163,6 +3167,10 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       // flow's single `executeDeployment(` below its guard. Pinned below.
       if (file === 'src/deployment/deploy-engine.ts') return false;
       if (file === 'src/deployment/deploy-engine/execute.ts') return false;
+      // `logical-id-rename.ts` is a pure rewrite whose only caller is
+      // `cdkd refactor`, which guards the container and its rows first.
+      // Pinned below.
+      if (file === 'src/state/logical-id-rename.ts') return false;
       return /[A-Za-z]*[Ss]tate\??\.orphans\b|orphansCarriedFrom\(|orphansAfterRollback\(/.test(code(file));
     });
     expect([...readers].sort()).toEqual(Object.keys(ANCHORS).sort());
@@ -3172,6 +3180,20 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
   });
 
   it('pins the two exclusions the derivation above makes', () => {
+    // `logical-id-rename.ts` is excluded because `refactor.ts`, its only
+    // caller, guards both the container and its rows above every call.
+    const renameCallers = spawnSync('git', ['grep', '-l', 'applyLogicalIdRenames(', '--', 'src'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    })
+      .stdout.split('\n')
+      .filter(Boolean)
+      .sort();
+    expect(renameCallers).toEqual(['src/cli/commands/refactor.ts', 'src/state/logical-id-rename.ts']);
+    const refactorSrc = code('src/cli/commands/refactor.ts');
+    expect(refactorSrc.indexOf('refuseMalformedOrphanRecords(')).toBeLessThan(
+      refactorSrc.indexOf('applyLogicalIdRenames(')
+    );
     // `diff.ts` is excluded because it RECEIVES the repaired state rather than
     // loading one. The moment it loads state itself the exclusion is wrong, and
     // a comment cannot notice that.
@@ -3334,6 +3356,8 @@ describe('the orphans ROW guard DOMINATES each row walk (go-to-k/cdkd#3500)', ()
     'src/deployment/nested-child-journal.ts': 'orphansAfterRollback(',
     // The success deploy's scan, which dereferences each row's `state`.
     'src/deployment/rollback-executor/journaled-orphans.ts': 'state.orphans ?? []',
+    // The plan's id set, which dereferences each row's `logicalId`.
+    'src/cli/commands/refactor.ts': 'Array.isArray(state.orphans)',
   };
   /**
    * Both dispositions plus the narrow predicate, because the fence must accept
