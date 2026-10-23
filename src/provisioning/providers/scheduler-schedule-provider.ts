@@ -896,7 +896,7 @@ export class SchedulerScheduleProvider implements ResourceProvider {
     const wrapDeleteError = (step: string, error: unknown): ProvisioningError => {
       const failureClass =
         error instanceof Error && error.name !== '' ? error.name : 'an unreadable failure';
-      return markRedactedCause(
+      const wrapped = markRedactedCause(
         new ProvisioningError(
           `Failed to delete Schedule ${logicalId}: its recorded GroupName is secret-derived, ` +
             `and ${step} failed (${failureClass})`,
@@ -906,6 +906,16 @@ export class SchedulerScheduleProvider implements ResourceProvider {
           error instanceof Error ? error : undefined
         )
       );
+      // The read and the delete return on `ResourceNotFoundException` before
+      // reaching here, so the one `*NotFound` left is a failed LISTING, which
+      // is not this method's proof of "gone" (two complete listings with no
+      // match). The wrap carries the class, which satisfies the "already
+      // deleted" classifiers' `ResourceNotFoundException` needle and would
+      // drop the record unproven, so mark it terminal: they check the marker
+      // first (go-to-k/cdkd#5222).
+      return error instanceof Error && error.name.includes('NotFound')
+        ? markNonRetryable(wrapped)
+        : wrapped;
     };
     const findMatches = async (): Promise<{ matches: string[]; datedOnly: number }> => {
       const groups: string[] = [];

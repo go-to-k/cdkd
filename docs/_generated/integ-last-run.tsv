@@ -48,7 +48,7 @@ cc-to-sdk-reroute	2026-10-11T09:33:22Z	PASS	230	verify.sh	PR #4720 (#4705) final
 cc-write-only-create-only	2026-10-11T09:33:22Z	PASS	170	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 cdk-cross-account-lookup-role	2026-10-12T07:09:30Z	PASS	215	verify.sh	rc ok, orph clean; a/b1/b2/c arms pass on PR #4812 refusal texts
 ci-cd	2026-10-11T09:33:22Z	PASS	75	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-cloudfront-function-url	2026-10-20T05:07:15Z	PASS	250	verify.sh	rc ok, orph clean; #5105
+cloudfront-function-url	2026-10-23T23:11:34Z	FAIL	226	verify.sh	PR #5224 (#5222); deploy ok, verify.sh asserts SID ExplicitFnUrlPermission absent from policy (verify.sh not in PR diff; Lambda permission SID generation changed by #5139); cleanup clean, 0 orphans
 cloudtrail-trail	2026-10-21T13:56:47Z	PASS	200	verify.sh	rc ok, reset/retain split verified, orph clean (1 lambda log group routinely swept)
 cloudwatch	2026-10-20T05:58:30Z	PASS	65	standard	deploy+destroy clean, 0 orphans
 cloudwatch-anomaly-detector	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -330,7 +330,7 @@ rollback-sqs-cooldown	2026-10-17T10:48:50Z	PASS	171	verify.sh	rc ok, orph clean 
 route53	2026-10-19T08:51:28Z	PASS	470	verify.sh	rc ok, orph clean (#2319 PR 5087)
 s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 PR #4449)
-s3-cloudfront	2026-10-21T13:56:47Z	PASS	256	verify.sh	rc ok, tags backfill verified, orph clean
+s3-cloudfront	2026-10-23T23:11:34Z	PASS	251	verify.sh	PR #5224 (#5222); us-east-1; destroy 5 deleted 0 errors, orph clean
 s3-directory-bucket	2026-10-20T06:32:13Z	PASS	221	verify.sh	deploy+destroy clean, 0 orphans
 s3-event-notification	2026-10-11T09:33:22Z	PASS	100	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-fix-forward-orphan	2026-10-15T19:17:17Z	PASS	281	verify.sh	PR #4966 (#3252) d92a5794e; us-west-2; own state bucket; rc ok, destroy clean, orph clean
@@ -342,7 +342,7 @@ s3-subconfig-removal	2026-10-11T09:33:22Z	PASS	105	verify.sh	PR #4720 (#4705) fi
 s3-tables	2026-10-18T18:32:28Z	PASS	85	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 s3-vectors	2026-10-16T09:35:29Z	PASS	45	verify.sh	rc ok, orph clean (#3341 slice 4997)
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-scheduler-custom-group	2026-10-16T09:35:29Z	PASS	106	verify.sh	rc ok, orph clean (#3341 slice 4997)
+scheduler-custom-group	2026-10-23T23:11:34Z	PASS	110	verify.sh	PR #5224 (#5222); us-east-1; rc ok, orph clean
 schema-v10-to-v11-migration	2026-10-14T07:59:02Z	PASS	495	verify.sh	rc ok, orph clean; PR #4893 state destroy purges record history (ee330190b), own state bucket; state.json kept only its delete marker
 schema-v11-to-v12-migration	2026-10-16T16:59:47Z	PASS	161	verify.sh	rc ok, orph clean (stateless-mixins refactor #5015, rebased)
 schema-v12-to-v13-migration	2026-10-23T16:21:31Z	PASS	159	verify.sh	v12->v13 transparent auto-migration verified, 46 assertions; integ-schema-migration marker set

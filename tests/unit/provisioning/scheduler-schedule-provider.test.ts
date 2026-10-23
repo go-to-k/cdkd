@@ -61,6 +61,7 @@ import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import {
   hasRedactedCause,
+  isMarkedNonRetryable,
   isRetryableTransientError,
   retryClassificationText,
 } from '../../../src/deployment/retryable-errors.js';
@@ -1085,6 +1086,28 @@ describe('SchedulerScheduleProvider', () => {
         expect(error).toBeInstanceOf(ProvisioningError);
         expect(error!.message).toContain('listing the schedules of its name failed (ThrottlingException)');
         expect(error!.message).not.toContain('g-secret');
+        expect(deletes()).toEqual([]);
+        // Negative control for the case below: a non-NotFound class stays retryable.
+        expect(isMarkedNonRetryable(error)).toBe(false);
+      });
+
+      it('a listing answered ResourceNotFoundException is not proof of gone: the wrap is terminal (go-to-k/cdkd#5222)', async () => {
+        // The wrap names the class, which satisfies the "already deleted"
+        // classifiers' `ResourceNotFoundException` needle; only the marker,
+        // which they check first, keeps the record.
+        answer({
+          ListSchedulesCommand: () => {
+            throw notFound();
+          },
+        });
+
+        const error = await caughtDelete(del());
+
+        expect(error).toBeInstanceOf(ProvisioningError);
+        expect(error!.message).toContain(
+          'listing the schedules of its name failed (ResourceNotFoundException)'
+        );
+        expect(isMarkedNonRetryable(error)).toBe(true);
         expect(deletes()).toEqual([]);
       });
 
