@@ -2305,13 +2305,16 @@ export class S3StateBackend {
     stackName: string,
     region: string
   ): Promise<void> {
-    // go-to-k/cdkd#5200: a sibling this process wrote has the one version its
-    // write created. Deleting that version removes the object and leaves no
-    // version or delete marker, in one call instead of a delete, a version
-    // listing and a version delete. Any doubt takes the general path below.
+    // go-to-k/cdkd#5200: a sibling this process wrote is deleted by the
+    // version its write created, which removes it without writing a delete
+    // marker. Its `If-None-Match: *` write succeeded, so nothing current sat
+    // under it (at most an earlier lifetime's delete marker), and removing it
+    // brings no older copy back. The purge below still runs, for versions an
+    // earlier lifetime's purge left. Any doubt takes the general path.
     const key = this.getStackInstanceKey(stackName, region);
     const versionId = this.siblingVersionsWritten.get(key);
     this.siblingVersionsWritten.delete(key);
+    let deleted = false;
     if (versionId !== undefined) {
       try {
         await this.ensureClientForBucket();
@@ -2323,20 +2326,22 @@ export class S3StateBackend {
             VersionId: versionId,
           })
         );
-        return;
+        deleted = true;
       } catch (error) {
         this.logger.debug(
           safeMsg`Could not delete the written version of the write-ahead stack instance id of ${displayStackName(stackName)}: ${describeAwsFailure(error).summary}`
         );
       }
     }
-    try {
-      await this.deleteStackInstanceSibling(stackName, region);
-    } catch (error) {
-      this.logger.debug(
-        safeMsg`Could not delete the write-ahead stack instance id of ${displayStackName(stackName)}: ${describeAwsFailure(error).summary}`
-      );
-      return;
+    if (!deleted) {
+      try {
+        await this.deleteStackInstanceSibling(stackName, region);
+      } catch (error) {
+        this.logger.debug(
+          safeMsg`Could not delete the write-ahead stack instance id of ${displayStackName(stackName)}: ${describeAwsFailure(error).summary}`
+        );
+        return;
+      }
     }
     await this.purgeNoncurrentVersions([this.getStackInstanceKey(stackName, region)], {
       objectDescription: STACK_INSTANCE_OBJECT_DESCRIPTION,

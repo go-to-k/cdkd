@@ -83,6 +83,9 @@ function buildEngine(opts: {
   dependsOn?: Record<string, string[]>;
   createGate: (id: string) => Promise<void>;
   saveGate: (n: number) => Promise<void>;
+  /** No record yet: a first deploy. */
+  fresh?: boolean;
+  dryRun?: boolean;
 }) {
   const provider = {
     create: vi.fn().mockImplementation(async (logicalId: string) => {
@@ -121,7 +124,11 @@ function buildEngine(opts: {
   });
 
   const mockStateBackend = {
-    getState: vi.fn().mockResolvedValue({ state: currentState, etag: 'e0' }),
+    getState: vi
+      .fn()
+      .mockResolvedValue(opts.fresh === true ? null : { state: currentState, etag: 'e0' }),
+    prefetchStackInstanceSibling: vi.fn(),
+    loadRetainedRecord: vi.fn().mockResolvedValue([]),
     saveState,
     stackInstanceIdForFirstWrite: vi.fn().mockResolvedValue('00000000-0000-4000-8000-000000000000'),
     appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
@@ -164,10 +171,14 @@ function buildEngine(opts: {
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
     } as never,
-    { concurrency: 10, roleArn: 'arn:aws:iam::1:role/r' },
+    {
+      concurrency: 10,
+      roleArn: 'arn:aws:iam::1:role/r',
+      ...(opts.dryRun === true && { dryRun: true }),
+    },
     REGION
   );
-  return { engine, saveState, savedIds };
+  return { engine, saveState, savedIds, backend: mockStateBackend };
 }
 
 function template(ids: string[]): CloudFormationTemplate {
@@ -214,24 +225,25 @@ describe('per-resource state saves coalesce behind the one in flight (#5200)', (
   });
 
   it('queues a new save for a completion that lands after the queued save STARTED', async () => {
+    const firstSaveStarted = deferred<void>();
     const secondSaveStarted = deferred<void>();
-    const releaseFirstSave = deferred<void>();
     const releaseSecondSave = deferred<void>();
     const { engine, savedIds } = buildEngine({
       ids: ['A', 'B', 'C'],
       dependsOn: {},
       createGate: (id) => {
         if (id === 'A') return Promise.resolve();
-        // B completes while A's save is held, so it queues the second save.
-        if (id === 'B') return new Promise((r) => setTimeout(r, 5));
+        // B returns only once A's save is held, so it queues the second save.
+        if (id === 'B') return firstSaveStarted.promise;
         // C completes only once that second save has started: it is not in
         // that save's records, so it must get a save of its own.
         return secondSaveStarted.promise;
       },
       saveGate: async (n) => {
         if (n === 0) {
-          setTimeout(() => releaseFirstSave.resolve(), 20);
-          await releaseFirstSave.promise;
+          firstSaveStarted.resolve();
+          // B's completion is microtasks away; the hold only outlasts it.
+          await new Promise((r) => setTimeout(r, 20));
         } else if (n === 1) {
           secondSaveStarted.resolve();
           setTimeout(() => releaseSecondSave.resolve(), 20);
@@ -300,7 +312,7 @@ describe("the final save's deferred cleanup (#5200)", () => {
 });
 
 describe('the rollback journal is read beside the state record (#5200)', () => {
-  it('asks for the journal before the state read returns, and still reads it once', async () => {
+  it('asks for the journal before the state read returns, and reads it no more often', async () => {
     const { engine } = buildEngine({
       ids: ['A'],
       createGate: () => Promise.resolve(),
@@ -325,8 +337,92 @@ describe('the rollback journal is read beside the state record (#5200)', () => {
     await engine.deploy(stackName, template(['A']));
 
     expect(journalAskedBeforeStateReturned).toBe(true);
-    // The read the deploy start makes is the one 1b consumes: no second read
-    // of the journal before the plan.
-    expect(backend.loadRollbackJournal.mock.calls.length).toBeGreaterThanOrEqual(1);
+    // The read the deploy start makes is the one 1b consumes. Two calls in
+    // all, as before the overlap: that read and the success settle's. A 1b
+    // that read again would make three.
+    expect(backend.loadRollbackJournal).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("a first deploy's instance-id sibling read starts beside the diff (#5200)", () => {
+  it('is prefetched on a first deploy, before the diff', async () => {
+    const { engine, backend } = buildEngine({
+      ids: ['A'],
+      fresh: true,
+      createGate: () => Promise.resolve(),
+      saveGate: () => Promise.resolve(),
+    });
+    await engine.deploy(stackName, template(['A']));
+    expect(backend.prefetchStackInstanceSibling).toHaveBeenCalledWith(stackName, REGION);
+    expect(backend.prefetchStackInstanceSibling.mock.invocationCallOrder[0]!).toBeLessThan(
+      backend.stackInstanceIdForFirstWrite.mock.invocationCallOrder[0]!
+    );
+  });
+
+  it('is not read for a stack that has a record', async () => {
+    const { engine, backend } = buildEngine({
+      ids: ['A'],
+      createGate: () => Promise.resolve(),
+      saveGate: () => Promise.resolve(),
+    });
+    await engine.deploy(stackName, template(['A']));
+    expect(backend.prefetchStackInstanceSibling).not.toHaveBeenCalled();
+  });
+
+  it('is not read by a dry run', async () => {
+    const { engine, backend } = buildEngine({
+      ids: ['A'],
+      fresh: true,
+      dryRun: true,
+      createGate: () => Promise.resolve(),
+      saveGate: () => Promise.resolve(),
+    });
+    await engine.deploy(stackName, template(['A']));
+    expect(backend.prefetchStackInstanceSibling).not.toHaveBeenCalled();
+  });
+});
+
+describe("the final save's deferred cleanup on a failing deploy (#5200)", () => {
+  it('is still settled before the lock is released when the deploy fails after the hand-over', async () => {
+    let releaseCleanup!: () => void;
+    const cleanupHeld = new Promise<void>((r) => {
+      releaseCleanup = r;
+    });
+    let cleanupSettled = false;
+    const { engine, saveState } = buildEngine({
+      ids: ['A'],
+      createGate: () => Promise.resolve(),
+      saveGate: () => Promise.resolve(),
+    });
+    saveState.mockImplementation(
+      async (
+        _s: string,
+        _r: string,
+        _state: StackState,
+        options?: { deferCleanup?: (c: Promise<void>) => void }
+      ) => {
+        options?.deferCleanup?.(
+          cleanupHeld.then(() => {
+            cleanupSettled = true;
+          })
+        );
+        // The deploy fails after the cleanup was handed over.
+        throw new Error('failed after the hand-over');
+      }
+    );
+    const releaseLock = (engine as unknown as { lockManager: { releaseLock: ReturnType<typeof vi.fn> } })
+      .lockManager.releaseLock;
+    let settledAtRelease: boolean | undefined;
+    releaseLock.mockImplementation(async () => {
+      settledAtRelease = cleanupSettled;
+    });
+
+    const deployed = engine.deploy(stackName, template(['A'])).catch((e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(releaseLock).not.toHaveBeenCalled();
+    releaseCleanup();
+    await deployed;
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+    expect(settledAtRelease).toBe(true);
   });
 });

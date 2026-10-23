@@ -352,6 +352,24 @@ describe('the stack-instance.json sibling (go-to-k/cdkd#5064)', () => {
       expect(callsTo(sent, 'PutObjectCommand', SIBLING_KEY)).toHaveLength(0);
     });
 
+    it('is consumed once: a second first-write reads the sibling afresh', async () => {
+      let reads = 0;
+      const { client, sent } = makeClient({
+        [`GetObjectCommand ${SIBLING_KEY}`]: () => {
+          reads += 1;
+          return reads === 1 ? noSuchKey() : bodyOf(stackInstanceSiblingBody(EARLIER_ID));
+        },
+      });
+      const backend = backendFor(client);
+      backend.prefetchStackInstanceSibling(STACK, REGION);
+      await backend.stackInstanceIdForFirstWrite(STACK, REGION, { writeAhead: true });
+      // A stale prefetch ("absent") would mint a second id here.
+      await expect(
+        backend.stackInstanceIdForFirstWrite(STACK, REGION, { writeAhead: true })
+      ).resolves.toBe(EARLIER_ID);
+      expect(callsTo(sent, 'GetObjectCommand', SIBLING_KEY)).toHaveLength(2);
+    });
+
     it('a lost race still reads the winner back afresh', async () => {
       let reads = 0;
       const { client, sent } = makeClient({
@@ -452,7 +470,7 @@ describe('the stack-instance.json sibling (go-to-k/cdkd#5064)', () => {
       expect(sent.map((c) => c.name)).toEqual(['PutObjectCommand']);
     });
 
-    it('a sibling this process wrote is removed by deleting its one version: no listing (#5200)', async () => {
+    it('a sibling this process wrote is removed by deleting its version, then purged (#5200)', async () => {
       const { client, sent } = makeClient({
         [`GetObjectCommand ${SIBLING_KEY}`]: noSuchKey,
         [`PutObjectCommand ${SIBLING_KEY}`]: () => ({ VersionId: 'v-sibling-1' }),
@@ -464,7 +482,11 @@ describe('the stack-instance.json sibling (go-to-k/cdkd#5064)', () => {
       const deletes = callsTo(sent, 'DeleteObjectCommand', SIBLING_KEY);
       expect(deletes).toHaveLength(1);
       expect(deletes[0]!.input['VersionId']).toBe('v-sibling-1');
-      expect(sent.some((c) => c.name === 'ListObjectVersionsCommand')).toBe(false);
+      // No plain delete (no delete marker), and the earlier lifetimes'
+      // versions are still purged.
+      expect(
+        sent.some((c) => c.name === 'ListObjectVersionsCommand' && c.input['Prefix'] === SIBLING_KEY)
+      ).toBe(true);
     });
 
     it('a failed version delete falls back to the delete and the version purge', async () => {
