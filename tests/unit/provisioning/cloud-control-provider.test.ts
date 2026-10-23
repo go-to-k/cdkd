@@ -2612,7 +2612,7 @@ describe('CloudControlProvider - phase timings of a wait (go-to-k/cdkd#5200)', (
     const { renderPhaseTimings } = await import('../../../src/utils/phase-timings.js');
     const report = renderPhaseTimings().join('\n');
     expect(report).toMatch(/delete: last poll gap\s+1\.50s/);
-    expect(report).toContain('RetryAfter hint present');
+    expect(report).toContain('RetryAfter hint, ahead of now');
   });
 
   it('records nothing when the report is off', async () => {

@@ -3120,8 +3120,13 @@ export class CloudControlProvider implements ResourceProvider {
           // 1s → 1.5s → 2.25s → 3.4s → 5s → 7.5s → 10s (capped)
           // Most CC API operations complete in 1-5s, so slower ramp-up
           // polls more frequently during the common case.
-          if (progressEvent.RetryAfter !== undefined) {
-            recordPhase('cloud control polls', 'RetryAfter hint present', 0);
+          if (progressEvent.RetryAfter instanceof Date) {
+            recordPhase(
+              'cloud control polls',
+              'RetryAfter hint, ahead of now',
+              Math.max(0, progressEvent.RetryAfter.getTime() - Date.now()),
+              `next sleep ${pollInterval}ms`
+            );
           }
           lastSleepMs = pollInterval;
           await this.sleep(pollInterval);
