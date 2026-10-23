@@ -122,7 +122,9 @@ describe('ServiceDiscoveryProvider createdBeforeFailure mark (go-to-k/cdkd#4583)
     it('does not mark when the create operation FAILED', async () => {
       primeOperation('FAIL');
       const error = await failure(provider, HTTP, { Name: 'ns' });
-      expect(String(error)).toContain('operation boom');
+      // go-to-k/cdkd#2319: the operation's ErrorMessage rides on the cause.
+      expect(String(error)).toContain('Operation failed for Res');
+      expect(String((error as Error).cause)).toContain('operation boom');
       expect(createdBeforeFailure(error, 'Res', HTTP)).toBeUndefined();
     });
 

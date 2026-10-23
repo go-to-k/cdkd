@@ -86,11 +86,16 @@ import {
   type ThresholdConfiguration,
 } from '@aws-sdk/client-ecs';
 import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, VERBOSE_POINTER } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { markDeleteStarted } from '../delete-started.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
-import { markRedactedCause } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { generatedNameFor } from '../resource-name.js';
 import { chunks, withApiLimit } from '../name-lookup.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -122,8 +127,10 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import {
   createMaskedLogSinks,
+  maskerOrIdentity,
   withDerivedNameMasks,
   type MaskedLogSinks,
+  type MaskerFn,
 } from '../masked-retry-logger.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
@@ -444,6 +451,22 @@ export const settleRolloutDelays = {
   sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
 };
 
+/**
+ * A DELETE failure wrap whose caught error's CLASS spells `NotFound`, marked
+ * non-retryable (go-to-k/cdkd#2319). The wrap names the class, and the deploy
+ * and destroy delete classifiers (`deploy-engine/delete.ts`,
+ * `deploy-engine/update-in-place.ts`, `destroy-runner.ts`) read `NotFound`
+ * in a message as "already deleted" unless the error is marked. This
+ * resource's own not-found returned before the wrap, so a `NotFound` class
+ * reaching it is another object's (an operation, a key, a namespace) and the
+ * resource may still exist.
+ */
+function markNotGoneOnNotFoundClass<E extends Error>(error: unknown, wrapped: E): E {
+  return error instanceof Error && error.name.includes('NotFound')
+    ? markNonRetryable(wrapped)
+    : wrapped;
+}
+
 export class ECSProvider implements ResourceProvider {
   private ecsClient?: ECSClient;
   private taskDefinitionCreateClient?: ECSClient;
@@ -661,31 +684,37 @@ export class ECSProvider implements ResourceProvider {
   }
 
   /**
-   * The `ProvisioningError` a `create()` / `update()` catch throws, its caught
-   * error's text masked BEFORE it joins the message (issue #2177). Mostly AWS
-   * text, which quotes a rejected request value back (a cluster, family or
-   * service name, a role ARN) off the RESOLVED `properties` bag; also a cdkd
-   * refusal describing a bag value (`readConfigString`). Masking the raw text
-   * reaches the masker's whole-value arm and the operation's derived-name
-   * needles, which the deploy engine's mask of the assembled message cannot.
+   * The failure wrap every create / update / delete catch throws.
    *
-   * The `cause` stays unmasked, and a message the mask CHANGED is stamped
-   * `markRedactedCause`, so the retry classifiers read that chain rather than a
-   * masked text a secret or a needle cut retry wording out of (the issue #4244
-   * class); an unchanged message is not stamped. A method, so
-   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap. Same
-   * logic as `wrapMaskedAwsError` (`src/deployment/retryable-errors.ts`, added
-   * by PR #4257): delegate to it once that is on `main`.
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through `mask`,
+   * and the wrap is stamped `markRedactedCause`, so the retry classifiers read
+   * the withheld text on the `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}). A non-`Error` throw is withheld the same
+   * way, unstamped: it has no chain to read.
+   *
+   * A cdkd-authored or transport error keeps its text, masked RAW (issue
+   * #2177: AWS text quotes a rejected request value back off the RESOLVED
+   * `properties` bag, and a cdkd refusal can describe a bag value), stamped
+   * exactly when the mask changed it (`wrapMaskedAwsError`, issue #4244). The
+   * deletes check not-found by type before they wrap. A method, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
    */
-  private wrapMaskedError(
-    log: MaskedLogSinks,
+  private wrapCaughtError(
+    mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    const raw = error instanceof Error ? error.message : String(error);
-    const masked = log.mask(raw);
-    const wrapped = build(masked);
-    return masked === raw ? wrapped : markRedactedCause(wrapped);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -948,8 +977,8 @@ export class ECSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log,
+      throw this.wrapCaughtError(
+        log.mask,
         error,
         (text) =>
           new ProvisioningError(
@@ -1080,8 +1109,8 @@ export class ECSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log,
+      throw this.wrapCaughtError(
+        log.mask,
         error,
         (text) =>
           new ProvisioningError(
@@ -1122,13 +1151,22 @@ export class ECSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete ECS cluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const refused = markNotGoneOnNotFoundClass(
+        error,
+        this.wrapCaughtError(
+          maskerOrIdentity(context?.maskSecrets),
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete ECS cluster ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
+      throw refused;
     }
   }
 
@@ -1236,8 +1274,8 @@ export class ECSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log,
+      throw this.wrapCaughtError(
+        log.mask,
         error,
         (text) =>
           new ProvisioningError(
@@ -1301,13 +1339,22 @@ export class ECSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete ECS task definition ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const refused = markNotGoneOnNotFoundClass(
+        error,
+        this.wrapCaughtError(
+          maskerOrIdentity(context?.maskSecrets),
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete ECS task definition ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
+      throw refused;
     }
   }
 
@@ -1534,10 +1581,19 @@ export class ECSProvider implements ResourceProvider {
         // `cdkd events` metadata extraction.
         // Names `--full-wait` and two `aws` commands, so the logical id is
         // shown only when plain (go-to-k/cdkd#4295).
-        throw new Error(
-          `ECS service ${logicalIdShown(logicalId)} did not reach steady state under --full-wait: ${describeAwsFailure(waitError).detail}. Inspect why its tasks stopped (stopped tasks stay visible for about an hour): ${listStopped.render()}, then ${aws`aws ecs describe-tasks${clusterArg} --tasks '<task-arn>' --query 'tasks[].[stoppedReason,containers[].reason]'`.render()}`,
+        // An AWS-authored failure (the rollout poll's DescribeServices) is
+        // named by its class here, its text at `debug` and on the stamped
+        // `cause` chain (go-to-k/cdkd#2319); the outer wrap keeps this
+        // cdkd-authored sentence.
+        const waitFailure = describeAwsFailure(waitError);
+        if (waitFailure.redacted) {
+          log.debug(`ECS service ${logicalId} steady-state wait failed: ${waitFailure.detail}`);
+        }
+        const steadyStateError = new Error(
+          `ECS service ${logicalIdShown(logicalId)} did not reach steady state under --full-wait: ${waitFailure.summary.replace(/\.$/, '')}. Inspect why its tasks stopped (stopped tasks stay visible for about an hour): ${listStopped.render()}, then ${aws`aws ecs describe-tasks${clusterArg} --tasks '<task-arn>' --query 'tasks[].[stoppedReason,containers[].reason]'`.render()}`,
           { cause: waitError }
         );
+        throw waitFailure.redacted ? markRedactedCause(steadyStateError) : steadyStateError;
       }
 
       return {
@@ -1549,7 +1605,7 @@ export class ECSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(log, error, (text) => {
+      throw this.wrapCaughtError(log.mask, error, (text) => {
         const wrapped = new ProvisioningError(
           // The wrapped text can be the `--full-wait` refusal, with its `aws`
           // commands, so the logical id is shown only when plain
@@ -1596,6 +1652,38 @@ export class ECSProvider implements ResourceProvider {
   }
 
   /**
+   * The error a `waitUntilServicesStable` that did not succeed throws, with
+   * AWS's text withheld (go-to-k/cdkd#2319). `@smithy/util-waiter` throws a
+   * plain `Error` whose message is the JSON of the waiter's result: every
+   * DescribeServices answer it saw (service, task-definition and role ARNs)
+   * and every failure's text (a denied call quotes the caller's assumed-role
+   * ARN). It carries no AWS-authored signal, so the failure wrap would keep it
+   * whole and persist it to `deployments/{runId}.jsonl`. The thrown message
+   * names the waiter's state and error name plus the `--verbose` pointer; the
+   * result goes to `debug`, masked, and stays on the stamped `cause` chain for
+   * the retry classifiers. Any other error is returned as it is.
+   */
+  private wrapWaiterResultError(error: unknown, logicalId: string, log: MaskedLogSinks): unknown {
+    if (!(error instanceof Error)) return error;
+    let state: unknown;
+    try {
+      state = (JSON.parse(error.message) as { state?: unknown } | null)?.state;
+    } catch {
+      return error;
+    }
+    if (typeof state !== 'string' || !/^[A-Z]+$/.test(state)) return error;
+    log.debug(`ECS service ${logicalId} ServicesStable waiter result: ${error.message}`);
+    const reduced = new Error(
+      `the ServicesStable waiter ended in state ${state}${error.name && error.name !== 'Error' ? ` (${error.name})` : ''}. ${VERBOSE_POINTER}`,
+      { cause: error }
+    );
+    // Keep the waiter's name (`TimeoutError`): `isAmbiguousOutcomeError` and
+    // the chain walks read it, and this adds a link to the cause chain.
+    reduced.name = error.name;
+    return markRedactedCause(reduced);
+  }
+
+  /**
    * Settle an ECS Service according to the run's wait mode.
    *
    * cdkd does NOT wait for steady state by default (issue #1275). The three
@@ -1631,12 +1719,16 @@ export class ECSProvider implements ResourceProvider {
         600,
         (resolvedResourceTimeoutMs('AWS::ECS::Service') ?? 0) / 1000
       );
-      await waitUntilServicesStable(
-        // minDelay/maxDelay override the AWS SDK defaults (15s / 120s) per the
-        // #1177 poll-cap sweep.
-        { client: this.getClient(), maxWaitTime, minDelay: 5, maxDelay: 10 },
-        { cluster, services: [serviceRef] }
-      );
+      try {
+        await waitUntilServicesStable(
+          // minDelay/maxDelay override the AWS SDK defaults (15s / 120s) per the
+          // #1177 poll-cap sweep.
+          { client: this.getClient(), maxWaitTime, minDelay: 5, maxDelay: 10 },
+          { cluster, services: [serviceRef] }
+        );
+      } catch (waiterError) {
+        throw this.wrapWaiterResultError(waiterError, logicalId, log);
+      }
       // waitUntilServicesStable's condition (a single deployment whose
       // runningCount matches desiredCount) is satisfied a few seconds BEFORE
       // ECS flips the PRIMARY deployment's rolloutState to COMPLETED — a race
@@ -1751,8 +1843,8 @@ export class ECSProvider implements ResourceProvider {
       );
     } catch (error) {
       // The refusal can describe the bag value it read (issue #2177).
-      throw this.wrapMaskedError(
-        log,
+      throw this.wrapCaughtError(
+        log.mask,
         error,
         (text) =>
           new ProvisioningError(
@@ -2251,8 +2343,8 @@ export class ECSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log,
+      throw this.wrapCaughtError(
+        log.mask,
         error,
         (text) =>
           new ProvisioningError(
@@ -2351,13 +2443,25 @@ export class ECSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        `Failed to delete ECS service ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const wrapped = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete ECS service ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // A missing CLUSTER means the service is gone too, so it stays readable
+      // as already deleted; any other `NotFound` class (a Service Connect
+      // `NamespaceNotFoundException` from the scale-down UpdateService) is
+      // not this service's.
+      const failure = this.isClusterNotFoundException(error)
+        ? wrapped
+        : markNotGoneOnNotFoundClass(error, wrapped);
       throw stripped ? markDeleteStarted(failure) : failure;
     }
   }
@@ -4191,10 +4295,19 @@ export class ECSProvider implements ResourceProvider {
       // free would let the probe hand the name to a create that adopts.
       const unanswered = (resp.failures ?? []).find((f) => f.reason !== 'MISSING');
       if (unanswered !== undefined) {
+        // `reason` is ECS's short failure code; `detail` is AWS's free text,
+        // which reaches a persisted deploy failure through the replacement
+        // name probe, so it goes to `debug` and the message points at
+        // `--verbose` instead (go-to-k/cdkd#2319).
+        if (unanswered.detail !== undefined) {
+          this.logger.debug(
+            `DescribeClusters failure detail for cluster ${displaySafe(explicit)}: ${displaySafe(unanswered.detail)}`
+          );
+        }
         throw new Error(
           `DescribeClusters did not answer for cluster ${displaySafe(explicit)}: ` +
             `${displaySafe(unanswered.reason ?? 'no reason given')}` +
-            (unanswered.detail !== undefined ? ` (${displaySafe(unanswered.detail)})` : '')
+            (unanswered.detail !== undefined ? `. ${VERBOSE_POINTER}` : '')
         );
       }
       return null;
