@@ -788,7 +788,8 @@ if node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --force \
-  --remove-protection >"${DESTROY_2B_LOG}" 2>&1; then
+  --remove-protection \
+  --verbose >"${DESTROY_2B_LOG}" 2>&1; then
   cat "${DESTROY_2B_LOG}" >&2
   echo "FAIL: phase 2b destroy exited 0; the SecurityCluster still holds an out-of-band member, so DeleteDBCluster must refuse" >&2
   exit 1
@@ -799,9 +800,17 @@ DESTROY_2B_LOG=""
 printf '%s\n' "${DESTROY_2B_PLAIN}" >&2
 # PREMISE: the failure is the engineered one. A destroy that died before the
 # flip leaves the guard ON too, which would pass the readback while testing
-# nothing.
-if ! grep -qE 'still contains DB instances|non-deleting state' <<<"${DESTROY_2B_PLAIN}"; then
-  echo "FAIL: phase 2b destroy failed, but not with DeleteDBCluster's member refusal -- the arm did not reach the compensation" >&2
+# nothing. The thrown wrap names AWS's error by its class only
+# (go-to-k/cdkd#2319), and the same class also covers the final-snapshot
+# refusal "isn't currently in the available state" (#5184), so the member
+# refusal itself is read on the wrap's --verbose debug line. Both lines are
+# the provider's own DeleteDBCluster catch-wrap.
+if ! grep -qE "Failed to delete DBCluster SecurityCluster: InvalidDBClusterStateFault\. Re-run with --verbose" <<<"${DESTROY_2B_PLAIN}"; then
+  echo "FAIL: phase 2b destroy failed, but not with the DeleteDBCluster catch-wrap (InvalidDBClusterStateFault + --verbose pointer) -- the arm did not reach the compensation" >&2
+  exit 1
+fi
+if ! grep -qE "Failed to delete DBCluster SecurityCluster: .*(still contains DB instances|non-deleting state)" <<<"${DESTROY_2B_PLAIN}"; then
+  echo "FAIL: phase 2b: DeleteDBCluster refused with InvalidDBClusterStateFault, but its --verbose line is not the member refusal (the #5184 final-snapshot race reads \"isn't currently in the available state\") -- the arm did not reach the compensation" >&2
   exit 1
 fi
 # The FAILURE SET: the SecurityCluster, and nothing but it and what the

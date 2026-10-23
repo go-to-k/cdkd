@@ -46,8 +46,12 @@
 #      per-type timeouts (DocDB / Neptune deletes can also take 5-10 min).
 #      The #5004 retention is proven by step 3d's readback; the guard is
 #      ON (kept through the removal), so this is also the flip's live
-#      SUCCESS path.
+#      SUCCESS path. Both clusters are DeletionPolicy Snapshot, so each
+#      delete takes a final snapshot right after the flip, which needs the
+#      cluster `available` again (issue #5184).
 #   5. cdkd state list — must report empty for the stack
+#   5b. exactly one cdkd final snapshot of each cluster since the run began
+#       (issue #5184); deleted right after, and by cleanup on any exit
 #
 # Auto-resolves AWS account ID + state bucket. Run from anywhere.
 #
@@ -115,6 +119,89 @@ OOB_NEPTUNE_INSTANCE_ID=""
 # Step 3g's captured destroy output; removed by cleanup too, since a signal
 # landing mid-destroy never reaches the step's own `rm`.
 DESTROY_3G_LOG=""
+# Issue #5184: when this run began (UTC, second precision, the prefix AWS's
+# ClusterCreateTime is compared on). Set before anything is created, so
+# cleanup can delete every final snapshot of the clusters this run created.
+RUN_START="$(date -u +%Y-%m-%dT%H:%M:%S)"
+
+# Print the manual snapshots of cluster $2 taken from a cluster CREATED at or
+# after RUN_START, one id per line. Keyed on the source cluster's
+# ClusterCreateTime, which a snapshot carries from its first listing, rather
+# than SnapshotCreateTime, which a `creating` one may lack: an older snapshot
+# of an earlier run's same-named cluster is never this run's. Fails (rc 1)
+# when the listing or a timestamp is unreadable, so a caller cannot read an
+# error as "none".
+this_run_cluster_snapshots() { # usage: this_run_cluster_snapshots <docdb|neptune> <cluster id>
+  local out
+  out=$(aws "$1" describe-db-cluster-snapshots --db-cluster-identifier "$2" \
+    --snapshot-type manual --region "${REGION}" --output json) || return 1
+  echo "${out}" | jq -r --arg start "${RUN_START}" '
+    .DBClusterSnapshots
+    | if all(.[]; (.ClusterCreateTime // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(\\+00:00|Z)$"))
+      then .[] | select(.ClusterCreateTime[0:19] >= $start) | .DBClusterSnapshotIdentifier
+      else error("unreadable ClusterCreateTime") end'
+}
+
+# Delete one cluster snapshot once it is `available` (one still `creating`
+# refuses the delete; DocDB and Neptune have no snapshot waiter). Bounded. A
+# snapshot already `deleting`, or gone, needs nothing more; a `failed` one is
+# deleted at once.
+delete_cluster_snapshot() { # usage: delete_cluster_snapshot <docdb|neptune> <snapshot id>
+  local status err i
+  # stderr apart from the status: a CLI warning line on a successful read
+  # would otherwise match no arm below.
+  err="$(mktemp)" || return 1
+  for i in $(seq 1 60); do
+    if ! status=$(aws "$1" describe-db-cluster-snapshots --db-cluster-snapshot-identifier "$2" \
+      --region "${REGION}" --query 'DBClusterSnapshots[0].Status' --output text 2>"${err}"); then
+      if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' "${err}"; then
+        rm -f "${err}"
+        return 0
+      fi
+      echo "[verify] WARN: could not read snapshot ${2}: $(cat "${err}")" >&2
+      rm -f "${err}"
+      return 1
+    fi
+    case "${status}" in
+      deleting)
+        rm -f "${err}"
+        return 0
+        ;;
+      available | failed) break ;;
+    esac
+    if [ "${i}" -lt 60 ]; then
+      sleep 10
+    fi
+  done
+  rm -f "${err}"
+  aws "$1" delete-db-cluster-snapshot --db-cluster-snapshot-identifier "$2" \
+    --region "${REGION}" >/dev/null
+}
+
+# Delete every snapshot this run took of both clusters. Best-effort per
+# snapshot; returns 1 when any listing or delete failed.
+delete_this_run_snapshots() {
+  local pair svc id snaps snap failed=0
+  for pair in "docdb ${DOCDB_CLUSTER_ID}" "neptune ${NEPTUNE_CLUSTER_ID}"; do
+    svc=${pair%% *}
+    id=${pair#* }
+    [ -n "${id}" ] || continue
+    if ! snaps=$(this_run_cluster_snapshots "${svc}" "${id}"); then
+      echo "[verify] WARN: could not list the manual snapshots of ${id}; check for a leftover by hand" >&2
+      failed=1
+      continue
+    fi
+    for snap in ${snaps}; do
+      if delete_cluster_snapshot "${svc}" "${snap}"; then
+        echo "[verify] deleted this run's snapshot ${snap}"
+      else
+        echo "[verify] WARN: could not delete snapshot ${snap}; delete it by hand" >&2
+        failed=1
+      fi
+    done
+  done
+  return "${failed}"
+}
 
 # Delete one out-of-band instance and wait for it to be gone. A member still
 # `creating` refuses the delete, so wait for `available` first. Best-effort:
@@ -165,12 +252,18 @@ cleanup() {
         --no-deletion-protection \
         --apply-immediately >/dev/null 2>&1 || true
     fi
+    # --skip-final-snapshot: both clusters are DeletionPolicy Snapshot, and a
+    # cleanup snapshot is not this run's evidence (issue #5184).
     ${CLI} destroy "${STACK}" \
       --state-bucket "${STATE_BUCKET}" \
       --force \
       --remove-protection \
+      --skip-final-snapshot \
       "${TIMEOUT_OVERRIDES[@]}" || true
   fi
+  # Issue #5184: any final snapshot this run took, on every exit -- step 4's
+  # destroy may have taken one before a later step failed.
+  delete_this_run_snapshots || true
   # Purge the versions any `s3 rm` / `state destroy` left behind as delete
   # markers. NONCURRENT-only, per the contract in ../s3-versions.sh: this runs
   # from the failure and signal traps, where a live state.json may be the only
@@ -256,6 +349,16 @@ if [ -z "${DOCDB_CLUSTER_ID}" ] || [ -z "${NEPTUNE_CLUSTER_ID}" ]; then
   exit 1
 fi
 echo "[verify] resolved clusters: docdb=${DOCDB_CLUSTER_ID} neptune=${NEPTUNE_CLUSTER_ID}"
+# Issue #5184 premise: both clusters record DeletionPolicy Snapshot, so step 4's
+# destroy takes a final snapshot after the flip. Without it the wait under test
+# never runs and step 5b would fail for the wrong reason.
+for type in AWS::DocDB::DBCluster AWS::Neptune::DBCluster; do
+  policy=$(echo "${STATE}" | jq -r --arg t "${type}" '[.resources | to_entries[] | select(.value.resourceType == $t) | .value.deletionPolicy // "absent"] | first // ""')
+  if [ "${policy}" != "Snapshot" ]; then
+    echo "[verify] FAIL: issue #5184 premise: ${type} records DeletionPolicy '${policy}', expected Snapshot" >&2
+    exit 1
+  fi
+done
 
 echo "[verify] step 3b: baseline #1160 / #5004 fields reached AWS"
 # jq false-vs-null trap: `//` treats false as missing — use explicit
@@ -712,6 +815,32 @@ if ${CLI} state list --state-bucket "${STATE_BUCKET}" | grep -q "${STACK}"; then
   exit 1
 fi
 echo "[verify] step 5 ok: state cleared"
+
+# Issue #5184: step 4 turned each guard off and then deleted the cluster with a
+# final snapshot. The snapshot needs the cluster `available`, and right after
+# the flip AWS can read protection OFF and `available` before the change shows
+# as `modifying`; a delete sent then is refused and step 4 fails. This step
+# proves the real-AWS path end to end. It cannot discriminate the fix, since a
+# pre-fix run passes whenever the first read lands after `modifying` shows; the
+# unit suites' mutation probes are the discrimination.
+echo "[verify] step 5b: one cdkd final snapshot of each cluster (issue #5184)"
+for pair in "docdb ${DOCDB_CLUSTER_ID}" "neptune ${NEPTUNE_CLUSTER_ID}"; do
+  svc=${pair%% *}
+  id=${pair#* }
+  if ! snaps=$(this_run_cluster_snapshots "${svc}" "${id}"); then
+    echo "[verify] FAIL: step 5b: could not list the manual snapshots of ${id}" >&2
+    exit 1
+  fi
+  final_count=$(printf '%s\n' "${snaps}" | grep -cE -- '-final-[0-9]{8}-[0-9]{6}$' || true)
+  other=$(printf '%s\n' "${snaps}" | grep -vE -- '-final-[0-9]{8}-[0-9]{6}$' | grep -v '^$' || true)
+  if [ "${final_count}" != "1" ] || [ -n "${other}" ]; then
+    echo "[verify] FAIL: step 5b: destroying ${svc} cluster ${id} (DeletionPolicy Snapshot) took ${final_count} cdkd final snapshot(s), expected 1; this run's snapshots: $(printf '%s ' ${snaps})" >&2
+    exit 1
+  fi
+  echo "[verify] step 5b ok: ${svc} cluster destroy took the final snapshot ${snaps}"
+done
+delete_this_run_snapshots
+echo "[verify] step 5b cleanup ok: final snapshots deleted"
 
 # AWS-side orphan auditing is delegated to /run-integ's /cleanup pass.
 

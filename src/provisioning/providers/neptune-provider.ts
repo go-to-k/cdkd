@@ -51,6 +51,7 @@ import {
   protectionFlipKey,
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
+  deleteAfterProtectionFlipWithFinalSnapshot,
 } from './deletion-protection-compensation.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
 
@@ -113,15 +114,6 @@ function instanceAttributes(
 function isDbIdentifier(id: string): boolean {
   return id.length <= 63 && /^[A-Za-z](?:-?[A-Za-z0-9])*$/.test(id);
 }
-
-/**
- * Issue #5155: how long a delete that takes a final snapshot waits, after a
- * `--remove-protection` flip, for the resource to return to `available`.
- */
-const FINAL_SNAPSHOT_SETTLE_WAIT_MS = 15 * 60_000;
-
-/** Issue #5155: budget kept back from the wait for the delete call and the compensation. */
-const FINAL_SNAPSHOT_COMPENSATION_MARGIN_MS = 60_000;
 
 /**
  * AWS Neptune Provider
@@ -848,17 +840,21 @@ export class NeptuneProvider implements ResourceProvider {
       // Issue #5155: a final snapshot needs `available`, which the flip above
       // briefly takes away. Only a flip of this run AND a snapshot wait, and
       // never once AWS accepted the delete (a re-entry after a failed wait).
+      const sendDelete = () =>
+        this.getClient().send(
+          new DeleteDBClusterCommand({
+            DBClusterIdentifier: physicalId,
+            ...(finalSnapshotId
+              ? { SkipFinalSnapshot: false, FinalDBSnapshotIdentifier: finalSnapshotId }
+              : { SkipFinalSnapshot: true }),
+          })
+        );
       if (finalSnapshotId && flip.flippedOffByThisRun && !flip.deleteAccepted) {
-        await this.waitForProtectionOffBeforeFinalSnapshot(logicalId, physicalId);
+        // Issue #5184: waits, then retries a delete AWS refuses as not `available`.
+        await this.deleteAfterProtectionFlip(logicalId, physicalId, sendDelete);
+      } else {
+        await sendDelete();
       }
-      await this.getClient().send(
-        new DeleteDBClusterCommand({
-          DBClusterIdentifier: physicalId,
-          ...(finalSnapshotId
-            ? { SkipFinalSnapshot: false, FinalDBSnapshotIdentifier: finalSnapshotId }
-            : { SkipFinalSnapshot: true }),
-        })
-      );
       // AWS took the delete: a later throw is the WAIT failing, and the guard
       // must not be put back on a cluster that is being deleted.
       flip.deleteAccepted = true;
@@ -1561,51 +1557,31 @@ export class NeptuneProvider implements ResourceProvider {
   }
 
   /**
-   * Issue #5155: after `--remove-protection` turned DeletionProtection off, wait
-   * until the cluster reads protection OFF and `available` before a delete that
-   * takes a final snapshot: the snapshot needs `available`, and right after the
-   * flip the cluster is briefly `modifying`. Status alone can still read
-   * `available` before the change starts; the protection readback cannot.
-   * Fails closed: on a timeout the delete is never sent, so the compensation
-   * puts the guard back. An AWS failure of a describe propagates as-is.
+   * Issues #5155 / #5184: the final-snapshot delete after a `--remove-protection`
+   * flip (deleteAfterProtectionFlipWithFinalSnapshot owns the wait, the retry
+   * and their bounds).
    */
-  private async waitForProtectionOffBeforeFinalSnapshot(
+  private async deleteAfterProtectionFlip(
     logicalId: string,
     physicalId: string,
-    maxWaitMs = FINAL_SNAPSHOT_SETTLE_WAIT_MS
+    send: () => Promise<unknown>
   ): Promise<void> {
-    // Bounded by what the engine's per-resource deadline leaves, minus a margin
-    // for the delete call and the compensation: the deadline does not cancel
-    // this wait, so a wait that outlived it would leave the guard down with
-    // nothing left to put it back (deletion-protection-compensation.ts, known
-    // narrowing 2).
-    const budgetMs = Math.min(
-      maxWaitMs,
-      enclosingDeadlineRemainingMs() - FINAL_SNAPSHOT_COMPENSATION_MARGIN_MS
-    );
-    if (budgetMs <= 0) {
-      throw new Error(
-        `--remove-protection turned DeletionProtection off, but the resource timeout leaves no time to wait for the cluster to return to 'available', which the final snapshot its DeletionPolicy asks for needs. The delete was not sent and the guard is put back; re-run the destroy with a longer --resource-timeout`
-      );
-    }
-    const startTime = Date.now();
-    let delay = 5_000;
-    for (;;) {
-      const current = await this.describeDBCluster(physicalId);
-      if (current === undefined) return;
-      // Only the flip's own transition is waited out: protection still ON, or
-      // `modifying`. Any other state is AWS's to accept or refuse, as before.
-      if (current.DeletionProtection === false && current.Status !== 'modifying') return;
-      if (Date.now() - startTime + delay >= budgetMs) break;
-      this.logger.debug(
-        safeMsg`Neptune DBCluster ${logicalId}: waiting for the DeletionProtection change to settle before the final snapshot (status ${current.Status ?? 'unknown'})`
-      );
-      await this.sleep(delay);
-      delay = Math.min(delay * 2, 10_000);
-    }
-    throw new Error(
-      `--remove-protection turned DeletionProtection off, but the cluster did not return to 'available' within ${Math.max(1, Math.round(budgetMs / 60_000))} minutes, and the final snapshot its DeletionPolicy asks for needs it. The delete was not sent and the guard is put back; re-run the destroy once the cluster is 'available'`
-    );
+    await deleteAfterProtectionFlipWithFinalSnapshot({
+      stateFault: 'InvalidDBClusterStateFault',
+      send,
+      noun: 'cluster',
+      label: 'Neptune DBCluster',
+      logicalId,
+      read: async () => {
+        const current = await this.describeDBCluster(physicalId);
+        return current === undefined
+          ? undefined
+          : { deletionProtection: current.DeletionProtection, status: current.Status };
+      },
+      sleep: (ms) => this.sleep(ms),
+      logger: this.logger,
+      remainingMs: enclosingDeadlineRemainingMs(),
+    });
   }
 
   /**

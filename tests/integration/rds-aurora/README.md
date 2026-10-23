@@ -26,7 +26,9 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
   phase 1) and asserts the reset to 1, proving `ModifyDBCluster` fired. The
   same phase drops `VpcSecurityGroupIds` and asserts the cluster moved to the
   VPC's `default` security group, as CloudFormation does (issue #1160). Phase 2b
-  proves a failed `--remove-protection` destroy restores it (issue #2204). It
+  proves a failed `--remove-protection` destroy restores it (issue #2204); it
+  runs with `--verbose` to read AWS's member refusal, which the thrown error
+  names only by its class (issue #2319). It
   declares no `DeletionPolicy`, so its destroy takes CloudFormation's default
   final snapshot, which verify.sh asserts and then deletes (issue #4030).
 
