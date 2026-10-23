@@ -86,8 +86,10 @@ reap_run() { # usage: reap_run <token>
         ;;
     esac
     local prefix="cdkd-wide-$1"
-    for url in $(aws sqs list-queues --queue-name-prefix "${prefix}-q-" --region "${REGION}" --query 'QueueUrls[]' --output text 2>/dev/null); do
-      [ "${url}" = "None" ] && continue
+    # By name: `ListQueues` is eventually consistent, and a listing of a
+    # prefix that does not exist yet goes on answering empty for a while.
+    for i in $(seq 0 $((PER_TYPE - 1))); do
+      url="$(aws sqs get-queue-url --queue-name "${prefix}-q-${i}" --region "${REGION}" --query QueueUrl --output text 2>/dev/null)" || continue
       aws sqs delete-queue --queue-url "${url}" --region "${REGION}" >/dev/null 2>&1
     done
     for arn in $(aws sns list-topics --region "${REGION}" --query "Topics[?contains(TopicArn, ':${prefix}-t-')].TopicArn" --output text 2>/dev/null); do
@@ -128,9 +130,13 @@ count_rows() { # usage: count_rows <command...>; prints the number of non-empty 
 }
 
 assert_live() { # usage: assert_live <token>
-  local prefix="cdkd-wide-$1" n
-  n="$(count_rows aws sqs list-queues --queue-name-prefix "${prefix}-q-" --region "${REGION}" --query 'QueueUrls[]' --output text)"
-  [ "${n}" = "${PER_TYPE}" ] || { echo "FAIL: ${n} SQS queues live for ${prefix}, expected ${PER_TYPE}" >&2; exit 1; }
+  local prefix="cdkd-wide-$1" n i
+  # Each queue by name (strongly consistent): `ListQueues` is not, and the
+  # pre-run sweep's listing of this prefix makes it answer empty for a while.
+  for i in $(seq 0 $((PER_TYPE - 1))); do
+    aws sqs get-queue-url --queue-name "${prefix}-q-${i}" --region "${REGION}" >/dev/null \
+      || { echo "FAIL: SQS queue ${prefix}-q-${i} is not live" >&2; exit 1; }
+  done
   n="$(count_rows aws sns list-topics --region "${REGION}" --query "Topics[?contains(TopicArn, ':${prefix}-t-')].TopicArn" --output text)"
   [ "${n}" = "${PER_TYPE}" ] || { echo "FAIL: ${n} SNS topics live for ${prefix}, expected ${PER_TYPE}" >&2; exit 1; }
   n="$(count_rows aws ssm get-parameters-by-path --path "/${prefix}" --region "${REGION}" --query 'Parameters[].Name' --output text)"
