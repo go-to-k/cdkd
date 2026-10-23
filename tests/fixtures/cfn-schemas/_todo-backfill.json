@@ -138,9 +138,6 @@
       "Ipv4NetmaskLength",
       "VpcEncryptionControl"
     ],
-    "AWS::EC2::VPCGatewayAttachment": [
-      "VpnGatewayId"
-    ],
     "AWS::EFS::MountTarget": [
       "IpAddress",
       "IpAddressType",

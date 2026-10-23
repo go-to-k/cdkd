@@ -7,17 +7,26 @@
 #   - DestinationPrefixListId: a route whose DESTINATION is a customer-managed
 #     prefix list (exercises the `rtb|pl-...` physicalId form end to end).
 #   - TransitGatewayId: a route whose TARGET is a Transit Gateway.
+#   - VPCGatewayAttachment.VpnGatewayId (issue #2762): a VPN gateway attachment
+#     the SDK provider makes itself (before #2762 it routed through Cloud
+#     Control), plus a route through the VPN gateway.
 #
 # Phases:
 #   1. Deploy: prefix-list route -> IGW, CIDR route -> TGW. Assert both routes
 #      exist in AWS with the exact destination/target pairs, the Route state
 #      records carry the `|pl-` physicalId form, and `cdkd drift` reads back
 #      clean (exercises readRouteCurrentState's prefix-list matching live).
+#      Also: the VPN gateway attachment's state record is the SDK provider's
+#      (`provisionedBy` sdk, physicalId `<vgwId>|<vpcId>`), AWS reports it
+#      `attached`, and the route through the VPN gateway exists.
 #   2. UPDATE (CDKD_TEST_UPDATE=true): swap the prefix-list route's target from
 #      the IGW to the TGW. Assert the swap was one ReplaceRoute with no
 #      DeleteRoute / CreateRoute (the SDK call log, issue #5068), the target
-#      swapped in AWS, and drift is clean.
-#   3. Destroy + assert the TGW attachment, TGW, prefix list, and VPC are gone
+#      swapped in AWS, and drift is clean. Also swap the VPN gateway
+#      attachment to a second VPN gateway in place (issue #5216): one
+#      DetachVpnGateway + one AttachVpnGateway, the record names the new
+#      gateway, and AWS reports it attached and the old one detached.
+#   3. Destroy + assert the TGW attachment, TGW, prefix list, VPN gateway, and VPC are gone
 #      and the cdkd state file is removed.
 #
 # Required env vars:
@@ -67,6 +76,8 @@ PL_NAME="cdkd-route-targets-pl"
 TGW_TAG="cdkd-route-targets-tgw"
 TGW_ATTACHMENT_TAG="cdkd-route-targets-tgw-attachment"
 VPC_TAG="cdkd-route-targets-vpc"
+VGW_TAG="cdkd-route-targets-vgw"
+VGW2_TAG="cdkd-route-targets-vgw2"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -108,6 +119,26 @@ cleanup() {
   if [ -n "${tgw_id}" ] && [ "${tgw_id}" != "None" ]; then
     aws ec2 delete-transit-gateway --region "${REGION}" --transit-gateway-id "${tgw_id}" >/dev/null 2>&1
   fi
+
+  # VPN gateway before the VPC: AWS refuses DeleteVpc while a VPN gateway is
+  # attached, and DeleteVpnGateway until the detach has finished (`detaching`
+  # -> `detached` is asynchronous).
+  local vgw_id vgw_vpc pending
+  for vgw_id in $(aws ec2 describe-vpn-gateways --region "${REGION}" \
+    --filters "Name=tag:Name,Values=${VGW_TAG},${VGW2_TAG}" "Name=state,Values=available,pending" \
+    --query 'VpnGateways[].VpnGatewayId' --output text 2>/dev/null); do
+    for vgw_vpc in $(aws ec2 describe-vpn-gateways --region "${REGION}" --vpn-gateway-ids "${vgw_id}" \
+      --query 'VpnGateways[0].VpcAttachments[?contains(`["attached","attaching"]`, State)].VpcId' --output text 2>/dev/null); do
+      aws ec2 detach-vpn-gateway --region "${REGION}" --vpn-gateway-id "${vgw_id}" --vpc-id "${vgw_vpc}" >/dev/null 2>&1
+    done
+    for _ in $(seq 1 30); do
+      pending="$(aws ec2 describe-vpn-gateways --region "${REGION}" --vpn-gateway-ids "${vgw_id}" \
+        --query "length(VpnGateways[0].VpcAttachments[?State!='detached'])" --output text 2>/dev/null)"
+      [ "${pending}" = "0" ] || [ -z "${pending}" ] || [ "${pending}" = "None" ] && break
+      sleep 10
+    done
+    aws ec2 delete-vpn-gateway --region "${REGION}" --vpn-gateway-id "${vgw_id}" >/dev/null 2>&1
+  done
 
   local vpc_id
   vpc_id="$(aws ec2 describe-vpcs --region "${REGION}" \
@@ -242,6 +273,48 @@ if [ "${TGW_ROUTE_TARGET}" != "${TGW_ID}" ]; then
 fi
 echo "    TGW-target route present (10.200.0.0/16 -> ${TGW_ID})"
 
+# --- Issue #2762: the VPN gateway attachment is the SDK provider's ----------
+VPC_ID="$(aws ec2 describe-vpcs --region "${REGION}" \
+  --filters "Name=tag:Name,Values=${VPC_TAG}" \
+  --query 'Vpcs[0].VpcId' --output text)"
+VGW_ID="$(aws ec2 describe-vpn-gateways --region "${REGION}" \
+  --filters "Name=tag:Name,Values=${VGW_TAG}" "Name=state,Values=available" \
+  --query 'VpnGateways[0].VpnGatewayId' --output text)"
+for v in "${VPC_ID}" "${VGW_ID}"; do
+  if [ -z "${v}" ] || [ "${v}" = "None" ]; then
+    echo "FAIL: the VPC / VPN gateway lookup came back empty (vpc='${VPC_ID}' vgw='${VGW_ID}')" >&2
+    exit 1
+  fi
+done
+VGW_RECORD="$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s).state.resources;const k=Object.keys(r).find(x=>x.startsWith("VgwAttachment"));const e=k&&r[k];process.stdout.write(e?`${e.provisionedBy??"<absent>"} ${e.physicalId}`:"<missing>")})')"
+# Before #2762 the template's VpnGatewayId routed the attachment through Cloud
+# Control: `cc-api VGW|<vpcId>`. The SDK provider records the gateway id itself.
+if [ "${VGW_RECORD}" != "sdk ${VGW_ID}|${VPC_ID}" ]; then
+  echo "FAIL: VPN gateway attachment record expected 'sdk ${VGW_ID}|${VPC_ID}', got '${VGW_RECORD}' (issue #2762)" >&2
+  exit 1
+fi
+echo "    VPN gateway attachment provisioned by the SDK provider (${VGW_RECORD})"
+VGW_ATTACH_STATE="$(aws ec2 describe-vpn-gateways --region "${REGION}" --vpn-gateway-ids "${VGW_ID}" \
+  --query "VpnGateways[0].VpcAttachments[?VpcId=='${VPC_ID}'].State | [0]" --output text)"
+if [ "${VGW_ATTACH_STATE}" != "attached" ]; then
+  echo "FAIL: VPN gateway ${VGW_ID} attachment to ${VPC_ID} expected 'attached' after deploy, got '${VGW_ATTACH_STATE}'" >&2
+  exit 1
+fi
+VGW_ROUTE_TARGET=""
+for _ in 1 2 3 4 5 6; do
+  VGW_ROUTE_TARGET="$(aws ec2 describe-route-tables --region "${REGION}" --route-table-ids "${RTB_ID}" \
+    --query "RouteTables[0].Routes[?DestinationCidrBlock=='10.210.0.0/16'].GatewayId | [0]" --output text)"
+  [ "${VGW_ROUTE_TARGET}" = "${VGW_ID}" ] && break
+  sleep 5
+done
+if [ "${VGW_ROUTE_TARGET}" != "${VGW_ID}" ]; then
+  echo "FAIL: VPN gateway route GatewayId expected ${VGW_ID}, got '${VGW_ROUTE_TARGET}'" >&2
+  exit 1
+fi
+echo "    VPN gateway attached and routed (10.210.0.0/16 -> ${VGW_ID})"
+
 # The prefix-list route's state record must be keyed on the pl- destination.
 PL_PHYSICAL_ID="$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --json 2>/dev/null \
@@ -290,6 +363,17 @@ if [ "${P2_REPLACE}" != "1" ] || [ "${P2_DELETE}" != "0" ] || [ "${P2_CREATE}" !
   cat "${P2_CALLS}" >&2
   exit 1
 fi
+# Issue #5216: the VPN gateway swap is one in-place detach + attach, not a
+# Cloud Control update and not a create-first replacement (which AWS refuses:
+# one VPN gateway per VPC).
+P2_VGW_DETACH="$(p2_calls DetachVpnGatewayCommand)"
+P2_VGW_ATTACH="$(p2_calls AttachVpnGatewayCommand)"
+echo "    Phase 2 VPN gateway calls: DetachVpnGateway=${P2_VGW_DETACH} AttachVpnGateway=${P2_VGW_ATTACH}"
+if [ "${P2_VGW_DETACH}" != "1" ] || [ "${P2_VGW_ATTACH}" != "1" ]; then
+  echo "FAIL: the VPN gateway swap must be exactly one DetachVpnGateway and one AttachVpnGateway (issue #5216)" >&2
+  cat "${P2_CALLS}" >&2
+  exit 1
+fi
 rm -f "${P2_CALLS}"
 echo "    target swap sent one ReplaceRoute, no DeleteRoute / CreateRoute"
 
@@ -323,6 +407,30 @@ p2_route_fail() {
   || p2_route_fail "prefix-list route Origin expected CreateRoute"
 echo "    prefix-list route target swapped to the TGW"
 
+VGW2_ID="$(aws ec2 describe-vpn-gateways --region "${REGION}" \
+  --filters "Name=tag:Name,Values=${VGW2_TAG}" "Name=state,Values=available" \
+  --query 'VpnGateways[0].VpnGatewayId' --output text)"
+if [ -z "${VGW2_ID}" ] || [ "${VGW2_ID}" = "None" ]; then
+  echo "FAIL: the Phase 2 VPN gateway lookup came back empty" >&2
+  exit 1
+fi
+VGW_RECORD_P2="$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s).state.resources;const k=Object.keys(r).find(x=>x.startsWith("VgwAttachment"));const e=k&&r[k];process.stdout.write(e?`${e.provisionedBy??"<absent>"} ${e.physicalId}`:"<missing>")})')"
+if [ "${VGW_RECORD_P2}" != "sdk ${VGW2_ID}|${VPC_ID}" ]; then
+  echo "FAIL: after the swap, VPN gateway attachment record expected 'sdk ${VGW2_ID}|${VPC_ID}', got '${VGW_RECORD_P2}' (issue #5216)" >&2
+  exit 1
+fi
+VGW2_STATE="$(aws ec2 describe-vpn-gateways --region "${REGION}" --vpn-gateway-ids "${VGW2_ID}" \
+  --query "VpnGateways[0].VpcAttachments[?VpcId=='${VPC_ID}'].State | [0]" --output text)"
+VGW1_LIVE="$(aws ec2 describe-vpn-gateways --region "${REGION}" --vpn-gateway-ids "${VGW_ID}" \
+  --query "length(not_null(VpnGateways[0].VpcAttachments, \`[]\`)[?State!='detached'])" --output text)"
+if [ "${VGW2_STATE}" != "attached" ] || [ "${VGW1_LIVE}" != "0" ]; then
+  echo "FAIL: after the swap expected ${VGW2_ID} attached and ${VGW_ID} detached, got '${VGW2_STATE}' / ${VGW1_LIVE} live attachment(s) on the old gateway" >&2
+  exit 1
+fi
+echo "    VPN gateway attachment swapped in place (${VGW_ID} -> ${VGW2_ID})"
+
 echo "==> Phase 2: drift read-back (expect no drift)"
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"
 echo "    drift clean after update"
@@ -352,6 +460,13 @@ if [ "${PL_LEFT}" != "0" ]; then
   echo "FAIL: prefix list still present after destroy (count=${PL_LEFT})" >&2
   exit 1
 fi
+VGW_LEFT="$(aws ec2 describe-vpn-gateways --region "${REGION}" \
+  --filters "Name=tag:Name,Values=${VGW_TAG},${VGW2_TAG}" "Name=state,Values=available,pending" \
+  --query 'length(VpnGateways)' --output text)"
+if [ "${VGW_LEFT}" != "0" ]; then
+  echo "FAIL: VPN gateway(s) still present after destroy (count=${VGW_LEFT})" >&2
+  exit 1
+fi
 VPC_LEFT="$(aws ec2 describe-vpcs --region "${REGION}" \
   --filters "Name=tag:Name,Values=${VPC_TAG}" \
   --query 'length(Vpcs)' --output text)"
@@ -359,9 +474,9 @@ if [ "${VPC_LEFT}" != "0" ]; then
   echo "FAIL: VPC still present after destroy (count=${VPC_LEFT})" >&2
   exit 1
 fi
-echo "    TGW attachment, TGW, prefix list, and VPC all gone"
+echo "    TGW attachment, TGW, prefix list, VPN gateway, and VPC all gone"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — EC2 Route prefix-list destination + TGW target: deploy, target-swap update, drift read-back, and destroy all verified"
+echo "[verify] PASS — EC2 Route prefix-list destination + TGW target + VPN gateway attachment: deploy, target-swap update, drift read-back, and destroy all verified"

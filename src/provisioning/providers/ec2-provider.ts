@@ -13,6 +13,9 @@ import {
   DeleteInternetGatewayCommand,
   AttachInternetGatewayCommand,
   DetachInternetGatewayCommand,
+  AttachVpnGatewayCommand,
+  DetachVpnGatewayCommand,
+  DescribeVpnGatewaysCommand,
   CreateNatGatewayCommand,
   DeleteNatGatewayCommand,
   DescribeNatGatewaysCommand,
@@ -209,15 +212,27 @@ import { generatedNameFor } from '../resource-name.js';
 /** Shapes of the four `AWS::EC2::*` composite physicalIds (issue #1657). */
 const EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT: CompositeIdFormat = {
   label: 'VPCGatewayAttachment',
-  // Matches `createVpcGatewayAttachment`'s packer, which emits the REAL
-  // `internetGatewayId`. The pre-#1657 text said `IGW|VpcId`; `IGW` is a token
-  // no code path produces, and a user repairing state.json as instructed would
-  // have called `DetachInternetGateway(InternetGatewayId: "IGW")`. A
-  // Cloud-Control-written record can carry an attachment TYPE here instead
-  // (`InternetGateway` / `VPN` — see `export.ts`), which the message does not
-  // try to express: the shape it names is the one cdkd's own packer writes.
-  segments: ['internetGatewayId', 'vpcId'],
+  // Matches `createVpcGatewayAttachment`'s packer, which emits the REAL gateway
+  // id: an internet gateway's `igw-…` or a VPN gateway's `vgw-…` (issue #2762),
+  // the prefix being what `delete` / `readCurrentState` branch on. The
+  // pre-#1657 text said `IGW|VpcId`; `IGW` is a token no code path produces,
+  // and a user repairing state.json as instructed would have called
+  // `DetachInternetGateway(InternetGatewayId: "IGW")`. A Cloud-Control-written
+  // record carries an attachment TYPE here instead (`IGW` / `VGW` — see
+  // `export.ts`), which the message does not try to express: the shape it
+  // names is the one cdkd's own packer writes.
+  segments: ['gatewayId', 'vpcId'],
 };
+
+/**
+ * How long a VPN gateway attachment may take to reach `attached` / `detached`
+ * (issue #2762). Both transitions are asynchronous on AWS's side; the outer
+ * per-resource `--resource-timeout` still bounds the whole call.
+ */
+const VPN_GATEWAY_ATTACHMENT_WAIT_MS = 10 * 60 * 1000;
+
+/** `DetachVpnGateway`'s answer for an attachment that is not `attached` right now. */
+const VPN_DETACH_IN_PROGRESS_ERRORS: ReadonlySet<string> = new Set(['IncorrectState']);
 
 const EC2_ROUTE_ID_FORMAT: CompositeIdFormat = {
   label: 'Route',
@@ -806,7 +821,7 @@ export class EC2Provider implements ResourceProvider {
       'AWS::EC2::EIP',
       new Set(['Domain', 'InstanceId', 'NetworkBorderGroup', 'PublicIpv4Pool', 'Tags']),
     ],
-    ['AWS::EC2::VPCGatewayAttachment', new Set(['VpcId', 'InternetGatewayId'])],
+    ['AWS::EC2::VPCGatewayAttachment', new Set(['VpcId', 'InternetGatewayId', 'VpnGatewayId'])],
     [
       'AWS::EC2::NatGateway',
       new Set([
@@ -1417,7 +1432,14 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::EIP':
         return this.updateEip(logicalId, physicalId, resourceType, properties, previousProperties);
       case 'AWS::EC2::VPCGatewayAttachment':
-        return this.updateVpcGatewayAttachment(logicalId, physicalId);
+        return this.updateVpcGatewayAttachment(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          context
+        );
       case 'AWS::EC2::NatGateway':
         return this.updateNatGateway(logicalId, physicalId);
       case 'AWS::EC2::RouteTable':
@@ -1507,7 +1529,13 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::EIP':
         return this.deleteEip(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::VPCGatewayAttachment':
-        return this.deleteVpcGatewayAttachment(logicalId, physicalId, resourceType, context);
+        return this.deleteVpcGatewayAttachment(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          context
+        );
       case 'AWS::EC2::NatGateway':
         return this.deleteNatGateway(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::RouteTable':
@@ -3225,6 +3253,36 @@ export class EC2Provider implements ResourceProvider {
 
   // ─── AWS::EC2::VPCGatewayAttachment ───────────────────────────────
 
+  /**
+   * Which gateway an attachment's template bag names. CloudFormation's
+   * documentation takes exactly one of `InternetGatewayId` / `VpnGatewayId`
+   * ("You must specify either InternetGatewayId or VpnGatewayId, but not
+   * both"), so a bag naming both or neither is refused before any AWS call.
+   */
+  private resolveVpcGatewayAttachmentTarget(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): { vpcId: string; kind: 'igw' | 'vgw'; gatewayId: string } {
+    const vpcId = properties['VpcId'];
+    const igw = properties['InternetGatewayId'];
+    const vgw = properties['VpnGatewayId'];
+    const hasIgw = typeof igw === 'string' && igw !== '';
+    const hasVgw = typeof vgw === 'string' && vgw !== '';
+    if (typeof vpcId !== 'string' || vpcId === '' || hasIgw === hasVgw) {
+      throw new ProvisioningError(
+        hasIgw && hasVgw
+          ? `VPCGatewayAttachment ${logicalId} specifies both InternetGatewayId and VpnGatewayId; CloudFormation accepts exactly one`
+          : `VpcId and exactly one of InternetGatewayId / VpnGatewayId are required for VPCGatewayAttachment ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+    return hasIgw
+      ? { vpcId, kind: 'igw', gatewayId: igw }
+      : { vpcId, kind: 'vgw', gatewayId: vgw as string };
+  }
+
   private async createVpcGatewayAttachment(
     logicalId: string,
     resourceType: string,
@@ -3233,26 +3291,21 @@ export class EC2Provider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating VPCGatewayAttachment ${logicalId}`);
 
-    const vpcId = properties['VpcId'] as string;
-    const internetGatewayId = properties['InternetGatewayId'] as string;
+    const { vpcId, kind, gatewayId } = this.resolveVpcGatewayAttachmentTarget(
+      logicalId,
+      resourceType,
+      properties
+    );
 
-    if (!vpcId || !internetGatewayId) {
-      throw new ProvisioningError(
-        `VpcId and InternetGatewayId are required for VPCGatewayAttachment ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    // Both segments are AWS-generated (`igw-...` / `vpc-...`), so neither is
-    // pipe-capable and this is uniform defense-in-depth (issue #1672).
-    // Computed before the AWS call so a refusal cannot leave an attachment AWS
-    // has already made without a state record.
+    // Both segments are AWS-generated (`igw-...` / `vgw-...` / `vpc-...`), so
+    // neither is pipe-capable and this is uniform defense-in-depth (issue
+    // #1672). Computed before the AWS call so a refusal cannot leave an
+    // attachment AWS has already made without a state record.
     const physicalId = packCompositeId(
       resourceType,
       logicalId,
       [
-        { name: 'internetGatewayId', value: internetGatewayId },
+        { name: kind === 'igw' ? 'internetGatewayId' : 'vpnGatewayId', value: gatewayId },
         { name: 'vpcId', value: vpcId },
       ],
       {
@@ -3267,13 +3320,22 @@ export class EC2Provider implements ResourceProvider {
       }
     );
 
+    let attachSent = false;
     try {
-      await this.ec2Client.send(
-        new AttachInternetGatewayCommand({
-          VpcId: vpcId,
-          InternetGatewayId: internetGatewayId,
-        })
-      );
+      if (kind === 'igw') {
+        await this.ec2Client.send(
+          new AttachInternetGatewayCommand({ VpcId: vpcId, InternetGatewayId: gatewayId })
+        );
+      } else {
+        // `AttachVpnGateway` answers `attaching`; a `Route` through the
+        // gateway is only accepted once the attachment is `attached`, so the
+        // create waits for that state.
+        await this.ec2Client.send(
+          new AttachVpnGatewayCommand({ VpcId: vpcId, VpnGatewayId: gatewayId })
+        );
+        attachSent = true;
+        await this.waitForVpnGatewayAttachment(gatewayId, vpcId, 'attached', logicalId);
+      }
 
       this.logger.debug(`Successfully created VPCGatewayAttachment ${logicalId}: ${physicalId}`);
 
@@ -3283,7 +3345,7 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         error,
         (text) =>
           new ProvisioningError(
@@ -3294,57 +3356,558 @@ export class EC2Provider implements ResourceProvider {
             cause
           )
       );
+      // The attach call succeeded and only the wait failed: the attachment
+      // exists in AWS, so the record must say so for a later destroy to detach it.
+      if (attachSent) markCreatedBeforeFailure(thrown, logicalId, resourceType, physicalId);
+      throw thrown;
     }
   }
 
-  private updateVpcGatewayAttachment(
+  /**
+   * Poll `DescribeVpnGateways` until the gateway's attachment to `vpcId`
+   * reaches `target`. `detached` also counts an attachment AWS no longer
+   * lists, or a gateway it no longer knows, as reached. Throws when the state
+   * is not reached within {@link VPN_GATEWAY_ATTACHMENT_WAIT_MS}.
+   */
+  private async waitForVpnGatewayAttachment(
+    vpnGatewayId: string,
+    vpcId: string,
+    target: 'attached' | 'detached',
     logicalId: string,
-    physicalId: string
-  ): Promise<ResourceUpdateResult> {
-    void physicalId;
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
-        'AWS::EC2::VPCGatewayAttachment',
-        logicalId,
-        'destroy + redeploy the VPCGatewayAttachment. The (VpcId, InternetGatewayId) pair is immutable.'
-      )
+    redetach?: () => Promise<unknown>
+  ): Promise<void> {
+    const started = Date.now();
+    let redetachSent = false;
+    let delay = 2000;
+    let last = 'unknown';
+    for (;;) {
+      // Every entry for this VPC, not the first: a `detached` entry left by an
+      // earlier attachment can sit beside the current one.
+      let states: string[];
+      try {
+        const resp = await this.ec2Client.send(
+          new DescribeVpnGatewaysCommand({ VpnGatewayIds: [vpnGatewayId] })
+        );
+        states = (resp.VpnGateways?.[0]?.VpcAttachments ?? [])
+          .filter((a) => a.VpcId === vpcId)
+          .map((a) => String(a.State));
+      } catch (error) {
+        // Only EC2's own `*.NotFound` code proves the gateway is gone (#4283).
+        if (target === 'detached' && isEc2NotFoundCode(error)) return;
+        throw error;
+      }
+      if (target === 'attached' && states.includes('attached')) return;
+      if (target === 'detached' && states.every((st) => st === 'detached')) return;
+      // A detach refused as `IncorrectState` while the attachment was still
+      // `attaching` (an interrupted create) never took: once it reads
+      // `attached`, send the detach again, once.
+      if (target === 'detached' && redetach && !redetachSent && states.includes('attached')) {
+        redetachSent = true;
+        try {
+          await redetach();
+        } catch (error) {
+          // Already `detaching` (a lagging read) or already gone: keep polling.
+          if (!isNamedError(error, VPN_DETACH_IN_PROGRESS_ERRORS) && !isEc2NotFoundCode(error)) {
+            throw error;
+          }
+        }
+      }
+      last = states.length === 0 ? 'absent' : states.join(', ');
+      if (Date.now() - started >= VPN_GATEWAY_ATTACHMENT_WAIT_MS) {
+        throw new Error(
+          `VPN gateway ${vpnGatewayId} attachment to ${vpcId} did not reach '${target}' within ` +
+            `${VPN_GATEWAY_ATTACHMENT_WAIT_MS / 60000} minutes (last state: ${last}) for ${logicalId}`
+        );
+      }
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10000);
+    }
+  }
+
+  /**
+   * Split an attachment physicalId into its gateway kind, gateway, and VPC.
+   *
+   * cdkd's own packer writes `<igw-…|vgw-…>|<vpcId>`. A Cloud-Control-written
+   * record carries the attachment TYPE token instead (`IGW` / `VGW`, or the
+   * never-written `InternetGateway` / `VPN` aliases `export.ts` also accepts);
+   * a pre-v7 record of that shape has no `provisionedBy` and reaches this
+   * provider (go-to-k/cdkd#2762 review). A token is never sent to AWS as a
+   * gateway id: `gatewayId` is `undefined` and the caller resolves it from the
+   * VPC. Anything else is refused with the format message.
+   */
+  private parseVpcGatewayAttachmentId(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string
+  ): { kind: 'igw' | 'vgw'; gatewayId: string | undefined; vpcId: string } {
+    const parts = physicalId.split('|');
+    const [first, vpcId] = parts;
+    if (parts.length === 2 && first && vpcId) {
+      if (first.startsWith('igw-')) return { kind: 'igw', gatewayId: first, vpcId };
+      if (first.startsWith('vgw-')) return { kind: 'vgw', gatewayId: first, vpcId };
+      if (first === 'IGW' || first === 'InternetGateway') {
+        return { kind: 'igw', gatewayId: undefined, vpcId };
+      }
+      if (first === 'VGW' || first === 'VPN') return { kind: 'vgw', gatewayId: undefined, vpcId };
+    }
+    throw new ProvisioningError(
+      compositeIdFormatMessage(EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT, logicalId, physicalId),
+      resourceType,
+      logicalId,
+      physicalId
     );
+  }
+
+  /**
+   * The gateway of `kind` AWS reports attached to `vpcId` (an
+   * `attachment.vpc-id` filter), for a record that names only the attachment
+   * type. `includeDetaching` also counts a VPN attachment still `detaching`,
+   * which a delete must wait out. `undefined` when none is.
+   */
+  private async findAttachedGatewayId(
+    kind: 'igw' | 'vgw',
+    vpcId: string,
+    includeDetaching: boolean
+  ): Promise<string | undefined> {
+    const filter = { Filters: [{ Name: 'attachment.vpc-id', Values: [vpcId] }] };
+    if (kind === 'igw') {
+      const resp = await this.ec2Client.send(new DescribeInternetGatewaysCommand(filter));
+      return resp.InternetGateways?.find((g) =>
+        g.Attachments?.some(
+          (a) => a.VpcId === vpcId && ['available', 'attached'].includes(String(a.State))
+        )
+      )?.InternetGatewayId;
+    }
+    const live = includeDetaching
+      ? ['attaching', 'attached', 'detaching']
+      : ['attaching', 'attached'];
+    const resp = await this.ec2Client.send(new DescribeVpnGatewaysCommand(filter));
+    return resp.VpnGateways?.find(
+      (g) =>
+        g.State !== 'deleted' &&
+        g.VpcAttachments?.some((a) => a.VpcId === vpcId && live.includes(String(a.State)))
+    )?.VpnGatewayId;
+  }
+
+  /** The gateway id of `kind` a record's own properties name, when well-formed. */
+  private recordedGatewayIdOf(
+    kind: 'igw' | 'vgw',
+    properties: Record<string, unknown> | undefined
+  ): string | undefined {
+    const value = properties?.[kind === 'igw' ? 'InternetGatewayId' : 'VpnGatewayId'];
+    return typeof value === 'string' && value.startsWith(`${kind}-`) ? value : undefined;
+  }
+
+  /**
+   * The gateway a type-token record (`VGW|vpc-…`) denotes, for a detach.
+   *
+   * Pinned to the id the record's own properties name: a shared VPC can hold
+   * another stack's gateway by the time this runs (the record's own detached
+   * out of band), and the `attachment.vpc-id` filter would return THAT one.
+   * The pinned id is detached by id, so an attachment AWS no longer has
+   * answers not-found instead of hitting a foreign gateway. With no recorded
+   * id, an empty filter answer is `undefined` (the caller confirms the region
+   * before reading it as gone), and a gateway the filter does find is
+   * refused: nothing proves it is this stack's.
+   */
+  private async resolveTokenRecordGateway(
+    kind: 'igw' | 'vgw',
+    vpcId: string,
+    recordedProperties: Record<string, unknown> | undefined,
+    logicalId: string,
+    resourceType: string,
+    physicalId: string
+  ): Promise<string | undefined> {
+    const recorded = this.recordedGatewayIdOf(kind, recordedProperties);
+    if (recorded !== undefined) return recorded;
+    const found = await this.findAttachedGatewayId(kind, vpcId, true);
+    if (found === undefined) return undefined;
+    throw new ProvisioningError(
+      `VPCGatewayAttachment ${logicalId}: the record names only the attachment type and no ` +
+        `${kind === 'igw' ? 'InternetGatewayId' : 'VpnGatewayId'}, and ${found} is attached to ` +
+        `${vpcId}. cdkd cannot tell whether it is this stack's gateway, so it does not detach it. ` +
+        `Detach it yourself if it is, or correct the record (cdkd state show).`,
+      resourceType,
+      logicalId,
+      physicalId
+    );
+  }
+
+  /** Whether `gatewayId` is attached (or, for a VPN gateway, attaching) to `vpcId`. */
+  private async isGatewayAttached(
+    kind: 'igw' | 'vgw',
+    gatewayId: string,
+    vpcId: string
+  ): Promise<boolean> {
+    if (kind === 'igw') {
+      const resp = await this.ec2Client.send(
+        new DescribeInternetGatewaysCommand({ InternetGatewayIds: [gatewayId] })
+      );
+      return (
+        resp.InternetGateways?.[0]?.Attachments?.some(
+          (a) => a.VpcId === vpcId && ['available', 'attached'].includes(String(a.State))
+        ) ?? false
+      );
+    }
+    const resp = await this.ec2Client.send(
+      new DescribeVpnGatewaysCommand({ VpnGatewayIds: [gatewayId] })
+    );
+    return (
+      resp.VpnGateways?.[0]?.VpcAttachments?.some(
+        (a) => a.VpcId === vpcId && (a.State === 'attached' || a.State === 'attaching')
+      ) ?? false
+    );
+  }
+
+  /**
+   * Attach `gatewayId` to `vpcId` (a VPN gateway also waits for `attached`).
+   * Skips the attach call when AWS already reports it attached, so a deploy
+   * re-running an interrupted swap converges instead of being refused.
+   */
+  private async attachVpcGateway(
+    kind: 'igw' | 'vgw',
+    gatewayId: string,
+    vpcId: string,
+    logicalId: string,
+    onAttachSent?: () => void
+  ): Promise<void> {
+    if (!(await this.isGatewayAttached(kind, gatewayId, vpcId))) {
+      if (kind === 'igw') {
+        await this.ec2Client.send(
+          new AttachInternetGatewayCommand({ VpcId: vpcId, InternetGatewayId: gatewayId })
+        );
+        onAttachSent?.();
+        return;
+      }
+      await this.ec2Client.send(
+        new AttachVpnGatewayCommand({ VpcId: vpcId, VpnGatewayId: gatewayId })
+      );
+      onAttachSent?.();
+    }
+    if (kind === 'vgw') {
+      await this.waitForVpnGatewayAttachment(gatewayId, vpcId, 'attached', logicalId);
+    }
+  }
+
+  /**
+   * Detach `gatewayId` from `vpcId`; a VPN gateway also waits for `detached`.
+   * A not-found answer is confirmed against the recorded region before it is
+   * read as "already detached". Raw AWS errors propagate: the caller wraps.
+   */
+  private async detachVpcGateway(
+    kind: 'igw' | 'vgw',
+    gatewayId: string,
+    vpcId: string,
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    expectedRegion: string | undefined
+  ): Promise<void> {
+    const isVpnGateway = kind === 'vgw';
+    let detachRefusedAsIncorrectState = false;
+    try {
+      await this.withDependencyViolationRetry(
+        () =>
+          isVpnGateway
+            ? this.ec2Client.send(
+                new DetachVpnGatewayCommand({ VpnGatewayId: gatewayId, VpcId: vpcId })
+              )
+            : this.ec2Client.send(
+                new DetachInternetGatewayCommand({ InternetGatewayId: gatewayId, VpcId: vpcId })
+              ),
+        {
+          description: `${isVpnGateway ? 'DetachVpnGateway' : 'DetachInternetGateway'} ${logicalId} (${gatewayId} from ${vpcId})`,
+        }
+      );
+    } catch (error) {
+      // A VPN detach skips to the wait only on EC2's own `*.NotFound` code: a
+      // looser match would wait out the full cap on an attachment AWS still
+      // holds and then hide the real refusal. `IncorrectState` (an attachment
+      // an interrupted earlier destroy left `detaching`) goes to the wait too.
+      if (isVpnGateway && isNamedError(error, VPN_DETACH_IN_PROGRESS_ERRORS)) {
+        detachRefusedAsIncorrectState = true;
+        this.logger.debug(
+          safeMsg`DetachVpnGateway ${logicalId}: attachment not detachable now, waiting`
+        );
+      } else {
+        const notFound = isVpnGateway ? isEc2NotFoundCode(error) : this.isNotFoundError(error);
+        if (!notFound) throw error;
+        const clientRegion = await this.ec2Client.config.region();
+        assertRegionMatch(clientRegion, expectedRegion, resourceType, logicalId, physicalId);
+        this.logger.debug(`VPCGatewayAttachment ${physicalId} does not exist, skipping detach`);
+        // A not-found VPN detach can also be an attachment left `detaching`,
+        // so the wait below still runs for it.
+        if (!isVpnGateway) return;
+      }
+    }
+
+    if (isVpnGateway) {
+      // `DetachVpnGateway` answers `detaching`. Until `detached`, AWS refuses
+      // both `DeleteVpnGateway` and `DeleteVpc`, which run next in reverse
+      // dependency order. The re-sent detach only after a refused first one:
+      // after a detach AWS accepted, a lagging `attached` read would draw
+      // `IncorrectState`.
+      await this.waitForVpnGatewayAttachment(
+        gatewayId,
+        vpcId,
+        'detached',
+        logicalId,
+        detachRefusedAsIncorrectState
+          ? () =>
+              this.ec2Client.send(
+                new DetachVpnGatewayCommand({ VpnGatewayId: gatewayId, VpcId: vpcId })
+              )
+          : undefined
+      );
+    }
+  }
+
+  /**
+   * Best-effort recovery after a failed in-place gateway swap, so AWS matches
+   * the record, which still names the OLD gateway: detach the new gateway if
+   * this swap attached it (its attach can be accepted while the wait fails),
+   * then re-attach the old one (skipped when still attached). The warn names
+   * what a re-read finds attached. Never throws: the swap's own error is the
+   * one the caller reports.
+   *
+   * Worst case, a same-kind VPN swap chains three
+   * {@link VPN_GATEWAY_ATTACHMENT_WAIT_MS} waits (the failed attach, this
+   * detach, this re-attach), so the per-resource `--resource-timeout` can cut
+   * the recovery short. The record still names the old gateway and every step
+   * here is idempotent, so a redeploy converges.
+   */
+  private async recoverFailedGatewaySwap(swap: {
+    logicalId: string;
+    resourceType: string;
+    physicalId: string;
+    vpcId: string;
+    desired: { kind: 'igw' | 'vgw'; gatewayId: string };
+    old: { kind: 'igw' | 'vgw'; id: string } | undefined;
+    newAttachSent: boolean;
+    expectedRegion: string | undefined;
+  }): Promise<void> {
+    const { logicalId, vpcId, desired, old } = swap;
+    const attempt = async (what: string, step: () => Promise<void>): Promise<void> => {
+      try {
+        await step();
+      } catch (error) {
+        this.logger.debug(
+          safeMsg`VPCGatewayAttachment ${logicalId}: ${what} failed: ${describeAwsFailure(error).detail}`
+        );
+      }
+    };
+    if (swap.newAttachSent) {
+      await attempt(`detaching the new gateway ${desired.gatewayId}`, () =>
+        this.detachVpcGateway(
+          desired.kind,
+          desired.gatewayId,
+          vpcId,
+          logicalId,
+          swap.resourceType,
+          swap.physicalId,
+          swap.expectedRegion
+        )
+      );
+    }
+    if (old !== undefined) {
+      await attempt(`re-attaching the previous gateway ${old.id}`, () =>
+        this.attachVpcGateway(old.kind, old.id, vpcId, logicalId)
+      );
+    }
+    const attached: string[] = [];
+    for (const g of [
+      ...(old ? [{ kind: old.kind, id: old.id }] : []),
+      { kind: desired.kind, id: desired.gatewayId },
+    ]) {
+      try {
+        if (await this.isGatewayAttached(g.kind, g.id, vpcId)) attached.push(g.id);
+      } catch {
+        attached.push(`${g.id} (unreadable)`);
+      }
+    }
+    if (old !== undefined && attached.length === 1 && attached[0] === old.id) {
+      this.logger.warn(
+        safeMsg`VPCGatewayAttachment ${logicalId}: the gateway swap failed; the previous gateway ${old.id} is attached again, as the record says`
+      );
+      return;
+    }
+    const list = attached.length === 0 ? 'none' : attached.join(', ');
+    const previous = old?.id ?? 'none';
+    this.logger.warn(
+      safeMsg`VPCGatewayAttachment ${logicalId}: the gateway swap failed and VPC ${vpcId} now has attached: ${list}. The record still names the previous gateway (${previous}), the template the new one (${desired.gatewayId}). Redeploy before any destroy: a destroy detaches only ${previous}, and ${desired.gatewayId} left attached blocks DeleteVpc.`
+    );
+  }
+
+  /**
+   * Swap the attached gateway in place (go-to-k/cdkd#5216). CloudFormation
+   * documents `InternetGatewayId` and `VpnGatewayId` as "Update requires: No
+   * interruption" and only `VpcId` as create-only, and a create-first
+   * replacement cannot work here: AWS allows one internet gateway and one VPN
+   * gateway per VPC, so the new attach would be refused.
+   *
+   * The physicalId names the gateway, so the result carries the NEW
+   * `<gatewayId>|<vpcId>` with `wasReplaced: false`; the engine records it.
+   *
+   * - Same kind (VPN to VPN, IGW to IGW): detach the old gateway first, which
+   *   AWS requires, then attach the new one.
+   * - Different kinds: a VPC holds one of each, so the new gateway is attached
+   *   first and the old one detached after it.
+   *
+   * On a failure the record still names the old gateway, so
+   * {@link recoverFailedGatewaySwap} puts AWS back to match it: the new gateway
+   * is detached again if this swap attached it, and the old one re-attached.
+   *
+   * Every attach skips a gateway AWS already reports attached, so re-running
+   * an interrupted swap converges.
+   */
+  private async updateVpcGatewayAttachment(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
+  ): Promise<ResourceUpdateResult> {
+    const desired = this.resolveVpcGatewayAttachmentTarget(logicalId, resourceType, properties);
+    const recorded = this.parseVpcGatewayAttachmentId(logicalId, physicalId, resourceType);
+    if (desired.vpcId !== recorded.vpcId) {
+      // `VpcId` is create-only, so the engine replaces before calling here.
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'VpcId is create-only: destroy + redeploy the VPCGatewayAttachment.'
+      );
+    }
+    const newPhysicalId = packCompositeId(
+      resourceType,
+      logicalId,
+      [
+        {
+          name: desired.kind === 'igw' ? 'internetGatewayId' : 'vpnGatewayId',
+          value: desired.gatewayId,
+        },
+        { name: 'vpcId', value: desired.vpcId },
+      ],
+      { maskSecrets: context?.maskSecrets }
+    );
+    const vpcId = desired.vpcId;
+
+    try {
+      const oldGatewayId =
+        recorded.gatewayId ??
+        (await this.resolveTokenRecordGateway(
+          recorded.kind,
+          vpcId,
+          previousProperties,
+          logicalId,
+          resourceType,
+          physicalId
+        ));
+      if (recorded.kind === desired.kind && oldGatewayId === desired.gatewayId) {
+        // Not trusted from the record alone: a rollback reverting a failed
+        // swap lands here, and AWS may hold no gateway. The attach skips one
+        // AWS already reports attached.
+        await this.attachVpcGateway(desired.kind, desired.gatewayId, vpcId, logicalId);
+        return { physicalId: newPhysicalId, wasReplaced: false };
+      }
+      const detachOld = async (): Promise<void> => {
+        if (oldGatewayId === undefined) return;
+        // An old gateway no longer attached (a swap whose restore failed, then
+        // a redeploy) is not detached again: AWS refuses that as not attached.
+        // A VPN gateway still `detaching` is waited out instead.
+        if (!(await this.isGatewayAttached(recorded.kind, oldGatewayId, vpcId))) {
+          if (recorded.kind === 'vgw') {
+            await this.waitForVpnGatewayAttachment(oldGatewayId, vpcId, 'detached', logicalId);
+          }
+          return;
+        }
+        await this.detachVpcGateway(
+          recorded.kind,
+          oldGatewayId,
+          vpcId,
+          logicalId,
+          resourceType,
+          physicalId,
+          context?.expectedRegion
+        );
+      };
+      let newAttachSent = false;
+      const attachNew = (): Promise<void> =>
+        this.attachVpcGateway(desired.kind, desired.gatewayId, vpcId, logicalId, () => {
+          newAttachSent = true;
+        });
+
+      try {
+        if (recorded.kind !== desired.kind) {
+          await attachNew();
+          await detachOld();
+        } else {
+          await detachOld();
+          await attachNew();
+        }
+      } catch (swapError) {
+        await this.recoverFailedGatewaySwap({
+          logicalId,
+          resourceType,
+          physicalId: newPhysicalId,
+          vpcId,
+          desired,
+          old: oldGatewayId === undefined ? undefined : { kind: recorded.kind, id: oldGatewayId },
+          newAttachSent,
+          expectedRegion: context?.expectedRegion,
+        });
+        throw swapError;
+      }
+      this.logger.debug(
+        safeMsg`Swapped VPCGatewayAttachment ${logicalId} in place: ${physicalId} -> ${newPhysicalId}`
+      );
+      return { physicalId: newPhysicalId, wasReplaced: false };
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update VPCGatewayAttachment ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+    }
   }
 
   private async deleteVpcGatewayAttachment(
     logicalId: string,
     physicalId: string,
     resourceType: string,
+    properties: Record<string, unknown> | undefined,
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting VPCGatewayAttachment ${logicalId}: ${physicalId}`);
 
-    const parts = physicalId.split('|');
-    if (parts.length !== 2) {
-      throw new ProvisioningError(
-        compositeIdFormatMessage(EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT, logicalId, physicalId),
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-
-    const [internetGatewayId, vpcId] = parts;
+    const {
+      kind,
+      gatewayId: recordedGatewayId,
+      vpcId,
+    } = this.parseVpcGatewayAttachmentId(logicalId, physicalId, resourceType);
 
     try {
-      await this.withDependencyViolationRetry(
-        () =>
-          this.ec2Client.send(
-            new DetachInternetGatewayCommand({
-              InternetGatewayId: internetGatewayId,
-              VpcId: vpcId,
-            })
-          ),
-        { description: `DetachInternetGateway ${logicalId} (${internetGatewayId} from ${vpcId})` }
-      );
-      this.logger.debug(`Successfully deleted VPCGatewayAttachment ${logicalId}`);
-    } catch (error) {
-      if (this.isNotFoundError(error)) {
+      const gatewayId =
+        recordedGatewayId ??
+        (await this.resolveTokenRecordGateway(
+          kind,
+          vpcId,
+          properties,
+          logicalId,
+          resourceType,
+          physicalId
+        ));
+      if (gatewayId === undefined) {
+        // A type-token record (`VGW|vpc-…`) whose VPC has no such gateway: the
+        // empty filter answer is only "gone" in the region the record names.
         const clientRegion = await this.ec2Client.config.region();
         assertRegionMatch(
           clientRegion,
@@ -3353,9 +3916,22 @@ export class EC2Provider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`VPCGatewayAttachment ${physicalId} does not exist, skipping deletion`);
+        this.logger.debug(
+          safeMsg`VPCGatewayAttachment ${physicalId}: no gateway attached, skipping detach`
+        );
         return;
       }
+      await this.detachVpcGateway(
+        kind,
+        gatewayId,
+        vpcId,
+        logicalId,
+        resourceType,
+        physicalId,
+        context?.expectedRegion
+      );
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
         error,
@@ -3369,6 +3945,7 @@ export class EC2Provider implements ResourceProvider {
           )
       );
     }
+    this.logger.debug(`Successfully deleted VPCGatewayAttachment ${logicalId}`);
   }
 
   // ─── AWS::EC2::NatGateway ─────────────────────────────────────────
@@ -7980,6 +8557,8 @@ export class EC2Provider implements ResourceProvider {
       name === 'InvalidVpcID.NotFound' ||
       name === 'InvalidSubnetID.NotFound' ||
       name === 'InvalidInternetGatewayID.NotFound' ||
+      name === 'InvalidVpnGatewayID.NotFound' ||
+      name === 'InvalidVpnGatewayAttachment.NotFound' ||
       name === 'InvalidRouteTableID.NotFound' ||
       name === 'InvalidGroup.NotFound' ||
       name === 'InvalidAssociationID.NotFound' ||
@@ -8108,9 +8687,9 @@ export class EC2Provider implements ResourceProvider {
    *
    * Read through the parent's `Describe*` response:
    *  - **AWS::EC2::VPCGatewayAttachment**: physical id is
-   *    `<internetGatewayId>|<vpcId>`; `DescribeInternetGateways` proves the
-   *    attachment still exists, and the two ids it returns are the only
-   *    properties.
+   *    `<gatewayId>|<vpcId>`; `DescribeInternetGateways` (an `igw-…` gateway)
+   *    or `DescribeVpnGateways` (a `vgw-…` one) proves the attachment still
+   *    exists, and the two ids it returns are the only properties.
    *  - **AWS::EC2::Route**, **AWS::EC2::SubnetRouteTableAssociation**,
    *    **AWS::EC2::SecurityGroupIngress**, **AWS::EC2::NetworkAclEntry**,
    *    **AWS::EC2::SubnetNetworkAclAssociation**: rule / association
@@ -8183,7 +8762,7 @@ export class EC2Provider implements ResourceProvider {
             context?.afterOwnWrite === true
           );
         case 'AWS::EC2::VPCGatewayAttachment':
-          return await this.readVpcGatewayAttachmentCurrentState(physicalId);
+          return await this.readVpcGatewayAttachmentCurrentState(physicalId, properties);
         case 'AWS::EC2::Route':
           return await this.readRouteCurrentState(physicalId);
         case 'AWS::EC2::SubnetRouteTableAssociation':
@@ -8831,27 +9410,59 @@ export class EC2Provider implements ResourceProvider {
   /**
    * AWS::EC2::VPCGatewayAttachment readCurrentState.
    *
-   * physicalId format: `<igwId>|<vpcId>` (cdkd `createVpcGatewayAttachment`).
-   * AWS API: `DescribeInternetGateways(igwId)` → walk `Attachments[]` for
-   * the matching `VpcId`. Returns `RESOURCE_NOT_FOUND` when the IGW is gone OR is no
-   * longer attached to the recorded VPC. Both fields are immutable on this
+   * physicalId format: `<gatewayId>|<vpcId>` (cdkd `createVpcGatewayAttachment`).
+   * An `igw-…` gateway reads `DescribeInternetGateways(igwId)`, a `vgw-…` one
+   * `DescribeVpnGateways(vgwId)` (issue #2762); either walks the attachments
+   * for the matching `VpcId`. Returns `RESOURCE_NOT_FOUND` when the gateway is
+   * gone OR is no longer attached to the recorded VPC (a VPN attachment
+   * `detaching` / `detached` counts as gone). Both fields are immutable on this
    * resource — drift signal is binary (exists / gone) plus VpcId mismatch.
    */
   private async readVpcGatewayAttachmentCurrentState(
-    physicalId: string
+    physicalId: string,
+    properties: Record<string, unknown> | undefined
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    const [igwId, vpcId] = physicalId.split('|');
-    if (!igwId || !vpcId) return undefined;
+    const parts = physicalId.split('|');
+    const [first, vpcId] = parts;
+    if (parts.length !== 2 || !first || !vpcId) return undefined;
+    // A Cloud-Control type token (`IGW` / `VGW`, go-to-k/cdkd#2762 review) is
+    // never sent as a gateway id: the gateway is the one attached to the VPC.
+    const token = { IGW: 'igw', InternetGateway: 'igw', VGW: 'vgw', VPN: 'vgw' } as const;
+    let gatewayId = first;
+    if (Object.hasOwn(token, first)) {
+      // Pinned to the id the record's properties name, as delete is: the VPC
+      // filter could answer with another stack's gateway, and an empty filter
+      // answer cannot be confirmed against the recorded region here, so a
+      // record naming no gateway reads as "cannot tell".
+      const recorded = this.recordedGatewayIdOf(token[first as keyof typeof token], properties);
+      if (recorded === undefined) return undefined;
+      gatewayId = recorded;
+    } else if (!first.startsWith('igw-') && !first.startsWith('vgw-')) {
+      return undefined;
+    }
+
+    if (gatewayId.startsWith('vgw-')) {
+      const resp = await this.ec2Client.send(
+        new DescribeVpnGatewaysCommand({ VpnGatewayIds: [gatewayId] })
+      );
+      const vgw = resp.VpnGateways?.[0];
+      if (!vgw || vgw.State === 'deleted') return RESOURCE_NOT_FOUND;
+      const attached = vgw.VpcAttachments?.some(
+        (a) => a.VpcId === vpcId && (a.State === 'attached' || a.State === 'attaching')
+      );
+      if (!attached) return RESOURCE_NOT_FOUND;
+      return { VpnGatewayId: gatewayId, VpcId: vpcId };
+    }
 
     const resp = await this.ec2Client.send(
-      new DescribeInternetGatewaysCommand({ InternetGatewayIds: [igwId] })
+      new DescribeInternetGatewaysCommand({ InternetGatewayIds: [gatewayId] })
     );
     const igw = resp.InternetGateways?.[0];
     if (!igw) return RESOURCE_NOT_FOUND;
     const attached = igw.Attachments?.some((a) => a.VpcId === vpcId);
     if (!attached) return RESOURCE_NOT_FOUND;
 
-    return { InternetGatewayId: igwId, VpcId: vpcId };
+    return { InternetGatewayId: gatewayId, VpcId: vpcId };
   }
 
   /**
@@ -9447,47 +10058,76 @@ export class EC2Provider implements ResourceProvider {
           return found ? { physicalId, attributes: {} } : null;
         }
         case 'AWS::EC2::VPCGatewayAttachment': {
-          // CloudFormation records `IGW|<vpcId>` (a CloudFormation IMPORT
-          // `<vpcId>|IGW`); cdkd records `<igwId>|<vpcId>`. Only the VPC is in
-          // CloudFormation's id, so the gateway comes from the template
-          // (`InternetGatewayId`, Ref-substituted to the gateway's id) or, failing
-          // that, from the one gateway AWS allows attached to the VPC.
+          // CloudFormation records `IGW|<vpcId>` / `VGW|<vpcId>` (a CloudFormation
+          // IMPORT `<vpcId>|IGW`); cdkd records `<gatewayId>|<vpcId>`. Only the
+          // VPC is in CloudFormation's id, so the gateway comes from the template
+          // (`InternetGatewayId` / `VpnGatewayId`, Ref-substituted to the
+          // gateway's id) or, failing that, from the one gateway of that kind AWS
+          // allows attached to the VPC.
           const segments = physicalId.split('|');
           if (segments.length !== 2) return null;
-          // A VPN gateway attachment is not this provider's to delete
-          // (`delete` only calls `DetachInternetGateway`).
-          if (segments.includes('VGW') || properties['VpnGatewayId'] !== undefined) return null;
           const vpcId =
             segments.find((seg) => /^vpc-[0-9a-f]+$/.test(seg)) ??
             (typeof properties['VpcId'] === 'string' ? properties['VpcId'] : undefined);
           if (!vpcId || !/^vpc-[0-9a-f]+$/.test(vpcId)) return null;
-          const declared =
-            segments.find((seg) => /^igw-[0-9a-f]+$/.test(seg)) ??
-            (typeof properties['InternetGatewayId'] === 'string'
-              ? properties['InternetGatewayId']
-              : undefined);
-          if (declared !== undefined && !/^igw-[0-9a-f]+$/.test(declared)) return null;
-          const resp = await this.ec2Client.send(
-            new DescribeInternetGatewaysCommand(
-              declared
-                ? { InternetGatewayIds: [declared] }
-                : { Filters: [{ Name: 'attachment.vpc-id', Values: [vpcId] }] }
-            )
-          );
-          const gateway = resp.InternetGateways?.find((g) =>
-            g.Attachments?.some(
-              // IGW attachments report `available` although the SDK types the
-              // field as `AttachmentStatus`, so compare it as a string.
-              (a) => a.VpcId === vpcId && ['available', 'attached'].includes(String(a.State))
-            )
-          );
-          if (!gateway?.InternetGatewayId) return null;
+          const isVpn =
+            segments.includes('VGW') ||
+            segments.some((seg) => seg.startsWith('vgw-')) ||
+            properties['VpnGatewayId'] !== undefined;
+          // An `IGW` id beside a VPN signal is contradictory: adopt neither.
+          if (isVpn && segments.some((seg) => seg === 'IGW' || seg.startsWith('igw-'))) {
+            return null;
+          }
+          let gatewayId: string | undefined;
+          if (isVpn) {
+            // Issue #2762: a VPN gateway attachment is this provider's too.
+            const declared =
+              segments.find((seg) => /^vgw-[0-9a-f]+$/.test(seg)) ??
+              (typeof properties['VpnGatewayId'] === 'string'
+                ? properties['VpnGatewayId']
+                : undefined);
+            if (declared !== undefined && !/^vgw-[0-9a-f]+$/.test(declared)) return null;
+            const resp = await this.ec2Client.send(
+              new DescribeVpnGatewaysCommand(
+                declared
+                  ? { VpnGatewayIds: [declared] }
+                  : { Filters: [{ Name: 'attachment.vpc-id', Values: [vpcId] }] }
+              )
+            );
+            gatewayId = resp.VpnGateways?.find(
+              (g) =>
+                g.State !== 'deleted' &&
+                g.VpcAttachments?.some((a) => a.VpcId === vpcId && a.State === 'attached')
+            )?.VpnGatewayId;
+          } else {
+            const declared =
+              segments.find((seg) => /^igw-[0-9a-f]+$/.test(seg)) ??
+              (typeof properties['InternetGatewayId'] === 'string'
+                ? properties['InternetGatewayId']
+                : undefined);
+            if (declared !== undefined && !/^igw-[0-9a-f]+$/.test(declared)) return null;
+            const resp = await this.ec2Client.send(
+              new DescribeInternetGatewaysCommand(
+                declared
+                  ? { InternetGatewayIds: [declared] }
+                  : { Filters: [{ Name: 'attachment.vpc-id', Values: [vpcId] }] }
+              )
+            );
+            gatewayId = resp.InternetGateways?.find((g) =>
+              g.Attachments?.some(
+                // IGW attachments report `available` although the SDK types the
+                // field as `AttachmentStatus`, so compare it as a string.
+                (a) => a.VpcId === vpcId && ['available', 'attached'].includes(String(a.State))
+              )
+            )?.InternetGatewayId;
+          }
+          if (!gatewayId) return null;
           const attachmentSegments = [
-            { name: 'internetGatewayId', value: gateway.InternetGatewayId },
+            { name: isVpn ? 'vpnGatewayId' : 'internetGatewayId', value: gatewayId },
             { name: 'vpcId', value: vpcId },
           ];
-          // Defense-in-depth, unreachable in practice: both segments passed an
-          // anchored id pattern above, so neither can hold the separator.
+          // Defense-in-depth, unreachable in practice: the VPC segment passed an
+          // anchored id pattern above and the gateway id is AWS's own answer.
           const refusal = compositeIdSeparatorRefusal(resourceType, logicalId, attachmentSegments);
           if (refusal !== undefined) {
             this.logger.warn(`${refusal} Skipping import.`);

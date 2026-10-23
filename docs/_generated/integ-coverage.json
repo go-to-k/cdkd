@@ -3412,7 +3412,8 @@
           "l2"
         ],
         "ec2-route-targets": [
-          "l1"
+          "l1",
+          "literal"
         ],
         "ec2-vpc": [
           "l2"
@@ -8222,6 +8223,7 @@
     "AWS::EC2::TransitGateway",
     "AWS::EC2::TransitGatewayAttachment",
     "AWS::EC2::VPCCidrBlock",
+    "AWS::EC2::VPNGateway",
     "AWS::EC2::Volume",
     "AWS::EKS::Cluster",
     "AWS::ELBv2::LoadBalancer",

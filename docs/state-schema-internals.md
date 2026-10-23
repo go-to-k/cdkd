@@ -2369,7 +2369,7 @@ per-type notes.
 | `AWS::EC2::NetworkAclEntry` | `<networkAclId>\|<ruleNumber>\|<egress>` (`egress` is `true` / `false`) |
 | `AWS::EC2::Route` | `<routeTableId>\|<destination>` (`destination` is the `DestinationCidrBlock`, `DestinationIpv6CidrBlock`, or `DestinationPrefixListId` the route declares) |
 | `AWS::EC2::SecurityGroupIngress` | `<groupId>\|<ipProtocol>\|<fromPort>\|<toPort>` (an omitted port is recorded as `-1`) |
-| `AWS::EC2::VPCGatewayAttachment` | `<internetGatewayId>\|<vpcId>` (note the order — CloudFormation's own identifier is `VpcId` first) |
+| `AWS::EC2::VPCGatewayAttachment` | `<gatewayId>\|<vpcId>`, an `igw-...` or `vgw-...` gateway (note the order — CloudFormation's own identifier is `VpcId` first) |
 | `AWS::Glue::Table` | `<databaseName>\|<tableName>` (either name may itself contain `\|`: cdkd reads the table name as everything after the recorded `DatabaseName`) |
 | `AWS::Lambda::EventInvokeConfig` | `<functionName>\|<qualifier>` (a bare function name is read as qualifier `$LATEST`) |
 | `AWS::Route53::RecordSet` | `<hostedZoneId>\|<name>\|<type>` |

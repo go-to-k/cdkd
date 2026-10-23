@@ -4,6 +4,7 @@ import {
   DescribeInternetGatewaysCommand,
   DescribeNetworkAclsCommand,
   DescribeRouteTablesCommand,
+  DescribeVpnGatewaysCommand,
 } from '@aws-sdk/client-ec2';
 
 const mockSend = vi.fn();
@@ -32,6 +33,7 @@ import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js
 const VPC = 'vpc-0ae97b9333626cb64';
 const RTB = 'rtb-060869cb45357a579';
 const IGW = 'igw-0803cffd840e0c1fe';
+const VGW = 'vgw-0a1b2c3d4e5f60718';
 const ACL = 'acl-04a259a5caa34a32c';
 
 const importAs = (resourceType: string, knownPhysicalId: string, properties = {}) =>
@@ -123,9 +125,68 @@ describe('EC2Provider import() of CloudFormation-created VPC plumbing (issue #36
     ).resolves.toStrictEqual({ physicalId: `${IGW}|${VPC}`, attributes: {} });
   });
 
-  it('VPCGatewayAttachment: declines a VPN gateway attachment without an AWS call', async () => {
+  // Issue #2762: the SDK provider now attaches / detaches VPN gateways too,
+  // so a CloudFormation `VGW|vpc` attachment is adopted as cdkd `vgw|vpc`.
+  it('VPCGatewayAttachment: CloudFormation `VGW|vpc` is rebuilt as cdkd `vgw|vpc` from the template', async () => {
+    mockSend.mockResolvedValueOnce({
+      VpnGateways: [
+        { VpnGatewayId: VGW, State: 'available', VpcAttachments: [{ VpcId: VPC, State: 'attached' }] },
+      ],
+    });
     await expect(
-      importAs('AWS::EC2::VPCGatewayAttachment', `VGW|${VPC}`, { VpnGatewayId: 'vgw-1' })
+      importAs('AWS::EC2::VPCGatewayAttachment', `VGW|${VPC}`, { VpcId: VPC, VpnGatewayId: VGW })
+    ).resolves.toStrictEqual({ physicalId: `${VGW}|${VPC}`, attributes: {} });
+    const call = mockSend.mock.calls[0]![0] as DescribeVpnGatewaysCommand;
+    expect(call).toBeInstanceOf(DescribeVpnGatewaysCommand);
+    expect(call.input).toEqual({ VpnGatewayIds: [VGW] });
+  });
+
+  it('VPCGatewayAttachment: `VGW|vpc` with no gateway in the template finds the VPN gateway attached to the VPC', async () => {
+    mockSend.mockResolvedValueOnce({
+      VpnGateways: [
+        { VpnGatewayId: VGW, State: 'available', VpcAttachments: [{ VpcId: VPC, State: 'attached' }] },
+      ],
+    });
+    await expect(
+      importAs('AWS::EC2::VPCGatewayAttachment', `${VPC}|VGW`)
+    ).resolves.toStrictEqual({ physicalId: `${VGW}|${VPC}`, attributes: {} });
+    const call = mockSend.mock.calls[0]![0] as DescribeVpnGatewaysCommand;
+    expect(call).toBeInstanceOf(DescribeVpnGatewaysCommand);
+    expect(call.input).toEqual({ Filters: [{ Name: 'attachment.vpc-id', Values: [VPC] }] });
+  });
+
+  it('VPCGatewayAttachment: declines a VPN gateway whose attachment is not `attached`', async () => {
+    mockSend.mockResolvedValueOnce({
+      VpnGateways: [
+        { VpnGatewayId: VGW, State: 'available', VpcAttachments: [{ VpcId: VPC, State: 'detaching' }] },
+      ],
+    });
+    await expect(
+      importAs('AWS::EC2::VPCGatewayAttachment', `${VGW}|${VPC}`)
+    ).resolves.toBeNull();
+  });
+
+  it('VPCGatewayAttachment: declines a `deleted` VPN gateway AWS still lists as attached', async () => {
+    mockSend.mockResolvedValueOnce({
+      VpnGateways: [
+        { VpnGatewayId: VGW, State: 'deleted', VpcAttachments: [{ VpcId: VPC, State: 'attached' }] },
+      ],
+    });
+    await expect(
+      importAs('AWS::EC2::VPCGatewayAttachment', `${VPC}|VGW`)
+    ).resolves.toBeNull();
+  });
+
+  it('VPCGatewayAttachment: an `IGW` id beside a template VpnGatewayId is declined without an AWS call', async () => {
+    await expect(
+      importAs('AWS::EC2::VPCGatewayAttachment', `IGW|${VPC}`, { VpnGatewayId: VGW })
+    ).resolves.toBeNull();
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('VPCGatewayAttachment: declines a malformed VpnGatewayId without an AWS call', async () => {
+    await expect(
+      importAs('AWS::EC2::VPCGatewayAttachment', `VGW|${VPC}`, { VpnGatewayId: 'vgw-NOPE' })
     ).resolves.toBeNull();
     expect(mockSend).not.toHaveBeenCalled();
   });

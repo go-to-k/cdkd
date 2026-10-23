@@ -77,7 +77,7 @@ The joined value is what `cdkd state show` prints. It is also what
 | `AWS::EC2::NetworkAclEntry` | `<networkAclId>\|<ruleNumber>\|<egress>`, where `egress` is `true` or `false` |
 | `AWS::EC2::Route` | `<routeTableId>\|<destination>`, the CIDR block or prefix list the route declares |
 | `AWS::EC2::SecurityGroupIngress` | `<groupId>\|<ipProtocol>\|<fromPort>\|<toPort>`; an omitted port is `-1` |
-| `AWS::EC2::VPCGatewayAttachment` | `<internetGatewayId>\|<vpcId>`; CloudFormation's own order is VPC first |
+| `AWS::EC2::VPCGatewayAttachment` | `<gatewayId>\|<vpcId>` (`igw-...` or `vgw-...`); CloudFormation's own order is VPC first |
 | `AWS::Glue::Table` | `<databaseName>\|<tableName>` |
 | `AWS::Lambda::EventInvokeConfig` | `<functionName>\|<qualifier>`; a bare function name means `$LATEST` |
 | `AWS::Route53::RecordSet` | `<hostedZoneId>\|<name>\|<type>` |
