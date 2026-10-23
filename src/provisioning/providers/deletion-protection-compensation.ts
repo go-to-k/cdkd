@@ -889,25 +889,56 @@ function finalSnapshotWaitBudgetMs(opts: FlipSettleOptions): number {
 }
 
 /**
+ * Issue #5184: RDS-family statuses no wait outlasts, because they end only
+ * through someone's action or not at all. Every other status that is not
+ * `available` is TRANSITIONAL (`modifying`, `configuring-*`, `backing-up`,
+ * `upgrading`, `maintenance`, ...) and is waited out within the budget. A deny
+ * list, so a status AWS adds later waits rather than fails.
+ */
+const TERMINAL_DB_STATUSES: ReadonlySet<string> = new Set([
+  'deleting',
+  'failed',
+  'stopped',
+  'stopping',
+  'starting',
+  'storage-full',
+  'insufficient-capacity',
+  'restore-error',
+]);
+
+/** Whether `status` is one {@link TERMINAL_DB_STATUSES} names, or an `inaccessible-*` / `incompatible-*` one. */
+export function isTerminalDbStatus(status: string | undefined): boolean {
+  if (status === undefined) return false;
+  return (
+    TERMINAL_DB_STATUSES.has(status) ||
+    status.startsWith('inaccessible-') ||
+    status.startsWith('incompatible-')
+  );
+}
+
+/**
  * Issues #5155 / #5184: after `--remove-protection` turned an RDS-family
  * resource's DeletionProtection off, wait before a delete that takes a final
  * snapshot. The snapshot needs `available`, and the flip takes the resource
- * through `modifying`. Right after the flip, AWS can already read protection
- * OFF and `available` while the modification has not surfaced yet; a delete
- * sent then is refused once it does. Neither field alone proves the flip is
- * over, so a settled read (protection OFF, not `modifying`) ends the wait only
- * after `modifying` has been seen, or after {@link FLIP_TRANSITION_GRACE_MS} of
- * slept time for a flip that never shows it. The grace clock starts at the
+ * through `modifying`; an earlier change can also leave it in another
+ * transitional status (`configuring-enhanced-monitoring`, ...). A settled read
+ * is protection OFF and `available`. Right after the flip, AWS can already read
+ * that while the modification has not surfaced yet; a delete sent then is
+ * refused once it does. So a settled read ends the wait only after a
+ * transitional status has been seen, or after {@link FLIP_TRANSITION_GRACE_MS}
+ * of slept time for a flip that never shows one. A TERMINAL status
+ * ({@link isTerminalDbStatus}) with the guard off ends the wait at once: the
+ * delete is AWS's to accept or refuse. The grace clock starts at the
  * first protection-OFF read, not at the wait's start: time spent while the
  * guard still reads ON is not time the modification had to surface after the
- * OFF readback. A flip that shows `modifying` adds no wait beyond its own
- * transition.
+ * OFF readback. A flip that shows a transitional status adds no wait beyond
+ * that transition.
  *
  * This is the FAST PATH only: AWS can keep reading `available` past the grace
  * window and still refuse the delete, which
  * {@link deleteAfterProtectionFlipWithFinalSnapshot} recovers from.
  *
- * Fails closed: when the resource is still `modifying` or reads the guard ON
+ * Fails closed: when the resource is still transitional or reads the guard ON
  * at the budget's bound ({@link finalSnapshotWaitBudgetMs}), it throws, the
  * delete is never sent, and the compensation puts the guard back. A settled
  * read still inside the grace window at the bound lets the delete through,
@@ -933,16 +964,17 @@ async function settleBeforeFinalSnapshot(
   // Slept time since the first protection-OFF read: the grace clock.
   let graceSleptMs = 0;
   let sawOff = false;
-  let sawModifying = false;
+  let sawTransitional = false;
   for (;;) {
     const current = await opts.read();
     if (current === undefined) return;
-    if (current.status === 'modifying') sawModifying = true;
+    const terminal = isTerminalDbStatus(current.status);
+    if (current.status !== 'available' && !terminal) sawTransitional = true;
     if (current.deletionProtection === false) sawOff = true;
-    // Only the flip's own transition is waited out: protection still ON, or
-    // `modifying`. Any other state is AWS's to accept or refuse, as before.
-    const settled = current.deletionProtection === false && current.status !== 'modifying';
-    const inGrace = !sawModifying && graceSleptMs < FLIP_TRANSITION_GRACE_MS;
+    // A terminal status is not this wait's to outlast: AWS accepts or refuses.
+    if (current.deletionProtection === false && terminal) return;
+    const settled = current.deletionProtection === false && current.status === 'available';
+    const inGrace = !sawTransitional && graceSleptMs < FLIP_TRANSITION_GRACE_MS;
     if (settled && !inGrace) return;
     // The grace window is ending on its own sleep, never overshot by the backoff.
     const step = inGrace ? Math.min(delay, FLIP_TRANSITION_GRACE_MS - graceSleptMs) : delay;
@@ -988,10 +1020,9 @@ export function isFinalSnapshotNotAvailableRefusal(error: unknown, stateFault: s
  * then start the modification, so a delete it refuses as not `available`
  * ({@link isFinalSnapshotNotAvailableRefusal}) is retried once the resource
  * reads `available` with the guard off again. Every other failure, the member
- * refusal included, propagates at once. So does a refusal after which the
- * resource reads anything but `modifying` (still the flip's transition) or
- * `available` with the guard off: a lasting state, or a guard back ON, is not
- * this wait's to outlast.
+ * refusal included, propagates at once. Between retries every transitional
+ * status is waited out; a refusal after which the resource reads a TERMINAL
+ * status ({@link isTerminalDbStatus}) or the guard back ON is rethrown at once.
  *
  * The wait and every retry share one budget ({@link finalSnapshotWaitBudgetMs}).
  * At its bound the last refusal is rethrown as-is: the delete was never
@@ -1032,7 +1063,7 @@ export async function deleteAfterProtectionFlipWithFinalSnapshot(
         const current = await opts.read();
         if (current === undefined) break;
         if (current.deletionProtection === false && current.status === 'available') break;
-        if (current.status !== 'modifying') throw error;
+        if (current.deletionProtection === true || isTerminalDbStatus(current.status)) throw error;
       }
     }
   }

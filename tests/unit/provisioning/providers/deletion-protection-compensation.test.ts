@@ -9,6 +9,7 @@ import {
   FLIP_TRANSITION_GRACE_MS,
   deleteAfterProtectionFlipWithFinalSnapshot,
   isFinalSnapshotNotAvailableRefusal,
+  isTerminalDbStatus,
   waitForFlipToSettleBeforeFinalSnapshot,
   type FlipSettleReading,
 } from '../../../../src/provisioning/providers/deletion-protection-compensation.js';
@@ -116,6 +117,26 @@ describe('waitForFlipToSettleBeforeFinalSnapshot (#5184)', () => {
     expect(reads).toHaveLength(8);
   });
 
+  it('waits out a transitional status other than modifying, then ends on available', async () => {
+    const { error, reads } = await run([
+      OFF('configuring-enhanced-monitoring'),
+      OFF('configuring-enhanced-monitoring'),
+      OFF('available'),
+    ]);
+
+    expect(error).toBeUndefined();
+    // No grace added once a transitional status was seen.
+    expect(reads).toHaveLength(3);
+  });
+
+  it('ends at once on a terminal status with the guard off', async () => {
+    const { error, reads, sleeps } = await run([OFF('stopped')]);
+
+    expect(error).toBeUndefined();
+    expect(reads).toHaveLength(1);
+    expect(sleeps).toEqual([]);
+  });
+
   it('ends at once when the resource is gone', async () => {
     const { error, reads, sleeps } = await run([undefined]);
 
@@ -188,6 +209,43 @@ describe('isFinalSnapshotNotAvailableRefusal (#5184)', () => {
     expect(isFinalSnapshotNotAvailableRefusal(MEMBER, 'InvalidDBClusterStateFault')).toBe(false);
     expect(isFinalSnapshotNotAvailableRefusal(CLUSTER_NOT_AVAILABLE, 'InvalidDBInstanceStateFault')).toBe(false);
     expect(isFinalSnapshotNotAvailableRefusal('isn\'t currently in the available state', 'InvalidDBClusterStateFault')).toBe(false);
+  });
+});
+
+describe('isTerminalDbStatus (#5184)', () => {
+  it('denies only the statuses no wait outlasts', () => {
+    for (const status of [
+      'deleting',
+      'failed',
+      'stopped',
+      'stopping',
+      'starting',
+      'storage-full',
+      'insufficient-capacity',
+      'restore-error',
+      'inaccessible-encryption-credentials',
+      'inaccessible-encryption-credentials-recoverable',
+      'incompatible-parameters',
+      'incompatible-network',
+    ]) {
+      expect(isTerminalDbStatus(status), status).toBe(true);
+    }
+    for (const status of [
+      'available',
+      'modifying',
+      'configuring-enhanced-monitoring',
+      'configuring-iam-database-auth',
+      'backing-up',
+      'upgrading',
+      'maintenance',
+      'storage-optimization',
+      'resetting-master-credentials',
+      'renaming',
+      'some-status-aws-adds-later',
+      undefined,
+    ]) {
+      expect(isTerminalDbStatus(status), String(status)).toBe(false);
+    }
   });
 });
 
@@ -271,7 +329,24 @@ describe('deleteAfterProtectionFlipWithFinalSnapshot (#5184)', () => {
     expect(sends).toBeLessThan(30);
   });
 
-  it('rethrows at once when the resource reads a lasting state after the refusal', async () => {
+  it('waits out configuring-enhanced-monitoring after a refusal, then retries (#5184 live shape)', async () => {
+    const { error, sends, reads } = await runDelete(
+      [
+        OFF('modifying'),
+        OFF('available'),
+        OFF('configuring-enhanced-monitoring'),
+        OFF('configuring-enhanced-monitoring'),
+        OFF('available'),
+      ],
+      [CLUSTER_NOT_AVAILABLE, undefined]
+    );
+
+    expect(error).toBeUndefined();
+    expect(sends).toBe(2);
+    expect(reads).toBe(5);
+  });
+
+  it('rethrows at once when the resource reads a terminal status after the refusal', async () => {
     const { error, sends, reads } = await runDelete(
       [OFF('modifying'), OFF('available'), OFF('stopped')],
       [CLUSTER_NOT_AVAILABLE, undefined]

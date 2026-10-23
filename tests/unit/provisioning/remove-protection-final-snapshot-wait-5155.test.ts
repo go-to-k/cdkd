@@ -243,16 +243,45 @@ describe.each(CASES)('$label: --remove-protection then a final snapshot (#5155)'
     expect(order.reEnables).toHaveLength(1);
   });
 
-  it('holds a lasting state that is not the flip\'s own transition only for the #5184 grace window', async () => {
-    const lasting = c.kind === 'cluster' ? 'backing-up' : 'storage-optimization';
-    const order = route(c.kind, { protectionOn: true, afterFlip: Array(10).fill(lasting) });
+  it('waits out any transitional status, not only modifying, before the delete (#5184)', async () => {
+    // The live rds-aurora shape: an earlier change left the cluster
+    // `configuring-enhanced-monitoring`, which is neither `available` nor
+    // `modifying`.
+    const transitional =
+      c.kind === 'cluster' ? 'configuring-enhanced-monitoring' : 'storage-optimization';
+    const order = route(c.kind, { protectionOn: true, afterFlip: Array(10).fill(transitional) });
     const context: DeleteContext = { removeProtection: true, finalSnapshotIdentifier: SNAP };
 
     await c.make().delete('Res', 'res', c.type, c.properties, context);
 
-    // Never `modifying`, so the delete waits out the 30s grace (reads after
-    // 0, 5, 15, 25 and 30s of sleep) and then leaves the state to AWS.
-    expect(describesBetweenFlipAndDelete(order)).toBe(5);
+    // Ten transitional reads, then `available`.
+    expect(describesBetweenFlipAndDelete(order)).toBe(11);
+  });
+
+  it('retries a refusal while the resource is in a transitional status other than modifying (#5184)', async () => {
+    // Refused once; the readback then shows configuring-enhanced-monitoring
+    // twice before `available`, and the retry is accepted.
+    const order = route(c.kind, {
+      protectionOn: true,
+      afterFlip: ['available', 'available', 'available', 'available', 'available',
+        'configuring-enhanced-monitoring', 'configuring-enhanced-monitoring'],
+      deleteRefusals: 1,
+    });
+    const context: DeleteContext = { removeProtection: true, finalSnapshotIdentifier: SNAP };
+
+    await c.make().delete('Res', 'res', c.type, c.properties, context);
+
+    expect(order.filter((n) => /^DeleteDB(Cluster|Instance)Command$/.test(n))).toHaveLength(2);
+    expect(order.reEnables).toHaveLength(0);
+  });
+
+  it('leaves a terminal status to AWS at once instead of waiting (#5184)', async () => {
+    const order = route(c.kind, { protectionOn: true, afterFlip: Array(10).fill('stopped') });
+    const context: DeleteContext = { removeProtection: true, finalSnapshotIdentifier: SNAP };
+
+    await c.make().delete('Res', 'res', c.type, c.properties, context);
+
+    expect(describesBetweenFlipAndDelete(order)).toBe(1);
   });
 
   it('waits for available after the flip when a final snapshot is requested', async () => {
