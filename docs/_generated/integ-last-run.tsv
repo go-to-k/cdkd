@@ -302,6 +302,7 @@ recreate-via-cc-api	2026-10-17T13:29:07Z	PASS	136	verify.sh	rc ok, orph clean (l
 recreate-via-sdk-provider	2026-10-17T13:29:07Z	PASS	106	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
 redacted-delete-address	2026-10-18T18:32:28Z	PASS	91	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
+refactor-command	2026-10-23T15:45:46Z	PASS	95	verify.sh	rc ok, orph clean, fixed Phase2c assertion in 8f9f360cf (#5201)
 remove-protection	2026-10-22T15:37:12Z	PASS	2120	verify.sh	rc ok, orph clean
 remove-protection-compensation	2026-10-22T15:37:12Z	PASS	251	verify.sh	rc ok, orph clean
 remove-protection-journaled-orphan	2026-10-20T10:53:50Z	PASS	675	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
