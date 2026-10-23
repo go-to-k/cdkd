@@ -397,3 +397,4 @@ vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-prov
 vpc-nat-gateway	2026-10-18T21:41:29Z	PASS	809	verify.sh	rc ok, orph clean (#5071)
 wafv2	2026-10-20T06:35:00Z	PASS	180	standard	deploy+destroy clean, 0 orphans
 wait-condition-handle	2026-09-30T12:06:02Z	PASS	66	verify.sh	rc ok, orph clean (#4228)
+wide-independent	2026-10-23T19:34:08Z	FAIL	100	verify.sh	#5209 first run; assert_live found 0/12 SQS queues post-deploy. Root cause (bisected): cleanup()'s pre-deploy reap_run probes aws sqs list-queues for the SAME not-yet-existing run-token prefix, and SQS ListQueues caches that empty result briefly; assert_live's immediate re-query of the identical prefix hits the stale cache. cdkd deploy itself is NOT at fault: Created 48/48 every attempt, confirmed live in AWS via direct SDK/CLI calls in isolation (sns/ssm/logs pre-probes or no pre-probe: always pass). Fixture bug, not edited per instructions.
