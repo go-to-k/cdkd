@@ -1432,8 +1432,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::EC2::VPCGatewayAttachment',
     {
-      handled: new Set<string>(['InternetGatewayId', 'VpcId']),
-      silentDrop: new Map<string, string>([['VpnGatewayId', 'not yet implemented by cdkd']]),
+      handled: new Set<string>(['InternetGatewayId', 'VpcId', 'VpnGatewayId']),
+      silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['AttachmentType']),
       ccRouteUnavailable: false,

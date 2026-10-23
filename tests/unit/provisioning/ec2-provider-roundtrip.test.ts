@@ -309,7 +309,8 @@ describe('EC2Provider read-update round-trip', () => {
     // keep.
     const immutableCases: Array<[string, string]> = [
       ['AWS::EC2::InternetGateway', 'igw-1'],
-      ['AWS::EC2::VPCGatewayAttachment', 'igw-1|vpc-1'],
+      // AWS::EC2::VPCGatewayAttachment left this list in go-to-k/cdkd#5216: it
+      // swaps the gateway in place (ec2-vpc-gateway-attachment-vpn.test.ts).
       ['AWS::EC2::NatGateway', 'nat-1'],
       ['AWS::EC2::RouteTable', 'rtb-1'],
       ['AWS::EC2::SubnetRouteTableAssociation', 'rtbassoc-1'],

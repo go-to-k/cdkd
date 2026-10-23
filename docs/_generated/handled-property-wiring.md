@@ -15,7 +15,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **89**
-- Declared properties: **1174** (**1172** with read evidence)
+- Declared properties: **1175** (**1173** with read evidence)
 - Fully wired classes: **87**
 - Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **38**
@@ -49,7 +49,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `CognitoUserPoolProvider` (cognito-provider.ts) | `object spread in narrowMfaConfiguration()` |
 | `DynamoDBGlobalTableProvider` (dynamodb-globaltable-provider.ts) | `computed key in canonicalizeDriftProperties()`, `computed key in collectDesiredKeyAttributeNames()`, `computed key in replicationImpliedStreamSpecification()`, `computed key in update()`, `extractLocalTags(...) in update()`, `object spread in canonicalizeDesiredProperties()`, `object spread in canonicalizeDriftProperties()`, `object spread in create()`, `object spread in stripProvisionedCapacityKeys()` |
 | `DynamoDBTableProvider` (dynamodb-table-provider.ts) | `computed key in canonicalizeDriftPair()`, `object spread in canonicalizeDriftProperties()` |
-| `EC2Provider` (ec2-provider.ts) | `Array.isArray(...) in isPlainRecord()`, `computed key in comparableIngressIdentity()`, `computed key in ingressRuleIdentity()`, `computed key in narrowRouteDestinations()`, `computed key in updateRoute()`, `identity(...) in readSgIngressByIdentity()`, `object spread in canonicalizeSgInlineRuleProtocols()`, `object spread in createSecurityGroupIngress()`, `object spread in narrowIngressIpProtocol()`, `object spread in narrowRouteDestinations()`, `object spread in updateSecurityGroupIngress()`, `withRemovalDefaults(...) in update()` |
+| `EC2Provider` (ec2-provider.ts) | `Array.isArray(...) in isPlainRecord()`, `computed key in comparableIngressIdentity()`, `computed key in ingressRuleIdentity()`, `computed key in narrowRouteDestinations()`, `computed key in recordedGatewayIdOf()`, `computed key in updateRoute()`, `identity(...) in readSgIngressByIdentity()`, `object spread in canonicalizeSgInlineRuleProtocols()`, `object spread in createSecurityGroupIngress()`, `object spread in narrowIngressIpProtocol()`, `object spread in narrowRouteDestinations()`, `object spread in updateSecurityGroupIngress()`, `withRemovalDefaults(...) in update()` |
 | `ECRProvider` (ecr-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
 | `ECSProvider` (ecs-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `EFSProvider` (efs-provider.ts) | `computed key in updateFileSystem()` |
@@ -107,7 +107,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `DocDBSubnetGroupProvider` | docdb-subnet-group-provider.ts | wired | 4 | 4 |
 | `DynamoDBGlobalTableProvider` | dynamodb-globaltable-provider.ts | wired | 14 | 14 |
 | `DynamoDBTableProvider` | dynamodb-table-provider.ts | wired | 19 | 19 |
-| `EC2Provider` | ec2-provider.ts | wired | 70 | 70 |
+| `EC2Provider` | ec2-provider.ts | wired | 71 | 71 |
 | `ECRProvider` | ecr-provider.ts | wired | 9 | 9 |
 | `ECSProvider` | ecs-provider.ts | wired | 48 | 48 |
 | `EFSProvider` | efs-provider.ts | wired | 18 | 18 |

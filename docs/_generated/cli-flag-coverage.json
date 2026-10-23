@@ -2567,6 +2567,8 @@
     "--vpc-config",
     "--vpc-id",
     "--vpc-ids",
+    "--vpn-gateway-id",
+    "--vpn-gateway-ids",
     "--wait-time-seconds",
     "--watch",
     "--ws",

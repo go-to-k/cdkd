@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 89,
-    "declaredProperties": 1174,
-    "wiredProperties": 1172,
+    "declaredProperties": 1175,
+    "wiredProperties": 1173,
     "wired": 87,
     "gap": 0,
     "allowListed": 2,
@@ -6305,7 +6305,7 @@
       "file": "ec2-provider.ts",
       "className": "EC2Provider",
       "bucket": "wired",
-      "declaredCount": 70,
+      "declaredCount": 71,
       "properties": [
         {
           "name": "AllocationId",
@@ -6921,8 +6921,12 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
             "createVpcGatewayAttachment",
+            "resolveVpcGatewayAttachmentTarget",
+            "update",
+            "updateVpcGatewayAttachment",
             "verifyExplicit"
           ]
         },
@@ -7631,12 +7635,16 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
             "createNetworkAcl",
             "createRouteTable",
             "createSecurityGroup",
             "createSubnet",
             "createVpcGatewayAttachment",
+            "resolveVpcGatewayAttachmentTarget",
+            "update",
+            "updateVpcGatewayAttachment",
             "verifyExplicit"
           ]
         },
@@ -7657,6 +7665,26 @@
             "update",
             "updateRoute"
           ]
+        },
+        {
+          "name": "VpnGatewayId",
+          "status": "wired",
+          "types": [
+            "AWS::EC2::VPCGatewayAttachment"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createVpcGatewayAttachment",
+            "resolveVpcGatewayAttachmentTarget",
+            "update",
+            "updateVpcGatewayAttachment",
+            "verifyExplicit"
+          ]
         }
       ],
       "gaps": [],
@@ -7665,6 +7693,7 @@
         "computed key in comparableIngressIdentity()",
         "computed key in ingressRuleIdentity()",
         "computed key in narrowRouteDestinations()",
+        "computed key in recordedGatewayIdOf()",
         "computed key in updateRoute()",
         "identity(...) in readSgIngressByIdentity()",
         "object spread in canonicalizeSgInlineRuleProtocols()",
