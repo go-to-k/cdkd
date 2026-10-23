@@ -1,5 +1,5 @@
 import { Command, InvalidArgumentError, Option } from 'commander';
-import { findRefactorHints, hintSidesOf, withMovedTo } from '../../analyzer/refactor-hints.js';
+import { findRefactorHints, withMovedTo } from '../../analyzer/refactor-hints.js';
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
 import { orphanRecordsPrintingBag } from '../../deployment/secret-name-needles.js';
 import {
@@ -600,13 +600,15 @@ async function diffCommand(
     // renamed in its stack, or moved to another selected stack of the same
     // environment -- is shown with where it reappears. Rows already in hand;
     // no AWS call.
+    // Only stacks `cdkd refactor` would plan take part: one with no cdkd
+    // record yet is never a move's destination ("a refactor never creates a
+    // stack"), and one the deploy refuses is refused by refactor too.
     const hints = findRefactorHints(
-      trees.map((tree, i) => ({
-        id: String(i),
-        stackName: tree.stackName,
-        env: treeEnvs[i]!,
-        ...hintSidesOf(tree.changes.values()),
-      }))
+      trees.flatMap((tree, i) =>
+        tree.refactorSides === undefined
+          ? []
+          : [{ id: String(i), stackName: tree.stackName, env: treeEnvs[i]!, ...tree.refactorSides }]
+      )
     );
     trees.forEach((tree, i) => {
       const forTree = hints.get(String(i));

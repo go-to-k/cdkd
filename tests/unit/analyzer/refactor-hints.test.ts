@@ -8,12 +8,20 @@ import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   findRefactorHints,
   hintSidesOf,
+  rollbackOrphanIds,
   movedToHint,
   withMovedTo,
   type RefactorHintStack,
 } from '../../../src/analyzer/refactor-hints.js';
 import { formatDestructiveChange } from '../../../src/analyzer/destructive-changes.js';
-import { diffTreeToJson, renderChangeLines } from '../../../src/cli/commands/diff-recursive.js';
+import {
+  buildDiffTree,
+  diffTreeToJson,
+  renderChangeLines,
+} from '../../../src/cli/commands/diff-recursive.js';
+import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+import type { StackState } from '../../../src/types/state.js';
 import type { DiffTreeNode } from '../../../src/cli/commands/diff-recursive.js';
 import { requireDeploymentApproval } from '../../../src/deployment/deployment-approval.js';
 import type { ResourceChange } from '../../../src/types/state.js';
@@ -117,6 +125,58 @@ describe('findRefactorHints', () => {
   });
 });
 
+describe('which stacks take part (cdkd refactor would plan them)', () => {
+  const template = {
+    Resources: { NewQueue: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q' } } },
+  };
+  const record: StackState = {
+    version: 13,
+    stackName: 'S',
+    region: 'us-east-1',
+    resources: {
+      OldQueue: { physicalId: 'u', resourceType: 'AWS::SQS::Queue', properties: { QueueName: 'q' } },
+    },
+    outputs: {},
+    lastModified: 1,
+  };
+  const tree = (state: StackState | null, isNestedChild = false) =>
+    buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template,
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: {
+        getState: async () => (state === null ? null : { state, etag: 'e' }),
+      } as unknown as S3StateBackend,
+      diffCalculator: new DiffCalculator(),
+      isNestedChild,
+    });
+
+  it('a stack with a cdkd record offers its rows', async () => {
+    const node = await tree(record);
+    expect(node.refactorSides?.deletes.map((d) => d.logicalId)).toEqual(['OldQueue']);
+    expect(node.refactorSides?.creates.map((c) => c.logicalId)).toEqual(['NewQueue']);
+  });
+
+  it('a stack with NO cdkd record yet offers none: a refactor never moves into it', async () => {
+    expect((await tree(null)).refactorSides).toBeUndefined();
+  });
+
+  it('a nested child offers none: cdkd refactor plans top-level stacks only', async () => {
+    expect((await tree(record, true)).refactorSides).toBeUndefined();
+  });
+
+  it('a rollback-orphan id is on neither side', async () => {
+    const node = await tree({ ...record, orphans: [{ logicalId: 'OldQueue' } as never] });
+    expect(node.refactorSides?.deletes).toEqual([]);
+    expect(rollbackOrphanIds({ orphans: [{ logicalId: 'X' } as never, null as never] })).toEqual(
+      new Set(['X'])
+    );
+  });
+});
+
 describe('hintSidesOf', () => {
   it('takes CREATE desired properties and DELETE recorded properties, and nothing else', () => {
     const sides = hintSidesOf([
@@ -193,6 +253,27 @@ describe('where the hint is rendered', () => {
     );
     expect(formatDestructiveChange(destroyed!)).toContain(HINT);
     expect(formatDestructiveChange(replaced!)).not.toContain('moved to');
+  });
+
+  it('not in the approval prompt of a nested child, nor for a rollback-orphan id', async () => {
+    for (const extra of [{ stackName: 'Parent~Child' }, { orphans: [{ logicalId: 'OldTable' }] }]) {
+      const approve = vi.fn(async () => true);
+      await requireDeploymentApproval({
+        options: { requireApproval: 'destructive', approveDeployment: approve },
+        stackName: 'Src',
+        changes: [
+          { logicalId: 'OldTable', changeType: 'DELETE', resourceType: 'AWS::DynamoDB::Table', currentProperties: {} },
+          { logicalId: 'NewTable', changeType: 'CREATE', resourceType: 'AWS::DynamoDB::Table', desiredProperties: {} },
+        ],
+        records: { OldTable: { physicalId: 't', resourceType: 'AWS::DynamoDB::Table', properties: {} } },
+        template: { Resources: {} },
+        ...(extra as object),
+      });
+      const request = (approve.mock.calls[0] as unknown[])[0] as {
+        destructiveChanges: Array<{ movedTo?: unknown }>;
+      };
+      expect(request.destructiveChanges[0]!.movedTo, JSON.stringify(extra)).toBeUndefined();
+    }
   });
 
   it("in the deploy approval prompt, for a rename within the stack being deployed", async () => {

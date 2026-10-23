@@ -9,7 +9,7 @@
  * such candidate. No AWS call. A hint is a suggestion: `cdkd refactor`
  * re-checks every pair with its own diff before writing anything.
  */
-import type { ResourceChange } from '../types/state.js';
+import type { ResourceChange, StackState } from '../types/state.js';
 import type { DestructiveChange } from './destructive-changes.js';
 import { displayIdent } from '../utils/display-safe.js';
 import {
@@ -78,14 +78,36 @@ export function findRefactorHints(stacks: readonly RefactorHintStack[]): Refacto
   return hints;
 }
 
-/** A stack's CREATE and DELETE rows as pairing sides (a DELETE carries the record's properties). */
-export function hintSidesOf(changes: Iterable<ResourceChange>): {
+/** One stack's rows as pairing sides. */
+export interface RefactorSides {
   creates: RefactorCreateSide[];
   deletes: RefactorDeleteSide[];
-} {
+}
+
+/**
+ * The logical ids a rollback-orphan record names: the next deploy settles
+ * them, so `cdkd refactor` pairs neither side of one (as `planStackRefactor`).
+ */
+export function rollbackOrphanIds(state: Pick<StackState, 'orphans'>): Set<string> {
+  return new Set(
+    (Array.isArray(state.orphans) ? state.orphans : [])
+      .map((o) => (o !== null && typeof o === 'object' ? o.logicalId : undefined))
+      .filter((id): id is string => typeof id === 'string')
+  );
+}
+
+/**
+ * A stack's CREATE and DELETE rows as pairing sides (a DELETE carries the
+ * record's properties), leaving out the ids in `exclude`.
+ */
+export function hintSidesOf(
+  changes: Iterable<ResourceChange>,
+  exclude: ReadonlySet<string> = new Set()
+): RefactorSides {
   const creates: RefactorCreateSide[] = [];
   const deletes: RefactorDeleteSide[] = [];
   for (const change of changes) {
+    if (exclude.has(change.logicalId)) continue;
     if (change.changeType === 'CREATE') {
       creates.push({
         logicalId: change.logicalId,

@@ -1,5 +1,11 @@
 import { hasPendingMovesOut, pendingMovesRefusalMessage } from '../../state/pending-moves.js';
-import { movedToHint, type MovedTo } from '../../analyzer/refactor-hints.js';
+import {
+  hintSidesOf,
+  movedToHint,
+  rollbackOrphanIds,
+  type MovedTo,
+  type RefactorSides,
+} from '../../analyzer/refactor-hints.js';
 import {
   readRefactorMarkerOnce,
   refactorMarkerRefusalMessage,
@@ -323,6 +329,12 @@ export interface DiffTreeNode {
    * every tree is built; absent elsewhere.
    */
   refactorHints?: ReadonlyMap<string, MovedTo>;
+  /**
+   * This stack's rows a `cdkd refactor` could pair (go-to-k/cdkd#5203), set
+   * only where that command would plan the stack: a top-level stack with a
+   * cdkd record and nothing `blocking`, rollback-orphan ids left out.
+   */
+  refactorSides?: RefactorSides;
   /**
    * Per-key changes to this node's persisted `Outputs` bag (issue #1921).
    *
@@ -675,6 +687,8 @@ async function loadStateOrEmpty(
   unreadable: string[];
   unreadableContainers: UnreadableContainer[];
   deployRefusals: string[];
+  /** Whether a record was read (false: the stack has no cdkd state yet). */
+  found: boolean;
 }> {
   const refactorMarker = readRefactorMarkerOnce(stateBackend);
   const result = await stateBackend.getState(stackName, region);
@@ -833,9 +847,16 @@ async function loadStateOrEmpty(
     if (isReadableBag(result.state.outputs) && !hasReadableExportSet(result.state)) {
       logger.warn(malformedExportNamesWarning(stackName, region, refusalRecovery));
     }
-    return { state: result.state, unreadable, unreadableContainers, deployRefusals };
+    return {
+      state: result.state,
+      unreadable,
+      unreadableContainers,
+      deployRefusals,
+      found: true,
+    };
   }
   return {
+    found: false,
     state: {
       stackName,
       region,
@@ -3635,7 +3656,7 @@ export async function buildDiffTree(args: {
   } = args;
   const unboundHealer = attributeHealerFor?.(stackName, region);
 
-  const { state, unreadable, unreadableContainers, deployRefusals } = await loadStateOrEmpty(
+  const { state, unreadable, unreadableContainers, deployRefusals, found } = await loadStateOrEmpty(
     stackName,
     region,
     stateBackend,
@@ -3768,6 +3789,9 @@ export async function buildDiffTree(args: {
     ),
     children: [],
   };
+  if (found && !isNestedChild && node.blocking.length === 0) {
+    node.refactorSides = hintSidesOf(changes.values(), rollbackOrphanIds(state));
+  }
   if (!recursive) return node;
 
   // Template-present children, in template order (CREATE / UPDATE / present).

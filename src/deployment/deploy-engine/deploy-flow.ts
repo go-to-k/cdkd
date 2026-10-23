@@ -1783,6 +1783,7 @@ export async function doDeployWithPrefetch(
       stackName,
       changes: changes.values(),
       records: currentState.resources,
+      orphans: currentState.orphans,
       template: effectiveTemplate,
       recreateTargetIds: recreateTargetIdsFor(engine.options.recreateTargets, stackName),
       // go-to-k/cdkd#4601: the `broadening` table prints resolved values;

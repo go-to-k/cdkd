@@ -139,7 +139,8 @@ withheld rows can then have the same `name`. The reasons are under
 
 Each entry is one change that `--fail-on=destructive` fails on. It has
 `logicalId`, `resourceType`, `impact`, `constructPath` when state records
-one, and `movedTo` on a removal [`cdkd refactor`](cli-refactor.md) would keep.
+one, and `movedTo` on a `WILL_DESTROY` removal [`cdkd refactor`](cli-refactor.md)
+would keep.
 
 | `impact` | Text output |
 | --- | --- |
