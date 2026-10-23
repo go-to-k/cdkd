@@ -254,7 +254,7 @@ describe('planStackRefactor', () => {
         if (!(id in want)) changes.set(id, { logicalId: id, changeType: 'DELETE', resourceType: queue });
       }
       return { changes, blocking: [] };
-    }) as RefactorDiffFn & { calls: number };
+    }) as unknown as RefactorDiffFn & { calls: number };
     fn.calls = 0;
     return fn;
   }
