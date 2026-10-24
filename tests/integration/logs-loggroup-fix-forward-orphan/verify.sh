@@ -415,8 +415,9 @@ for lid in OrphanA OrphanC; do
 done
 # go-to-k/cdkd#2319: each refused cleanup line names the AWS failure by its
 # class plus the --verbose pointer, right after its head. AWS's text for the
-# explicit deny names this account, the deny role and `not authorized`; a FAIL
-# prints only the line's head (to its first colon) and its length.
+# explicit deny names this account, the deny role and `not authorized`; this
+# assertion's own FAIL prints only the line's head (to its first colon) and
+# its length.
 assert_cleanup_line_redacted() { # usage: assert_cleanup_line_redacted <cleanup head up to the logical id>
   local line rest head
   line="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/inject.log" | awk -v n="$1" 'index($0, n) { l = $0 } END { print l }')"

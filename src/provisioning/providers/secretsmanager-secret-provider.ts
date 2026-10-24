@@ -425,7 +425,8 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
             logicalId,
             name,
             cause
-          )
+          ),
+        true
       );
     }
   }
@@ -687,7 +688,8 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
    * operation's masker, and the wrap is stamped `markRedactedCause`, so the
    * retry classifiers read the withheld text on the `cause` chain. An "already
    * exists" (`ResourceExistsException` on a taken name) is restated
-   * ({@link relayedNameCollision}). A cdkd-authored or transport error keeps
+   * ({@link relayedNameCollision}) from the create only (`relayCollision`):
+   * elsewhere "it" would read as this secret. A cdkd-authored or transport error keeps
    * its text, masked (issue #2177), stamped only when the mask changed it
    * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like
    * an AWS one, unstamped (it has no chain). The delete tests its typed
@@ -700,12 +702,14 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
   private wrapCaughtError(
     mask: MaskerFn,
     error: unknown,
-    build: (text: string) => ProvisioningError
+    build: (text: string) => ProvisioningError,
+    relayCollision = false
   ): ProvisioningError {
     const failure = describeAwsFailure(error);
     if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
     this.logger.debug(mask(build(mask(failure.detail)).message));
-    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    const relay = relayCollision ? relayedNameCollision(failure.detail) : '';
+    const wrapped = build(`${mask(failure.summary)}${relay}`);
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 

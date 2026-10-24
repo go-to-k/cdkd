@@ -415,6 +415,51 @@ describe('the Secrets Manager create and update wraps', () => {
     expect(isNameCollisionErrorFrom(failure, 'Sec')).toBe(true);
   });
 
+  it('update: an "already exists" is not restated as this secret\'s own collision', async () => {
+    failOn({
+      UpdateSecretCommand: () => awsErr('ResourceExistsException', 'A version already exists.'),
+    });
+    const failure = await caught(update());
+    expect(failure.message).toContain('ResourceExistsException.');
+    expect(failure.message).not.toContain(RESTATED);
+  });
+
+  it('a non-Error throw is withheld, unstamped', async () => {
+    mockSend.mockImplementation(async (command: unknown) => {
+      if (commandName(command) === 'CreateSecretCommand') throw `raw ${DENIED}`;
+      return {};
+    });
+    const failure = await caught(create());
+    expect(failure.message).toContain('Failed to create secret Sec: ');
+    expect(failure.message).not.toContain(ACCOUNT);
+    expect(hasRedactedCause(failure)).toBe(false);
+  });
+
+  it.each([
+    [
+      'secret',
+      'DeleteSecretCommand',
+      () =>
+        new SecretsManagerSecretProvider().delete(
+          'Res',
+          'arn:aws:secretsmanager:us-east-1:000000000000:secret:s-AbCdEf',
+          'AWS::SecretsManager::Secret',
+          undefined,
+          ctx
+        ),
+    ],
+    [
+      'EventBridge bus',
+      'DeleteEventBusCommand',
+      () => new EventBridgeBusProvider().delete('Res', 'bus-1', 'AWS::Events::EventBus', undefined, ctx),
+    ],
+  ] as const)('%s delete: a cdkd-authored error keeps its text, masked', async (_s, command, run) => {
+    failOn({ [command]: () => new Error('socket hang up near s3cr3t') });
+    const failure = await caught(run());
+    expect(failure.message).toContain('socket hang up near ***');
+    expect(failure.message).not.toContain(VERBOSE_POINTER);
+  });
+
   it('create: a cdkd-authored error keeps its text, masked', async () => {
     failOn({ CreateSecretCommand: () => new Error('socket hang up near s3cr3t') });
     const failure = await caught(create());
@@ -782,7 +827,11 @@ describe('the CodeCommit identity-read wraps', () => {
       `Failed to update CodeCommit Repository Res: AccessDenied. ${VERBOSE_POINTER}`
     );
     expect(hasRedactedCause(failure)).toBe(true);
-    expect(lines(debug).some((l) => l.includes(MASKED_DENIED))).toBe(true);
+    expect(
+      lines(debug).some(
+        (l) => l.includes('GetRepository failed while checking the holder') && l.includes(MASKED_DENIED)
+      )
+    ).toBe(true);
     expect(lines(debug).join('\n')).not.toContain('s3cr3t');
   });
 
@@ -828,6 +877,8 @@ describe('the final-snapshot refusals', () => {
   const SITES: {
     site: string;
     head: string;
+    /** The full head, where `head` cannot spell a generated snapshot id. */
+    pattern?: RegExp;
     run: (make: () => Error) => Promise<unknown>;
   }[] = [
     {
@@ -856,6 +907,7 @@ describe('the final-snapshot refusals', () => {
     {
       site: 'Redshift snapshot poll',
       head: 'Failed while waiting for final snapshot ',
+      pattern: /Failed while waiting for final snapshot \S+ of Rs \(rs-1\): AccessDenied\. /,
       run: (make) =>
         createRedshiftFinalSnapshot(client({ DescribeClusterSnapshotsCommand: make }), 'rs-1', 'Rs', logger),
     },
@@ -891,10 +943,11 @@ describe('the final-snapshot refusals', () => {
     logger.debug.mockReset();
   });
 
-  it.each(SITES)('$site: class only, cause kept and stamped, AWS text at debug', async ({ head, run }) => {
+  it.each(SITES)('$site: class only, cause kept and stamped, AWS text at debug', async ({ head, pattern, run }) => {
     expectCarriesIdentity(denied);
     const failure = await caught(run(denied));
     expect(failure.message).toContain(head);
+    if (pattern) expect(failure.message).toMatch(pattern);
     expect(failure.message).toContain(`AccessDenied. ${VERBOSE_POINTER} `);
     expect(failure.message).toMatch(/was NOT deleted/);
     expect(failure.message).not.toContain(ACCOUNT);
