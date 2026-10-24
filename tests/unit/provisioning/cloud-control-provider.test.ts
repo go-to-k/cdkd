@@ -52,6 +52,22 @@ vi.mock('@aws-sdk/client-redshift', () => ({
 // go-to-k/cdkd#5260: an imported HTTP API's definition change goes through
 // ReimportApi on a client the provider builds itself.
 const mockApiGwV2Send = vi.hoisted(() => vi.fn());
+const mockS3Send = vi.hoisted(() => vi.fn());
+// The bucket-region correction; null ("keep the shared client") unless a case
+// stages a rebuilt one.
+const mockRebuildForBucketRegion = vi.hoisted(() => vi.fn());
+vi.mock('../../../src/utils/bucket-region-client.js', () => ({
+  rebuildClientForBucketRegion: mockRebuildForBucketRegion,
+}));
+// A 301 is followed with a client the provider builds for the named region.
+const mockRedirectS3Send = vi.hoisted(() => vi.fn());
+const mockRedirectS3Client = vi.hoisted(() =>
+  vi.fn(() => ({ send: mockRedirectS3Send, destroy: vi.fn(), config: {} }))
+);
+vi.mock('@aws-sdk/client-s3', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@aws-sdk/client-s3')>()),
+  S3Client: mockRedirectS3Client,
+}));
 const mockApiGwV2Client = vi.hoisted(() =>
   vi.fn(() => ({ send: mockApiGwV2Send, destroy: vi.fn() }))
 );
@@ -80,6 +96,8 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     cloudFront: { send: vi.fn() },
     lambda: { send: vi.fn() },
     eventBridge: { send: mockEventBridgeSend },
+    // go-to-k/cdkd#5264: a BodyS3Location definition is read with GetObject.
+    s3: { send: mockS3Send },
   }),
 }));
 
@@ -114,11 +132,13 @@ import {
   CloudControlOperationFailedError,
   isNotFoundMessage,
   handlerAuthFailureHint,
+  s3RedirectRegion,
 } from '../../../src/provisioning/cloud-control-provider.js';
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
 import { clearReadOnlyPropertiesCache } from '../../../src/provisioning/read-only-properties.js';
 import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
 import {
+  hasRedactedCause,
   isMarkedNonRetryable,
   isRetryableTransientError,
 } from '../../../src/deployment/retryable-errors.js';
@@ -2631,6 +2651,12 @@ describe('CloudControlProvider update: an ApiGatewayV2 Api imported from Body (g
     clearCreateOnlyPropertiesCache();
     mockCloudControlConfigRegion.mockResolvedValue('us-east-1');
     mockCloudFormationSend.mockResolvedValue({ Schema: JSON.stringify(SCHEMA) });
+    mockRebuildForBucketRegion.mockReset();
+    mockRebuildForBucketRegion.mockResolvedValue(null);
+    // `clearAllMocks` keeps a queued `mockRejectedValueOnce` a case left
+    // unconsumed (a 301 not followed); reset so it cannot leak forward.
+    mockS3Send.mockReset();
+    mockRedirectS3Send.mockReset();
     wire();
     provider = new CloudControlProvider();
   });
@@ -2728,47 +2754,360 @@ describe('CloudControlProvider update: an ApiGatewayV2 Api imported from Body (g
     expect(result.sentNothing).toBe(true);
   });
 
-  it('refuses a BodyS3Location change, non-retryable, before any write', async () => {
-    const error = await provider
-      .update(
-        'Api',
-        'api123',
-        TYPE,
-        { BodyS3Location: { Bucket: 'b', Key: 'v2.yaml' } },
-        { BodyS3Location: { Bucket: 'b', Key: 'v1.yaml' } }
-      )
-      .then(
-        () => new Error('expected a refusal'),
-        (e: unknown) => e as Error
-      );
+  /** GetObject inputs, in order. */
+  function s3Reads(): unknown[] {
+    return mockS3Send.mock.calls.map((c) => (c[0] as { input: unknown }).input);
+  }
 
-    expect(error.message).toContain('the change is to BodyS3Location');
-    expect(isMarkedNonRetryable(error)).toBe(true);
-    expect(reimports()).toEqual([]);
+  function wireS3Object(text: string): void {
+    mockS3Send.mockResolvedValue({ Body: { transformToString: () => Promise.resolve(text) } });
+  }
+
+  it('reads a changed BodyS3Location (pinned Version; Etag recorded, never sent) and reimports its text', async () => {
+    wireS3Object('openapi: 3.0.1 # v2');
+    await provider.update(
+      'Api',
+      'api123',
+      TYPE,
+      { BodyS3Location: { Bucket: 'defs', Key: 'v2.yaml', Version: 'ver2', Etag: '"e2"' } },
+      { BodyS3Location: { Bucket: 'defs', Key: 'v1.yaml' } }
+    );
+
+    expect(s3Reads()).toEqual([{ Bucket: 'defs', Key: 'v2.yaml', VersionId: 'ver2' }]);
+    expect(reimports()).toEqual([{ ApiId: 'api123', Body: 'openapi: 3.0.1 # v2' }]);
     expect(sentPatches()).toEqual([]);
   });
 
-  it('refuses an import-option change on an API defined by BodyS3Location, naming that case', async () => {
-    const location = { Bucket: 'b', Key: 'v1.yaml' };
+  it('reads the definition through a client rebuilt for the bucket region, then destroys it', async () => {
+    const regionalSend = vi.fn().mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve('openapi: 3.0.1 # eu') },
+    });
+    const regionalDestroy = vi.fn();
+    mockRebuildForBucketRegion.mockResolvedValueOnce({ send: regionalSend, destroy: regionalDestroy });
+    await provider.update(
+      'Api',
+      'api123',
+      TYPE,
+      { BodyS3Location: { Bucket: 'eu-defs', Key: 'v2.yaml' } },
+      { BodyS3Location: { Bucket: 'eu-defs', Key: 'v1.yaml' } }
+    );
+
+    expect(mockRebuildForBucketRegion).toHaveBeenCalledWith(
+      expect.anything(),
+      'eu-defs',
+      expect.objectContaining({ reuseClientCredentials: true })
+    );
+    expect(regionalSend).toHaveBeenCalledTimes(1);
+    expect(s3Reads()).toEqual([]);
+    expect(regionalDestroy).toHaveBeenCalledTimes(1);
+    expect(reimports()).toEqual([{ ApiId: 'api123', Body: 'openapi: 3.0.1 # eu' }]);
+  });
+
+  it('an import-option change on an S3-defined API reimports the same object with the new option', async () => {
+    wireS3Object('openapi: 3.0.1');
+    const location = { Bucket: 'defs', Key: 'v1.yaml' };
+    await provider.update(
+      'Api',
+      'api123',
+      TYPE,
+      { BodyS3Location: location, BasePath: 'split', Description: 'declared' },
+      { BodyS3Location: location, BasePath: 'ignore', Description: 'declared' }
+    );
+
+    expect(s3Reads()).toEqual([{ Bucket: 'defs', Key: 'v1.yaml' }]);
+    expect(reimports()).toEqual([{ ApiId: 'api123', Body: 'openapi: 3.0.1', Basepath: 'split' }]);
+    // The declared Description is re-sent, as for an inline Body.
+    expect(sentPatches()).toEqual([[{ op: 'add', path: '/Description', value: 'declared' }]]);
+  });
+
+  it.each([
+    [
+      'AccessDenied',
+      403,
+      'failed with AccessDenied. The deploy identity needs s3:GetObject on it, and kms:Decrypt on its key',
+    ],
+    ['NoSuchKey', 404, 'failed with NoSuchKey. Upload the definition there'],
+  ])(
+    'a refused read (%s) names the class and the next step, never AWS text, and writes nothing',
+    async (name, status, needle) => {
+      const raw = Object.assign(
+        new Error('User: arn:aws:sts::123456789012:assumed-role/R/s is not authorized'),
+        { name, $metadata: { httpStatusCode: status } }
+      );
+      mockS3Send.mockRejectedValue(raw);
+      const error = await provider
+        .update(
+          'Api',
+          'api123',
+          TYPE,
+          { BodyS3Location: { Bucket: 'defs', Key: 'v2.yaml', Etag: 'e2' } },
+          { BodyS3Location: { Bucket: 'defs', Key: 'v1.yaml' } }
+        )
+        .then(
+          () => new Error('expected the read to fail'),
+          (e: unknown) => e as Error
+        );
+
+      expect(error.message).toContain('reading its OpenAPI definition s3://defs/v2.yaml');
+      expect(error.message).toContain(needle);
+      expect(error.message).not.toContain('123456789012');
+      expect(error.message).not.toContain('not authorized');
+      expect((error as Error & { cause?: unknown }).cause).toBe(raw);
+      expect(isMarkedNonRetryable(error)).toBe(true);
+      expect(reimports()).toEqual([]);
+      expect(sentPatches()).toEqual([]);
+    }
+  );
+
+  async function refusedRead(
+    rejection: unknown,
+    desired: Record<string, unknown> = {
+      BodyS3Location: { Bucket: 'defs', Key: 'v2.yaml', Version: 'ver2' },
+    }
+  ): Promise<Error> {
+    mockS3Send.mockRejectedValue(rejection);
+    return provider
+      .update('Api', 'api123', TYPE, desired, {
+        BodyS3Location: { Bucket: 'defs', Key: 'v1.yaml' },
+      })
+      .then(
+        () => new Error('expected the read to fail'),
+        (e: unknown) => e as Error
+      );
+  }
+
+  it.each([
+    ['a name alone (no $metadata)', { name: 'AccessDenied' }, 'needs s3:GetObject'],
+    ['a 403 alone (another name)', { name: 'Forbidden', $metadata: { httpStatusCode: 403 } }, 'needs s3:GetObject'],
+    ['NoSuchVersion', { name: 'NoSuchVersion', $metadata: { httpStatusCode: 404 } }, 'Upload the definition there'],
+    ['NoSuchBucket', { name: 'NoSuchBucket', $metadata: { httpStatusCode: 404 } }, 'Upload the definition there'],
+  ])('a settled refusal recognised from %s is non-retryable with its next step', async (_l, shape, needle) => {
+    const error = await refusedRead(Object.assign(new Error('aws text'), shape));
+
+    expect(error.message).toContain(needle);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+  });
+
+  it('a transient read failure (SlowDown 503) stays retryable, with its cause readable', async () => {
+    const raw = Object.assign(new Error('Please reduce your request rate.'), {
+      name: 'SlowDown',
+      $metadata: { httpStatusCode: 503 },
+    });
+    const error = await refusedRead(raw);
+
+    expect(error.message).toContain('failed with SlowDown.');
+    expect(error.message).not.toContain('Please reduce');
+    expect(isMarkedNonRetryable(error)).toBe(false);
+    expect(hasRedactedCause(error)).toBe(true);
+    expect((error as Error & { cause?: unknown }).cause).toBe(raw);
+  });
+
+  it('switching an inline Body to BodyS3Location reimports the object and drops the Body remove', async () => {
+    wireS3Object('openapi: 3.0.1 # from s3');
+    await provider.update(
+      'Api',
+      'api123',
+      TYPE,
+      { BodyS3Location: { Bucket: 'defs', Key: 'v1.yaml' }, Tags: { team: 'b' } },
+      { Body: BODY_V1, Tags: { team: 'a' } }
+    );
+
+    expect(reimports()).toEqual([{ ApiId: 'api123', Body: 'openapi: 3.0.1 # from s3' }]);
+    expect(sentPatches()).toEqual([[{ op: 'replace', path: '/Tags', value: { team: 'b' } }]]);
+  });
+
+  it('an unresolvable Cloud Control region is refused before any S3 read', async () => {
+    mockCloudControlConfigRegion.mockResolvedValue('');
     const error = await provider
       .update(
         'Api',
         'api123',
         TYPE,
-        { BodyS3Location: location, BasePath: 'split' },
-        { BodyS3Location: location, BasePath: 'ignore' }
+        { BodyS3Location: { Bucket: 'defs', Key: 'v2.yaml' } },
+        { BodyS3Location: { Bucket: 'defs', Key: 'v1.yaml' } }
       )
       .then(
         () => new Error('expected a refusal'),
         (e: unknown) => e as Error
       );
 
-    expect(error.message).toContain(
-      'or to an import option (BasePath / FailOnWarnings) on an API defined by BodyS3Location'
+    expect(error.message).toContain("could not resolve the Cloud Control client's region");
+    expect(s3Reads()).toEqual([]);
+    expect(mockRebuildForBucketRegion).not.toHaveBeenCalled();
+  });
+
+  function redirect(region: string | undefined): Error {
+    return Object.assign(new Error('The bucket you are attempting to access must be addressed using the specified endpoint.'), {
+      name: 'PermanentRedirect',
+      $metadata: { httpStatusCode: 301 },
+      ...(region !== undefined ? { $response: { headers: { 'x-amz-bucket-region': region } } } : {}),
+    });
+  }
+
+  it('follows a 301 once, to the region S3 names, and reimports what it reads there', async () => {
+    // The first client: a rebuilt one carrying a credentials provider, which
+    // the followed client must reuse as is.
+    const credentials = vi.fn();
+    const firstSend = vi.fn().mockRejectedValueOnce(redirect('eu-west-1'));
+    mockRebuildForBucketRegion.mockResolvedValueOnce({
+      send: firstSend,
+      destroy: vi.fn(),
+      config: { credentials },
+    });
+    mockRedirectS3Send.mockResolvedValueOnce({
+      Body: { transformToString: () => Promise.resolve('openapi: 3.0.1 # redirected') },
+    });
+    await provider.update(
+      'Api',
+      'api123',
+      TYPE,
+      { BodyS3Location: { Bucket: 'far-defs', Key: 'v2.yaml' } },
+      { BodyS3Location: { Bucket: 'far-defs', Key: 'v1.yaml' } }
     );
+
+    expect(mockRedirectS3Client).toHaveBeenCalledWith(
+      expect.objectContaining({ region: 'eu-west-1', credentials })
+    );
+    expect(mockRedirectS3Send).toHaveBeenCalledTimes(1);
+    expect(reimports()).toEqual([{ ApiId: 'api123', Body: 'openapi: 3.0.1 # redirected' }]);
+  });
+
+  it.each([
+    ['a second 301 after the redirect', 'eu-west-1'],
+    ['a 301 naming no region', undefined],
+  ])('%s is refused, non-retryable, naming s3:GetBucketLocation', async (_label, region) => {
+    mockS3Send.mockRejectedValueOnce(redirect(region));
+    // Only a 301 that names a region is followed, and only once.
+    if (region !== undefined) mockRedirectS3Send.mockRejectedValueOnce(redirect('eu-west-1'));
+    const error = await provider
+      .update(
+        'Api',
+        'api123',
+        TYPE,
+        { BodyS3Location: { Bucket: 'far-defs', Key: 'v2.yaml' } },
+        { BodyS3Location: { Bucket: 'far-defs', Key: 'v1.yaml' } }
+      )
+      .then(
+        () => new Error('expected a refusal'),
+        (e: unknown) => e as Error
+      );
+
+    expect(error.message).toContain("could not reach the bucket's region");
+    expect(error.message).toContain('s3:GetBucketLocation');
+    expect(error.message).not.toContain('must be addressed');
     expect(isMarkedNonRetryable(error)).toBe(true);
+    expect(mockRedirectS3Send).toHaveBeenCalledTimes(region !== undefined ? 1 : 0);
     expect(reimports()).toEqual([]);
-    expect(sentPatches()).toEqual([]);
+  });
+
+  it('a transient failure of the followed read stays retryable and names no region grant', async () => {
+    mockS3Send.mockRejectedValueOnce(redirect('eu-west-1'));
+    mockRedirectS3Send.mockRejectedValueOnce(
+      Object.assign(new Error('Service Unavailable'), {
+        name: 'SlowDown',
+        $metadata: { httpStatusCode: 503 },
+      })
+    );
+    const error = await provider
+      .update(
+        'Api',
+        'api123',
+        TYPE,
+        { BodyS3Location: { Bucket: 'far-defs', Key: 'v2.yaml' } },
+        { BodyS3Location: { Bucket: 'far-defs', Key: 'v1.yaml' } }
+      )
+      .then(
+        () => new Error('expected a failure'),
+        (e: unknown) => e as Error
+      );
+
+    expect(error.message).toContain('failed with SlowDown.');
+    expect(error.message).not.toContain('s3:GetBucketLocation');
+    expect(isMarkedNonRetryable(error)).toBe(false);
+    expect(hasRedactedCause(error)).toBe(true);
+  });
+
+  it("wraps a rejected bucket-region lookup like any failed read", async () => {
+    mockRebuildForBucketRegion.mockRejectedValueOnce(new Error('region provider failed'));
+    const error = await provider
+      .update(
+        'Api',
+        'api123',
+        TYPE,
+        { BodyS3Location: { Bucket: 'defs', Key: 'v2.yaml' } },
+        { BodyS3Location: { Bucket: 'defs', Key: 'v1.yaml' } }
+      )
+      .then(
+        () => new Error('expected a failure'),
+        (e: unknown) => e as Error
+      );
+
+    expect(error.message).toContain('reading its OpenAPI definition s3://defs/v2.yaml failed with Error.');
+    expect(isMarkedNonRetryable(error)).toBe(false);
+    expect(reimports()).toEqual([]);
+  });
+
+  it('refuses a template declaring both Body and BodyS3Location, before any read', async () => {
+    const error = await provider
+      .update(
+        'Api',
+        'api123',
+        TYPE,
+        { Body: BODY_V2, BodyS3Location: { Bucket: 'defs', Key: 'v2.yaml' } },
+        { Body: BODY_V1 }
+      )
+      .then(
+        () => new Error('expected a refusal'),
+        (e: unknown) => e as Error
+      );
+
+    expect(error.message).toContain('declares both Body and BodyS3Location');
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect(s3Reads()).toEqual([]);
+    expect(reimports()).toEqual([]);
+  });
+
+  it('a pinned Version names the version grant on AccessDenied', async () => {
+    mockS3Send.mockRejectedValue(
+      Object.assign(new Error('Access Denied'), {
+        name: 'AccessDenied',
+        $metadata: { httpStatusCode: 403 },
+      })
+    );
+    const error = await provider
+      .update(
+        'Api',
+        'api123',
+        TYPE,
+        { BodyS3Location: { Bucket: 'defs', Key: 'v.yaml', Version: 'ver2' } },
+        { BodyS3Location: { Bucket: 'defs', Key: 'v.yaml', Version: 'ver1' } }
+      )
+      .then(
+        () => new Error('expected the read to fail'),
+        (e: unknown) => e as Error
+      );
+
+    expect(error.message).toContain('(and s3:GetObjectVersion for the pinned Version)');
+  });
+
+  it('refuses a BodyS3Location that is not the CloudFormation shape, before any read', async () => {
+    const error = await provider
+      .update(
+        'Api',
+        'api123',
+        TYPE,
+        { BodyS3Location: { Bucket: 'defs' } },
+        { BodyS3Location: { Bucket: 'defs', Key: 'v1.yaml' } }
+      )
+      .then(
+        () => new Error('expected a refusal'),
+        (e: unknown) => e as Error
+      );
+
+    expect(error.message).toContain('its BodyS3Location is not an object with string Bucket and Key');
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect(s3Reads()).toEqual([]);
+    expect(reimports()).toEqual([]);
   });
 
   it('re-sends an unchanged declared Description after a reimport, which can overwrite it', async () => {
@@ -2928,5 +3267,28 @@ describe('CloudControlProvider - phase timings of a wait (go-to-k/cdkd#5200)', (
     await runDelete();
     const { renderPhaseTimings } = await import('../../../src/utils/phase-timings.js');
     expect(renderPhaseTimings()).toEqual([]);
+  });
+});
+
+describe('s3RedirectRegion (go-to-k/cdkd#5264)', () => {
+  const redirect = (extra: Record<string, unknown>) =>
+    Object.assign(new Error('x'), { name: 'PermanentRedirect', ...extra });
+
+  it.each([
+    ['the x-amz-bucket-region header', redirect({ $response: { headers: { 'x-amz-bucket-region': 'eu-west-1' } } }), 'eu-west-1'],
+    ['the Region field', redirect({ Region: 'ap-southeast-2' }), 'ap-southeast-2'],
+    ['the BucketRegion field', redirect({ BucketRegion: 'us-gov-west-1' }), 'us-gov-west-1'],
+    ['a 301 status without the name', Object.assign(new Error('x'), { $metadata: { httpStatusCode: 301 }, Region: 'eu-central-1' }), 'eu-central-1'],
+  ])('reads %s', (_label, error, region) => {
+    expect(s3RedirectRegion(error)).toBe(region);
+  });
+
+  it.each([
+    ['another error', Object.assign(new Error('x'), { name: 'AccessDenied', Region: 'eu-west-1' })],
+    ['a redirect naming no region', redirect({})],
+    ['a value that is not a region', redirect({ Region: 'eu-west-1; rm -rf /' })],
+    ['null', null],
+  ])('returns undefined for %s', (_label, error) => {
+    expect(s3RedirectRegion(error)).toBeUndefined();
   });
 });

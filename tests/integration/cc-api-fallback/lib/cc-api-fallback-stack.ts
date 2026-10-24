@@ -42,6 +42,8 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  *       each adds its own route, on the same API id; from edit 2 the
  *       declared `Description` and `Tags` read back, the description
  *       surviving a reimport of a definition holding its own
+ *   (c') two redeploys that switch the definition to `BodyS3Location` and
+ *       then point it at a new object succeed in place (go-to-k/cdkd#5264)
  *   (d) `cdkd destroy` cleans up via the CC delete path
  */
 export class CcApiFallbackStack extends cdk.Stack {
@@ -87,23 +89,36 @@ export class CcApiFallbackStack extends cdk.Stack {
     // Cloud Control still applies), and the definition carries its own
     // `info.description`, which a reimport writes over the API's description.
     const bodyEdit = process.env.CC_BODY_EDIT;
-    const declares = bodyEdit !== undefined && Number(bodyEdit) >= 2;
+    // go-to-k/cdkd#5264: `CC_BODY_S3_BUCKET` + `CC_BODY_S3_KEY` switch the
+    // definition to `BodyS3Location` (an object verify.sh uploads), keeping
+    // the declared `Description` and a `Tags` value of its own.
+    const s3Bucket = process.env.CC_BODY_S3_BUCKET;
+    const s3Key = process.env.CC_BODY_S3_KEY;
+    const fromS3 = s3Bucket !== undefined && s3Key !== undefined;
+    const declares = fromS3 || (bodyEdit !== undefined && Number(bodyEdit) >= 2);
     new apigwv2.CfnApi(this, 'SilentDropApi', {
       ...(declares
-        ? { description: 'cdkd-5260-declared', tags: { cdkd5260: `edit-${bodyEdit}` } }
+        ? {
+            description: 'cdkd-5260-declared',
+            tags: { cdkd5260: fromS3 ? 's3' : `edit-${bodyEdit}` },
+          }
         : {}),
-      body: {
-        openapi: '3.0.1',
-        info: {
-          title: 'cdkd-cc-api-fallback-probe',
-          version: '1.0',
-          ...(declares ? { description: 'cdkd-5260-from-body' } : {}),
-        },
-        paths: {
-          '/cdkd-2473-probe': probeGet,
-          ...(bodyEdit ? { [`/cdkd-5260-edit-${bodyEdit}`]: probeGet } : {}),
-        },
-      },
+      ...(fromS3
+        ? { bodyS3Location: { bucket: s3Bucket, key: s3Key } }
+        : {
+            body: {
+              openapi: '3.0.1',
+              info: {
+                title: 'cdkd-cc-api-fallback-probe',
+                version: '1.0',
+                ...(declares ? { description: 'cdkd-5260-from-body' } : {}),
+              },
+              paths: {
+                '/cdkd-2473-probe': probeGet,
+                ...(bodyEdit ? { [`/cdkd-5260-edit-${bodyEdit}`]: probeGet } : {}),
+              },
+            },
+          }),
     });
   }
 }

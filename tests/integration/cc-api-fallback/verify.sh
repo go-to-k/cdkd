@@ -8,8 +8,9 @@
 # auto-routed via Cloud Control API and that the spec's route reaches
 # AWS — the silent-drop bug is closed by default. Also asserts the
 # destroy path works through CC API. Step 0 reds self-diagnosingly if
-# the trigger is ever backfilled. Phase 1a (go-to-k/cdkd#5260) redeploys two
-# in-place edits of Body. Phase 1b (go-to-k/cdkd#2319) destroys the
+# the trigger is ever backfilled. Phase 1a (go-to-k/cdkd#5260) redeploys
+# in-place edits of Body; phase 1c (go-to-k/cdkd#5264) switches it to
+# BodyS3Location and edits that. Phase 1b (go-to-k/cdkd#2319) destroys the
 # stack as a role denied API Gateway's write verbs, so the Cloud Control
 # DELETE handler FAILs with a denial, and asserts the persisted
 # RESOURCE_FAILED message carries `<caller-principal>` and none of the
@@ -64,6 +65,10 @@ DENY_ROLE="${STACK}-no-apigw-write"
 DENY_POLICY_NAME="cc-delete-without-apigw-write"
 DENY_SESSION="cdkd-cc-deny-probe"
 DENY_ROLE_CREATED=""
+# go-to-k/cdkd#5264: the bucket phase 1c uploads definition objects to; its
+# name needs the account id, so it is set once that is read.
+DEFS_BUCKET=""
+DEFS_BUCKET_CREATED=""
 # Holds AWS text (the deny destroy's log, the events it wrote); removed on
 # every exit.
 LOG_DIR="$(mktemp -d)"
@@ -86,6 +91,14 @@ cleanup() {
   # cleanup on the first `"${STATE_BUCKET}"` expansion — best-effort
   # cleanup should run as much as it can with the env it has.
   set +eu
+  if [ -n "${DEFS_BUCKET_CREATED}" ] && [ -n "${DEFS_BUCKET}" ]; then
+    aws s3 rm "s3://${DEFS_BUCKET}" --recursive --region "${REGION}" >/dev/null 2>&1
+    if aws s3api delete-bucket --bucket "${DEFS_BUCKET}" --region "${REGION}" >/dev/null 2>&1; then
+      DEFS_BUCKET_CREATED=""
+    else
+      echo "WARN: definition bucket ${DEFS_BUCKET} could not be deleted; delete it by hand" >&2
+    fi
+  fi
   if [ -n "${DENY_ROLE_CREATED}" ]; then
     delete_deny_role
     for _ in $(seq 1 12); do
@@ -173,6 +186,28 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+# A per-run token: two concurrent runs in us-east-1 would otherwise share the
+# name (create-bucket succeeds there for the owner), and one run's cleanup
+# would delete the other's bucket.
+DEFS_RUN_TOKEN="$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
+case "${DEFS_RUN_TOKEN}" in
+  [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+  *)
+    echo "FAIL: could not draw a run token for the definition bucket (got '${DEFS_RUN_TOKEN}')" >&2
+    exit 1
+    ;;
+esac
+DEFS_BUCKET="cdkd-cc-api-fallback-defs-${ACCOUNT_ID}-${REGION}-${DEFS_RUN_TOKEN}"
+# The per-run name cannot collide, so a precondition on it would be vacuous.
+# Name any definition bucket an earlier run left instead (a WARN, not a FAIL:
+# it may be a concurrent run's live bucket).
+DEFS_LEFTOVERS="$(aws s3api list-buckets \
+  --query "Buckets[?starts_with(Name, 'cdkd-cc-api-fallback-defs-${ACCOUNT_ID}-${REGION}-')].Name" \
+  --output text)"
+case "${DEFS_LEFTOVERS}" in
+  '' | None) ;;
+  *) echo "WARN: definition bucket(s) from another run of this fixture exist: ${DEFS_LEFTOVERS} -- delete them once no run is live" >&2 ;;
+esac
 # A role left by an earlier run would carry another run's policy.
 assert_gone "precondition: role ${DENY_ROLE} already exists (left by an earlier run); delete it first" \
   aws iam get-role --role-name "${DENY_ROLE}"
@@ -320,6 +355,79 @@ for edit in 1 2 3; do
   echo "    OK: Body edit ${edit} deployed in place (same API id), and its route is live"
 done
 echo "    OK: each edit replaced the definition, and the declared Description and Tags read back (#5260)"
+
+# --- Phase 1c: switch the definition to BodyS3Location, then edit it ---------
+# go-to-k/cdkd#5264. ReimportApi takes the definition's text only, so cdkd
+# reads the object BodyS3Location names (as the deploy identity, in the
+# bucket's region) and reimports that text; before #5264 it refused the change.
+# Redeploy 1 switches the inline Body to object v1; redeploy 2 points
+# BodyS3Location at object v2. Each object adds its own route.
+s3_definition() { # usage: s3_definition <n>; prints definition JSON with route /cdkd-5264-s3-<n>
+  node -e 'const n=process.argv[1];const get={get:{responses:{"200":{description:"ok"}},"x-amazon-apigateway-integration":{type:"http_proxy",httpMethod:"GET",uri:"https://example.com",payloadFormatVersion:"1.0"}}};process.stdout.write(JSON.stringify({openapi:"3.0.1",info:{title:"cdkd-cc-api-fallback-probe",version:"1.0",description:"cdkd-5264-from-object"},paths:{"/cdkd-2473-probe":get,[`/cdkd-5264-s3-${n}`]:get}}))' "$1"
+}
+echo "==> Phase 1c: definition bucket ${DEFS_BUCKET}"
+# Flagged BEFORE the create: an interrupt between the two would otherwise
+# leave the bucket for the next run's precondition.
+DEFS_BUCKET_CREATED=1
+if [ "${REGION}" = "us-east-1" ]; then
+  aws s3api create-bucket --bucket "${DEFS_BUCKET}" --region "${REGION}" >/dev/null
+else
+  aws s3api create-bucket --bucket "${DEFS_BUCKET}" --region "${REGION}" \
+    --create-bucket-configuration "LocationConstraint=${REGION}" >/dev/null
+fi
+for obj in 1 2; do
+  s3_definition "${obj}" > "${LOG_DIR}/definition-${obj}.json"
+  aws s3 cp "${LOG_DIR}/definition-${obj}.json" "s3://${DEFS_BUCKET}/defs/v${obj}.json" \
+    --region "${REGION}" --quiet
+done
+for obj in 1 2; do
+  echo "==> Phase 1c: redeploy with BodyS3Location -> defs/v${obj}.json (#5264)"
+  if ! CC_BODY_S3_BUCKET="${DEFS_BUCKET}" CC_BODY_S3_KEY="defs/v${obj}.json" \
+    node "${LOCAL_DIST}" deploy "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" \
+    --yes; then
+    echo "FAIL: the redeploy to BodyS3Location defs/v${obj}.json failed -- an in-place BodyS3Location change must succeed, as it does under the CDK CLI (#5264)" >&2
+    exit 1
+  fi
+  S3_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)" || {
+    echo "FAIL: could not read s3://${STATE_BUCKET}/${STATE_KEY} after the BodyS3Location redeploy ${obj}" >&2
+    exit 1
+  }
+  S3_API_ID="$(printf '%s' "${S3_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::ApiGatewayV2::Api") | .value.physicalId // ""] | first')"
+  if [ "${S3_API_ID}" != "${API_ID}" ]; then
+    echo "FAIL: the BodyS3Location redeploy ${obj} changed the API id from ${API_ID} to '${S3_API_ID}' (#5264)" >&2
+    exit 1
+  fi
+  S3_ROUTES="$(route_count "GET /cdkd-5264-s3-${obj}")"
+  if [ "${S3_ROUTES}" -lt 1 ]; then
+    echo "FAIL: route 'GET /cdkd-5264-s3-${obj}' is missing on API ${API_ID} -- object v${obj}'s definition never reached AWS (#5264)" >&2
+    exit 1
+  fi
+  # The previous definition (inline edit 3, then object v1) is replaced.
+  if [ "${obj}" = 1 ]; then PREV_ROUTE="GET /cdkd-5260-edit-3"; else PREV_ROUTE="GET /cdkd-5264-s3-1"; fi
+  PREV_ROUTES="$(route_count "${PREV_ROUTE}")"
+  if [ "${PREV_ROUTES}" -ne 0 ]; then
+    echo "FAIL: route '${PREV_ROUTE}' survived the BodyS3Location redeploy ${obj}, whose definition dropped it (#5264)" >&2
+    exit 1
+  fi
+  LIVE_DESC="$(api_field Description)"
+  if [ "${LIVE_DESC}" != "cdkd-5260-declared" ]; then
+    echo "FAIL: after the BodyS3Location redeploy ${obj} the API's Description reads '${LIVE_DESC}', not the declared 'cdkd-5260-declared' (#5264)" >&2
+    exit 1
+  fi
+  echo "    OK: BodyS3Location redeploy ${obj} imported object v${obj} in place (same API id, its route live)"
+done
+# Emptied and deleted here, confirmed gone; `cleanup` retries on any failure.
+aws s3 rm "s3://${DEFS_BUCKET}" --recursive --region "${REGION}" >/dev/null
+aws s3api delete-bucket --bucket "${DEFS_BUCKET}" --region "${REGION}"
+for _ in $(seq 1 12); do
+  if gone_probe aws s3api head-bucket --bucket "${DEFS_BUCKET}" --region "${REGION}"; then break; fi
+  sleep 5
+done
+assert_gone "definition bucket ${DEFS_BUCKET} still exists after its delete" \
+  aws s3api head-bucket --bucket "${DEFS_BUCKET}" --region "${REGION}"
+DEFS_BUCKET_CREATED=""
 
 # --- Phase 1b: a denied Cloud Control DELETE (go-to-k/cdkd#2319) ------------
 # The Cloud Control handler calls API Gateway with the CALLER's credentials, so

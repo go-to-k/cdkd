@@ -27,7 +27,7 @@ import {
 import { DescribeReplicationGroupsCommand, ElastiCacheClient } from '@aws-sdk/client-elasticache';
 import { DescribeClustersCommand, RedshiftClient } from '@aws-sdk/client-redshift';
 import { DescribeDomainCommand, OpenSearchClient } from '@aws-sdk/client-opensearch';
-import { GetBucketLocationCommand } from '@aws-sdk/client-s3';
+import { GetBucketLocationCommand, GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getAccountInfo, type AwsAccountInfo } from '../deployment/intrinsic-function-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { getAwsClients } from '../utils/aws-clients.js';
@@ -70,12 +70,16 @@ import { shellQuote } from '../state/lock-contention-message.js';
 // imports are types, so a new edge INTO it cannot close a cycle.
 import { withIndeterminateGuard } from '../deployment/delete-outcome.js';
 import { standaloneInlinePolicyHandedOff } from '../deployment/inline-policy-claims.js';
-import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { describeAwsFailure, VERBOSE_POINTER } from '../utils/aws-failure-text.js';
+import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import { quietS3Logger } from '../utils/sdk-call-log.js';
 import { displaySafe, safeMsg } from '../utils/display-safe.js';
 import { withPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { withGuardDutyDetectorReadBackOps } from './guardduty-detector-patch.js';
 import {
+  apiGatewayV2DefinitionObject,
   isApiGatewayV2Import,
   splitApiGatewayV2ImportPatch,
   type ApiGatewayV2Reimport,
@@ -185,6 +189,36 @@ function stripNullValues(obj: unknown): unknown {
     return result;
   }
   return obj;
+}
+
+/**
+ * The region an S3 `301 PermanentRedirect` names for a bucket
+ * (go-to-k/cdkd#5264): the `x-amz-bucket-region` response header, or the
+ * error's `Region` / `BucketRegion` field. `undefined` for any other error,
+ * or a value that is not a region.
+ */
+export function s3RedirectRegion(error: unknown): string | undefined {
+  const e = error as
+    | {
+        name?: unknown;
+        Region?: unknown;
+        BucketRegion?: unknown;
+        $metadata?: { httpStatusCode?: unknown };
+        $response?: { headers?: Record<string, unknown> };
+      }
+    | null
+    | undefined;
+  if (e?.name !== 'PermanentRedirect' && e?.$metadata?.httpStatusCode !== 301) return undefined;
+  for (const candidate of [
+    e?.$response?.headers?.['x-amz-bucket-region'],
+    e?.Region,
+    e?.BucketRegion,
+  ]) {
+    if (typeof candidate !== 'string') continue;
+    const region = canonicalizeRegion(candidate.trim());
+    if (region !== undefined && /^[a-z]{2}(-[a-z]+)+-\d+$/.test(region)) return region;
+  }
+  return undefined;
 }
 
 /**
@@ -1767,9 +1801,9 @@ export class CloudControlProvider implements ResourceProvider {
    * region, refused when that region cannot be resolved, as the SDK delete
    * delegates are.
    *
-   * A `BodyS3Location` definition is refused: `ReimportApi` takes the
-   * definition's text only, and cdkd does not fetch it from S3 on the
-   * template's behalf.
+   * A `BodyS3Location` definition is read from S3 first, since `ReimportApi`
+   * takes the definition's text only (go-to-k/cdkd#5264; see
+   * {@link readApiGatewayV2DefinitionObject}).
    */
   private async reimportApiGatewayV2(
     logicalId: string,
@@ -1777,15 +1811,13 @@ export class CloudControlProvider implements ResourceProvider {
     resourceType: string,
     reimport: ApiGatewayV2Reimport
   ): Promise<void> {
-    if (reimport.fromS3 || reimport.body === undefined) {
+    // Which definition API Gateway would take is not established, so a
+    // template naming both is refused rather than one silently ignored.
+    if (reimport.fromS3 && reimport.body !== undefined) {
       throw markNonRetryable(
         new ProvisioningError(
-          `Cannot update ${logicalId} (${resourceType}) in place: the change is to ` +
-            `BodyS3Location, or to an import option (BasePath / FailOnWarnings) on an API defined ` +
-            `by BodyS3Location, and Cloud Control cannot change an imported API's definition ` +
-            `(API Gateway refuses the fields it reads back beside it), while ReimportApi takes ` +
-            `the definition's text only. Declare the definition inline as Body, or give the ` +
-            `API a new logical ID so it is replaced.`,
+          `Cannot update ${logicalId} (${resourceType}): it declares both Body and ` +
+            `BodyS3Location. Declare the OpenAPI definition in one of them.`,
           resourceType,
           logicalId,
           physicalId
@@ -1810,13 +1842,22 @@ export class CloudControlProvider implements ResourceProvider {
         )
       );
     }
+    // After the region refusal, so an unresolvable region never costs an S3 read.
+    const body = reimport.fromS3
+      ? await this.readApiGatewayV2DefinitionObject(
+          logicalId,
+          physicalId,
+          resourceType,
+          reimport.bodyS3Location
+        )
+      : reimport.body;
     const { ApiGatewayV2Client, ReimportApiCommand } = await import('@aws-sdk/client-apigatewayv2');
     const client = new ApiGatewayV2Client({ ...ambientClientDefaults(), region });
     try {
       await client.send(
         new ReimportApiCommand({
           ApiId: physicalId,
-          Body: reimport.body,
+          Body: body,
           ...(reimport.basePath !== undefined ? { Basepath: reimport.basePath } : {}),
           ...(reimport.failOnWarnings !== undefined
             ? { FailOnWarnings: reimport.failOnWarnings }
@@ -1827,6 +1868,150 @@ export class CloudControlProvider implements ResourceProvider {
       client.destroy();
     }
     this.logger.debug(`Reimported the OpenAPI definition of ${logicalId}`);
+  }
+
+  /**
+   * The text of the OpenAPI definition a `BodyS3Location` names
+   * (go-to-k/cdkd#5264), read with the deploy identity (the one that drives
+   * the Cloud Control operations of this update). The read targets the
+   * bucket's own region (`rebuildClientForBucketRegion`). That probe can
+   * miss (a bucket in another account, or no `s3:GetBucketLocation`) and
+   * fall back to the client's region, so a 301 `PermanentRedirect` is
+   * followed ONCE to the region S3 names; a second failure is refused. A
+   * pinned `Version` is read as that version. `Etag` is only recorded: the
+   * CloudFormation reference calls it "the Etag of the S3 object" and states
+   * no check, so cdkd sends no `IfMatch`; a changed `Etag` still triggers the
+   * reimport, as any changed property does.
+   *
+   * No `ExpectedBucketOwner`, deliberately: a template-named definition
+   * bucket may be another account's, as CloudFormation allows (cdkd-assets
+   * mode, which writes, refuses a foreign owner).
+   *
+   * A refused read names the AWS failure by its class, never AWS's text,
+   * which on an `AccessDenied` quotes the caller (go-to-k/cdkd#2319); the
+   * SDK error stays as the `cause`. An `AccessDenied` names the grant the
+   * deploy identity needs.
+   */
+  private async readApiGatewayV2DefinitionObject(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    location: unknown
+  ): Promise<string> {
+    const object = apiGatewayV2DefinitionObject(location);
+    if (object === undefined) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Cannot update ${logicalId} (${resourceType}): its BodyS3Location is not an object ` +
+            `with string Bucket and Key (and optional string Version / Etag), so cdkd cannot ` +
+            `read the OpenAPI definition to reimport.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    const shown = `s3://${displaySafe(object.bucket)}/${displaySafe(object.key)}`;
+    const shared = getAwsClients().s3;
+    const owned: S3Client[] = [];
+    const read = async (s3: S3Client): Promise<string> => {
+      const response = await s3.send(
+        new GetObjectCommand({
+          Bucket: object.bucket,
+          Key: object.key,
+          ...(object.version !== undefined ? { VersionId: object.version } : {}),
+        })
+      );
+      const text = await response.Body?.transformToString();
+      if (text === undefined) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            `Cannot update ${logicalId} (${resourceType}): S3 returned no body for its ` +
+              `OpenAPI definition ${shown}.`,
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+      }
+      return text;
+    };
+    let redirected = false;
+    try {
+      // Inside the `try`, so a rejection of the client's own region lookup
+      // is wrapped and labelled like any other failed read.
+      const rebuilt = await rebuildClientForBucketRegion(shared, object.bucket, {
+        reuseClientCredentials: true,
+        tolerateNonStandardClient: true,
+      });
+      if (rebuilt) owned.push(rebuilt);
+      const first = rebuilt ?? shared;
+      try {
+        return await read(first);
+      } catch (error) {
+        const redirectRegion = s3RedirectRegion(error);
+        if (redirectRegion === undefined) throw error;
+        redirected = true;
+        const regional = new S3Client({
+          ...awsClientDefaults(),
+          region: redirectRegion,
+          // The same credential provider as the client that was redirected.
+          credentials: first.config?.credentials,
+          logger: quietS3Logger(),
+        });
+        owned.push(regional);
+        return await read(regional);
+      }
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      // AWS's own text, for `--verbose` only: it can quote the caller.
+      this.logger.debug(
+        `Reading the OpenAPI definition ${shown} of ${logicalId} failed: ` +
+          displaySafe(describeAwsFailure(error).detail)
+      );
+      const name = (error as { name?: unknown } | null | undefined)?.name;
+      const errorClass = typeof name === 'string' && name !== '' ? displaySafe(name) : 'Error';
+      const status = (error as { $metadata?: { httpStatusCode?: unknown } } | null | undefined)
+        ?.$metadata?.httpStatusCode;
+      // Settled answers (the grant, the object, the region) are not retried;
+      // a throttle, 5xx or dropped connection is, as any other update failure
+      // is. The message withholds AWS's text, so the retry classifiers read
+      // the cause chain (`markRedactedCause`).
+      let next: string | undefined;
+      if (errorClass === 'AccessDenied' || status === 403) {
+        next =
+          ` The deploy identity needs s3:GetObject on it` +
+          (object.version !== undefined
+            ? ' (and s3:GetObjectVersion for the pinned Version)'
+            : '') +
+          ', and kms:Decrypt on its key if the object is SSE-KMS encrypted.';
+      } else if (
+        errorClass === 'NoSuchKey' ||
+        errorClass === 'NoSuchBucket' ||
+        errorClass === 'NoSuchVersion'
+      ) {
+        next = ' Upload the definition there, or point BodyS3Location at the right object.';
+      } else if (errorClass === 'PermanentRedirect' || status === 301) {
+        // A 301 that named no region, or a second one after the redirect was
+        // followed. Any other failure of the followed read (a throttle, a 5xx)
+        // takes the ordinary retry below.
+        next =
+          (redirected ? ` S3 redirected the read twice.` : ` S3 named no region to redirect to.`) +
+          ` cdkd could not reach the bucket's region: grant the deploy identity ` +
+          `s3:GetBucketLocation on the bucket, or keep the definition in a bucket of this region.`;
+      }
+      const wrapped = new ProvisioningError(
+        `Cannot update ${logicalId} (${resourceType}): reading its OpenAPI definition ` +
+          `${shown} failed with ${errorClass}.${next ?? ''} ${VERBOSE_POINTER}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      );
+      throw next !== undefined ? markNonRetryable(wrapped) : markRedactedCause(wrapped);
+    } finally {
+      for (const client of owned) client.destroy();
+    }
   }
 
   /**
