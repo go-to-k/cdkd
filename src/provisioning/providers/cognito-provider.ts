@@ -2611,7 +2611,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // Same split as the `dynamodb-index-busy-delete` DescribeTable arm.
       this.logger.debug(
         `GetUserPoolMfaConfig failed for UserPool ${physicalId} ` +
-          `(${error instanceof Error ? error.name : typeof error}): ` +
+          `(${error instanceof Error ? safeStringify(error.name) : typeof error}): ` +
           `${describeAwsFailure(error).detail}`
       );
       return { failed: true };
@@ -2649,7 +2649,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // nothing the deploy needs.
       this.logger.debug(
         `DescribeUserPool failed for UserPool ${physicalId} before the MFA pre-flight ` +
-          `(${error instanceof Error ? error.name : typeof error}): ` +
+          `(${error instanceof Error ? safeStringify(error.name) : typeof error}): ` +
           `${describeAwsFailure(error).detail}`
       );
       return undefined;
@@ -2687,7 +2687,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // loses nothing the deploy needs.
       this.logger.debug(
         `GetUserPoolMfaConfig failed for UserPool ${physicalId} while choosing the call order ` +
-          `(${error instanceof Error ? error.name : typeof error}): ` +
+          `(${error instanceof Error ? safeStringify(error.name) : typeof error}): ` +
           `${describeAwsFailure(error).detail}`
       );
       return undefined;
@@ -2742,7 +2742,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       this.logger.warn(
         `UserPool ${physicalId}: UpdateUserPool failed after SetUserPoolMfaConfig had already ` +
           `applied the new MFA configuration, and restoring the previous one also failed ` +
-          `(${restoreError instanceof Error ? restoreError.name : typeof restoreError}). The pool ` +
+          `(${restoreError instanceof Error ? safeStringify(restoreError.name) : typeof restoreError}). The pool ` +
           `may now carry the NEW MFA configuration with its OLD sign-in policy; re-run the deploy, ` +
           `or check it with ${aws`aws cognito-idp get-user-pool-mfa-config --user-pool-id ${physicalId}${region}`.render()}.`
       );
@@ -3944,7 +3944,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     const echoClause =
       echoError === undefined
         ? ''
-        : safeMsg`; the pool's own settings sent back were refused first (${describeAwsFailure(echoError).summary})`;
+        : safeMsg`; the pool's own settings sent back were refused first (${mask(describeAwsFailure(echoError).summary)})`;
     // Masked (#5180): AWS's text can quote an echoed template-authored member.
     this.logger.debug(
       mask(
@@ -3959,7 +3959,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             echoClause +
             safeMsg`. The delete will be refused while it is on.${accessHint}`
         : safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool failed without an answer from AWS ` +
-            safeMsg`(${describeAwsFailure(error).summary})` +
+            // Masked: for a failure AWS did not author, the summary IS its raw
+            // message, which can quote a resolved value.
+            safeMsg`(${mask(describeAwsFailure(error).summary)})` +
             echoClause +
             (echoError === undefined
               ? typeof error === 'object' && error !== null && sentWithoutEmail.has(error)

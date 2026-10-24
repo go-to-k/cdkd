@@ -2912,6 +2912,30 @@ describe('CognitoUserPoolProvider', () => {
         expect(warned).not.toContain('123456789012');
       });
 
+      // go-to-k/cdkd#3361: the warn put the restore failure's `name` in a bare
+      // template, so a `name` `String()` cannot convert threw a TypeError that
+      // replaced both this warn and the UpdateUserPool failure it reports.
+      it('still warns, and surfaces the original error, when the restore failure name cannot be converted', async () => {
+        mockSend.mockResolvedValueOnce(liveOnSingle); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig (first)
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error('bad EmailVerificationSubject'), { name: 'InvalidParameterException' })
+        ); // UpdateUserPool
+        const restoreError = new Error('restore refused');
+        Object.defineProperty(restoreError, 'name', { value: Object.create(null) });
+        mockSend.mockRejectedValueOnce(restoreError); // SetUserPoolMfaConfig (restore)
+
+        const error = await rejectionOf(
+          provider.update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', addWebAuthnMulti, {})
+        );
+
+        expect(error.message).toContain('bad EmailVerificationSubject');
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain(
+          'restoring the previous one also failed (a value that could not be converted to text)'
+        );
+      });
+
       // Issue #3136: the pool id is the `state.json`-borne physical id, so the
       // check command renders through `pasteableAwsCommand` — withheld when it
       // cannot be printed exactly or holds a character that changes it once unquoted

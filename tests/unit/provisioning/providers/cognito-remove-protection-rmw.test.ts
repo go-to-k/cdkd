@@ -432,6 +432,20 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     );
   });
 
+  // The no-answer warn prints `describeAwsFailure(...).summary`, which for a
+  // failure AWS did not author is its RAW message: it goes through the
+  // operation's masker, as the debug line beside it always did.
+  it('masks the no-answer warn, whose summary is the raw message of a failure AWS did not author', async () => {
+    const SECRET = 'hunter2-resolved-secret';
+    const timeout = Object.assign(new Error(`socket hang up near ${SECRET}`), { name: 'TimeoutError' });
+    script({ echoError: { INACTIVE: timeout }, dels: [domainRefusal()] });
+    const maskSecrets = (text: string): string => text.split(SECRET).join('***');
+    await expect(del({ ...CTX, maskSecrets })).rejects.toThrow();
+    const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('failed without an answer from AWS (socket hang up near ***)');
+    expect(warned).not.toContain(SECRET);
+  });
+
   it('an echo that got NO answer and did NOT land: no "left on" claim, and the re-enable still writes the guard back', async () => {
     const timeout = Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
     script({ echoError: { INACTIVE: timeout }, dels: [domainRefusal()] });
