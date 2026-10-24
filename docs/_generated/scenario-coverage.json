@@ -2593,6 +2593,11 @@
       ]
     },
     {
+      "name": "termination-protection",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "throttle-wide-dag",
       "annotated": true,
       "scenarios": [
@@ -3593,6 +3598,7 @@
     "stepfunctions-s3-definition",
     "stream-delete-redeploy",
     "synthetics-canary",
+    "termination-protection",
     "unrecognized-key-autoroute",
     "wide-independent"
   ]
