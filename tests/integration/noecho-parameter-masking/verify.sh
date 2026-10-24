@@ -65,7 +65,9 @@
 #      wrote: scrub's NoEcho arm reproduces the deploy's (#4043 Phase C).
 #   2. A probe deploy adding `NoEchoReject`, whose `Tier` IS the value. SSM's
 #      ValidationException quotes the value back; the deploy fails, and
-#      neither its output nor any deployments/*.jsonl object carries it.
+#      neither its output nor any deployments/*.jsonl object carries it. The
+#      persisted event names the rejection by its class only, AWS's text
+#      reaching only the --verbose debug line, masked (go-to-k/cdkd#2319).
 #   2b. A --no-rollback deploy with a second value (and a changed Description)
 #      updates NoEchoConsumer, then fails on NoEchoFailingQueue. The journal
 #      carries no value. `cdkd rollback` reads the parameter back (its baseline
@@ -1302,13 +1304,14 @@ fi
 # message that stopped quoting the value, leaves the negative above proving
 # nothing. Anchored on the provider's OWN wrapper, then on SSM's measured
 # wording (`Value '<v>' at 'tier' failed to satisfy constraint`),
-# case-insensitive.
+# case-insensitive. Since go-to-k/cdkd#2319 only the wrapper's --verbose debug
+# line carries AWS's text (masked); the thrown message names the class.
 REJECTION_RE='failed to satisfy constraint'
 # Taken from the FILTERED text: a filter that dropped cdkd's own lines (or a
 # grep that errored into an empty result) then fails this premise instead of
 # passing the leak negative above vacuously.
-P2_REJECTION_LINE=$(grep -m1 -F 'Failed to create SSM parameter NoEchoReject' <<< "${P2_CDKD_OUT}" \
-  | grep -iE "${REJECTION_RE}" || true)
+P2_REJECTION_LINE=$(grep -F 'Failed to create SSM parameter NoEchoReject' <<< "${P2_CDKD_OUT}" \
+  | grep -m1 -iE "${REJECTION_RE}" || true)
 if [ -z "${P2_REJECTION_LINE}" ]; then
   echo "FAIL: premise: the Phase 2 deploy failed, but not with SSM's Tier validation rejection -- this arm did not run" >&2
   diag_output "${P2_CDKD_OUT}"
@@ -1322,7 +1325,10 @@ echo "    OK: the rejection AWS quoted the value in is printed masked"
 assert_gone "${REJECT_NAME} exists after its rejected create" \
   aws ssm get-parameter --name "${REJECT_NAME}" --region "${REGION}"
 # The durable sink: every deployments/*.jsonl object, with a floor so a scan
-# that read nothing cannot pass, and at least one carrying the rejection.
+# that read nothing cannot pass, and at least one carrying the rejection --
+# by its class only (go-to-k/cdkd#2319): SSM's text, which quotes the value,
+# must not be persisted even masked.
+CLASS_ONLY_RE="Failed to create SSM parameter NoEchoReject: [A-Za-z0-9]+\\. Re-run with --verbose for AWS's own message\\."
 EVENT_KEYS=$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
   --prefix "${STATE_PREFIX}deployments/" --output json | jq -r '.Contents // [] | .[].Key')
 EVENTS_SCANNED=0
@@ -1343,6 +1349,10 @@ while IFS= read -r event_key || [ -n "${event_key}" ]; do
   fi
   assert_no_split_piece "deployment events object ${event_key}" "$(cat "${EVENT_FILE}")"
   if grep -F 'Failed to create SSM parameter NoEchoReject' "${EVENT_FILE}" | grep -qiE "${REJECTION_RE}"; then
+    echo "FAIL: deployment events object ${event_key} persists SSM's rejection text for NoEchoReject; the thrown message must name the error class only (go-to-k/cdkd#2319)" >&2
+    exit 1
+  fi
+  if grep -qE -- "${CLASS_ONLY_RE}" "${EVENT_FILE}"; then
     EVENTS_REJECTION=$((EVENTS_REJECTION + 1))
   fi
 done <<< "${EVENT_KEYS}"
@@ -1351,7 +1361,7 @@ if [ "${EVENTS_SCANNED}" -lt 2 ]; then
   exit 1
 fi
 if [ "${EVENTS_REJECTION}" -lt 1 ]; then
-  echo "FAIL: no deployment-events object carries the Tier validation rejection -- the failed resource's event was not among what the scan read" >&2
+  echo "FAIL: no deployment-events object carries the Tier validation rejection as 'Failed to create SSM parameter NoEchoReject: <ErrorClass>. Re-run with --verbose for AWS's own message.' -- the failed resource's event was not among what the scan read, or its message is not class-only (go-to-k/cdkd#2319)" >&2
   exit 1
 fi
 echo "    OK: no deployment-events object carries the value (${EVENTS_SCANNED} objects, ${EVENTS_REJECTION} with the rejection)"
