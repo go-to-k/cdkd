@@ -1820,6 +1820,7 @@
         "recreate-via-cc-api",
         "redshift-cluster-getatt",
         "remove-protection",
+        "remove-protection-compensation",
         "rollback-command",
         "rollback-sqs-cooldown",
         "route53",
