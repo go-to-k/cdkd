@@ -210,6 +210,52 @@ delete_deny_roles() {
   )
 }
 
+# This stack's deployments/*.jsonl keys, sorted, one per line (go-to-k/cdkd#2319).
+# A failed listing returns non-zero, so a caller never reads an empty list as
+# "no new events".
+deployment_event_keys() {
+  local listed
+  listed="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+    --prefix "cdkd/${STACK}/${REGION}/deployments/" --output json)" || return 1
+  printf '%s' "${listed}" | jq -r '.Contents // [] | .[].Key | select(endswith(".jsonl"))' | LC_ALL=C sort
+}
+
+# go-to-k/cdkd#2319: the last persisted RESOURCE_FAILED event Phase 2 wrote for
+# <logical id> starts with <cdkd-authored prefix>, and no event for it quotes
+# this account's id. With <class-only> set, the rest must be AWS's error class
+# plus the --verbose pointer. A FAIL prints only the logical id and the
+# message's length: the message may be AWS's text, naming accounts, roles or
+# sessions.
+assert_failed_event_redacted() { # usage: assert_failed_event_redacted <logical id> <prefix> [class-only]
+  local lid="$1" prefix="$2" class_only="${3:-}" msg events
+  # The LAST matching event's whole message (`-s` slurps the events), never
+  # the last LINE of all of them: a multi-line message would be judged by its
+  # tail.
+  msg="$(jq -rs --arg l "${lid}" \
+    'map(select(.logicalId == $l and .error.message != null)) | last | .error.message // empty' \
+    "${DESTROY_LOG}.failed")"
+  if [ -z "${msg}" ]; then
+    echo "FAIL: Phase 2 persisted no RESOURCE_FAILED event with an error message for ${lid} (the #2319 checks would pass for free)" >&2
+    exit 1
+  fi
+  if ! printf '%s' "${msg}" | grep -qF -- "${prefix}: "; then
+    echo "FAIL: ${lid}'s RESOURCE_FAILED message does not carry '${prefix}: ' (#2319); ${#msg} chars" >&2
+    exit 1
+  fi
+  if [ -n "${class_only}" ] && ! printf '%s' "${msg}" \
+      | grep -qE -- "${prefix}: [A-Za-z0-9.]+\. Re-run with --verbose for AWS's own message\."; then
+    echo "FAIL: ${lid}'s RESOURCE_FAILED message is not '${prefix}: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); ${#msg} chars" >&2
+    exit 1
+  fi
+  # A here-string, not a pipe: an early `grep -q` exit could SIGPIPE `jq`,
+  # which `pipefail` would turn into a false "no".
+  events="$(jq -c --arg l "${lid}" 'select(.logicalId == $l)' "${DESTROY_LOG}.failed")"
+  if grep -qF -- "${ACCOUNT_ID}" <<<"${events}"; then
+    echo "FAIL: ${lid}'s RESOURCE_FAILED event quotes AWS's text, with this account's id (#2319); ${#msg} chars" >&2
+    exit 1
+  fi
+}
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
@@ -302,7 +348,8 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
-  rm -f "${DESTROY_LOG}" "${DESTROY_LOG}.poll-err" "${DESTROY_LOG}.id-err"
+  rm -f "${DESTROY_LOG}" "${DESTROY_LOG}.poll-err" "${DESTROY_LOG}.id-err" \
+    "${DESTROY_LOG}.keys" "${DESTROY_LOG}.failed"
   set -eu
 }
 
@@ -593,6 +640,12 @@ echo "    ${DENY_ROLE} is denied UpdateAutoScalingGroup on ${ASG_NAME}"
 
 # --- Phase 2: the compensation arm (issue #2204) -----------------------------
 echo "==> Phase 2: destroy --remove-protection as ${DENY_ROLE}, against out-of-band dependents (expect non-zero)"
+# go-to-k/cdkd#2319: the event keys before the destroy, so the check after it
+# reads only this destroy's events.
+if ! deployment_event_keys > "${DESTROY_LOG}.keys"; then
+  echo "FAIL: could not list s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/deployments/ before Phase 2's destroy" >&2
+  exit 1
+fi
 set +e
 as_deny_role node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
   --force --remove-protection > "${DESTROY_LOG}" 2>&1
@@ -607,6 +660,26 @@ if [ "${rc}" -eq 0 ]; then
   exit 1
 fi
 echo "    destroy exited ${rc} as expected"
+
+# go-to-k/cdkd#2319: the SDK-routed SdkInstance terminate and ProtectedAsg
+# delete failed on purpose, and deployments/*.jsonl outlives the run, so their
+# persisted RESOURCE_FAILED events must name AWS's refusal by its class, never
+# its text (which can quote the deny role's ARN, with this account's id).
+if ! NEW_EVENT_KEYS="$(deployment_event_keys | LC_ALL=C comm -13 "${DESTROY_LOG}.keys" -)"; then
+  echo "FAIL: could not list s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/deployments/ after Phase 2's destroy" >&2
+  exit 1
+fi
+: > "${DESTROY_LOG}.failed"
+while IFS= read -r event_key || [ -n "${event_key}" ]; do
+  [ -n "${event_key}" ] || continue
+  aws s3 cp "s3://${STATE_BUCKET}/${event_key}" - --quiet \
+    | jq -c 'select(.eventType == "RESOURCE_FAILED" and (.logicalId == "SdkInstance" or .logicalId == "ProtectedAsg"))' \
+    >> "${DESTROY_LOG}.failed"
+done <<< "${NEW_EVENT_KEYS}"
+assert_failed_event_redacted SdkInstance "Failed to terminate EC2 Instance SdkInstance" class-only
+assert_failed_event_redacted ProtectedAsg "Failed to delete AutoScalingGroup ProtectedAsg"
+rm -f "${DESTROY_LOG}.failed" "${DESTROY_LOG}.keys"
+echo "    the SdkInstance and ProtectedAsg RESOURCE_FAILED events carry no account id"
 
 for iid in "${SDK_ID}" "${CC_ID}" "${ASG_IID}"; do
   st="$(instance_state "${iid}")"

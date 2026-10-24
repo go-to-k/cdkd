@@ -452,6 +452,19 @@ describe.each(SITES)('$name: --remove-protection compensation (issue #2204)', (s
     );
   });
 
+  // go-to-k/cdkd#2319: the class is AWS-authored text, so the delete's masker
+  // must reach the re-enable report. The ELBv2 delete is another lane's file.
+  it.skipIf(site.name !== 'AutoScalingGroup')('masks a secret spelled in the failed re-enable class', async () => {
+    script(site, { observe: true, del: terminalRefusal(), reEnable: Object.assign(new Error('denied'), { name: 'Denieds3cr3tException', $fault: 'client', $metadata: { httpStatusCode: 400 } }) });
+    await expect(del(undefined, { ...CTX, maskSecrets: (t: string) => t.split('s3cr3t').join('***') })).rejects.toThrow(REFUSAL);
+    const reported = [...childLogger.error.mock.calls, ...childLogger.warn.mock.calls]
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes('re-enable'));
+    expect(reported).toHaveLength(1);
+    expect(reported[0]).toContain('(Denied***Exception. Re-run with --verbose');
+    expect(reported[0]).not.toContain('s3cr3t');
+  });
+
   it('a not-found re-enable is a WARN that names the check first, not an ERROR claiming it is live', async () => {
     script(site, { observe: true, del: terminalRefusal(), reEnable: site.sdkNotFound() });
     await expect(del()).rejects.toThrow(REFUSAL);

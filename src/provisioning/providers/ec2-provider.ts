@@ -158,9 +158,11 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
 import {
   createMaskedLogSinks,
+  maskerOrIdentity,
   type MaskedLogSinks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
+import { markNotGone } from '../not-gone.js';
 import type {
   CreateContext,
   UpdateContext,
@@ -182,7 +184,11 @@ import {
   type PasteableAwsCommand,
 } from '../replacement-protection-advice.js';
 import { displayIdent, safeMsg } from '../../utils/display-safe.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
 import {
   isRedactedRecordedValue,
   REDACTED_DELETE_ADDRESS_SKIP_REASON,
@@ -192,11 +198,12 @@ import {
 import {
   explicitDenyPolicyKind,
   isExplicitDenyError,
-  isNameCollisionError,
   isThrottlingError,
   markNonRetryable,
   markRedactedCause,
+  relayedNameCollision,
   THROTTLING_ERROR_NAMES,
+  wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { withRetry } from '../../deployment/retry.js';
 import { startInterruptWatch } from '../interrupt-watch.js';
@@ -753,21 +760,23 @@ const CDKD_NOTES = new WeakMap<Error, string>();
 
 /**
  * What a thrown EC2 wrap says in place of an AWS-authored failure's own text
- * (go-to-k/cdkd#2319): its class, plus two cdkd-authored facts that text
- * carried and a reader of the thrown message needs. An "already exists" is
- * restated, because the create-first replacement path reads the TOP-level
- * message to credit a name collision (`isNameCollisionErrorFrom`), and EC2
- * names the security-group one `InvalidGroup.Duplicate`, which no collision
- * pattern matches. A {@link CDKD_NOTES} note is re-appended.
+ * (go-to-k/cdkd#2319): its class, through `mask` (the class is AWS-authored
+ * text too), plus two cdkd-authored facts that text carried and a reader of
+ * the thrown message needs. An "already exists" is restated
+ * ({@link relayedNameCollision}), because the create-first replacement path
+ * reads the TOP-level message to credit a name collision
+ * (`isNameCollisionErrorFrom`), and EC2 names the security-group one
+ * `InvalidGroup.Duplicate`, which no collision pattern matches; not from a
+ * post-create wiring call's failure ({@link markAuxiliaryFailure}), where "it"
+ * would read as this resource (#3826). A {@link CDKD_NOTES} note is
+ * re-appended.
  */
-function redactedEc2FailureText(error: unknown, failure: AwsFailureText): string {
+function redactedEc2FailureText(mask: MaskerFn, error: unknown, failure: AwsFailureText): string {
   // A non-`Error` throw is redacted too, but AWS did not author it, so it
   // reports nothing.
-  if (!(error instanceof Error)) return failure.summary;
-  const collision = isNameCollisionError(failure.detail)
-    ? ' AWS reports that it already exists.'
-    : '';
-  return `${failure.summary}${collision}${CDKD_NOTES.get(error) ?? ''}`;
+  if (!(error instanceof Error)) return mask(failure.summary);
+  const collision = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+  return `${mask(failure.summary)}${collision}${CDKD_NOTES.get(error) ?? ''}`;
 }
 
 /** The error code EC2 answers a denied action with. */
@@ -1319,9 +1328,9 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::VPCGatewayAttachment':
         return this.createVpcGatewayAttachment(logicalId, resourceType, properties, context);
       case 'AWS::EC2::NatGateway':
-        return this.createNatGateway(logicalId, resourceType, properties);
+        return this.createNatGateway(logicalId, resourceType, properties, context);
       case 'AWS::EC2::RouteTable':
-        return this.createRouteTable(logicalId, resourceType, properties);
+        return this.createRouteTable(logicalId, resourceType, properties, context);
       case 'AWS::EC2::Route':
         return this.createRoute(
           logicalId,
@@ -1333,9 +1342,9 @@ export class EC2Provider implements ResourceProvider {
           context?.maskSecrets
         );
       case 'AWS::EC2::SubnetRouteTableAssociation':
-        return this.createSubnetRouteTableAssociation(logicalId, resourceType, properties);
+        return this.createSubnetRouteTableAssociation(logicalId, resourceType, properties, context);
       case 'AWS::EC2::SecurityGroup':
-        return this.createSecurityGroup(logicalId, resourceType, properties);
+        return this.createSecurityGroup(logicalId, resourceType, properties, context);
       case 'AWS::EC2::SecurityGroupIngress':
         return this.createSecurityGroupIngress(
           logicalId,
@@ -1350,11 +1359,11 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::Instance':
         return this.createInstance(logicalId, resourceType, properties, context);
       case 'AWS::EC2::NetworkAcl':
-        return this.createNetworkAcl(logicalId, resourceType, properties);
+        return this.createNetworkAcl(logicalId, resourceType, properties, context);
       case 'AWS::EC2::NetworkAclEntry':
         return this.createNetworkAclEntry(logicalId, resourceType, properties, context);
       case 'AWS::EC2::SubnetNetworkAclAssociation':
-        return this.createSubnetNetworkAclAssociation(logicalId, resourceType, properties);
+        return this.createSubnetNetworkAclAssociation(logicalId, resourceType, properties, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -1395,6 +1404,7 @@ export class EC2Provider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -1418,19 +1428,34 @@ export class EC2Provider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::EC2::VPC':
-        return this.updateVpc(logicalId, physicalId, resourceType, properties, previousProperties);
+        return this.updateVpc(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          context
+        );
       case 'AWS::EC2::Subnet':
         return this.updateSubnet(
           logicalId,
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       case 'AWS::EC2::InternetGateway':
         return this.updateInternetGateway(logicalId, physicalId);
       case 'AWS::EC2::EIP':
-        return this.updateEip(logicalId, physicalId, resourceType, properties, previousProperties);
+        return this.updateEip(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          context
+        );
       case 'AWS::EC2::VPCGatewayAttachment':
         return this.updateVpcGatewayAttachment(
           logicalId,
@@ -1461,7 +1486,8 @@ export class EC2Provider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       case 'AWS::EC2::SecurityGroupIngress':
         return this.updateSecurityGroupIngress(
@@ -1953,7 +1979,13 @@ export class EC2Provider implements ResourceProvider {
         }
 
         // Apply tags the create did not carry (go-to-k/cdkd#4971)
-        if (!tagsApplied) await this.applyTags(vpcId, desiredTags, logicalId);
+        if (!tagsApplied)
+          await this.applyTags(
+            vpcId,
+            desiredTags,
+            logicalId,
+            maskerOrIdentity(context?.maskSecrets)
+          );
 
         // Fetch VPC details for attributes
         await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [vpcId] }));
@@ -1980,8 +2012,9 @@ export class EC2Provider implements ResourceProvider {
           );
         } catch (cleanupError) {
           leftBehindId = vpcId;
+          const cleanupHead = `Failed to clean up partially-created VPC ${logicalId} (${vpcId}): `;
           this.logger.warn(
-            `Failed to clean up partially-created VPC ${logicalId} (${vpcId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-vpc --vpc-id ${vpcId}`.render()}`
+            `${cleanupHead}${this.warnFailureSentence(cleanupHead, cleanupError, maskerOrIdentity(context?.maskSecrets))} Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-vpc --vpc-id ${vpcId}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -2010,6 +2043,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -2035,7 +2069,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating VPC ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -2086,7 +2121,8 @@ export class EC2Provider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       this.logger.debug(`Successfully updated VPC ${logicalId}`);
@@ -2102,6 +2138,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -2174,7 +2211,8 @@ export class EC2Provider implements ResourceProvider {
           continue;
         }
         const cause = error instanceof Error ? error : undefined;
-        throw this.wrapCaughtError(
+        throw this.wrapDeleteError(
+          maskerOrIdentity(context?.maskSecrets),
           error,
           (text) =>
             new ProvisioningError(
@@ -2348,7 +2386,13 @@ export class EC2Provider implements ResourceProvider {
       // associations attached, so a single DeleteSubnet suffices.
       try {
         // Apply tags the create did not carry (go-to-k/cdkd#4971)
-        if (!tagsApplied) await this.applyTags(subnetId, desiredTags, logicalId);
+        if (!tagsApplied)
+          await this.applyTags(
+            subnetId,
+            desiredTags,
+            logicalId,
+            maskerOrIdentity(context?.maskSecrets)
+          );
 
         // Set MapPublicIpOnLaunch if specified
         const mapPublicIp = properties['MapPublicIpOnLaunch'];
@@ -2373,8 +2417,9 @@ export class EC2Provider implements ResourceProvider {
           );
         } catch (cleanupError) {
           leftBehindId = subnetId;
+          const cleanupHead = `Failed to clean up partially-created Subnet ${logicalId} (${subnetId}): `;
           this.logger.warn(
-            `Failed to clean up partially-created Subnet ${logicalId} (${subnetId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-subnet --subnet-id ${subnetId}`.render()}`
+            `${cleanupHead}${this.warnFailureSentence(cleanupHead, cleanupError, maskerOrIdentity(context?.maskSecrets))} Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-subnet --subnet-id ${subnetId}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -2394,6 +2439,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -2416,7 +2462,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Subnet ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -2464,7 +2511,8 @@ export class EC2Provider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       this.logger.debug(`Successfully updated Subnet ${logicalId}`);
@@ -2481,6 +2529,7 @@ export class EC2Provider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -2596,7 +2645,8 @@ export class EC2Provider implements ResourceProvider {
           continue;
         }
         const cause = error instanceof Error ? error : undefined;
-        throw this.wrapCaughtError(
+        throw this.wrapDeleteError(
+          maskerOrIdentity(context?.maskSecrets),
           error,
           (text) =>
             new ProvisioningError(
@@ -2739,7 +2789,8 @@ export class EC2Provider implements ResourceProvider {
       }
 
       // Apply tags the create did not carry (go-to-k/cdkd#4971)
-      if (!tagsApplied) await this.applyTags(igwId, desiredTags, logicalId);
+      if (!tagsApplied)
+        await this.applyTags(igwId, desiredTags, logicalId, maskerOrIdentity(context?.maskSecrets));
 
       this.logger.debug(`Successfully created InternetGateway ${logicalId}: ${igwId}`);
 
@@ -2752,6 +2803,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -2811,7 +2863,8 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -2964,7 +3017,13 @@ export class EC2Provider implements ResourceProvider {
       }
 
       // Tags the create did not carry (go-to-k/cdkd#4971)
-      if (!tagsApplied) await this.applyTags(allocationId, desiredTags, logicalId);
+      if (!tagsApplied)
+        await this.applyTags(
+          allocationId,
+          desiredTags,
+          logicalId,
+          maskerOrIdentity(context?.maskSecrets)
+        );
 
       // Associate to an instance on the fast SDK path, keeping EIP+InstanceId
       // off the ~20s Cloud Control async-poll route.
@@ -3032,13 +3091,19 @@ export class EC2Provider implements ResourceProvider {
           createdId = undefined;
           this.logger.debug(safeMsg`Released partially-created EIP ${logicalId} (${allocatedId})`);
         } catch (cleanupError) {
+          const cleanupText = this.warnFailureSentence(
+            `Failed to release partially-created EIP ${logicalId} (${allocatedId}): `,
+            cleanupError,
+            maskerOrIdentity(context?.maskSecrets)
+          );
           this.logger.warn(
-            safeMsg`Failed to release partially-created EIP ${logicalId} (${allocatedId}): ${describeAwsFailure(cleanupError).detail}. Manual release may be required: ${pasteableAwsCommand(context?.maskSecrets)`aws ec2 release-address --allocation-id ${allocatedId}`.render()}`
+            safeMsg`Failed to release partially-created EIP ${logicalId} (${allocatedId}): ${cleanupText} Manual release may be required: ${pasteableAwsCommand(context?.maskSecrets)`aws ec2 release-address --allocation-id ${allocatedId}`.render()}`
           );
         }
       }
       const cause = error instanceof Error ? error : undefined;
       const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -3095,7 +3160,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // Tags and InstanceId (association) are mutable in place; Domain / pool /
     // border group are create-only and handled by the replacement path.
@@ -3109,7 +3175,8 @@ export class EC2Provider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       const oldInstanceId = previousProperties['InstanceId'] as string | undefined;
@@ -3215,7 +3282,8 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -3346,6 +3414,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -3866,6 +3935,7 @@ export class EC2Provider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -3933,7 +4003,8 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -3964,7 +4035,8 @@ export class EC2Provider implements ResourceProvider {
   private async createNatGateway(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating NatGateway ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -4022,7 +4094,13 @@ export class EC2Provider implements ResourceProvider {
       createdId = natGatewayId;
 
       // Tags the create did not carry (go-to-k/cdkd#4971)
-      if (!tagsApplied) await this.applyTags(natGatewayId, desiredTags, logicalId);
+      if (!tagsApplied)
+        await this.applyTags(
+          natGatewayId,
+          desiredTags,
+          logicalId,
+          maskerOrIdentity(context?.maskSecrets)
+        );
 
       // Wait for `available` state unless --no-wait is set. Same gating
       // pattern as CloudFront / RDS / ElastiCache providers (env var
@@ -4067,6 +4145,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -4135,7 +4214,8 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -4190,10 +4270,9 @@ export class EC2Provider implements ResourceProvider {
       // can clean it up manually. We do NOT re-throw because doing
       // so would block downstream Subnet / VPC delete from running,
       // which is worse.
+      const waitHead = `Wait for NatGateway ${physicalId} deletion did not complete cleanly: `;
       this.logger.warn(
-        `Wait for NatGateway ${physicalId} deletion did not complete cleanly: ${
-          describeAwsFailure(error).detail
-        } — proceeding with downstream delete steps`
+        `${waitHead}${this.warnFailureSentence(waitHead, error, maskerOrIdentity(context?.maskSecrets))} Proceeding with downstream delete steps.`
       );
     }
 
@@ -4205,7 +4284,8 @@ export class EC2Provider implements ResourceProvider {
   private async createRouteTable(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating RouteTable ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -4245,7 +4325,13 @@ export class EC2Provider implements ResourceProvider {
       const routeTableId = response.RouteTable!.RouteTableId!;
 
       // Apply tags the create did not carry (go-to-k/cdkd#4971)
-      if (!tagsApplied) await this.applyTags(routeTableId, desiredTags, logicalId);
+      if (!tagsApplied)
+        await this.applyTags(
+          routeTableId,
+          desiredTags,
+          logicalId,
+          maskerOrIdentity(context?.maskSecrets)
+        );
 
       this.logger.debug(`Successfully created RouteTable ${logicalId}: ${routeTableId}`);
 
@@ -4259,6 +4345,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -4308,7 +4395,8 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -4457,6 +4545,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -4574,6 +4663,7 @@ export class EC2Provider implements ResourceProvider {
       } catch (error) {
         const cause = error instanceof Error ? error : undefined;
         throw this.wrapCaughtError(
+          maskerOrIdentity(maskSecrets),
           error,
           (text) =>
             new ProvisioningError(
@@ -4591,7 +4681,12 @@ export class EC2Provider implements ResourceProvider {
     // route table change that did not take the replacement path): delete the
     // recorded route and create the desired one.
     try {
-      await this.deleteRoute(logicalId, physicalId, resourceType);
+      await this.deleteRoute(
+        logicalId,
+        physicalId,
+        resourceType,
+        maskSecrets ? { maskSecrets } : undefined
+      );
       const createResult = await this.createRoute(
         logicalId,
         resourceType,
@@ -4643,6 +4738,7 @@ export class EC2Provider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -4705,7 +4801,8 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -4724,7 +4821,8 @@ export class EC2Provider implements ResourceProvider {
   private async createSubnetRouteTableAssociation(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SubnetRouteTableAssociation ${logicalId}`);
 
@@ -4759,6 +4857,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -4813,7 +4912,8 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -4832,7 +4932,8 @@ export class EC2Provider implements ResourceProvider {
   private async createSecurityGroup(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SecurityGroup ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -4938,7 +5039,14 @@ export class EC2Provider implements ResourceProvider {
           });
         await Promise.all([
           // Only tags the create did not carry (go-to-k/cdkd#4971).
-          recordRejection(this.applyTags(groupId, tagsApplied ? [] : desiredTags, logicalId)),
+          recordRejection(
+            this.applyTags(
+              groupId,
+              tagsApplied ? [] : desiredTags,
+              logicalId,
+              maskerOrIdentity(context?.maskSecrets)
+            )
+          ),
           recordRejection(this.authorizeInlineIngress(groupId, ingressRules)),
           recordRejection(this.applyInlineEgress(groupId, egressRules)),
         ]);
@@ -4953,8 +5061,9 @@ export class EC2Provider implements ResourceProvider {
           );
         } catch (cleanupError) {
           leftBehindId = groupId;
+          const cleanupHead = `Failed to clean up partially-created SecurityGroup ${logicalId} (${groupId}): `;
           this.logger.warn(
-            `Failed to clean up partially-created SecurityGroup ${logicalId} (${groupId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-security-group --group-id ${groupId}`.render()}`
+            `${cleanupHead}${this.warnFailureSentence(cleanupHead, cleanupError, maskerOrIdentity(context?.maskSecrets))} Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-security-group --group-id ${groupId}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -4974,6 +5083,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -5095,7 +5205,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating SecurityGroup ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -5108,7 +5219,8 @@ export class EC2Provider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       // Diff and apply ingress rule changes (symmetric with egress below).
@@ -5142,6 +5254,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -5215,7 +5328,8 @@ export class EC2Provider implements ResourceProvider {
           continue;
         }
         const cause = error instanceof Error ? error : undefined;
-        throw this.wrapCaughtError(
+        throw this.wrapDeleteError(
+          maskerOrIdentity(context?.maskSecrets),
           error,
           (text) =>
             new ProvisioningError(
@@ -5551,6 +5665,7 @@ export class EC2Provider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const failure = this.wrapCaughtError(
+        maskerOrIdentity(maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -6143,7 +6258,12 @@ export class EC2Provider implements ResourceProvider {
               previousProperties,
               // The old rule's recorded `sgr-` id, when there is one, revokes
               // exactly it (go-to-k/cdkd#4355).
-              recordedAttributes ? { recordedAttributes } : undefined
+              recordedAttributes || maskSecrets
+                ? {
+                    ...(recordedAttributes && { recordedAttributes }),
+                    ...(maskSecrets && { maskSecrets }),
+                  }
+                : undefined
             );
       // go-to-k/cdkd#3952: delete-then-create must ABORT when the revoke was
       // skipped (provider-delete-path.md): authorizing the new rule would leave
@@ -6214,6 +6334,7 @@ export class EC2Provider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -6414,7 +6535,8 @@ export class EC2Provider implements ResourceProvider {
         return notMatched();
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -6583,7 +6705,13 @@ export class EC2Provider implements ResourceProvider {
       // failed.
       try {
         // Apply tags the create did not carry (go-to-k/cdkd#4971)
-        if (!tagsApplied) await this.applyTags(instanceId, desiredTags, logicalId);
+        if (!tagsApplied)
+          await this.applyTags(
+            instanceId,
+            desiredTags,
+            logicalId,
+            maskerOrIdentity(context?.maskSecrets)
+          );
 
         // Wait for instance to reach running state unless --no-wait is set.
         // Same gating pattern as the NAT Gateway wait above. Before issue
@@ -6716,8 +6844,9 @@ export class EC2Provider implements ResourceProvider {
           );
         } catch (cleanupError) {
           leftBehindId = instanceId;
+          const cleanupHead = `Failed to terminate partially-created EC2 Instance ${logicalId} (${instanceId}): `;
           this.logger.warn(
-            `Failed to terminate partially-created EC2 Instance ${logicalId} (${instanceId}): ${describeAwsFailure(cleanupError).detail}. THE INSTANCE IS STILL RUNNING AND BILLING. Manual termination required: ${pasteableAwsCommand(context?.maskSecrets)`aws ec2 terminate-instances --instance-ids ${instanceId}`.render()}`
+            `${cleanupHead}${this.warnFailureSentence(cleanupHead, cleanupError, maskerOrIdentity(context?.maskSecrets))} THE INSTANCE IS STILL RUNNING AND BILLING. Manual termination required: ${pasteableAwsCommand(context?.maskSecrets)`aws ec2 terminate-instances --instance-ids ${instanceId}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -6729,6 +6858,7 @@ export class EC2Provider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : this.wrapCaughtError(
+              maskerOrIdentity(context?.maskSecrets),
               error,
               (text) =>
                 new ProvisioningError(
@@ -6979,7 +7109,8 @@ export class EC2Provider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       await this.updateInstanceSecurityProps(physicalId, properties, previousProperties);
@@ -7005,6 +7136,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -7205,6 +7337,7 @@ export class EC2Provider implements ResourceProvider {
         logicalId,
         physicalId,
         logger: this.logger,
+        mask: context?.maskSecrets,
         site: ec2InstanceProtectionSite(physicalId, commandRegion),
         reEnable: () => reEnableInstanceApiTermination(this.ec2Client, physicalId),
       },
@@ -7314,7 +7447,8 @@ export class EC2Provider implements ResourceProvider {
           continue;
         }
         const cause = error instanceof Error ? error : undefined;
-        throw this.wrapCaughtError(
+        throw this.wrapDeleteError(
+          maskerOrIdentity(context?.maskSecrets),
           error,
           (text) =>
             new ProvisioningError(
@@ -7773,7 +7907,8 @@ export class EC2Provider implements ResourceProvider {
   private async createNetworkAcl(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating NetworkAcl ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -7813,7 +7948,13 @@ export class EC2Provider implements ResourceProvider {
       const networkAclId = response.NetworkAcl!.NetworkAclId!;
 
       // Apply tags the create did not carry (go-to-k/cdkd#4971)
-      if (!tagsApplied) await this.applyTags(networkAclId, desiredTags, logicalId);
+      if (!tagsApplied)
+        await this.applyTags(
+          networkAclId,
+          desiredTags,
+          logicalId,
+          maskerOrIdentity(context?.maskSecrets)
+        );
 
       this.logger.debug(`Successfully created NetworkAcl ${logicalId}: ${networkAclId}`);
 
@@ -7827,6 +7968,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -7865,7 +8007,8 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -7946,6 +8089,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -8006,7 +8150,8 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -8125,6 +8270,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -8143,7 +8289,8 @@ export class EC2Provider implements ResourceProvider {
   private async createSubnetNetworkAclAssociation(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SubnetNetworkAclAssociation ${logicalId}`);
 
@@ -8208,6 +8355,7 @@ export class EC2Provider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -8313,7 +8461,8 @@ export class EC2Provider implements ResourceProvider {
   private async applyTags(
     resourceId: string,
     tags: CfnTagEntry[],
-    logicalId: string
+    logicalId: string,
+    mask: MaskerFn
   ): Promise<void> {
     if (tags.length > 0) {
       try {
@@ -8325,9 +8474,8 @@ export class EC2Provider implements ResourceProvider {
         );
         this.logger.debug(`Applied ${tags.length} tag(s) to ${logicalId}`);
       } catch (error) {
-        this.logger.warn(
-          `Failed to apply tags to ${logicalId}: ${describeAwsFailure(error).detail}`
-        );
+        const tagHead = `Failed to apply tags to ${logicalId}: `;
+        this.logger.warn(`${tagHead}${this.warnFailureText(tagHead, error, mask)}`);
       }
     }
   }
@@ -8344,7 +8492,8 @@ export class EC2Provider implements ResourceProvider {
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
-    newTagsRaw: unknown
+    newTagsRaw: unknown,
+    mask: MaskerFn
   ): Promise<void> {
     const plan = planTagDiff(oldTagsRaw, newTagsRaw);
     const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
@@ -8364,9 +8513,8 @@ export class EC2Provider implements ResourceProvider {
         );
         this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from ${resourceId}`);
       } catch (error) {
-        this.logger.warn(
-          `Failed to remove tags from ${resourceId}: ${describeAwsFailure(error).detail}`
-        );
+        const tagHead = `Failed to remove tags from ${resourceId}: `;
+        this.logger.warn(`${tagHead}${this.warnFailureText(tagHead, error, mask)}`);
       }
     }
     if (tagsToAdd.length > 0) {
@@ -8379,9 +8527,8 @@ export class EC2Provider implements ResourceProvider {
         );
         this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on ${resourceId}`);
       } catch (error) {
-        this.logger.warn(
-          `Failed to add tags on ${resourceId}: ${describeAwsFailure(error).detail}`
-        );
+        const tagHead = `Failed to add tags on ${resourceId}: `;
+        this.logger.warn(`${tagHead}${this.warnFailureText(tagHead, error, mask)}`);
       }
     }
   }
@@ -8484,18 +8631,68 @@ export class EC2Provider implements ResourceProvider {
    * throw has no chain, so it is not stamped. Every caller tests its own
    * not-found and `DependencyViolation` wording on the CAUGHT error before
    * wrapping, so no decision here reads the shortened message.
+   *
+   * `mask` is the operation's secret masker: AWS can echo a resolved value
+   * back, so the debug line is masked raw and as the finished line, and the
+   * class itself goes through it. A cdkd-authored or transport error keeps
+   * its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244).
    */
   private wrapCaughtError(
+    mask: MaskerFn,
     error: unknown,
     build: (text: string) => ProvisioningError
   ): ProvisioningError {
     const failure = describeAwsFailure(error);
-    if (!failure.redacted) return build(failure.detail);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
     // `build` runs twice here (debug text, then the throw), so it must stay a
     // side-effect-free constructor call.
-    this.logger.debug(build(failure.detail).message);
-    const wrapped = build(redactedEc2FailureText(error, failure));
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(redactedEc2FailureText(mask, error, failure));
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
+   * The failure text a default-level `warn` quotes after `head`
+   * (go-to-k/cdkd#2319). An AWS-authored failure is named by its CLASS, since
+   * a denied `Delete*` or `CreateTags` names the caller's assumed-role ARN;
+   * AWS's own text goes to `debug` under the same `head`, through `mask`. A
+   * cdkd-authored or transport error keeps its text, masked and otherwise
+   * unchanged, as `wrapMaskedAwsError` relays it into a thrown wrap.
+   */
+  private warnFailureText(head: string, error: unknown, mask: MaskerFn): string {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return mask(failure.detail);
+    this.logger.debug(mask(`${head}${mask(failure.detail)}`));
+    return mask(failure.summary);
+  }
+
+  /**
+   * {@link warnFailureText} for a `warn` that goes on with another sentence:
+   * the text, closed with a period unless it already ends one.
+   */
+  private warnFailureSentence(head: string, error: unknown, mask: MaskerFn): string {
+    const text = this.warnFailureText(head, error, mask);
+    return /[.!?]$/.test(text) ? text : `${text}.`;
+  }
+
+  /**
+   * The delete catches' {@link wrapCaughtError}. The wrap names an AWS failure
+   * by its CLASS, and the delete classifiers read `NotFound` in a message as
+   * "already deleted": a class naming another object's not-found (a
+   * `KMSNotFoundException`) would drop the state record of a live resource.
+   * Each caller tests its own not-found on the CAUGHT error first
+   * (`isNotFoundError`), so a `NotFound` class reaching here is not this
+   * resource's, and the wrap is marked {@link markNotGone}
+   * (go-to-k/cdkd#2319, #5228).
+   */
+  private wrapDeleteError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const thrown = this.wrapCaughtError(mask, error, build);
+    return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
   }
 
   /**
@@ -9274,8 +9471,9 @@ export class EC2Provider implements ResourceProvider {
           result['IamInstanceProfile'] = live.IamInstanceProfile.Arn;
         }
       } catch (error) {
+        const backfillHead = `Could not backfill IamInstanceProfile for ${physicalId} during the --no-wait capture: `;
         this.logger.warn(
-          `Could not backfill IamInstanceProfile for ${physicalId} during the --no-wait capture (${describeAwsFailure(error).detail}); the field is omitted from the observed snapshot`
+          `${backfillHead}${this.warnFailureSentence(backfillHead, error, (t) => t)} The field is omitted from the observed snapshot.`
         );
       }
     }

@@ -263,7 +263,7 @@ describe('DynamoDB thrown wraps keep the caller identity out (go-to-k/cdkd#2319)
     debugSpy.mockReset();
   });
 
-  describe.each(sites())('$site', ({ command, action, prefix, answers, run }) => {
+  describe.each(sites())('$site', ({ site, command, action, prefix, answers, run }) => {
     it('names an AWS-authored failure by its class, keeps cause, and stays retryable', async () => {
       const original = accessDenied(action);
       failOn(command, original, answers);
@@ -299,11 +299,21 @@ describe('DynamoDB thrown wraps keep the caller identity out (go-to-k/cdkd#2319)
       expect(failure.cause).toBe(original);
     });
 
-    it('keeps a non-Error throw as text, unstamped', async () => {
+    it('handles a non-Error throw unstamped', async () => {
       failOn(command, 'socket hang up', answers);
       const failure = await thrown(run());
 
-      expect(failure.message).toBe(`${prefix}socket hang up`);
+      if (site.startsWith('Table ')) {
+        // The Table wrap withholds the value, the whole payload with no class
+        // to fall back to, as the settled #2319 wrap does; it has no chain to
+        // stamp, and the text is on the debug line.
+        expect(failure.message).toBe(
+          `${prefix}a non-Error value of type string. ${VERBOSE_POINTER}`
+        );
+        expect(debugged()).toContain(`${prefix}socket hang up`);
+      } else {
+        expect(failure.message).toBe(`${prefix}socket hang up`);
+      }
       expect(hasRedactedCause(failure)).toBe(false);
     });
   });

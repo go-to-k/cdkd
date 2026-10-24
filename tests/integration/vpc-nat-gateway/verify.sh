@@ -721,6 +721,25 @@ if ! grep -q "Failed to release partially-created EIP OrphanEip" "${FF_LOG}"; th
   echo "FAIL: the deploy as ${DENY_ROLE} did not report a refused release of OrphanEip's address (the arm needs the release to fail -- output above)" >&2
   exit 1
 fi
+# go-to-k/cdkd#2319: the refused ReleaseAddress is the deny role's, and AWS
+# words it with the role's assumed-role ARN (this account's id). The default-
+# level warning names it by its class; AWS's text is debug-only. A FAIL prints
+# only the cdkd-authored prefix and the line's length, never the line.
+EIP_RELEASE_HEAD="Failed to release partially-created EIP OrphanEip"
+EIP_RELEASE_LINE="$(sed $'s/\x1b\\[[0-9;]*m//g' "${FF_LOG}" | grep -F -- "${EIP_RELEASE_HEAD}" | head -1 || true)"
+if [ -z "${EIP_RELEASE_LINE}" ]; then
+  echo "FAIL: no '${EIP_RELEASE_HEAD}' line after the ANSI strip (the #2319 checks below would pass for free)" >&2
+  exit 1
+fi
+if ! grep -qE -- "${EIP_RELEASE_HEAD} \(eipalloc-[0-9a-f]+\): [A-Za-z0-9.]+\. Re-run with --verbose for AWS's own message\." <<<"${EIP_RELEASE_LINE}"; then
+  echo "FAIL: the '${EIP_RELEASE_HEAD}' warning is not '<head> (<allocation>): <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); ${#EIP_RELEASE_LINE} chars" >&2
+  exit 1
+fi
+if grep -qF -- "${ACCOUNT_ID}" <<<"${EIP_RELEASE_LINE}"; then
+  echo "FAIL: the '${EIP_RELEASE_HEAD}' warning quotes AWS's text, with this account's id (#2319); ${#EIP_RELEASE_LINE} chars" >&2
+  exit 1
+fi
+echo "    ok: the refused release is named by its class, with no account id"
 if [ "$(state_physical_id OrphanEip)" != "<absent>" ]; then
   echo "FAIL: state records OrphanEip after a CREATE that threw (expected no record)" >&2
   exit 1

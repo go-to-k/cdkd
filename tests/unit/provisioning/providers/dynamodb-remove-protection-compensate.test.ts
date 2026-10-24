@@ -527,6 +527,34 @@ describe.each(PROVIDERS)(
       );
     }, 120_000);
 
+    // go-to-k/cdkd#2319: the class is AWS-authored text, so the delete's
+    // masker must reach the re-enable report. The GlobalTable delete is
+    // another lane's file.
+    it.skipIf(provider.resourceType !== 'AWS::DynamoDB::Table')(
+      'masks a secret spelled in the failed re-enable class',
+      async () => {
+        install({
+          protectionOn: true,
+          onDelete: () => Promise.reject(terminalDeleteRefusal()),
+          reEnableFails: true,
+          reEnableError: () => Object.assign(new Error('denied'), { name: 'Denieds3cr3tException', $fault: 'client', $metadata: { httpStatusCode: 400 } }),
+        });
+
+        await expect(
+          provider
+            .make()
+            .delete(LOGICAL_ID, TABLE_NAME, provider.resourceType, {}, {
+              ...REMOVE_PROTECTION,
+              maskSecrets: (t: string) => t.split('s3cr3t').join('***'),
+            })
+        ).rejects.toThrow(/Attempt to change a resource which is still in use/);
+
+        expect(errorLines()).toContain('(Denied***Exception. Re-run with --verbose');
+        expect(errorLines()).not.toContain('s3cr3t');
+      },
+      120_000
+    );
+
     it('re-enables the guard when a Ctrl-C aborts the path after the flip', async () => {
       install(provider.armInterruptRoute(fireInterrupt));
 
@@ -1203,8 +1231,10 @@ describe('compensateRemovedDeletionProtection: failed re-enable log level (#2224
 
     expect(captured.error).toHaveLength(0);
     // NOT debug: a live table whose status is merely not ACTIVE also answers
-    // RNF here, and silencing that hides the case the line exists for.
-    expect(captured.debug).toHaveLength(0);
+    // RNF here, and silencing that hides the case the line exists for. Only
+    // AWS's own text goes to debug (go-to-k/cdkd#2319).
+    expect(captured.debug).toHaveLength(1);
+    expect(captured.debug[0]).toContain('Requested resource not found');
 
     const warned = captured.warn.join('\n');
     // The claim issue #2224 objected to must NOT survive: cdkd does not know
@@ -1218,8 +1248,10 @@ describe('compensateRemovedDeletionProtection: failed re-enable log level (#2224
     expect(warned).toContain('not in this region or account');
     expect(warned).toContain(`aws dynamodb describe-table --table-name ${TABLE_NAME}`);
     expect(warned).toContain(`aws dynamodb update-table --table-name ${TABLE_NAME}`);
-    // The underlying AWS text is still carried, so the line is diagnosable.
-    expect(warned).toContain('Requested resource not found');
+    // The failure is named by its class, so the line is diagnosable; AWS's
+    // own text (which can name the caller) is at debug (go-to-k/cdkd#2319).
+    expect(warned).toContain('(ResourceNotFoundException. Re-run with --verbose');
+    expect(warned).not.toContain('Requested resource not found');
     // ...and the re-enable is reported as FAILED even though it is narrated at
     // warn. The softer LEVEL is about what cdkd can claim; the OUTCOME is about
     // what it did, and it did not put the guard back -- which is what keeps

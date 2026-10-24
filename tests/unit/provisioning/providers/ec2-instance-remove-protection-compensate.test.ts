@@ -303,6 +303,20 @@ describe('EC2 Instance (SDK route): --remove-protection compensation (issue #220
     );
   });
 
+  // go-to-k/cdkd#2319: the class is AWS-authored text, so the delete's masker
+  // must reach the re-enable report (dropping it leaves the secret in place).
+  it('masks a secret spelled in the failed re-enable class', async () => {
+    const provider = newProvider();
+    script({ observe: true, del: terminalRefusal, reEnable: Object.assign(new Error('denied'), { name: 'Denieds3cr3tException', $fault: 'client', $metadata: { httpStatusCode: 400 } }) });
+    await expect(del(provider, { ...CTX, maskSecrets: (t: string) => t.split('s3cr3t').join('***') })).rejects.toThrow('Failed to terminate');
+    const reported = [...childLogger.error.mock.calls, ...childLogger.warn.mock.calls]
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes('re-enable'));
+    expect(reported).toHaveLength(1);
+    expect(reported[0]).toContain('(Denied***Exception. Re-run with --verbose');
+    expect(reported[0]).not.toContain('s3cr3t');
+  });
+
   it('names the client region in the restore command when the state records none', async () => {
     script({ observe: true, del: terminalRefusal, reEnable: new Error('AccessDenied') });
     await expect(del(newProvider(), { removeProtection: true })).rejects.toThrow(

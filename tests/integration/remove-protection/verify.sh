@@ -447,7 +447,9 @@ while IFS= read -r event_key || [ -n "${event_key}" ]; do
   aws s3 cp "s3://${STATE_BUCKET}/${event_key}" - --quiet \
     | jq -c --arg l "${NLB_LOGICAL_ID}" 'select(.eventType == "RESOURCE_FAILED" and .logicalId == $l)' >> "${FAILED_4B}"
 done <<< "${NEW_EVENT_KEYS_4B}"
-NLB_FAILED_MSG="$(jq -r '.error.message // empty' "${FAILED_4B}" | tail -n 1)"
+# The LAST event's whole message (`-s` slurps the events), never the last
+# LINE of all of them: a multi-line message would be judged by its tail.
+NLB_FAILED_MSG="$(jq -rs 'map(select(.error.message != null)) | last | .error.message // empty' "${FAILED_4B}")"
 # A FAIL prints only the cdkd-authored prefix and the length: the rest may be
 # AWS's text, naming accounts, roles or sessions.
 if [ -z "${NLB_FAILED_MSG}" ]; then

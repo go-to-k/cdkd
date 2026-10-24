@@ -607,6 +607,14 @@ export interface ProtectionFlipCompensationOptions {
    *    delete of the same resource to retry.
    */
   readonly reEnable: () => Promise<void | 'already-on' | 'read-on-write-failed'>;
+  /**
+   * The delete's `DeleteContext.maskSecrets`. A failed re-enable is reported
+   * by its error CLASS at warn / error, through this masker, and AWS's text
+   * goes to debug under the same head, masked (go-to-k/cdkd#2319): a denied
+   * write names the caller's assumed-role ARN, and a validation refusal can
+   * quote the echoed members.
+   */
+  readonly mask?: MaskerFn | undefined;
 }
 
 /**
@@ -675,7 +683,21 @@ export async function compensateProtectionFlip(
     );
     return 'restored';
   } catch (reEnableError) {
-    const detail = describeAwsFailure(reEnableError).detail;
+    const mask = maskerOrIdentity(opts.mask);
+    const failure = describeAwsFailure(reEnableError);
+    // The class (or a cdkd-authored text) in the line; AWS's own text at debug.
+    const detail = mask(failure.summary);
+    if (failure.redacted) {
+      // Masked before `safeMsg` too: it flattens line breaks and control
+      // characters inside the value, which can split a secret the outer pass
+      // would then miss (the #5180 shape of `observeThenDisableProtection`).
+      opts.logger.debug(
+        mask(
+          safeMsg`${site.subject} ${opts.logicalId}: re-enabling ${site.guardName} on ` +
+            safeMsg`${opts.physicalId} failed: ${mask(failure.detail)}`
+        )
+      );
+    }
     const commands = site.commands();
     const caveat = site.restoreCaveat ? ` ${site.restoreCaveat}` : '';
     if (site.isNotFound(reEnableError)) {

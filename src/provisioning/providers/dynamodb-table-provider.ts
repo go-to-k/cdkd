@@ -50,7 +50,12 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { clientDefaultsFor, type CredentialConfig } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { markNotGone } from '../not-gone.js';
 import { generatedNameFor } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -126,6 +131,7 @@ import {
   isTransientServerError,
   markRedactedCause,
   relayedNameCollision,
+  wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
 import type {
@@ -1730,11 +1736,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * wrap is stamped `markRedactedCause`, so the retry classifiers read the
    * withheld text on the `cause` chain. An "already exists" and an index-busy
    * refusal are restated ({@link relayedNameCollision},
-   * {@link relayedIndexBusyDelete}). A cdkd-authored or transport error, or a
-   * non-`Error` throw, keeps its text, as in the S3 Tables provider's wrap
-   * (go-to-k/cdkd#5059); the deploy engine masks a thrown message. The delete
-   * checks `ResourceNotFoundException` by type before it wraps, so no "already
-   * deleted" reading depends on AWS's wording.
+   * {@link relayedIndexBusyDelete}); the "already exists" not from a
+   * post-create step's failure ({@link markAuxiliaryFailure}), where "it" would
+   * read as the table (#3826). A cdkd-authored or transport error keeps its
+   * text, masked, stamped only when the mask changed it (`wrapMaskedAwsError`,
+   * issue #4244); a non-`Error` throw is withheld like an AWS one, unstamped
+   * (it has no chain). The delete checks `ResourceNotFoundException` by type
+   * before it wraps, and marks a foreign not-found class {@link markNotGone}.
    *
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor call.
@@ -1745,16 +1753,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
     build: (text: string) => ProvisioningError
   ): ProvisioningError {
     const failure = describeAwsFailure(error);
-    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
-    const m = mask ?? ((text: string) => text);
+    const m = maskerOrIdentity(mask);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
     this.logger.debug(m(build(m(failure.detail)).message));
-    return markRedactedCause(
-      build(
-        `${m(failure.summary)}${relayedNameCollision(failure.detail)}${relayedIndexBusyDelete(
-          failure.detail
-        )}`
-      )
-    );
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${m(failure.summary)}${relay}${relayedIndexBusyDelete(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -2282,10 +2286,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
           debug(`Rolled back partially-created DynamoDB table ${tableName}`);
         } catch (cleanupError) {
           tableLeftBehind = true;
+          // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a
+          // denied DeleteTable names the caller's assumed-role ARN.
+          const cleanupFailure = describeAwsFailure(cleanupError);
+          const cleanupHead = `Failed to roll back partially-created DynamoDB table ${tableName}: `;
+          if (cleanupFailure.redacted) debug(`${cleanupHead}${cleanupFailure.detail}`);
           warn(
-            `Failed to roll back partially-created DynamoDB table ${tableName}: ${
-              describeAwsFailure(cleanupError).detail
-            }`
+            `${cleanupHead}${cleanupFailure.redacted ? cleanupFailure.summary : cleanupFailure.detail}`
           );
         }
         markAuxiliaryFailure(error, logicalId);
@@ -3913,6 +3920,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
           physicalId,
           typeLabel: 'table',
           logger: this.logger,
+          mask: context?.maskSecrets,
           ...(context?.expectedRegion ? { region: context.expectedRegion } : {}),
           reEnable: async () => {
             await this.dynamoDBClient.send(
@@ -4311,7 +4319,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // rather than start a fresh one. That is the compounding term of issue
       // #1955.
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -4323,6 +4331,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this table is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
