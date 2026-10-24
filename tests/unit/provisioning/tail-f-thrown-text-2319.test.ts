@@ -746,6 +746,49 @@ describe('CloudTrail EventSelectors reset tolerance (#2319)', () => {
     );
   });
 
+  // A trail named with one WORD of the phrase: cutting that name would erase
+  // AWS's own wording and fail a refusal main skipped. CFn accepts the names.
+  it.each([
+    `arn:aws:cloudtrail:us-east-1:${ACCOUNT}:trail/advanced`,
+    `arn:aws:cloudtrail:us-east-1:${ACCOUNT}:trail/selectors`,
+    `arn:aws:cloudtrail:us-east-1:${ACCOUNT}:trail/event`,
+  ])('a genuine refusal on %s still skips the reset', async (arn) => {
+    route({
+      PutEventSelectorsCommand: awsError(
+        'InvalidEventSelectorsException',
+        'This trail uses advanced event selectors, which are managed through a separate API'
+      ),
+    });
+
+    await reset(arn);
+
+    expect(warnLines().some((l) => l.includes('skipping the EventSelectors reset'))).toBe(true);
+  });
+
+  // IAM role and session names may carry `,`: the ARN cut must take it whole.
+  it('a role ARN carrying a comma is cut whole', async () => {
+    const text = `Refused for arn:aws:sts::${ACCOUNT}:assumed-role/x,advanced-event-selector/s on this trail`;
+    route({ PutEventSelectorsCommand: awsError('InvalidParameterException', text) });
+
+    const failure = await caught(reset(TRAIL_ARN));
+
+    expect(failure.message).toBe(
+      `Failed to update CloudTrail Trail T: InvalidParameterException. ${VERBOSE_POINTER}`
+    );
+  });
+
+  // An access denial is never the benign rejection, whatever its text spells.
+  it('an access denial whose own text spells the phrase is not swallowed', async () => {
+    const text = 'Not authorized to change advanced event selectors on this trail';
+    route({ PutEventSelectorsCommand: awsError('AccessDeniedException', text) });
+
+    const failure = await caught(reset(TRAIL_ARN));
+
+    expect(failure.message).toBe(
+      `Failed to update CloudTrail Trail T: AccessDeniedException. ${VERBOSE_POINTER}`
+    );
+  });
+
   it('a denial naming a role after the phrase is not swallowed', async () => {
     const text = `User: arn:aws:sts::${ACCOUNT}:assumed-role/advanced-event-selector-admin/s is not authorized to perform: cloudtrail:PutEventSelectors on resource: ${TRAIL_ARN}`;
     expect(/advanced[\s-]*event[\s-]*selector/i.test(text)).toBe(true);

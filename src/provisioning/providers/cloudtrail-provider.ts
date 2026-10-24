@@ -174,17 +174,32 @@ function describeValue(value: unknown): string {
 }
 
 /**
- * AWS's text with every ARN and the trail's own id cut out, as whole tokens
- * (go-to-k/cdkd#2319 review): the EventSelectors reset tolerance matches a
- * phrase in AWS's text, and an access denial quoting a trail, role or session
- * NAMED after that phrase must not match it. A token cut, not a substring
- * one, so a short trail name does not erase letters of AWS's own wording.
+ * The wording of AWS's rejection that the EventSelectors reset tolerates: a
+ * trail on AdvancedEventSelectors has no basic selectors to reset.
+ */
+const ADVANCED_SELECTOR_PHRASE = /advanced[\s-]*event[\s-]*selector/i;
+
+/**
+ * An access-denial class: never the benign advanced-selector rejection,
+ * whatever its text spells (go-to-k/cdkd#2319 review).
+ */
+const ACCESS_DENIAL_CLASS = /^(AccessDenied|NotAuthorized|Unauthorized)/i;
+
+/**
+ * AWS's text with every ARN cut out, and the trail's id and bare name cut out
+ * as whole tokens when they themselves spell the phrase (go-to-k/cdkd#2319
+ * review): the EventSelectors reset tolerance matches
+ * {@link ADVANCED_SELECTOR_PHRASE} in AWS's text, and a denial quoting a trail,
+ * role or session NAMED after it must not match. An identifier that does not
+ * spell the phrase is left alone, so a trail named `advanced` or `selectors`
+ * does not erase words of AWS's own wording. The ARN cut runs to whitespace or
+ * a quote / bracket, so an IAM name carrying `,` is cut whole.
  */
 function withoutTrailIdentifiers(text: string, physicalId: string): string {
   const trailName = physicalId.slice(physicalId.lastIndexOf('/') + 1);
-  let out = text.replace(/\barn:[^\s,;()'"]+/g, '');
+  let out = text.replace(/\barn:[^\s;()'"]+/g, '');
   for (const id of new Set([physicalId, trailName])) {
-    if (id === '') continue;
+    if (id === '' || !ADVANCED_SELECTOR_PHRASE.test(id)) continue;
     const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     out = out.replace(new RegExp(`(^|[^A-Za-z0-9._-])${escaped}(?=$|[^A-Za-z0-9._-])`, 'g'), '$1');
   }
@@ -745,7 +760,14 @@ export class CloudTrailProvider implements ResourceProvider {
           // ({@link withoutTrailIdentifiers}).
           const failure = describeAwsFailure(error);
           const message = withoutTrailIdentifiers(failure.detail, physicalId);
-          if (!isRemoval || !/advanced[\s-]*event[\s-]*selector/i.test(message)) throw error;
+          const errorClass = error instanceof Error ? error.name : '';
+          if (
+            !isRemoval ||
+            ACCESS_DENIAL_CLASS.test(errorClass) ||
+            !ADVANCED_SELECTOR_PHRASE.test(message)
+          ) {
+            throw error;
+          }
           // The class at warn, AWS's text at debug (go-to-k/cdkd#2319).
           const m = maskerOrIdentity(context?.maskSecrets);
           const head =
