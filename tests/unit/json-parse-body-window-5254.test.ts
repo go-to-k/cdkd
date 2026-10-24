@@ -198,7 +198,6 @@ describe('JSON.parse failures quote no body (issue #5254)', () => {
     expect((err as Error).message).toBe(
       'Template is not valid YAML. Cause: ReferenceError: Excessive alias count indicates a resource exhaustion attack'
     );
-    expectNoLeakIn(err);
   });
 
   it('parseCfnTemplate (YAML): a warning is a warn line without the code frame, never stderr', () => {

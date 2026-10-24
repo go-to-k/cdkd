@@ -428,6 +428,27 @@ describe('parseCfnTemplate — YAML acceptance through parseDocument (issue #525
   });
 });
 
+describe('parseCfnTemplate — YAML 1.2 acceptance without a directive (issue #5254)', () => {
+  it('keeps `<<` as a plain key and 1.1 booleans as strings, as `yaml.parse` does', () => {
+    // The ordinary template: no `%YAML` directive, so the 1.2 core schema
+    // applies and neither merge keys nor `yes` / `on` booleans are special.
+    const body = [
+      'Base: &base',
+      '  Runtime: nodejs20.x',
+      'Fn:',
+      '  <<: *base',
+      '  Memory: 256',
+      'Flags: [yes, on, true, no, off]',
+      '',
+    ].join('\n');
+    expect(parseCfnTemplate(body)).toEqual({
+      Base: { Runtime: 'nodejs20.x' },
+      Fn: { '<<': { Runtime: 'nodejs20.x' }, Memory: 256 },
+      Flags: ['yes', 'on', true, 'no', 'off'],
+    });
+  });
+});
+
 describe('detectTemplateFormat — UTF-8 BOM handling', () => {
   const BOM = '﻿';
 
