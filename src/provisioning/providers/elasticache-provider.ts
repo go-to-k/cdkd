@@ -17,6 +17,7 @@ import {
   type IpDiscovery,
 } from '@aws-sdk/client-elasticache';
 import { getLogger } from '../../utils/logger.js';
+import { markNotGone } from '../not-gone.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   markRedactedCause,
@@ -110,6 +111,22 @@ export class ElastiCacheProvider implements ResourceProvider {
     this.logger.debug(m(build(m(failure.detail)).message));
     const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
+   * {@link wrapCaughtError} for a delete catch. The wrap names an AWS failure
+   * by its CLASS, and the delete classifiers read `NotFound` in a message as
+   * "already deleted": a class naming ANOTHER object's not-found (this
+   * resource's own not-found returned before the wrap) is marked
+   * `markNotGone`, so the record is kept (go-to-k/cdkd#2319).
+   */
+  private wrapDeleteError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const thrown = this.wrapCaughtError(mask, error, build);
+    return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -466,7 +483,7 @@ export class ElastiCacheProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -819,7 +836,7 @@ export class ElastiCacheProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
         context?.maskSecrets,
         error,
         (text) =>

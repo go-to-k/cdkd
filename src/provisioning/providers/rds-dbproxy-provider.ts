@@ -26,6 +26,7 @@ import {
   DBPROXY_TAGS_WHAT,
 } from '../tag-list.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -44,7 +45,13 @@ import {
   withDerivedNameMasks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
-import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
 import { injectiveKey, injectiveKeyPrefix } from '../../state/record-keys.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
@@ -206,8 +213,10 @@ export class RDSDBProxyProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    const mask = maskerOrIdentity(context?.maskSecrets);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const tags = refuseMalformedDesiredTags(
       properties['Tags'],
@@ -274,7 +283,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
         })
       );
     } catch (error) {
-      throw this.wrapError(error, 'CREATE', resourceType, logicalId, undefined);
+      throw this.wrapCaughtError(error, 'CREATE', resourceType, logicalId, undefined, mask);
     }
 
     // Wait until DBProxyStatus = 'available'. Post-create wiring (Targets via
@@ -313,7 +322,14 @@ export class RDSDBProxyProvider implements ResourceProvider {
           } else if (error instanceof ProvisioningError) {
             throw error;
           } else {
-            throw this.wrapError(error, 'CREATE (poll)', resourceType, logicalId, dbProxyName);
+            throw this.wrapCaughtError(
+              error,
+              'CREATE (poll)',
+              resourceType,
+              logicalId,
+              dbProxyName,
+              mask
+            );
           }
         }
         await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
@@ -453,7 +469,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
       try {
         await client.send(new ModifyDBProxyCommand(input as never));
       } catch (error) {
-        throw this.wrapError(error, 'UPDATE', resourceType, logicalId, physicalId, mask);
+        throw this.wrapCaughtError(error, 'UPDATE', resourceType, logicalId, physicalId, mask);
       }
     }
 
@@ -538,6 +554,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     const client = this.getClient();
+    const mask = maskerOrIdentity(context?.maskSecrets);
 
     this.logger.debug(`Deleting DBProxy ${physicalId}`);
 
@@ -556,7 +573,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
         this.logger.debug(`DBProxy ${physicalId} already gone, treating as success`);
         return;
       }
-      throw this.wrapError(error, 'DELETE', resourceType, logicalId, physicalId);
+      throw this.wrapDeleteError(error, 'DELETE', resourceType, logicalId, physicalId, mask);
     }
 
     // Wait for the proxy to fully disappear. AWS keeps the resource in
@@ -572,7 +589,14 @@ export class RDSDBProxyProvider implements ResourceProvider {
           this.logger.debug(`DBProxy ${physicalId} fully deleted`);
           return;
         }
-        throw this.wrapError(error, 'DELETE (poll)', resourceType, logicalId, physicalId);
+        throw this.wrapDeleteError(
+          error,
+          'DELETE (poll)',
+          resourceType,
+          logicalId,
+          physicalId,
+          mask
+        );
       }
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     }
@@ -776,7 +800,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
           new RemoveTagsFromResourceCommand({ ResourceName: arn, TagKeys: toRemove })
         );
       } catch (error) {
-        throw this.wrapError(
+        throw this.wrapCaughtError(
           error,
           'UPDATE (remove tags)',
           resourceType,
@@ -790,7 +814,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
       try {
         await client.send(new AddTagsToResourceCommand({ ResourceName: arn, Tags: toAdd }));
       } catch (error) {
-        throw this.wrapError(
+        throw this.wrapCaughtError(
           error,
           'UPDATE (add tags)',
           resourceType,
@@ -844,29 +868,65 @@ export class RDSDBProxyProvider implements ResourceProvider {
     }
   }
 
-  private wrapError(
+  /**
+   * The failure wrap this provider's create, update, delete and tag catches
+   * throw.
+   *
+   * An AWS-authored failure reaches the message as its CLASS plus the
+   * `--verbose` pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an RDS `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}); this provider marks
+   * no post-create call auxiliary, so nothing gates it. A cdkd-authored or transport
+   * error keeps its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, go-to-k/cdkd#4339); a non-`Error` throw is withheld
+   * like an AWS one, unstamped (it has no chain). A delete catch tests
+   * not-found by type before it wraps.
+   */
+  private wrapCaughtError(
     error: unknown,
     op: string,
     resourceType: string,
     logicalId: string,
     physicalId: string | undefined,
     // AWS can quote a secret-derived name, the pre-rotation one included
-    // (go-to-k/cdkd#4339); stamped exactly when the mask changed its text.
-    // Absent means unmasked.
+    // (go-to-k/cdkd#4339). Absent means unmasked.
     mask: MaskerFn = maskerOrIdentity(undefined)
   ): ProvisioningError {
     const cause = error instanceof Error ? error : undefined;
-    return wrapMaskedAwsError(
-      mask,
-      error,
-      (text) =>
-        new ProvisioningError(
-          `${op} failed for ${logicalId}: ${text}`,
-          resourceType,
-          logicalId,
-          physicalId,
-          cause
-        )
-    );
+    const build = (text: string): ProvisioningError =>
+      new ProvisioningError(
+        `${op} failed for ${logicalId}: ${text}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
+   * {@link wrapCaughtError} for a delete catch. The wrap names an AWS failure
+   * by its CLASS, and the delete classifiers read `NotFound` in a message as
+   * "already deleted": a class naming ANOTHER object's not-found (the typed
+   * not-found of this resource returned before the wrap) is marked
+   * `markNotGone`, so the record is kept (go-to-k/cdkd#2319).
+   */
+  private wrapDeleteError(
+    error: unknown,
+    op: string,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string,
+    mask: MaskerFn
+  ): ProvisioningError {
+    const thrown = this.wrapCaughtError(error, op, resourceType, logicalId, physicalId, mask);
+    return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
   }
 }

@@ -52,7 +52,12 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { isRefusedByName, markDeleteStarted, type DeleteProgress } from '../delete-started.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { markNotGone } from '../not-gone.js';
 import { generatedNameFor } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -534,10 +539,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * and as the finished line. The wrap is stamped `markRedactedCause`, so
    * retry classification reads the withheld text on the `cause` chain. An
    * "already exists" and an index-busy refusal are restated
-   * ({@link relayedNameCollision}, {@link relayedIndexBusyDelete}). A
-   * cdkd-authored or transport error keeps the masked pass-through of the
+   * ({@link relayedNameCollision}, {@link relayedIndexBusyDelete}); the first
+   * is not, when a post-CreateTable call raised it ({@link isAuxiliaryFailure}).
+   * A cdkd-authored or transport error keeps the masked pass-through of the
    * shared `wrapMaskedAwsError`, which stamps when the mask changed the text
-   * (the #4244 class); a non-`Error` throw keeps its masked text, unstamped.
+   * (the #4244 class); a non-`Error` throw is withheld like an AWS one,
+   * unstamped (it has no chain).
    * The delete checks `ResourceNotFoundException` by type before it wraps.
    *
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
@@ -549,16 +556,45 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
     const failure = describeAwsFailure(error);
-    if (!(error instanceof Error)) return build(log.mask(failure.detail));
     if (!failure.redacted) return wrapMaskedAwsError(log.mask, error, build);
     log.debug(build(log.mask(failure.detail)).message);
-    return markRedactedCause(
-      build(
-        `${log.mask(failure.summary)}${relayedNameCollision(failure.detail)}${relayedIndexBusyDelete(
-          failure.detail
-        )}`
-      )
+    // Not restated when a post-create call raised it (#3826): "it" would read
+    // as this resource.
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(
+      `${log.mask(failure.summary)}${relay}${relayedIndexBusyDelete(failure.detail)}`
     );
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
+   * The failure text a partial-create cleanup `warn` quotes after `head`, with
+   * its closing period (go-to-k/cdkd#2319). An AWS-authored failure is named
+   * by its CLASS at warn, since a denied `DeleteTable` names the caller's
+   * assumed-role ARN; AWS's own text goes to `debug` under the same `head`,
+   * masked. A cdkd-authored or transport error keeps its text, masked.
+   */
+  private cleanupFailureText(log: MaskedLogSinks, head: string, error: unknown): string {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return `${log.mask(failure.detail)}.`;
+    log.debug(`${head}${log.mask(failure.detail)}`);
+    return log.mask(failure.summary);
+  }
+
+  /**
+   * {@link wrapMaskedError} for a delete catch. The wrap names an AWS failure
+   * by its CLASS, and the delete classifiers read `NotFound` in a message as
+   * "already deleted": a class naming ANOTHER object's not-found (this
+   * resource's own not-found returned before the wrap) is marked
+   * `markNotGone`, so the record is kept (go-to-k/cdkd#2319).
+   */
+  private wrapDeleteError(
+    log: MaskedLogSinks,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    const thrown = this.wrapMaskedError(log, error, build);
+    return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
   }
 
   /**
@@ -1452,7 +1488,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               maskSecrets
             );
           } catch (replicaCleanupErr) {
-            const msg = describeAwsFailure(replicaCleanupErr).detail;
+            // The class at warn, AWS's text at debug (go-to-k/cdkd#2319).
+            const msg = this.cleanupFailureText(
+              log,
+              `Partial-create cleanup: failed to drop replica ${region} on ${tableName}: `,
+              replicaCleanupErr
+            );
             // `Delete={RegionName=` and `}` are cdkd's own text, so they sit in
             // the template's literal part: passed as a value, their `{` and `}`
             // would withhold the command for every table (`PASTE_ARG_UNSAFE`,
@@ -1465,7 +1506,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             // error, not a run. `region` is an AWS region name read from
             // `DescribeTable`, so it holds no quote.
             warn(
-              `Partial-create cleanup: failed to drop replica ${region} on ${tableName}: ${msg}. ` +
+              `Partial-create cleanup: failed to drop replica ${region} on ${tableName}: ${msg} ` +
                 `Run: ${pasteableAwsCommand(maskSecrets)`aws dynamodb update-table --table-name ${tableName} --replica-updates 'Delete={RegionName='${region}'}' --region ${currentRegion}`.render()}`
             );
           }
@@ -1473,9 +1514,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: tableName }));
       } catch (cleanupErr) {
         tableLeftBehind = true;
-        const cleanupMsg = describeAwsFailure(cleanupErr).detail;
+        const cleanupMsg = this.cleanupFailureText(
+          log,
+          `Partial-create cleanup failed for ${tableName}: `,
+          cleanupErr
+        );
         warn(
-          `Partial-create cleanup failed for ${tableName}: ${cleanupMsg}. ` +
+          `Partial-create cleanup failed for ${tableName}: ${cleanupMsg} ` +
             `To remove the orphaned AWS-side table, run: ` +
             pasteableAwsCommand(
               maskSecrets
@@ -5330,15 +5375,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       if (isInterruptedWaitError(describeErr)) throw describeErr;
       // An AWS-authored failure is reduced to its class (go-to-k/cdkd#2319):
       // this arm THROWS, so the text reaches the durable events store. The
-      // typed RNF guard below returns before any wrap. `destroy-runner.ts`'s
-      // already-deleted substring match still sees a typed not-found raised
-      // inside the replica teardown, since the reduced text names the class
-      // (`...NotFoundException. Re-run with --verbose ...`); only a not-found
-      // stated in AWS's prose alone stops reading as already deleted, which
-      // errs toward keeping the state row.
+      // typed RNF guard below returns before any wrap, so a class naming
+      // another object's not-found here (an auto-scaling
+      // `ObjectNotFoundException` from the replica teardown) is marked
+      // `markNotGone`: the delete classifiers never read it as this table gone,
+      // which keeps the state row.
       if (!(describeErr instanceof ResourceNotFoundException)) {
         const cause = describeErr instanceof Error ? describeErr : undefined;
-        throw this.wrapMaskedError(
+        throw this.wrapDeleteError(
           deleteLog,
           describeErr,
           (text) =>
@@ -5540,7 +5584,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // rather than start a fresh one. That is the whole compounding term of
       // issue #1955.
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapDeleteError(
         deleteLog,
         error,
         (text) =>

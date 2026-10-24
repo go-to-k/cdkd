@@ -734,10 +734,7 @@ const CASES: Case[] = [
     clients: [Route53Client],
     main: 'CreateHostedZoneCommand',
     aux: 'AssociateVPCWithHostedZoneCommand',
-    // The Accelerated Recovery arm throws its OWN ProvisioningError, which the
-    // outer catch rethrows as-is: the mark must sit before that rethrow.
     alsoAux: [
-      'UpdateHostedZoneFeaturesCommand',
       {
         // A replayed create ADOPTS the zone the lost first attempt made (#2039);
         // the auxiliary failing after that is still not this zone's collision.
@@ -764,6 +761,28 @@ const CASES: Case[] = [
         mustSend: ['ListHostedZonesByNameCommand', 'GetHostedZoneCommand'],
       },
     ],
+    responses: {
+      CreateHostedZoneCommand: {
+        HostedZone: { Id: '/hostedzone/Z1', Name: 'example.com.' },
+        DelegationSet: { NameServers: ['ns-1.awsdns-01.org'] },
+      },
+    },
+  },
+  {
+    // The Accelerated Recovery arm's own site: it throws its OWN
+    // ProvisioningError, which the outer catch rethrows as-is, so the mark sits
+    // on the raw error before that wrap (go-to-k/cdkd#2319: the wrap then does
+    // not restate the collision).
+    name: 'route53 AWS::Route53::HostedZone (Accelerated Recovery)',
+    provider: () => new Route53Provider(),
+    resourceType: 'AWS::Route53::HostedZone',
+    properties: {
+      Name: 'example.com',
+      HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' },
+    },
+    clients: [Route53Client],
+    main: 'CreateHostedZoneCommand',
+    aux: 'UpdateHostedZoneFeaturesCommand',
     responses: {
       CreateHostedZoneCommand: {
         HostedZone: { Id: '/hostedzone/Z1', Name: 'example.com.' },

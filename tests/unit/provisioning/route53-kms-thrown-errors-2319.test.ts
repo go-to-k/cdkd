@@ -323,7 +323,7 @@ describe('Route 53 / KMS thrown wraps keep the caller identity out (go-to-k/cdkd
     warnSpy.mockReset();
   });
 
-  describe.each(sites())('$site', ({ command, name, action, prefix, answers, run }) => {
+  describe.each(sites())('$site', ({ site, command, name, action, prefix, answers, run }) => {
     it('names an AWS-authored failure by its class, keeps cause, and stays retryable', async () => {
       const original = accessDenied(name, action);
       failOn(command, original, answers);
@@ -344,11 +344,9 @@ describe('Route 53 / KMS thrown wraps keep the caller identity out (go-to-k/cdkd
       expect(retryClassificationText(failure)).toContain('not authorized to perform');
       expect(isRetryableTransientError(failure, retryClassificationText(failure))).toBe(true);
 
-      // AWS's own text is not discarded: it is logged (debug, or the lookup's
-      // existing warn), never only dropped.
-      expect(command === 'ListHostedZonesByNameCommand' ? warned() : debugged()).toContain(
-        CALLER_ARN
-      );
+      // AWS's own text is not discarded: it is on the debug line, never only
+      // dropped (the lookup's warn names the class since go-to-k/cdkd#2319).
+      expect(debugged()).toContain(CALLER_ARN);
     });
 
     it('keeps a cdkd-authored or transport failure verbatim, unstamped', async () => {
@@ -363,12 +361,27 @@ describe('Route 53 / KMS thrown wraps keep the caller identity out (go-to-k/cdkd
       expect(failure.cause).toBe(original);
     });
 
-    it('keeps a non-Error throw as text, unstamped', async () => {
+    // The Route 53 wraps withhold a non-Error throw like an AWS failure
+    // (go-to-k/cdkd#2319 tail-d): its `String()` is the whole payload.
+    const withholdsNonError = site.startsWith('Route 53');
+
+    it.skipIf(withholdsNonError)('keeps a non-Error throw as text, unstamped', async () => {
       failOn(command, 'socket hang up', answers);
       const failure = await thrown(run());
 
       expect(failure.message).toContain(`${prefix}socket hang up`);
       expect(failure.message).not.toContain(VERBOSE_POINTER);
+      expect(hasRedactedCause(failure)).toBe(false);
+    });
+
+    it.runIf(withholdsNonError)('withholds a non-Error throw, unstamped', async () => {
+      failOn(command, 'socket hang up', answers);
+      const failure = await thrown(run());
+
+      expect(failure.message).toContain(
+        `${prefix}a non-Error value of type string. ${VERBOSE_POINTER}`
+      );
+      expect(failure.message).not.toContain('socket hang up');
       expect(hasRedactedCause(failure)).toBe(false);
     });
   });
