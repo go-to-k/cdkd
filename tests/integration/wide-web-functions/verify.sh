@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # verify.sh — a wide stack of slow Cloud Control resources (issue #5242):
-# 12 independent Lambda Web Functions, each with one revision and one
+# Independent Lambda Web Functions (WIDE_WEBFN_COUNT, default 12), each with one revision and one
 # HomeRegion endpoint, plus one shared execution role (37 resources). It
 # measures how the --concurrency setting changes the deploy, read off the
 # `CDKD_PHASE_TIMINGS` report.
@@ -58,7 +58,12 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # Web functions in the stack (the stack's FUNCTIONS); with one revision and
 # one endpoint each, plus the role, the DAG holds 3 * 12 + 1 resources.
-FUNCTIONS=12
+FUNCTIONS="${WIDE_WEBFN_COUNT:-12}"
+case "${FUNCTIONS}" in
+  '' | *[!0-9]*) echo "FAIL: WIDE_WEBFN_COUNT must be an integer (got '${FUNCTIONS}')" >&2; exit 1 ;;
+esac
+# The stack reads the same variable.
+export WIDE_WEBFN_COUNT="${FUNCTIONS}"
 RESOURCES=$((3 * FUNCTIONS + 1))
 NAME_PREFIX="cdkd-integ-webfn-wide"
 CODE_KEY="app.zip"
@@ -263,7 +268,20 @@ assert_run_gone() { # usage: assert_run_gone <token>
       aws lambda-web get-web-function --function-name "${fn}" --region "${REGION}"
   done
   assert_gone "role ${prefix}-${REGION} still exists after destroy" aws iam get-role --role-name "${prefix}-${REGION}"
-  echo "    OK: ${FUNCTIONS} web functions, their endpoints and the role are gone"
+  # A revision cannot outlive its function, so the function probe covers it.
+  # The log groups Lambda creates for the functions are not stack resources:
+  # removed here, so a passing run leaves none behind, then asserted gone.
+  local lg left
+  for lg in $(aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/web/${prefix}-" \
+    --region "${REGION}" --query 'logGroups[].logGroupName' --output text); do
+    [ "${lg}" = "None" ] && continue
+    aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null
+  done
+  left="$(aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/web/${prefix}-" \
+    --region "${REGION}" --query 'logGroups[].logGroupName' --output text)"
+  [ -z "${left}" ] || [ "${left}" = "None" ] \
+    || { echo "FAIL: log groups of ${prefix} still exist after destroy: ${left}" >&2; exit 1; }
+  echo "    OK: ${FUNCTIONS} web functions, their endpoints, the role and the log groups are gone"
 }
 
 run_phase() { # usage: run_phase <token> <label> [deploy args...]
@@ -315,4 +333,4 @@ assert_gone "code bucket ${CODE_BUCKET} still exists" aws s3api head-bucket --bu
 trap - EXIT INT TERM
 rm -f "${DEPLOY_LOG}"
 rm -rf "${WORK}"
-echo "[verify] PASS — wide-web-functions: 12 independent Lambda Web Functions (37 resources) deployed, live and destroyed at --concurrency ${SETTINGS}"
+echo "[verify] PASS — wide-web-functions: ${FUNCTIONS} independent Lambda Web Functions (${RESOURCES} resources) deployed, live and destroyed at --concurrency ${SETTINGS}"

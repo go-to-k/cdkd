@@ -8,7 +8,7 @@
  * `./retryable-errors.ts`.
  */
 
-import { recordPhase } from '../utils/phase-timings.js';
+import { phaseTimingsEnabled, recordPhase } from '../utils/phase-timings.js';
 import {
   formatRetryClassificationSignals,
   hasReplayMayCollide,
@@ -673,7 +673,14 @@ export async function withRetry<T>(
         : propagationSleptMs;
       // go-to-k/cdkd#5242: inert unless CDKD_PHASE_TIMINGS=1. The error's class
       // only, never its message (it can quote a value).
-      recordPhase('retries (every stack)', `retry after ${retryErrorClass(error)}`, delay, shownId);
+      if (phaseTimingsEnabled()) {
+        recordPhase(
+          'retries (every stack)',
+          `retry after ${retryErrorClass(error)}`,
+          delay,
+          shownId
+        );
+      }
       opts.logger?.debug(
         `  ⏳ Retrying ${shownId} in ${delay / 1000}s (attempt ${attempt + 1}/${attemptLimit}${
           propagation

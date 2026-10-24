@@ -62,6 +62,25 @@ describe('withRetry phase timings (#5242)', () => {
     );
   });
 
+  it("carries a Cloud Control handler's error code", async () => {
+    process.env['CDKD_PHASE_TIMINGS'] = '1';
+    let calls = 0;
+    const op = vi.fn().mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw Object.assign(new Error('CREATE failed for Doc: Rate exceeded'), {
+          name: 'CloudControlOperationFailedError',
+          ccErrorCode: 'Throttling',
+        });
+      }
+      return 'ok';
+    });
+    await withRetry(op, 'Doc', { sleep: () => Promise.resolve() });
+    expect(renderPhaseTimings().join('\n')).toContain(
+      'retry after CloudControlOperationFailedError (Throttling)'
+    );
+  });
+
   it('records nothing with the report off', async () => {
     delete process.env['CDKD_PHASE_TIMINGS'];
     await withRetry(throttledTwice(), 'MyQueue', { sleep: () => Promise.resolve() });

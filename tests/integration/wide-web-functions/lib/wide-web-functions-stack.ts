@@ -3,12 +3,22 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import type { Construct } from 'constructs';
 
-/** Web functions in the stack, each with one revision and one endpoint. */
-export const FUNCTIONS = 12;
+/**
+ * Web functions in the stack, each with one revision and one endpoint:
+ * `WIDE_WEBFN_COUNT`, default 12, at most 50.
+ */
+export const FUNCTIONS = ((): number => {
+  const raw = process.env.WIDE_WEBFN_COUNT ?? '12';
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 50) {
+    throw new Error(`WIDE_WEBFN_COUNT must be an integer from 1 to 50 (got '${raw}')`);
+  }
+  return n;
+})();
 
 /**
- * A wide stack of slow Cloud Control resources (issue #5242): 12 Lambda Web
- * Functions, none depending on another, each with one revision and one
+ * A wide stack of slow Cloud Control resources (issue #5242): Lambda Web
+ * Functions (12 by default), none depending on another, each with one revision and one
  * HomeRegion endpoint routing all traffic to it. One execution role serves
  * every revision. A web function is created through Cloud Control, which
  * returns only once AWS reports it ready, so a slot held by one is held for
