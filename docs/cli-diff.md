@@ -185,6 +185,25 @@ resource still exists under the recorded physical ID, and that no other cdkd
 stack claims it. If another stack does claim it, the diff reports the problem
 under `Blocking` and exits `3`.
 
+### `(moved to ...)`: a rename `cdkd refactor` would keep
+
+```text
+  [-] OldTable (AWS::DynamoDB::Table) (moved to MyStack.NewTable, run 'cdkd refactor' to keep it)
+```
+
+The resource is removed under one logical ID and added under another, with the
+same type and the same properties, so it is most likely the same resource
+renamed or moved. A deploy would delete it and create a new one;
+[`cdkd refactor`](cli-refactor.md) keeps it instead. The note appears only
+when the pair is unambiguous: one removal and one addition match each other
+and nothing else. A move between stacks is noted when both stacks are in the
+diff (`cdkd diff OldStack NewStack`, or `--all`), deploy to the same account
+and region, and already have cdkd state: `cdkd refactor` never moves a
+resource into a stack that was never deployed. A nested stack's rows get no
+note. The `--fail-on=destructive` list and the `cdkd deploy` approval prompt
+carry the same note; the prompt sees only the stack being deployed, so it
+notes renames within that stack.
+
 ## Exit codes
 
 | Code | Meaning |

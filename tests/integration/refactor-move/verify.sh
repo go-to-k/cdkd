@@ -218,6 +218,22 @@ QUEUE_CREATED_A="$(aws sqs get-queue-attributes --queue-url "${QUEUE_PID}" --reg
 # --- Phase 2: generation "b" -------------------------------------------------
 export CDKD_TEST_UPDATE=true
 
+echo "==> Phase 2a0: diff --all names the stack each moved resource reappears in"
+set +e
+OUT_DIFF="$(cdkd diff --all "${STATE_FLAGS[@]}" 2>&1)"
+set -e
+printf '%s\n' "${OUT_DIFF}"
+for id in "${TABLE_ID}" "${QUEUE_ID}"; do
+  # Sentinel: the removal row must be there before its hint is judged.
+  row="$(printf '%s\n' "${OUT_DIFF}" | grep -F "[-] ${id} (" || true)"
+  [ -n "${row}" ] || { echo "FAIL: diff shows no removal row for ${id}" >&2; exit 1; }
+  printf '%s' "${row}" | grep -qF "(moved to ${DST}." \
+    || { echo "FAIL: the removal of ${id} does not name ${DST} (go-to-k/cdkd#5203)" >&2; exit 1; }
+  printf '%s' "${row}" | grep -qF "run 'cdkd refactor' to keep it)" \
+    || { echo "FAIL: the hint for ${id} does not name cdkd refactor" >&2; exit 1; }
+done
+echo "    both removals name ${DST}"
+
 echo "==> Phase 2a: refactor --dry-run plans both moves and writes nothing"
 SRC_ETAG="$(state_etag "${SRC_KEY}")"
 DST_ETAG="$(state_etag "${DST_KEY}")"

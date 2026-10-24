@@ -302,8 +302,8 @@ recreate-via-cc-api	2026-10-23T16:20:51Z	PASS	123	verify.sh	#615 mid-life SDK->C
 recreate-via-sdk-provider	2026-10-17T13:29:07Z	PASS	106	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
 redacted-delete-address	2026-10-18T18:32:28Z	PASS	91	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
-refactor-command	2026-10-23T20:45:22Z	PASS	95	verify.sh	rc ok, orph clean, no refactor-map.json left; mktemp-dir ordering fixed on e48470db5 (#5201)
-refactor-move	2026-10-23T23:22:22Z	PASS	160	verify.sh	rc ok, orph clean; re-run on 3d64872f4 (destroy re-read is now deep-equality) (#5212, #5220)
+refactor-command	2026-10-23T23:41:04Z	PASS	115	verify.sh	rc ok, orph clean; re-run on 4a1466a76 (hint only pairs refactor would plan): ambiguous topics show no hint, table/queue still do (#5232)
+refactor-move	2026-10-23T23:44:43Z	PASS	160	verify.sh	rc ok, orph clean; re-run on 4a1466a76 (hint only pairs refactor would plan), both [-] rows still hinted (#5232)
 remove-protection	2026-10-23T17:17:04Z	PASS	2113	verify.sh	--remove-protection destroy succeeded, ASG-launched instance confirmed terminated (#796), state cleared, orph clean
 remove-protection-compensation	2026-10-22T15:37:12Z	PASS	251	verify.sh	rc ok, orph clean
 remove-protection-journaled-orphan	2026-10-20T10:53:50Z	PASS	675	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean

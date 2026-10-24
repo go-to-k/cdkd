@@ -26,7 +26,10 @@ the deploy to keep the resource instead.
    ```
 
    The renamed resource shows up as `will be destroyed` for the old logical
-   ID, beside an addition of the new one.
+   ID, beside an addition of the new one. When cdkd can tell the two are the
+   same resource, the removal says so:
+   `(moved to MyStack.NewId, run 'cdkd refactor' to keep it)`. For a move
+   between stacks, diff both: `cdkd diff OldStack NewStack`.
 
 3. **Preview the refactor.**
 

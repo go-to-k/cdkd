@@ -209,11 +209,28 @@ export CDKD_TEST_UPDATE=true
 
 echo "==> Phase 2a: diff reports the replacement a plain deploy would make"
 set +e
-cdkd diff "${STACK}" "${STATE_FLAGS[@]}" --fail-on=destructive >/dev/null 2>&1
+OUT_2A="$(cdkd diff "${STACK}" "${STATE_FLAGS[@]}" --fail-on=destructive 2>&1)"
 rc=$?
 set -e
+printf '%s\n' "${OUT_2A}"
 [ "${rc}" -ne 0 ] || { echo "FAIL: diff --fail-on=destructive exited 0 before the refactor" >&2; exit 1; }
 echo "    diff --fail-on=destructive rc=${rc}"
+# go-to-k/cdkd#5203: the table's removal names where it reappears; the two
+# look-alike topics are ambiguous, so neither carries a hint. Sentinel: the
+# removal row itself must be there before its hint is judged.
+TABLE_ROW="$(printf '%s\n' "${OUT_2A}" | grep -F "[-] ${OLD_TABLE_ID} (" || true)"
+[ -n "${TABLE_ROW}" ] || { echo "FAIL: diff shows no removal row for ${OLD_TABLE_ID}" >&2; exit 1; }
+printf '%s' "${TABLE_ROW}" | grep -qF "(moved to ${STACK}.StorageData" \
+  || { echo "FAIL: the table's removal row carries no refactor hint" >&2; exit 1; }
+printf '%s' "${TABLE_ROW}" | grep -qF "run 'cdkd refactor' to keep it)" \
+  || { echo "FAIL: the table's hint does not name cdkd refactor" >&2; exit 1; }
+TOPIC_ROWS="$(printf '%s\n' "${OUT_2A}" | grep -F '(AWS::SNS::Topic)' | grep -F '[-] ' || true)"
+[ -n "${TOPIC_ROWS}" ] || { echo "FAIL: diff shows no topic removal rows" >&2; exit 1; }
+if printf '%s\n' "${TOPIC_ROWS}" | grep -qF 'moved to'; then
+  echo "FAIL: an ambiguous topic removal carries a refactor hint" >&2
+  exit 1
+fi
+echo "    the table's removal names StorageData; the ambiguous topics carry no hint"
 
 echo "==> Phase 2b: refactor --dry-run refuses on the ambiguous topics"
 ETAG_BEFORE="$(state_etag)"
