@@ -1186,6 +1186,30 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
       expect(failure.message).toContain(`Function not found: ${SECRET_MASK}`);
     });
 
+    // go-to-k/cdkd#3361: `withholdWaiterPayload` rebuilt the message / stack
+    // header from `error.name` in a bare template, so a waiter failure whose
+    // `name` cannot be converted threw a TypeError in place of the update
+    // failure it was rewriting.
+    it('a waiter failure whose name cannot be converted still surfaces the update failure', async () => {
+      fakeLambda(TINY3);
+      const waiterError = waiterFailed({
+        name: 'ResourceNotFoundException',
+        Message: `Function not found: ${TINY3}`,
+      });
+      // Materialize the stack first: V8 formats it lazily from `name`, so a
+      // first read AFTER the `name` swap throws on its own, before the line
+      // under test.
+      void waiterError.stack;
+      Object.defineProperty(waiterError, 'name', { value: Object.create(null) });
+      waitUpdated.mockRejectedValue(waiterError);
+      const [desired, previous] = updatePair(TINY3, TINY3);
+      const failure = await thrown(
+        provider.update('Fn', TINY3, TYPE, desired, previous, { maskSecrets })
+      );
+      expect(failure).toBeInstanceOf(ProvisioningError);
+      expect(failure.message).toContain(`Function not found: ${SECRET_MASK}`);
+    });
+
     it('a rotated recorded name in a status reason', async () => {
       fakeLambda('old-secret-fn');
       waitUpdated.mockRejectedValue(

@@ -268,6 +268,14 @@ describe('safeStringify: the guarded 1:1 replacement for a bare String(x)', () =
   // go-to-k/cdkd#3361: the redacted SUMMARY interpolated an AWS-authored
   // failure's `name`, so one `String()` cannot convert threw from
   // `describeAwsFailure` -- which every caller reaches inside a catch.
+  // A truthy `name` that converts to '' (an empty array) falls back to `Error`
+  // rather than printing an empty clause.
+  it('names a truthy name that converts to an empty string Error in the summary', () => {
+    const error = Object.assign(new Error('Access denied'), { $fault: 'client' });
+    Object.defineProperty(error, 'name', { value: [] });
+    expect(describeAwsFailure(error).summary).toBe(`Error. ${VERBOSE_POINTER}`);
+  });
+
   it('describeAwsFailure does not throw for an AWS-authored failure whose name cannot be converted', () => {
     const error = Object.assign(new Error('Access denied'), { $fault: 'client' });
     Object.defineProperty(error, 'name', { value: Object.create(null) });
