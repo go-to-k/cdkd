@@ -41,7 +41,11 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
-import { describeAwsFailure, isAwsAuthoredFailure, safeStringify } from '../../utils/aws-failure-text.js';
+import {
+  describeAwsFailure,
+  isAwsAuthoredFailure,
+  safeStringify,
+} from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import {
   isThrottlingError,
@@ -3931,7 +3935,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     echoError?: unknown
   ): void {
     const name =
-      typeof error === 'object' && error !== null ? safeStringify((error as { name?: unknown }).name) : '';
+      typeof error === 'object' && error !== null
+        ? safeStringify((error as { name?: unknown }).name)
+        : '';
     const accessHint = /AccessDenied|NotAuthorized|Unauthorized/.test(name)
       ? ' The caller needs cognito-idp:UpdateUserPool.'
       : '';
