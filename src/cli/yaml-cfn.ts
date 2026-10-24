@@ -209,15 +209,16 @@ const CUSTOM_TAGS = buildCustomTags();
 
 /**
  * A `yaml` parse failure WITHOUT the template text it quotes (issue
- * [#5254](https://github.com/go-to-k/cdkd/issues/5254)). The library's
- * `message` ends with a code frame of the offending source lines, which can
- * hold a plaintext value, so a `YAMLError` is rendered from its error CODE
- * and line/column, both library-controlled. Anything else keeps its text.
+ * [#5254](https://github.com/go-to-k/cdkd/issues/5254)). The library builds a
+ * `YAMLError`'s message as `<reason> at line L, column C:` followed by a code
+ * frame of the offending source lines, which can hold a plaintext value. Only
+ * the first line is kept: the library's own reason, or the one a cdkd tag
+ * resolver raised (`!GetAtt requires ...`, which names its own scalar).
+ * Anything else keeps its text.
  */
 function describeYamlParseFailure(err: unknown): string {
   if (err instanceof YAMLError) {
-    const at = err.linePos?.[0];
-    return `${err.name} ${err.code}${at ? ` at line ${at.line}, column ${at.col}` : ''}`;
+    return err.message.split('\n', 1)[0]!.replace(/:$/, '');
   }
   return describeAwsFailure(err).detail;
 }

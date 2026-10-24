@@ -136,13 +136,13 @@ describe('JSON.parse failures quote no body (issue #5254)', () => {
     expectLeakTokenOnlyAtDebug(loggerSpies);
   });
 
-  it('parseCfnTemplate (YAML) renders the error code and position, not the code frame', () => {
+  it('parseCfnTemplate (YAML) keeps the reason and position, not the code frame', () => {
     const body = 'Resources:\n  A:\n    Password: hunter2SECRET\n   bad: [unclosed\n';
     // Premise: the `yaml` library quotes the source lines in its message.
     const err = caughtFrom(() => parseCfnTemplate(body));
     expect(loggedText(loggerSpies.debug)).toContain(LEAK_TOKEN);
     expect((err as Error).message).toMatch(
-      /^Template is not valid YAML\. Cause: YAMLParseError [A-Z_]+ at line \d+, column \d+$/
+      /^Template is not valid YAML\. Cause: \S.* at line \d+, column \d+$/
     );
     expectNoLeakIn(err);
     for (const fn of [loggerSpies.info, loggerSpies.warn, loggerSpies.error]) {
