@@ -97,7 +97,7 @@ dlm-lifecycle-policy	2026-10-22T07:45:16Z	PASS	110	verify.sh	PR #5161 (#2319) @4
 docdb-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	1830	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
 docdb-neptune	2026-10-23T13:26:24Z	PASS	5434	verify.sh	PR #5196 (#5194 helper): rc=0, 0 err 0 orph. Step 3c SG-change redeploy did not hit the new InvalidDBInstanceState/InvalidDBClusterState refusal this run (no modifyDbInstanceWhenAvailable debug line), so the new wait/retry path was not exercised, but is now on this path with no regression. Full re-scan clean: 0 S3 state versions, 0 IAM roles, 0 DocDB/Neptune clusters/instances, 0 manual snapshots
 docker-image-asset	2026-10-17T13:23:24Z	PASS	90	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
-drift-revert	2026-10-24T02:21:28Z	PASS	375	verify.sh	rebuilt dist (building fixture, ran alone); drift/--revert all green; destroy 16 deleted 0 errors, orph clean (#5209 sweep)
+drift-revert	2026-10-24T05:25:10Z	PASS	351	verify.sh	rebuilt dist (building fixture, ran alone); round aborted after this fixture per coordinator (src change pending); 16 deleted 0 errors, orph clean (#5242)
 drift-revert-arrays	2026-10-16T18:55:45Z	PASS	221	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
 drift-revert-vpc	2026-10-24T02:28:24Z	PASS	387	verify.sh	rebuilt dist (building fixture, ran alone); revert incl #4021 ALL-group baseline; destroy 22 deleted 0 errors, orph clean (#5209 sweep)
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
