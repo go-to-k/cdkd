@@ -817,4 +817,32 @@ describe('CloudTrail EventSelectors reset tolerance (#2319)', () => {
     );
     expect(warnLines().some((l) => l.includes('skipping the EventSelectors reset'))).toBe(false);
   });
+
+  // A non-denial class, so only the id cut keeps the trail's own name from
+  // matching: the class gate does not decide this case.
+  it('a non-denial refusal quoting the phrase-named trail is not swallowed', async () => {
+    const text = 'Trail advanced-event-selector-audit has too many selectors';
+    expect(/advanced[\s-]*event[\s-]*selector/i.test(text)).toBe(true);
+    route({ PutEventSelectorsCommand: awsError('InvalidParameterException', text) });
+
+    const failure = await caught(reset(ADV_ARN));
+
+    expect(failure.message).toBe(
+      `Failed to update CloudTrail Trail T: InvalidParameterException. ${VERBOSE_POINTER}`
+    );
+    expect(warnLines().some((l) => l.includes('skipping the EventSelectors reset'))).toBe(false);
+  });
+
+  it('a genuine refusal on a phrase-named trail still skips the reset', async () => {
+    route({
+      PutEventSelectorsCommand: awsError(
+        'InvalidEventSelectorsException',
+        'This trail uses advanced event selectors, which are managed through a separate API'
+      ),
+    });
+
+    await reset(ADV_ARN);
+
+    expect(warnLines().some((l) => l.includes('skipping the EventSelectors reset'))).toBe(true);
+  });
 });
