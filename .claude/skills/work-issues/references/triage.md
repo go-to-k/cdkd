@@ -109,17 +109,16 @@ asserted SYMBOL, not the body's paths or line numbers; a body PROPOSING a mechan
 update, or a backfill wiring a shape (#5204), has a CFn premise:
 `aws cloudformation describe-type --type RESOURCE --type-name <T> --query
 Schema` (`required`, `createOnlyProperties`), else a throwaway change set
-(delete its stack, then what the delete leaves: FSx final backups via
-`aws fsx describe-backups`, #5206), BEFORE design (#3769): measure a
-removal ALONE and BESIDE another change, poll reads for minutes (lag reads as
-"CFn ignores it"), and measure an ORDER, never reason it (#5107, #5109,
-#5119). cdkd may refuse what CFn or the AWS CDK CLI rejects, never what they
-accept; MEASURE a CDK CLI premise by running the inputs through its parser from
-`node_modules` — one read off its source refused more (#2221).
+(delete its stack, then its leftovers: `aws fsx describe-backups`, #5206),
+BEFORE design (#3769): measure a removal ALONE and BESIDE another change, poll
+reads for minutes (lag reads as "CFn ignores it"), and measure an ORDER, never
+reason it (#5107). cdkd may refuse what CFn or the AWS CDK CLI rejects, never
+what they accept; MEASURE a CDK CLI premise by running the inputs through its
+parser from `node_modules`, never by reading its source (#2221).
 
 **An issue one maintainer answer unblocks is a candidate, not "blocked"** — a
-design choice, a go-ahead (a real-AWS re-measure, a sibling repo's fix and
-release, a step only the maintainer can take) or closing an AWS-side limit with
+design choice, a go-ahead (a re-measure, a sibling repo's release, a
+maintainer-only step) or closing an AWS-side limit with
 docs: return its options, each fix and what CFn / the CDK CLI do, for ONE
 `AskUserQuestion` at triage (gotchas.md).
 
@@ -133,8 +132,7 @@ CUT=$(date -u -v-60M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '60 min ago' 
 # An empty $CUT matches nothing and reads as an empty backlog, so stop, not warn.
 [ -n "$CUT" ] || { echo 'CUTOFF FAILED — not an empty backlog'; exit 1; }
 
-# §1's listing with the gate applied. DOUBLE quotes — `gh api --jq` takes no
-# `--arg`, so the cutoff expands into the filter.
+# §1's listing, gated. DOUBLE quotes: `gh api --jq` takes no `--arg`.
 gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
   --jq ".[] | select(.pull_request | not) | select(.created_at < \"$CUT\")
         | select([.labels[].name] | index(\"backfill-type\") | not)
