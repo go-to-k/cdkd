@@ -39,6 +39,7 @@ import { S3DirectoryBucketProvider } from '../../../src/provisioning/providers/s
 import { AgentCoreRuntimeProvider } from '../../../src/provisioning/providers/agentcore-runtime-provider.js';
 import { AgentCoreEvaluatorProvider } from '../../../src/provisioning/providers/agentcore-evaluator-provider.js';
 import { AgentCoreBrowserProvider } from '../../../src/provisioning/providers/agentcore-browser-provider.js';
+import { AgentCoreCodeInterpreterProvider } from '../../../src/provisioning/providers/agentcore-code-interpreter-provider.js';
 import { S3VectorsProvider } from '../../../src/provisioning/providers/s3-vectors-provider.js';
 import { KinesisStreamConsumerProvider } from '../../../src/provisioning/providers/kinesis-streamconsumer-provider.js';
 import {
@@ -109,6 +110,7 @@ const DIR = 'AWS::S3Express::DirectoryBucket';
 const RUNTIME = 'AWS::BedrockAgentCore::Runtime';
 const EVALUATOR = 'AWS::BedrockAgentCore::Evaluator';
 const BROWSER = 'AWS::BedrockAgentCore::Browser';
+const CODE_INTERPRETER = 'AWS::BedrockAgentCore::CodeInterpreter';
 const VB = 'AWS::S3Vectors::VectorBucket';
 const CONSUMER = 'AWS::Kinesis::StreamConsumer';
 
@@ -285,6 +287,10 @@ const cases: Case[] = [
     run: () => new AgentCoreBrowserProvider().create('Br', BROWSER, {}, ctx),
   },
   {
+    wrap: 'Failed to adopt the AWS-managed default code interpreter for Ci',
+    run: () => new AgentCoreCodeInterpreterProvider().create('Ci', CODE_INTERPRETER, {}, ctx),
+  },
+  {
     wrap: 'Failed to create S3 VectorBucket Vb',
     run: () => new S3VectorsProvider().create('Vb', VB, VB_PROPS, ctx),
   },
@@ -400,7 +406,7 @@ describe('provider thrown wraps withhold AWS text (#2319)', () => {
     expect(failure.message).not.toContain('111122223333');
     // The verdict the restatement exists for: a create-first replacement
     // still reads the wrap as a name collision.
-    const logicalId = /\b(Lb|Tg|L|Fh|Al|Ad|Oac|Dir|Rt|Ev|Br|Vb|Co)\b/.exec(c.wrap)![1]!;
+    const logicalId = /\b(Lb|Tg|L|Fh|Al|Ad|Oac|Dir|Rt|Ev|Br|Ci|Vb|Co)\b/.exec(c.wrap)![1]!;
     expect(isNameCollisionErrorFrom(failure, logicalId)).toBe(true);
   });
 
