@@ -129,6 +129,11 @@ OOB_INSTANCE_ID=""
 # Phase 2b's captured destroy output; removed by cleanup too, since a signal
 # landing mid-destroy never reaches the phase's own `rm`.
 DESTROY_2B_LOG=""
+# Phase 2b's go-to-k/cdkd#2319 check: the deployments/*.jsonl keys before the
+# destroy, and the RESOURCE_FAILED events read after it (AWS text: removed by
+# cleanup on every exit).
+EVENT_KEYS_2B=""
+EVENTS_2B=""
 # Phase 1c's captured deploy output (issue #4087), removed by cleanup likewise.
 DEPLOY_1C_LOG=""
 # Phase 2's captured deploy output (issue #1160 DBProxy arm), likewise.
@@ -184,6 +189,16 @@ seed_tg_cc_api() {
   [ "$(tg_field .provisionedBy)" = "cc-api" ] || { echo "FAIL: seeding the target group record to cc-api did not stick" >&2; return 1; }
 }
 
+# This stack's deployments/*.jsonl keys, sorted, one per line (go-to-k/cdkd#2319).
+# A failed listing returns non-zero, so a caller never reads an empty list as
+# "no new events".
+deployment_event_keys() {
+  local listed
+  listed="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+    --prefix "cdkd/${STACK}/${REGION}/deployments/" --output json)" || return 1
+  printf '%s' "${listed}" | jq -r '.Contents // [] | .[].Key | select(endswith(".jsonl"))' | LC_ALL=C sort
+}
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS RDS resources"
   # Do NOT silence stderr on `state destroy` — a partial-failure (e.g. a VPC
@@ -194,6 +209,8 @@ cleanup() {
   # calls are expected to NotFound after state destroy succeeds.
   set +eu
   [ -n "${DESTROY_2B_LOG}" ] && rm -f "${DESTROY_2B_LOG}"
+  [ -n "${EVENT_KEYS_2B}" ] && rm -f "${EVENT_KEYS_2B}"
+  [ -n "${EVENTS_2B}" ] && rm -f "${EVENTS_2B}"
   [ -n "${DEPLOY_1C_LOG}" ] && rm -f "${DEPLOY_1C_LOG}"
   [ -n "${DEPLOY_2_LOG}" ] && rm -f "${DEPLOY_2_LOG}"
   if [ -n "${OOB_INSTANCE_ID}" ]; then
@@ -783,6 +800,11 @@ aws rds wait db-instance-available --db-instance-identifier "${OOB_INSTANCE_ID}"
 # failure-set check below admits no DBProxyTargetGroup.
 seed_tg_cc_api
 
+EVENT_KEYS_2B="$(mktemp)"
+if ! deployment_event_keys > "${EVENT_KEYS_2B}"; then
+  echo "FAIL: phase 2b: could not list the deployments/ prefix before the destroy" >&2
+  exit 1
+fi
 DESTROY_2B_LOG="$(mktemp)"
 if node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -827,6 +849,46 @@ if [ -n "${UNEXPECTED_2B}" ]; then
   echo "FAIL: phase 2b: deletes failed outside the engineered set: $(printf '%s ' ${UNEXPECTED_2B})" >&2
   exit 1
 fi
+# go-to-k/cdkd#2319: the failed deletes' persisted RESOURCE_FAILED events name
+# AWS's refusal by its class. AWS words it with the cluster's ARN (this
+# account's id), and deployments/*.jsonl outlives the run. Only this destroy's
+# new event files are read, so an earlier run's events cannot answer.
+EVENTS_2B="$(mktemp)"
+if ! NEW_EVENT_KEYS_2B="$(deployment_event_keys | LC_ALL=C comm -13 "${EVENT_KEYS_2B}" -)"; then
+  echo "FAIL: phase 2b: could not list the deployments/ prefix after the destroy" >&2
+  exit 1
+fi
+while IFS= read -r event_key || [ -n "${event_key}" ]; do
+  [ -n "${event_key}" ] || continue
+  aws s3 cp "s3://${STATE_BUCKET}/${event_key}" - --quiet \
+    | jq -c 'select(.eventType == "RESOURCE_FAILED")' >> "${EVENTS_2B}"
+done <<< "${NEW_EVENT_KEYS_2B}"
+EVENT_ACCOUNT_2B="$(aws sts get-caller-identity --query Account --output text)"
+# A FAIL prints only the cdkd-authored prefix and the length: the rest may be
+# AWS's text, naming accounts, roles or sessions.
+assert_failed_event_class_only_2B() { # usage: <logicalId> <wrap prefix>
+  local msg
+  msg="$(jq -r --arg l "$1" 'select(.logicalId == $l) | .error.message // empty' "${EVENTS_2B}" | tail -n 1)"
+  if [ -z "${msg}" ]; then
+    echo "FAIL: phase 2b: the destroy persisted no RESOURCE_FAILED event with an error message for $1 (the #2319 checks below would pass for free)" >&2
+    exit 1
+  fi
+  if ! printf '%s' "${msg}" | grep -qE "$2: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
+    echo "FAIL: phase 2b: $1's RESOURCE_FAILED message is not '$2: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed prefix: '${msg%%:*}', ${#msg} chars" >&2
+    exit 1
+  fi
+  # Every FAILED event this destroy wrote for it, not only the last.
+  if jq -r --arg l "$1" 'select(.logicalId == $l) | .error.message // empty' "${EVENTS_2B}" \
+    | grep -qF "${EVENT_ACCOUNT_2B}"; then
+    echo "FAIL: phase 2b: $1's RESOURCE_FAILED message quotes AWS's text, with this account's id (#2319); observed prefix: '${msg%%:*}', ${#msg} chars" >&2
+    exit 1
+  fi
+}
+assert_failed_event_class_only_2B SecurityCluster "Failed to delete DBCluster SecurityCluster"
+rm -f "${EVENTS_2B}" "${EVENT_KEYS_2B}"
+EVENTS_2B=""
+EVENT_KEYS_2B=""
+echo "phase 2b ok: the SecurityCluster RESOURCE_FAILED event names the AWS failure by its class, with no account id"
 
 POST_PROTECTION=""
 for i in $(seq 1 12); do

@@ -380,6 +380,25 @@ esac
 assert_journaled OrphanCluster "${CLUSTER_A}" "${CLUSTER_A_RID}"
 assert_journaled OrphanInstance "${DB_A}" "${DB_A_RID}"
 assert_journaled HeldCluster "${CLUSTER_HELD}" "${CLUSTER_HELD_RID}"
+# go-to-k/cdkd#2319: the refused self-cleanup's warning names the AWS failure
+# by its class. AWS words the explicit deny with this account's id and the deny
+# role's ARN; that text goes to the --verbose debug line only. A FAIL prints
+# only the cdkd-authored head and the length.
+INJECT_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${LOG_DIR}/inject.log")"
+CLEANUP_HEAD="Failed to delete partially-created DBCluster OrphanCluster (${CLUSTER_A}): "
+CLEANUP_LINE="$(grep -F "${CLEANUP_HEAD}" <<<"${INJECT_PLAIN}" | tail -n 1 || true)"
+if [ -z "${CLEANUP_LINE}" ]; then
+  echo "[verify] FAIL: step 2 printed no '${CLEANUP_HEAD}...' warning: the self-cleanup delete was not refused (output above)" >&2
+  exit 1
+fi
+if ! grep -qE "partially-created DBCluster OrphanCluster \(${CLUSTER_A}\): [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\. THE CLUSTER" <<<"${CLEANUP_LINE}"; then
+  echo "[verify] FAIL: the refused self-cleanup warning is not '${CLEANUP_HEAD}<ErrorClass>. Re-run with --verbose for AWS's own message. THE CLUSTER ...' (#2319); ${#CLEANUP_LINE} chars" >&2
+  exit 1
+fi
+if grep -F "partially-created DBCluster" <<<"${INJECT_PLAIN}" | grep -qF "${ACCOUNT_ID}"; then
+  echo "[verify] FAIL: a partially-created DBCluster cleanup warning quotes AWS's text, with this account's id (#2319)" >&2
+  exit 1
+fi
 echo "[verify] step 2 ok: ${CLUSTER_A}, ${DB_A} and ${CLUSTER_HELD} are in AWS, journaled with their resource ids, with no state record"
 
 # A user fixes forward minutes later, once both are up; an RDS resource still

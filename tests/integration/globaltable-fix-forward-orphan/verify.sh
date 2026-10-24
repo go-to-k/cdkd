@@ -386,6 +386,60 @@ assert_journaled() { # usage: assert_journaled <logicalId> <table>
 assert_journaled OrphanA "${TABLE_A}"
 assert_journaled OrphanC "${TABLE_C}"
 C_ID="$(table_id "${TABLE_C}")"
+# go-to-k/cdkd#2319: the refused partial-create cleanup's warning names the AWS
+# failure by its class. AWS words the explicit deny with this account's id and
+# the deny role's ARN; that text goes to the --verbose debug line only. A FAIL
+# prints only the cdkd-authored head and the length.
+INJECT_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${LOG_DIR}/inject.log")"
+for t in "${TABLE_A}" "${TABLE_C}"; do
+  cleanup_head="Partial-create cleanup failed for ${t}: "
+  cleanup_line="$(grep -F "${cleanup_head}" <<<"${INJECT_PLAIN}" | tail -n 1 || true)"
+  if [ -z "${cleanup_line}" ]; then
+    echo "[verify] FAIL: step 2 printed no '${cleanup_head}...' warning: the cleanup DeleteTable was not refused (output above)" >&2
+    exit 1
+  fi
+  if ! grep -qE "Partial-create cleanup failed for ${t}: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\. To remove" <<<"${cleanup_line}"; then
+    echo "[verify] FAIL: the refused cleanup warning for ${t} is not '${cleanup_head}<ErrorClass>. Re-run with --verbose for AWS's own message. To remove ...' (#2319); ${#cleanup_line} chars" >&2
+    exit 1
+  fi
+done
+if grep -F "Partial-create cleanup" <<<"${INJECT_PLAIN}" | grep -qF "${ACCOUNT_ID}"; then
+  echo "[verify] FAIL: a partial-create cleanup warning quotes AWS's text, with this account's id (#2319)" >&2
+  exit 1
+fi
+# ... and each failed CREATE's persisted RESOURCE_FAILED event is class-only:
+# the deployments/*.jsonl store outlives the run.
+EVENT_KEYS_2="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+  --prefix "${STATE_PREFIX}deployments/" --output json \
+  | jq -r '.Contents // [] | .[].Key | select(endswith(".jsonl"))')"
+# Inside LOG_DIR, which `cleanup` removes on every exit: it holds AWS text.
+FAILED_2="${LOG_DIR}/failed-events-2.jsonl"
+: > "${FAILED_2}"
+while IFS= read -r event_key || [ -n "${event_key}" ]; do
+  [ -n "${event_key}" ] || continue
+  aws s3 cp "s3://${STATE_BUCKET}/${event_key}" - --quiet \
+    | jq -c 'select(.eventType == "RESOURCE_FAILED")' >> "${FAILED_2}"
+done <<< "${EVENT_KEYS_2}"
+assert_failed_event_redacted() { # usage: assert_failed_event_redacted <logicalId> <wrap prefix>
+  local msg
+  msg="$(jq -r --arg l "$1" 'select(.logicalId == $l) | .error.message // empty' "${FAILED_2}" | tail -n 1)"
+  if [ -z "${msg}" ]; then
+    echo "[verify] FAIL: no RESOURCE_FAILED event with an error message for $1 under s3://${STATE_BUCKET}/${STATE_PREFIX}deployments/ after step 2 (the #2319 checks below would pass for free)" >&2
+    exit 1
+  fi
+  if ! printf '%s' "${msg}" | grep -qE "$2: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
+    echo "[verify] FAIL: $1's RESOURCE_FAILED message is not '$2: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed prefix: '${msg%%:*}', ${#msg} chars" >&2
+    exit 1
+  fi
+  if jq -r --arg l "$1" 'select(.logicalId == $l) | .error.message // empty' "${FAILED_2}" \
+    | grep -qF "${ACCOUNT_ID}"; then
+    echo "[verify] FAIL: $1's RESOURCE_FAILED message quotes AWS's text, with this account's id (#2319); observed prefix: '${msg%%:*}', ${#msg} chars" >&2
+    exit 1
+  fi
+}
+assert_failed_event_redacted OrphanA "Failed to create DynamoDB GlobalTable OrphanA"
+assert_failed_event_redacted OrphanC "Failed to create DynamoDB GlobalTable OrphanC"
+rm -f "${FAILED_2}"
 echo "[verify] step 2 ok: ${TABLE_A} and ${TABLE_C} are in AWS, journaled with their TableIds, with no state record"
 
 echo "[verify] step 2b: ${TABLE_C} is deleted and its name re-used outside the stack"
