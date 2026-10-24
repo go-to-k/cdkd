@@ -502,6 +502,21 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     expect(isRefusedEcho(err)).toBe(false);
   });
 
+  // go-to-k/cdkd#3361, end to end: the flip's own failure is best-effort (the
+  // delete goes on and reports AWS's refusal), so an out-throw from
+  // `isRefusedEcho` or `warnGuardLeftOn` on an unconvertible `name` cost the
+  // operator the "left on" warn, the one line naming why the guard is still on.
+  it('an echo refusal whose name cannot be stringified still warns the guard was left on', async () => {
+    const err = named('InvalidParameterException', 'refused');
+    Object.defineProperty(err, 'name', { value: Object.create(null) });
+    script({ echoError: { INACTIVE: err }, dels: [named('InvalidParameterException', 'deletion protection is activated')] });
+    await expect(del()).rejects.toSatisfy(says('deletion protection is activated'));
+    expect(updates()).toHaveLength(1);
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('DeletionProtection was left on, because UpdateUserPool refused to turn it off')
+    );
+  });
+
   it('names cognito-idp:UpdateUserPool when the echo is access-denied', async () => {
     script({ echoError: { INACTIVE: named('AccessDeniedException', 'no') }, dels: [domainRefusal()] });
     await expect(del()).rejects.toThrow();
