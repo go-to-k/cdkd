@@ -744,5 +744,18 @@ function retryErrorClass(error: unknown): string {
     typeof value === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(value) ? value : undefined;
   const name = ident((error as { name?: unknown } | null)?.name) ?? 'Error';
   const code = ident((error as { ccErrorCode?: unknown } | null)?.ccErrorCode);
-  return code !== undefined ? `${name} (${code})` : name;
+  // A provider wraps the AWS error as `cause`; the innermost named link is
+  // the class that was retried. Bounded, and a cycle stops it.
+  let root: string | undefined;
+  let current: unknown = (error as { cause?: unknown } | null)?.cause;
+  for (let depth = 0; depth < 5 && current !== null && typeof current === 'object'; depth++) {
+    root = ident((current as { name?: unknown }).name) ?? root;
+    const next = (current as { cause?: unknown }).cause;
+    if (next === current) break;
+    current = next;
+  }
+  const parts = [code, root !== undefined && root !== name ? root : undefined].filter(
+    (part): part is string => part !== undefined
+  );
+  return parts.length > 0 ? `${name} (${parts.join(', ')})` : name;
 }

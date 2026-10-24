@@ -42,6 +42,26 @@ describe('withRetry phase timings (#5242)', () => {
     expect(report).not.toContain('secret-value-123');
   });
 
+  it("names the AWS error a provider wrapped as the retried error's cause", async () => {
+    process.env['CDKD_PHASE_TIMINGS'] = '1';
+    let calls = 0;
+    const op = vi.fn().mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) {
+        const aws = Object.assign(new Error('Rate exceeded'), { name: 'TooManyRequestsException' });
+        throw Object.assign(new Error('Failed to create Revision: Rate exceeded'), {
+          name: 'ProvisioningError',
+          cause: aws,
+        });
+      }
+      return 'ok';
+    });
+    await withRetry(op, 'Revision', { sleep: () => Promise.resolve() });
+    expect(renderPhaseTimings().join('\n')).toContain(
+      'retry after ProvisioningError (TooManyRequestsException)'
+    );
+  });
+
   it('records nothing with the report off', async () => {
     delete process.env['CDKD_PHASE_TIMINGS'];
     await withRetry(throttledTwice(), 'MyQueue', { sleep: () => Promise.resolve() });
