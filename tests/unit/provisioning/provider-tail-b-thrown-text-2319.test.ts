@@ -158,7 +158,22 @@ const RUNTIME_PROPS_NEW = { ...RUNTIME_PROPS, Description: 'd' };
 const EVALUATOR_PROPS = { EvaluatorName: 'ev', Level: 'TRACE', EvaluatorConfig: {} };
 const EVALUATOR_PROPS_NEW = { ...EVALUATOR_PROPS, Description: 'd' };
 
-type Case = { wrap: string; run: () => Promise<unknown> };
+/**
+ * `prime` makes only the site's own call reject, for a site an earlier call in
+ * the same method would otherwise wrap first; without it every send rejects.
+ */
+type Case = {
+  wrap: string;
+  run: () => Promise<unknown>;
+  prime?: (rejection: unknown) => void;
+};
+
+function reject(c: Case, rejection: unknown): void {
+  if (c.prime) c.prime(rejection);
+  else mockSend.mockRejectedValue(rejection);
+}
+
+const VB_ARN = 'arn:aws:s3vectors:us-east-1:111122223333:bucket/vb';
 
 const cases: Case[] = [
   {
@@ -279,6 +294,25 @@ const cases: Case[] = [
       new S3VectorsProvider().update('Vb', 'vb', VB, { ...VB_PROPS, Tags: [{ Key: 'k', Value: 'v' }] }, VB_PROPS, ctx),
   },
   {
+    wrap: 'Failed to update tags for S3 VectorBucket Vb (vb)',
+    run: () =>
+      new S3VectorsProvider().update(
+        'Vb',
+        'vb',
+        VB,
+        { ...VB_PROPS, Tags: [{ Key: 'k', Value: 'v' }] },
+        VB_PROPS,
+        ctx
+      ),
+    // GetVectorBucket resolves the ARN; the tag write is the call that fails.
+    prime: (rejection) =>
+      mockSend.mockImplementation((command: { constructor: { name: string } }) =>
+        command.constructor.name === 'GetVectorBucketCommand'
+          ? Promise.resolve({ vectorBucket: { vectorBucketArn: VB_ARN } })
+          : Promise.reject(rejection)
+      ),
+  },
+  {
     wrap: 'Failed to delete S3 VectorBucket Vb',
     run: () => new S3VectorsProvider().delete('Vb', 'vb', VB, VB_PROPS, ctx),
   },
@@ -305,7 +339,7 @@ describe('provider thrown wraps withhold AWS text (#2319)', () => {
   });
 
   it.each(cases)('$wrap: an AWS-authored failure is named by its class', async (c) => {
-    mockSend.mockRejectedValue(denied());
+    reject(c, denied());
 
     const failure = await caught(c.run());
 
@@ -321,7 +355,7 @@ describe('provider thrown wraps withhold AWS text (#2319)', () => {
   });
 
   it.each(cases)('$wrap: a cdkd-authored failure keeps its text, masked', async (c) => {
-    mockSend.mockRejectedValue(new Error('socket hang up near s3cr3t'));
+    reject(c, new Error('socket hang up near s3cr3t'));
 
     const failure = await caught(c.run());
 
@@ -332,24 +366,38 @@ describe('provider thrown wraps withhold AWS text (#2319)', () => {
     expect(hasRedactedCause(failure)).toBe(true);
   });
 
-  it('a cdkd-authored failure the mask leaves alone is not stamped', async () => {
-    mockSend.mockRejectedValue(new Error('socket hang up'));
+  it.each(cases)('$wrap: a cdkd-authored failure the mask leaves alone is not stamped', async (c) => {
+    reject(c, new Error('socket hang up'));
 
-    const failure = await caught(cases[0]!.run());
+    const failure = await caught(c.run());
 
-    expect(failure.message).toBe(`${cases[0]!.wrap}: socket hang up`);
+    expect(failure.message).toContain(`${c.wrap}: socket hang up`);
     expect(hasRedactedCause(failure)).toBe(false);
   });
 
-  it('a non-Error throw is withheld, unstamped', async () => {
-    mockSend.mockRejectedValue('raw s3cr3t value');
+  it.each(cases)('$wrap: a non-Error throw is withheld, unstamped', async (c) => {
+    reject(c, 'raw s3cr3t value');
 
-    const failure = await caught(cases[0]!.run());
+    const failure = await caught(c.run());
 
-    expect(failure.message).toBe(
-      `${cases[0]!.wrap}: a non-Error value of type string. ${VERBOSE_POINTER}`
+    expect(failure.message).toContain(
+      `${c.wrap}: a non-Error value of type string. ${VERBOSE_POINTER}`
     );
+    expect(failure.message).not.toContain('s3cr3t');
     expect(hasRedactedCause(failure)).toBe(false);
+  });
+
+  // A ConflictException matches no collision pattern by its class, so only the
+  // restatement keeps a create-first replacement recognising a taken name.
+  it.each(cases)('$wrap: restates an "already exists" the class does not carry', async (c) => {
+    reject(c, awsSdkError('A resource named x already exists in 111122223333.', 'ConflictException'));
+
+    const failure = await caught(c.run());
+
+    expect(failure.message).toContain(
+      `${c.wrap}: ConflictException. ${VERBOSE_POINTER} AWS reports that it already exists.`
+    );
+    expect(failure.message).not.toContain('111122223333');
   });
 
   // RegisterStreamConsumer reports a taken name as ResourceInUseException,

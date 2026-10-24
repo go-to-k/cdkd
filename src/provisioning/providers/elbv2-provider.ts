@@ -642,6 +642,7 @@ export class ELBv2Provider implements ResourceProvider {
     const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
+
   /** `--remove-protection` flips per load balancer, kept across `delete()` re-entry (#2204). */
   private readonly protectionFlips = new ProtectionFlipRegistry();
 
@@ -877,7 +878,7 @@ export class ELBv2Provider implements ResourceProvider {
    * this provider logs (issue #2050, review round 2). A thrown `create()` /
    * `update()` / `delete()` failure goes through {@link wrapCaughtError}
    * instead, which names an AWS-authored failure by its class and masks the
-   * rest the same way, stamping the wrap.
+   * rest the same way; the wrap is stamped when it withholds or masks.
    *
    * Masks `error.message` rather than the assembled sentence ON PURPOSE. The
    * two are NOT equivalent: handing the masker the raw message can reach

@@ -138,7 +138,7 @@ export class AgentCoreBrowserProvider implements ResourceProvider {
         error,
         (text) =>
           new ProvisioningError(
-            `Failed to adopt the AWS-managed default browser for ${logicalId}: ${text}. ` +
+            `Failed to adopt the AWS-managed default browser for ${logicalId}: ${text}${text.endsWith('.') ? '' : '.'} ` +
               `Bedrock AgentCore may not be available in this region.`,
             resourceType,
             logicalId,
