@@ -44,6 +44,7 @@ import { ResourceNotFoundException } from '@aws-sdk/client-cognito-identity-prov
 import {
   CognitoUserPoolProvider,
   REFUSED_ECHO_ERRORS,
+  isRefusedEcho,
   USER_POOL_ECHO_MEMBERS,
   USER_POOL_KEPT_ON_OMISSION,
   userPoolDeletionProtectionUpdate,
@@ -431,6 +432,20 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     );
   });
 
+  // The no-answer warn prints `describeAwsFailure(...).summary`, which for a
+  // failure AWS did not author is its RAW message: it goes through the
+  // operation's masker, as the debug line beside it always did.
+  it('masks the no-answer warn, whose summary is the raw message of a failure AWS did not author', async () => {
+    const SECRET = 'hunter2-resolved-secret';
+    const timeout = Object.assign(new Error(`socket hang up near ${SECRET}`), { name: 'TimeoutError' });
+    script({ echoError: { INACTIVE: timeout }, dels: [domainRefusal()] });
+    const maskSecrets = (text: string): string => text.split(SECRET).join('***');
+    await expect(del({ ...CTX, maskSecrets })).rejects.toThrow();
+    const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('failed without an answer from AWS (socket hang up near ***)');
+    expect(warned).not.toContain(SECRET);
+  });
+
   it('an echo that got NO answer and did NOT land: no "left on" claim, and the re-enable still writes the guard back', async () => {
     const timeout = Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
     script({ echoError: { INACTIVE: timeout }, dels: [domainRefusal()] });
@@ -488,6 +503,32 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     expect(deleteCalls()).toBe(0);
     // A retry is coming: no "left on" claim for a write that will be re-sent.
     expect(childLogger.warn).not.toHaveBeenCalledWith(expect.stringContaining('left on'));
+  });
+
+  // go-to-k/cdkd#3361: `isRefusedEcho` read the failure's `name` with a bare
+  // `String()`. A thrown value's `name` is as arbitrary as the value, and this
+  // predicate runs inside the echo catches that decide the bare fallback, so a
+  // `name` `String()` cannot convert must answer "not refused", never throw.
+  it('isRefusedEcho answers false, without throwing, for a name String() cannot convert', () => {
+    expect(isRefusedEcho({ name: Object.create(null) })).toBe(false);
+    const err = named('InvalidParameterException', 'refused');
+    Object.defineProperty(err, 'name', { value: Object.create(null) });
+    expect(isRefusedEcho(err)).toBe(false);
+  });
+
+  // go-to-k/cdkd#3361, end to end: the flip's own failure is best-effort (the
+  // delete goes on and reports AWS's refusal), so an out-throw from
+  // `isRefusedEcho` or `warnGuardLeftOn` on an unconvertible `name` cost the
+  // operator the "left on" warn, the one line naming why the guard is still on.
+  it('an echo refusal whose name cannot be stringified still warns the guard was left on', async () => {
+    const err = named('InvalidParameterException', 'refused');
+    Object.defineProperty(err, 'name', { value: Object.create(null) });
+    script({ echoError: { INACTIVE: err }, dels: [named('InvalidParameterException', 'deletion protection is activated')] });
+    await expect(del()).rejects.toSatisfy(says('deletion protection is activated'));
+    expect(updates()).toHaveLength(1);
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('DeletionProtection was left on, because UpdateUserPool refused to turn it off')
+    );
   });
 
   it('names cognito-idp:UpdateUserPool when the echo is access-denied', async () => {

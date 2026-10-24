@@ -399,7 +399,10 @@ function withholdWaiterPayload(
   if (described === undefined || !(error instanceof Error)) return undefined;
   const text = mask(described);
   const original = error.message;
-  const header = `${error.name}: ${original}`;
+  // `safeStringify`: a failure's `name` is as arbitrary as the failure, and
+  // this runs inside the create / update catch (go-to-k/cdkd#3361).
+  const name = safeStringify(error.name);
+  const header = `${name}: ${original}`;
   const stack = typeof error.stack === 'string' ? error.stack : '';
   try {
     Object.defineProperty(error, 'message', {
@@ -410,8 +413,8 @@ function withholdWaiterPayload(
     });
     Object.defineProperty(error, 'stack', {
       value: stack.startsWith(header)
-        ? `${error.name}: ${text}${stack.slice(header.length)}`
-        : `${error.name}: ${text}`,
+        ? `${name}: ${text}${stack.slice(header.length)}`
+        : `${name}: ${text}`,
       writable: true,
       configurable: true,
       enumerable: false,
@@ -1026,7 +1029,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    const raw = error instanceof Error ? error.message : String(error);
+    // `.detail` is byte-identical to the `.message` / `String()` ternary and
+    // cannot throw on an unconvertible value (go-to-k/cdkd#3361).
+    const raw = describeAwsFailure(error).detail;
     // A failed waiter's payload is withheld in the caught error itself.
     const text = withholdWaiterPayload(error, log.mask)?.masked ?? log.mask(raw);
     const wrapped = build(text);

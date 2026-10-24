@@ -338,7 +338,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    */
   private maskErrorMessage(error: unknown, maskSecrets: SecretMasker | undefined): string {
     const mask = maskerOrIdentity(maskSecrets);
-    return mask(error instanceof Error ? error.message : String(error));
+    // `.detail`: the same text, without out-throwing the cleanup catch it runs
+    // in on a value `String()` cannot convert (go-to-k/cdkd#3361).
+    return mask(describeAwsFailure(error).detail);
   }
 
   /**

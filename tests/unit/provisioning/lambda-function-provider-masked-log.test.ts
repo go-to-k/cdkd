@@ -1149,6 +1149,24 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
       expect(retryClassificationText(failure)).toContain(LONG);
       expect(failure.message).not.toContain(LONG);
     });
+
+    // go-to-k/cdkd#3361: `wrapMaskedError` rendered a non-`Error` with a bare
+    // `String()`, so a value it cannot convert replaced the create failure with
+    // a TypeError.
+    it('wraps a throw String() cannot convert instead of throwing a TypeError', async () => {
+      fakeLambda('plain-fn', {
+        CreateFunctionCommand: () => {
+          throw Object.create(null);
+        },
+      });
+      const failure = await thrown(provider.create('Fn', TYPE, createProps(), { maskSecrets }));
+      expect(failure).toBeInstanceOf(ProvisioningError);
+      expect(failure.message).toContain(
+        'Failed to create Lambda function Fn: a value that could not be converted to text'
+      );
+      // The placeholder masks to itself, so nothing was withheld to mark.
+      expect(hasRedactedCause(failure)).toBe(false);
+    });
   });
 
   describe('secrets only the operation masker knows stay out of the printed cause', () => {
@@ -1165,6 +1183,30 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
         provider.update('Fn', TINY3, TYPE, desired, previous, { maskSecrets })
       );
       expect(printed(failure)).not.toMatch(/\bkpz\b/);
+      expect(failure.message).toContain(`Function not found: ${SECRET_MASK}`);
+    });
+
+    // go-to-k/cdkd#3361: `withholdWaiterPayload` rebuilt the message / stack
+    // header from `error.name` in a bare template, so a waiter failure whose
+    // `name` cannot be converted threw a TypeError in place of the update
+    // failure it was rewriting.
+    it('a waiter failure whose name cannot be converted still surfaces the update failure', async () => {
+      fakeLambda(TINY3);
+      const waiterError = waiterFailed({
+        name: 'ResourceNotFoundException',
+        Message: `Function not found: ${TINY3}`,
+      });
+      // Materialize the stack first: V8 formats it lazily from `name`, so a
+      // first read AFTER the `name` swap throws on its own, before the line
+      // under test.
+      void waiterError.stack;
+      Object.defineProperty(waiterError, 'name', { value: Object.create(null) });
+      waitUpdated.mockRejectedValue(waiterError);
+      const [desired, previous] = updatePair(TINY3, TINY3);
+      const failure = await thrown(
+        provider.update('Fn', TINY3, TYPE, desired, previous, { maskSecrets })
+      );
+      expect(failure).toBeInstanceOf(ProvisioningError);
       expect(failure.message).toContain(`Function not found: ${SECRET_MASK}`);
     });
 
