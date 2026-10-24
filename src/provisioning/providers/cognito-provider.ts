@@ -3424,6 +3424,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         logicalId,
         physicalId,
         logger: this.logger,
+        mask: context?.maskSecrets,
         site: userPoolProtectionSite(physicalId, context?.expectedRegion),
         // A FRESH read, echoed back (#4066). The echo is ALWAYS written, even
         // when the read already says ACTIVE: a read can lag a write that

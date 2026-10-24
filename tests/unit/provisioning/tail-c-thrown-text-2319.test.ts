@@ -76,6 +76,8 @@ import {
 } from '../../../src/deployment/retryable-errors.js';
 import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import { isMarkedNotGone } from '../../../src/provisioning/not-gone.js';
+import { compensateProtectionFlip } from '../../../src/provisioning/providers/deletion-protection-compensation.js';
+import type { Logger } from '../../../src/types/config.js';
 import { allowUnscopedCreateTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
 
@@ -808,5 +810,78 @@ describe('tail-c cleanup warnings name an AWS failure by its class (#2319)', () 
     expect(lines).toEqual([`Failed to add tags on vpc-1: AccessDenied. ${VERBOSE_POINTER}`]);
     expect(debugLines()).toContain(`Failed to add tags on vpc-1: ${mask(DENIED)}`);
     expect(debugLines().join('\n')).not.toContain('s3cr3t');
+  });
+});
+
+describe('a failed --remove-protection re-enable names an AWS failure by its class (#2319)', () => {
+  const lines = { warn: [] as string[], error: [] as string[], debug: [] as string[] };
+  const logger = {
+    debug: (m: string) => lines.debug.push(m),
+    info: () => undefined,
+    warn: (m: string) => lines.warn.push(m),
+    error: (m: string) => lines.error.push(m),
+    child: () => logger,
+  } as unknown as Logger;
+  beforeEach(() => {
+    lines.warn.length = 0;
+    lines.error.length = 0;
+    lines.debug.length = 0;
+  });
+
+  const run = (reEnableError: unknown, notFound: boolean) =>
+    compensateProtectionFlip({
+      flip: { flippedOffByThisRun: true, deleteAccepted: false } as never,
+      // A terminal delete failure: nothing in the retry table matches it.
+      error: Object.assign(new Error('The resource is in use'), { name: 'ResourceInUse' }),
+      logicalId: 'Res',
+      physicalId: 'res-1',
+      logger,
+      mask,
+      site: {
+        subject: 'Thing',
+        guardName: 'DeletionProtection',
+        noun: 'thing',
+        isNotFound: () => notFound,
+        notFoundMeaning: 'AWS answered not-found.',
+        commands: () => ({ check: 'check-cmd', restoreAfterNotFound: 'fix-cmd', restoreLive: 'live-cmd' }),
+      },
+      reEnable: () => Promise.reject(reEnableError),
+    });
+
+  it.each([
+    { arm: 'live (error)', notFound: false, sink: 'error' as const },
+    { arm: 'not-found (warn)', notFound: true, sink: 'warn' as const },
+  ])('$arm: the class at the line, the masked text at debug', async ({ notFound, sink }) => {
+    const rejection = denied();
+    expect(rejection.message).toContain(ACCOUNT_ARN);
+
+    expect(await run(rejection, notFound)).toBe('failed');
+
+    expect(lines[sink]).toHaveLength(1);
+    expect(lines[sink][0]).toContain(`(AccessDenied. ${VERBOSE_POINTER})`);
+    expect(lines[sink][0]).not.toContain(ACCOUNT_ARN);
+    expect(lines.debug.some((l) => l.includes(mask(DENIED)))).toBe(true);
+    expect(lines.debug.join('\n')).not.toContain('s3cr3t');
+  });
+
+  it('masks a secret spelled in the class', async () => {
+    await run(
+      Object.assign(new Error('denied'), {
+        name: 'Denieds3cr3tException',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 400 },
+      }),
+      false
+    );
+
+    expect(lines.error[0]).toContain(`(Denied***Exception. ${VERBOSE_POINTER})`);
+    expect(lines.error[0]).not.toContain('s3cr3t');
+  });
+
+  it('keeps a cdkd-authored failure text, masked, with no debug line', async () => {
+    await run(new Error('socket hang up near s3cr3t'), false);
+
+    expect(lines.error[0]).toContain('(socket hang up near ***)');
+    expect(lines.debug.some((l) => l.includes('re-enabling'))).toBe(false);
   });
 });

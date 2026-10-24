@@ -1653,7 +1653,13 @@ export class ASGProvider implements ResourceProvider {
       );
     } catch (error) {
       if (current) {
-        await this.settleInstanceFlips(logicalId, current, error, context?.expectedRegion);
+        await this.settleInstanceFlips(
+          logicalId,
+          current,
+          error,
+          context?.expectedRegion,
+          context?.maskSecrets
+        );
       }
       throw error;
     }
@@ -1682,7 +1688,8 @@ export class ASGProvider implements ResourceProvider {
     logicalId: string,
     groupFlip: ProtectionFlipRecord,
     error: unknown,
-    region: string | undefined
+    region: string | undefined,
+    mask: MaskerFn | undefined
   ): Promise<void> {
     const instances = this.groupInstanceFlips.get(groupFlip);
     if (!instances) return;
@@ -1697,6 +1704,7 @@ export class ASGProvider implements ResourceProvider {
           logicalId,
           physicalId: instanceId,
           logger: this.logger,
+          mask,
           site: autoScalingGroupInstanceProtectionSite(instanceId, region),
           reEnable: () => this.reEnableLaunchedInstance(instanceId),
         },
@@ -1768,6 +1776,7 @@ export class ASGProvider implements ResourceProvider {
         logicalId,
         physicalId,
         logger: this.logger,
+        mask: context?.maskSecrets,
         site: autoScalingGroupProtectionSite(physicalId, context?.expectedRegion, removedValue),
         reEnable: async () => {
           const value = removedValue();

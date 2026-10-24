@@ -228,8 +228,12 @@ deployment_event_keys() {
 # sessions.
 assert_failed_event_redacted() { # usage: assert_failed_event_redacted <logical id> <prefix> [class-only]
   local lid="$1" prefix="$2" class_only="${3:-}" msg events
-  msg="$(jq -r --arg l "${lid}" 'select(.logicalId == $l) | .error.message // empty' \
-    "${DESTROY_LOG}.failed" | tail -n 1)"
+  # The LAST matching event's whole message (`-s` slurps the events), never
+  # the last LINE of all of them: a multi-line message would be judged by its
+  # tail.
+  msg="$(jq -rs --arg l "${lid}" \
+    'map(select(.logicalId == $l and .error.message != null)) | last | .error.message // empty' \
+    "${DESTROY_LOG}.failed")"
   if [ -z "${msg}" ]; then
     echo "FAIL: Phase 2 persisted no RESOURCE_FAILED event with an error message for ${lid} (the #2319 checks would pass for free)" >&2
     exit 1

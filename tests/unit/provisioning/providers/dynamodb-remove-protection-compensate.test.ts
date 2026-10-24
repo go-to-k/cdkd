@@ -1203,8 +1203,10 @@ describe('compensateRemovedDeletionProtection: failed re-enable log level (#2224
 
     expect(captured.error).toHaveLength(0);
     // NOT debug: a live table whose status is merely not ACTIVE also answers
-    // RNF here, and silencing that hides the case the line exists for.
-    expect(captured.debug).toHaveLength(0);
+    // RNF here, and silencing that hides the case the line exists for. Only
+    // AWS's own text goes to debug (go-to-k/cdkd#2319).
+    expect(captured.debug).toHaveLength(1);
+    expect(captured.debug[0]).toContain('Requested resource not found');
 
     const warned = captured.warn.join('\n');
     // The claim issue #2224 objected to must NOT survive: cdkd does not know
@@ -1218,8 +1220,10 @@ describe('compensateRemovedDeletionProtection: failed re-enable log level (#2224
     expect(warned).toContain('not in this region or account');
     expect(warned).toContain(`aws dynamodb describe-table --table-name ${TABLE_NAME}`);
     expect(warned).toContain(`aws dynamodb update-table --table-name ${TABLE_NAME}`);
-    // The underlying AWS text is still carried, so the line is diagnosable.
-    expect(warned).toContain('Requested resource not found');
+    // The failure is named by its class, so the line is diagnosable; AWS's
+    // own text (which can name the caller) is at debug (go-to-k/cdkd#2319).
+    expect(warned).toContain('(ResourceNotFoundException. Re-run with --verbose');
+    expect(warned).not.toContain('Requested resource not found');
     // ...and the re-enable is reported as FAILED even though it is narrated at
     // warn. The softer LEVEL is about what cdkd can claim; the OUTCOME is about
     // what it did, and it did not put the guard back -- which is what keeps

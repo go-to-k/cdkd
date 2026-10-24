@@ -316,7 +316,10 @@ while IFS= read -r event_key || [ -n "${event_key}" ]; do
     | jq -c 'select(.eventType == "RESOURCE_FAILED" and .logicalId == "OrphanRepo")' \
       >> "${LOG_DIR}/e1-failed-events.jsonl"
 done <<< "${E1_NEW_EVENT_KEYS}"
-E1_FAILED_MSG="$(jq -r '.error.message // empty' "${LOG_DIR}/e1-failed-events.jsonl" | tail -n 1)"
+# The LAST event's whole message (`-s` slurps the events), never the last
+# LINE of all of them: a multi-line message would be judged by its tail.
+E1_FAILED_MSG="$(jq -rs 'map(select(.error.message != null)) | last | .error.message // empty' \
+  "${LOG_DIR}/e1-failed-events.jsonl")"
 # A FAIL prints only the cdkd-authored prefix and the length: the rest may be
 # AWS's text, naming accounts, roles or sessions.
 if [ -z "${E1_FAILED_MSG}" ]; then

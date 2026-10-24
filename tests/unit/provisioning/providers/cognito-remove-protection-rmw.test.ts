@@ -1107,7 +1107,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     });
     await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.error).toHaveBeenCalledWith(
-      expect.stringMatching(/could NOT re-enable DeletionProtection.*\(busy\)/)
+      expect.stringMatching(/could NOT re-enable DeletionProtection.*\(ConcurrentModificationException\. Re-run/)
     );
   });
 

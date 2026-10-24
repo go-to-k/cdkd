@@ -2014,7 +2014,7 @@ export class EC2Provider implements ResourceProvider {
           leftBehindId = vpcId;
           const cleanupHead = `Failed to clean up partially-created VPC ${logicalId} (${vpcId}): `;
           this.logger.warn(
-            `${cleanupHead}${this.warnFailureText(cleanupHead, cleanupError, maskerOrIdentity(context?.maskSecrets))} Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-vpc --vpc-id ${vpcId}`.render()}`
+            `${cleanupHead}${this.warnFailureSentence(cleanupHead, cleanupError, maskerOrIdentity(context?.maskSecrets))} Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-vpc --vpc-id ${vpcId}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -2419,7 +2419,7 @@ export class EC2Provider implements ResourceProvider {
           leftBehindId = subnetId;
           const cleanupHead = `Failed to clean up partially-created Subnet ${logicalId} (${subnetId}): `;
           this.logger.warn(
-            `${cleanupHead}${this.warnFailureText(cleanupHead, cleanupError, maskerOrIdentity(context?.maskSecrets))} Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-subnet --subnet-id ${subnetId}`.render()}`
+            `${cleanupHead}${this.warnFailureSentence(cleanupHead, cleanupError, maskerOrIdentity(context?.maskSecrets))} Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-subnet --subnet-id ${subnetId}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -3091,7 +3091,7 @@ export class EC2Provider implements ResourceProvider {
           createdId = undefined;
           this.logger.debug(safeMsg`Released partially-created EIP ${logicalId} (${allocatedId})`);
         } catch (cleanupError) {
-          const cleanupText = this.warnFailureText(
+          const cleanupText = this.warnFailureSentence(
             `Failed to release partially-created EIP ${logicalId} (${allocatedId}): `,
             cleanupError,
             maskerOrIdentity(context?.maskSecrets)
@@ -4272,7 +4272,7 @@ export class EC2Provider implements ResourceProvider {
       // which is worse.
       const waitHead = `Wait for NatGateway ${physicalId} deletion did not complete cleanly: `;
       this.logger.warn(
-        `${waitHead}${this.warnFailureText(waitHead, error, maskerOrIdentity(context?.maskSecrets))} Proceeding with downstream delete steps.`
+        `${waitHead}${this.warnFailureSentence(waitHead, error, maskerOrIdentity(context?.maskSecrets))} Proceeding with downstream delete steps.`
       );
     }
 
@@ -5063,7 +5063,7 @@ export class EC2Provider implements ResourceProvider {
           leftBehindId = groupId;
           const cleanupHead = `Failed to clean up partially-created SecurityGroup ${logicalId} (${groupId}): `;
           this.logger.warn(
-            `${cleanupHead}${this.warnFailureText(cleanupHead, cleanupError, maskerOrIdentity(context?.maskSecrets))} Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-security-group --group-id ${groupId}`.render()}`
+            `${cleanupHead}${this.warnFailureSentence(cleanupHead, cleanupError, maskerOrIdentity(context?.maskSecrets))} Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-security-group --group-id ${groupId}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -6846,7 +6846,7 @@ export class EC2Provider implements ResourceProvider {
           leftBehindId = instanceId;
           const cleanupHead = `Failed to terminate partially-created EC2 Instance ${logicalId} (${instanceId}): `;
           this.logger.warn(
-            `${cleanupHead}${this.warnFailureText(cleanupHead, cleanupError, maskerOrIdentity(context?.maskSecrets))} THE INSTANCE IS STILL RUNNING AND BILLING. Manual termination required: ${pasteableAwsCommand(context?.maskSecrets)`aws ec2 terminate-instances --instance-ids ${instanceId}`.render()}`
+            `${cleanupHead}${this.warnFailureSentence(cleanupHead, cleanupError, maskerOrIdentity(context?.maskSecrets))} THE INSTANCE IS STILL RUNNING AND BILLING. Manual termination required: ${pasteableAwsCommand(context?.maskSecrets)`aws ec2 terminate-instances --instance-ids ${instanceId}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -7337,6 +7337,7 @@ export class EC2Provider implements ResourceProvider {
         logicalId,
         physicalId,
         logger: this.logger,
+        mask: context?.maskSecrets,
         site: ec2InstanceProtectionSite(physicalId, commandRegion),
         reEnable: () => reEnableInstanceApiTermination(this.ec2Client, physicalId),
       },
@@ -8652,20 +8653,27 @@ export class EC2Provider implements ResourceProvider {
   }
 
   /**
-   * The failure text a default-level `warn` quotes after `head`, with its
-   * closing period (go-to-k/cdkd#2319). An AWS-authored failure is named by
-   * its CLASS, since a denied `Delete*` or `CreateTags` names the caller's
-   * assumed-role ARN; AWS's own text goes to `debug` under the same `head`,
-   * through `mask`. A cdkd-authored or transport error keeps its text, masked.
+   * The failure text a default-level `warn` quotes after `head`
+   * (go-to-k/cdkd#2319). An AWS-authored failure is named by its CLASS, since
+   * a denied `Delete*` or `CreateTags` names the caller's assumed-role ARN;
+   * AWS's own text goes to `debug` under the same `head`, through `mask`. A
+   * cdkd-authored or transport error keeps its text, masked and otherwise
+   * unchanged, as `wrapMaskedAwsError` relays it into a thrown wrap.
    */
   private warnFailureText(head: string, error: unknown, mask: MaskerFn): string {
     const failure = describeAwsFailure(error);
-    if (!failure.redacted) {
-      const text = mask(failure.detail);
-      return /[.!?]$/.test(text) ? text : `${text}.`;
-    }
+    if (!failure.redacted) return mask(failure.detail);
     this.logger.debug(mask(`${head}${mask(failure.detail)}`));
     return mask(failure.summary);
+  }
+
+  /**
+   * {@link warnFailureText} for a `warn` that goes on with another sentence:
+   * the text, closed with a period unless it already ends one.
+   */
+  private warnFailureSentence(head: string, error: unknown, mask: MaskerFn): string {
+    const text = this.warnFailureText(head, error, mask);
+    return /[.!?]$/.test(text) ? text : `${text}.`;
   }
 
   /**
@@ -9465,7 +9473,7 @@ export class EC2Provider implements ResourceProvider {
       } catch (error) {
         const backfillHead = `Could not backfill IamInstanceProfile for ${physicalId} during the --no-wait capture: `;
         this.logger.warn(
-          `${backfillHead}${this.warnFailureText(backfillHead, error, (t) => t)} The field is omitted from the observed snapshot.`
+          `${backfillHead}${this.warnFailureSentence(backfillHead, error, (t) => t)} The field is omitted from the observed snapshot.`
         );
       }
     }
