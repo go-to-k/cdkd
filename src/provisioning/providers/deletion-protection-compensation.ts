@@ -345,11 +345,12 @@ export function isTerminalDeleteFailure(error: unknown): boolean {
   if (isInterruptedWaitError(error)) return true;
   if (finalDeleteAttempt.getStore() === true) return true;
   if (isMarkedNonRetryable(error)) return true;
-  // The CHAIN text, as the loop reads it (issue #2302). The one adopter delete
-  // throw stamped with `markRedactedCause` is the Cloud Control abandoned wait;
-  // on the top-level message its redacted text read terminal while the loop
-  // retried it, so the record was released and the retry's refusal went
-  // uncompensated (issue #4318).
+  // The CHAIN text, as the loop reads it (issue #2302). An adopter delete throw
+  // stamped with `markRedactedCause` -- the Cloud Control abandoned wait, and
+  // any provider delete wrap that names an AWS failure by its class
+  // (go-to-k/cdkd#2319) -- reads terminal on its top-level message while the
+  // loop retries it: read there, the record was released and the retry's
+  // refusal went uncompensated (issue #4318).
   const classify = retryClassificationText(error);
   return !(isRetryableTransientError(error, classify) || classify.includes('Too Many Requests'));
 }

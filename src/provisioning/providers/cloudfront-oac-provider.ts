@@ -26,6 +26,7 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { markNotGone } from '../not-gone.js';
 import {
   markRedactedCause,
   relayedNameCollision,
@@ -347,7 +348,7 @@ export class CloudFrontOACProvider implements ResourceProvider {
       }
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
@@ -359,6 +360,12 @@ export class CloudFrontOACProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 

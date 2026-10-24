@@ -266,8 +266,68 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
       const warned = warnLines();
       // Non-vacuity: the cleanup-failure branch really did fire.
       expect(warned).toContain('Failed to clean up partially-created LoadBalancer Lb');
-      expect(warned).toContain(SECRET_MASK);
+      // go-to-k/cdkd#2319: a denied DeleteLoadBalancer names the caller, so the
+      // warn carries the class; AWS's text reaches the debug line, masked.
+      expect(warned).toContain(`: ValidationError. ${VERBOSE_POINTER} Manual deletion`);
       expect(warned).not.toContain(SECRET_PLAINTEXT);
+      expect(debugLines()).toContain(
+        `Failed to clean up partially-created LoadBalancer Lb (${LB_ARN}): ValidationError: delete request for ${SECRET_MASK}`
+      );
+      expect(loggedLines()).not.toContain(SECRET_PLAINTEXT);
+    });
+
+    // go-to-k/cdkd#3361: a cleanup rejection `String()` cannot convert (a
+    // null-prototype object) must not out-throw the catch: the warn still
+    // prints and the wiring failure is what the caller sees.
+    it('still warns and rethrows the wiring failure when the cleanup rejects with an unconvertible value', async () => {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof CreateLoadBalancerCommand) {
+          return Promise.resolve({ LoadBalancers: [{ LoadBalancerArn: LB_ARN, DNSName: 'd' }] });
+        }
+        if (command instanceof ModifyLoadBalancerAttributesCommand) {
+          return Promise.reject(awsRejection('load balancer attribute'));
+        }
+        if (command instanceof DeleteLoadBalancerCommand) {
+          return Promise.reject(Object.create(null));
+        }
+        return Promise.resolve({});
+      });
+
+      const thrown = await captureThrow(() =>
+        provider.create('Lb', LB_TYPE, LB_PROPERTIES, { maskSecrets })
+      );
+
+      expect(thrown.message).toBe(`Failed to create LoadBalancer Lb: ValidationError. ${VERBOSE_POINTER}`);
+      expect(warnLines()).toContain(
+        `Failed to clean up partially-created LoadBalancer Lb (${LB_ARN}): a non-Error value of type object. ${VERBOSE_POINTER} Manual deletion`
+      );
+    });
+
+    // Positive control: a cdkd-authored or transport cleanup failure keeps its
+    // text at warn, masked.
+    it('keeps a cdkd-authored cleanup failure at warn, masked', async () => {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof CreateLoadBalancerCommand) {
+          return Promise.resolve({ LoadBalancers: [{ LoadBalancerArn: LB_ARN, DNSName: 'd' }] });
+        }
+        if (command instanceof ModifyLoadBalancerAttributesCommand) {
+          return Promise.reject(awsRejection('load balancer attribute'));
+        }
+        if (command instanceof DeleteLoadBalancerCommand) {
+          return Promise.reject(new Error(`socket hang up near ${SECRET_PLAINTEXT}`));
+        }
+        return Promise.resolve({});
+      });
+
+      await expect(
+        provider.create('Lb', LB_TYPE, LB_PROPERTIES, { maskSecrets })
+      ).rejects.toThrow();
+
+      const warned = warnLines();
+      expect(warned).toContain(
+        `Failed to clean up partially-created LoadBalancer Lb (${LB_ARN}): socket hang up near ${SECRET_MASK}. Manual deletion`
+      );
+      expect(warned).not.toContain(VERBOSE_POINTER);
       expect(loggedLines()).not.toContain(SECRET_PLAINTEXT);
     });
   });

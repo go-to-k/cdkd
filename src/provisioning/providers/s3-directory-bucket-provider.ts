@@ -27,6 +27,7 @@ import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-
 import { generatedNameFor } from '../resource-name.js';
 import { renderDisableCommand } from '../replacement-protection-advice.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { markNotGone } from '../not-gone.js';
 import { displayIdent, displaySafe } from '../../utils/display-safe.js';
 import {
   markNonRetryable,
@@ -621,7 +622,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         mask,
         error,
         (text) =>
@@ -633,6 +634,12 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 

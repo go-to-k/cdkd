@@ -28,6 +28,7 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { markNotGone } from '../not-gone.js';
 import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
@@ -317,7 +318,7 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
@@ -329,6 +330,12 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
