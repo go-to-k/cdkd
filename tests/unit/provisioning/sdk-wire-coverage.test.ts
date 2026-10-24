@@ -181,7 +181,11 @@ interface Result {
  *   (only `prev` varies, so the removal-reset path is what is observed)
  *
  * A reduced side that THROWS is not delivery: it lands in `removalThrows`, and
- * that path is probed instead by changing its value on create.
+ * that path is probed instead by changing its value, in each direction that
+ * threw: on create, `create(full)` vs `create(alt)`; on update,
+ * `update(next=full, prev=base)` vs `update(next=alt, prev=base)`, where `base`
+ * lacks the leaf's parent so both sides make the same call and only the value
+ * differs.
  */
 async function probe(c: Case): Promise<Result> {
   const p = c.provider();
@@ -199,7 +203,8 @@ async function probe(c: Case): Promise<Result> {
 
   const full = await record(create(c.bag));
   const settled = await record(update(c.bag, c.bag));
-  // A throwing baseline would make every comparison against it vacuous.
+  // Every create comparison is made against `full`, so a throwing `full` would
+  // make them vacuous; `settled` guards that a no-op update succeeds at all.
   expect(full).toMatchObject({ threw: false });
   expect(settled).toMatchObject({ threw: false });
   const fullWire = (full as { wire: string }).wire;
@@ -218,32 +223,43 @@ async function probe(c: Case): Promise<Result> {
   for (const path of paths(c.bag)) {
     const label = path.join('.');
     const reduced = without(c.bag, path);
-    let threw = compare('create', label, await record(create(reduced)), full);
+    const createThrew = compare('create', label, await record(create(reduced)), full);
+    let updateThrew = false;
     if (!c.createOnly.has(String(path[0]))) {
-      threw =
+      updateThrew =
         compare(
           'update-add',
           label,
           await record(update(c.bag, reduced)),
           await record(update(reduced, reduced))
-        ) || threw;
-      threw =
+        ) || updateThrew;
+      updateThrew =
         compare(
           'update-remove',
           label,
           await record(update(reduced, c.bag)),
           await record(update(reduced, reduced))
-        ) || threw;
+        ) || updateThrew;
     }
-    if (!threw) continue;
+    if (!createThrew && !updateThrew) continue;
     const alt = varied(
       c.bag,
       path,
       c.variants && label in c.variants ? { value: c.variants[label] } : undefined
     );
-    const altOutcome = alt === undefined ? undefined : await record(create(alt));
-    if (altOutcome === undefined || altOutcome.threw || altOutcome.wire === fullWire) {
-      silent.push(`create-vary:${label}`);
+    if (createThrew) {
+      const altOutcome = alt === undefined ? undefined : await record(create(alt));
+      if (altOutcome === undefined || altOutcome.threw || altOutcome.wire === fullWire) {
+        silent.push(`create-vary:${label}`);
+      }
+    }
+    if (updateThrew) {
+      const base = without(c.bag, path.length > 1 ? path.slice(0, -1) : path);
+      const before = await record(update(c.bag, base));
+      const after = alt === undefined ? undefined : await record(update(alt, base));
+      if (before.threw || after === undefined || after.threw || after.wire === before.wire) {
+        silent.push(`update-vary:${label}`);
+      }
     }
   }
   return { silent, removalThrows };
@@ -277,10 +293,10 @@ const TAGS_REFUSED =
 const SUBSCRIPTION_REFUSED =
   'an inline Subscription without a string Protocol and Endpoint is refused before Subscribe';
 
-// Known gaps, listed so the test pins them: fixing one turns this test red
-// until its row is deleted here, so the list only shrinks.
-const REMOVAL_RESET_GAP =
-  'missing from SQS_ATTRIBUTE_REMOVAL_RESET, so a removal keeps the live value (go-to-k/cdkd#1160)';
+// Not a gap: CloudFormation keeps the live value when these are removed
+// (measured A/B, go-to-k/cdkd#5004), so update() deliberately sends nothing.
+const CFN_KEEPS_ON_REMOVAL =
+  'CloudFormation keeps the live value on removal (go-to-k/cdkd#5004); deliberately absent from SQS_ATTRIBUTE_REMOVAL_RESET';
 // Not a gap: SetQueueAttributes re-sends the whole policy from `next` and never
 // reads `prev`, so a member removed from a still-declared policy is delivered
 // by `next` alone (the update-add probe of the same path observes that).
@@ -354,7 +370,12 @@ const CASES: TypeCase[] = [
       {
         // A value-dependent drop is invisible to a bag of truthy values only.
         name: 'falsy values',
-        bag: { TopicName: 't', ContentBasedDeduplication: false, DisplayName: '' },
+        bag: {
+          TopicName: 'f.fifo',
+          FifoTopic: true,
+          ContentBasedDeduplication: false,
+          DisplayName: '',
+        },
         expectedSilent: {
           'create:ContentBasedDeduplication':
             'CreateTopic gates on truthiness; false is the service default, so omitting it is equivalent',
@@ -397,8 +418,8 @@ const CASES: TypeCase[] = [
           ],
         },
         expectedSilent: {
-          'update-remove:DeduplicationScope': REMOVAL_RESET_GAP,
-          'update-remove:FifoThroughputLimit': REMOVAL_RESET_GAP,
+          'update-remove:DeduplicationScope': CFN_KEEPS_ON_REMOVAL,
+          'update-remove:FifoThroughputLimit': CFN_KEEPS_ON_REMOVAL,
           'update-remove:RedrivePolicy.deadLetterTargetArn': WHOLE_POLICY_FROM_NEXT,
           'update-remove:RedrivePolicy.maxReceiveCount': WHOLE_POLICY_FROM_NEXT,
           'update-remove:RedriveAllowPolicy.redrivePermission': WHOLE_POLICY_FROM_NEXT,
@@ -409,7 +430,7 @@ const CASES: TypeCase[] = [
         // `SqsManagedSseEnabled` is mutually exclusive with `KmsMasterKeyId`.
         name: 'SQS-managed encryption',
         bag: { QueueName: 'q', SqsManagedSseEnabled: true },
-        expectedSilent: { 'update-remove:SqsManagedSseEnabled': REMOVAL_RESET_GAP },
+        expectedSilent: { 'update-remove:SqsManagedSseEnabled': CFN_KEEPS_ON_REMOVAL },
       },
       {
         name: 'falsy values',
