@@ -207,6 +207,33 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
       ).toBe(true);
     });
 
+    // The class is AWS-authored text too: the warn masks it.
+    it('masks a secret spelled in the cleanup failure class at warn', async () => {
+      const deniedWithSecret = Object.assign(new Error('denied'), {
+        name: 'Denieds3cr3tException',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 403 },
+      });
+      mockSend.mockResolvedValueOnce(c.created);
+      mockSend.mockRejectedValueOnce(nonRetryable('wiring boom'));
+      mockSend.mockRejectedValueOnce(deniedWithSecret);
+
+      await failure(() =>
+        provider.create('Res', c.type, c.props, {
+          maskSecrets: (t: string) => t.replaceAll('s3cr3t', '***'),
+        })
+      );
+
+      const log = getLogger().child('ELBv2Provider') as unknown as {
+        warn: ReturnType<typeof vi.fn>;
+        debug: ReturnType<typeof vi.fn>;
+      };
+      const all = [...log.warn.mock.calls, ...log.debug.mock.calls].map((call) => String(call[0]));
+      const warned = log.warn.mock.calls.map((call) => String(call[0])).join('\n');
+      expect(warned).toContain(`(${c.arn}): Denied***Exception. ${VERBOSE_POINTER} `);
+      expect(all.join('\n')).not.toContain('s3cr3t');
+    });
+
     it('go-to-k/cdkd#4705 E-3: the 4xx wiring failure with the resource left behind keeps the intent', async () => {
       mockSend.mockResolvedValueOnce(c.created);
       mockSend.mockRejectedValueOnce(nonRetryable('wiring boom'));
