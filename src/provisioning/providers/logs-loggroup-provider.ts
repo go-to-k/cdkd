@@ -44,6 +44,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { markNotGone } from '../not-gone.js';
 import { generatedNameFor } from '../resource-name.js';
 import { chunks, isAccessDeniedError, lookupEachName, withApiLimit } from '../name-lookup.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -674,9 +675,17 @@ export class LogsLogGroupProvider implements ResourceProvider {
               ? `Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${deleteCommand}`
               : "Outside a rollback's re-create, the failed deploy's rollback journal records it for `cdkd rollback --revert-failed`; otherwise delete it yourself before the next deploy, via the console: the log " +
                 'group name cannot be reproduced safely on a command line.';
+            // An AWS-authored failure is named by its class at warn, and AWS's
+            // text (a denied `DeleteLogGroup` names the caller) goes to `debug`
+            // under the same head (go-to-k/cdkd#2319).
+            const cleanupFailure = describeAwsFailure(cleanupError);
+            const cleanupHead = `Failed to clean up partially-created log group ${displaySafe(logicalId)} (${displaySafe(mask(logGroupName))}): `;
+            if (cleanupFailure.redacted) {
+              this.logger.debug(mask(`${cleanupHead}${cleanupFailure.detail}`));
+            }
             this.logger.warn(
               mask(
-                `Failed to clean up partially-created log group ${displaySafe(logicalId)} (${displaySafe(mask(logGroupName))}): ${describeAwsFailure(cleanupError).detail}. ${manualStep}`
+                `${cleanupHead}${cleanupFailure.redacted ? `${cleanupFailure.summary} ` : `${cleanupFailure.detail}. `}${manualStep}`
               )
             );
           }
@@ -1466,7 +1475,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
@@ -1478,6 +1487,12 @@ export class LogsLogGroupProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this one is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 

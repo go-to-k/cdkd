@@ -19,6 +19,7 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { markNotGone } from '../not-gone.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -577,7 +578,7 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -589,6 +590,12 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this one is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
