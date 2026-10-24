@@ -49,6 +49,7 @@ import {
   relayedNameCollision,
 } from '../../deployment/retryable-errors.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { markNotGone } from '../not-gone.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { earliestOwnCreationTime, serverClockReading, withServerClock } from './server-clock.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
@@ -578,6 +579,21 @@ export class FSxFileSystemProvider implements ResourceProvider {
     return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
   }
 
+  /**
+   * The cleanup-failure text a best-effort `warn` quotes after `head`
+   * (go-to-k/cdkd#2319). An AWS-authored failure is named by its CLASS at
+   * warn, since a denied call names the caller's assumed-role ARN; AWS's own
+   * text goes to `debug` under the same `head`, masked. A cdkd-authored or
+   * transport error keeps its text, masked.
+   */
+  private cleanupFailureText(head: string, error: unknown, mask: MaskerFn | undefined): string {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return m(failure.detail);
+    this.logger.debug(m(`${head}${m(failure.detail)}`));
+    return m(failure.summary);
+  }
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::FSx::FileSystem',
@@ -859,10 +875,9 @@ export class FSxFileSystemProvider implements ResourceProvider {
           this.logger.warn(`Rolled back partially-created FSx FileSystem ${fileSystemId}`);
         } catch (cleanupError) {
           survivorId = fileSystemId;
+          const cleanupHead = `Failed to roll back partially-created FSx FileSystem ${fileSystemId}: `;
           this.logger.warn(
-            `Failed to roll back partially-created FSx FileSystem ${fileSystemId}: ${
-              describeAwsFailure(cleanupError).detail
-            } — outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself to stop billing`
+            `${cleanupHead}${this.cleanupFailureText(cleanupHead, cleanupError, context?.maskSecrets)} — outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself to stop billing`
           );
         }
       }
@@ -1767,7 +1782,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -1779,6 +1794,12 @@ export class FSxFileSystemProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFound` in a message as "already deleted": only the typed
+      // `FileSystemNotFound` above means this file system is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
 
     // Deletion is async — poll until the file system is GONE. A timeout is
@@ -2056,7 +2077,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
       } catch (error) {
         if (error instanceof FileSystemNotFound) return;
         const cause = error instanceof Error ? error : undefined;
-        throw this.wrapCaughtError(
+        const thrown = this.wrapCaughtError(
           mask,
           error,
           (text) =>
@@ -2068,6 +2089,10 @@ export class FSxFileSystemProvider implements ResourceProvider {
               cause
             )
         );
+        // As in `delete()`: only the typed not-found above is gone.
+        throw error instanceof Error && error.name.includes('NotFound')
+          ? markNotGone(thrown)
+          : thrown;
       }
 
       if (!fs && sawResponse) return;

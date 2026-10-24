@@ -58,7 +58,11 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import {
   onlySecretDerived,
@@ -339,7 +343,9 @@ export class IAMUserGroupProvider implements ResourceProvider {
    * goes to `debug` through the masker, and the wrap is stamped
    * `markRedactedCause` so the retry classifiers read the withheld text on the
    * unmasked `cause` chain. An "already exists" is restated
-   * ({@link relayedNameCollision}). A cdkd-authored or transport error, or a
+   * ({@link relayedNameCollision}), except from a post-create wiring step's
+   * failure ({@link markAuxiliaryFailure}), where "it" would read as this user
+   * or group (#3826). A cdkd-authored or transport error, or a
    * non-`Error` throw, keeps its text masked (issue #2177,
    * `wrapMaskedAwsError`, issue #4244).
    *
@@ -356,9 +362,26 @@ export class IAMUserGroupProvider implements ResourceProvider {
     if (!(error instanceof Error)) return build(mask(failure.detail));
     if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
     this.logger.debug(mask(build(mask(failure.detail)).message));
-    return markRedactedCause(
-      build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
-    );
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    return markRedactedCause(build(`${mask(failure.summary)}${relay}`));
+  }
+
+  /**
+   * The cleanup-failure text a partial-create `warn` quotes after `head`, with
+   * its closing period (go-to-k/cdkd#2319). An AWS-authored failure is named by
+   * its CLASS at warn, since a denied `Delete*` names the caller's assumed-role
+   * ARN; AWS's own text goes to `debug` under the same `head`, through `log`'s
+   * masker. A cdkd-authored or transport error keeps its text, masked.
+   */
+  private cleanupFailureText(
+    head: string,
+    cleanupError: unknown,
+    log: { mask: MaskerFn; debug: (message: string) => void }
+  ): string {
+    const failure = describeAwsFailure(cleanupError);
+    if (!failure.redacted) return `${log.mask(failure.detail)}.`;
+    log.debug(`${head}${log.mask(failure.detail)}`);
+    return log.mask(failure.summary);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -689,8 +712,9 @@ export class IAMUserGroupProvider implements ResourceProvider {
           // as `***`, which would act on a different principal. Pinned by this
           // type's partial-create cleanup test.
           const aws = pasteableAwsCommand(log.mask);
+          const cleanupHead = `Failed to clean up partially-created IAM user ${logicalId} (${v(userName)}): `;
           log.warn(
-            `Failed to clean up partially-created IAM user ${logicalId} (${v(userName)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: remove from groups, detach managed policies, delete inline policies, delete login profile (${aws`aws iam delete-login-profile --user-name ${userName}`.render()}), remove permissions boundary (${aws`aws iam delete-user-permissions-boundary --user-name ${userName}`.render()}), then ${aws`aws iam delete-user --user-name ${userName}`.render()}`
+            `${cleanupHead}${this.cleanupFailureText(cleanupHead, cleanupError, log)} Manual deletion may be required before the next deploy: remove from groups, detach managed policies, delete inline policies, delete login profile (${aws`aws iam delete-login-profile --user-name ${userName}`.render()}), remove permissions boundary (${aws`aws iam delete-user-permissions-boundary --user-name ${userName}`.render()}), then ${aws`aws iam delete-user --user-name ${userName}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -1455,8 +1479,9 @@ export class IAMUserGroupProvider implements ResourceProvider {
           // as `***`, which would act on a different principal. Pinned by this
           // type's partial-create cleanup test.
           const aws = pasteableAwsCommand(log.mask);
+          const cleanupHead = `Failed to clean up partially-created IAM group ${logicalId} (${v(groupName)}): `;
           log.warn(
-            `Failed to clean up partially-created IAM group ${logicalId} (${v(groupName)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: detach managed policies + delete inline policies, then ${aws`aws iam delete-group --group-name ${groupName}`.render()}`
+            `${cleanupHead}${this.cleanupFailureText(cleanupHead, cleanupError, log)} Manual deletion may be required before the next deploy: detach managed policies + delete inline policies, then ${aws`aws iam delete-group --group-name ${groupName}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring

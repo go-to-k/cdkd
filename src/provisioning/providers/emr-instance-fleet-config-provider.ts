@@ -266,6 +266,21 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
     return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
   }
 
+  /**
+   * The cleanup-failure text a best-effort `warn` quotes after `head`
+   * (go-to-k/cdkd#2319). An AWS-authored failure is named by its CLASS at
+   * warn, since a denied call names the caller's assumed-role ARN; AWS's own
+   * text goes to `debug` under the same `head`, masked. A cdkd-authored or
+   * transport error keeps its text, masked.
+   */
+  private cleanupFailureText(head: string, error: unknown, mask: MaskerFn | undefined): string {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return m(failure.detail);
+    this.logger.debug(m(`${head}${m(failure.detail)}`));
+    return m(failure.summary);
+  }
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::EMR::InstanceFleetConfig',
@@ -757,10 +772,11 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
             `EMR instance fleet ${physicalId} scale-to-0 skipped (cluster/fleet gone): ${error.message}`
           );
         } else {
+          const head = `Best-effort scale-to-0 of EMR instance fleet ${physicalId} failed: `;
           this.logger.warn(
-            `Best-effort scale-to-0 of EMR instance fleet ${physicalId} failed: ${
-              describeAwsFailure(error).detail
-            } — its instances are released when the parent cluster terminates`
+            maskerOrIdentity(context?.maskSecrets)(
+              `${head}${this.cleanupFailureText(head, error, context?.maskSecrets)} — its instances are released when the parent cluster terminates`
+            )
           );
         }
       }

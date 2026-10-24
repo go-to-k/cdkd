@@ -30,7 +30,12 @@ import {
   relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -998,7 +1003,7 @@ export class KinesisStreamProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
@@ -1010,6 +1015,12 @@ export class KinesisStreamProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this stream is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
 
     // Issue #3872: the stream keeps its NAME while it is DELETING, and a
@@ -1104,7 +1115,9 @@ export class KinesisStreamProvider implements ResourceProvider {
    * classifiers read the withheld text on the `cause` chain. An "already
    * exists" (`ResourceInUseException` on `CreateStream`) is restated
    * ({@link relayedNameCollision}), so a create-first replacement still
-   * recognises the collision. A cdkd-authored or transport error keeps its
+   * recognises the collision, except from a post-create wiring step's failure
+   * ({@link markAuxiliaryFailure}), where "it" would read as this stream
+   * (#3826). A cdkd-authored or transport error keeps its
    * text, masked, stamped only when the mask changed it (`wrapMaskedAwsError`,
    * issue #4244); a non-`Error` throw is withheld like an AWS one, unstamped
    * (it has no chain). The delete catch tests not-found before it wraps.
@@ -1120,7 +1133,8 @@ export class KinesisStreamProvider implements ResourceProvider {
     const failure = describeAwsFailure(error);
     if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
     this.logger.debug(mask(build(mask(failure.detail)).message));
-    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${mask(failure.summary)}${relay}`);
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 

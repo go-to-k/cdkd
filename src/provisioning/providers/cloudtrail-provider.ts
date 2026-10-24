@@ -52,7 +52,12 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { markNotGone } from '../not-gone.js';
 import { generatedNameFor } from '../resource-name.js';
 
 /**
@@ -192,9 +197,10 @@ export class CloudTrailProvider implements ResourceProvider {
    * caller's assumed-role ARN. AWS's own text goes to `debug` through the
    * operation's `maskSecrets` (`mask`), and the wrap is stamped
    * `markRedactedCause`, so the retry classifiers read the withheld text on the
-   * `cause` chain. An "already exists" is restated ({@link relayedNameCollision});
-   * a failure after `CreateTrail` returned is marked auxiliary on the `cause`,
-   * which the collision anchor still reads. A cdkd-authored or transport error
+   * `cause` chain. An "already exists" is restated ({@link relayedNameCollision}),
+   * except from a failure after `CreateTrail` returned, which is marked
+   * auxiliary on the `cause` ({@link markAuxiliaryFailure}): there "it" would
+   * read as this trail (#3826). A cdkd-authored or transport error
    * keeps its text, masked, stamped only when the mask changed it
    * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like an
    * AWS one, unstamped (it has no chain). The delete checks `TrailNotFoundException` by type before it wraps.
@@ -211,7 +217,8 @@ export class CloudTrailProvider implements ResourceProvider {
     const failure = describeAwsFailure(error);
     if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
     this.logger.debug(m(build(m(failure.detail)).message));
-    const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${m(failure.summary)}${relay}`);
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
@@ -850,7 +857,12 @@ export class CloudTrailProvider implements ResourceProvider {
             cause
           )
       );
-      throw stripped ? markDeleteStarted(failure) : failure;
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFound` in a message as "already deleted": only the typed
+      // `TrailNotFoundException` above means this trail is gone (go-to-k/cdkd#2319).
+      const notGone =
+        error instanceof Error && error.name.includes('NotFound') ? markNotGone(failure) : failure;
+      throw stripped ? markDeleteStarted(notGone) : notGone;
     }
   }
 
