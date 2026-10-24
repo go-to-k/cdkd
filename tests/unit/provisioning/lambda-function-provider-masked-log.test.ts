@@ -65,6 +65,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { LambdaFunctionProvider } from '../../../src/provisioning/providers/lambda-function-provider.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import {
   createSecretMasker,
   maskSecretsInError,
@@ -171,6 +172,9 @@ const transcript = (): string =>
   [...debugSpy.mock.calls, ...warnSpy.mock.calls, ...errorSpy.mock.calls]
     .map((args) => String(args[0]))
     .join('\n');
+
+/** Every debug line, as written. */
+const debugLines = (): string[] => debugSpy.mock.calls.map((args) => String(args[0]));
 
 const allLines = (): string[] =>
   [...debugSpy.mock.calls, ...warnSpy.mock.calls, ...errorSpy.mock.calls].map((args) =>
@@ -297,7 +301,11 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
       const failure = await thrown(
         provider.create('Fn', TYPE, createProps({ FunctionName: 'plain-fn' }), { maskSecrets })
       );
+      // go-to-k/cdkd#2319: the message names the class; AWS's text reaches debug, masked.
       expect(failure.message).toBe(
+        `Failed to create Lambda function Fn: InvalidParameterValueException. ${VERBOSE_POINTER}`
+      );
+      expect(debugLines()).toContain(
         `Failed to create Lambda function Fn: The role defined for the function cannot be assumed by Lambda: ${SECRET_MASK}`
       );
       // The cause stays unmasked: the retry classifiers read it.
@@ -321,13 +329,21 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
           { maskSecrets }
         )
       );
+      // go-to-k/cdkd#2319: the throw, warn and cleanup line name the class;
+      // AWS's text reaches debug, masked.
       expect(failure.message).toContain(
-        `Failed to set ReservedConcurrentExecutions on Lambda function Fn (function was deleted to maintain atomicity): Bad concurrency for ${SECRET_MASK}`
+        `Failed to set ReservedConcurrentExecutions on Lambda function Fn (function was deleted to maintain atomicity): InvalidParameterValueException. ${VERBOSE_POINTER}`
       );
       expect(warnSpy.mock.calls.map((c) => String(c[0]))).toContainEqual(
-        `PutFunctionConcurrency failed for Fn: Bad concurrency for ${SECRET_MASK} — deleting partially-created function to maintain atomicity`
+        `PutFunctionConcurrency failed for Fn: InvalidParameterValueException. ${VERBOSE_POINTER} — deleting partially-created function to maintain atomicity`
       );
       expect(errorSpy.mock.calls.map((c) => String(c[0]))).toContainEqual(
+        `Cleanup DeleteFunction failed for Fn after PutFunctionConcurrency failure — function may be orphaned: AccessDeniedException. ${VERBOSE_POINTER}`
+      );
+      expect(debugLines()).toContain(
+        `PutFunctionConcurrency failed for Fn: Bad concurrency for ${SECRET_MASK}`
+      );
+      expect(debugLines()).toContain(
         `Cleanup DeleteFunction failed for Fn after PutFunctionConcurrency failure — function may be orphaned: Not authorized to delete ${SECRET_MASK}`
       );
       expect(transcript()).not.toContain(LONG);
@@ -335,7 +351,7 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
       // The inner cdkd-authored refusal is masked where it is built, not only
       // by create()'s outer wrap: it travels on as the outer error's cause.
       const inner = (failure as Error & { cause?: unknown }).cause as Error;
-      expect(inner.message).toContain(`Bad concurrency for ${SECRET_MASK}`);
+      expect(inner.message).toContain(`InvalidParameterValueException. ${VERBOSE_POINTER}`);
       expect(inner.message).not.toContain(LONG);
     });
 
@@ -386,7 +402,11 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
       const failure = await thrown(
         provider.create('Fn', TYPE, createProps({ FunctionName: TINY3 }), { maskSecrets })
       );
+      // go-to-k/cdkd#2319: the class, plus the restated collision.
       expect(failure.message).toBe(
+        `Failed to create Lambda function Fn: ResourceConflictException. ${VERBOSE_POINTER} AWS reports that it already exists.`
+      );
+      expect(debugLines()).toContain(
         `Failed to create Lambda function Fn: Function already exist: ${SECRET_MASK}`
       );
     });
@@ -496,9 +516,11 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
       const failure = await thrown(
         provider.update('Fn', oldName, TYPE, desired, previous, { maskSecrets })
       );
+      // go-to-k/cdkd#2319: the message names the class; AWS's text reaches debug, masked.
       expect(failure.message).toBe(
-        `Failed to update Lambda function Fn: Function ${SECRET_MASK} is not in a valid state`
+        `Failed to update Lambda function Fn: ResourceConflictException. ${VERBOSE_POINTER}`
       );
+      expect(debugLines()).toContain(`Failed to update Lambda function Fn: Function ${SECRET_MASK} is not in a valid state`);
     });
 
     it('masks a 3-character recorded name AWS quotes back in the update failure', async () => {
@@ -514,7 +536,11 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
       const failure = await thrown(
         provider.update('Fn', TINY3, TYPE, desired, previous, { maskSecrets })
       );
-      expect(failure.message).toBe(`Failed to update Lambda function Fn: Function ${SECRET_MASK} is busy`);
+      // go-to-k/cdkd#2319: the message names the class; AWS's text reaches debug, masked.
+      expect(failure.message).toBe(
+        `Failed to update Lambda function Fn: ResourceConflictException. ${VERBOSE_POINTER}`
+      );
+      expect(debugLines()).toContain(`Failed to update Lambda function Fn: Function ${SECRET_MASK} is busy`);
     });
 
     it('masks a ROTATED 3-character name AWS quotes back in the update failure', async () => {
@@ -527,7 +553,11 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
       const failure = await thrown(
         provider.update('Fn', 'wvx', TYPE, desired, previous, { maskSecrets })
       );
-      expect(failure.message).toBe(`Failed to update Lambda function Fn: Function ${SECRET_MASK} is busy`);
+      // go-to-k/cdkd#2319: the message names the class; AWS's text reaches debug, masked.
+      expect(failure.message).toBe(
+        `Failed to update Lambda function Fn: ResourceConflictException. ${VERBOSE_POINTER}`
+      );
+      expect(debugLines()).toContain(`Failed to update Lambda function Fn: Function ${SECRET_MASK} is busy`);
     });
 
     it('masks AWS text quoting a secret in the update failure', async () => {
@@ -540,9 +570,11 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
       const failure = await thrown(
         provider.update('Fn', 'plain-fn', TYPE, desired, previous, { maskSecrets })
       );
+      // go-to-k/cdkd#2319: the message names the class; AWS's text reaches debug, masked.
       expect(failure.message).toBe(
-        `Failed to update Lambda function Fn: Role ${SECRET_MASK} cannot be assumed`
+        `Failed to update Lambda function Fn: InvalidParameterValueException. ${VERBOSE_POINTER}`
       );
+      expect(debugLines()).toContain(`Failed to update Lambda function Fn: Role ${SECRET_MASK} cannot be assumed`);
     });
 
     it('masks the waiter failure text', async () => {
@@ -635,11 +667,11 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
       );
     });
 
+    // go-to-k/cdkd#2319: an AWS-authored failure is always withheld (and
+    // stamped), so the unchanged-text arm is a cdkd-authored or transport one.
     it('does not stamp a post-create refusal the mask left unchanged', async () => {
       fakeLambda('plain-fn', {
-        PutFunctionConcurrencyCommand: reject(
-          awsAuthored('InvalidParameterValueException', 'Bad concurrency')
-        ),
+        PutFunctionConcurrencyCommand: reject(new Error('Bad concurrency')),
       });
       const failure = await thrown(
         provider.create('Fn', TYPE, createProps({ ReservedConcurrentExecutions: 3 }), {
@@ -652,11 +684,12 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
 
     it('does not stamp a failure the mask left unchanged', async () => {
       fakeLambda('plain-fn', {
-        CreateFunctionCommand: reject(awsAuthored('InvalidParameterValueException', 'Bad role')),
+        CreateFunctionCommand: reject(new Error('Bad role')),
       });
       const failure = await thrown(
         provider.create('Fn', TYPE, createProps(), { maskSecrets: retryMasker })
       );
+      expect(failure.message).toContain('Bad role');
       expect(hasRedactedCause(failure)).toBe(false);
     });
   });
@@ -975,7 +1008,11 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
       const failure = await thrown(
         provider.update('Fn', 'plain-fn', TYPE, desired, previous, { maskSecrets })
       );
+      // go-to-k/cdkd#2319: the message names the class; AWS's text reaches debug, masked.
       expect(failure.message).toBe(
+        `Failed to update Lambda function Fn: InvalidParameterValueException. ${VERBOSE_POINTER}`
+      );
+      expect(debugLines()).toContain(
         `Failed to update Lambda function Fn: String measured: ${JSON.stringify(JSON.stringify({ DB_CREDENTIALS: SECRET_MASK }))}`
       );
     });
@@ -997,7 +1034,11 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
           { maskSecrets }
         )
       );
+      // go-to-k/cdkd#2319: the message names the class; AWS's text reaches debug, masked.
       expect(failure.message).toBe(
+        `Failed to create Lambda function Fn: InvalidParameterValueException. ${VERBOSE_POINTER}`
+      );
+      expect(debugLines()).toContain(
         `Failed to create Lambda function Fn: String measured: {"DB_CREDENTIALS":"${SECRET_MASK}"}`
       );
     });
@@ -1131,7 +1172,11 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
       const failure = await thrown(
         provider.update('Fn', 'plain-fn', TYPE, desired, previous, { maskSecrets })
       );
+      // go-to-k/cdkd#2319: the message names the class; AWS's text reaches debug, masked.
       expect(failure.message).toBe(
+        `Failed to update Lambda function Fn: InvalidParameterValueException. ${VERBOSE_POINTER}`
+      );
+      expect(debugLines()).toContain(
         `Failed to update Lambda function Fn: Lambda was unable to configure your environment variables because the environment variables you have provided exceeded the 4KB limit. String measured: {"DB_CREDENTIALS":"${SECRET_MASK}"}`
       );
     });
@@ -1161,11 +1206,14 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
       });
       const failure = await thrown(provider.create('Fn', TYPE, createProps(), { maskSecrets }));
       expect(failure).toBeInstanceOf(ProvisioningError);
-      expect(failure.message).toContain(
+      // go-to-k/cdkd#2319: a non-Error is withheld like an AWS failure, and its
+      // placeholder text reaches debug.
+      expect(failure.message).toBe(
+        `Failed to create Lambda function Fn: a non-Error value of type object. ${VERBOSE_POINTER}`
+      );
+      expect(debugLines()).toContain(
         'Failed to create Lambda function Fn: a value that could not be converted to text'
       );
-      // The placeholder masks to itself, so nothing was withheld to mark.
-      expect(hasRedactedCause(failure)).toBe(false);
     });
   });
 

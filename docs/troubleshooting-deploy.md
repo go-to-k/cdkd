@@ -65,11 +65,13 @@ cdkd deploy MyStack --replace
 
 ```
 ProvisioningError: Failed to create resource MyFunction
-Caused by: Failed to create Lambda function MyFunction: <the AWS error>
+Caused by: Failed to create Lambda function MyFunction: <ErrorClass>. Re-run with --verbose for AWS's own message.
 ```
 
-The AWS error on the `Caused by:` line tells you which problem you have. Two
-are common.
+The `Caused by:` line names the AWS error class only, because AWS's text can
+name your account and role. Re-run with `--verbose`: AWS's own message, on the
+debug line that starts `Failed to create Lambda function MyFunction:`, tells
+you which problem you have. Two are common.
 
 ### `Error occurred while GetObject. S3 Error Code: NoSuchKey.`
 

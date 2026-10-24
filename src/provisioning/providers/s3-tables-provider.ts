@@ -22,6 +22,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { markRedactedCause, relayedNameCollision } from '../../deployment/retryable-errors.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
   compositeIdFormatMessage,
@@ -178,7 +179,8 @@ export class S3TablesProvider implements ResourceProvider {
    * transport error, or a non-`Error` throw, keeps its text, as in the
    * EventBridge bus provider's wrap (go-to-k/cdkd#5053); the thrown message is
    * masked by the deploy engine. Every delete checks `NotFoundException`
-   * by type before it wraps, so no "already deleted" reading depends on AWS's
+   * by type before it wraps, and stamps a wrap naming another `NotFound` class
+   * `markNotGone`, so no "already deleted" reading depends on AWS's
    * wording.
    *
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
@@ -516,7 +518,7 @@ export class S3TablesProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -528,6 +530,12 @@ export class S3TablesProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -749,7 +757,7 @@ export class S3TablesProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -761,6 +769,12 @@ export class S3TablesProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -1530,7 +1544,7 @@ export class S3TablesProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -1542,6 +1556,12 @@ export class S3TablesProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 

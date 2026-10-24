@@ -138,8 +138,10 @@ import { withoutServerErrorRetries } from './ambiguous-create.js';
 import {
   markNonRetryable,
   markRedactedCause,
+  relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import {
@@ -1044,8 +1046,11 @@ function newGlueClients(region: string | undefined): {
  * `build` must thread `error` as the wrap's `cause`: the redaction is stamped
  * so the retry classifiers read that chain, where the withheld `not authorized
  * to perform` still is. A non-`Error` throw has no chain, so it is not stamped.
- * No Glue caller reads the message for "already deleted": every delete checks
- * `EntityNotFoundException` by type before it wraps.
+ * An "already exists" is restated ({@link relayedNameCollision}), so a
+ * create-first replacement still recognises the collision. Every delete checks
+ * `EntityNotFoundException` by type before it wraps, and stamps a wrap naming
+ * any other `NotFound` class `markNotGone`, which the destroy loop's "already
+ * deleted" match refuses.
  */
 function wrapGlueError(
   mask: MaskerFn,
@@ -1058,7 +1063,7 @@ function wrapGlueError(
   // `build` runs twice here (debug text, then the throw), so it must stay a
   // side-effect-free constructor call.
   debug(mask(build(failure.detail).message));
-  const wrapped = build(mask(failure.summary));
+  const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
   return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
 }
 
@@ -1512,7 +1517,7 @@ export class GlueProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         log.mask,
         error,
         (text) =>
@@ -1524,6 +1529,12 @@ export class GlueProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -1987,7 +1998,7 @@ export class GlueProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         log.mask,
         error,
         (text) =>
@@ -1999,6 +2010,12 @@ export class GlueProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -3518,7 +3535,7 @@ export class GlueWorkflowProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         context?.maskSecrets ?? ((text: string) => text),
         error,
         (text) =>
@@ -3530,6 +3547,12 @@ export class GlueWorkflowProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -3862,7 +3885,7 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         context?.maskSecrets ?? ((text: string) => text),
         error,
         (text) =>
@@ -3874,6 +3897,12 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -4573,7 +4602,7 @@ export class GlueJobProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         context?.maskSecrets ?? ((text: string) => text),
         error,
         (text) =>
@@ -4585,6 +4614,12 @@ export class GlueJobProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -5362,7 +5397,7 @@ export class GlueCrawlerProvider implements ResourceProvider {
         }
       }
       const cause = failure instanceof Error ? failure : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         log.mask,
         failure,
         (text) =>
@@ -5374,6 +5409,12 @@ export class GlueCrawlerProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw failure instanceof Error && failure.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -5922,7 +5963,7 @@ export class GlueConnectionProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         log.mask,
         error,
         (text) =>
@@ -5934,6 +5975,12 @@ export class GlueConnectionProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -6462,7 +6509,7 @@ export class GlueTriggerProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = this.wrapMaskedError(
+      const wrapped = this.wrapMaskedError(
         context?.maskSecrets ?? ((text: string) => text),
         error,
         (text) =>
@@ -6474,6 +6521,11 @@ export class GlueTriggerProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      const failure =
+        error instanceof Error && error.name.includes('NotFound') ? markNotGone(wrapped) : wrapped;
       throw stripped ? markDeleteStarted(failure) : failure;
     }
   }

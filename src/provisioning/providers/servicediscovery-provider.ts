@@ -1365,15 +1365,26 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
             `Cleaned up partially-created ServiceDiscovery Service ${logicalId} (${serviceId}) after ServiceAttributes wiring failure`
           );
         } catch (cleanupError) {
+          // An AWS failure is named by its class at warn, AWS's text at debug
+          // under the same head (go-to-k/cdkd#2319): a denied `DeleteService`
+          // names the caller. A cdkd-authored error keeps its text at warn.
+          const cleanupFailure = describeAwsFailure(cleanupError);
+          const cleanupHead =
+            `Failed to clean up partially-created ServiceDiscovery Service ${logicalId} ` +
+            `(${serviceId}) after ServiceAttributes wiring failure: `;
+          if (cleanupFailure.redacted) {
+            this.logger.debug(
+              maskerOrIdentity(maskSecrets)(`${cleanupHead}${cleanupFailure.detail}`)
+            );
+          }
           this.logger.warn(
             // Masked for uniformity with the sibling lines in this same `try`
             // (issue #2050). The cleanup call carries only a physical id, so a
             // resolved property value reaching here would be surprising — but
             // "surprising" is not "impossible", and an unmasked line sitting
             // beside masked ones is what a later author copies.
-            `Failed to clean up partially-created ServiceDiscovery Service ${logicalId} ` +
-              `(${serviceId}) after ServiceAttributes wiring failure: ` +
-              `${this.maskErrorMessage(cleanupError, maskSecrets)}. Outside a rollback's re-create, the failed deploy's rollback ` +
+            `${cleanupHead}` +
+              `${cleanupFailure.redacted ? `${maskerOrIdentity(maskSecrets)(cleanupFailure.summary)} ` : `${this.maskErrorMessage(cleanupError, maskSecrets)}. `}Outside a rollback's re-create, the failed deploy's rollback ` +
               `journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself ` +
               `before the next deploy: ` +
               `${pasteableAwsCommand(maskSecrets)`aws servicediscovery delete-service --id ${serviceId}`.render()}`
