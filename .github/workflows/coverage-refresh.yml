@@ -12,9 +12,13 @@ name: Provider coverage refresh
 #   - `publish` holds the write token and no AWS credentials, and runs no
 #     dependency code (no install, no generator).
 #
-# Off until the maintainer sets the repository variable
-# COVERAGE_AUDIT_ROLE_ARN to a role this repository's OIDC subject may assume,
-# allowing only `cloudformation:ListTypes` and `cloudformation:DescribeType`.
+# Off until the maintainer sets the repository SECRET COVERAGE_AUDIT_ROLE_ARN
+# to a role this repository's OIDC subject may assume, allowing only
+# `cloudformation:ListTypes` and `cloudformation:DescribeType`. A secret, not
+# a variable, though an ARN is no credential: the run logs of this public
+# repository print a step's inputs, and a variable's value -- the account id
+# in the ARN -- would appear there unmasked. A job-level `if:` cannot read a
+# secret, so the first step decides whether the rest runs.
 
 on:
   schedule:
@@ -30,7 +34,6 @@ concurrency:
 
 jobs:
   audit:
-    if: vars.COVERAGE_AUDIT_ROLE_ARN != ''
     runs-on: ubuntu-latest
     # The stateful derivation reads one DescribeType per Tier-2 type (~1600).
     timeout-minutes: 45
@@ -40,11 +43,25 @@ jobs:
     outputs:
       changed: ${{ steps.diff.outputs.changed }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - name: Check the audit role is configured
+        id: role
+        env:
+          ROLE_ARN: ${{ secrets.COVERAGE_AUDIT_ROLE_ARN }}
+        run: |
+          if [ -n "${ROLE_ARN}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "COVERAGE_AUDIT_ROLE_ARN is not set; nothing to do."
+          fi
+
+      - if: steps.role.outputs.configured == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           persist-credentials: false
 
-      - uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1
+      - if: steps.role.outputs.configured == 'true'
+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1
         with:
           node-version: "24"
           cache: true
@@ -56,16 +73,19 @@ jobs:
       # The bound is the role's policy (two read calls) and its trust
       # condition (`sub` = this repository on `main`; AWS conditions on no
       # other GitHub claim, so any workflow on `main` could assume it).
-      - run: vp install --frozen-lockfile
+      - if: steps.role.outputs.configured == 'true'
+        run: vp install --frozen-lockfile
 
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      - if: steps.role.outputs.configured == 'true'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          role-to-assume: ${{ vars.COVERAGE_AUDIT_ROLE_ARN }}
+          role-to-assume: ${{ secrets.COVERAGE_AUDIT_ROLE_ARN }}
           role-session-name: cdkd-coverage-refresh
           aws-region: us-east-1
           mask-aws-account-id: true
 
       - name: Regenerate from live AWS
+        if: steps.role.outputs.configured == 'true'
         run: |
           set -euo pipefail
           vp run audit:coverage:regenerate
@@ -74,6 +94,7 @@ jobs:
 
       - name: Collect what changed
         id: diff
+        if: steps.role.outputs.configured == 'true'
         run: |
           set -euo pipefail
           files="docs/_generated/provider-coverage.json docs/_generated/provider-coverage.md docs/_generated/stateful-candidates.json docs/_generated/stateful-candidates.md src/provisioning/unsupported-types.generated.ts"
