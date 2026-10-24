@@ -109,7 +109,7 @@ asserted SYMBOL, not the body's paths or line numbers; a body PROPOSING a mechan
 update, or a backfill wiring a shape (#5204), has a CFn premise:
 `aws cloudformation describe-type --type RESOURCE --type-name <T> --query
 Schema` (`required`, `createOnlyProperties`), else a throwaway change set
-(delete its stack, then its leftovers: `aws fsx describe-backups`, #5206),
+(delete its stack, then its leftovers, e.g. FSx final backups, #5206),
 BEFORE design (#3769): measure a removal ALONE and BESIDE another change, poll
 reads for minutes (lag reads as "CFn ignores it"), and measure an ORDER, never
 reason it (#5107). cdkd may refuse what CFn or the AWS CDK CLI rejects, never
