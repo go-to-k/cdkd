@@ -40,6 +40,7 @@ import { type BrowseDeps, nonInteractiveBrowseRefusal, runStateBrowse } from './
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import {
+  asIsMessage,
   displayAwsMessage,
   displayIdent,
   displayStackName,
@@ -3319,7 +3320,7 @@ async function stateDestroyCommand(
               undefined,
               'cdkd state destroy'
             );
-            logger.error(`  ✗ ${err.message}`);
+            logger.error(safeMsg`  ✗ ${asIsMessage(err.message)}`);
             totalErrors++;
             continue;
           }

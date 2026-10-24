@@ -23,7 +23,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { asIsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
@@ -1072,14 +1072,14 @@ async function destroyCommand(
       ) {
         if (options.removeProtection) {
           logger.warn(
-            `Stack ${displaySafe(stackName)} was deployed with terminationProtection: true — bypassing because --remove-protection set`
+            safeMsg`Stack ${stackName} was deployed with terminationProtection: true — bypassing because --remove-protection set`
           );
         } else {
           const err = new StackTerminationProtectionError(stackName, undefined, {
             args: stateCommandAccount.args,
             clause: withheldAccountClause(accountRecovery, 'the command below prints'),
           });
-          logger.error(`  ✗ ${err.message}`);
+          logger.error(safeMsg`  ✗ ${asIsMessage(err.message)}`);
           totalErrors++;
           continue;
         }

@@ -82,6 +82,7 @@ const AUDITED_MEMBERS = [
   'finalSnapshotClients',
   'requireApproval', // a run-wide level naming no stack: a child asks for its own changes
   'approveDeployment', // the CLI's prompt; the request it receives names the child stack
+  'terminationProtection', // the ROOT stack's setting: a child engine ignores it (`parentStackInfo`)
 ];
 
 /** The interface body, sliced once and shared by the parse and the fail-closed scan. */
