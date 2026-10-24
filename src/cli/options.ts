@@ -1200,8 +1200,11 @@ export const annotationMessageOptions = [
 ];
 
 export const deployOptions = [
+  // go-to-k/cdkd#5242: measured on 48 independent resources, Cloud Control
+  // route: the resource DAG took 103s at 10, 68s at 20, and 72s at 30, where
+  // Cloud Control began answering with retryable failures.
   new Option('--concurrency <number>', 'Maximum concurrent resource operations')
-    .default(10)
+    .default(20)
     .argParser((value) => parseInt(value, 10)),
   new Option('--stack-concurrency <number>', 'Maximum concurrent stack deployments')
     .default(4)

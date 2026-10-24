@@ -65,7 +65,7 @@ These six flags are explained on this page.
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--concurrency <number>` | `10` | Maximum concurrent resource operations per stack. |
+| `--concurrency <number>` | `20` | Maximum concurrent resource operations per stack. |
 | `--stack-concurrency <number>` | `4` | Maximum concurrent stack deployments. |
 | `--asset-publish-concurrency <number>` | `8` | Maximum concurrent asset publishes (S3 uploads and ECR pushes). |
 | `--image-build-concurrency <number>` | `4` | Maximum concurrent Docker image builds. |
