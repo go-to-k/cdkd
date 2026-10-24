@@ -46,6 +46,7 @@ import {
   isAwsAuthoredFailure,
   safeStringify,
 } from '../../utils/aws-failure-text.js';
+import { markNotGone } from '../not-gone.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import {
   isThrottlingError,
@@ -2199,7 +2200,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             );
           }
           this.logger.warn(
-            `Failed to roll back partially-created Cognito User Pool ${createdUserPoolId}: ${rollbackFailure.summary}`
+            maskerOrIdentity(context?.maskSecrets)(
+              `Failed to roll back partially-created Cognito User Pool ${createdUserPoolId}: ${rollbackFailure.summary}`
+            )
           );
         }
       }
@@ -3714,7 +3717,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -3726,6 +3729,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this pool is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 

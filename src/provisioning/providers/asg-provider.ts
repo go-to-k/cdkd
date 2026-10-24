@@ -32,6 +32,7 @@ import {
 } from '@aws-sdk/client-auto-scaling';
 import { DescribeInstancesCommand, EC2Client } from '@aws-sdk/client-ec2';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { markNotGone } from '../not-gone.js';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -1898,7 +1899,7 @@ export class ASGProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
@@ -1910,6 +1911,12 @@ export class ASGProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // not-found check above means this group is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 

@@ -1029,10 +1029,17 @@ describe('auxiliary create failures do not classify as a name collision (#3826)'
         else expect(sent).toContain(c.main);
       }
       expect(error).toBeInstanceOf(Error);
-      // The top-level message still RELAYS a collision signature and the chain
-      // still holds an AWS-authored "already exists": nothing was reworded, so
-      // the mark alone is what keeps the verdict false.
-      expect(isNameCollisionError((error as Error).message)).toBe(true);
+      // The generic stand-in is not AWS-authored, so the top-level message
+      // still RELAYS its collision signature: nothing was reworded, and the
+      // mark alone is what keeps the verdict false. An AWS-authored
+      // `auxAwsError` is named by its class (go-to-k/cdkd#2319), and the wrap
+      // does not restate its "already exists" for an auxiliary failure, so the
+      // message carries no signature; the chain still holds AWS's text.
+      const awsAuthored = c.auxAwsError !== undefined && arm.command === c.aux;
+      expect(isNameCollisionError((error as Error).message)).toBe(!awsAuthored);
+      if (awsAuthored) {
+        expect(isNameCollisionError(((error as Error).cause as Error).message)).toBe(true);
+      }
       expect(isNameCollisionErrorFrom(error, LOGICAL_ID)).toBe(false);
     });
 
