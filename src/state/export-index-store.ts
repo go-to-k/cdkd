@@ -117,7 +117,7 @@ function mapsEqual(a: Map<string, ExportIndexEntry>, b: Map<string, ExportIndexE
  * arms are driven by tests.
  */
 function describeParseFailure(err: unknown, bytes: number): string {
-  const raw = err instanceof Error ? err.message : String(err);
+  const raw = describeAwsFailure(err).detail;
   const at = /at position (\d+)/.exec(raw);
   // `at position` is V8's UTF-16 CODE-UNIT index, not a byte offset -- named
   // in the rendered text because the size beside it is UTF-8 bytes, and two
@@ -603,7 +603,7 @@ export class ExportIndexStore {
       }
       if (outcome.kind === 'corrupt') {
         this.logger.warn(
-          `Exports index corrupt (${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}); rebuilding from state.json files`
+          `Exports index corrupt (${describeParseFailure(outcome.error, outcome.bytes)}); rebuilding from state.json files`
         );
         await this.rebuild();
         return;

@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { describeAwsFailure } from './aws-failure-text.js';
 import { displaySafe } from './display-safe.js';
 
 /**
@@ -622,7 +623,7 @@ export function displayAssemblyPath(value: string): string {
  */
 export function describeFileReadFailure(err: unknown, filePath: string): string {
   if (err instanceof SyntaxError) return 'invalid JSON';
-  const message = err instanceof Error ? err.message : String(err);
+  const message = describeAwsFailure(err).detail;
   return displaySafe(filePath === '' ? message : message.split(filePath).join('<path>'));
 }
 

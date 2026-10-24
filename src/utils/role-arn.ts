@@ -13,6 +13,7 @@ import {
   SECOND_ROLE_PUBLISH_REFUSAL,
 } from './aws-client-defaults.js';
 import { readEnvCredentials } from './caller-credentials.js';
+import { describeAwsFailure } from './aws-failure-text.js';
 import { displayAwsMessage, displayIdent, ROLE_ARN_MAX_CODE_POINTS } from './display-safe.js';
 
 /**
@@ -399,7 +400,7 @@ export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promi
         // CAPPED as well as sanitized: STS echoes an unparseable RoleArn back
         // verbatim, so this message's length is the submitter's choice and an
         // oversized ARN would flood past the cap the ARN itself just paid.
-        const message = displayAwsMessage(err instanceof Error ? err.message : String(err));
+        const message = displayAwsMessage(describeAwsFailure(err).detail);
         throw new Error(
           `AssumeRole into ${displayRoleArn} failed: ${message}. ` +
             `If this is a trust-policy issue, the producer's role must allow sts:AssumeRole ` +
@@ -643,9 +644,7 @@ export async function applyRoleArnIfSet(opts: {
       );
     } catch (err) {
       throw new Error(
-        `AssumeRole for ${displayRoleArn} failed: ${displayAwsMessage(
-          err instanceof Error ? err.message : String(err)
-        )}`,
+        `AssumeRole for ${displayRoleArn} failed: ${displayAwsMessage(describeAwsFailure(err).detail)}`,
         { cause: err instanceof Error ? err : undefined }
       );
     }
