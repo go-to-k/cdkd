@@ -90,9 +90,11 @@ tests passing is necessary but NOT sufficient:
 ### 8-d. Integ arms owe a discrimination proof (mutation-probe on real AWS)
 
 BEFORE the final integ, revert the fix, rebuild, run, confirm the arm goes RED
-**at YOUR assertion — read which one fired**, then restore and rebuild. A GREEN
-pre-fix run BLOCKS the merge: rework the arm so the symptom reaches AWS
-(#4927: an engine skip ate the write). A failure HINT's needle is
+**at YOUR assertion — read which one fired**, then restore and rebuild. A red
+ANYWHERE ELSE proves nothing: at the CREATE, AWS refuses the shape (#5204); at
+a pre-existing step, harden that check (S3 delete lag, #5218) and re-run. A
+GREEN pre-fix run BLOCKS the merge: rework the arm so the symptom reaches AWS
+(#4927). A failure HINT's needle is
 copied from that red run, never reasoned (#4336); a refusal the
 log tail lacks is the failed resource's `error.message` / `awsErrorCode` in
 `s3://<bucket>/<prefix>/<Stack>/<region>/deployments/*.jsonl`. **Revert by

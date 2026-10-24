@@ -106,9 +106,11 @@ asserted SYMBOL, not the body's paths or line numbers; a body PROPOSING a mechan
 `origin/main` already produces it (#2286). On an empty grep,
 `gh pr list --state all --search <symbol>` separates "premise wrong" from
 "premise on an unmerged branch". A fix choosing accept / refuse / replace /
-update has a CFn premise: `aws cloudformation describe-type --type RESOURCE
---type-name <T> --query Schema` (`required`, `createOnlyProperties`), else a
-throwaway change set (delete its stack after), BEFORE design (#3769): measure a
+update, or a backfill wiring a shape (#5204), has a CFn premise:
+`aws cloudformation describe-type --type RESOURCE --type-name <T> --query
+Schema` (`required`, `createOnlyProperties`), else a throwaway change set
+(delete its stack, then what the delete leaves: FSx final backups via
+`aws fsx describe-backups`, #5206), BEFORE design (#3769): measure a
 removal ALONE and BESIDE another change, poll reads for minutes (lag reads as
 "CFn ignores it"), and measure an ORDER, never reason it (#5107, #5109,
 #5119). cdkd may refuse what CFn or the AWS CDK CLI rejects, never what they
