@@ -398,4 +398,4 @@ vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-prov
 vpc-nat-gateway	2026-10-18T21:41:29Z	PASS	809	verify.sh	rc ok, orph clean (#5071)
 wafv2	2026-10-20T06:35:00Z	PASS	180	standard	deploy+destroy clean, 0 orphans
 wait-condition-handle	2026-09-30T12:06:02Z	PASS	66	verify.sh	rc ok, orph clean (#4228)
-wide-independent	2026-10-24T03:25:54Z	PASS	177	verify.sh	rerun after f8b9a44fc (destroy output logged + printed on failure, no logic change); 48 resources, PASS at --concurrency 10 and 30, orph clean
+wide-independent	2026-10-24T04:21:29Z	PASS	1087	verify.sh	#5242: 5 phases - SDK at default/30, Cloud Control (24 SSM docs+24 Athena wg) at default/20/30; retry after ProvisioningError x17 at CC --concurrency 30; destroy 0 errors, orph clean incl SSM docs + Athena wg
