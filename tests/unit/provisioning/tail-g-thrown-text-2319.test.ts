@@ -915,7 +915,8 @@ describe('the IAM inline policy partial-create detach warn', () => {
   it("names the class at warn, AWS's text at debug, masked", async () => {
     arm(denied);
     await caught(run());
-    expect(detachWarn()).toContain(`${HEAD}AccessDenied. ${VERBOSE_POINTER})`);
+    expect(detachWarn()).toContain(`${HEAD}AccessDenied): `);
+    expect(detachWarn()).toMatch(new RegExp(`\\. ${VERBOSE_POINTER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
     expect(detachWarn()).not.toContain(ACCOUNT);
     expect(detachWarn()).not.toContain('not authorized');
     expect(
@@ -927,7 +928,7 @@ describe('the IAM inline policy partial-create detach warn', () => {
   it('masks a secret spelled in the class (SECRET-IN-CLASS)', async () => {
     arm(secretClass);
     await caught(run());
-    expect(detachWarn()).toContain(`${HEAD}${SECRET_CLASS_SHOWN}. ${VERBOSE_POINTER})`);
+    expect(detachWarn()).toContain(`${HEAD}${SECRET_CLASS_SHOWN}): `);
     expect(detachWarn()).not.toContain('s3cr3t');
   });
 
@@ -935,6 +936,7 @@ describe('the IAM inline policy partial-create detach warn', () => {
     arm(() => new Error('socket hang up'));
     await caught(run());
     expect(detachWarn()).toContain(`${HEAD}socket hang up)`);
+    expect(detachWarn()).not.toContain(VERBOSE_POINTER);
   });
 });
 
