@@ -15,6 +15,12 @@ export interface ApiGatewayV2Reimport {
   body: string | undefined;
   /** True when the desired properties import from `BodyS3Location`. */
   fromS3: boolean;
+  /**
+   * The desired `BodyS3Location` when {@link fromS3}: the caller reads the
+   * definition's text from it (go-to-k/cdkd#5264), since `ReimportApi`
+   * takes the text only.
+   */
+  bodyS3Location: unknown;
   basePath: string | undefined;
   failOnWarnings: boolean | undefined;
 }
@@ -87,6 +93,7 @@ export function splitApiGatewayV2ImportPatch(
     reimport: {
       body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
       fromS3: Object.prototype.hasOwnProperty.call(desired, 'BodyS3Location'),
+      bodyS3Location: desired['BodyS3Location'],
       basePath: typeof basePath === 'string' ? basePath : undefined,
       // A template may spell a Boolean as a string, as CloudFormation accepts.
       failOnWarnings:
@@ -96,5 +103,38 @@ export function splitApiGatewayV2ImportPatch(
             ? false
             : undefined,
     },
+  };
+}
+
+/** Where `ReimportApi` reads an S3-held definition from (`BodyS3Location`). */
+export interface ApiGatewayV2DefinitionObject {
+  bucket: string;
+  key: string;
+  version: string | undefined;
+  etag: string | undefined;
+}
+
+/**
+ * The definition object a `BodyS3Location` names, or `undefined` when it is
+ * not the CloudFormation shape (`Bucket` and `Key` non-empty strings;
+ * `Version` and `Etag` optional strings).
+ */
+export function apiGatewayV2DefinitionObject(
+  location: unknown
+): ApiGatewayV2DefinitionObject | undefined {
+  if (location === null || typeof location !== 'object' || Array.isArray(location)) {
+    return undefined;
+  }
+  const { Bucket, Key, Version, Etag } = location as Record<string, unknown>;
+  if (typeof Bucket !== 'string' || Bucket === '' || typeof Key !== 'string' || Key === '') {
+    return undefined;
+  }
+  if (Version !== undefined && typeof Version !== 'string') return undefined;
+  if (Etag !== undefined && typeof Etag !== 'string') return undefined;
+  return {
+    bucket: Bucket,
+    key: Key,
+    version: Version === '' ? undefined : Version,
+    etag: Etag === '' ? undefined : Etag,
   };
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vite-plus/test';
 import {
+  apiGatewayV2DefinitionObject,
   isApiGatewayV2Import,
   splitApiGatewayV2ImportPatch,
 } from '../../../src/provisioning/apigwv2-body-import-patch.js';
@@ -27,6 +28,7 @@ describe('splitApiGatewayV2ImportPatch (go-to-k/cdkd#5260)', () => {
     expect(reimport).toEqual({
       body: JSON.stringify(BODY_V2),
       fromS3: false,
+      bodyS3Location: undefined,
       basePath: undefined,
       failOnWarnings: undefined,
     });
@@ -67,7 +69,11 @@ describe('splitApiGatewayV2ImportPatch (go-to-k/cdkd#5260)', () => {
       { BodyS3Location: { Bucket: 'b', Key: 'v1' } },
       { BodyS3Location: { Bucket: 'b', Key: 'v2' } }
     );
-    expect(reimport).toMatchObject({ fromS3: true, body: undefined });
+    expect(reimport).toMatchObject({
+      fromS3: true,
+      body: undefined,
+      bodyS3Location: { Bucket: 'b', Key: 'v2' },
+    });
   });
 
   it('re-sends a declared Description the patch has no op on, only beside a reimport', () => {
@@ -110,5 +116,34 @@ describe('isApiGatewayV2Import (go-to-k/cdkd#5260)', () => {
     expect(isApiGatewayV2Import(TYPE, { BodyS3Location: { Bucket: 'b', Key: 'k' } })).toBe(true);
     expect(isApiGatewayV2Import(TYPE, { Name: 't', ProtocolType: 'HTTP' })).toBe(false);
     expect(isApiGatewayV2Import('AWS::ApiGatewayV2::Stage', { Body: BODY_V1 })).toBe(false);
+  });
+});
+
+describe('apiGatewayV2DefinitionObject (go-to-k/cdkd#5264)', () => {
+  it('reads the CloudFormation shape, empty Version / Etag as absent', () => {
+    expect(apiGatewayV2DefinitionObject({ Bucket: 'b', Key: 'k' })).toEqual({
+      bucket: 'b',
+      key: 'k',
+      version: undefined,
+      etag: undefined,
+    });
+    expect(
+      apiGatewayV2DefinitionObject({ Bucket: 'b', Key: 'k', Version: 'v', Etag: '"e"' })
+    ).toEqual({ bucket: 'b', key: 'k', version: 'v', etag: '"e"' });
+    expect(apiGatewayV2DefinitionObject({ Bucket: 'b', Key: 'k', Version: '', Etag: '' })).toEqual(
+      { bucket: 'b', key: 'k', version: undefined, etag: undefined }
+    );
+  });
+
+  it.each([
+    ['a string', 's3://b/k'],
+    ['null', null],
+    ['an array', [{ Bucket: 'b', Key: 'k' }]],
+    ['no Key', { Bucket: 'b' }],
+    ['an empty Bucket', { Bucket: '', Key: 'k' }],
+    ['a numeric Version', { Bucket: 'b', Key: 'k', Version: 3 }],
+    ['an object Etag', { Bucket: 'b', Key: 'k', Etag: {} }],
+  ])('refuses %s', (_label, location) => {
+    expect(apiGatewayV2DefinitionObject(location)).toBeUndefined();
   });
 });
