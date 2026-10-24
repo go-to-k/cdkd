@@ -916,7 +916,8 @@ describe('the IAM inline policy partial-create detach warn', () => {
     arm(denied);
     await caught(run());
     expect(detachWarn()).toContain(`${HEAD}AccessDenied): `);
-    expect(detachWarn()).toMatch(new RegExp(`\\. ${VERBOSE_POINTER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+    expect(detachWarn()).toContain(`removed by hand (${VERBOSE_POINTER.replace(/\.$/, '')}): role role-a`);
+    expect(detachWarn()).toMatch(/--policy-name p$/);
     expect(detachWarn()).not.toContain(ACCOUNT);
     expect(detachWarn()).not.toContain('not authorized');
     expect(

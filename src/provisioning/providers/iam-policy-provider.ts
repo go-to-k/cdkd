@@ -539,9 +539,12 @@ export class IAMPolicyProvider implements ResourceProvider {
         }
         // The class alone per step; the --verbose pointer once, after the list.
         withheld ||= failure.redacted;
-        const reason = failure.redacted
-          ? failure.summary.slice(0, -` ${VERBOSE_POINTER}`.length).replace(/\.$/, '')
-          : failure.detail;
+        const tail = ` ${VERBOSE_POINTER}`;
+        const reason = !failure.redacted
+          ? failure.detail
+          : failure.summary.endsWith(tail)
+            ? failure.summary.slice(0, -tail.length).replace(/\.$/, '')
+            : failure.summary;
         failed.push(`${step.what} (${log.mask(reason)}): ${step.command}`);
       }
     }
@@ -549,7 +552,9 @@ export class IAMPolicyProvider implements ResourceProvider {
       log.warn(
         `Failed to detach the partially-created IAM policy ${logicalId} (${v(policyName)}) after ` +
           `its create failed; cdkd has no record of it, so it stays attached and granting until ` +
-          `it is removed by hand: ${failed.join('; ')}${withheld ? `. ${VERBOSE_POINTER}` : ''}`
+          // The pointer comes before the list: after it, a period would join
+          // the last pasteable command.
+          `it is removed by hand${withheld ? ` (${VERBOSE_POINTER.replace(/\.$/, '')})` : ''}: ${failed.join('; ')}`
       );
     }
   }
