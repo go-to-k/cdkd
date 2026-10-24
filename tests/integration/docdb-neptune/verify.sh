@@ -119,6 +119,11 @@ OOB_NEPTUNE_INSTANCE_ID=""
 # Step 3g's captured destroy output; removed by cleanup too, since a signal
 # landing mid-destroy never reaches the step's own `rm`.
 DESTROY_3G_LOG=""
+# Step 3g's go-to-k/cdkd#2319 check: the deployments/*.jsonl keys before the
+# destroy, and the RESOURCE_FAILED events read after it (AWS text: removed by
+# cleanup on every exit).
+EVENT_KEYS_3G=""
+EVENTS_3G=""
 # Issue #5184: when this run began (UTC, second precision, the prefix AWS's
 # ClusterCreateTime is compared on). Set before anything is created, so
 # cleanup can delete every final snapshot of the clusters this run created.
@@ -221,6 +226,16 @@ if [ ! -d node_modules ]; then
   vp install
 fi
 
+# This stack's deployments/*.jsonl keys, sorted, one per line (go-to-k/cdkd#2319).
+# A failed listing returns non-zero, so a caller never reads an empty list as
+# "no new events".
+deployment_event_keys() {
+  local listed
+  listed="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+    --prefix "${STATE_PREFIX}deployments/" --output json)" || return 1
+  printf '%s' "${listed}" | jq -r '.Contents // [] | .[].Key | select(endswith(".jsonl"))' | LC_ALL=C sort
+}
+
 # On any failure exit, re-attempt destroy so we never leak DocDB /
 # Neptune clusters. Best-effort DeletionProtection flip-offs first: an
 # aborted run can die with the baseline (step-2) protection still live,
@@ -228,6 +243,8 @@ fi
 cleanup() {
   rc=$?
   [ -n "${DESTROY_3G_LOG}" ] && rm -f "${DESTROY_3G_LOG}"
+  [ -n "${EVENT_KEYS_3G}" ] && rm -f "${EVENT_KEYS_3G}"
+  [ -n "${EVENTS_3G}" ] && rm -f "${EVENTS_3G}"
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting cleanup destroy"
     # Step 3g's out-of-band members first: while one stands, its cluster's
@@ -725,6 +742,11 @@ aws neptune create-db-instance --db-instance-identifier "${OOB_NEPTUNE_INSTANCE_
 aws docdb wait db-instance-available --db-instance-identifier "${OOB_DOCDB_INSTANCE_ID}" --region "${REGION}"
 aws neptune wait db-instance-available --db-instance-identifier "${OOB_NEPTUNE_INSTANCE_ID}" --region "${REGION}"
 
+EVENT_KEYS_3G="$(mktemp)"
+if ! deployment_event_keys > "${EVENT_KEYS_3G}"; then
+  echo "[verify] FAIL: step 3g: could not list the deployments/ prefix before the destroy" >&2
+  exit 1
+fi
 DESTROY_3G_LOG="$(mktemp)"
 if ${CLI} destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -741,11 +763,17 @@ DESTROY_3G_LOG=""
 printf '%s\n' "${DESTROY_3G_PLAIN}" >&2
 # PREMISE: the failure is the engineered one. A destroy that died earlier (a
 # credential error, a region refusal) never reached the flip, so a guard still
-# ON afterwards would pass the readback below while testing nothing.
-if ! grep -qE 'still contains DB instances|non-deleting state' <<<"${DESTROY_3G_PLAIN}"; then
-  echo "[verify] FAIL: step 3g destroy failed, but not with DeleteDBCluster's member refusal -- the arm did not reach the compensation" >&2
-  exit 1
-fi
+# ON afterwards would pass the readback below while testing nothing. The
+# thrown wrap names AWS's error by its class only (go-to-k/cdkd#2319), and this
+# destroy runs without --verbose, so the member refusal is read as each
+# provider's DeleteDBCluster catch-wrap with the class DeleteDBCluster answers
+# it with. The failure-set check below rules out an earlier death.
+for premise in "Failed to delete DocDB DBCluster DocdbCluster" "Failed to delete Neptune DBCluster NeptuneCluster"; do
+  if ! grep -qF "${premise}: InvalidDBClusterStateFault. Re-run with --verbose" <<<"${DESTROY_3G_PLAIN}"; then
+    echo "[verify] FAIL: step 3g destroy failed, but not with '${premise}: InvalidDBClusterStateFault' (DeleteDBCluster's member refusal) -- the arm did not reach the compensation" >&2
+    exit 1
+  fi
+done
 # The FAILURE SET: both clusters, and nothing but them and what the
 # out-of-band members' ENIs hold (subnet groups, the shared SG, the VPC and its
 # subnets). Anything else failing here would otherwise be absorbed silently by
@@ -762,6 +790,52 @@ if [ -n "${UNEXPECTED_3G}" ]; then
   echo "[verify] FAIL: step 3g: deletes failed outside the engineered set: $(printf '%s ' ${UNEXPECTED_3G})" >&2
   exit 1
 fi
+# go-to-k/cdkd#2319: the failed deletes' persisted RESOURCE_FAILED events name
+# AWS's refusal by its class, and deployments/*.jsonl outlives the run. The
+# engineered member refusal may quote no account id, so the account-id check
+# guards a regression rather than proving this change. Only this destroy's
+# new event files are read, so an earlier run's events cannot answer.
+EVENTS_3G="$(mktemp)"
+if ! NEW_EVENT_KEYS_3G="$(deployment_event_keys | LC_ALL=C comm -13 "${EVENT_KEYS_3G}" -)"; then
+  echo "[verify] FAIL: step 3g: could not list the deployments/ prefix after the destroy" >&2
+  exit 1
+fi
+while IFS= read -r event_key || [ -n "${event_key}" ]; do
+  [ -n "${event_key}" ] || continue
+  aws s3 cp "s3://${STATE_BUCKET}/${event_key}" - --quiet \
+    | jq -c 'select(.eventType == "RESOURCE_FAILED")' >> "${EVENTS_3G}"
+done <<< "${NEW_EVENT_KEYS_3G}"
+EVENT_ACCOUNT_3G="${ACCOUNT_ID}"
+# A FAIL prints only the cdkd-authored prefix and the length: the rest may be
+# AWS's text, naming accounts, roles or sessions.
+# The cdkd-authored prefix of a persisted message, never AWS's text: a message
+# with no colon has no prefix of cdkd's (go-to-k/cdkd#2319).
+msg_prefix() { case "$1" in *:*) printf '%s' "${1%%:*}" ;; *) printf '<none>' ;; esac; }
+assert_failed_event_class_only_3G() { # usage: <logicalId> <wrap prefix>
+  local msg
+  # One value, not a line: a message can span lines.
+  msg="$(jq -rs --arg l "$1" '[.[] | select(.logicalId == $l) | .error.message // empty] | last // empty' "${EVENTS_3G}")"
+  if [ -z "${msg}" ]; then
+    echo "[verify] FAIL: step 3g: the destroy persisted no RESOURCE_FAILED event with an error message for $1 (the #2319 checks below would pass for free)" >&2
+    exit 1
+  fi
+  if ! printf '%s' "${msg}" | grep -qE "$2: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
+    echo "[verify] FAIL: step 3g: $1's RESOURCE_FAILED message is not '$2: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed prefix: '$(msg_prefix "${msg}")', ${#msg} chars" >&2
+    exit 1
+  fi
+  # Every FAILED event this destroy wrote for it, not only the last.
+  if jq -r --arg l "$1" 'select(.logicalId == $l) | .error.message // empty' "${EVENTS_3G}" \
+    | grep -F "${EVENT_ACCOUNT_3G}" >/dev/null; then
+    echo "[verify] FAIL: step 3g: $1's RESOURCE_FAILED message quotes AWS's text, with this account's id (#2319); observed prefix: '$(msg_prefix "${msg}")', ${#msg} chars" >&2
+    exit 1
+  fi
+}
+assert_failed_event_class_only_3G DocdbCluster "Failed to delete DocDB DBCluster DocdbCluster"
+assert_failed_event_class_only_3G NeptuneCluster "Failed to delete Neptune DBCluster NeptuneCluster"
+rm -f "${EVENTS_3G}" "${EVENT_KEYS_3G}"
+EVENTS_3G=""
+EVENT_KEYS_3G=""
+echo "[verify] step 3g ok: the DocdbCluster and NeptuneCluster RESOURCE_FAILED events name the AWS failure by its class, with no account id"
 
 # The assertion under test. ModifyDBCluster(DeletionProtection) applies
 # immediately, but read it back under a short bounded poll rather than once.

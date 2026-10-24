@@ -772,7 +772,7 @@ export class RDSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -958,9 +958,17 @@ export class RDSProvider implements ResourceProvider {
           const unprotect = wantsDeletionProtection
             ? aws`aws rds modify-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --no-deletion-protection --apply-immediately; `
             : aws``;
-          // Masked: AWS's text can echo the create's resolved inputs.
+          // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a denied
+          // DeleteDBCluster names the caller's assumed-role ARN. Masked: AWS's
+          // text can echo the create's resolved inputs.
+          const m = maskerOrIdentity(mask);
+          const cleanupFailure = describeAwsFailure(cleanupError);
+          const cleanupHead = `Failed to delete partially-created DBCluster ${logicalId} (${dbClusterIdentifier}): `;
+          if (cleanupFailure.redacted) {
+            this.logger.debug(m(`${cleanupHead}${m(cleanupFailure.detail)}`));
+          }
           this.logger.warn(
-            `Failed to delete partially-created DBCluster ${logicalId} (${dbClusterIdentifier}): ${maskerOrIdentity(mask)(describeAwsFailure(cleanupError).detail)}. THE CLUSTER IS STILL RUNNING AND BILLING. Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`${wantsDeletionProtection ? ', which cannot delete it while its DeletionProtection is on' : ''}; otherwise delete it yourself: ${aws`${unprotect}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`.render()}`
+            `${cleanupHead}${cleanupFailure.redacted ? `${m(cleanupFailure.summary)} ` : `${m(cleanupFailure.detail)}. `}THE CLUSTER IS STILL RUNNING AND BILLING. Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`${wantsDeletionProtection ? ', which cannot delete it while its DeletionProtection is on' : ''}; otherwise delete it yourself: ${aws`${unprotect}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`.render()}`
           );
         }
         throw innerError;
@@ -1385,7 +1393,7 @@ export class RDSProvider implements ResourceProvider {
         detachedFrom !== undefined
           ? ' (it was already detached from its global cluster, and stays a standalone cluster)'
           : '';
-      const failure = this.wrapCaughtError(
+      const failure = this.wrapDeleteError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -1883,7 +1891,7 @@ export class RDSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -1979,6 +1987,22 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
+   * {@link wrapCaughtError} for a delete catch. The wrap names an AWS failure
+   * by its CLASS, and the delete classifiers read `NotFound` in a message as
+   * "already deleted": a class naming ANOTHER object's not-found (this
+   * resource's own not-found returned before the wrap) is marked
+   * `markNotGone`, so the record is kept (go-to-k/cdkd#2319).
+   */
+  private wrapDeleteError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const thrown = this.wrapCaughtError(mask, error, build);
+    return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
+  }
+
+  /**
    * A {@link GlobalClusterDetachError} for a failed detach or membership read.
    * Its message is the "Failed to delete DBCluster" wrap's, which is persisted
    * to `deployments/{runId}.jsonl`, so an AWS-authored failure is named by its
@@ -1994,7 +2018,8 @@ export class RDSProvider implements ResourceProvider {
   ): GlobalClusterDetachError {
     const failure = describeAwsFailure(error);
     if (failure.redacted) this.logger.debug(mask(build(mask(failure.detail))));
-    return new GlobalClusterDetachError(build(failure.summary));
+    // Masked: the class is AWS-authored text too.
+    return new GlobalClusterDetachError(build(mask(failure.summary)));
   }
 
   /**

@@ -437,7 +437,7 @@ describe('EMR / FSx / EFS thrown wraps keep the caller identity out (go-to-k/cdk
     resetIdempotencyTokensForTests();
   });
 
-  describe.each(sites())('$site', ({ command, name, action, prefix, answers, nth, run }) => {
+  describe.each(sites())('$site', ({ site, command, name, action, prefix, answers, nth, run }) => {
     it('names an AWS-authored failure by its class, keeps cause, and stays retryable', async () => {
       const original = accessDenied(name, action);
       failOn(command, original, answers, nth);
@@ -507,13 +507,28 @@ describe('EMR / FSx / EFS thrown wraps keep the caller identity out (go-to-k/cdk
       expect(failure.cause).toBe(original);
     });
 
-    it('keeps a non-Error throw as text, unstamped', async () => {
+    // The EFS wraps withhold a non-Error throw like an AWS failure
+    // (go-to-k/cdkd#2319 tail-d): its `String()` is the whole payload.
+    const withholdsNonError = site.startsWith('EFS');
+
+    it.skipIf(withholdsNonError)('keeps a non-Error throw as text, unstamped', async () => {
       // Not `socket hang up`: the two termination polls absorb that as transient.
       failOn(command, 'unexpected reply', answers, nth);
       const failure = await thrown(run());
 
       expect(failure.message).toContain(`${prefix}unexpected reply`);
       expect(failure.message).not.toContain(VERBOSE_POINTER);
+      expect(hasRedactedCause(failure)).toBe(false);
+    });
+
+    it.runIf(withholdsNonError)('withholds a non-Error throw, unstamped', async () => {
+      failOn(command, 'unexpected reply', answers, nth);
+      const failure = await thrown(run());
+
+      expect(failure.message).toContain(
+        `${prefix}a non-Error value of type string. ${VERBOSE_POINTER}`
+      );
+      expect(failure.message).not.toContain('unexpected reply');
       expect(hasRedactedCause(failure)).toBe(false);
     });
   });
