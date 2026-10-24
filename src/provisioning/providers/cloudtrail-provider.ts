@@ -182,6 +182,24 @@ function describeValue(value: unknown): string {
  * CloudTrail CreateTrail/UpdateTrail are synchronous - the CC API adds
  * unnecessary polling overhead for operations that complete immediately.
  */
+/**
+ * AWS's text with every ARN and the trail's own id cut out, as whole tokens
+ * (go-to-k/cdkd#2319 review): the EventSelectors reset tolerance matches a
+ * phrase in AWS's text, and an access denial quoting a trail, role or session
+ * NAMED after that phrase must not match it. A token cut, not a substring
+ * one, so a short trail name does not erase letters of AWS's own wording.
+ */
+function withoutTrailIdentifiers(text: string, physicalId: string): string {
+  const trailName = physicalId.slice(physicalId.lastIndexOf('/') + 1);
+  let out = text.replace(/\barn:[^\s,;()'"]+/g, '');
+  for (const id of new Set([physicalId, trailName])) {
+    if (id === '') continue;
+    const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(`(^|[^A-Za-z0-9._-])${escaped}(?=$|[^A-Za-z0-9._-])`, 'g'), '$1');
+  }
+  return out;
+}
+
 export class CloudTrailProvider implements ResourceProvider {
   private client: CloudTrailClient | undefined;
   private createClient: CloudTrailClient | undefined;
@@ -723,11 +741,10 @@ export class CloudTrailProvider implements ResourceProvider {
           // `.detail`, never `.summary`: the classifier below matches AWS's OWN
           // wording, which `.summary` replaces with the wire name alone. Same text as
           // the `instanceof Error ?` ternary it replaced, minus that ternary's throw.
-          // The trail's own name / ARN is cut out first: an AccessDenied quotes
-          // the trail ARN, and a trail NAMED after the phrase would otherwise
-          // swallow the denial here (go-to-k/cdkd#2319 review).
+          // Matched with the trail's id and every ARN cut out
+          // ({@link withoutTrailIdentifiers}).
           const failure = describeAwsFailure(error);
-          const message = failure.detail.split(physicalId).join('');
+          const message = withoutTrailIdentifiers(failure.detail, physicalId);
           if (!isRemoval || !/advanced[\s-]*event[\s-]*selector/i.test(message)) throw error;
           // The class at warn, AWS's text at debug (go-to-k/cdkd#2319).
           const m = maskerOrIdentity(context?.maskSecrets);

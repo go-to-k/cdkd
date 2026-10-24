@@ -735,6 +735,29 @@ describe('CloudTrail EventSelectors reset tolerance (#2319)', () => {
     expect(debugLines().join('\n')).not.toContain('s3cr3t');
   });
 
+  it('a denial quoting the bare name of a trail named after the phrase is not swallowed', async () => {
+    const text = 'Not authorized to update trail advanced-event-selector-audit';
+    route({ PutEventSelectorsCommand: awsError('AccessDeniedException', text) });
+
+    const failure = await caught(reset(ADV_ARN));
+
+    expect(failure.message).toBe(
+      `Failed to update CloudTrail Trail T: AccessDeniedException. ${VERBOSE_POINTER}`
+    );
+  });
+
+  it('a denial naming a role after the phrase is not swallowed', async () => {
+    const text = `User: arn:aws:sts::${ACCOUNT}:assumed-role/advanced-event-selector-admin/s is not authorized to perform: cloudtrail:PutEventSelectors on resource: ${TRAIL_ARN}`;
+    expect(/advanced[\s-]*event[\s-]*selector/i.test(text)).toBe(true);
+    route({ PutEventSelectorsCommand: awsError('AccessDeniedException', text) });
+
+    const failure = await caught(reset(TRAIL_ARN));
+
+    expect(failure.message).toBe(
+      `Failed to update CloudTrail Trail T: AccessDeniedException. ${VERBOSE_POINTER}`
+    );
+  });
+
   it('a denial quoting a trail named after the phrase is not swallowed', async () => {
     const text = `User: arn:aws:sts::${ACCOUNT}:assumed-role/deployer/s is not authorized to perform: cloudtrail:PutEventSelectors on resource: ${ADV_ARN}`;
     // Positive control: the denial's own text matches the tolerance's wording.
