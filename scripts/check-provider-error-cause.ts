@@ -302,6 +302,15 @@ export const EXEMPTIONS: readonly CauseExemption[] = [
       'assembly-reader.ts (go-to-k/cdkd#3617)',
   },
   {
+    file: 'state/s3-state-backend.ts',
+    errorClass: 'StateError',
+    within: 'parseStateBody',
+    count: 1,
+    reason:
+      "a `JSON.parse` failure of the state body, not an AWS error: no classifier reads it, and V8's " +
+      '`SyntaxError` quotes a window of that body, which a `Caused by:` line would print (go-to-k/cdkd#5247)',
+  },
+  {
     file: 'local/docker-image-builder.ts',
     errorClass: 'LocalInvokeBuildError',
     within: 'buildContainerImage',
