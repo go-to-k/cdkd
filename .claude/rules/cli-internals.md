@@ -63,7 +63,7 @@ payload is the LAST stdout line, not the whole stream. Contract in
 
 ## Concurrency and per-resource deadlines
 
-- `--concurrency` (resource ops, 10), `--stack-concurrency` (4),
+- `--concurrency` (resource ops, 20), `--stack-concurrency` (4),
   `--asset-publish-concurrency` (8), `--image-build-concurrency` (4).
 - `--resource-warn-after` (default `5m`) and `--resource-timeout` (default
   `30m`) on deploy / destroy / state destroy. Both are REPEATABLE and take

@@ -1269,7 +1269,7 @@ Say in-code which you chose and what it costs.
 so the wrong answer LEAVES an orphan rather than destroying a live resource.**
 "Newer than my snapshot" is equally true of the orphan your own attempt minted
 and of a resource something else created in the same window: a sibling resource
-in the same stack (the deploy engine dispatches at `--concurrency 10` by
+in the same stack (the deploy engine dispatches at `--concurrency 20` by
 default), a second `cdkd` process, or a human. Deleting the second kind is
 strictly worse than the bug being fixed — it destroys something cdkd state still
 advertises, and for a type whose `readCurrentState` cannot tell that the

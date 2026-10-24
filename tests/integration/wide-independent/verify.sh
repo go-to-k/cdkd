@@ -5,12 +5,17 @@
 # a slot, read off the `CDKD_PHASE_TIMINGS` report.
 #
 # Phases:
-#   1. Deploy at the default --concurrency, with the phase report on. Assert
+#   1. Deploy at --concurrency 10, with the phase report on. Assert
 #      every resource exists, and that the report carries the slot-wait line
 #      for all 48 resources. Destroy, assert gone.
+#   (Settings: WIDE_SDK_SETTINGS, default "10 30"; WIDE_CC_SETTINGS, default
+#   "10 20 30". Every phase passes --concurrency explicitly.)
 #   2. The same at --concurrency 30, under a fresh name token (SQS holds a
-#      deleted queue's name for 60s). Destroy, assert gone and the state file
-#      removed.
+#      deleted queue's name for 60s). Destroy, assert gone.
+#   3. Issue #5242: CDKD_WIDE_KIND=cc, 48 resources of types with no SDK
+#      provider (24 SSM documents, 24 Athena workgroups), so every one goes
+#      through Cloud Control, at --concurrency 10, 20 and 30, each with its own
+#      token. Assert live, destroy, assert gone, and the state file removed.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -58,8 +63,15 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 PER_TYPE=12
 # One name token per phase; lowercase letters and digits only (an SQS name).
-RUN_A="a$$"
-RUN_B="b$$"
+# The --concurrency settings each mode runs at, in order. Overridable to
+# measure others (a setting may repeat, to see run-to-run spread).
+SDK_SETTINGS="${WIDE_SDK_SETTINGS:-10 30}"
+CC_SETTINGS="${WIDE_CC_SETTINGS:-10 20 30}"
+# One name token per phase, `<letter><pid>`: at most ten phases.
+TOKEN_LETTERS="a b c d e f g h i j"
+ALL_TOKENS=""
+for letter in ${TOKEN_LETTERS}; do ALL_TOKENS="${ALL_TOKENS} ${letter}$$"; done
+CC_PER_TYPE=24
 DEPLOY_LOG="${TMPDIR:-/tmp}/cdkd-5209-deploy.$$.log"
 CLEANED_UP=0
 
@@ -79,7 +91,7 @@ reap_run() { # usage: reap_run <token>
   (
     set +eu
     case "${1:-}" in
-      [ab][0-9]?*) ;;
+      [a-j][0-9]?*) ;;
       *)
         echo "WARN: teardown sweep refused — '${1:-}' is not one of this fixture's run tokens" >&2
         exit 0
@@ -101,6 +113,11 @@ reap_run() { # usage: reap_run <token>
     for lg in $(aws logs describe-log-groups --log-group-name-prefix "/${prefix}/" --region "${REGION}" --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
       aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null 2>&1
     done
+    # The Cloud Control mode's resources, by name.
+    for i in $(seq 0 $((CC_PER_TYPE - 1))); do
+      aws ssm delete-document --name "${prefix}-doc-${i}" --region "${REGION}" >/dev/null 2>&1
+      aws athena delete-work-group --work-group "${prefix}-wg-${i}" --recursive-delete-option --region "${REGION}" >/dev/null 2>&1
+    done
   )
 }
 
@@ -112,8 +129,7 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   rm -f "${DEPLOY_LOG}"
-  reap_run "${RUN_A}"
-  reap_run "${RUN_B}"
+  for token in ${ALL_TOKENS}; do reap_run "${token}"; done
   node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
   aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -145,6 +161,24 @@ assert_live() { # usage: assert_live <token>
   [ "${n}" = "${PER_TYPE}" ] || { echo "FAIL: ${n} log groups live for ${prefix}, expected ${PER_TYPE}" >&2; exit 1; }
 }
 
+assert_live_cc() { # usage: assert_live_cc <token>
+  local prefix="cdkd-wide-$1" i
+  for i in $(seq 0 $((CC_PER_TYPE - 1))); do
+    aws ssm describe-document --name "${prefix}-doc-${i}" --region "${REGION}" >/dev/null \
+      || { echo "FAIL: SSM document ${prefix}-doc-${i} is not live" >&2; exit 1; }
+    aws athena get-work-group --work-group "${prefix}-wg-${i}" --region "${REGION}" >/dev/null \
+      || { echo "FAIL: Athena workgroup ${prefix}-wg-${i} is not live" >&2; exit 1; }
+  done
+}
+
+assert_run_gone_cc() { # usage: assert_run_gone_cc <token>
+  local prefix="cdkd-wide-$1" i
+  for i in $(seq 0 $((CC_PER_TYPE - 1))); do
+    assert_gone "SSM document ${prefix}-doc-${i} still exists after destroy" aws ssm describe-document --name "${prefix}-doc-${i}" --region "${REGION}"
+    assert_gone "Athena workgroup ${prefix}-wg-${i} still exists after destroy" aws athena get-work-group --work-group "${prefix}-wg-${i}" --region "${REGION}"
+  done
+}
+
 assert_run_gone() { # usage: assert_run_gone <token>
   local prefix="cdkd-wide-$1" i
   for i in $(seq 0 $((PER_TYPE - 1))); do
@@ -158,14 +192,16 @@ assert_run_gone() { # usage: assert_run_gone <token>
   [ "${n}" = "0" ] || { echo "FAIL: ${n} log groups of ${prefix} still exist after destroy" >&2; exit 1; }
 }
 
-run_phase() { # usage: run_phase <token> <label> [deploy args...]
-  local token="$1" label="$2"
-  shift 2
+run_phase() { # usage: run_phase <kind: sdk|cc> <token> <label> [deploy args...]
+  local kind="$1" token="$2" label="$3"
+  shift 3
+  local kind_env=""
+  [ "${kind}" = "cc" ] && kind_env="cc"
   echo "==> ${label}: deploy (run ${token})"
-  CDKD_WIDE_RUN="${token}" CDKD_PHASE_TIMINGS=1 node "${LOCAL_DIST}" deploy \
+  CDKD_WIDE_KIND="${kind_env}" CDKD_WIDE_RUN="${token}" CDKD_PHASE_TIMINGS=1 node "${LOCAL_DIST}" deploy \
     --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes "$@" >"${DEPLOY_LOG}" 2>&1 \
     || { cat "${DEPLOY_LOG}" >&2; echo "FAIL: ${label} deploy failed" >&2; exit 1; }
-  assert_live "${token}"
+  if [ "${kind}" = "cc" ]; then assert_live_cc "${token}"; else assert_live "${token}"; fi
   local wait_line
   wait_line="$(grep 'ready, waiting for a --concurrency slot' "${DEPLOY_LOG}" | sed 's/.*INFO[^ ]* *//' || true)"
   # Sentinel: the report itself must be there, or a missing wait line would
@@ -177,21 +213,36 @@ run_phase() { # usage: run_phase <token> <label> [deploy args...]
   echo "[measure] ${label}: ${wait_line}"
   echo "[measure] ${label}: $(grep -E 'resource DAG  ' "${DEPLOY_LOG}" | sed 's/.*INFO[^ ]* *//')"
   echo "[measure] ${label}: $(grep -cE 'Rate exceeded|Throttl' "${DEPLOY_LOG}" || true) throttling line(s)"
+  # Every retry cdkd made, by error class (none is a valid answer).
+  grep 'retry after ' "${DEPLOY_LOG}" | sed 's/.*INFO[^ ]* *//; s/^/[measure] '"${label}"': /' || true
   echo "==> ${label}: destroy"
-  CDKD_WIDE_RUN="${token}" node "${LOCAL_DIST}" destroy "${STACK}" \
+  CDKD_WIDE_KIND="${kind_env}" CDKD_WIDE_RUN="${token}" node "${LOCAL_DIST}" destroy "${STACK}" \
     --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force >"${DEPLOY_LOG}" 2>&1 \
     || { cat "${DEPLOY_LOG}" >&2; echo "FAIL: ${label} destroy failed" >&2; exit 1; }
-  assert_run_gone "${token}"
+  if [ "${kind}" = "cc" ]; then assert_run_gone_cc "${token}"; else assert_run_gone "${token}"; fi
 }
 
 cleanup
 CLEANED_UP=0
 
-run_phase "${RUN_A}" "default --concurrency"
-run_phase "${RUN_B}" "--concurrency 30" --concurrency 30
+set -- ${ALL_TOKENS}
+phases=0
+for n in ${SDK_SETTINGS}; do
+  [ "$#" -gt 0 ] || { echo "FAIL: more than ten phases requested" >&2; exit 1; }
+  run_phase sdk "$1" "--concurrency ${n}" --concurrency "${n}"
+  shift
+  phases=$((phases + 1))
+done
+for n in ${CC_SETTINGS}; do
+  [ "$#" -gt 0 ] || { echo "FAIL: more than ten phases requested" >&2; exit 1; }
+  run_phase cc "$1" "cloud control, --concurrency ${n}" --concurrency "${n}"
+  shift
+  phases=$((phases + 1))
+done
+[ "${phases}" -gt 0 ] || { echo "FAIL: no phase ran" >&2; exit 1; }
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 
 trap - EXIT INT TERM
 rm -f "${DEPLOY_LOG}"
-echo "[verify] PASS — wide-independent: 48 independent resources deployed and destroyed at --concurrency 10 and 30"
+echo "[verify] PASS — wide-independent: 48 independent SDK-route resources at --concurrency ${SDK_SETTINGS}, 48 Cloud Control resources at ${CC_SETTINGS}"

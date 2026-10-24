@@ -71,7 +71,7 @@ Phase timings (CDKD_PHASE_TIMINGS=1):
 
 When most of the time is in `resource DAG`, the slowest resource decides the
 deploy, unless the stack has more independent resources than `--concurrency`
-(default 10). The `ready, waiting for a --concurrency slot` line shows how long
+(default 20). The `ready, waiting for a --concurrency slot` line shows how long
 resources waited for a free slot, creates, updates and deletes added up; when
 it is large, raise `--concurrency`. Time in the other steps is cdkd's own work, mostly round trips to the
 state bucket.
@@ -98,7 +98,7 @@ A level is a group of resources that do not depend on each other. Resources
 in a chain cannot run at the same time, so a graph with many levels and few
 resources per level is what slows a deploy down. A real deploy prints the same
 figure in one line:
-`Deploying 4 resource(s) (DAG: 3 levels, max parallel: 10)`.
+`Deploying 4 resource(s) (DAG: 3 levels, max parallel: 20)`.
 
 During a deploy each resource starts as soon as its own dependencies
 complete, so cdkd does not wait for a whole level to finish. A destroy
@@ -171,7 +171,7 @@ only under `--verbose` or after the retries are used up. If throttling fails
 the deploy, lower the concurrency:
 
 ```bash
-# default 10, concurrent resource operations
+# default 20, concurrent resource operations
 cdkd deploy MyStack --concurrency 4
 
 # default 4, concurrent stacks

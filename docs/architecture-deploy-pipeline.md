@@ -276,7 +276,7 @@ A resource starts as soon as all of its own dependencies have completed. It
 does not wait for unrelated resources at the same depth of the graph. This
 event-driven dispatch is in `src/deployment/dag-executor.ts`.
 
-`--concurrency` (default 10) caps the number of operations in flight. When more
+`--concurrency` (default 20) caps the number of operations in flight. When more
 resources are ready than the cap allows, the one with the most transitive
 dependents starts first. A slow chain, such as an Elastic IP followed by a NAT
 gateway, therefore starts early.

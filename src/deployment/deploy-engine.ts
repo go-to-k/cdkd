@@ -696,7 +696,7 @@ export class DeployEngine {
       ...(options.producerLookup && { producerLookup: options.producerLookup }),
       ...(options.consumerAccount && { consumerAccount: options.consumerAccount }),
     });
-    this.options.concurrency = options.concurrency ?? 10;
+    this.options.concurrency = options.concurrency ?? 20;
     this.options.dryRun = options.dryRun ?? false;
     this.options.lockTimeout = options.lockTimeout ?? 5 * 60 * 1000; // 5 minutes
     this.options.noRollback = options.noRollback ?? false;
