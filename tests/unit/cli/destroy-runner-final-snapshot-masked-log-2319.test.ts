@@ -118,8 +118,15 @@ async function snapshotLines(userName: string): Promise<string[]> {
   runnerInfo.mockReset();
   snapshot.mockReset();
   snapshot.mockImplementation(
-    async (_t: string, _p: string, _l: string, _c: unknown, log: { debug(m: string): void }) => {
+    async (
+      _t: string,
+      _p: string,
+      _l: string,
+      _c: unknown,
+      log: { debug(m: string): void; info(m: string): void }
+    ) => {
       log.debug(`Failed to create the final snapshot for Vol (vol-1): AccessDenied on ${USER_ID}`);
+      log.info(`Final snapshot snap-1 completed for Vol (vol-1) of ${USER_ID}`);
       return 'snap-1';
     }
   );
@@ -130,21 +137,23 @@ async function snapshotLines(userName: string): Promise<string[]> {
   );
   expect(result.errorCount).toBe(0);
   expect(snapshot).toHaveBeenCalledTimes(1);
-  return runnerDebug.mock.calls
+  return [...runnerDebug.mock.calls, ...runnerInfo.mock.calls]
     .map((c) => String(c[0]))
-    .filter((l) => l.startsWith('Failed to create the final snapshot for Vol'));
+    .filter((l) => l.includes('final snapshot') || l.includes('Final snapshot'));
 }
 
 describe("cdkd destroy masks the final snapshot's debug line (go-to-k/cdkd#2319)", () => {
   it('masks a name derived from a secret through the delete masker', async () => {
     expect(await snapshotLines(REF)).toEqual([
       'Failed to create the final snapshot for Vol (vol-1): AccessDenied on ***',
+      'Final snapshot snap-1 completed for Vol (vol-1) of ***',
     ]);
   });
 
   it('negative control: an ordinary name prints as it is', async () => {
     expect(await snapshotLines('plain-user')).toEqual([
       `Failed to create the final snapshot for Vol (vol-1): AccessDenied on ${USER_ID}`,
+      `Final snapshot snap-1 completed for Vol (vol-1) of ${USER_ID}`,
     ]);
   });
 });

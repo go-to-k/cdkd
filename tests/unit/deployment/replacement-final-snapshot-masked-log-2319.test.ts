@@ -6,16 +6,35 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
  * helper a logger routed through the caller's secret masker.
  */
 
-const { snapshot } = vi.hoisted(() => ({ snapshot: vi.fn() }));
+const { snapshot, engineDebug } = vi.hoisted(() => ({ snapshot: vi.fn(), engineDebug: vi.fn() }));
+vi.mock('../../../src/utils/logger.js', () => {
+  const fns = {
+    setLevel: vi.fn(),
+    debug: engineDebug,
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: () => fns,
+  };
+  return { getLogger: () => fns };
+});
+vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
+  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+    getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
+    resetPhysicalIdFallbackCount: vi.fn(),
+  })),
+}));
 vi.mock('../../../src/provisioning/final-snapshot.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   createPreDeleteFinalSnapshot: snapshot,
 }));
 vi.mock('../../../src/utils/aws-clients.js', () => ({ getAwsClients: () => ({}) }));
 
-const { prepareFinalSnapshotForDelete } = await import(
+const { prepareFinalSnapshotForDelete, replaceDeleteFirstAndRecreate } = await import(
   '../../../src/deployment/deploy-engine/replacement.js'
 );
+const { DeployEngine } = await import('../../../src/deployment/deploy-engine.js');
+const { recordLogOnlyValue } = await import('../../../src/deployment/secret-redaction/log-only.js');
 
 const debug = vi.fn();
 const info = vi.fn();
@@ -51,5 +70,49 @@ describe('prepareFinalSnapshotForDelete masks the snapshot helper lines (go-to-k
   it('without a masker the lines pass through as they were (negative control)', async () => {
     await prepareFinalSnapshotForDelete(deps, 'Vol', 'AWS::EC2::Volume', { physicalId: 'vol-1' }, 'Snapshot');
     expect(lines(debug).join('\n')).toContain('s3cr3t');
+  });
+});
+
+describe('the --replace delete-first hands the snapshot its delete masker (go-to-k/cdkd#2319)', () => {
+  it("masks the snapshot helper's debug line with the replacement's bag", async () => {
+    engineDebug.mockReset();
+    const engine = new DeployEngine(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { getProviderFor: vi.fn() } as never,
+      { concurrency: 1, forceStatefulRecreation: true, replace: true } as never,
+      'us-east-1'
+    );
+    const provider = {
+      create: vi.fn(async () => ({ physicalId: 'vol-2', attributes: {} })),
+      update: vi.fn(),
+      delete: vi.fn(async () => undefined),
+      getAttribute: vi.fn(),
+    };
+    const secrets = new Map<string, string>();
+    recordLogOnlyValue(secrets, 's3cr3t');
+    await replaceDeleteFirstAndRecreate(
+      engine.replacementRun,
+      engine.replacementDeps(),
+      'Vol',
+      'AWS::EC2::Volume',
+      'AWS::EC2::Volume',
+      { physicalId: 'vol-1', resourceType: 'AWS::EC2::Volume', properties: {}, attributes: {} },
+      provider as never,
+      provider as never,
+      {},
+      secrets,
+      'Snapshot',
+      'sdk',
+      undefined
+    );
+    expect(snapshot).toHaveBeenCalledTimes(1);
+    const shown = engineDebug.mock.calls.map((c) => String(c[0]));
+    expect(shown).toContain(
+      'Failed to create the final snapshot: User: assumed-role/deployer/*** is not authorized'
+    );
+    expect(shown.join('\n')).not.toContain('s3cr3t');
   });
 });
