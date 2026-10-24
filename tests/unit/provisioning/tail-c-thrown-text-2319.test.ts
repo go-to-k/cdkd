@@ -724,6 +724,39 @@ describe('tail-c cleanup warnings name an AWS failure by its class (#2319)', () 
     expect(debugLines().some((l) => l.startsWith(c.debugHead ?? c.head))).toBe(false);
   });
 
+  // An "already exists" from a post-create step names some OTHER object, so
+  // the wrap must not restate it as this resource's collision (#3826).
+  it.each([
+    {
+      wrap: 'Failed to create DynamoDB table Res',
+      run: () =>
+        new DynamoDBTableProvider().create(
+          'Res',
+          TABLE,
+          { ...TABLE_PROPS, PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true } },
+          ctx
+        ),
+      responses: { CreateTableCommand: ACTIVE_TABLE, DescribeTableCommand: ACTIVE_TABLE },
+      wiring: 'UpdateContinuousBackupsCommand',
+    },
+    {
+      wrap: 'Failed to create VPC Res',
+      run: ec2Create('AWS::EC2::VPC', { ...EC2_VPC, EnableDnsHostnames: true }),
+      responses: { CreateVpcCommand: { Vpc: { VpcId: 'vpc-1' } } },
+      wiring: 'ModifyVpcAttributeCommand',
+    },
+  ])('$wrap: an "already exists" from a post-create step is not restated', async (c) => {
+    answer(c.responses, {
+      [c.wiring]: awsSdkError('A resource named x already exists.', 'ConflictException'),
+    });
+
+    const failure = await caught(c.run());
+
+    expect(mockSend.mock.calls.some(([command]) => commandName(command) === c.wiring)).toBe(true);
+    expect(failure.message).toBe(`${c.wrap}: ConflictException. ${VERBOSE_POINTER}`);
+    expect(isNameCollisionErrorFrom(failure, 'Res')).toBe(false);
+  });
+
   it('names a denied tag write by its class at warn', async () => {
     const tagError = denied();
     answer({}, { CreateTagsCommand: tagError });
