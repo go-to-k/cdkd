@@ -174,15 +174,6 @@ function describeValue(value: unknown): string {
 }
 
 /**
- * SDK Provider for AWS CloudTrail resources
- *
- * Supports:
- * - AWS::CloudTrail::Trail
- *
- * CloudTrail CreateTrail/UpdateTrail are synchronous - the CC API adds
- * unnecessary polling overhead for operations that complete immediately.
- */
-/**
  * AWS's text with every ARN and the trail's own id cut out, as whole tokens
  * (go-to-k/cdkd#2319 review): the EventSelectors reset tolerance matches a
  * phrase in AWS's text, and an access denial quoting a trail, role or session
@@ -200,6 +191,15 @@ function withoutTrailIdentifiers(text: string, physicalId: string): string {
   return out;
 }
 
+/**
+ * SDK Provider for AWS CloudTrail resources
+ *
+ * Supports:
+ * - AWS::CloudTrail::Trail
+ *
+ * CloudTrail CreateTrail/UpdateTrail are synchronous - the CC API adds
+ * unnecessary polling overhead for operations that complete immediately.
+ */
 export class CloudTrailProvider implements ResourceProvider {
   private client: CloudTrailClient | undefined;
   private createClient: CloudTrailClient | undefined;
