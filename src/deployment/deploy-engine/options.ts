@@ -114,6 +114,12 @@ export interface DeployEngineOptions {
   assetRedirect?: AssetRedirectMap;
 
   /**
+   * The synthesized stack's `terminationProtection` (go-to-k/cdkd#5238),
+   * written to the root stack's record by every deploy. Ignored for a nested
+   * child (`parentStackInfo`).
+   */
+  terminationProtection?: boolean;
+  /**
    * When set, every state save during this deploy stamps the supplied
    * parent-stack identity onto `StackState.parentStack` /
    * `parentLogicalId` / `parentRegion` (schema v6+). The

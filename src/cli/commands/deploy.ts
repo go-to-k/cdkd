@@ -1337,6 +1337,8 @@ async function deployCommand(
             resourceTimeoutByType: options.resourceTimeout.perTypeMs,
           }),
           ...(approveDeployment && { requireApproval, approveDeployment }),
+          // go-to-k/cdkd#5238: recorded so `cdkd state destroy` can honor it.
+          ...(stackInfo.terminationProtection === true && { terminationProtection: true }),
         };
 
         const stackDeployEngine = new DeployEngine(

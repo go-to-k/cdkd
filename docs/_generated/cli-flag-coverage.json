@@ -414,6 +414,7 @@
         "stream-delete-redeploy",
         "synthetics-canary",
         "tags-propagation",
+        "termination-protection",
         "throttle-wide-dag",
         "type-change-replacement",
         "update-policy-mutations",
@@ -865,6 +866,7 @@
         "stream-delete-redeploy",
         "synthetics-canary",
         "tags-propagation",
+        "termination-protection",
         "throttle-wide-dag",
         "type-change-replacement",
         "unrecognized-key-autoroute",
@@ -1261,6 +1263,7 @@
         "stream-delete-redeploy",
         "synthetics-canary",
         "tags-propagation",
+        "termination-protection",
         "throttle-wide-dag",
         "type-change-replacement",
         "unrecognized-key-autoroute",
@@ -1286,7 +1289,8 @@
         "rds-dbinstance-backfill",
         "remove-protection",
         "remove-protection-compensation",
-        "remove-protection-journaled-orphan"
+        "remove-protection-journaled-orphan",
+        "termination-protection"
       ]
     },
     {
@@ -1710,6 +1714,7 @@
         "stream-delete-redeploy",
         "synthetics-canary",
         "tags-propagation",
+        "termination-protection",
         "throttle-wide-dag",
         "type-change-replacement",
         "unrecognized-key-autoroute",
@@ -1730,7 +1735,8 @@
         "perf-cross-backend-check",
         "refactor-command",
         "refactor-move",
-        "remove-protection-journaled-orphan"
+        "remove-protection-journaled-orphan",
+        "termination-protection"
       ]
     },
     {
@@ -2102,6 +2108,7 @@
         "stepfunctions-s3-definition",
         "stream-delete-redeploy",
         "synthetics-canary",
+        "termination-protection",
         "throttle-wide-dag",
         "unrecognized-key-autoroute",
         "update-replace",

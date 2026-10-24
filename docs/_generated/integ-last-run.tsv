@@ -265,13 +265,13 @@ monitoring	2026-08-10T05:19:05Z	PASS	43	standard	0810 P2 sweep b6; 7 del 0 err, 
 multi-asset	2026-09-21T12:02:26Z	PASS	97	verify.sh	rc ok, orph clean; #3489 asset-publish sites (file + docker)
 multi-region-same-stack	2026-10-11T21:09:57Z	PASS	59	standard	PR #4809, standard flow + us-west-2 arm, orph clean
 multi-resource	2026-10-24T03:41:38Z	PASS	71	standard	destroy 0 errors, 0 orphans (17 deleted); swept this run's 2 CR log groups (#3885 pre-existing gap); #5228 not-gone mark
-multi-stack-deps	2026-10-24T03:12:22Z	PASS	98	standard	deploy+destroy clean all 3 stacks, 0 orphans (#5209 sweep)
+multi-stack-deps	2026-10-24T05:05:36Z	PASS	120	standard	deploy+diff(no change)+destroy clean all 3 stacks, 0 orphans; re-run on 564761a4b after rebase onto main (incl. #5235) (#5240)
 neptune-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	2280	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
 nested-required-preflight	2026-10-11T09:33:22Z	PASS	55	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 nested-stack	2026-10-13T02:41:29Z	PASS	65	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 nested-stack-3level	2026-10-15T09:24:20Z	PASS	490	verify.sh	PR #4939 (#4929) 504262f2b; own state bucket; rc ok, no seeded secret in any version, orph clean
 nested-stack-deep	2026-10-23T21:03:40Z	PASS	130	verify.sh	rc ok, orph clean; re-run on 62a976c7f after rebase onto main (#5211 merge)
-nested-stack-replace-guard	2026-10-23T23:16:13Z	PASS	60	verify.sh	rc ok, orph clean; re-run on 3d64872f4 (destroy re-read is now deep-equality) (#5220)
+nested-stack-replace-guard	2026-10-24T03:30:48Z	PASS	60	verify.sh	rc ok, orph clean; re-run on c53d626fd (#5240, #5238)
 nested-stack-rollback	2026-10-20T10:30:19Z	PASS	124	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 nested-stack-secret	2026-10-18T13:32:15Z	PASS	360	verify.sh	PR #5052 (stage2 RedactionContext refactor) b22bc1158; pnpm/mise shim used; rc 0, destroy 0 errors, 0 surviving state versions
 nlb-source-nat	2026-10-14T14:46:11Z	PASS	370	verify.sh	PR #4915 (#1160) ce4ffaf68; rc 0, destroy 0 errors, orph clean
@@ -386,6 +386,7 @@ stepfunctions-s3-definition	2026-10-11T09:33:22Z	PASS	60	verify.sh	PR #4720 (#47
 stream-delete-redeploy	2026-10-21T09:46:34Z	PASS	325	verify.sh	rc ok, orph clean; PR #5148 moved to ExtendedS3, added Phase 3c (FileExtension change, sub-field removal retained)
 synthetics-canary	2026-10-11T09:33:22Z	PASS	151	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 tags-propagation	2026-10-19T00:17:40Z	PASS	201	verify.sh	rc ok, orph clean (#5077)
+termination-protection	2026-10-24T05:02:39Z	PASS	60	verify.sh	rc ok, orph clean; re-run on 564761a4b after rebase onto main (incl. #5235 delete path) (#5238)
 throttle-wide-dag	2026-10-11T09:33:22Z	PASS	326	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 type-change-replacement	2026-10-20T19:58:09Z	PASS	210	verify.sh	PR #5100 pre-merge run, own state bucket, rc ok, orph clean
 unrecognized-key-autoroute	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean

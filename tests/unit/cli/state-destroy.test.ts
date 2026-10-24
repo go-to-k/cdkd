@@ -344,6 +344,86 @@ describe('cdkd state destroy', () => {
     expect(mockRunDestroyForStack.mock.calls[0]![2].deferRegistryTail).toBeUndefined();
   });
 
+  describe('a stack its last deploy recorded as terminationProtection: true (go-to-k/cdkd#5238)', () => {
+    const protectedRecord = (stackName: string) => ({
+      state: { ...makeStackState(stackName, 'us-east-1'), terminationProtection: true as const },
+      etag: '"abc"',
+    });
+
+    it('is refused before the runner, naming the bypass, and the run exits 2', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue(protectedRecord('MyStack'));
+
+      await expect(runStateDestroy(['destroy', 'MyStack', '--yes'])).rejects.toThrow();
+      expect(exitSpy).toHaveBeenCalledWith(2);
+      expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+      const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+      expect(messages).toContain('terminationProtection: true');
+      expect(messages).toContain('cdkd state destroy MyStack --stack-region us-east-1 --remove-protection');
+    });
+
+    it('a protected stack does not stop an unprotected sibling', async () => {
+      mockListStacks.mockResolvedValue([
+        { stackName: 'Guarded', region: 'us-east-1' },
+        { stackName: 'Open', region: 'us-east-1' },
+      ]);
+      mockGetState.mockImplementation(async (name: string) =>
+        name === 'Guarded'
+          ? protectedRecord('Guarded')
+          : { state: makeStackState('Open', 'us-east-1'), etag: '"abc"' }
+      );
+
+      await runStateDestroy(['destroy', 'Guarded', 'Open', '--yes']).catch(() => undefined);
+      expect(mockRunDestroyForStack.mock.calls.map((c) => c[0])).toEqual(['Open']);
+    });
+
+    it('a nested child is refused when its ROOT was deployed protected, naming the root', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'Root~Child', region: 'us-east-1' }]);
+      mockGetState.mockImplementation(async (name: string) =>
+        name === 'Root'
+          ? protectedRecord('Root')
+          : {
+              state: {
+                ...makeStackState('Root~Child', 'us-east-1'),
+                parentStack: 'Root',
+                parentLogicalId: 'Child',
+                parentRegion: 'us-east-1',
+              },
+              etag: '"abc"',
+            }
+      );
+
+      await expect(runStateDestroy(['destroy', 'Root~Child', '--yes'])).rejects.toThrow();
+      expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+      expect(errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n')).toContain(
+        "is nested under 'Root'"
+      );
+    });
+
+    it('CONTROL: a nested child under an unprotected root destroys', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'Root~Child', region: 'us-east-1' }]);
+      mockGetState.mockImplementation(async (name: string) => ({
+        state: {
+          ...makeStackState(name, 'us-east-1'),
+          ...(name !== 'Root' && { parentStack: 'Root', parentLogicalId: 'Child', parentRegion: 'us-east-1' }),
+        },
+        etag: '"abc"',
+      }));
+
+      await runStateDestroy(['destroy', 'Root~Child', '--yes']);
+      expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+      expect(mockRunDestroyForStack.mock.calls[0]![2].stateDestroy).toBe(true);
+    });
+
+    it('--remove-protection destroys it', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue(protectedRecord('MyStack'));
+
+      await runStateDestroy(['destroy', 'MyStack', '--yes', '--remove-protection']);
+      expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('passes --remove-protection through to the runner', async () => {
     mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValue({

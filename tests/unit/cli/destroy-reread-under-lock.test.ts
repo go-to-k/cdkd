@@ -140,6 +140,28 @@ describe('runDestroyForStack re-reads its record under the lock (go-to-k/cdkd#52
     expect(h.releaseLock).toHaveBeenCalledWith(STACK, REGION);
   });
 
+  it('refuses termination protection a deploy turned on while the prompt waited (go-to-k/cdkd#5238)', async () => {
+    const { h, thrown } = await destroyWith(
+      stateWith({ A: RES_A, B: RES_B }),
+      stateWith({ A: RES_A, B: RES_B }, { terminationProtection: true })
+    );
+    expect((thrown as CdkdError).code).toBe('STACK_TERMINATION_PROTECTION');
+    expect(h.getProviderFor).not.toHaveBeenCalled();
+    expect(h.deleteState).not.toHaveBeenCalled();
+    expect(h.releaseLock).toHaveBeenCalledWith(STACK, REGION);
+  });
+
+  it('CONTROL: with --remove-protection that protection does not stop it', async () => {
+    const h = makeCtx();
+    (h.ctx as unknown as { removeProtection: boolean }).removeProtection = true;
+    (h.ctx.stateBackend.getState as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state: stateWith({ A: RES_A, B: RES_B }, { terminationProtection: true }),
+      etag: 'e',
+    });
+    await runDestroyForStack(STACK, stateWith({ A: RES_A, B: RES_B }), h.ctx).catch(() => undefined);
+    expect(h.getProviderFor, 'the destroy reaches the delete path').toHaveBeenCalled();
+  });
+
   it('refuses a source mark that appeared while the prompt waited', async () => {
     const { h, thrown } = await destroyWith(
       stateWith({ A: RES_A, B: RES_B }),

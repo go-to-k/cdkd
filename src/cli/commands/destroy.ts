@@ -23,7 +23,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { asIsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
@@ -1059,6 +1059,35 @@ async function destroyCommand(
       if (!stateResult) {
         logger.warn(`No state found for stack ${displaySafe(stackName)}, skipping`);
         continue;
+      }
+
+      // go-to-k/cdkd#5238: protection the stack was DEPLOYED with counts too,
+      // as in CloudFormation, where the deployed stack's setting is what a
+      // delete meets: code that dropped it but was never redeployed is still
+      // protected. The synth check above already ran for a synth-protected
+      // stack.
+      if (
+        synthStack?.terminationProtection !== true &&
+        stateResult.state.terminationProtection === true
+      ) {
+        if (options.removeProtection) {
+          logger.warn(
+            safeMsg`Stack ${stackName} was deployed with terminationProtection: true — bypassing because --remove-protection set`
+          );
+        } else {
+          const err = new StackTerminationProtectionError(
+            stackName,
+            undefined,
+            {
+              args: stateCommandAccount.args,
+              clause: withheldAccountClause(accountRecovery, 'the command below prints'),
+            },
+            { command: 'cdkd destroy' }
+          );
+          logger.error(safeMsg`  ✗ ${asIsMessage(err.message)}`);
+          totalErrors++;
+          continue;
+        }
       }
 
       // Nested-stack child-only destroy refusal (#555 A2 / design §7). A

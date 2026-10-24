@@ -31,6 +31,7 @@ import { refusedBaselineRemedy } from './refused-baseline-remedy.js';
 import {
   CdkdError,
   PartialFailureError,
+  StackTerminationProtectionError,
   formatError,
   withErrorHandling,
 } from '../../utils/error-handler.js';
@@ -39,6 +40,7 @@ import { type BrowseDeps, nonInteractiveBrowseRefusal, runStateBrowse } from './
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import {
+  asIsMessage,
   displayAwsMessage,
   displayIdent,
   displayStackName,
@@ -3006,6 +3008,35 @@ function createStateOrphanCommand(): Command {
 }
 
 /**
+ * The stack whose recorded `terminationProtection` covers `stackName`
+ * (go-to-k/cdkd#5238): the stack itself, or the root its `parentStack` chain
+ * leads to, read record by record. `undefined` when none is protected. A
+ * chain that cycles or runs deeper than any nesting cdkd writes stops there,
+ * unprotected by what it could not read; a missing parent record likewise.
+ */
+async function protectedRootOf(
+  stackName: string,
+  state: StackState,
+  region: string,
+  backend: { getState: S3StateBackend['getState'] }
+): Promise<string | undefined> {
+  let name = stackName;
+  let record: StackState | undefined = state;
+  const seen = new Set<string>();
+  for (let depth = 0; record !== undefined && depth < 32; depth++) {
+    if (record.terminationProtection === true) return name;
+    const parent: unknown = record.parentStack;
+    if (typeof parent !== 'string' || parent === '' || seen.has(parent)) return undefined;
+    seen.add(name);
+    const parentRegion: string =
+      typeof record.parentRegion === 'string' ? record.parentRegion : region;
+    name = parent;
+    record = (await backend.getState(parent, parentRegion))?.state;
+  }
+  return undefined;
+}
+
+/**
  * `cdkd state destroy <stacks...>` command implementation
  *
  * Destroys a stack's AWS resources AND removes its state record, **without**
@@ -3301,6 +3332,46 @@ async function stateDestroyCommand(
           continue;
         }
 
+        // go-to-k/cdkd#5238: the stack's last deploy recorded
+        // `terminationProtection: true`, or it is a nested child under a root
+        // stack that did (a root's protection covers its nested stacks, as in
+        // CloudFormation; only the root's record carries the setting).
+        // Refused before the lock and any delete, as `cdkd destroy` does, and
+        // counted toward the partial failure (exit 2) so sibling targets still
+        // run; the runner checks again under the lock. `--remove-protection`
+        // is the bypass, logged at WARN.
+        const protectedRoot = await protectedRootOf(
+          stackName,
+          stateResult.state,
+          refRegion,
+          setup.stateBackend
+        );
+        if (protectedRoot !== undefined) {
+          if (options.removeProtection === true) {
+            logger.warn(
+              safeMsg`Stack ${displayStackName(protectedRoot)} was deployed with terminationProtection: true — bypassing because --remove-protection set`
+            );
+          } else {
+            const recovery = renderRecovery(options, setup);
+            const err = new StackTerminationProtectionError(
+              stackName,
+              undefined,
+              {
+                args: accountArgs(recovery),
+                clause: withheldAccountClause(recovery, 'the command below prints'),
+              },
+              {
+                command: 'cdkd state destroy',
+                stackRegion: refRegion,
+                ...(protectedRoot !== stackName && { root: protectedRoot }),
+              }
+            );
+            logger.error(safeMsg`  ✗ ${asIsMessage(err.message)}`);
+            totalErrors++;
+            continue;
+          }
+        }
+
         // Issue #2117 — the last check before any delete is issued; see the
         // twin in `destroy.ts`. Unconditionally `stoppedEarly`: THIS target is
         // the one left undestroyed, whether or not any follow it.
@@ -3392,6 +3463,7 @@ async function stateDestroyCommand(
                   // --yes skips the per-stack prompt inside the runner.
                   skipConfirmation: options.yes,
                   removeProtection: options.removeProtection === true,
+                  stateDestroy: true,
                   skipFinalSnapshot: options.skipFinalSnapshot === true,
                   // go-to-k/cdkd#4150: a top-level destroy may resolve a
                   // secret-derived principal list; a deploy never does.
@@ -3528,8 +3600,9 @@ function createStateDestroyCommand(): Command {
     .addOption(new Option('--all').hideHelp())
     .option(
       '--remove-protection',
-      'Bypass deletion protection on protected resources by flipping the per-resource ' +
-        `protection flag off in-place before delete. Covers ${removeProtectionTypeList()}.`,
+      'Destroy a stack deployed with terminationProtection: true, and bypass deletion ' +
+        'protection on protected resources by flipping the per-resource protection flag ' +
+        `off in-place before delete. Covers ${removeProtectionTypeList()}.`,
       false
     )
     .addOption(stackRegionOption())

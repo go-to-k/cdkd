@@ -188,7 +188,7 @@ the exit codes are therefore the same, and
 | Flag | Default | Description |
 | --- | --- | --- |
 | `[stacks...]` | — | Stack names to destroy. Required. |
-| `--remove-protection` | off | Turn per-resource deletion protection off before deleting. |
+| `--remove-protection` | off | Destroy a stack deployed with `terminationProtection: true`, and turn per-resource deletion protection off before deleting. |
 | `--skip-final-snapshot` | off | Delete `DeletionPolicy: Snapshot` resources without taking the final snapshot. |
 | `--allow-unsupported-types <types>` | — | Comma-separated types to attempt through Cloud Control although cdkd reports them unsupported. |
 | `--resource-warn-after <duration>` or `<TYPE>=<duration>` | `5m` | Warn when one resource operation runs longer than this. Repeatable. |
@@ -199,6 +199,19 @@ the exit codes are therefore the same, and
 
 `--stack-region` also acts on a record that names no region. A stack whose
 only record is in a different region is skipped with a warning.
+
+### A stack deployed with termination protection
+
+Each `cdkd deploy` records the stack's `terminationProtection` in its state.
+`state destroy` refuses a stack whose last deploy recorded it, and a nested
+stack (`<parent>~<child>`) under a root stack that recorded it, before any
+lock or delete, with `STACK_TERMINATION_PROTECTION` (exit `2`; other named
+stacks still run). It checks again under the lock, so a deploy that turns the
+protection on while the prompt waits is refused too. Pass
+`--remove-protection` to destroy it anyway; the flag also turns off each
+resource's deletion protection, as in the table above. A record an
+earlier cdkd version wrote carries no setting, so its stack is not refused
+until its next deploy.
 
 ### Differences from `cdkd destroy`
 

@@ -638,6 +638,20 @@ export interface StackState {
    */
   pendingMovesOut?: PendingMoveOut[];
 
+  /**
+   * The stack was last deployed with `terminationProtection: true`
+   * (go-to-k/cdkd#5238). Each deploy writes it from the synthesized stack
+   * (present only when true), so it is what the DEPLOYED stack says, as in
+   * CloudFormation; `cdkd destroy` and `cdkd state destroy` refuse while it
+   * is set unless `--remove-protection` is given. `cdkd state destroy` has no
+   * CDK app, so this is the only place it can learn the setting.
+   *
+   * Additive, NO schema bump (the `orphans` precedent): an older binary drops
+   * the field on its next save and does not refuse, a stated consequence.
+   * Carried by every non-deploy writer through {@link stackInstanceIdCarriedFrom}.
+   */
+  terminationProtection?: true;
+
   /** Last modification timestamp (Unix milliseconds) */
   lastModified: number;
 }
@@ -1575,13 +1589,21 @@ export function stackInstanceIdCarriedFrom(
   previous:
     | Pick<
         StackState,
-        'stackInstanceId' | 'retiredNameGenerations' | 'supersededResources' | 'pendingMovesOut'
+        | 'stackInstanceId'
+        | 'retiredNameGenerations'
+        | 'supersededResources'
+        | 'pendingMovesOut'
+        | 'terminationProtection'
       >
     | null
     | undefined
 ): Pick<
   StackState,
-  'stackInstanceId' | 'retiredNameGenerations' | 'supersededResources' | 'pendingMovesOut'
+  | 'stackInstanceId'
+  | 'retiredNameGenerations'
+  | 'supersededResources'
+  | 'pendingMovesOut'
+  | 'terminationProtection'
 > {
   // go-to-k/cdkd#5064: the lifetime's retired name generations travel with
   // its id -- a writer that dropped them would hand a re-added resource a
@@ -1602,6 +1624,11 @@ export function stackInstanceIdCarriedFrom(
     ...(previous?.pendingMovesOut !== undefined && {
       pendingMovesOut: previous.pendingMovesOut,
     }),
+    // go-to-k/cdkd#5238: so does the deployed stack's termination protection
+    // -- a writer that dropped it would let `cdkd state destroy` delete a
+    // protected stack. Only `true` is carried: a hand-edited other value
+    // protects nothing and is not repeated.
+    ...(previous?.terminationProtection === true && { terminationProtection: true }),
   };
 }
 
