@@ -89,9 +89,9 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure, VERBOSE_POINTER } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { markDeleteStarted } from '../delete-started.js';
+import { markNotGone } from '../not-gone.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import {
-  markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
   wrapMaskedAwsError,
@@ -453,18 +453,16 @@ export const settleRolloutDelays = {
 
 /**
  * A DELETE failure wrap whose caught error's CLASS spells `NotFound`, marked
- * non-retryable (go-to-k/cdkd#2319). The wrap names the class, and the deploy
- * and destroy delete classifiers (`deploy-engine/delete.ts`,
+ * not gone (go-to-k/cdkd#2319, #5228). The wrap names the class, and the
+ * deploy and destroy delete classifiers (`deploy-engine/delete.ts`,
  * `deploy-engine/update-in-place.ts`, `destroy-runner.ts`) read `NotFound`
  * in a message as "already deleted" unless the error is marked. This
  * resource's own not-found returned before the wrap, so a `NotFound` class
  * reaching it is another object's (an operation, a key, a namespace) and the
- * resource may still exist.
+ * resource may still exist. Retryability stays the retry classifiers'.
  */
 function markNotGoneOnNotFoundClass<E extends Error>(error: unknown, wrapped: E): E {
-  return error instanceof Error && error.name.includes('NotFound')
-    ? markNonRetryable(wrapped)
-    : wrapped;
+  return error instanceof Error && error.name.includes('NotFound') ? markNotGone(wrapped) : wrapped;
 }
 
 export class ECSProvider implements ResourceProvider {

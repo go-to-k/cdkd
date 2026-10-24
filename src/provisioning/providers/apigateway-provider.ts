@@ -47,6 +47,7 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { stringifyValue } from '../../utils/stringify.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { markNotGone } from '../not-gone.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import {
   compositeIdFormatMessage,
@@ -72,7 +73,6 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import {
-  markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
   wrapMaskedAwsError,
@@ -689,10 +689,11 @@ export class ApiGatewayProvider implements ResourceProvider {
       // `NotFoundException` from `UpdateAccount` names something else and the
       // CloudWatch role ARN is still set. The wrap carries that class, which
       // satisfies the "already deleted" classifiers' `NotFoundException`
-      // needle and would drop the record, so mark it terminal: they check the
-      // marker first (go-to-k/cdkd#5222).
+      // needle and would drop the record, so mark it not gone: they check the
+      // marker first (go-to-k/cdkd#5222, #5228). Retryability stays the retry
+      // classifiers'.
       throw error instanceof Error && error.name.includes('NotFound')
-        ? markNonRetryable(failure)
+        ? markNotGone(failure)
         : failure;
     }
   }

@@ -65,6 +65,7 @@ import {
   isRetryableTransientError,
   retryClassificationText,
 } from '../../../src/deployment/retryable-errors.js';
+import { isMarkedNotGone } from '../../../src/provisioning/not-gone.js';
 
 /** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
 function bagOf(
@@ -1087,11 +1088,12 @@ describe('SchedulerScheduleProvider', () => {
         expect(error!.message).toContain('listing the schedules of its name failed (ThrottlingException)');
         expect(error!.message).not.toContain('g-secret');
         expect(deletes()).toEqual([]);
-        // Negative control for the case below: a non-NotFound class stays retryable.
+        // Negative control for the case below: a non-NotFound class is unmarked.
+        expect(isMarkedNotGone(error)).toBe(false);
         expect(isMarkedNonRetryable(error)).toBe(false);
       });
 
-      it('a listing answered ResourceNotFoundException is not proof of gone: the wrap is terminal (go-to-k/cdkd#5222)', async () => {
+      it('a listing answered ResourceNotFoundException is not proof of gone: the wrap is marked not gone (go-to-k/cdkd#5222)', async () => {
         // The wrap names the class, which satisfies the "already deleted"
         // classifiers' `ResourceNotFoundException` needle; only the marker,
         // which they check first, keeps the record.
@@ -1107,7 +1109,9 @@ describe('SchedulerScheduleProvider', () => {
         expect(error!.message).toContain(
           'listing the schedules of its name failed (ResourceNotFoundException)'
         );
-        expect(isMarkedNonRetryable(error)).toBe(true);
+        expect(isMarkedNotGone(error)).toBe(true);
+        // go-to-k/cdkd#5228: the listing keeps its retry, which re-lists.
+        expect(isMarkedNonRetryable(error)).toBe(false);
         expect(deletes()).toEqual([]);
       });
 

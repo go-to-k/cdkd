@@ -2061,7 +2061,12 @@ Two placement rules go with it:
   row. `destroy-runner.ts` and the deploy engine's delete arms (`deploy-engine/update-in-place.ts`,
   `deploy-engine/delete.ts`) all check
   `isInterruptedWaitError` ahead of that match; any new message-based classifier
-  on a delete path needs the same guard.
+  on a delete path needs the same guard. They check `isMarkedNotGone` there too
+  ([#5228](https://github.com/go-to-k/cdkd/issues/5228)): a provider whose
+  delete failure is not its resource's own not-found but may still carry a
+  needle (another object's `*NotFound` class, a logical id) wraps it in
+  `markNotGone` (`src/provisioning/not-gone.ts`). That mark leaves retrying to
+  the retry classifiers, so never use `markNonRetryable` only to block the read.
 
   **A hand-rolled poll on the same path owes the same treatment**, and issue
   [#1952](https://github.com/go-to-k/cdkd/issues/1952) is why the rule is stated

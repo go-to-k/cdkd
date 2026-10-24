@@ -3,7 +3,8 @@
  * `NotFoundException` from the delete's `UpdateAccount` names something else
  * and the CloudWatch role ARN is still set. The wrap carries the class, which
  * satisfies the "already deleted" classifiers' `NotFoundException` needle, so
- * it must be marked terminal: they check `isMarkedNonRetryable` first.
+ * it must be marked not gone: they check `isMarkedNotGone` first (#5228), and
+ * the mark leaves retryability to the retry classifiers.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { NotFoundException } from '@aws-sdk/client-api-gateway';
@@ -37,6 +38,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ApiGatewayProvider } from '../../../src/provisioning/providers/apigateway-provider.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { isMarkedNotGone } from '../../../src/provisioning/not-gone.js';
 
 const TYPE = 'AWS::ApiGateway::Account';
 
@@ -55,7 +57,7 @@ describe('API Gateway Account delete: a NotFoundException is not "already delete
     mockSend.mockReset();
   });
 
-  it('marks the wrap terminal when UpdateAccount answers NotFoundException', async () => {
+  it('marks the wrap not gone when UpdateAccount answers NotFoundException', async () => {
     const failure = await deleteAccountFailing(
       new NotFoundException({ message: 'Invalid resource identifier specified', $metadata: {} })
     );
@@ -64,7 +66,8 @@ describe('API Gateway Account delete: a NotFoundException is not "already delete
     // The premise: the class reaches the message and carries the needle.
     expect(failure.message).toContain('Failed to delete API Gateway Account ApiAccount');
     expect(failure.message).toContain('NotFoundException');
-    expect(isMarkedNonRetryable(failure)).toBe(true);
+    expect(isMarkedNotGone(failure)).toBe(true);
+    expect(isMarkedNonRetryable(failure)).toBe(false);
   });
 
   it('leaves a non-NotFound failure retryable (negative control)', async () => {
@@ -77,6 +80,7 @@ describe('API Gateway Account delete: a NotFoundException is not "already delete
     );
 
     expect(failure.message).toContain('TooManyRequestsException');
+    expect(isMarkedNotGone(failure)).toBe(false);
     expect(isMarkedNonRetryable(failure)).toBe(false);
   });
 });

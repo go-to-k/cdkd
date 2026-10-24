@@ -14,6 +14,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { markNotGone } from '../not-gone.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import { generatedNameFor } from '../resource-name.js';
 import type {
@@ -911,10 +912,11 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       // is not this method's proof of "gone" (two complete listings with no
       // match). The wrap carries the class, which satisfies the "already
       // deleted" classifiers' `ResourceNotFoundException` needle and would
-      // drop the record unproven, so mark it terminal: they check the marker
-      // first (go-to-k/cdkd#5222).
+      // drop the record unproven, so mark it not gone: they check the marker
+      // first (go-to-k/cdkd#5222, #5228). A listing that failed on a racing
+      // group delete keeps its retry, which re-lists.
       return error instanceof Error && error.name.includes('NotFound')
-        ? markNonRetryable(wrapped)
+        ? markNotGone(wrapped)
         : wrapped;
     };
     const findMatches = async (): Promise<{ matches: string[]; datedOnly: number }> => {

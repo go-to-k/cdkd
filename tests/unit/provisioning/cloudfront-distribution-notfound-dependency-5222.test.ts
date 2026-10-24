@@ -2,8 +2,9 @@
  * go-to-k/cdkd#5222: a `*NotFound` class from the disable step names a
  * DEPENDENCY (a referenced function or key group), never the distribution.
  * The delete wrap carries the class, which satisfies update-in-place's bare
- * `NotFound` "already deleted" needle, so the wrap must be marked terminal:
- * the classifiers check `isMarkedNonRetryable` before any needle.
+ * `NotFound` "already deleted" needle, so the wrap must be marked not gone:
+ * the classifiers check `isMarkedNotGone` before any needle (#5228), and the
+ * mark leaves retryability to the retry classifiers.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
@@ -41,6 +42,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { CloudFrontDistributionProvider } from '../../../src/provisioning/providers/cloudfront-distribution-provider.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { isMarkedNotGone } from '../../../src/provisioning/not-gone.js';
 
 const TYPE = 'AWS::CloudFront::Distribution';
 
@@ -67,7 +69,7 @@ describe('CloudFront Distribution delete: a dependency NotFound is not "already 
     vi.clearAllMocks();
   });
 
-  it('marks the wrap terminal when the disable step answers EntityNotFound', async () => {
+  it('marks the wrap not gone when the disable step answers EntityNotFound', async () => {
     const failure = await deleteWithDisableFailure(
       new EntityNotFound({ message: 'The entity was not found.', $metadata: {} })
     );
@@ -75,7 +77,8 @@ describe('CloudFront Distribution delete: a dependency NotFound is not "already 
     // The premise: the class reaches the message and carries the needle.
     expect(failure.message).toContain('Failed to delete CloudFront Distribution MyDist');
     expect(failure.message).toContain('EntityNotFound');
-    expect(isMarkedNonRetryable(failure)).toBe(true);
+    expect(isMarkedNotGone(failure)).toBe(true);
+    expect(isMarkedNonRetryable(failure)).toBe(false);
   });
 
   for (const [label, error] of [
@@ -94,11 +97,12 @@ describe('CloudFront Distribution delete: a dependency NotFound is not "already 
       Object.assign(new Error('The origin does not exist.'), { name: 'NoSuchOrigin' }),
     ],
   ] as const) {
-    it(`marks the wrap terminal on a missing dependency: ${label}`, async () => {
+    it(`marks the wrap not gone on a missing dependency: ${label}`, async () => {
       const failure = await deleteWithDisableFailure(error);
 
       expect(failure.message).toContain('Failed to delete CloudFront Distribution MyDist');
-      expect(isMarkedNonRetryable(failure)).toBe(true);
+      expect(isMarkedNotGone(failure)).toBe(true);
+      expect(isMarkedNonRetryable(failure)).toBe(false);
     });
   }
 
@@ -112,6 +116,7 @@ describe('CloudFront Distribution delete: a dependency NotFound is not "already 
     );
 
     expect(failure.message).toContain('ThrottlingException');
+    expect(isMarkedNotGone(failure)).toBe(false);
     expect(isMarkedNonRetryable(failure)).toBe(false);
   });
 });

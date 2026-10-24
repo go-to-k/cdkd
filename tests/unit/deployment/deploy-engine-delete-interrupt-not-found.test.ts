@@ -13,12 +13,13 @@
  * substring match. The substring match cannot be made safe on its own: any
  * needle can appear in a user-chosen name.
  */
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { InterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { assertRegionMatch } from '../../../src/provisioning/region-check.js';
 import { isMarkedNonRetryable, markNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { markNotGone } from '../../../src/provisioning/not-gone.js';
 import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
 import { nestedStackChildFailureMessage } from '../../../src/provisioning/nested-stack-messages.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -76,19 +77,26 @@ type JournalMocks = {
 describe('DeployEngine DELETE — an interrupt is never "already deleted" (#2053 / #1952)', () => {
   let saveState: ReturnType<typeof vi.fn>;
   let deleteError: Error | undefined;
+  let deleteCalls = 0;
 
   beforeEach(() => {
     vi.clearAllMocks();
     deleteError = undefined;
+    deleteCalls = 0;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   function buildEngine() {
     const provider = {
       create: vi.fn().mockResolvedValue({ physicalId: 'phys-x', attributes: {} }),
       update: vi.fn().mockResolvedValue({ physicalId: 'phys-x', wasReplaced: false }),
-      delete: vi.fn().mockImplementation(() =>
-        deleteError ? Promise.reject(deleteError) : Promise.resolve(undefined)
-      ),
+      delete: vi.fn().mockImplementation(() => {
+        deleteCalls++;
+        return deleteError ? Promise.reject(deleteError) : Promise.resolve(undefined);
+      }),
     };
 
     const currentState: StackState = {
@@ -266,6 +274,75 @@ describe('DeployEngine DELETE — an interrupt is never "already deleted" (#2053
     );
 
     expect(persistedResources()[NEEDLE]).toMatchObject({ physicalId: `phys-${NEEDLE}` });
+  });
+
+  it('keeps the state row for a NOT-GONE-marked failure carrying the needle (go-to-k/cdkd#5228)', async () => {
+    // A provider's typed verdict that the failure is not its resource's
+    // not-found. Apart from retryability by design, so the non-retryable
+    // guard does not cover it.
+    const notGone = markNotGone(
+      new Error(`Failed to delete ECS cluster ${NEEDLE}: KeyNotFoundFault`)
+    );
+    expect(notGone.message).toContain('NotFoundException');
+    expect(isMarkedNonRetryable(notGone)).toBe(false);
+    deleteError = notGone;
+
+    await expect(buildEngine().deploy(STACK, template)).rejects.toThrow(
+      new RegExp(`Failed to delete resource ${NEEDLE}`)
+    );
+
+    expect(persistedResources()[NEEDLE]).toMatchObject({ physicalId: `phys-${NEEDLE}` });
+  });
+
+  describe('a TRANSIENT failure carrying the needle, through withRetry (go-to-k/cdkd#5228)', () => {
+    // A throttle on a resource whose logical id spells the needle. The mark
+    // must neither cost it the engine's delete retries nor let the exhausted
+    // failure read as "already deleted".
+    const throttle = (): Error => new Error(`Failed to delete ECS cluster ${NEEDLE}: Rate exceeded`);
+
+    async function deployUnderFakeTimers(): Promise<{ rejected: unknown }> {
+      vi.useFakeTimers();
+      let settled = false;
+      let rejected: unknown;
+      const run = buildEngine()
+        .deploy(STACK, template)
+        .then(
+          () => undefined,
+          (e: unknown) => {
+            rejected = e;
+          }
+        )
+        .finally(() => {
+          settled = true;
+        });
+      // The delete backoff starts at 5s and doubles: step well past it.
+      for (let i = 0; i < 300 && !settled; i++) await vi.advanceTimersByTimeAsync(1_000);
+      await run;
+      return { rejected };
+    }
+
+    it('is retried, and once the retries run out the state row is kept', async () => {
+      deleteError = markNotGone(throttle());
+      expect(isMarkedNonRetryable(deleteError)).toBe(false);
+
+      const { rejected } = await deployUnderFakeTimers();
+
+      // 1 attempt + 3 retries (`delete.ts` passes 3): the mark cost no retry.
+      expect(deleteCalls).toBe(4);
+      expect(String(rejected)).toMatch(new RegExp(`Failed to delete resource ${NEEDLE}`));
+      expect(persistedResources()[NEEDLE]).toMatchObject({ physicalId: `phys-${NEEDLE}` });
+    });
+
+    it('CONTROL — unmarked, the exhausted throttle WAS read as already deleted', async () => {
+      deleteError = throttle();
+
+      const { rejected } = await deployUnderFakeTimers();
+
+      // Unmarked: the same 4 attempts.
+      expect(deleteCalls).toBe(4);
+      expect(rejected).toBeUndefined();
+      expect(persistedResources()[NEEDLE]).toBeUndefined();
+    });
   });
 
   // go-to-k/cdkd#1889: a deploy that REMOVES a nested stack routes its row here.

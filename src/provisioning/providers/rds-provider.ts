@@ -33,6 +33,7 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
+import { markNotGone } from '../not-gone.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generatedNameFor } from '../resource-name.js';
@@ -1341,16 +1342,20 @@ export class RDSProvider implements ResourceProvider {
       await this.waitForClusterDeleted(logicalId, physicalId, RDS_DELETE_WAIT_MS);
     } catch (error) {
       if (error instanceof GlobalClusterDetachError) {
-        // Non-retryable so the destroy / deploy classifiers never read an AWS
-        // "not found" in the detail as the cluster being gone; a re-run of the
-        // destroy repeats the detach.
-        const detachFailure = markNonRetryable(
-          new ProvisioningError(
-            `Failed to delete DBCluster ${logicalId}: ${error.message}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            error
+        // Not gone, so the destroy / deploy classifiers never read an AWS
+        // "not found" in the detail as the cluster being gone (#5228). Also
+        // non-retryable: the detach already waited out busy states and
+        // throttles within the delete budget, so a retry would only spend it
+        // again; a re-run of the destroy repeats the detach.
+        const detachFailure = markNotGone(
+          markNonRetryable(
+            new ProvisioningError(
+              `Failed to delete DBCluster ${logicalId}: ${error.message}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              error
+            )
           )
         );
         throw progress.stripped ? markDeleteStarted(detachFailure) : detachFailure;

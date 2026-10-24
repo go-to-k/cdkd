@@ -165,7 +165,10 @@ export function hasRedactedCause(error: unknown): boolean {
  *
  * Reach for it when the error means "this cannot succeed on a retry" as a
  * matter of cdkd's own logic — NOT for a relayed AWS failure, whose
- * retryability is the classifiers' business.
+ * retryability is the classifiers' business. To keep the already-deleted
+ * classifiers from reading a delete failure as gone, use `markNotGone`
+ * (`src/provisioning/not-gone.ts`, go-to-k/cdkd#5228), which leaves the
+ * retry alone.
  *
  * The known live instance this JSDoc used to flag as uncovered —
  * `ResourceUpdateNotSupportedError` (`src/utils/error-handler.ts`), which

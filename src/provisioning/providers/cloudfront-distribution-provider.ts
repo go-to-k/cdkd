@@ -20,6 +20,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted } from '../delete-started.js';
+import { markNotGone } from '../not-gone.js';
 import {
   markNonRetryable,
   markRedactedCause,
@@ -743,11 +744,10 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       // referenced policy, function or key group is gone. The wrap carries the
       // class (or, unredacted, AWS's "does not exist" text), which satisfies the
       // "already deleted" classifiers' needles and would drop the record of a
-      // live distribution, so mark it terminal: they check the marker first,
-      // and a missing dependency does not come back on a retry
-      // (go-to-k/cdkd#5222).
+      // live distribution, so mark it not gone: they check the marker first
+      // (go-to-k/cdkd#5222, #5228). Retryability stays the retry classifiers'.
       if (error instanceof Error && DEPENDENCY_MISSING_CLASS.test(error.name)) {
-        markNonRetryable(failure);
+        markNotGone(failure);
       }
       throw stripped ? markDeleteStarted(failure) : failure;
     }
