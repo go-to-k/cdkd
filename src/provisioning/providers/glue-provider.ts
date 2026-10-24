@@ -138,8 +138,10 @@ import { withoutServerErrorRetries } from './ambiguous-create.js';
 import {
   markNonRetryable,
   markRedactedCause,
+  relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import {
@@ -1044,8 +1046,11 @@ function newGlueClients(region: string | undefined): {
  * `build` must thread `error` as the wrap's `cause`: the redaction is stamped
  * so the retry classifiers read that chain, where the withheld `not authorized
  * to perform` still is. A non-`Error` throw has no chain, so it is not stamped.
- * No Glue caller reads the message for "already deleted": every delete checks
- * `EntityNotFoundException` by type before it wraps.
+ * An "already exists" is restated ({@link relayedNameCollision}), so a
+ * create-first replacement still recognises the collision. Every delete checks
+ * `EntityNotFoundException` by type before it wraps, and stamps a wrap naming
+ * any other `NotFound` class `markNotGone`, which the destroy loop's "already
+ * deleted" match refuses.
  */
 function wrapGlueError(
   mask: MaskerFn,
@@ -1058,8 +1063,19 @@ function wrapGlueError(
   // `build` runs twice here (debug text, then the throw), so it must stay a
   // side-effect-free constructor call.
   debug(mask(build(failure.detail).message));
-  const wrapped = build(mask(failure.summary));
+  const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
   return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+}
+
+/**
+ * A delete wrap names an AWS failure by its CLASS (go-to-k/cdkd#2319), and the
+ * destroy loop's "already deleted" match reads `NotFoundException` in a message
+ * as gone. Every Glue delete tests its own `EntityNotFoundException` by type
+ * before it wraps, so a wrap naming any other `NotFound` class (another
+ * resource's) is stamped `markNotGone`, which that match refuses.
+ */
+function markForeignNotFound(error: unknown, thrown: ProvisioningError): ProvisioningError {
+  return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
 }
 
 /**
@@ -1512,17 +1528,20 @@ export class GlueProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log.mask,
+      throw markForeignNotFound(
         error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete Glue Database ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
+        this.wrapMaskedError(
+          log.mask,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete Glue Database ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
     }
   }
@@ -1987,17 +2006,20 @@ export class GlueProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log.mask,
+      throw markForeignNotFound(
         error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete Glue Table ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
+        this.wrapMaskedError(
+          log.mask,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete Glue Table ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
     }
   }
@@ -3518,17 +3540,20 @@ export class GlueWorkflowProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        context?.maskSecrets ?? ((text: string) => text),
+      throw markForeignNotFound(
         error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete Glue Workflow ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
+        this.wrapMaskedError(
+          context?.maskSecrets ?? ((text: string) => text),
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete Glue Workflow ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
     }
   }
@@ -3862,17 +3887,20 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        context?.maskSecrets ?? ((text: string) => text),
+      throw markForeignNotFound(
         error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete Glue SecurityConfiguration ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
+        this.wrapMaskedError(
+          context?.maskSecrets ?? ((text: string) => text),
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete Glue SecurityConfiguration ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
     }
   }
@@ -4573,17 +4601,20 @@ export class GlueJobProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        context?.maskSecrets ?? ((text: string) => text),
+      throw markForeignNotFound(
         error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete Glue Job ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
+        this.wrapMaskedError(
+          context?.maskSecrets ?? ((text: string) => text),
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete Glue Job ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
     }
   }
@@ -5362,17 +5393,20 @@ export class GlueCrawlerProvider implements ResourceProvider {
         }
       }
       const cause = failure instanceof Error ? failure : undefined;
-      throw this.wrapMaskedError(
-        log.mask,
+      throw markForeignNotFound(
         failure,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete Glue Crawler ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
+        this.wrapMaskedError(
+          log.mask,
+          failure,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete Glue Crawler ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
     }
   }
@@ -5922,17 +5956,20 @@ export class GlueConnectionProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log.mask,
+      throw markForeignNotFound(
         error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete Glue Connection ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
+        this.wrapMaskedError(
+          log.mask,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete Glue Connection ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
     }
   }
@@ -6462,17 +6499,20 @@ export class GlueTriggerProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = this.wrapMaskedError(
-        context?.maskSecrets ?? ((text: string) => text),
+      const failure = markForeignNotFound(
         error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete Glue Trigger ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
+        this.wrapMaskedError(
+          context?.maskSecrets ?? ((text: string) => text),
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete Glue Trigger ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
       throw stripped ? markDeleteStarted(failure) : failure;
     }

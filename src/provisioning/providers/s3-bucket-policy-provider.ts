@@ -10,7 +10,12 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { markRedactedCause } from '../../deployment/retryable-errors.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { logicalIdShown } from '../composite-id.js';
 import {
@@ -348,16 +353,21 @@ export class S3BucketPolicyProvider implements ResourceProvider {
    * A thrown message is persisted to `deployments/{runId}.jsonl`, and S3 words
    * an `AccessDenied` on `PutBucketPolicy` / `DeleteBucketPolicy` as `User:
    * arn:aws:sts::<account>:assumed-role/<role>/<session> is not authorized
-   * ...`. So an AWS-authored failure is reduced to its class here, and AWS's
-   * own text goes to `logger.debug`, where it still separates a missing grant
-   * from a bucket-policy `Deny`. A cdkd-authored error keeps its text.
-   * `describeAwsFailure` also cannot throw on a value `String()` cannot
-   * convert, which used to replace the failure (go-to-k/cdkd#3341).
+   * ...`. So an AWS-authored failure is reduced to its class plus the
+   * `--verbose` pointer, masked (the class is AWS-authored text too), and
+   * AWS's own text goes to `logger.debug` through the operation's masker, where
+   * it still separates a missing grant from a bucket-policy `Deny`. An
+   * "already exists" is restated ({@link relayedNameCollision}). The wrap is
+   * stamped `markRedactedCause`, so the retry classifiers read the withheld
+   * text on the `cause` chain; a non-`Error` throw is withheld the same way,
+   * unstamped (it has no chain). A cdkd-authored or transport error keeps its
+   * text, masked, stamped exactly when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244). `describeAwsFailure` also cannot throw
+   * on a value `String()` cannot convert (go-to-k/cdkd#3341).
    *
-   * Nothing else reads this message by substring: the not-found arms in
-   * `delete` match by error class or name before the wrap. The retry classifiers do, so the cause is
-   * kept and a redaction is stamped for them to read it instead -- only when
-   * the cause IS the error whose text was withheld.
+   * The not-found arms in `delete` match by error class or name before the
+   * wrap, and a delete wrap naming any other `NotFound` class is stamped
+   * `markNotGone`, which the destroy loop's "already deleted" match refuses.
    */
   private wrapOperationError(
     operation: 'create' | 'update' | 'delete',
@@ -368,21 +378,23 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     maskSecrets: ((text: string) => string) | undefined
   ): ProvisioningError {
     const mask = maskSecrets ?? ((t: string) => t);
-    const failure = describeAwsFailure(error);
-    if (failure.redacted) {
-      this.logger.debug(
-        mask(`Failed to ${operation} S3 bucket policy ${logicalId}: ${failure.detail}`)
-      );
-    }
     const cause = error instanceof Error ? error : undefined;
-    const wrapped = new ProvisioningError(
-      `Failed to ${operation} S3 bucket policy ${logicalId}: ${failure.summary}`,
-      resourceType,
-      logicalId,
-      physicalId,
-      cause
-    );
-    return failure.redacted && cause !== undefined ? markRedactedCause(wrapped) : wrapped;
+    const build = (text: string): ProvisioningError =>
+      new ProvisioningError(
+        `Failed to ${operation} S3 bucket policy ${logicalId}: ${text}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    const stamped = cause !== undefined ? markRedactedCause(wrapped) : wrapped;
+    return operation === 'delete' && cause !== undefined && cause.name.includes('NotFound')
+      ? markNotGone(stamped)
+      : stamped;
   }
 
   /**

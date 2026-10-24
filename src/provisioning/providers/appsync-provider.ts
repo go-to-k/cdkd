@@ -102,7 +102,12 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { injectiveKey } from '../../state/record-keys.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { markNotGone } from '../not-gone.js';
 import {
   AmbiguousCreateLatch,
   RecentIdSet,
@@ -239,6 +244,18 @@ const MUTABLE_GRAPHQL_API_CONFIG_PROPERTIES = [
  * - AWS::AppSync::Resolver
  * - AWS::AppSync::ApiKey
  */
+/**
+ * A delete wrap names an AWS failure by its CLASS (go-to-k/cdkd#2319), and the
+ * destroy loop's "already deleted" match reads `NotFoundException` in a message
+ * as gone. Every AppSync delete tests `isNotFoundError`
+ * before it wraps, so a wrap naming another `NotFound` class that test let
+ * through (another resource's) is stamped `markNotGone`, which that match
+ * refuses.
+ */
+function markForeignNotFound(error: unknown, thrown: ProvisioningError): ProvisioningError {
+  return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
+}
+
 export class AppSyncProvider implements ResourceProvider {
   private client: AppSyncClient | undefined;
   private createClient: AppSyncClient | undefined;
@@ -1612,7 +1629,10 @@ export class AppSyncProvider implements ResourceProvider {
     subType: string,
     // AWS can quote a child's secret-derived name back (go-to-k/cdkd#4275);
     // absent means unmasked.
-    mask: MaskerFn = maskerOrIdentity(undefined)
+    mask: MaskerFn = maskerOrIdentity(undefined),
+    // A post-create step's failure (go-to-k/cdkd#2319): no "already exists"
+    // restatement, which would read as this resource's collision.
+    auxiliary = false
   ): ProvisioningError {
     const cause = error instanceof Error ? error : undefined;
     const build = (text: string): ProvisioningError =>
@@ -1625,7 +1645,7 @@ export class AppSyncProvider implements ResourceProvider {
       );
     const failure = describeAwsFailure(error);
     if (error instanceof Error && failure.redacted) {
-      return this.withheldAwsFailure(mask, failure.detail, failure.summary, build);
+      return this.withheldAwsFailure(mask, failure.detail, failure.summary, build, auxiliary);
     }
     // A cdkd-authored or transport error, or a non-`Error` throw, keeps its
     // text masked, stamped exactly when the mask changed it, so the retry
@@ -1654,7 +1674,13 @@ export class AppSyncProvider implements ResourceProvider {
   ): ProvisioningError {
     const failure = describeAwsFailure(error);
     if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
-    return this.withheldAwsFailure(mask, failure.detail, failure.summary, build);
+    return this.withheldAwsFailure(
+      mask,
+      failure.detail,
+      failure.summary,
+      build,
+      isAuxiliaryFailure(error)
+    );
   }
 
   /**
@@ -1666,16 +1692,20 @@ export class AppSyncProvider implements ResourceProvider {
    * `markRedactedCause`, so the retry classifiers read the withheld text on
    * the `cause` chain. An "already exists" is restated
    * ({@link relayedNameCollision}) so a create-first replacement still
-   * recognises a name collision.
+   * recognises a name collision, except from a post-create step's failure
+   * (`auxiliary`, {@link markAuxiliaryFailure}), where "it" would read as this
+   * resource.
    */
   private withheldAwsFailure(
     mask: MaskerFn,
     detail: string,
     summary: string,
-    build: (text: string) => ProvisioningError
+    build: (text: string) => ProvisioningError,
+    auxiliary = false
   ): ProvisioningError {
     this.logger.debug(mask(build(mask(detail)).message));
-    return markRedactedCause(build(`${mask(summary)}${relayedNameCollision(detail)}`));
+    const relay = auxiliary ? '' : relayedNameCollision(detail);
+    return markRedactedCause(build(`${mask(summary)}${relay}`));
   }
 
   async delete(
@@ -2304,7 +2334,10 @@ export class AppSyncProvider implements ResourceProvider {
         logicalId,
         apiId,
         isUpdate ? 'GraphqlApi (env vars)' : 'GraphqlApi (env vars, post-create)',
-        mask
+        mask,
+        // The API itself was just created: an "already exists" from this call
+        // is not its name collision (#3826), so it is not restated.
+        !isUpdate
       );
     }
     return narrowed;
@@ -3047,10 +3080,19 @@ export class AppSyncProvider implements ResourceProvider {
           this.logger.debug(`Rolled back partially-created GraphQL API ${createdApiId}`);
         } catch (rollbackError) {
           apiLeftBehind = true;
+          // The class at warn, AWS's text at debug under the same head
+          // (go-to-k/cdkd#2319): a denied `DeleteGraphqlApi` names the caller.
+          // A cdkd-authored error keeps its text at warn.
+          const rollbackFailure = describeAwsFailure(rollbackError);
+          const cleanupHead = `Failed to roll back partially-created GraphQL API ${createdApiId}: `;
+          const mask = maskerOrIdentity(context?.maskSecrets);
+          if (rollbackFailure.redacted) {
+            this.logger.debug(mask(`${cleanupHead}${rollbackFailure.detail}`));
+          }
           this.logger.warn(
-            `Failed to roll back partially-created GraphQL API ${createdApiId}: ${
-              describeAwsFailure(rollbackError).detail
-            }`
+            mask(
+              `${cleanupHead}${rollbackFailure.redacted ? rollbackFailure.summary : rollbackFailure.detail}`
+            )
           );
         }
       }
@@ -3222,17 +3264,20 @@ export class AppSyncProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
+      throw markForeignNotFound(
         error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete GraphQL API ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
+        this.wrapCaughtError(
+          maskerOrIdentity(context?.maskSecrets),
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete GraphQL API ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
     }
   }
@@ -3473,17 +3518,20 @@ export class AppSyncProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
+      throw markForeignNotFound(
         error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete DataSource ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
+        this.wrapCaughtError(
+          maskerOrIdentity(context?.maskSecrets),
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete DataSource ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
     }
   }
@@ -3639,17 +3687,20 @@ export class AppSyncProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
+      throw markForeignNotFound(
         error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete Resolver ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
+        this.wrapCaughtError(
+          maskerOrIdentity(context?.maskSecrets),
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete Resolver ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
     }
   }
@@ -3884,17 +3935,20 @@ export class AppSyncProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
+      throw markForeignNotFound(
         error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete ApiKey ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
+        this.wrapCaughtError(
+          maskerOrIdentity(context?.maskSecrets),
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete ApiKey ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
     }
   }

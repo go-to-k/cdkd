@@ -22,6 +22,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { markRedactedCause, relayedNameCollision } from '../../deployment/retryable-errors.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
   compositeIdFormatMessage,
@@ -156,6 +157,17 @@ function tableIdentityFromGetTable(
 /** `text` closed as a sentence, for a wrap that continues after it. */
 function sentence(text: string): string {
   return text.endsWith('.') ? text : `${text}.`;
+}
+
+/**
+ * A delete wrap names an AWS failure by its CLASS (go-to-k/cdkd#2319), and the
+ * destroy loop's "already deleted" match reads `NotFoundException` in a message
+ * as gone. Every S3 Tables delete tests its own `NotFoundException` by type
+ * before it wraps, so a wrap naming any other `NotFound` class (another
+ * resource's) is stamped `markNotGone`, which that match refuses.
+ */
+function markForeignNotFound(error: unknown, thrown: ProvisioningError): ProvisioningError {
+  return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
 }
 
 export class S3TablesProvider implements ResourceProvider {
@@ -516,17 +528,20 @@ export class S3TablesProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        context?.maskSecrets,
+      throw markForeignNotFound(
         error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete S3 Table Bucket ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
+        this.wrapCaughtError(
+          context?.maskSecrets,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete S3 Table Bucket ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
     }
   }
@@ -749,17 +764,20 @@ export class S3TablesProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        context?.maskSecrets,
+      throw markForeignNotFound(
         error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete S3 Tables Namespace ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
+        this.wrapCaughtError(
+          context?.maskSecrets,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete S3 Tables Namespace ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
     }
   }
@@ -1530,17 +1548,20 @@ export class S3TablesProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        context?.maskSecrets,
+      throw markForeignNotFound(
         error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete S3 Tables Table ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
+        this.wrapCaughtError(
+          context?.maskSecrets,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete S3 Tables Table ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
     }
   }

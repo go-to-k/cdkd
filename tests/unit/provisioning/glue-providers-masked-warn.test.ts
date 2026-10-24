@@ -653,7 +653,7 @@ describe('GlueProvider AWS::Glue::Table (issue #2177)', () => {
     );
     expectMessageMasked(error);
     expect((error as Error).message).toBe(
-      `Failed to create Glue Table Tbl: AlreadyExistsException. ${VERBOSE_POINTER}`
+      `Failed to create Glue Table Tbl: AlreadyExistsException. ${VERBOSE_POINTER} AWS reports that it already exists.`
     );
     expect(debugLines()).toContain(
       `Failed to create Glue Table Tbl: Table ${SECRET_MASK} already exists in ${SECRET_MASK} ` +

@@ -173,7 +173,14 @@ describe('ServiceDiscoveryProvider — ServiceAttributes backfill (#609)', () =>
       const line = warn.mock.calls
         .map((c) => String(c[0]))
         .find((m) => m.includes('Failed to clean up partially-created ServiceDiscovery'));
-      expect(line).toContain('a value that could not be converted to text');
+      // go-to-k/cdkd#2319: a non-Error is withheld at warn, like an AWS failure;
+      // its (unconvertible) text goes to debug.
+      expect(line).toContain('a non-Error value of type object.');
+      const debug = (getLogger().child('x') as unknown as { debug: ReturnType<typeof vi.fn> })
+        .debug;
+      expect(
+        debug.mock.calls.some((c) => String(c[0]).includes('a value that could not be converted to text'))
+      ).toBe(true);
     });
   });
 

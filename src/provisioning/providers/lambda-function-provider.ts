@@ -1,5 +1,9 @@
 import * as zlib from 'node:zlib';
-import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
+import {
+  describeAwsFailure,
+  safeStringify,
+  type AwsFailureText,
+} from '../../utils/aws-failure-text.js';
 import {
   LambdaClient,
   CreateFunctionCommand,
@@ -57,9 +61,15 @@ import {
   isRetryableTransientError,
   markNonRetryable,
   markRedactedCause,
+  relayedNameCollision,
 } from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
 import { generatedNameFor } from '../resource-name.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   CreateContext,
@@ -980,8 +990,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
       };
     } catch (error) {
       if (functionCreated) markAuxiliaryFailure(error, logicalId);
-      // The cause stays unmasked: a masked message is stamped so the retry
-      // classifiers read the chain (`wrapMaskedError`).
+      // The cause stays unmasked: a withheld or masked message is stamped so
+      // the retry classifiers read the chain (`wrapMaskedError`).
       // A non-Error throw still gets a cause, so a stamp has a chain to read.
       const cause = error instanceof Error ? error : undefined;
       const thrown = this.wrapMaskedError(
@@ -1014,24 +1024,49 @@ export class LambdaFunctionProvider implements ResourceProvider {
   }
 
   /**
-   * A failure wrap whose message quotes `error`'s text MASKED: AWS quotes request
-   * values (a role, a layer, a subnet) back in its own words.
+   * The failure wrap this provider's create / update catches throw.
    *
-   * When the mask changed that text, the wrap is stamped `markRedactedCause`, so
-   * `withRetry`'s substring classifiers read the unmasked cause chain rather than
-   * the masked message (the `concurrent update operation` / `currently in the
-   * following state` wording a secret needle could otherwise cut). A method,
-   * not a module function, so `gen-update-wrap-coverage` sees the catch that
-   * throws it as a `ProvisioningError` wrap factory.
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's masker, and the wrap is stamped `markRedactedCause`, so the
+   * retry classifiers read the withheld text (`concurrent update operation`,
+   * `currently in the following state`) on the `cause` chain. An "already
+   * exist(s)" is restated ({@link relayedNameCollision}), so a create-first
+   * replacement still recognises the collision (issue #1625), except from a
+   * post-create call's failure ({@link markAuxiliaryFailure}), where "it" would
+   * read as this function. A non-`Error` throw is withheld the same way, and
+   * stamped only when `build` threads a cause for it (create / update do: a
+   * thrown string keeps its retry classification on that chain).
+   *
+   * A cdkd-authored or transport error keeps its text, MASKED: AWS quotes
+   * request values (a role, a layer, a subnet) back in its own words. When the
+   * mask changed that text, the wrap is stamped `markRedactedCause` too. A
+   * failed waiter's payload is withheld in the caught error itself
+   * ({@link withholdWaiterPayload}). A method, not a module function, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a
+   * `ProvisioningError` wrap factory.
+   *
+   * `build` must thread `error` as `cause`, and runs twice on an AWS-authored
+   * failure, so it must stay a side-effect-free constructor call.
    */
   private wrapMaskedError(
     log: MaskedLogSinks,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (failure.redacted) {
+      this.logger.debug(log.mask(build(log.mask(failure.detail)).message));
+      const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+      const wrapped = build(`${log.mask(failure.summary)}${relay}`);
+      // A non-Error throw is stamped too when `build` gave it a cause to read.
+      return wrapped.cause !== undefined ? markRedactedCause(wrapped) : wrapped;
+    }
     // `.detail` is byte-identical to the `.message` / `String()` ternary and
     // cannot throw on an unconvertible value (go-to-k/cdkd#3361).
-    const raw = describeAwsFailure(error).detail;
+    const raw = failure.detail;
     // A failed waiter's payload is withheld in the caught error itself.
     const text = withholdWaiterPayload(error, log.mask)?.masked ?? log.mask(raw);
     const wrapped = build(text);
@@ -1075,30 +1110,36 @@ export class LambdaFunctionProvider implements ResourceProvider {
     try {
       await send();
     } catch (error) {
-      // `message` is NOT warn-only: the `throw new ProvisioningError(...)` at
-      // the end of this handler interpolates it too, and
-      // `extractDeploymentEventError` persists that into
-      // `deployments/{runId}.jsonl`. So this is one of TEN thrown-and-persisted
-      // sites in this sweep, not the warn-only site it reads as; an audit
-      // reading only the warn above misses it, and review missed seven of the
-      // ten for exactly that reason before counting them from the throws.
-      // `.detail` keeps AWS's own sentence, and the disclosure question for
-      // every site of that shape is issue go-to-k/cdkd#2319's.
+      // The refusal thrown at the end of this handler is persisted to
+      // `deployments/{runId}.jsonl` (`extractDeploymentEventError`), and so is
+      // not the warn-only site it reads as. An AWS-authored failure is named
+      // there, and in the warn, by its CLASS plus the `--verbose` pointer
+      // (go-to-k/cdkd#2319): an `AccessDeniedException` names the caller's
+      // assumed-role ARN. AWS's own text goes to `debug` under the same head.
+      // The refusal is stamped `markRedactedCause`, so the retry classifiers
+      // read the withheld `concurrent update operation` wording on the `cause`
+      // chain. No "already exists" is restated: the function is in hand, so it
+      // would be an auxiliary object's, not this function's (#3826).
       //
-      // Masked before it joins either line (issue #2177): AWS quotes request
+      // Masked before it joins any line (issue #2177): AWS quotes request
       // values back, and the warn below reaches no engine sink at all.
       //
       // The Active wait below can fail with the waiter's whole GetFunction
       // payload as its message: that is withheld, not relayed
       // (`describeLambdaWaiterFailure`).
-      const rawMessage = describeAwsFailure(error).detail;
-      const withheld = withholdWaiterPayload(error, log.mask);
-      const message = withheld?.masked ?? log.mask(rawMessage);
+      const failure = describeAwsFailure(error);
+      const rawMessage = failure.detail;
+      const withheld = failure.redacted ? undefined : withholdWaiterPayload(error, log.mask);
+      const message = failure.redacted
+        ? log.mask(failure.summary)
+        : (withheld?.masked ?? log.mask(rawMessage));
+      const warnHead = `${ctx.apiName} failed for ${ctx.logicalId}: `;
+      if (failure.redacted) this.logger.debug(log.mask(`${warnHead}${rawMessage}`));
       // Masked once, over the finished line, like the cleanup line below: it
       // is built from the UNMASKED described text.
       this.logger.warn(
         log.mask(
-          `${ctx.apiName} failed for ${ctx.logicalId}: ${withheld?.described ?? rawMessage} — deleting partially-created function to maintain atomicity`
+          `${warnHead}${failure.redacted ? failure.summary : (withheld?.described ?? rawMessage)} — deleting partially-created function to maintain atomicity`
         )
       );
       // The cleanup delete is RETRIED on a still-settling function. When the
@@ -1110,7 +1151,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // `retryable-errors.ts`, so the deploy engine's outer `withRetry`
       // re-creates. A waiter-timeout message is NOT in that table, which is
       // exactly the case that reaches here and must clean up after itself.)
-      let cleanupFailure: string | undefined;
+      let cleanupFailure: AwsFailureText | undefined;
       for (let attempt = 0; attempt < LAMBDA_CLEANUP_DELETE_MAX_ATTEMPTS; attempt++) {
         try {
           await this.lambdaClient.send(
@@ -1126,8 +1167,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
           // state` alternative would be blinded, and AWS sends that wording for
           // a function still updating. Losing it breaks on the first attempt
           // and leaves an ORPHANED function, not merely a worse message.
-          const deleteMessage = describeAwsFailure(deleteError).detail;
-          cleanupFailure = deleteMessage;
+          cleanupFailure = describeAwsFailure(deleteError);
+          const deleteMessage = cleanupFailure.detail;
           // Only a state conflict is worth waiting out; anything else
           // (auth, already-deleted) will not change on a retry.
           if (!/currently in the following state|ResourceConflict/i.test(deleteMessage)) break;
@@ -1141,10 +1182,16 @@ export class LambdaFunctionProvider implements ResourceProvider {
       if (cleanupFailure === undefined) ctx.cleanup.deleted = true;
       if (cleanupFailure !== undefined) {
         // `error` has no sink of its own: the finished line goes through the
-        // same masker. The classifier above read the RAW text.
+        // same masker. The classifier above read the RAW text. An AWS-authored
+        // failure is named by its class here (a denied `DeleteFunction` names
+        // the caller), and AWS's text goes to `debug` under the same head.
+        const cleanupHead = `Cleanup DeleteFunction failed for ${ctx.logicalId} after ${ctx.apiName} failure — function may be orphaned: `;
+        if (cleanupFailure.redacted) {
+          this.logger.debug(log.mask(`${cleanupHead}${cleanupFailure.detail}`));
+        }
         this.logger.error(
           log.mask(
-            `Cleanup DeleteFunction failed for ${ctx.logicalId} after ${ctx.apiName} failure — function may be orphaned: ${cleanupFailure}`
+            `${cleanupHead}${cleanupFailure.redacted ? cleanupFailure.summary : cleanupFailure.detail}`
           )
         );
       }
@@ -1157,7 +1204,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
         cause ?? new Error(rawMessage)
       );
       // The retry wording this message keeps on purpose (see create()) must
-      // still classify when the mask cut it: read the cause chain instead.
+      // still classify when the mask cut it, or when it was withheld: read the
+      // cause chain instead.
+      if (failure.redacted) throw markRedactedCause(refusal);
       throw message === rawMessage ? refusal : markRedactedCause(refusal);
     }
   }
@@ -1667,13 +1716,23 @@ export class LambdaFunctionProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        `Failed to delete Lambda function ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const wrapped = this.wrapMaskedError(
+        createMaskedLogSinks(this.logger, context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Lambda function ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this function is gone (go-to-k/cdkd#2319).
+      const failure =
+        error instanceof Error && error.name.includes('NotFound') ? markNotGone(wrapped) : wrapped;
       throw stripped ? markDeleteStarted(failure) : failure;
     }
 

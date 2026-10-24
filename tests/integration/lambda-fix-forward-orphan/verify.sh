@@ -522,6 +522,59 @@ assert_journaled OrphanD "${FN_D}"
 C_TOKEN="$(fn_token "${FN_C}")"
 echo "[verify] step 2 ok: ${FN_A}, ${FN_C} and ${FN_D} are in AWS, journaled with their identities, with no state record"
 
+# go-to-k/cdkd#2319: each orphan's persisted RESOURCE_FAILED event names the
+# refused post-create call by its class plus the verbose-mode pointer. AWS's
+# text for an explicit deny names this account and the deny role's ARN, and the
+# deployments/*.jsonl store outlives the run, so neither may reach it.
+EVENT_KEYS_2="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+  --prefix "${STATE_PREFIX}deployments/" --output json \
+  | jq -r '.Contents // [] | .[].Key | select(endswith(".jsonl"))')"
+# Inside LOG_DIR, which `cleanup` removes on every exit: it holds AWS text.
+FAILED_2="${LOG_DIR}/failed-events-2.jsonl"
+: > "${FAILED_2}"
+while IFS= read -r event_key || [ -n "${event_key}" ]; do
+  [ -n "${event_key}" ] || continue
+  aws s3 cp "s3://${STATE_BUCKET}/${event_key}" - --quiet \
+    | jq -c 'select(.eventType == "RESOURCE_FAILED")' >> "${FAILED_2}"
+done <<< "${EVENT_KEYS_2}"
+for pair in OrphanA:RecursiveLoop OrphanC:RecursiveLoop OrphanD:ReservedConcurrentExecutions; do
+  lid="${pair%%:*}"
+  prop="${pair#*:}"
+  # The orphan's OWN failure: the provider wrap. A sibling-abort event says
+  # nothing about it.
+  msg="$(jq -r --arg l "${lid}" 'select(.logicalId == $l) | .error.message // empty' "${FAILED_2}" \
+    | grep -F "Failed to create Lambda function ${lid}:" | tail -n 1 || true)"
+  if [ -z "${msg}" ]; then
+    # Only the cdkd-authored prefix and the length: the rest may be AWS's text.
+    echo "[verify] FAIL: no RESOURCE_FAILED event for ${lid} carries its provider wrap ('Failed to create Lambda function ${lid}:') under s3://${STATE_BUCKET}/${STATE_PREFIX}deployments/ after step 2: the premise no longer holds, and the #2319 checks below would pass for free. ${lid}'s RESOURCE_FAILED messages:" >&2
+    jq -r --arg l "${lid}" 'select(.logicalId == $l) | .error.message // "<no message>"' "${FAILED_2}" \
+      | while IFS= read -r m; do echo "  prefix '${m%%:*}', ${#m} chars" >&2; done
+    rm -f "${FAILED_2}"
+    exit 1
+  fi
+  if ! printf '%s' "${msg}" | grep -qE "Failed to create Lambda function ${lid}: Failed to set ${prop} on Lambda function ${lid} \(function was deleted to maintain atomicity\): [A-Za-z0-9]+\. Re-run with [-][-]verbose for AWS's own message\."; then
+    echo "[verify] FAIL: ${lid}'s RESOURCE_FAILED message is not the post-create refusal naming '<ErrorClass>' plus the verbose-mode pointer (#2319); observed prefix '${msg%%: Failed to set*}', ${#msg} chars" >&2
+    rm -f "${FAILED_2}"
+    exit 1
+  fi
+  if printf '%s' "${msg}" | grep -qF "${ACCOUNT_ID}" \
+    || printf '%s' "${msg}" | grep -qiF "not authorized" \
+    || printf '%s' "${msg}" | grep -qF "${DENY_ROLE}"; then
+    echo "[verify] FAIL: ${lid}'s RESOURCE_FAILED message quotes AWS's text (account id, deny role or 'not authorized') (#2319); ${#msg} chars" >&2
+    rm -f "${FAILED_2}"
+    exit 1
+  fi
+done
+rm -f "${FAILED_2}"
+# The refused cleanup DeleteFunction is printed by its class too: a denied
+# DeleteFunction names the caller.
+if ! printf '%s' "${INJECT_FLAT}" \
+  | grep -qE "Cleanup DeleteFunction failed for OrphanD after PutFunctionConcurrency failure — function may be orphaned: [A-Za-z0-9]+\. Re-run with [-][-]verbose for AWS's own message\."; then
+  echo "[verify] FAIL: OrphanD's refused cleanup DeleteFunction is not printed as '<ErrorClass>' plus the verbose-mode pointer (#2319, output above)" >&2
+  exit 1
+fi
+echo "[verify] step 2 ok: the orphans' RESOURCE_FAILED events and the cleanup line name the AWS failure by its class, with no account id or AWS text"
+
 echo "[verify] step 2b: ${FN_C} is deleted and its name re-used outside the stack"
 aws lambda delete-function --function-name "${FN_C}" --region "${REGION}" >/dev/null
 assert_gone_eventually "step 2b: ${FN_C} survived its delete" \
