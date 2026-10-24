@@ -66,6 +66,8 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
+import { getLogger } from '../../../src/utils/logger.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { provenNothingCreated } from '../../../src/deployment/generated-name-guard.js';
 
@@ -176,6 +178,33 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
 
       expect(((error as Error).cause as Error).message).toContain('wiring boom');
       expect(createdBeforeFailure(error, 'Res', c.type)).toBe(c.arn);
+    });
+
+    // go-to-k/cdkd#2319: a denied cleanup Delete* names the caller, so the warn
+    // carries the class; AWS's text goes to the debug line under the same head.
+    it('names a denied cleanup delete by its class at warn', async () => {
+      const denied = Object.assign(
+        new Error('User: arn:aws:sts::111122223333:assumed-role/deployer/s is not authorized'),
+        { name: 'AccessDenied', $fault: 'client', $metadata: { httpStatusCode: 403 } }
+      );
+      mockSend.mockResolvedValueOnce(c.created);
+      mockSend.mockRejectedValueOnce(nonRetryable('wiring boom'));
+      mockSend.mockRejectedValueOnce(denied);
+
+      await failure(() => provider.create('Res', c.type, c.props));
+
+      const log = getLogger().child('ELBv2Provider') as unknown as {
+        warn: ReturnType<typeof vi.fn>;
+        debug: ReturnType<typeof vi.fn>;
+      };
+      const warned = log.warn.mock.calls.map((call) => String(call[0])).join('\n');
+      expect(warned).toContain(`(${c.arn}): AccessDenied. ${VERBOSE_POINTER} `);
+      expect(warned).not.toContain('111122223333');
+      expect(
+        log.debug.mock.calls.some((call) =>
+          String(call[0]).endsWith(`(${c.arn}): ${denied.message}`)
+        )
+      ).toBe(true);
     });
 
     it('go-to-k/cdkd#4705 E-3: the 4xx wiring failure with the resource left behind keeps the intent', async () => {

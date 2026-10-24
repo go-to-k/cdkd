@@ -279,7 +279,9 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
 
     // go-to-k/cdkd#3361: a cleanup rejection `String()` cannot convert (a
     // null-prototype object) must not out-throw the catch: the warn still
-    // prints and the wiring failure is what the caller sees.
+    // prints and the wiring failure is what the caller sees. A non-Error takes
+    // `cleanupFailureText`'s withheld arm, so this pins the catch as a whole;
+    // `maskErrorMessage` itself only ever receives an `Error` now.
     it('still warns and rethrows the wiring failure when the cleanup rejects with an unconvertible value', async () => {
       mockSend.mockImplementation((command: unknown) => {
         if (command instanceof CreateLoadBalancerCommand) {
