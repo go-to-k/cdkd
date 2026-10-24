@@ -50,6 +50,7 @@ import {
   isNameCollisionErrorFrom,
   isRecreateRetryableError,
   markNonRetryable,
+  markRedactedCause,
 } from '../retryable-errors.js';
 import {
   createSecretMasker,
@@ -514,13 +515,25 @@ export async function updateByReplacement(
           updateSecrets,
           printingSecretsFor(engine.secretsRun, logicalId),
         ]);
-        throw new Error(
+        // go-to-k/cdkd#2319: this message is persisted, and an AWS-authored
+        // delete failure (a raw SDK or Cloud Control error) names the caller
+        // on a denial. It is named by its class plus the `--verbose` pointer,
+        // AWS's text goes to `debug` masked, and the wrap is stamped so a
+        // classifier reads that text on the `cause` chain. A provider's own
+        // wrap or a transport failure keeps its text.
+        const deleteFailure = describeAwsFailure(deleteError);
+        const destroyFailureText = (text: string): string =>
           // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676).
           safeMsg`Failed to destroy old resource ${maskSecretsInText(logicalId, shownSecrets)} ` +
-            safeMsg`(${maskSecretsInText(currentResource.physicalId, shownSecrets)}) during ${recreateFlagName}: ` +
-            // go-to-k/cdkd#2676: the wrapped error's (masked) message is
-            // embedded as-is and LAST: it can end in cdkd's own remedy lines.
-            safeMsg`${asIsMessage(maskSecretsInText(describeAwsFailure(deleteError).detail, shownSecrets))}`,
+          safeMsg`(${maskSecretsInText(currentResource.physicalId, shownSecrets)}) during ${recreateFlagName}: ` +
+          // go-to-k/cdkd#2676: the wrapped error's (masked) message is
+          // embedded as-is and LAST: it can end in cdkd's own remedy lines.
+          safeMsg`${asIsMessage(maskSecretsInText(text, shownSecrets))}`;
+        if (deleteFailure.redacted) {
+          engine.logger.debug(destroyFailureText(deleteFailure.detail));
+        }
+        const destroyFailure = new Error(
+          destroyFailureText(deleteFailure.redacted ? deleteFailure.summary : deleteFailure.detail),
           {
             cause:
               deleteError instanceof Error
@@ -528,6 +541,9 @@ export async function updateByReplacement(
                 : undefined,
           }
         );
+        throw deleteFailure.redacted && deleteError instanceof Error
+          ? markRedactedCause(destroyFailure)
+          : destroyFailure;
       }
       // Issue #1762: same reasoning as the delete-first fallback —
       // this destroy is load-bearing, so a skip has to fail the
@@ -706,9 +722,17 @@ export async function updateByReplacement(
       // The AWS text every refusal below quotes: masked FIRST (the
       // create was handed resolved values), then rendered display-safe
       // and bounded, since an AWS message can echo a template value.
-      const createMsg = displayAwsMessage(
-        maskSecretsInText(describeAwsFailure(createError).detail, updateSecrets)
+      // go-to-k/cdkd#2319: every refusal below is persisted, so an
+      // AWS-authored collision (a raw SDK or Cloud Control error) is quoted
+      // by its class plus the `--verbose` pointer, its text in `debug`. A
+      // provider's own wrap keeps its text.
+      const createFailure = describeAwsFailure(createError);
+      const createAwsMsg = displayAwsMessage(
+        maskSecretsInText(createFailure.detail, updateSecrets)
       );
+      const createMsg = createFailure.redacted
+        ? displaySafe(maskSecretsInText(createFailure.summary, updateSecrets))
+        : createAwsMsg;
       // For the refusals that close it with their own `. `: a provider's
       // redacted summary ends in a period (go-to-k/cdkd#2319), and so does
       // most AWS text.
@@ -735,6 +759,11 @@ export async function updateByReplacement(
       // (issue go-to-k/cdkd#3208).
       const nameCollision = isNameCollisionErrorFrom(createError, logicalId);
       if (!nameCollision) throw createError;
+      if (createFailure.redacted) {
+        engine.logger.debug(
+          safeMsg`${maskSecretsInText(logicalId, updateSecrets)}: the create-first attempt collided: ${asIsMessage(createAwsMsg)}`
+        );
+      }
       // Retain pins the old resource (and its name) in place, so a
       // same-name replacement can never proceed under any flag.
       // (Snapshot is not special-cased HERE — the old resource is

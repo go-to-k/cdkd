@@ -60,7 +60,7 @@ import { cachedCreateOnlyPropertyPaths } from '../../provisioning/create-only-pr
 import { hasPassProvenance } from '../secret-redaction/reference-provenance.js';
 import { referenceProvenanceOf } from '../reference-provenance-record.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { asIsMessage, safeMsg } from '../../utils/display-safe.js';
+import { asIsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
@@ -75,6 +75,7 @@ import {
   isNameCollisionErrorFrom,
   isUpdateUnsupportedError,
   markNonRetryable,
+  markRedactedCause,
 } from '../retryable-errors.js';
 import {
   createSecretMasker,
@@ -1019,15 +1020,32 @@ export async function updateInPlace(
               updateSecrets,
               printingSecretsFor(engine.secretsRun, logicalId),
             ]);
-            throw new Error(
+            // go-to-k/cdkd#2319: an AWS-authored create failure (a raw SDK or
+            // Cloud Control error) names the caller on a denial, so the
+            // persisted message carries its class plus the `--verbose`
+            // pointer, AWS's text goes to `debug` masked, and the wrap is
+            // stamped so a classifier reads that text on the `cause` chain.
+            // A provider's own wrap or a transport failure keeps its text.
+            const createFailure = describeAwsFailure(createError);
+            const createFailureText = (text: string): string =>
               // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676).
               safeMsg`Failed to create ${maskSecretsInText(logicalId, shownSecrets)} after the ` +
-                safeMsg`UPDATE-not-supported replacement: the old resource (${maskSecretsInText(currentResource.physicalId, shownSecrets)}) ` +
-                // go-to-k/cdkd#2676: the wrapped error's (masked) message is embedded
-                // as-is and LAST: it can end in cdkd's own remedy command lines.
-                safeMsg`is now gone. Re-run the deploy to create it fresh. Cause: ${asIsMessage(maskSecretsInText(describeAwsFailure(createError).detail, shownSecrets))}`,
+              safeMsg`UPDATE-not-supported replacement: the old resource (${maskSecretsInText(currentResource.physicalId, shownSecrets)}) ` +
+              // go-to-k/cdkd#2676: the wrapped error's (masked) message is embedded
+              // as-is and LAST: it can end in cdkd's own remedy command lines.
+              safeMsg`is now gone. Re-run the deploy to create it fresh. Cause: ${asIsMessage(maskSecretsInText(text, shownSecrets))}`;
+            if (createFailure.redacted) {
+              engine.logger.debug(createFailureText(createFailure.detail));
+            }
+            const createFailed = new Error(
+              createFailureText(
+                createFailure.redacted ? createFailure.summary : createFailure.detail
+              ),
               { cause: createError instanceof Error ? createError : undefined }
             );
+            throw createFailure.redacted && createError instanceof Error
+              ? markRedactedCause(createFailed)
+              : createFailed;
           }
           // Same HEURISTIC, and the same bounded blast radius, as
           // the property-driven create-first path's: a false positive
@@ -1286,12 +1304,39 @@ export async function updateInPlace(
         !isInterruptedWaitError(updateError) &&
         !isWaitAbandonedError(updateError)
       ) {
-        updateError.message += ccAutoRouteUpdateFailureRemedy(
+        const remedy = ccAutoRouteUpdateFailureRemedy(
           logicalId,
           resourceType,
           updateDecision.ccRouteReason.properties,
           engine.options.parentStackInfo !== undefined
         );
+        // go-to-k/cdkd#2319: appended to AWS's own error, the remedy would be
+        // dropped with AWS's text when the event recorder reduces that error
+        // to its class. Such an error is wrapped instead: the class plus the
+        // remedy in the persisted message, AWS's text in `debug` (masked) and
+        // on the `cause`, which every downstream mark reader walks.
+        const updateFailure = describeAwsFailure(updateError);
+        if (updateFailure.redacted) {
+          const shownSecrets = unionOfSecretBags([
+            updateSecrets,
+            printingSecretsFor(engine.secretsRun, logicalId),
+          ]);
+          engine.logger.debug(
+            safeMsg`${maskSecretsInText(logicalId, shownSecrets)}: the update failed: ${asIsMessage(
+              maskSecretsInText(updateFailure.detail, shownSecrets)
+            )}`
+          );
+          const wrapped = new Error(`${displaySafe(updateFailure.summary)}${remedy}`, {
+            cause: updateError,
+          });
+          // The AWS class stays the recorded `error.name`, as when the error
+          // itself was thrown -- except `CredentialsProviderError`, a name
+          // `isAwsAuthoredFailure` reads as AWS-authored on its own, so the
+          // recorder would reduce the wrap too and drop the remedy.
+          if (updateError.name !== 'CredentialsProviderError') wrapped.name = updateError.name;
+          throw markRedactedCause(wrapped);
+        }
+        updateError.message += remedy;
       }
       throw updateError;
     }

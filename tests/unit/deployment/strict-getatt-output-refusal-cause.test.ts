@@ -25,7 +25,7 @@ import {
   isMarkedNonRetryable,
   isRetryableTransientError,
 } from '../../../src/deployment/retryable-errors.js';
-import { markNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { hasRedactedCause, markNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
@@ -127,6 +127,15 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
     getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
     resetPhysicalIdFallbackCount: vi.fn(),
     resolve: vi.fn().mockImplementation(async (value: unknown) => {
+      if (value === '__aws_denial__' || value === '__transport__') {
+        const { awsSdkError } = await import('../_aws-sdk-error.js');
+        throw value === '__aws_denial__'
+          ? awsSdkError(
+              'User: arn:aws:sts::123456789012:assumed-role/Deployer/s is denied ec2:DescribeVpcs',
+              'UnauthorizedOperation'
+            )
+          : new Error('connect ECONNREFUSED 127.0.0.1:443');
+      }
       if (value === '__refusal__') {
         throw markNonRetryable(
           new IntrinsicResolutionRefusalError(await realSplitRefusalMessage())
@@ -219,7 +228,7 @@ describe('--strict-getatt output re-wrap preserves the non-retryable marker (#18
     };
   });
 
-  const deployAndCatch = async (): Promise<Error> => {
+  const deployAndCatch = async (tpl: CloudFormationTemplate = template): Promise<Error> => {
     const engine = new DeployEngine(
       mockStateBackend as never,
       mockLockManager as never,
@@ -230,12 +239,44 @@ describe('--strict-getatt output re-wrap preserves the non-retryable marker (#18
       'us-east-1'
     );
     try {
-      await engine.deploy(stackName, template);
+      await engine.deploy(stackName, tpl);
     } catch (error) {
       return error as Error;
     }
     throw new Error('expected the strict-getatt output failure to reject');
   };
+
+  // go-to-k/cdkd#2319: the refusal reaches the persisted RUN_FINISHED event,
+  // and AWS words a denial with the caller's account, role and session.
+  it('names an AWS-authored read failure by its class, its text in debug and on the cause', async () => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const error = await deployAndCatch({
+      ...template,
+      Outputs: { Denied: { Value: '__aws_denial__' } },
+    });
+
+    expect(error.message).toContain(
+      "drop the flag to skip the output instead): UnauthorizedOperation. Re-run with --verbose for AWS's own message."
+    );
+    expect(error.message).not.toContain('123456789012');
+    expect(hasRedactedCause(error)).toBe(true);
+    expect(((error as Error & { cause?: Error }).cause as Error).message).toContain('Deployer');
+    const debugLine = vi
+      .mocked(getLogger().debug)
+      .mock.calls.map(([m]) => String(m))
+      .find((m) => m.includes('Deployer'));
+    expect(debugLine).toContain('Failed to resolve output Denied');
+  });
+
+  it('keeps a transport read failure text, unstamped', async () => {
+    const error = await deployAndCatch({
+      ...template,
+      Outputs: { Down: { Value: '__transport__' } },
+    });
+
+    expect(error.message).toContain('instead): connect ECONNREFUSED 127.0.0.1:443');
+    expect(hasRedactedCause(error)).toBe(false);
+  });
 
   it('re-wraps the refusal but keeps it non-retryable via the cause chain', async () => {
     const error = await deployAndCatch();

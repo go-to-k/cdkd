@@ -366,9 +366,12 @@ describe('rollback replay - the failure warn + the events record are masked (iss
       | { error?: { message?: string; name?: string; awsErrorCode?: string; requestId?: string } }
       | undefined;
     expect(failed).toBeDefined();
-    // Masking happened ...
+    // The AWS-authored text is withheld from the persisted copy
+    // (go-to-k/cdkd#2319), so no plaintext can reach it ...
     expect(failed!.error?.message).not.toContain(SECRET_PLAINTEXT);
-    expect(failed!.error?.message).toContain(SECRET_MASK);
+    expect(failed!.error?.message).toBe(
+      "ValidationException. Re-run with --verbose for AWS's own message."
+    );
     // ... and nothing else was lost on the way through.
     expect(failed!.error?.name).toBe('ValidationException');
     expect(failed!.error?.awsErrorCode).toBe('ValidationException');

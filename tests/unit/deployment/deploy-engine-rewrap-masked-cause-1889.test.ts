@@ -42,6 +42,14 @@ vi.mock('../../../src/utils/logger.js', () => {
   return { getLogger: () => fns };
 });
 
+/**
+ * go-to-k/cdkd#2319: an AWS-authored failure's text moved from the persisted
+ * wrap message to `debug`, so the masking cases read it there.
+ */
+function debugLines(): string[] {
+  return vi.mocked(getLogger().debug).mock.calls.map(([m]) => String(m));
+}
+
 vi.mock('p-limit', () => ({
   default: vi.fn(() => <T>(fn: () => T) => fn()),
 }));
@@ -104,6 +112,7 @@ describe('replacement delete wraps chain a masked cause (go-to-k/cdkd#1889)', ()
 
   beforeEach(() => {
     vi.mocked(printingSecretsFor).mockReset();
+    vi.mocked(getLogger().debug).mockClear();
     secretsToRecord = [];
     createFailures = [];
     deleteRejection = undefined;
@@ -348,7 +357,13 @@ describe('replacement delete wraps chain a masked cause (go-to-k/cdkd#1889)', ()
 
       expect(wrap.message).toContain('Failed to destroy old resource Pipe (my-pipe)');
       expect(wrap.message).not.toContain(SECRET);
-      expect(wrap.message).toContain(`Value '***' at 'Source' failed`);
+      // go-to-k/cdkd#2319: the persisted message names the class; AWS's text
+      // is in debug, masked.
+      expect(wrap.message).toContain(
+        "during --recreate-via-cc-api: ResourceConflictException. Re-run with --verbose for AWS's own message."
+      );
+      expect(debugLines().some((l) => l.includes(`Value '***' at 'Source' failed`))).toBe(true);
+      expect(debugLines().some((l) => l.includes(SECRET))).toBe(false);
       expect(cause).toBeInstanceOf(Error);
       expect(cause.message).not.toContain(SECRET);
       expect(cause.stack ?? '').not.toContain(SECRET);
@@ -374,9 +389,11 @@ describe('replacement delete wraps chain a masked cause (go-to-k/cdkd#1889)', ()
       );
 
       expect(wrap.message).toContain('Failed to destroy old resource Pipe (my-pipe)');
-      expect(wrap.message).toContain(`Value '***' failed\n[ERROR] forged`);
       expect(wrap.message).not.toContain('pem-line-one-2676');
       expect(wrap.message).not.toContain('pem-line-two-2676');
+      // go-to-k/cdkd#2319: AWS's text is on the debug line now, masked whole.
+      expect(debugLines().some((l) => l.includes(`Value '***' failed\n[ERROR] forged`))).toBe(true);
+      expect(debugLines().some((l) => l.includes('pem-line-'))).toBe(false);
     });
 
     // go-to-k/cdkd#2676: the wrapped error's message is embedded as-is and
@@ -432,9 +449,14 @@ describe('replacement delete wraps chain a masked cause (go-to-k/cdkd#1889)', ()
 
       expect(printingSecretsFor).toHaveBeenCalledWith(engine.secretsRun, 'Pipe');
       expect(wrap.message).toContain('Failed to destroy old resource Pipe (my-pipe)');
-      expect(wrap.message).toContain(`Handler failed: '***' is still referenced`);
       expect(wrap.message).not.toContain('prev-noecho-one-2676');
       expect(wrap.message).not.toContain('prev-noecho-two-2676');
+      // go-to-k/cdkd#2319: AWS's text is on the debug line now, masked with
+      // the printing bag too.
+      expect(debugLines().some((l) => l.includes(`Handler failed: '***' is still referenced`))).toBe(
+        true
+      );
+      expect(debugLines().some((l) => l.includes('prev-noecho-'))).toBe(false);
     });
   });
 
@@ -464,12 +486,7 @@ describe('replacement delete wraps chain a masked cause (go-to-k/cdkd#1889)', ()
     const DENIAL =
       'User: arn:aws:sts::123456789012:assumed-role/Deployer/s is denied pipes:DeletePipe';
 
-    function debugLines(): string[] {
-      return vi.mocked(getLogger().debug).mock.calls.map(([m]) => String(m));
-    }
-
     it('the delete wrap: class in the message, AWS text in debug, cause kept and stamped', async () => {
-      vi.mocked(getLogger().debug).mockClear();
       const raw = markNonRetryable(awsSdkError(DENIAL, 'AccessDeniedException'));
       createFailures = [collision()];
       deleteRejection = () => raw;
@@ -486,7 +503,6 @@ describe('replacement delete wraps chain a masked cause (go-to-k/cdkd#1889)', ()
     });
 
     it('the re-create wrap: class in the message, masked AWS text in debug', async () => {
-      vi.mocked(getLogger().debug).mockClear();
       secretsToRecord = [[SECRET, '{{resolve:secretsmanager:db:SecretString:pw}}']];
       createFailures = [
         collision(),
@@ -511,7 +527,6 @@ describe('replacement delete wraps chain a masked cause (go-to-k/cdkd#1889)', ()
       ['delete', 'Failed to delete old resource Pipe'],
       ['re-create', 'Failed to re-create Pipe'],
     ] as const)('masks a multi-line secret in the %s wrap debug line', async (wrapKind, head) => {
-      vi.mocked(getLogger().debug).mockClear();
       const multiLine = 'pem-line-one-2676\npem-line-two-2676';
       secretsToRecord = [[multiLine, '{{resolve:secretsmanager:db:SecretString:pw}}']];
       const denial = () =>

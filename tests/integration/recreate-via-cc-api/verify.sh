@@ -358,6 +358,37 @@ if [ -z "${REQUEST_ID}" ]; then
   exit 1
 fi
 echo "        OK: RESOURCE_FAILED awsErrorCode=${AWS_CODE}, requestId present"
+# go-to-k/cdkd#2319 regression guard. The old bucket is deleted by the SDK S3
+# provider, whose own wrap already names an AWS failure by its class, so this
+# path is redacted before the engine's destroy wrap sees it: the checks below
+# keep it that way rather than evidence the engine change. The persisted
+# message must carry the class and the --verbose pointer (the provider may
+# append its own explicit-deny note after it) and none of AWS's text. The
+# bucket name embeds this account's id on purpose, so it is stripped first.
+FAILED_MSG=$(printf '%s' "${FAILED_EVENT}" | jq -r '.error.message // ""')
+if [ -z "${FAILED_MSG}" ]; then
+  echo "FAIL: RESOURCE_FAILED for RecreateProbeBucket has no error.message (the #2319 checks below would pass for free)" >&2
+  exit 1
+fi
+if ! printf '%s' "${FAILED_MSG}" | grep -qE "^Failed to destroy old resource RecreateProbeBucket \(.*\) during --recreate-via-cc-api: .*[A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
+  echo "FAIL: RESOURCE_FAILED message is not the destroy wrap carrying '<ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319)" >&2
+  exit 1
+fi
+# A FAIL here names only which needle matched: echoing the message would print
+# what it leaked.
+LEAK=""
+if printf '%s' "${FAILED_MSG}" | sed -e "s/${BUCKET_NAME}//g" | grep -qF "${ACCOUNT_ID}"; then
+  LEAK="the account id (outside the bucket name)"
+elif printf '%s' "${FAILED_MSG}" | grep -qiE "assumed-role|arn:aws:sts::"; then
+  LEAK="a caller ARN"
+elif printf '%s' "${FAILED_MSG}" | grep -qiF "not authorized"; then
+  LEAK="AWS's 'not authorized' wording"
+fi
+if [ -n "${LEAK}" ]; then
+  echo "FAIL: RESOURCE_FAILED message quotes AWS's text: it contains ${LEAK} (#2319)" >&2
+  exit 1
+fi
+echo "        OK: RESOURCE_FAILED message names the AWS failure by its class, with no AWS text (#2319)"
 
 if gone_probe aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}"; then
   echo "FAIL: probe bucket ${BUCKET_NAME} is gone after a destroy AWS refused" >&2

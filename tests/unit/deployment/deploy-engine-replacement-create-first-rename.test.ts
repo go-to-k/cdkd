@@ -324,6 +324,35 @@ describe('DeployEngine — create-first when a replacement moves its name (#3931
       expect(h.provider.delete).not.toHaveBeenCalled();
     });
 
+    // go-to-k/cdkd#2319: the refusal is persisted, and an SDK error a
+    // provider let escape can carry the caller's ARN. cdkd's own "the create
+    // collided" sentence stays; only AWS's text moves to debug.
+    it('quotes an AWS-authored collision by its class, its text in debug', async () => {
+      logger.debug.mockClear();
+      const raw = awsSdkError(
+        'Function already exist: taken-name (arn:aws:sts::123456789012:assumed-role/Deployer/s)'
+      );
+      h.createFailures = [raw];
+
+      const err = await provision(makeEngine(h), {
+        recorded: 'my-fn',
+        desired: 'taken-name',
+        replacement: false,
+      });
+
+      expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
+      expect(err!.message).toContain(
+        "but the create collided: ResourceConflictException. Re-run with --verbose for AWS's own message. If the collision is on the requested name"
+      );
+      expect(err!.message).not.toContain('123456789012');
+      expect(err!.message).not.toContain('Deployer');
+      expect(err!.cause).toBe(raw);
+      expect(isMarkedNonRetryable(err)).toBe(true);
+      expect(debugLines().find((l) => l.includes('Deployer'))).toContain(
+        'the create-first attempt collided: Function already exist: taken-name'
+      );
+    });
+
     it('creates the renamed resource BEFORE deleting the old one', async () => {
       const err = await provision(makeEngine(h), {
         recorded: 'my-fn',
