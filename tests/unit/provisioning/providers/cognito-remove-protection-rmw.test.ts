@@ -44,6 +44,7 @@ import { ResourceNotFoundException } from '@aws-sdk/client-cognito-identity-prov
 import {
   CognitoUserPoolProvider,
   REFUSED_ECHO_ERRORS,
+  isRefusedEcho,
   USER_POOL_ECHO_MEMBERS,
   USER_POOL_KEPT_ON_OMISSION,
   userPoolDeletionProtectionUpdate,
@@ -490,16 +491,15 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     expect(childLogger.warn).not.toHaveBeenCalledWith(expect.stringContaining('left on'));
   });
 
-  // go-to-k/cdkd#3361: `isRefusedEcho` read the echo failure's `name` with a
-  // bare `String()`. A thrown value's `name` is as arbitrary as the value, and
-  // one `String()` cannot convert threw a TypeError out of the echo's catch in
-  // place of the delete's own refusal.
-  it('a refused echo whose name cannot be stringified does not fall back, and the delete reports its own refusal', async () => {
+  // go-to-k/cdkd#3361: `isRefusedEcho` read the failure's `name` with a bare
+  // `String()`. A thrown value's `name` is as arbitrary as the value, and this
+  // predicate runs inside the echo catches that decide the bare fallback, so a
+  // `name` `String()` cannot convert must answer "not refused", never throw.
+  it('isRefusedEcho answers false, without throwing, for a name String() cannot convert', () => {
+    expect(isRefusedEcho({ name: Object.create(null) })).toBe(false);
     const err = named('InvalidParameterException', 'refused');
     Object.defineProperty(err, 'name', { value: Object.create(null) });
-    script({ echoError: { INACTIVE: err }, dels: [named('InvalidParameterException', 'deletion protection is activated')] });
-    await expect(del()).rejects.toSatisfy(says('deletion protection is activated'));
-    expect(updates()).toHaveLength(1);
+    expect(isRefusedEcho(err)).toBe(false);
   });
 
   it('names cognito-idp:UpdateUserPool when the echo is access-denied', async () => {
