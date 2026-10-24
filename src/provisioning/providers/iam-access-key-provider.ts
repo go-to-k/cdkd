@@ -20,11 +20,16 @@ import {
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { markNotGone } from '../not-gone.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import type { CreateContext, UpdateContext } from '../../types/resource.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
 
 import type {
   ResourceProvider,
@@ -118,7 +123,10 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     const failure = describeAwsFailure(error);
     if (!failure.redacted) return wrapMaskedAwsError(log.mask, error, build);
     log.debug(build(log.mask(failure.detail)).message);
-    const wrapped = build(`${log.mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    // Not from a post-create step (`markAuxiliaryFailure`), where "it" would
+    // read as the resource just created.
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${log.mask(failure.summary)}${relay}`);
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
@@ -767,7 +775,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         createMaskedLogSinks(this.logger, context?.maskSecrets),
         error,
         (text) =>
@@ -779,6 +787,12 @@ export class IAMAccessKeyProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this one is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 

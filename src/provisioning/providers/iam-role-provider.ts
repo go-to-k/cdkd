@@ -28,6 +28,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { markNotGone } from '../not-gone.js';
 import { generateResourceNameWithFallback, recordedGeneratedNameKept } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { withRemovalDefaults } from '../update-removal.js';
@@ -41,7 +42,11 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import {
   markNonRetryable,
@@ -126,9 +131,10 @@ export class IAMRoleProvider implements ResourceProvider {
     if (!(error instanceof Error)) return build(mask(failure.detail));
     if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
     this.logger.debug(mask(build(mask(failure.detail)).message));
-    return markRedactedCause(
-      build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
-    );
+    // Not from a post-create step (`markAuxiliaryFailure`), where "it" would
+    // read as the resource just created.
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    return markRedactedCause(build(`${mask(failure.summary)}${relay}`));
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -357,8 +363,14 @@ export class IAMRoleProvider implements ResourceProvider {
           // The `<arn>` / `<name>` holes are QUOTED: bare, each is two shell
           // redirections.
           const aws = pasteableAwsCommand(log.mask);
+          // An AWS-authored failure is named by its class at warn, and AWS's
+          // text (a denied `DeleteRole` names the caller) goes to `debug` under
+          // the same head (go-to-k/cdkd#2319).
+          const cleanupFailure = describeAwsFailure(cleanupError);
+          const cleanupHead = `Failed to clean up partially-created IAM role ${logicalId} (${v(roleName)}): `;
+          if (cleanupFailure.redacted) log.debug(`${cleanupHead}${v(cleanupFailure.detail)}`);
           log.warn(
-            `Failed to clean up partially-created IAM role ${logicalId} (${v(roleName)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: detach managed policies (${aws`aws iam list-attached-role-policies --role-name ${roleName}`.render()} then ${aws`aws iam detach-role-policy --role-name ${roleName} --policy-arn '<arn>'`.render()}), delete inline policies (${aws`aws iam list-role-policies --role-name ${roleName}`.render()} then ${aws`aws iam delete-role-policy --role-name ${roleName} --policy-name '<name>'`.render()}), then ${aws`aws iam delete-role --role-name ${roleName}`.render()}`
+            `${cleanupHead}${cleanupFailure.redacted ? `${v(cleanupFailure.summary)} ` : `${v(cleanupFailure.detail)}. `}Manual deletion may be required before the next deploy: detach managed policies (${aws`aws iam list-attached-role-policies --role-name ${roleName}`.render()} then ${aws`aws iam detach-role-policy --role-name ${roleName} --policy-arn '<arn>'`.render()}), delete inline policies (${aws`aws iam list-role-policies --role-name ${roleName}`.render()} then ${aws`aws iam delete-role-policy --role-name ${roleName} --policy-name '<name>'`.render()}), then ${aws`aws iam delete-role --role-name ${roleName}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -877,7 +889,13 @@ export class IAMRoleProvider implements ResourceProvider {
             cause
           )
       );
-      throw progress.stripped ? markDeleteStarted(failure) : failure;
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this one is gone (go-to-k/cdkd#2319). IAM's own
+      // `NoSuchEntity` is not such a class.
+      const marked =
+        error instanceof Error && error.name.includes('NotFound') ? markNotGone(failure) : failure;
+      throw progress.stripped ? markDeleteStarted(marked) : marked;
     }
   }
 

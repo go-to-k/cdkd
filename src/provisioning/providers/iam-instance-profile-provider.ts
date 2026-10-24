@@ -20,6 +20,7 @@ import {
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { markNotGone } from '../not-gone.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
@@ -29,7 +30,11 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
 import {
   onlySecretDerived,
   readPrincipalLists,
@@ -112,9 +117,10 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     if (!(error instanceof Error)) return build(mask(failure.detail));
     if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
     this.logger.debug(mask(build(mask(failure.detail)).message));
-    return markRedactedCause(
-      build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
-    );
+    // Not from a post-create step (`markAuxiliaryFailure`), where "it" would
+    // read as the resource just created.
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    return markRedactedCause(build(`${mask(failure.summary)}${relay}`));
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -248,8 +254,14 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
           // type's partial-create cleanup test.
           // The `<name>` hole is QUOTED: bare, it is two shell redirections.
           const aws = pasteableAwsCommand(log.mask);
+          // An AWS-authored failure is named by its class at warn, and AWS's
+          // text (a denied `DeleteInstanceProfile` names the caller) goes to
+          // `debug` under the same head (go-to-k/cdkd#2319).
+          const cleanupFailure = describeAwsFailure(cleanupError);
+          const cleanupHead = `Failed to clean up partially-created IAM instance profile ${logicalId} (${v(instanceProfileName)}): `;
+          if (cleanupFailure.redacted) log.debug(`${cleanupHead}${v(cleanupFailure.detail)}`);
           log.warn(
-            `Failed to clean up partially-created IAM instance profile ${logicalId} (${v(instanceProfileName)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: remove every role (${aws`aws iam remove-role-from-instance-profile --instance-profile-name ${instanceProfileName} --role-name '<name>'`.render()}) then ${aws`aws iam delete-instance-profile --instance-profile-name ${instanceProfileName}`.render()}`
+            `${cleanupHead}${cleanupFailure.redacted ? `${v(cleanupFailure.summary)} ` : `${v(cleanupFailure.detail)}. `}Manual deletion may be required before the next deploy: remove every role (${aws`aws iam remove-role-from-instance-profile --instance-profile-name ${instanceProfileName} --role-name '<name>'`.render()}) then ${aws`aws iam delete-instance-profile --instance-profile-name ${instanceProfileName}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -570,7 +582,13 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
             cause
           )
       );
-      throw stripped ? markDeleteStarted(failure) : failure;
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this one is gone (go-to-k/cdkd#2319). IAM's own
+      // `NoSuchEntity` is not such a class.
+      const marked =
+        error instanceof Error && error.name.includes('NotFound') ? markNotGone(failure) : failure;
+      throw stripped ? markDeleteStarted(marked) : marked;
     }
   }
 
