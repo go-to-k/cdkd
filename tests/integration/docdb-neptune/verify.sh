@@ -763,11 +763,17 @@ DESTROY_3G_LOG=""
 printf '%s\n' "${DESTROY_3G_PLAIN}" >&2
 # PREMISE: the failure is the engineered one. A destroy that died earlier (a
 # credential error, a region refusal) never reached the flip, so a guard still
-# ON afterwards would pass the readback below while testing nothing.
-if ! grep -qE 'still contains DB instances|non-deleting state' <<<"${DESTROY_3G_PLAIN}"; then
-  echo "[verify] FAIL: step 3g destroy failed, but not with DeleteDBCluster's member refusal -- the arm did not reach the compensation" >&2
-  exit 1
-fi
+# ON afterwards would pass the readback below while testing nothing. The
+# thrown wrap names AWS's error by its class only (go-to-k/cdkd#2319), and this
+# destroy runs without --verbose, so the member refusal is read as each
+# provider's DeleteDBCluster catch-wrap with the class DeleteDBCluster answers
+# it with. The failure-set check below rules out an earlier death.
+for premise in "Failed to delete DocDB DBCluster DocdbCluster" "Failed to delete Neptune DBCluster NeptuneCluster"; do
+  if ! grep -qF "${premise}: InvalidDBClusterStateFault. Re-run with --verbose" <<<"${DESTROY_3G_PLAIN}"; then
+    echo "[verify] FAIL: step 3g destroy failed, but not with '${premise}: InvalidDBClusterStateFault' (DeleteDBCluster's member refusal) -- the arm did not reach the compensation" >&2
+    exit 1
+  fi
+done
 # The FAILURE SET: both clusters, and nothing but them and what the
 # out-of-band members' ENIs hold (subnet groups, the shared SG, the VPC and its
 # subnets). Anything else failing here would otherwise be absorbed silently by
