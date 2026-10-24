@@ -59,9 +59,8 @@ tests passing is necessary but NOT sufficient:
   (deploy → the redeploy that reproduced the bug → destroy). A lane barred from
   real-AWS RUNS still WRITES the arm; the parent runs it. "No fixture can reach
   it" needs `grep -rl '<type's last segment>' tests/integration/*/lib` empty
-  first (`Certificate`, not `AWS::CertificateManager::Certificate`, which an
-  L2 fixture need not spell; a type an L2 creates IMPLICITLY needs a synthed
-  template grepped instead) — an existing fixture takes the new arm
+  first (an L2 fixture need not spell the full type; one an L2 creates
+  IMPLICITLY needs a synthed template grepped) — an existing fixture takes the new arm
   (#4369).
 - **A change to what cdkd PRINTS or DECIDES** (a message's text or line split,
   a refuse / adopt outcome) → `grep -rlF --include='*.sh' --include='*.ts'
@@ -90,9 +89,11 @@ tests passing is necessary but NOT sufficient:
 ### 8-d. Integ arms owe a discrimination proof (mutation-probe on real AWS)
 
 BEFORE the final integ, revert the fix, rebuild, run, confirm the arm goes RED
-**at YOUR assertion — read which one fired**, then restore and rebuild. A GREEN
-pre-fix run BLOCKS the merge: rework the arm so the symptom reaches AWS
-(#4927: an engine skip ate the write). A failure HINT's needle is
+**at YOUR assertion — read which one fired**, then restore and rebuild. A red
+ELSEWHERE proves nothing: at the CREATE the shape is unreachable, so redo
+`triage.md`'s CFn premise (#5204); at an older step, harden it and re-run
+(#5218). A GREEN pre-fix run BLOCKS the merge: rework the arm so the symptom reaches AWS
+(#4927). A failure HINT's needle is
 copied from that red run, never reasoned (#4336); a refusal the
 log tail lacks is the failed resource's `error.message` / `awsErrorCode` in
 `s3://<bucket>/<prefix>/<Stack>/<region>/deployments/*.jsonl`. **Revert by
@@ -193,8 +194,7 @@ merge-ready, ONCE, on the final sha — brief each reviewer with the maintainer'
 design answers and "what does this break that CFn or the CDK CLI accepts?" (a
 redaction slice adds: "sweep every helper that returns or mutates the ORIGINAL
 SDK error after the try — created-before-failure cleanup, orphan notes, retire
-paths"; both security reviewers passed one that go-to-k/cdkd#5161's code
-reviewer caught), to read by explicit sha after
+paths", #5161), to read by explicit sha after
 `git fetch origin +refs/pull/<N>/head:refs/review/pr-<N>`: `FETCH_HEAD` is
 shared across worktrees, `fetch.prune` DELETES a ref fetched from the short
 `pull/<N>/head`, and without `+` a force-push is rejected. A later fix round goes to the same reviewer with the delta. **The reviewer set is
