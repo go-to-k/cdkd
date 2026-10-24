@@ -194,7 +194,14 @@ describe('a collision with a resource the new one does not hold refuses delete-n
     expect(failed[0]).toContain('"stream-new"');
     expect(failed[0]).toContain('another resource holds the colliding name');
     expect(failed[0]).toContain('Nothing was deleted');
-    expect(failed[0]).toContain(KINESIS_COLLISION);
+    // go-to-k/cdkd#2319: the provider names AWS's failure by its class, and
+    // this line restates the --verbose pointer without the flag spelling.
+    expect(failed[0]).toContain(
+      `Underlying collision: "Failed to create Kinesis stream Stream: ResourceInUseException. Re-run with verbose logging for AWS's own message. AWS reports that it already exists."`
+    );
+    expect(failed[0]).not.toContain(KINESIS_COLLISION);
+    expect(failed[0]).not.toContain('123456789012');
+    expect(failed[0]).not.toContain('--verbose');
   });
 });
 
@@ -236,8 +243,14 @@ describe('the name-holder collision refusal describes a payload logical id (go-t
       // The prose line (with `re-run cdkd rollback`) and the `--orphan` line
       // carry no copy of the id. The provider's own collision text, which can
       // echo it (`Failed to create Kinesis stream <id>`), is on a line of its
-      // own with no command on it; that raw AWS-text display is a separate
-      // residual this PR does not claim.
+      // own with no command on it: the wrap names AWS's failure by its class
+      // (go-to-k/cdkd#2319), and its `--verbose` pointer is restated there
+      // without the flag spelling.
+      const collision = message.split('\n').find((l) => l.startsWith('Underlying collision: '));
+      expect(collision, id).toContain(
+        "ResourceInUseException. Re-run with verbose logging for AWS's own message. AWS reports that it already exists."
+      );
+      expect(collision, id).not.toContain('--verbose');
       const [prose] = message.split('\n');
       expect(prose, id).not.toContain(id);
       expect(message.split('\n').at(-1), id).toBe("To orphan it: cdkd rollback --orphan '<id>'");

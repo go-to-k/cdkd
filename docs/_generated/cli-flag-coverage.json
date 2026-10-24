@@ -1806,6 +1806,7 @@
         "recreate-via-cc-api",
         "redshift-cluster-getatt",
         "remove-protection",
+        "rollback-command",
         "rollback-sqs-cooldown",
         "route53",
         "s3-directory-bucket",
