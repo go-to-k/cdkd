@@ -72,7 +72,8 @@ Phase timings (CDKD_PHASE_TIMINGS=1):
 When most of the time is in `resource DAG`, the slowest resource decides the
 deploy, unless the stack has more independent resources than `--concurrency`
 (default 10). The `ready, waiting for a --concurrency slot` line shows how long
-resources waited for a free slot; when it is large, raise `--concurrency`. Time in the other steps is cdkd's own work, mostly round trips to the
+resources waited for a free slot, creates, updates and deletes added up; when
+it is large, raise `--concurrency`. Time in the other steps is cdkd's own work, mostly round trips to the
 state bucket.
 
 ### Inspect the dependency graph
