@@ -1789,6 +1789,7 @@
         "iam-managed-policy",
         "iam-propagation-stress",
         "iam-secret-derived-principals",
+        "iam-user-group-fix-forward-orphan",
         "import-attributes",
         "import-auto-mode",
         "import-deployed-parameter-secret",

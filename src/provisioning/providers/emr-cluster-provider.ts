@@ -362,6 +362,21 @@ export class EMRClusterProvider implements ResourceProvider {
     return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
   }
 
+  /**
+   * The cleanup-failure text a best-effort `warn` quotes after `head`
+   * (go-to-k/cdkd#2319). An AWS-authored failure is named by its CLASS at
+   * warn, since a denied call names the caller's assumed-role ARN; AWS's own
+   * text goes to `debug` under the same `head`, masked. A cdkd-authored or
+   * transport error keeps its text, masked.
+   */
+  private cleanupFailureText(head: string, error: unknown, mask: MaskerFn | undefined): string {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return m(failure.detail);
+    this.logger.debug(m(`${head}${m(failure.detail)}`));
+    return m(failure.summary);
+  }
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::EMR::Cluster',
@@ -663,10 +678,11 @@ export class EMRClusterProvider implements ResourceProvider {
           this.logger.warn(`Rolled back partially-created EMR Cluster ${clusterId}`);
         } catch (cleanupError) {
           survivorId = clusterId;
+          const cleanupHead = `Failed to roll back partially-created EMR Cluster ${clusterId}: `;
           this.logger.warn(
-            `Failed to roll back partially-created EMR Cluster ${clusterId}: ${
-              describeAwsFailure(cleanupError).detail
-            } — terminate it manually to stop billing`
+            maskerOrIdentity(context?.maskSecrets)(
+              `${cleanupHead}${this.cleanupFailureText(cleanupHead, cleanupError, context?.maskSecrets)} — terminate it manually to stop billing`
+            )
           );
         }
       }
@@ -1435,10 +1451,18 @@ export class EMRClusterProvider implements ResourceProvider {
       const state = cluster?.Status?.State;
       if (state && TERMINAL_STATES.has(state)) {
         if (state === 'TERMINATED_WITH_ERRORS') {
-          const reason =
-            cluster?.Status?.StateChangeReason?.Message ?? 'no state-change reason reported';
+          // The reason's code at warn, its text at debug (go-to-k/cdkd#2319): a
+          // validation reason names IAM role ARNs and the account id.
+          const m = maskerOrIdentity(mask);
+          const head = `EMR Cluster ${clusterId} terminated with errors: `;
+          const stateReason = cluster?.Status?.StateChangeReason;
+          const reason = describeAwsStatusReason(
+            { code: stateReason?.Code, message: stateReason?.Message },
+            'no state-change reason reported'
+          );
+          if (reason.redacted) this.logger.debug(m(`${head}${m(reason.detail)}`));
           this.logger.warn(
-            `EMR Cluster ${clusterId} terminated with errors: ${reason} (the cluster is gone and no longer bills)`
+            m(`${head}${m(reason.summary)} (the cluster is gone and no longer bills)`)
           );
         }
         return;

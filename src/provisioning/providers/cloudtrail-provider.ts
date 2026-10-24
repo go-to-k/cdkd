@@ -52,7 +52,12 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { markNotGone } from '../not-gone.js';
 import { generatedNameFor } from '../resource-name.js';
 
 /**
@@ -169,6 +174,40 @@ function describeValue(value: unknown): string {
 }
 
 /**
+ * The wording of AWS's rejection that the EventSelectors reset tolerates: a
+ * trail on AdvancedEventSelectors has no basic selectors to reset.
+ */
+const ADVANCED_SELECTOR_PHRASE = /advanced[\s-]*event[\s-]*selector/i;
+
+/**
+ * An access-denial class, CloudTrail's `Insufficient*AccessPermissionException`
+ * included: never the benign advanced-selector rejection, whatever its text
+ * spells (go-to-k/cdkd#2319 review).
+ */
+const ACCESS_DENIAL_CLASS = /AccessDenied|NotAuthorized|Unauthorized|AccessPermission/i;
+
+/**
+ * AWS's text with every ARN cut out, and the trail's id and bare name cut out
+ * as whole tokens when they themselves spell the phrase (go-to-k/cdkd#2319
+ * review): the EventSelectors reset tolerance matches
+ * {@link ADVANCED_SELECTOR_PHRASE} in AWS's text, and a denial quoting a trail,
+ * role or session NAMED after it must not match. An identifier that does not
+ * spell the phrase is left alone, so a trail named `advanced` or `selectors`
+ * does not erase words of AWS's own wording. The ARN cut runs to whitespace or
+ * a quote / bracket, so an IAM name carrying `,` is cut whole.
+ */
+function withoutTrailIdentifiers(text: string, physicalId: string): string {
+  const trailName = physicalId.slice(physicalId.lastIndexOf('/') + 1);
+  let out = text.replace(/\barn:[^\s;()'"]+/g, '');
+  for (const id of new Set([physicalId, trailName])) {
+    if (id === '' || !ADVANCED_SELECTOR_PHRASE.test(id)) continue;
+    const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(`(^|[^A-Za-z0-9._-])${escaped}(?=$|[^A-Za-z0-9._-])`, 'g'), '$1');
+  }
+  return out;
+}
+
+/**
  * SDK Provider for AWS CloudTrail resources
  *
  * Supports:
@@ -192,9 +231,10 @@ export class CloudTrailProvider implements ResourceProvider {
    * caller's assumed-role ARN. AWS's own text goes to `debug` through the
    * operation's `maskSecrets` (`mask`), and the wrap is stamped
    * `markRedactedCause`, so the retry classifiers read the withheld text on the
-   * `cause` chain. An "already exists" is restated ({@link relayedNameCollision});
-   * a failure after `CreateTrail` returned is marked auxiliary on the `cause`,
-   * which the collision anchor still reads. A cdkd-authored or transport error
+   * `cause` chain. An "already exists" is restated ({@link relayedNameCollision}),
+   * except from a failure after `CreateTrail` returned, which is marked
+   * auxiliary on the `cause` ({@link markAuxiliaryFailure}): there "it" would
+   * read as this trail (#3826). A cdkd-authored or transport error
    * keeps its text, masked, stamped only when the mask changed it
    * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like an
    * AWS one, unstamped (it has no chain). The delete checks `TrailNotFoundException` by type before it wraps.
@@ -211,7 +251,8 @@ export class CloudTrailProvider implements ResourceProvider {
     const failure = describeAwsFailure(error);
     if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
     this.logger.debug(m(build(m(failure.detail)).message));
-    const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${m(failure.summary)}${relay}`);
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
@@ -716,13 +757,26 @@ export class CloudTrailProvider implements ResourceProvider {
           // `.detail`, never `.summary`: the classifier below matches AWS's OWN
           // wording, which `.summary` replaces with the wire name alone. Same text as
           // the `instanceof Error ?` ternary it replaced, minus that ternary's throw.
-          const message = describeAwsFailure(error).detail;
-          if (!isRemoval || !/advanced[\s-]*event[\s-]*selector/i.test(message)) throw error;
-          this.logger.warn(
+          // Matched with the trail's id and every ARN cut out
+          // ({@link withoutTrailIdentifiers}).
+          const failure = describeAwsFailure(error);
+          const message = withoutTrailIdentifiers(failure.detail, physicalId);
+          const errorClass = error instanceof Error ? error.name : '';
+          if (
+            !isRemoval ||
+            ACCESS_DENIAL_CLASS.test(errorClass) ||
+            !ADVANCED_SELECTOR_PHRASE.test(message)
+          ) {
+            throw error;
+          }
+          // The class at warn, AWS's text at debug (go-to-k/cdkd#2319).
+          const m = maskerOrIdentity(context?.maskSecrets);
+          const head =
             `CloudTrail Trail ${logicalId}: skipping the EventSelectors reset — the ` +
-              `trail is using AdvancedEventSelectors, which AWS manages through a ` +
-              `separate API, so there are no basic event selectors to clear (${message})`
-          );
+            `trail is using AdvancedEventSelectors, which AWS manages through a ` +
+            `separate API, so there are no basic event selectors to clear (`;
+          if (failure.redacted) this.logger.debug(m(`${head}${m(failure.detail)})`));
+          this.logger.warn(m(`${head}${failure.redacted ? failure.summary : failure.detail})`));
         }
       }
 
@@ -850,7 +904,12 @@ export class CloudTrailProvider implements ResourceProvider {
             cause
           )
       );
-      throw stripped ? markDeleteStarted(failure) : failure;
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFound` in a message as "already deleted": only the typed
+      // `TrailNotFoundException` above means this trail is gone (go-to-k/cdkd#2319).
+      const notGone =
+        error instanceof Error && error.name.includes('NotFound') ? markNotGone(failure) : failure;
+      throw stripped ? markDeleteStarted(notGone) : notGone;
     }
   }
 
