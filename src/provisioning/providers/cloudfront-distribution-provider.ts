@@ -81,6 +81,13 @@ function shownId(id: string): string {
 const QUANTITY_ITEM_FIELDS = ['Origins', 'CacheBehaviors', 'CustomErrorResponses', 'Aliases'];
 
 /**
+ * A CloudFront exception class that says a referenced entity is missing
+ * (`EntityNotFound`, `NoSuch*`, `TrustedKeyGroupDoesNotExist`, ...), checked
+ * against `UpdateDistributionCommand`'s `@throws` (go-to-k/cdkd#5222).
+ */
+const DEPENDENCY_MISSING_CLASS = /NotFound|^NoSuch|DoesNotExist/;
+
+/**
  * `ViewerCertificate` members whose ACRONYM CASING differs between the CFn
  * resource schema and the CloudFront API (issue #1370). The CFn template
  * carries the left-hand spelling; the SDK model only knows the right-hand
@@ -729,6 +736,19 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
             cause
           )
       );
+      // A missing-entity class here names a DEPENDENCY, never this distribution
+      // (its own `NoSuchDistribution` returned above): the disable step's
+      // `UpdateDistribution` answers `EntityNotFound`, `NoSuchCachePolicy`,
+      // `NoSuchOrigin`, `TrustedKeyGroupDoesNotExist` and their siblings when a
+      // referenced policy, function or key group is gone. The wrap carries the
+      // class (or, unredacted, AWS's "does not exist" text), which satisfies the
+      // "already deleted" classifiers' needles and would drop the record of a
+      // live distribution, so mark it terminal: they check the marker first,
+      // and a missing dependency does not come back on a retry
+      // (go-to-k/cdkd#5222).
+      if (error instanceof Error && DEPENDENCY_MISSING_CLASS.test(error.name)) {
+        markNonRetryable(failure);
+      }
       throw stripped ? markDeleteStarted(failure) : failure;
     }
   }

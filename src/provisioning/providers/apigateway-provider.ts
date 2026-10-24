@@ -72,6 +72,7 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import {
+  markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
   wrapMaskedAwsError,
@@ -672,7 +673,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted API Gateway Account ${logicalId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const failure = this.wrapMaskedError(
         context?.maskSecrets ?? ((text) => text),
         error,
         (text) =>
@@ -684,6 +685,15 @@ export class ApiGatewayProvider implements ResourceProvider {
             cause
           )
       );
+      // The Account is a per-region singleton that cannot be absent, so a
+      // `NotFoundException` from `UpdateAccount` names something else and the
+      // CloudWatch role ARN is still set. The wrap carries that class, which
+      // satisfies the "already deleted" classifiers' `NotFoundException`
+      // needle and would drop the record, so mark it terminal: they check the
+      // marker first (go-to-k/cdkd#5222).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNonRetryable(failure)
+        : failure;
     }
   }
 
