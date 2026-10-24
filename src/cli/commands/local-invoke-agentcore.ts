@@ -14,6 +14,7 @@ import {
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { describeLocalAwsFailureForWarn } from '../../utils/local-aws-failure.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   displayIdent,
   displaySafe,
@@ -404,9 +405,7 @@ async function localInvokeAgentCoreCommand(
       logStream = undefined;
       drainInFlight = killAndDrainContainerLogs(containerId, stream)
         .catch((err: unknown) => {
-          getLogger().debug(
-            safeMsg`container log drain failed: ${err instanceof Error ? err.message : String(err)}`
-          );
+          getLogger().debug(safeMsg`container log drain failed: ${describeAwsFailure(err).detail}`);
         })
         .finally(() => {
           drainInFlight = undefined;
@@ -437,9 +436,7 @@ async function localInvokeAgentCoreCommand(
         try {
           stateProvider.dispose();
         } catch (err) {
-          getLogger().debug(
-            `state provider dispose failed: ${err instanceof Error ? err.message : String(err)}`
-          );
+          getLogger().debug(`state provider dispose failed: ${describeAwsFailure(err).detail}`);
         }
       }
       // A rebuild's `docker run` in flight: its container is not `containerId`
@@ -470,7 +467,7 @@ async function localInvokeAgentCoreCommand(
           await removeContainer(containerId);
         } catch (err) {
           getLogger().debug(
-            `removeContainer(${containerId}) failed: ${err instanceof Error ? err.message : String(err)}`
+            `removeContainer(${containerId}) failed: ${describeAwsFailure(err).detail}`
           );
         }
       }
@@ -480,7 +477,7 @@ async function localInvokeAgentCoreCommand(
         } catch (err) {
           getLogger().debug(
             `Failed to remove profile credentials tmpdir ${profileCredsFile.hostPath}: ${
-              err instanceof Error ? err.message : String(err)
+              describeAwsFailure(err).detail
             }`
           );
         }
@@ -491,7 +488,7 @@ async function localInvokeAgentCoreCommand(
       await flushStdio();
     },
     (err) => {
-      getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+      getLogger().debug(`cleanup failed: ${describeAwsFailure(err).detail}`);
     }
   );
 
@@ -2462,7 +2459,7 @@ export async function readEvent(options: LocalInvokeAgentCoreOptions): Promise<u
       raw = readFileSync(options.event, 'utf-8');
     } catch (err) {
       throw new CdkdError(
-        `Failed to read --event file '${options.event}': ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to read --event file '${options.event}': ${describeAwsFailure(err).detail}`,
         'LOCAL_INVOKE_AGENTCORE_EVENT_READ_FAILED'
       );
     }
@@ -2476,7 +2473,7 @@ function parseEvent(raw: string, source: string): unknown {
     return JSON.parse(raw);
   } catch (err) {
     throw new CdkdError(
-      `Failed to parse event payload from ${source} as JSON: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to parse event payload from ${source} as JSON: ${describeAwsFailure(err).detail}`,
       'LOCAL_INVOKE_AGENTCORE_EVENT_PARSE_FAILED'
     );
   }
@@ -2566,7 +2563,7 @@ export function readEnvOverridesFile(filePath: string | undefined): EnvOverrideF
     raw = readFileSync(filePath, 'utf-8');
   } catch (err) {
     throw new CdkdError(
-      `Failed to read --env-vars file '${filePath}': ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to read --env-vars file '${filePath}': ${describeAwsFailure(err).detail}`,
       'LOCAL_INVOKE_AGENTCORE_ENV_VARS_READ_FAILED'
     );
   }
@@ -2575,7 +2572,7 @@ export function readEnvOverridesFile(filePath: string | undefined): EnvOverrideF
     parsed = JSON.parse(raw);
   } catch (err) {
     throw new CdkdError(
-      `Failed to parse --env-vars file '${filePath}' as JSON: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to parse --env-vars file '${filePath}' as JSON: ${describeAwsFailure(err).detail}`,
       'LOCAL_INVOKE_AGENTCORE_ENV_VARS_PARSE_FAILED'
     );
   }

@@ -398,7 +398,7 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
     });
     ws.on('error', (err) => {
       logger.debug(
-        `WebSocket error for connection ${connectionId}: ${err instanceof Error ? err.message : String(err)}`
+        `WebSocket error for connection ${connectionId}: ${describeAwsFailure(err).detail}`
       );
     });
 

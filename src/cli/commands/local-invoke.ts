@@ -14,6 +14,7 @@ import {
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { describeLocalAwsFailureForWarn } from '../../utils/local-aws-failure.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   displayIdent,
   ROLE_ARN_MAX_CODE_POINTS,
@@ -424,9 +425,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       await killAndDrainContainerLogs(containerId, logStream);
     },
     (err) => {
-      getLogger().debug(
-        safeMsg`container log drain failed: ${err instanceof Error ? err.message : String(err)}`
-      );
+      getLogger().debug(safeMsg`container log drain failed: ${describeAwsFailure(err).detail}`);
     }
   );
 
@@ -451,7 +450,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
           await removeContainer(containerId);
         } catch (err) {
           getLogger().debug(
-            `removeContainer(${containerId}) failed: ${err instanceof Error ? err.message : String(err)}`
+            `removeContainer(${containerId}) failed: ${describeAwsFailure(err).detail}`
           );
         }
       }
@@ -461,7 +460,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
         } catch (err) {
           getLogger().debug(
             `Failed to remove inline-code tmpdir ${imagePlan.inlineTmpDir}: ${
-              err instanceof Error ? err.message : String(err)
+              describeAwsFailure(err).detail
             }`
           );
         }
@@ -472,7 +471,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
         } catch (err) {
           getLogger().debug(
             `Failed to remove merged-layers tmpdir ${imagePlan.layersTmpDir}: ${
-              err instanceof Error ? err.message : String(err)
+              describeAwsFailure(err).detail
             }`
           );
         }
@@ -483,9 +482,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
             rmSync(dir, { recursive: true, force: true });
           } catch (err) {
             getLogger().debug(
-              `Failed to remove ARN-layer tmpdir ${dir}: ${
-                err instanceof Error ? err.message : String(err)
-              }`
+              `Failed to remove ARN-layer tmpdir ${dir}: ${describeAwsFailure(err).detail}`
             );
           }
         }
@@ -496,7 +493,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
         } catch (err) {
           getLogger().debug(
             `Failed to remove profile credentials tmpdir ${profileCredsFile.hostPath}: ${
-              err instanceof Error ? err.message : String(err)
+              describeAwsFailure(err).detail
             }`
           );
         }
@@ -507,7 +504,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       await flushStdio();
     },
     (err) => {
-      getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+      getLogger().debug(`cleanup failed: ${describeAwsFailure(err).detail}`);
     }
   );
 
@@ -1583,9 +1580,7 @@ function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | u
     raw = readFileSync(filePath, 'utf-8');
   } catch (err) {
     throw new Error(
-      `Failed to read --env-vars file '${filePath}': ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      `Failed to read --env-vars file '${filePath}': ${describeAwsFailure(err).detail}`
     );
   }
   let parsed: unknown;
@@ -1593,9 +1588,7 @@ function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | u
     parsed = JSON.parse(raw);
   } catch (err) {
     throw new Error(
-      `Failed to parse --env-vars file '${filePath}' as JSON: ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      `Failed to parse --env-vars file '${filePath}' as JSON: ${describeAwsFailure(err).detail}`
     );
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -1629,9 +1622,7 @@ function parseEvent(raw: string, source: string): unknown {
     return JSON.parse(raw);
   } catch (err) {
     throw new Error(
-      `Failed to parse event payload from ${source} as JSON: ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      `Failed to parse event payload from ${source} as JSON: ${describeAwsFailure(err).detail}`
     );
   }
 }

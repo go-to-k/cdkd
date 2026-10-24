@@ -13,6 +13,7 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeLocalAwsFailureForWarn, redactedAwsCause } from '../../utils/local-aws-failure.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { displayIdent, plainIdentOr, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import { VALUE_NOT_SHOWN } from '../../provisioning/import-helpers.js';
 import { applyRoleArnForLocal } from '../../local/local-role-arn.js';
@@ -247,7 +248,7 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
           } catch (err) {
             getLogger().debug(
               `Failed to remove profile credentials tmpdir ${channels.profileCredsFile.hostPath}: ${
-                err instanceof Error ? err.message : String(err)
+                describeAwsFailure(err).detail
               }`
             );
           }
@@ -261,7 +262,7 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
             afterContainersStopped: disposeCreds,
           });
         } catch (err) {
-          getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+          getLogger().debug(`cleanup failed: ${describeAwsFailure(err).detail}`);
         }
         // Idempotent (`rm --force`); covers a `cleanupEcsRun` that threw first.
         await disposeCreds();
@@ -986,7 +987,7 @@ function readEnvOverridesFile(
     raw = readFileSync(filePath, 'utf-8');
   } catch (err) {
     throw new Error(
-      `Failed to read --env-vars file '${filePath}': ${err instanceof Error ? err.message : String(err)}`
+      `Failed to read --env-vars file '${filePath}': ${describeAwsFailure(err).detail}`
     );
   }
   let parsed: unknown;
@@ -994,7 +995,7 @@ function readEnvOverridesFile(
     parsed = JSON.parse(raw);
   } catch (err) {
     throw new Error(
-      `Failed to parse --env-vars file '${filePath}' as JSON: ${err instanceof Error ? err.message : String(err)}`
+      `Failed to parse --env-vars file '${filePath}' as JSON: ${describeAwsFailure(err).detail}`
     );
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
