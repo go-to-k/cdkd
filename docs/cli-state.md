@@ -484,6 +484,8 @@ Three things to know when you read the block:
 Pick a stack from the state bucket with the keyboard, then view it, without
 copying its name into another command.
 
+![cdkd state browse: the stack list, typing "data" to filter it, picking DataStack, and its Resources view printed above the menu.](https://raw.githubusercontent.com/go-to-k/cdkd/main/assets/state-browse.gif)
+
 ```bash
 cdkd state browse
 cdkd state browse --state-prefix staging
