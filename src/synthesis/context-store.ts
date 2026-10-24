@@ -2,6 +2,12 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { getLogger } from '../utils/logger.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import {
+  describeJsonParseFailure,
+  jsonParseFailureDebugDetail,
+  utf8ByteLength,
+} from '../utils/json-parse-failure.js';
+import { safeMsg } from '../utils/display-safe.js';
 import { defineOwnKey } from '../utils/own-keys.js';
 
 const CDK_CONTEXT_FILE = 'cdk.context.json';
@@ -30,14 +36,27 @@ export class ContextStore {
       return {};
     }
 
+    let content: string | undefined;
     try {
-      const content = readFileSync(filePath, 'utf-8');
+      content = readFileSync(filePath, 'utf-8');
       const context = JSON.parse(content) as Record<string, unknown>;
       this.logger.debug(
         `Loaded ${Object.keys(context).length} context value(s) from cdk.context.json`
       );
       return context;
     } catch (error) {
+      // V8's `SyntaxError` quotes a window of the file, so the warning names
+      // only the failure's offset and size; V8's text goes to `debug` (issue
+      // #5254). `content` is set exactly when the read succeeded.
+      if (error instanceof SyntaxError && content !== undefined) {
+        this.logger.debug(
+          safeMsg`cdk.context.json failed to parse: ${jsonParseFailureDebugDetail(error)}`
+        );
+        this.logger.warn(
+          safeMsg`Failed to parse cdk.context.json: ${describeJsonParseFailure(error, utf8ByteLength(content))}`
+        );
+        return {};
+      }
       this.logger.warn(`Failed to parse cdk.context.json: ${describeAwsFailure(error).detail}`);
       return {};
     }

@@ -3,8 +3,13 @@ import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 import { getLogger } from '../utils/logger.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import {
+  describeJsonParseFailure,
+  jsonParseFailureDebugDetail,
+  utf8ByteLength,
+} from '../utils/json-parse-failure.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
-import { displayIdent } from '../utils/display-safe.js';
+import { displayIdent, safeMsg } from '../utils/display-safe.js';
 import { StateError } from '../utils/error-handler.js';
 
 /**
@@ -35,12 +40,24 @@ function loadJsonConfig(filePath: string): CdkConfig | null {
     return null;
   }
 
+  let content: string | undefined;
   try {
-    const content = readFileSync(filePath, 'utf-8');
+    content = readFileSync(filePath, 'utf-8');
     const config = JSON.parse(content) as CdkConfig;
     logger.debug(`Loaded config from ${filePath}`);
     return config;
   } catch (error) {
+    // V8's `SyntaxError` quotes a window of the file, and `cdk.json`'s
+    // `context` can hold values a user would not print, so the warning names
+    // only the failure's offset and size; V8's text goes to `debug` (issue
+    // #5254). `content` is set exactly when the read succeeded.
+    if (error instanceof SyntaxError && content !== undefined) {
+      logger.debug(safeMsg`${filePath} failed to parse: ${jsonParseFailureDebugDetail(error)}`);
+      logger.warn(
+        safeMsg`Failed to parse ${filePath}: ${describeJsonParseFailure(error, utf8ByteLength(content))}`
+      );
+      return null;
+    }
     logger.warn(`Failed to parse ${filePath}: ${describeAwsFailure(error).detail}`);
     return null;
   }

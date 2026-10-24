@@ -45,6 +45,7 @@ import {
   Document,
   Pair,
   Scalar,
+  YAMLError,
   YAMLMap,
   YAMLSeq,
   parse as yamlParse,
@@ -52,6 +53,13 @@ import {
 } from 'yaml';
 import type { CollectionTag, ScalarTag } from 'yaml';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { safeMsg } from '../utils/display-safe.js';
+import {
+  describeJsonParseFailure,
+  jsonParseFailureDebugDetail,
+  utf8ByteLength,
+} from '../utils/json-parse-failure.js';
+import { getLogger } from '../utils/logger.js';
 
 export type CfnTemplate = Record<string, unknown>;
 export type TemplateFormat = 'json' | 'yaml';
@@ -200,6 +208,21 @@ function buildCustomTags(): Array<ScalarTag | CollectionTag> {
 const CUSTOM_TAGS = buildCustomTags();
 
 /**
+ * A `yaml` parse failure WITHOUT the template text it quotes (issue
+ * [#5254](https://github.com/go-to-k/cdkd/issues/5254)). The library's
+ * `message` ends with a code frame of the offending source lines, which can
+ * hold a plaintext value, so a `YAMLError` is rendered from its error CODE
+ * and line/column, both library-controlled. Anything else keeps its text.
+ */
+function describeYamlParseFailure(err: unknown): string {
+  if (err instanceof YAMLError) {
+    const at = err.linePos?.[0];
+    return `${err.name} ${err.code}${at ? ` at line ${at.line}, column ${at.col}` : ''}`;
+  }
+  return describeAwsFailure(err).detail;
+}
+
+/**
  * Parse a CFn template string. JSON or YAML, auto-detected.
  *
  * @throws Error with a clear message when the input is empty, malformed,
@@ -216,13 +239,24 @@ export function parseCfnTemplate(text: string): CfnTemplate {
     try {
       parsed = JSON.parse(body);
     } catch (err) {
-      throw new Error(`Template is not valid JSON. Cause: ${describeAwsFailure(err).detail}`);
+      // V8's `SyntaxError` quotes a window of the template, which can hold a
+      // plaintext value, so the message names only the failure's offset and
+      // size; V8's text goes to `debug` only (issue #5254).
+      getLogger().debug(
+        safeMsg`Template failed to parse as JSON: ${jsonParseFailureDebugDetail(err)}`
+      );
+      throw new Error(
+        `Template is not valid JSON. Cause: ${describeJsonParseFailure(err, utf8ByteLength(body))}`
+      );
     }
   } else {
     try {
       parsed = yamlParse(body, { customTags: CUSTOM_TAGS });
     } catch (err) {
-      throw new Error(`Template is not valid YAML. Cause: ${describeAwsFailure(err).detail}`);
+      getLogger().debug(
+        safeMsg`Template failed to parse as YAML: ${jsonParseFailureDebugDetail(err)}`
+      );
+      throw new Error(`Template is not valid YAML. Cause: ${describeYamlParseFailure(err)}`);
     }
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {

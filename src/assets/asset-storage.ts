@@ -18,11 +18,21 @@ import { getLogger } from '../utils/logger.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import { CdkdError, normalizeAwsError } from '../utils/error-handler.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import {
+  jsonParseFailureDebugDetail,
+  jsonParseFailureStandIn,
+  utf8ByteLength,
+} from '../utils/json-parse-failure.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import { buildDenyExternalAccessPolicy } from '../utils/deny-external-access-policy.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { pasteableCommand } from '../utils/pasteable-command.js';
-import { displayIdent, plainIdentOr, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
+import {
+  displayIdent,
+  plainIdentOr,
+  safeMsg,
+  STACK_REF_MAX_CODE_POINTS,
+} from '../utils/display-safe.js';
 
 /**
  * cdkd-owned asset storage — naming, bootstrap marker, and deploy-time
@@ -577,11 +587,18 @@ export function parseBootstrapMarker(body: string, markerKey: string): Bootstrap
   try {
     parsed = JSON.parse(body);
   } catch (error) {
+    // A snippet-free STAND-IN as the cause, not V8's `SyntaxError` (issue
+    // #5254): V8 quotes a window of the marker body, and `formatError` prints
+    // a cause on its `Caused by:` line. The stand-in is still a `SyntaxError`
+    // and carries the offset and size; V8's own text goes to `debug` only.
+    getLogger().debug(
+      safeMsg`${markerSubject(markerKey)} failed to parse: ${jsonParseFailureDebugDetail(error)}`
+    );
     throw new CdkdError(
       `${markerSubject(markerKey)} in the state bucket is not valid JSON. ` +
         `Re-run 'cdkd bootstrap' for this region to rewrite it.`,
       'INVALID_BOOTSTRAP_MARKER',
-      error as Error
+      jsonParseFailureStandIn(error, utf8ByteLength(body))
     );
   }
   const marker = parsed as Partial<BootstrapMarker>;

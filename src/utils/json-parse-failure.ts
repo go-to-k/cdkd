@@ -33,6 +33,7 @@
  * `Caused by:` line, and the CLI's last-resort handler inspects the chain.
  */
 import { describeAwsFailure } from './aws-failure-text.js';
+import { displaySafe, UNRENDERABLE } from './display-safe.js';
 
 export function describeJsonParseFailure(err: unknown, bytes: number): string {
   const raw = describeAwsFailure(err).detail;
@@ -56,4 +57,24 @@ export function describeJsonParseFailure(err: unknown, bytes: number): string {
  */
 export function utf8ByteLength(body: string): number {
   return Buffer.byteLength(body, 'utf8');
+}
+
+/**
+ * V8's own text for a `JSON.parse` failure, for a `debug` line ONLY (issue
+ * [#5254](https://github.com/go-to-k/cdkd/issues/5254)). It still quotes the
+ * body's window; the ASCII allowlist only keeps a body-supplied newline or
+ * escape from forging a line (issue #3003).
+ */
+export function jsonParseFailureDebugDetail(err: unknown): string {
+  return displaySafe(describeAwsFailure(err).detail, { asciiOnly: true }) || UNRENDERABLE;
+}
+
+/**
+ * A snippet-free STAND-IN for a `JSON.parse` failure, for a site whose readers
+ * need a `cause` (issue [#5254](https://github.com/go-to-k/cdkd/issues/5254)).
+ * It is a real `SyntaxError`, so an `instanceof SyntaxError` or `name` reader
+ * classifies it as before, and its message is {@link describeJsonParseFailure}.
+ */
+export function jsonParseFailureStandIn(err: unknown, bytes: number): SyntaxError {
+  return new SyntaxError(describeJsonParseFailure(err, bytes));
 }

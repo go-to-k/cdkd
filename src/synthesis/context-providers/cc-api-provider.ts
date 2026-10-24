@@ -5,7 +5,35 @@ import {
 } from '@aws-sdk/client-cloudcontrol';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
+import { displayIdent, safeMsg } from '../../utils/display-safe.js';
+import {
+  describeJsonParseFailure,
+  jsonParseFailureDebugDetail,
+  utf8ByteLength,
+} from '../../utils/json-parse-failure.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+
+/**
+ * Parse a Cloud Control resource model WITHOUT echoing it on failure (issue
+ * [#5254](https://github.com/go-to-k/cdkd/issues/5254)). V8's `SyntaxError`
+ * quotes a window of the model, which can hold a plaintext property value,
+ * and the raw error used to reach the context provider's `error` line and the
+ * error value handed back to the CDK app. The rethrow names only the type and
+ * the failure's offset and size, with no cause; V8's text goes to `debug`.
+ */
+function parseResourceModel(body: string, typeName: string): ResourceModel {
+  try {
+    return JSON.parse(body) as ResourceModel;
+  } catch (err) {
+    getLogger().debug(
+      safeMsg`Cloud Control resource model for ${displayIdent(typeName)} failed to parse: ${jsonParseFailureDebugDetail(err)}`
+    );
+    throw new Error(
+      `Cloud Control returned a resource model for ${displayIdent(typeName)} that is not ` +
+        `valid JSON: ${describeJsonParseFailure(err, utf8ByteLength(body))}`
+    );
+  }
+}
 
 /**
  * Cloud Control API context provider
@@ -107,7 +135,7 @@ export class CcApiContextProvider implements ContextProvider {
         return null;
       }
 
-      return JSON.parse(response.ResourceDescription.Properties) as ResourceModel;
+      return parseResourceModel(response.ResourceDescription.Properties, typeName);
     } catch (error) {
       const err = error as { name?: string };
       if (err.name === 'ResourceNotFoundException') {
@@ -137,7 +165,7 @@ export class CcApiContextProvider implements ContextProvider {
 
       for (const desc of response.ResourceDescriptions ?? []) {
         if (desc.Properties) {
-          resources.push(JSON.parse(desc.Properties) as ResourceModel);
+          resources.push(parseResourceModel(desc.Properties, typeName));
         }
       }
 
