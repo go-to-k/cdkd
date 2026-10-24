@@ -397,8 +397,11 @@ for r in "${ROLE_A}" "${ROLE_C}"; do
     exit 1
   fi
 done
-if ! printf '%s' "$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/inject.log" | tr '\n' ' ')" | grep -qF 'must be in ARN format'; then
-  echo "[verify] FAIL: the step-2 deploy did not fail on the refused inline policy (MalformedPolicyDocument 'must be in ARN format'; output above)" >&2
+# go-to-k/cdkd#2319: the thrown message names AWS's refusal by its class
+# (`MalformedPolicyDocument[Exception]`); AWS's own text (`must be in ARN
+# format`) is shown only with --verbose.
+if ! printf '%s' "$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/inject.log" | tr '\n' ' ')" | grep -qE 'MalformedPolicyDocument(Exception)?\.'; then
+  echo "[verify] FAIL: the step-2 deploy did not fail on the refused inline policy (its MalformedPolicyDocument class; output above)" >&2
   exit 1
 fi
 A_POLICIES="$(aws iam list-role-policies --role-name "${ROLE_A}" --query 'PolicyNames' --output text)"
