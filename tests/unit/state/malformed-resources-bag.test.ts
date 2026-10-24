@@ -7772,7 +7772,7 @@ describe('a file hosting BOTH a read-only view and a writer refuses per FLOW', (
     // over malformed records through the real backend — and this fence's job is
     // the complementary one: that the call is here at all, in this function,
     // and is not the import.
-    for (const site of ['async function stateResourcesCommand(', 'function repairRecordForTextRender(']) {
+    for (const site of ['export async function printStackResources(', 'function repairRecordForTextRender(']) {
       expect(
         flow(src, site).match(/repairMalformedResourcesForReadOnly\(/g) ?? [],
         `${site} no longer CALLS the read-only repair; if this view stopped needing it, ` +
