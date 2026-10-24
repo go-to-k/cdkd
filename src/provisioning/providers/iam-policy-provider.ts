@@ -527,8 +527,17 @@ export class IAMPolicyProvider implements ResourceProvider {
         );
       } catch (error) {
         if (error instanceof NoSuchEntityException) continue;
+        // An AWS-authored failure is named by its class at warn, and AWS's
+        // text (a denied detach names the caller) goes to `debug`
+        // (go-to-k/cdkd#2319).
+        const failure = describeAwsFailure(error);
+        if (failure.redacted) {
+          log.debug(
+            `Failed to detach the partially-created IAM policy ${logicalId} (${v(policyName)}) from ${step.what}: ${failure.detail}`
+          );
+        }
         failed.push(
-          `${step.what} (${log.mask(describeAwsFailure(error).detail)}): ${step.command}`
+          `${step.what} (${log.mask(failure.redacted ? failure.summary : failure.detail)}): ${step.command}`
         );
       }
     }

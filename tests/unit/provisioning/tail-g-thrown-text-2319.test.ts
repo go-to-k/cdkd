@@ -43,6 +43,7 @@ for (const [mod, client] of [
   ['@aws-sdk/client-dlm', 'DLMClient'],
   ['@aws-sdk/client-codecommit', 'CodeCommitClient'],
   ['@aws-sdk/client-sts', 'STSClient'],
+  ['@aws-sdk/client-lambda-web', 'LambdaWebClient'],
 ] as const) {
   vi.doMock(mod, async (importOriginal) => ({
     ...(await importOriginal<Record<string, unknown>>()),
@@ -57,6 +58,12 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async (importO
   ...(await importOriginal<Record<string, unknown>>()),
   getAccountInfo: () =>
     Promise.resolve({ accountId: '000000000000', region: 'us-east-1', partition: 'aws' }),
+}));
+
+// The web function revision waits poll every 500 ms; the cases drive states, not time.
+vi.mock('../../../src/provisioning/providers/lambda-web-function-arns.js', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  sleep: () => Promise.resolve(),
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -99,6 +106,9 @@ const { CodeCommitRepositoryProvider } = await import(
 const { ACMCertificateProvider } = await import(
   '../../../src/provisioning/providers/acm-certificate-provider.js'
 );
+const { IAMPolicyProvider } = await import('../../../src/provisioning/providers/iam-policy-provider.js');
+const { LambdaWebFunctionRevisionProvider, resetWebFunctionRevisionCreateRetryStateForTests } =
+  await import('../../../src/provisioning/providers/lambda-web-function-revision-provider.js');
 const {
   createEbsFinalSnapshot,
   createRedshiftFinalSnapshot,
@@ -178,6 +188,7 @@ beforeEach(() => {
   info.mockReset();
   waitStable.mockReset();
   resetIdempotencyTokensForTests();
+  resetWebFunctionRevisionCreateRetryStateForTests();
   vi.spyOn(finalSnapshotDelays, 'sleep').mockResolvedValue(undefined);
   delete process.env['CDKD_FULL_WAIT'];
 });
@@ -306,6 +317,19 @@ const DELETES: DeleteCase[] = [
         'Res',
         'policy-1',
         'AWS::DLM::LifecyclePolicy',
+        undefined,
+        ctx
+      ),
+  },
+  {
+    site: 'Lambda web function revision',
+    prefix: 'Failed to delete Lambda web function revision Res: ',
+    command: 'DeleteWebFunctionRevisionCommand',
+    run: () =>
+      new LambdaWebFunctionRevisionProvider().delete(
+        'Res',
+        'arn:aws:lambda:us-east-1:000000000000:web-function/fn/revision/rev-1',
+        'AWS::Lambda::WebFunctionRevision',
         undefined,
         ctx
       ),
@@ -857,6 +881,109 @@ describe('the CodeCommit identity-read wraps', () => {
     expect(lines(warn).join('\n')).not.toContain(ACCOUNT);
     expect(lines(debug).some((l) => l.includes(MASKED_DENIED))).toBe(true);
     expect(lines(debug).join('\n')).not.toContain('s3cr3t');
+  });
+});
+
+// ─── IAM inline policy detach / web function revision cleanup ───────
+
+describe('the IAM inline policy partial-create detach warn', () => {
+  const HEAD = 'role role-a (';
+  const arm = (detachError: () => Error): void => {
+    mockSend.mockImplementation(async (command: { input?: Record<string, unknown> }) => {
+      const name = commandName(command);
+      if (name === 'PutRolePolicyCommand' && command.input?.['RoleName'] === 'role-b') {
+        throw awsErr('MalformedPolicyDocumentException', 'bad document');
+      }
+      if (name === 'DeleteRolePolicyCommand') throw detachError();
+      return {};
+    });
+  };
+  const run = () =>
+    new IAMPolicyProvider().create(
+      'Pol',
+      'AWS::IAM::Policy',
+      {
+        PolicyName: 'p',
+        PolicyDocument: { Version: '2012-10-17', Statement: [] },
+        Roles: ['role-a', 'role-b'],
+      },
+      ctx
+    );
+  const detachWarn = (): string =>
+    lines(warn).find((l) => l.startsWith('Failed to detach the partially-created IAM policy Pol')) ?? '';
+
+  it("names the class at warn, AWS's text at debug, masked", async () => {
+    arm(denied);
+    await caught(run());
+    expect(detachWarn()).toContain(`${HEAD}AccessDenied. ${VERBOSE_POINTER})`);
+    expect(detachWarn()).not.toContain(ACCOUNT);
+    expect(detachWarn()).not.toContain('not authorized');
+    expect(
+      lines(debug).some((l) => l.includes('from role role-a: ') && l.includes(MASKED_DENIED))
+    ).toBe(true);
+    expect(lines(debug).join('\n')).not.toContain('s3cr3t');
+  });
+
+  it('masks a secret spelled in the class (SECRET-IN-CLASS)', async () => {
+    arm(secretClass);
+    await caught(run());
+    expect(detachWarn()).toContain(`${HEAD}${SECRET_CLASS_SHOWN}. ${VERBOSE_POINTER})`);
+    expect(detachWarn()).not.toContain('s3cr3t');
+  });
+
+  it("keeps a cdkd-authored failure's text (polarity)", async () => {
+    arm(() => new Error('socket hang up'));
+    await caught(run());
+    expect(detachWarn()).toContain(`${HEAD}socket hang up)`);
+  });
+});
+
+describe('the Lambda web function revision partial-create cleanup warn', () => {
+  // The cleanup goes through the provider's own delete(), whose class-only
+  // wrap the warn relays: pinned end to end.
+  const run = () =>
+    new LambdaWebFunctionRevisionProvider().create(
+      'Rev',
+      'AWS::Lambda::WebFunctionRevision',
+      {
+        FunctionName: 'arn:aws:lambda:us-east-1:000000000000:web-function/fn',
+        BuildConfig: {
+          CodeConfig: { S3Object: { Bucket: 'b', Key: 'k' } },
+          RuntimeConfig: { Runtime: 'nodejs24.x' },
+        },
+        ServiceConfig: { ExecutionRoleArn: 'arn:aws:iam::000000000000:role/r' },
+      },
+      ctx
+    );
+  const arm = (cleanupError: () => Error): void =>
+    failOn(
+      {
+        GetWebFunctionRevisionCommand: () => awsErr('BadRequestException', 'bad'),
+        DeleteWebFunctionRevisionCommand: cleanupError,
+      },
+      {
+        CreateWebFunctionRevisionCommand: {
+          revisionArn: 'arn:aws:lambda:us-east-1:000000000000:web-function/fn/revision/rev-1',
+          revisionId: 'rev-1',
+        },
+      }
+    );
+  const cleanupWarn = (): string =>
+    lines(warn).find((l) => l.startsWith('Failed to delete partially-created Lambda web function revision Rev')) ?? '';
+
+  it('names the class, never AWS\'s text', async () => {
+    arm(denied);
+    await caught(run());
+    expect(cleanupWarn()).toContain(`AccessDenied. ${VERBOSE_POINTER}`);
+    expect(cleanupWarn()).not.toContain(ACCOUNT);
+    expect(cleanupWarn()).not.toContain('not authorized');
+  });
+
+  it('masks a secret spelled in the class (SECRET-IN-CLASS)', async () => {
+    arm(secretClass);
+    await caught(run());
+    expect(cleanupWarn()).toContain(SECRET_CLASS_SHOWN);
+    expect(cleanupWarn()).not.toContain('s3cr3t');
   });
 });
 
