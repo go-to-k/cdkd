@@ -50,7 +50,11 @@ jobs:
           cache: true
           run-install: false
 
-      # BEFORE the credentials: install scripts never see them.
+      # Before the credentials, so they are not in its environment. That is
+      # not the bound: with `id-token: write` every step of this job can mint
+      # the OIDC token, and dependency code runs in the regenerate step too.
+      # The bound is the role's policy (two read calls) and its trust
+      # condition (this workflow, on `main`).
       - run: vp install --frozen-lockfile
 
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -58,6 +62,7 @@ jobs:
           role-to-assume: ${{ vars.COVERAGE_AUDIT_ROLE_ARN }}
           role-session-name: cdkd-coverage-refresh
           aws-region: us-east-1
+          mask-aws-account-id: true
 
       - name: Regenerate from live AWS
         run: |
