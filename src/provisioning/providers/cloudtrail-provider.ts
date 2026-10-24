@@ -723,13 +723,20 @@ export class CloudTrailProvider implements ResourceProvider {
           // `.detail`, never `.summary`: the classifier below matches AWS's OWN
           // wording, which `.summary` replaces with the wire name alone. Same text as
           // the `instanceof Error ?` ternary it replaced, minus that ternary's throw.
-          const message = describeAwsFailure(error).detail;
+          // The trail's own name / ARN is cut out first: an AccessDenied quotes
+          // the trail ARN, and a trail NAMED after the phrase would otherwise
+          // swallow the denial here (go-to-k/cdkd#2319 review).
+          const failure = describeAwsFailure(error);
+          const message = failure.detail.split(physicalId).join('');
           if (!isRemoval || !/advanced[\s-]*event[\s-]*selector/i.test(message)) throw error;
-          this.logger.warn(
+          // The class at warn, AWS's text at debug (go-to-k/cdkd#2319).
+          const m = maskerOrIdentity(context?.maskSecrets);
+          const head =
             `CloudTrail Trail ${logicalId}: skipping the EventSelectors reset — the ` +
-              `trail is using AdvancedEventSelectors, which AWS manages through a ` +
-              `separate API, so there are no basic event selectors to clear (${message})`
-          );
+            `trail is using AdvancedEventSelectors, which AWS manages through a ` +
+            `separate API, so there are no basic event selectors to clear (`;
+          if (failure.redacted) this.logger.debug(m(`${head}${m(failure.detail)})`));
+          this.logger.warn(m(`${head}${failure.redacted ? failure.summary : failure.detail})`));
         }
       }
 

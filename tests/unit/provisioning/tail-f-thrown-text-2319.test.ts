@@ -107,6 +107,7 @@ import {
 } from '../../../src/deployment/retryable-errors.js';
 import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import { isMarkedNotGone } from '../../../src/provisioning/not-gone.js';
+import { isDeleteStarted } from '../../../src/provisioning/delete-started.js';
 
 // The FSx / EMR creates run outside a withStackName scope, so the
 // stack-scoped create token (go-to-k/cdkd#4428) is opted out of its guard.
@@ -324,6 +325,24 @@ describe('a delete wrap naming a foreign NotFound is marked not gone (#2319)', (
 
     expect(failure.message).toBe(`${c.wrap}: KMSNotFoundException. ${VERBOSE_POINTER}`);
     expect(isMarkedNotGone(failure)).toBe(true);
+  });
+
+  // StopLogging went through first, so the delete is also marked started; the
+  // two marks are stamped on the same wrap and both must survive.
+  it('CloudTrail: a foreign NotFound after StopLogging keeps both marks', async () => {
+    route({
+      DeleteTrailCommand: awsError('KMSNotFoundException', `Key arn:aws:kms:us-east-1:${ACCOUNT}:key/k`),
+    });
+
+    const failure = await caught(
+      new CloudTrailProvider().delete('T', TRAIL_ARN, TRAIL, undefined, ctx)
+    );
+
+    expect(failure.message).toBe(
+      `Failed to delete CloudTrail Trail T: KMSNotFoundException. ${VERBOSE_POINTER}`
+    );
+    expect(isMarkedNotGone(failure)).toBe(true);
+    expect(isDeleteStarted(failure)).toBe(true);
   });
 
   it.each(deleteCases)('$wrap: a failure that is not a NotFound is not marked', async (c) => {
@@ -632,6 +651,32 @@ describe('a best-effort cleanup warn names an AWS failure by its class (#2319)',
     expect(debugLines().join('\n')).not.toContain('s3cr3t');
   });
 
+  it('a TERMINATED_WITH_ERRORS reason with no code is the pointer alone at warn', async () => {
+    const reasonText = `Service role arn:aws:iam::${ACCOUNT}:role/s3cr3t is invalid`;
+    let describes = 0;
+    route(
+      {},
+      {
+        DescribeClusterCommand: () => ({
+          Cluster: {
+            Id: CLUSTER_ID,
+            Status:
+              ++describes === 1
+                ? { State: 'RUNNING' }
+                : { State: 'TERMINATED_WITH_ERRORS', StateChangeReason: { Message: reasonText } },
+          },
+        }),
+      }
+    );
+
+    await new EMRClusterProvider(poll).delete('C', CLUSTER_ID, CLUSTER, undefined, ctx);
+
+    expect(warnLines()).toContain(
+      `EMR Cluster ${CLUSTER_ID} terminated with errors: ${VERBOSE_POINTER} (the cluster is gone and no longer bills)`
+    );
+    expect(warnLines().join('\n')).not.toContain(ACCOUNT);
+  });
+
   it('a TERMINATED_WITH_ERRORS with no reason keeps cdkd\'s fallback', async () => {
     let describes = 0;
     route(
@@ -651,5 +696,56 @@ describe('a best-effort cleanup warn names an AWS failure by its class (#2319)',
     expect(warnLines()).toContain(
       `EMR Cluster ${CLUSTER_ID} terminated with errors: no state-change reason reported (the cluster is gone and no longer bills)`
     );
+  });
+});
+
+/**
+ * CloudTrail's EventSelectors reset tolerates AWS's advanced-event-selector
+ * rejection, matched on AWS's text. That text is AWS-authored, so it is named
+ * by its class at warn; and the trail's own name / ARN is cut out before the
+ * match, so a denial quoting a trail NAMED after the phrase still fails.
+ */
+describe('CloudTrail EventSelectors reset tolerance (#2319)', () => {
+  const ADV_ARN = `arn:aws:cloudtrail:us-east-1:${ACCOUNT}:trail/advanced-event-selector-audit`;
+  const reset = (arn: string): Promise<unknown> =>
+    new CloudTrailProvider().update(
+      'T',
+      arn,
+      TRAIL,
+      { S3BucketName: 'b' },
+      { S3BucketName: 'b', EventSelectors: [{ ReadWriteType: 'WriteOnly' }] },
+      ctx
+    );
+
+  it('names an AWS-authored advanced-selector rejection by its class at warn', async () => {
+    const text = `This trail uses advanced event selectors (s3cr3t), account ${ACCOUNT}`;
+    route({ PutEventSelectorsCommand: awsError('InvalidEventSelectorsException', text) });
+
+    await reset(TRAIL_ARN);
+
+    const head = 'CloudTrail Trail T: skipping the EventSelectors reset';
+    const line = warnLines().find((l) => l.startsWith(head));
+    expect(line).toBe(
+      `${head} — the trail is using AdvancedEventSelectors, which AWS manages through a ` +
+        `separate API, so there are no basic event selectors to clear ` +
+        `(InvalidEventSelectorsException. ${VERBOSE_POINTER})`
+    );
+    expect(warnLines().join('\n')).not.toContain(ACCOUNT);
+    expect(debugLines().some((l) => l.startsWith(head) && l.includes(mask(text)))).toBe(true);
+    expect(debugLines().join('\n')).not.toContain('s3cr3t');
+  });
+
+  it('a denial quoting a trail named after the phrase is not swallowed', async () => {
+    const text = `User: arn:aws:sts::${ACCOUNT}:assumed-role/deployer/s is not authorized to perform: cloudtrail:PutEventSelectors on resource: ${ADV_ARN}`;
+    // Positive control: the denial's own text matches the tolerance's wording.
+    expect(/advanced[\s-]*event[\s-]*selector/i.test(text)).toBe(true);
+    route({ PutEventSelectorsCommand: awsError('AccessDeniedException', text) });
+
+    const failure = await caught(reset(ADV_ARN));
+
+    expect(failure.message).toBe(
+      `Failed to update CloudTrail Trail T: AccessDeniedException. ${VERBOSE_POINTER}`
+    );
+    expect(warnLines().some((l) => l.includes('skipping the EventSelectors reset'))).toBe(false);
   });
 });

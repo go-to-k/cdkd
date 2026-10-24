@@ -456,7 +456,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
         } catch (cleanupError) {
           const cleanupHead = safeMsg`Failed to scale partially-created EMR TASK instance group ${logicalId} (${leftBehindGroupId}) to 0: `;
           log.warn(
-            `${cleanupHead}${this.cleanupFailureText(cleanupHead, cleanupError, log.mask)} — its instances are released when the parent cluster terminates`
+            safeMsg`${cleanupHead}${this.cleanupFailureText(cleanupHead, cleanupError, log.mask)} — its instances are released when the parent cluster terminates`
           );
         }
       }
