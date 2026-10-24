@@ -1068,17 +1068,6 @@ function wrapGlueError(
 }
 
 /**
- * A delete wrap names an AWS failure by its CLASS (go-to-k/cdkd#2319), and the
- * destroy loop's "already deleted" match reads `NotFoundException` in a message
- * as gone. Every Glue delete tests its own `EntityNotFoundException` by type
- * before it wraps, so a wrap naming any other `NotFound` class (another
- * resource's) is stamped `markNotGone`, which that match refuses.
- */
-function markForeignNotFound(error: unknown, thrown: ProvisioningError): ProvisioningError {
-  return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
-}
-
-/**
  * SDK Provider for AWS Glue resources
  *
  * Supports:
@@ -1528,21 +1517,24 @@ export class GlueProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw markForeignNotFound(
+      const thrown = this.wrapMaskedError(
+        log.mask,
         error,
-        this.wrapMaskedError(
-          log.mask,
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to delete Glue Database ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        )
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Database ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -2006,21 +1998,24 @@ export class GlueProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw markForeignNotFound(
+      const thrown = this.wrapMaskedError(
+        log.mask,
         error,
-        this.wrapMaskedError(
-          log.mask,
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to delete Glue Table ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        )
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Table ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -3540,21 +3535,24 @@ export class GlueWorkflowProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw markForeignNotFound(
+      const thrown = this.wrapMaskedError(
+        context?.maskSecrets ?? ((text: string) => text),
         error,
-        this.wrapMaskedError(
-          context?.maskSecrets ?? ((text: string) => text),
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to delete Glue Workflow ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        )
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Workflow ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -3887,21 +3885,24 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw markForeignNotFound(
+      const thrown = this.wrapMaskedError(
+        context?.maskSecrets ?? ((text: string) => text),
         error,
-        this.wrapMaskedError(
-          context?.maskSecrets ?? ((text: string) => text),
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to delete Glue SecurityConfiguration ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        )
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue SecurityConfiguration ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -4601,21 +4602,24 @@ export class GlueJobProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw markForeignNotFound(
+      const thrown = this.wrapMaskedError(
+        context?.maskSecrets ?? ((text: string) => text),
         error,
-        this.wrapMaskedError(
-          context?.maskSecrets ?? ((text: string) => text),
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to delete Glue Job ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        )
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Job ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -5393,21 +5397,24 @@ export class GlueCrawlerProvider implements ResourceProvider {
         }
       }
       const cause = failure instanceof Error ? failure : undefined;
-      throw markForeignNotFound(
+      const thrown = this.wrapMaskedError(
+        log.mask,
         failure,
-        this.wrapMaskedError(
-          log.mask,
-          failure,
-          (text) =>
-            new ProvisioningError(
-              `Failed to delete Glue Crawler ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        )
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Crawler ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw failure instanceof Error && failure.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -5956,21 +5963,24 @@ export class GlueConnectionProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw markForeignNotFound(
+      const thrown = this.wrapMaskedError(
+        log.mask,
         error,
-        this.wrapMaskedError(
-          log.mask,
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to delete Glue Connection ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        )
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Connection ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -6499,21 +6509,23 @@ export class GlueTriggerProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = markForeignNotFound(
+      const wrapped = this.wrapMaskedError(
+        context?.maskSecrets ?? ((text: string) => text),
         error,
-        this.wrapMaskedError(
-          context?.maskSecrets ?? ((text: string) => text),
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to delete Glue Trigger ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        )
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Trigger ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      const failure =
+        error instanceof Error && error.name.includes('NotFound') ? markNotGone(wrapped) : wrapped;
       throw stripped ? markDeleteStarted(failure) : failure;
     }
   }

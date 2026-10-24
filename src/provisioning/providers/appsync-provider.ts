@@ -244,17 +244,6 @@ const MUTABLE_GRAPHQL_API_CONFIG_PROPERTIES = [
  * - AWS::AppSync::Resolver
  * - AWS::AppSync::ApiKey
  */
-/**
- * A delete wrap names an AWS failure by its CLASS (go-to-k/cdkd#2319), and the
- * destroy loop's "already deleted" match reads `NotFoundException` in a message
- * as gone. Every AppSync delete tests `isNotFoundError`
- * before it wraps, so a wrap naming another `NotFound` class that test let
- * through (another resource's) is stamped `markNotGone`, which that match
- * refuses.
- */
-function markForeignNotFound(error: unknown, thrown: ProvisioningError): ProvisioningError {
-  return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
-}
 
 export class AppSyncProvider implements ResourceProvider {
   private client: AppSyncClient | undefined;
@@ -3264,21 +3253,24 @@ export class AppSyncProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw markForeignNotFound(
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
-        this.wrapCaughtError(
-          maskerOrIdentity(context?.maskSecrets),
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to delete GraphQL API ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        )
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete GraphQL API ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -3518,21 +3510,24 @@ export class AppSyncProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw markForeignNotFound(
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
-        this.wrapCaughtError(
-          maskerOrIdentity(context?.maskSecrets),
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to delete DataSource ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        )
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete DataSource ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -3687,21 +3682,24 @@ export class AppSyncProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw markForeignNotFound(
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
-        this.wrapCaughtError(
-          maskerOrIdentity(context?.maskSecrets),
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to delete Resolver ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        )
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Resolver ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -3935,21 +3933,24 @@ export class AppSyncProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw markForeignNotFound(
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
-        this.wrapCaughtError(
-          maskerOrIdentity(context?.maskSecrets),
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to delete ApiKey ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        )
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete ApiKey ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 

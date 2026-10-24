@@ -1206,8 +1206,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // The retry wording this message keeps on purpose (see create()) must
       // still classify when the mask cut it, or when it was withheld: read the
       // cause chain instead.
-      if (failure.redacted) throw markRedactedCause(refusal);
-      throw message === rawMessage ? refusal : markRedactedCause(refusal);
+      throw failure.redacted || message !== rawMessage ? markRedactedCause(refusal) : refusal;
     }
   }
 
