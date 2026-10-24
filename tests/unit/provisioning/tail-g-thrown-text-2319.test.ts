@@ -879,8 +879,50 @@ describe('the CodeCommit identity-read wraps', () => {
     await del();
     expect(lines(warn).join('\n')).toContain(`AccessDenied. ${VERBOSE_POINTER}`.replace(/\.$/, ''));
     expect(lines(warn).join('\n')).not.toContain(ACCOUNT);
-    expect(lines(debug).some((l) => l.includes(MASKED_DENIED))).toBe(true);
+    expect(
+      lines(debug).some(
+        (l) => l.includes('GetRepository failed while confirming CodeCommit Repository Res') && l.includes(MASKED_DENIED)
+      )
+    ).toBe(true);
     expect(lines(debug).join('\n')).not.toContain('s3cr3t');
+  });
+});
+
+// ─── IAM role create / update wraps ─────────────────────────────────
+
+describe('the IAM role create and update wraps', () => {
+  const DOC = { Version: '2012-10-17', Statement: [] };
+  const create = () =>
+    new IAMRoleProvider().create('Res', 'AWS::IAM::Role', { RoleName: 'r', AssumeRolePolicyDocument: DOC }, ctx);
+  const update = () =>
+    new IAMRoleProvider().update(
+      'Res',
+      'r',
+      'AWS::IAM::Role',
+      { RoleName: 'r', AssumeRolePolicyDocument: DOC, Description: 'new' },
+      { RoleName: 'r', AssumeRolePolicyDocument: DOC, Description: 'old' },
+      ctx
+    );
+
+  it.each([
+    ['create', 'CreateRoleCommand', create, 'Failed to create IAM role Res: '],
+    ['update', 'UpdateRoleCommand', update, 'Failed to update IAM role Res: '],
+  ] as const)('%s: masks a secret spelled in the class (SECRET-IN-CLASS)', async (_op, command, run, prefix) => {
+    failOn({ [command]: secretClass }, { GetRoleCommand: { Role: { RoleName: 'r', Path: '/' } } });
+    const failure = await caught(run());
+    expect(failure.message).toContain(`${prefix}${SECRET_CLASS_SHOWN}. ${VERBOSE_POINTER}`);
+    expect(failure.message).not.toContain('s3cr3t');
+  });
+
+  it("create: restates the role's own taken name, which the collision classifier reads", async () => {
+    failOn({
+      CreateRoleCommand: () =>
+        awsErr('EntityAlreadyExistsException', 'Role with name r already exists.'),
+    });
+    const failure = await caught(create());
+    expect(failure.message).toContain('EntityAlreadyExistsException.');
+    expect(failure.message).toContain(RESTATED);
+    expect(isNameCollisionErrorFrom(failure, 'Res')).toBe(true);
   });
 });
 

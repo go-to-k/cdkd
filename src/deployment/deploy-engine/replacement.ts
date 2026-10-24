@@ -293,13 +293,18 @@ export function replacementDeleteContext(
  *     ElastiCache ReplicationGroup) → creates the snapshot and waits for
  *     it here, then returns undefined (the subsequent delete is plain).
  *   - anything else Snapshot-tagged → refuses.
+ *
+ * `mask` is the caller's secret masker, when it holds one: the snapshot
+ * helper's info and debug lines (a withheld AWS failure's text among them,
+ * go-to-k/cdkd#2319) go through it, as `rollback-executor/names.ts` does.
  */
 export async function prepareFinalSnapshotForDelete(
   deps: ReplacementDeps,
   logicalId: string,
   resourceType: string,
   currentResource: { physicalId: string; provisionedBy?: 'sdk' | 'cc-api' | undefined },
-  policy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined
+  policy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined,
+  mask?: (text: string) => string
 ): Promise<string | undefined> {
   if (policy !== 'Snapshot' || deps.options.skipFinalSnapshot === true) return undefined;
   if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType) && currentResource.provisionedBy !== 'cc-api') {
@@ -320,7 +325,12 @@ export async function prepareFinalSnapshotForDelete(
       currentResource.physicalId,
       logicalId,
       deps.options.finalSnapshotClients ?? getAwsClients(),
-      deps.logger
+      mask === undefined
+        ? deps.logger
+        : {
+            info: (message) => deps.logger.info(mask(message)),
+            debug: (message) => deps.logger.debug(mask(message)),
+          }
     );
     return undefined;
   }
@@ -383,7 +393,8 @@ export async function replaceDeleteFirstAndRecreate(
     logicalId,
     oldResourceType,
     currentResource,
-    updateReplacePolicy
+    updateReplacePolicy,
+    createContext.maskSecrets
   );
   let deleteResult: void | ResourceDeleteResult;
   try {
@@ -939,7 +950,8 @@ export async function createFirstThenDeleteOld(
         logicalId,
         input.oldResourceType,
         currentResource,
-        input.snapshotPolicy
+        input.snapshotPolicy,
+        createSecretMasker(secrets)
       );
   deps.logger.info(
     retainOld
