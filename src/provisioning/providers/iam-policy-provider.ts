@@ -35,7 +35,7 @@ import {
   resolveSecretDerivedPrincipals,
 } from '../secret-principal-resolution.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, VERBOSE_POINTER } from '../../utils/aws-failure-text.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import type {
@@ -519,6 +519,7 @@ export class IAMPolicyProvider implements ResourceProvider {
       })),
     ];
     const failed: string[] = [];
+    let withheld = false;
     for (const step of steps) {
       try {
         await step.send();
@@ -536,16 +537,19 @@ export class IAMPolicyProvider implements ResourceProvider {
             `Failed to detach the partially-created IAM policy ${logicalId} (${v(policyName)}) from ${step.what}: ${failure.detail}`
           );
         }
-        failed.push(
-          `${step.what} (${log.mask(failure.redacted ? failure.summary : failure.detail)}): ${step.command}`
-        );
+        // The class alone per step; the --verbose pointer once, after the list.
+        withheld ||= failure.redacted;
+        const reason = failure.redacted
+          ? failure.summary.slice(0, -` ${VERBOSE_POINTER}`.length).replace(/\.$/, '')
+          : failure.detail;
+        failed.push(`${step.what} (${log.mask(reason)}): ${step.command}`);
       }
     }
     if (failed.length > 0) {
       log.warn(
         `Failed to detach the partially-created IAM policy ${logicalId} (${v(policyName)}) after ` +
           `its create failed; cdkd has no record of it, so it stays attached and granting until ` +
-          `it is removed by hand: ${failed.join('; ')}`
+          `it is removed by hand: ${failed.join('; ')}${withheld ? `. ${VERBOSE_POINTER}` : ''}`
       );
     }
   }
