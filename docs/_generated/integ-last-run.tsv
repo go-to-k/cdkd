@@ -37,7 +37,7 @@ bucket-deployment	2026-10-11T09:33:22Z	PASS	80	verify.sh	PR #4720 (#4705) final 
 budgets	2026-10-22T21:55:31Z	PASS	133	verify.sh	PR#5188 Run C at HEAD (73687a4de): Phase2b clean (2 checked, 0 unsupported); Phase2c drift exit1 on Budget.BudgetLimit.Amount (2->3) OK; Phase2d --revert restored limit to 2, kept both subscribers and FilterExpression, drift clean after; destroy 0 errors; AWS/S3 clean after; marker SET.
 cache-streaming	2026-10-21T13:56:47Z	PASS	634	verify.sh	rc ok, GetAtt redis endpoint verified, orph clean
 cc-abandoned-create-resume	2026-10-20T03:03:42Z	PASS	121	verify.sh	deploy+destroy clean, 0 orphans
-cc-api-fallback	2026-10-24T00:27:18Z	PASS	42	verify.sh	rc ok, orph clean; CC delete arm #5226
+cc-api-fallback	2026-10-24T03:41:38Z	PASS	45	verify.sh	rc ok, orph clean; #5228 not-gone mark
 cc-api-fallback-transitions	2026-10-23T16:20:21Z	PASS	98	verify.sh	#634 items 3+4 verified end-to-end; both HTTP API probes + state files gone
 cc-final-snapshot-handlers	2026-10-22T07:45:16Z	PASS	1103	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean; 0 surviving state versions
 cc-getatt-readback	2026-10-18T04:24:32Z	PASS	104	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
@@ -120,7 +120,7 @@ ec2-vpc	2026-10-20T12:02:38Z	PASS	133	verify.sh	PR#5127 1160 route53 hostedzone 
 ecr	2026-10-20T06:00:42Z	PASS	55	standard	deploy+destroy clean, 0 orphans
 ecr-scanning	2026-10-16T08:15:12Z	PASS	60	verify.sh	rc ok, orph clean (#3341 slice 4995)
 ecs-bluegreen	2026-10-11T09:33:22Z	PASS	230	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-ecs-fargate	2026-10-23T20:55:48Z	PASS	441	verify.sh	rc ok, orph clean
+ecs-fargate	2026-10-24T03:41:38Z	PASS	496	verify.sh	rc ok, orph clean; #5228 not-gone mark
 ecs-schedule-targets	2026-10-11T09:33:22Z	PASS	80	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 ecs-service-update-props	2026-10-22T19:00:38Z	PASS	132	verify.sh	rc ok, destroy 15 deleted 0 errors, orphans clean (PR#5169)
 efs-immutable-replacement	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
@@ -266,6 +266,8 @@ multi-asset	2026-09-21T12:02:26Z	PASS	97	verify.sh	rc ok, orph clean; #3489 asse
 multi-region-same-stack	2026-10-11T21:09:57Z	PASS	59	standard	PR #4809, standard flow + us-west-2 arm, orph clean
 multi-resource	2026-10-24T03:11:59Z	PASS	88	standard	destroy 0 errors, 0 orphans (17 deleted) (#5209 sweep)
 multi-stack-deps	2026-10-24T03:12:22Z	PASS	98	standard	deploy+destroy clean all 3 stacks, 0 orphans (#5209 sweep)
+multi-resource	2026-10-24T03:41:38Z	PASS	71	standard	destroy 0 errors, 0 orphans (17 deleted); swept this run's 2 CR log groups (#3885 pre-existing gap); #5228 not-gone mark
+multi-stack-deps	2026-10-23T23:18:50Z	PASS	105	standard	deploy+diff(no change)+destroy clean all 3 stacks, 0 orphans; re-run on 3d64872f4 (destroy re-read is now deep-equality) (#5220)
 neptune-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	2280	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
 nested-required-preflight	2026-10-11T09:33:22Z	PASS	55	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 nested-stack	2026-10-13T02:41:29Z	PASS	65	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
@@ -342,7 +344,7 @@ s3-subconfig-removal	2026-10-11T09:33:22Z	PASS	105	verify.sh	PR #4720 (#4705) fi
 s3-tables	2026-10-18T18:32:28Z	PASS	85	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 s3-vectors	2026-10-16T09:35:29Z	PASS	45	verify.sh	rc ok, orph clean (#3341 slice 4997)
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-scheduler-custom-group	2026-10-23T23:55:45Z	PASS	105	verify.sh	rc ok, orph clean
+scheduler-custom-group	2026-10-24T03:41:38Z	PASS	105	verify.sh	rc ok, orph clean; #5228 not-gone mark
 schema-v10-to-v11-migration	2026-10-14T07:59:02Z	PASS	495	verify.sh	rc ok, orph clean; PR #4893 state destroy purges record history (ee330190b), own state bucket; state.json kept only its delete marker
 schema-v11-to-v12-migration	2026-10-16T16:59:47Z	PASS	161	verify.sh	rc ok, orph clean (stateless-mixins refactor #5015, rebased)
 schema-v12-to-v13-migration	2026-10-23T16:21:31Z	PASS	159	verify.sh	v12->v13 transparent auto-migration verified, 46 assertions; integ-schema-migration marker set
