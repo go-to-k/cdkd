@@ -1161,7 +1161,11 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
       });
       const failure = await thrown(provider.create('Fn', TYPE, createProps(), { maskSecrets }));
       expect(failure).toBeInstanceOf(ProvisioningError);
-      expect(failure.message).toContain('Failed to create Lambda function Fn');
+      expect(failure.message).toContain(
+        'Failed to create Lambda function Fn: a value that could not be converted to text'
+      );
+      // The placeholder masks to itself, so nothing was withheld to mark.
+      expect(hasRedactedCause(failure)).toBe(false);
     });
   });
 

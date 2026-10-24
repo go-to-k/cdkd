@@ -210,7 +210,10 @@ export const VERBOSE_POINTER = "Re-run with --verbose for AWS's own message.";
  * a re-export is the signal that a second predicate has appeared.
  */
 function redactedAwsFailureSummary(error: Error): string {
-  return `${error.name || 'Error'}. ${VERBOSE_POINTER}`;
+  // `safeStringify`, not the template's own conversion: a failure's `name` is
+  // as arbitrary as the failure, and every `describeAwsFailure` caller -- even
+  // one reading only `.detail` -- runs this inside a catch (go-to-k/cdkd#3361).
+  return `${(error.name && safeStringify(error.name)) || 'Error'}. ${VERBOSE_POINTER}`;
 }
 
 /**

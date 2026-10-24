@@ -265,6 +265,18 @@ describe('the property cdkd prose matchers depend on (go-to-k/cdkd#3348)', () =>
 });
 
 describe('safeStringify: the guarded 1:1 replacement for a bare String(x)', () => {
+  // go-to-k/cdkd#3361: the redacted SUMMARY interpolated an AWS-authored
+  // failure's `name`, so one `String()` cannot convert threw from
+  // `describeAwsFailure` -- which every caller reaches inside a catch.
+  it('describeAwsFailure does not throw for an AWS-authored failure whose name cannot be converted', () => {
+    const error = Object.assign(new Error('Access denied'), { $fault: 'client' });
+    Object.defineProperty(error, 'name', { value: Object.create(null) });
+    const failure = describeAwsFailure(error);
+    expect(failure.redacted).toBe(true);
+    expect(failure.summary).toBe(`a value that could not be converted to text. ${VERBOSE_POINTER}`);
+    expect(failure.detail).toBe('Access denied');
+  });
+
   // WHY this exists rather than `describeAwsFailure(x).detail`. The sweep that
   // converted `src/provisioning/**` to `.detail` reached nine BARE `String(x)`
   // sites and substituted `.detail` there too, on a "byte-identical" claim that
