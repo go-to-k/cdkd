@@ -3771,7 +3771,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // Kept at debug: if the re-send fails too, the caller's warn names only
       // that second failure.
       this.logger.debug(
-        safeMsg`UpdateUserPool refused the SES EmailConfiguration of ${physicalId}: ${describeAwsFailure(echoError).summary}`
+        safeMsg`UpdateUserPool refused the SES EmailConfiguration of ${physicalId}: ${mask(describeAwsFailure(echoError).summary)}`
       );
       try {
         await this.getClient().send(
