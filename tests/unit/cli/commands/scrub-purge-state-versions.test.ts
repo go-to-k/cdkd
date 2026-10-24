@@ -261,7 +261,7 @@ describe('cdkd scrub purges the superseded state.json versions (go-to-k/cdkd#262
     // The SAVE's error, not one from the `finally`: a purge that threw there
     // would replace it.
     await expect(scrub(record(SECRET_PLAINTEXT))).rejects.toThrow(
-      /Failed to save state for stack .*Service Unavailable/
+      /Failed to save state for stack .*ServiceUnavailable\. Re-run with --verbose/
     );
 
     expect(names()).toEqual([
