@@ -778,16 +778,19 @@ describe('CloudTrail EventSelectors reset tolerance (#2319)', () => {
   });
 
   // An access denial is never the benign rejection, whatever its text spells.
-  it('an access denial whose own text spells the phrase is not swallowed', async () => {
-    const text = 'Not authorized to change advanced event selectors on this trail';
-    route({ PutEventSelectorsCommand: awsError('AccessDeniedException', text) });
+  it.each(['AccessDeniedException', 'InsufficientIAMAccessPermissionException'])(
+    'a %s whose own text spells the phrase is not swallowed',
+    async (errorClass) => {
+      const text = 'Not authorized to change advanced event selectors on this trail';
+      route({ PutEventSelectorsCommand: awsError(errorClass, text) });
 
-    const failure = await caught(reset(TRAIL_ARN));
+      const failure = await caught(reset(TRAIL_ARN));
 
-    expect(failure.message).toBe(
-      `Failed to update CloudTrail Trail T: AccessDeniedException. ${VERBOSE_POINTER}`
-    );
-  });
+      expect(failure.message).toBe(
+        `Failed to update CloudTrail Trail T: ${errorClass}. ${VERBOSE_POINTER}`
+      );
+    }
+  );
 
   it('a denial naming a role after the phrase is not swallowed', async () => {
     const text = `User: arn:aws:sts::${ACCOUNT}:assumed-role/advanced-event-selector-admin/s is not authorized to perform: cloudtrail:PutEventSelectors on resource: ${TRAIL_ARN}`;

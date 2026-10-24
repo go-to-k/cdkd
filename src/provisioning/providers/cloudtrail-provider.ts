@@ -180,10 +180,11 @@ function describeValue(value: unknown): string {
 const ADVANCED_SELECTOR_PHRASE = /advanced[\s-]*event[\s-]*selector/i;
 
 /**
- * An access-denial class: never the benign advanced-selector rejection,
- * whatever its text spells (go-to-k/cdkd#2319 review).
+ * An access-denial class, CloudTrail's `Insufficient*AccessPermissionException`
+ * included: never the benign advanced-selector rejection, whatever its text
+ * spells (go-to-k/cdkd#2319 review).
  */
-const ACCESS_DENIAL_CLASS = /^(AccessDenied|NotAuthorized|Unauthorized)/i;
+const ACCESS_DENIAL_CLASS = /AccessDenied|NotAuthorized|Unauthorized|AccessPermission/i;
 
 /**
  * AWS's text with every ARN cut out, and the trail's id and bare name cut out
