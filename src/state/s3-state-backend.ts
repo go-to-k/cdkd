@@ -2923,15 +2923,6 @@ export class S3StateBackend {
   }
 
   /**
-   * Read the legacy key and classify what is there — {@link LegacyStateProbe}
-   * says what each answer means and which consumer acts on it.
-   */
-  /**
-   * A stack name safe to put in a log line. Names reach this class from S3
-   * key segments, which anyone able to write the bucket controls, so every
-   * message that renders one goes through here (issue #2170's class).
-   */
-  /**
    * The `StateError` a failed S3 call throws, with the failure named by its
    * CLASS (go-to-k/cdkd#2319).
    *
@@ -2966,6 +2957,11 @@ export class S3StateBackend {
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
+  /**
+   * A stack name safe to put in a log line. Names reach this class from S3
+   * key segments, which anyone able to write the bucket controls, so every
+   * message that renders one goes through here (issue #2170's class).
+   */
   private displayName(stackName: string): string {
     // Bare when plain, otherwise one JSON string: callers write NO quotes of
     // their own around it (go-to-k/cdkd#3617).
@@ -3109,6 +3105,10 @@ export class S3StateBackend {
     };
   }
 
+  /**
+   * Read the legacy key and classify what is there — {@link LegacyStateProbe}
+   * says what each answer means and which consumer acts on it.
+   */
   private async probeLegacyState(stackName: string): Promise<LegacyStateProbe> {
     try {
       const response = await this.s3Client.send(
