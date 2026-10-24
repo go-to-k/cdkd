@@ -213,9 +213,11 @@ function redactedAwsFailureSummary(error: Error): string {
   // `safeStringify`, not the template's own conversion: a failure's `name` is
   // as arbitrary as the failure, and every `describeAwsFailure` caller -- even
   // one reading only `.detail` -- runs this inside a catch (go-to-k/cdkd#3361).
-  // Identical for a string `name`; a `name` that converts to `''` falls back to
-  // `Error`, as an empty or missing one always did.
-  const name = safeStringify(error.name ?? '');
+  // Read once. Identical to the old `name || 'Error'` for every `name` that
+  // converts: a falsy one still gives `Error`, and so does a truthy one that
+  // converts to `''`.
+  const raw: unknown = error.name;
+  const name = raw ? safeStringify(raw) : '';
   return `${name || 'Error'}. ${VERBOSE_POINTER}`;
 }
 
