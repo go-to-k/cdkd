@@ -657,8 +657,35 @@ export class StackTerminationProtectionError extends CdkdError {
      * {@link NestedStackChildDirectDestroyError} takes them: built by the
      * caller, since this module cannot import `malformed-resources-bag.ts`.
      */
-    account?: { args: readonly CommandArg[]; clause: string }
+    account?: { args: readonly CommandArg[]; clause: string },
+    /**
+     * `cdkd state destroy` (go-to-k/cdkd#5238) reads the setting from the
+     * record its last deploy wrote and has no CDK code to edit, so its
+     * remedy is `--remove-protection`.
+     */
+    command: 'cdkd destroy' | 'cdkd state destroy' = 'cdkd destroy'
   ) {
+    if (command === 'cdkd state destroy') {
+      const bypass = pasteableCommand('cdkd state destroy', [
+        { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+        { literal: '--remove-protection' },
+        ...(account?.args ?? []),
+      ]);
+      super(
+        `Stack ${quotedOrDescribed(stackName, 'stack name')} was last deployed with ` +
+          `terminationProtection: true and cannot be destroyed. To destroy it anyway, ` +
+          `pass --remove-protection.` +
+          withheldTargetClause(bypass, 'stack', 'cdkd state destroy', "This stack's name") +
+          (account?.clause ? ` ${account.clause.trimEnd()}` : '') +
+          `\nDestroy it with: ${bypass.command}`,
+        'STACK_TERMINATION_PROTECTION',
+        cause
+      );
+      this.stackName = stackName;
+      this.name = 'StackTerminationProtectionError';
+      Object.setPrototypeOf(this, StackTerminationProtectionError.prototype);
+      return;
+    }
     // Trailing labelled line, gated value (go-to-k/cdkd#3436): the name comes
     // from a state key or an assembly, and inside the sentence's quotes it
     // pasted as shell. `patternMatched`: `cdkd destroy` resolves its argument

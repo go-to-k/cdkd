@@ -1061,6 +1061,30 @@ async function destroyCommand(
         continue;
       }
 
+      // go-to-k/cdkd#5238: protection the stack was DEPLOYED with counts too,
+      // as in CloudFormation, where the deployed stack's setting is what a
+      // delete meets: code that dropped it but was never redeployed is still
+      // protected. The synth check above already ran for a synth-protected
+      // stack.
+      if (
+        synthStack?.terminationProtection !== true &&
+        stateResult.state.terminationProtection === true
+      ) {
+        if (options.removeProtection) {
+          logger.warn(
+            `Stack ${displaySafe(stackName)} was deployed with terminationProtection: true — bypassing because --remove-protection set`
+          );
+        } else {
+          const err = new StackTerminationProtectionError(stackName, undefined, {
+            args: stateCommandAccount.args,
+            clause: withheldAccountClause(accountRecovery, 'the command below prints'),
+          });
+          logger.error(`  ✗ ${err.message}`);
+          totalErrors++;
+          continue;
+        }
+      }
+
       // Nested-stack child-only destroy refusal (#555 A2 / design §7). A
       // state record with `parentStack` set was written by
       // `NestedStackProvider.create` (or recursive `cdkd import

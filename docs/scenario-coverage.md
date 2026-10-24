@@ -305,5 +305,6 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`stepfunctions-s3-definition`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions-s3-definition/)
 - [`stream-delete-redeploy`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stream-delete-redeploy/)
 - [`synthetics-canary`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/synthetics-canary/)
+- [`termination-protection`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/termination-protection/)
 - [`unrecognized-key-autoroute`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/unrecognized-key-autoroute/)
 - [`wide-independent`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/wide-independent/)

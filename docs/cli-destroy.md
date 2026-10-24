@@ -132,7 +132,7 @@ says what to do.
 | What stops it | What you see | Read |
 | --- | --- | --- |
 | No `--yes` and no terminal | `NON_INTERACTIVE_CONFIRM`, exit `1` | [Non-interactive runs](cli-destroy-prompts.md#non-interactive-runs) |
-| `terminationProtection: true` on the stack | `STACK_TERMINATION_PROTECTION`, exit `2` | [`--remove-protection`](#remove-protection-bypass-deletion-protection-on-destroy) |
+| `terminationProtection: true` on the stack, in the code or at its last deploy | `STACK_TERMINATION_PROTECTION`, exit `2` | [`--remove-protection`](#remove-protection-bypass-deletion-protection-on-destroy) |
 | Another stack imports one of its outputs | `STACK_HAS_ACTIVE_IMPORTS` | [Use Another Stack's Outputs](cross-stack-references.md) |
 | A bucket or ECR repository that still holds data | That resource fails, exit `2` | [Non-empty buckets and repositories](cli-destroy-guards.md#non-empty-s3-buckets-and-ecr-repositories) |
 | Deletion protection on a resource | That resource fails with the AWS error, exit `2` | [`--remove-protection`](#remove-protection-bypass-deletion-protection-on-destroy) |
@@ -283,8 +283,11 @@ and its default answer changes to no (`y/N`).
 The flag turns off two kinds of protection:
 
 - **`terminationProtection` on the stack.** cdkd logs a warning that names the
-  stack and continues. `cdkd state destroy` cannot see this setting, because
-  only the CDK app reports it, so the flag has nothing to do there.
+  stack and continues. The protection counts when the CDK code sets it, and
+  when the stack was last DEPLOYED with it: as in CloudFormation, code that
+  dropped the setting protects nothing until it is redeployed. Each deploy
+  records the setting in the stack's state, which is how `cdkd state destroy`,
+  with no CDK app, refuses a protected stack too.
 - **Deletion protection on a resource** of one of the types below.
 
 | Resource type | Protection field | Call that turns it off |

@@ -31,6 +31,7 @@ import { refusedBaselineRemedy } from './refused-baseline-remedy.js';
 import {
   CdkdError,
   PartialFailureError,
+  StackTerminationProtectionError,
   formatError,
   withErrorHandling,
 } from '../../utils/error-handler.js';
@@ -3299,6 +3300,29 @@ async function stateDestroyCommand(
               ', skipping'
           );
           continue;
+        }
+
+        // go-to-k/cdkd#5238: the stack's last deploy recorded
+        // `terminationProtection: true`. Refused before the lock and any
+        // delete, as `cdkd destroy` does, and counted toward the partial
+        // failure (exit 2) so sibling targets still run; `--remove-protection`
+        // is the bypass, logged at WARN.
+        if (stateResult.state.terminationProtection === true) {
+          if (options.removeProtection === true) {
+            logger.warn(
+              safeMsg`Stack ${displayStackName(stackName)} was deployed with terminationProtection: true — bypassing because --remove-protection set`
+            );
+          } else {
+            const err = new StackTerminationProtectionError(
+              stackName,
+              undefined,
+              undefined,
+              'cdkd state destroy'
+            );
+            logger.error(`  ✗ ${err.message}`);
+            totalErrors++;
+            continue;
+          }
         }
 
         // Issue #2117 — the last check before any delete is issued; see the

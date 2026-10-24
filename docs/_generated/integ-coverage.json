@@ -7562,6 +7562,7 @@
         "stale-attribute-heal",
         "state-info-command",
         "tags-propagation",
+        "termination-protection",
         "throttle-wide-dag",
         "type-change-replacement",
         "update-policy-mutations",
@@ -7936,6 +7937,10 @@
           "l2"
         ],
         "tags-propagation": [
+          "l2",
+          "literal"
+        ],
+        "termination-protection": [
           "l2",
           "literal"
         ],

@@ -30,6 +30,7 @@ interface StackState {
   stackInstanceId?: string;       // v13+: this lifetime's id; absent = legacy, forever
   retiredNameGenerations?: Record<string, number>; // v13+: logical id -> generation it left at
   pendingMovesOut?: PendingMoveOut[]; // no bump: an unfinished `cdkd refactor` move out (ids only); deploy/destroy refuse while present (#5212)
+  terminationProtection?: true; // no bump: each deploy writes it from synth (root only); destroy / state destroy refuse while present (#5238)
   lastModified: number;
 }
 

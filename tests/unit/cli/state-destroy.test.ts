@@ -344,6 +344,48 @@ describe('cdkd state destroy', () => {
     expect(mockRunDestroyForStack.mock.calls[0]![2].deferRegistryTail).toBeUndefined();
   });
 
+  describe('a stack its last deploy recorded as terminationProtection: true (go-to-k/cdkd#5238)', () => {
+    const protectedRecord = (stackName: string) => ({
+      state: { ...makeStackState(stackName, 'us-east-1'), terminationProtection: true as const },
+      etag: '"abc"',
+    });
+
+    it('is refused before the runner, naming the bypass, and the run exits 2', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue(protectedRecord('MyStack'));
+
+      await expect(runStateDestroy(['destroy', 'MyStack', '--yes'])).rejects.toThrow();
+      expect(exitSpy).toHaveBeenCalledWith(2);
+      expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+      const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+      expect(messages).toContain('terminationProtection: true');
+      expect(messages).toContain('cdkd state destroy MyStack --remove-protection');
+    });
+
+    it('a protected stack does not stop an unprotected sibling', async () => {
+      mockListStacks.mockResolvedValue([
+        { stackName: 'Guarded', region: 'us-east-1' },
+        { stackName: 'Open', region: 'us-east-1' },
+      ]);
+      mockGetState.mockImplementation(async (name: string) =>
+        name === 'Guarded'
+          ? protectedRecord('Guarded')
+          : { state: makeStackState('Open', 'us-east-1'), etag: '"abc"' }
+      );
+
+      await runStateDestroy(['destroy', 'Guarded', 'Open', '--yes']).catch(() => undefined);
+      expect(mockRunDestroyForStack.mock.calls.map((c) => c[0])).toEqual(['Open']);
+    });
+
+    it('--remove-protection destroys it', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue(protectedRecord('MyStack'));
+
+      await runStateDestroy(['destroy', 'MyStack', '--yes', '--remove-protection']);
+      expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('passes --remove-protection through to the runner', async () => {
     mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValue({

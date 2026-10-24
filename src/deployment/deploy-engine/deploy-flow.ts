@@ -248,6 +248,19 @@ export async function doDeployWithPrefetch(
       lastModified: Date.now(),
     };
     const currentEtag = currentStateData?.etag;
+    // go-to-k/cdkd#5238: the record says what the DEPLOYED stack's
+    // `terminationProtection` is, so `cdkd state destroy` (no CDK app) can
+    // honor it. Set from this synth on the in-memory record, so every save
+    // below writes it (the carrier copies it) and a no-change deploy that
+    // only toggles it still saves. A nested child takes none: the setting is
+    // the root stack's.
+    const loadedTerminationProtection = currentState.terminationProtection === true;
+    if (!engine.options.parentStackInfo) {
+      if (engine.options.terminationProtection === true) currentState.terminationProtection = true;
+      else delete currentState.terminationProtection;
+    }
+    const terminationProtectionChanged =
+      (currentState.terminationProtection === true) !== loadedTerminationProtection;
     // go-to-k/cdkd#5064: the scope every generated name of this deploy is
     // derived in -- the record's stack instance id (`undefined` for a legacy
     // record, and for a first deploy until `resolveStackInstanceId` below
@@ -1483,6 +1496,7 @@ export async function doDeployWithPrefetch(
           skippedOutputsChanged ||
           orphansChanged ||
           supersededChanged ||
+          terminationProtectionChanged ||
           healedAttributesPending
         ) {
           // A first deploy with nothing to create still writes its record here.
