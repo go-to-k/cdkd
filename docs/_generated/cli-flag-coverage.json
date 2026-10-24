@@ -1798,6 +1798,7 @@
         "partial-create-handback",
         "perf-cross-backend-check",
         "rds-aurora",
+        "recreate-via-cc-api",
         "redshift-cluster-getatt",
         "remove-protection",
         "rollback-sqs-cooldown",

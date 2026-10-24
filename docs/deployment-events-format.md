@@ -51,13 +51,18 @@ Each event is one JSON object, stored as one line of the run's file:
 | `guard` | `RESOURCE_GUARD_INDETERMINATE` | The id of the check that could not answer |
 | `error` | failure events | `{ name, message, awsErrorCode?, requestId?, ownLines? }` |
 
-Three details about these fields:
+Some details about these fields:
 
 - A `cdkd state destroy` run records `command: destroy`.
 - A nested stack's events carry the nested stack's name in `stackName` and
   are stored in the parent's run.
 - `error.awsErrorCode` and `error.requestId` come from the innermost AWS SDK
   error behind the failure.
+- When the failure is AWS's own error, with no cdkd message around it,
+  `error.message` is its error class and a pointer, for example
+  `AccessDenied. Re-run with --verbose for AWS's own message.` AWS words an
+  access denial with your account id and role ARN, and this file outlives the
+  stack.
 
 ### Placeholders in the output
 

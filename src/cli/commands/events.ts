@@ -749,7 +749,8 @@ export function printRunEvents(
       const name = safeText(e.error.name) || UNRENDERABLE;
       // `e.error.message` is the ONE field here that is legitimately EMPTY
       // without anyone forging anything: `extractDeploymentEventError` defaults
-      // `name` (`err.name || 'Error'`) but copies `message` verbatim, so the
+      // `name` (`err.name || 'Error'`) but copies a cdkd-authored `message`
+      // verbatim (an AWS-authored one is its class, go-to-k/cdkd#2319), so the
       // commonest possible error — a bare `new Error()` — stores `''`. Every
       // other field on this line needs store-write access to be blank, and at
       // that point the whole record is forged anyway.
@@ -794,7 +795,14 @@ export function printRunEvents(
           : laterShows
             ? ''
             : `: ${UNRENDERABLE}`;
-      logger.info(`      ${red(`${name}${code}${message}`)}${reqId}`);
+      // go-to-k/cdkd#2319: an AWS-authored failure is recorded as its class
+      // plus the `--verbose` pointer, so a head that already opens with the
+      // name is shown alone, and the code only when it differs from the name.
+      const nameLed = rest.length === 0 && headShown.startsWith(`${name}. `);
+      const line = nameLed
+        ? `${name}${e.error.awsErrorCode === e.error.name ? '' : code}${headShown.slice(name.length)}`
+        : `${name}${code}${message}`;
+      logger.info(`      ${red(line)}${reqId}`);
       for (const line of rest) {
         const shown = safeText(line);
         // `safeMsg` over the already-sanitized line: the message is built

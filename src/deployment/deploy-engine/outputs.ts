@@ -20,7 +20,7 @@ import {
   noEchoParameterValueSeed,
   secretBearingExportNameWarning,
 } from '../outputs-export-alias.js';
-import { markNonRetryable } from '../retryable-errors.js';
+import { markNonRetryable, markRedactedCause } from '../retryable-errors.js';
 import { mirrorInheritedParameterReads } from '../intrinsic-resolver/parameter-secrets.js';
 import {
   inheritNestedStackParameterAssociations,
@@ -32,7 +32,7 @@ import {
   type LiveScopePolicy,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
-import { safeStringify } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { asIsMessage, safeMsg } from '../../utils/display-safe.js';
 
 /** See `deploy-engine.ts`: an inline type-only alias, for the `vi.mock` reason stated there. */
@@ -323,12 +323,26 @@ export function handleOutputResolutionFailure(
     // go-to-k/cdkd#2676: `detail` is an error's (masked) message, which can
     // end in cdkd's own remedy command lines (`maskedRecordRemedyFor`), so it
     // is embedded as-is and LAST, after the flag note.
-    throw new Error(
+    //
+    // go-to-k/cdkd#2319: this refusal reaches the persisted `RUN_FINISHED`
+    // event, and an AWS-authored read failure names the caller on a denial.
+    // It is named by its class plus the `--verbose` pointer, its text goes
+    // to `debug` masked, and the refusal is stamped so a classifier reads
+    // that text on the (masked) `cause` chain. A cdkd-authored refusal or a
+    // transport failure keeps its text.
+    const failure = error instanceof Error ? describeAwsFailure(error) : undefined;
+    const refusalText = (text: string): string =>
       safeMsg`Failed to resolve output ${outputKey} ` +
-        `(--strict-getatt promotes output resolution failures to deploy errors; ` +
-        safeMsg`drop the flag to skip the output instead): ${asIsMessage(detail)}`,
+      `(--strict-getatt promotes output resolution failures to deploy errors; ` +
+      safeMsg`drop the flag to skip the output instead): ${asIsMessage(text)}`;
+    if (failure?.redacted === true) deps.logger.debug(refusalText(detail));
+    const refusal = new Error(
+      refusalText(failure?.redacted === true ? failure.summary : detail),
       cause instanceof Error || typeof cause === 'string' ? { cause } : {}
     );
+    throw failure?.redacted === true && cause instanceof Error
+      ? markRedactedCause(refusal)
+      : refusal;
   }
   deps.logger.warn(safeMsg`Failed to resolve output ${outputKey}: ${asIsMessage(detail)}`);
   outputs[outputKey] = undefined;

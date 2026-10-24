@@ -979,7 +979,22 @@ export async function createFirstThenDeleteOld(
   } catch (createError) {
     // The old resource is untouched: a raw failure is the whole story.
     if (!isNameCollisionErrorFrom(createError, logicalId)) throw createError;
-    const createMsg = displayAwsMessage(maskName(describeAwsFailure(createError).detail));
+    // go-to-k/cdkd#2319: the refusal is persisted, so an AWS-authored
+    // collision is quoted by its class plus the `--verbose` pointer and AWS's
+    // text goes to `debug`. No reader needs AWS's wording in this MESSAGE:
+    // `isNameCollisionErrorFrom` reads the chain, the rollback keys on the
+    // code, and the "the create collided" sentence is cdkd's. A provider's
+    // own wrap keeps its text.
+    const createFailure = describeAwsFailure(createError);
+    const createAwsMsg = displayAwsMessage(maskName(createFailure.detail));
+    const createMsg = createFailure.redacted
+      ? displaySafe(maskName(createFailure.summary)).replace(/\.$/, '')
+      : createAwsMsg;
+    if (createFailure.redacted) {
+      deps.logger.debug(
+        safeMsg`${maskName(logicalId)}: the create-first attempt collided: ${asIsMessage(createAwsMsg)}`
+      );
+    }
     // Marked: the message quotes the collision text, which the recreate
     // retry classifier would otherwise retry for minutes.
     throw markNonRetryable(
