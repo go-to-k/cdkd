@@ -2977,7 +2977,8 @@ describe('CloudControlProvider update: an ApiGatewayV2 Api imported from Body (g
     ['a 301 naming no region', undefined],
   ])('%s is refused, non-retryable, naming s3:GetBucketLocation', async (_label, region) => {
     mockS3Send.mockRejectedValueOnce(redirect(region));
-    mockRedirectS3Send.mockRejectedValueOnce(redirect('eu-west-1'));
+    // Only a 301 that names a region is followed, and only once.
+    if (region !== undefined) mockRedirectS3Send.mockRejectedValueOnce(redirect('eu-west-1'));
     const error = await provider
       .update(
         'Api',
@@ -2995,7 +2996,7 @@ describe('CloudControlProvider update: an ApiGatewayV2 Api imported from Body (g
     expect(error.message).toContain('s3:GetBucketLocation');
     expect(error.message).not.toContain('must be addressed');
     expect(isMarkedNonRetryable(error)).toBe(true);
-    expect(mockRedirectS3Send.mock.calls.length).toBeLessThanOrEqual(1);
+    expect(mockRedirectS3Send).toHaveBeenCalledTimes(region !== undefined ? 1 : 0);
     expect(reimports()).toEqual([]);
   });
 
