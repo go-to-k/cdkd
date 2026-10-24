@@ -380,8 +380,15 @@ export class SNSTopicProvider implements ResourceProvider {
             );
           } catch (cleanupError) {
             leftBehindArn = topicArn;
+            // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a
+            // denied DeleteTopic names the caller's assumed-role ARN.
+            const cleanupFailure = describeAwsFailure(cleanupError);
+            const cleanupHead = `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): `;
+            if (cleanupFailure.redacted) {
+              this.logger.debug(maskSecrets(`${cleanupHead}${cleanupFailure.detail}`));
+            }
             warn(
-              `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): ${describeAwsFailure(cleanupError).detail}. Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws sns delete-topic --topic-arn ${topicArn}`.render()}`
+              `${cleanupHead}${cleanupFailure.redacted ? `${cleanupFailure.summary} ` : `${cleanupFailure.detail}. `}Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws sns delete-topic --topic-arn ${topicArn}`.render()}`
             );
           }
         }
@@ -405,7 +412,7 @@ export class SNSTopicProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const thrown = this.wrapCaughtError(
-        maskSecrets,
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(

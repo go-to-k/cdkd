@@ -349,6 +349,16 @@ describe('ECR / SQS / SNS / Step Functions / WAFv2 / CodeBuild thrown wraps with
     expect(debugLines().join('\n')).not.toContain('s3cr3t');
   });
 
+  it.each(cases)('$wrap ($fail): a secret in the error class is masked out of the message', async (c) => {
+    // The class reaches the thrown message, so it goes through the masker too.
+    failOn(c.fail, awsSdkError(DENIED, 'Denieds3cr3tException'), c.answers);
+
+    const failure = await caught(c.run());
+
+    expect(failure.message).toBe(`${c.wrap}: Denied***Exception. ${VERBOSE_POINTER}`);
+    expect(failure.message).not.toContain('s3cr3t');
+  });
+
   it.each(deletes)('$wrap: a NotFound class that is not the resource never reads as gone', async (c) => {
     // The class name spells `NotFoundException`, which the destroy and deploy
     // delete classifiers read as "already deleted" unless the error is marked.
