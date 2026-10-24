@@ -541,6 +541,14 @@ describe('cdkd gc', () => {
       chain.push(e.message, String(e.stack));
     }
     expect(chain.join('\n')).not.toContain('hunter2');
+    // V8's text is at `debug` and nowhere louder: a `debug` -> `warn` slip
+    // would print it at default verbosity.
+    const logged = (fn: { mock: { calls: unknown[][] } }): string =>
+      fn.mock.calls.map((c) => c.map(String).join(' ')).join('\n');
+    expect(logged(loggerMocks.debug)).toContain('hunter2');
+    for (const fn of [loggerMocks.info, loggerMocks.warn, loggerMocks.error]) {
+      expect(logged(fn)).not.toContain('hunter2');
+    }
   });
 
   describe('European Sovereign Cloud state keys (issue #2001)', () => {

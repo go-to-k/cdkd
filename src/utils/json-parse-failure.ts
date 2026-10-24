@@ -36,7 +36,12 @@ import { describeAwsFailure } from './aws-failure-text.js';
 
 export function describeJsonParseFailure(err: unknown, bytes: number): string {
   const raw = describeAwsFailure(err).detail;
-  const at = /at position (\d+)/.exec(raw);
+  // Anchored on V8's OWN sentence ending (`... in JSON at position N (line L
+  // column C)`, or the older form without the line/column suffix): the
+  // quoting family ends `... is not valid JSON`, and a quoted body can itself
+  // contain `at position 42`, which an unanchored match would report as the
+  // offset.
+  const at = / in JSON at position (\d+)(?: \(line \d+ column \d+\))?$/.exec(raw);
   // `at position` is V8's UTF-16 CODE-UNIT index, not a byte offset -- named
   // in the rendered text because the size beside it is UTF-8 bytes.
   const where = at ? ` at code-unit position ${at[1]}` : '';

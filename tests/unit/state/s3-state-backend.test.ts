@@ -1134,11 +1134,20 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       }
       expect((v8 as Error).message).toContain('hunter2');
 
+      for (const fn of Object.values(childLoggerMock)) fn.mockClear();
       s3Client.send.mockResolvedValueOnce({
         Body: { transformToString: () => Promise.resolve(body) },
         ETag: '"e"',
       });
       const caught = await backend.getState('X', 'us-east-1').catch((e: unknown) => e);
+      // V8's text is at `debug` and nowhere louder: a `debug` -> `warn` slip
+      // would print it at default verbosity.
+      const logged = (fn: { mock: { calls: unknown[][] } }): string =>
+        fn.mock.calls.map((c) => c.map(String).join(' ')).join('\n');
+      expect(logged(childLoggerMock.debug)).toContain('hunter2');
+      for (const fn of [childLoggerMock.info, childLoggerMock.warn, childLoggerMock.error]) {
+        expect(logged(fn)).not.toContain('hunter2');
+      }
       expect(caught).toBeInstanceOf(StateError);
       expect((caught as Error).message).toBe(
         `State file for stack X is not valid JSON: invalid JSON; ${Buffer.byteLength(body, 'utf8')} byte(s) read`

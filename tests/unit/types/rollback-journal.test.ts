@@ -1,4 +1,16 @@
-import { describe, it, expect } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+
+// A stable double, so the parse failure's `debug` line is assertable.
+const { loggerMock } = vi.hoisted(() => ({
+  loggerMock: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+vi.mock('../../../src/utils/logger.js', () => ({
+  getLogger: () => ({ ...loggerMock, child: () => loggerMock }),
+}));
+
+beforeEach(() => {
+  for (const fn of Object.values(loggerMock)) fn.mockClear();
+});
 import {
   ROLLBACK_JOURNAL_VERSION,
   parseRollbackJournal,
@@ -131,6 +143,25 @@ describe('parseRollbackJournal refuses to forge a line (issue #3064)', () => {
     }
     expect(chain.join('\n')).not.toContain('hunter2');
     expect((caught as Error).message).toMatch(/is not valid JSON: invalid JSON; \d+ byte\(s\) read$/);
+    // V8's text is at `debug` and nowhere louder.
+    const logged = (fn: { mock: { calls: unknown[][] } }): string =>
+      fn.mock.calls.map((c) => c.map(String).join(' ')).join('\n');
+    expect(logged(loggerMock.debug)).toContain('hunter2');
+    for (const fn of [loggerMock.info, loggerMock.warn, loggerMock.error]) {
+      expect(logged(fn)).not.toContain('hunter2');
+    }
+  });
+
+  it('keeps V8 text on the debug line flattened through the allowlist (issues #3003, #5247)', () => {
+    messageOf('[1,2,\n  Phys\u200bicalID: arn:forged]', 'S');
+
+    const line = loggerMock.debug.mock.calls
+      .map((c: unknown[]) => String(c[0]))
+      .find((m: string) => m.startsWith("Rollback journal for 'S' failed to parse:"));
+    // `Phys ical` can only have come FROM the body, so the line is not vacuous.
+    expect(line).toContain('Phys ical');
+    expect(line).not.toMatch(CTRL);
+    expect(line).not.toMatch(INVISIBLE);
   });
 
   it('flattens the STACK NAME, which is an S3 key segment', () => {

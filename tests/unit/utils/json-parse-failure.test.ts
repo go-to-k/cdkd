@@ -35,8 +35,28 @@ describe('describeJsonParseFailure (issue #5247)', () => {
     );
   });
 
+  it('takes no offset from a quoted body that itself says `at position`', () => {
+    const body = '[at position 42]';
+    const err = parseError(body);
+    // Premise: V8 quotes the phrase inside its `is not valid JSON` sentence.
+    expect((err as Error).message).toContain('at position 42');
+
+    expect(describeJsonParseFailure(err, utf8ByteLength(body))).toBe(
+      'invalid JSON; 16 byte(s) read'
+    );
+  });
+
+  it('keeps the offset of the older V8 form without a line/column suffix', () => {
+    const err = new SyntaxError('Unexpected token } in JSON at position 123');
+    expect(describeJsonParseFailure(err, 4)).toBe(
+      'invalid JSON at code-unit position 123; 4 byte(s) read'
+    );
+  });
+
   it('renders a non-Error value without echoing it', () => {
-    expect(describeJsonParseFailure('hunter2 at position 3x', 5)).not.toContain('hunter2');
+    expect(describeJsonParseFailure('hunter2 in JSON at position 3x', 5)).toBe(
+      'invalid JSON; 5 byte(s) read'
+    );
   });
 
   it('counts UTF-8 bytes, not UTF-16 code units', () => {
