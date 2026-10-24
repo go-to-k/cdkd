@@ -265,9 +265,6 @@ monitoring	2026-08-10T05:19:05Z	PASS	43	standard	0810 P2 sweep b6; 7 del 0 err, 
 multi-asset	2026-09-21T12:02:26Z	PASS	97	verify.sh	rc ok, orph clean; #3489 asset-publish sites (file + docker)
 multi-region-same-stack	2026-10-11T21:09:57Z	PASS	59	standard	PR #4809, standard flow + us-west-2 arm, orph clean
 multi-resource	2026-10-24T03:41:38Z	PASS	71	standard	destroy 0 errors, 0 orphans (17 deleted); swept this run's 2 CR log groups (#3885 pre-existing gap); #5228 not-gone mark
-multi-stack-deps	2026-10-24T03:12:22Z	PASS	98	standard	deploy+destroy clean all 3 stacks, 0 orphans (#5209 sweep)
-multi-resource	2026-10-23T16:19:29Z	PASS	76	standard	destroy 0 errors, 0 orphans (17 deleted); swept this run's 2 CR log groups (#3885 pre-existing gap)
-multi-resource	2026-10-24T03:11:59Z	PASS	88	standard	destroy 0 errors, 0 orphans (17 deleted) (#5209 sweep)
 multi-stack-deps	2026-10-24T03:23:48Z	PASS	136	standard	deploy+diff(no change)+destroy clean all 3 stacks, 0 orphans; regression check for fix/state-termination-protection@912044b7f (#5240)
 neptune-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	2280	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
 nested-required-preflight	2026-10-11T09:33:22Z	PASS	55	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
