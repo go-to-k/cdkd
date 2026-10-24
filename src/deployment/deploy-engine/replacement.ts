@@ -382,6 +382,13 @@ export async function replaceDeleteFirstAndRecreate(
   noEchoDeleteValues?: NoEchoDeleteValues
 ): Promise<Awaited<ReturnType<ResourceProvider['create']>>> {
   const createContext: CreateContext = { maskSecrets: createSecretMasker(secrets) };
+  // go-to-k/cdkd#2007: the bag this deploy resolved plus the name bag, which
+  // covers a physical id derived from a secret: the old resource's delete and
+  // its final snapshot's lines log under it.
+  const deleteMask = createUnionSecretMasker([
+    secrets,
+    secretNameBagFor(deps.secretsRun(), logicalId),
+  ]);
   // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the OLD
   // resource before the replacement delete, exactly like the destroy
   // paths honor `DeletionPolicy: Snapshot`. Deliberately OUTSIDE the
@@ -394,7 +401,7 @@ export async function replaceDeleteFirstAndRecreate(
     oldResourceType,
     currentResource,
     updateReplacePolicy,
-    createContext.maskSecrets
+    deleteMask
   );
   let deleteResult: void | ResourceDeleteResult;
   try {
@@ -418,10 +425,7 @@ export async function replaceDeleteFirstAndRecreate(
           ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
           // go-to-k/cdkd#2007: the bag this deploy resolved, which the call
           // also logs under; the physical id can be a name it derives.
-          maskSecrets: createUnionSecretMasker([
-            secrets,
-            secretNameBagFor(deps.secretsRun(), logicalId),
-          ]),
+          maskSecrets: deleteMask,
         }
       )
     );
@@ -951,7 +955,9 @@ export async function createFirstThenDeleteOld(
         input.oldResourceType,
         currentResource,
         input.snapshotPolicy,
-        createSecretMasker(secrets)
+        // The delete's own masker (below): no PRE_DELETE_SNAPSHOT type reaches
+        // this method today, so no snapshot line is logged here yet.
+        createUnionSecretMasker([secrets, secretNameBagFor(deps.secretsRun(), logicalId)])
       );
   deps.logger.info(
     retainOld
