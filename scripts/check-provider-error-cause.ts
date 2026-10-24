@@ -136,7 +136,7 @@
  * `src/provisioning/providers`, #2040's subject; widened over `src/` on
  * 2026-10-02 the run flagged 17 sites in 10 files: 10 sat behind a composer
  * the rule could not see yet, 4 were genuine drops under `src/local/`
- * (threaded since), and 3 are the deliberate omissions in {@link EXEMPTIONS}. The providers subtree
+ * (threaded since), and 3 were deliberate omissions, now among {@link EXEMPTIONS}. The providers subtree
  * keeps its own file floor so the original subject cannot drop out of a scan
  * that is otherwise large enough.
  *
