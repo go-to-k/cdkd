@@ -1567,8 +1567,14 @@ export class ECSProvider implements ResourceProvider {
             );
           } catch (cleanupError) {
             survivorArn = service.serviceArn;
+            // An AWS-authored failure is named by its class at warn, and AWS's
+            // text (a denied `DeleteService` names the caller) goes to `debug`
+            // under the same head (go-to-k/cdkd#2319).
+            const cleanupFailure = describeAwsFailure(cleanupError);
+            const cleanupHead = `Failed to clean up partially-created ECS service ${logicalIdShown(logicalId)} ${isPlainImportValue(service.serviceArn) ? `(${service.serviceArn})` : VALUE_NOT_SHOWN}: `;
+            if (cleanupFailure.redacted) log.debug(`${cleanupHead}${cleanupFailure.detail}`);
             log.warn(
-              `Failed to clean up partially-created ECS service ${logicalIdShown(logicalId)} ${isPlainImportValue(service.serviceArn) ? `(${service.serviceArn})` : VALUE_NOT_SHOWN}: ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${deleteCommand.render()}`
+              `${cleanupHead}${cleanupFailure.redacted ? `${cleanupFailure.summary} ` : `${cleanupFailure.detail}. `}Manual deletion may be required before the next deploy: ${deleteCommand.render()}`
             );
           }
         }

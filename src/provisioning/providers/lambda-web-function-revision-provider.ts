@@ -34,6 +34,7 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { isPlainImportValue, VALUE_NOT_SHOWN } from '../import-helpers.js';
 import { logicalIdShown } from '../composite-id.js';
@@ -368,7 +369,7 @@ export class LambdaWebFunctionRevisionProvider implements ResourceProvider {
       // confirm it so a destroy never reports an orphan as deleted.
       await this.waitForGone(parts.functionArn, physicalId, logicalId);
     } catch (error) {
-      throw this.wrapError(
+      const thrown = this.wrapError(
         'delete',
         logicalId,
         resourceType,
@@ -376,6 +377,12 @@ export class LambdaWebFunctionRevisionProvider implements ResourceProvider {
         error,
         context?.maskSecrets
       );
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this revision is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 

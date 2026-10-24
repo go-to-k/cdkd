@@ -78,7 +78,11 @@ import {
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { pasteableAwsCommand, type PasteableAwsCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
 import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
@@ -333,7 +337,9 @@ export class ApiGatewayProvider implements ResourceProvider {
    * caller's assumed-role ARN. AWS's own text goes to `debug` through the
    * masker, and the wrap is stamped `markRedactedCause`, so the retry
    * classifiers read the withheld text on the `cause` chain. An "already
-   * exists" is restated ({@link relayedNameCollision}).
+   * exists" is restated ({@link relayedNameCollision}), except from a
+   * post-create step (`markAuxiliaryFailure`: the Stage patch, the Method
+   * wiring), where "it" would read as the resource just created.
    *
    * A cdkd-authored or transport error, or a non-`Error` throw, keeps its text
    * masked (issue #2177): AWS quotes a rejected request value back off the
@@ -354,9 +360,8 @@ export class ApiGatewayProvider implements ResourceProvider {
     if (!(error instanceof Error)) return build(mask(failure.detail));
     if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
     this.logger.debug(mask(build(mask(failure.detail)).message));
-    return markRedactedCause(
-      build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
-    );
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    return markRedactedCause(build(`${mask(failure.summary)}${relay}`));
   }
 
   /**
@@ -1061,7 +1066,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         context?.maskSecrets ?? ((text) => text),
         error,
         (text) =>
@@ -1073,6 +1078,12 @@ export class ApiGatewayProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this one is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -1292,7 +1303,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         context?.maskSecrets ?? ((text) => text),
         error,
         (text) =>
@@ -1304,6 +1315,12 @@ export class ApiGatewayProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this one is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -1500,7 +1517,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         context?.maskSecrets ?? ((text) => text),
         error,
         (text) =>
@@ -1512,6 +1529,12 @@ export class ApiGatewayProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this one is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -1654,8 +1677,14 @@ export class ApiGatewayProvider implements ResourceProvider {
             await this.apiGatewayClient.send(new DeleteStageCommand({ restApiId, stageName }));
           } catch (cleanupError) {
             stageLeftBehind = true;
+            // An AWS-authored failure is named by its class at warn, and AWS's
+            // text (a denied `DeleteStage` names the caller) goes to `debug`
+            // under the same head (go-to-k/cdkd#2319).
+            const cleanupFailure = describeAwsFailure(cleanupError);
+            const cleanupHead = `Failed to clean up stage ${log.value(stageName)} after a post-create patch failure: `;
+            if (cleanupFailure.redacted) log.debug(`${cleanupHead}${cleanupFailure.detail}`);
             log.warn(
-              `Failed to clean up stage ${log.value(stageName)} after a post-create patch failure: ${describeAwsFailure(cleanupError).detail}`
+              `${cleanupHead}${cleanupFailure.redacted ? cleanupFailure.summary : cleanupFailure.detail}`
             );
           }
           // The stage itself was created: an "already exists" from the patch is
@@ -2084,7 +2113,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         context?.maskSecrets ?? ((text) => text),
         error,
         (text) =>
@@ -2096,6 +2125,12 @@ export class ApiGatewayProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this one is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -2339,8 +2374,13 @@ export class ApiGatewayProvider implements ResourceProvider {
           // method), so the command renders through `pasteableAwsCommand`
           // (issue #3136): quoted, or withheld when one cannot be printed
           // exactly.
+          // An AWS-authored failure is named by its class at warn, and AWS's
+          // text goes to `debug` under the same head (go-to-k/cdkd#2319).
+          const cleanupFailure = describeAwsFailure(cleanupError);
+          const cleanupHead = `Failed to clean up partially-created API Gateway Method ${logicalId} (${methodPath}): `;
+          if (cleanupFailure.redacted) log.debug(`${cleanupHead}${cleanupFailure.detail}`);
           log.warn(
-            `Failed to clean up partially-created API Gateway Method ${logicalId} (${methodPath}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand(log.mask)`aws apigateway delete-method --rest-api-id ${restApiId} --resource-id ${resourceId} --http-method ${httpMethod}`.render()}`
+            `${cleanupHead}${cleanupFailure.redacted ? `${cleanupFailure.summary} ` : `${cleanupFailure.detail}. `}Manual deletion may be required before the next deploy: ${pasteableAwsCommand(log.mask)`aws apigateway delete-method --rest-api-id ${restApiId} --resource-id ${resourceId} --http-method ${httpMethod}`.render()}`
           );
         }
         // The method itself was created: an "already exists" from its wiring
@@ -2583,7 +2623,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         context?.maskSecrets ?? ((text) => text),
         error,
         (text) =>
@@ -2595,6 +2635,12 @@ export class ApiGatewayProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this one is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 

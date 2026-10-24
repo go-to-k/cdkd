@@ -603,8 +603,16 @@ if gone_probe aws sqs get-queue-attributes --queue-url "${QUEUE_URL_A}" --attrib
 fi
 aws logs delete-log-group --log-group-name "${XB_LOG_GROUP}" --region "${REGION}"
 aws s3 rb "s3://${BUCKET_X}" --force >/dev/null
-assert_gone "the second bucket ${BUCKET_X} still exists after its removal" \
-  aws s3api head-bucket --bucket "${BUCKET_X}"
+# A bucket delete is eventually consistent: HeadBucket can still answer 200
+# right after `rb` returns, so the probe is retried, bounded (12 x 5s).
+for attempt in $(seq 1 12); do
+  gone_probe aws s3api head-bucket --bucket "${BUCKET_X}" && break
+  if [ "${attempt}" = 12 ]; then
+    echo "FAIL: the second bucket ${BUCKET_X} still exists after its removal" >&2
+    exit 1
+  fi
+  sleep 5
+done
 BUCKET_X=""
 echo "    OK: B in a second bucket deployed under its own names and adopted nothing; A's queue and log group retention are untouched; B is destroyed and the bucket deleted"
 

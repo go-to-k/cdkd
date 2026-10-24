@@ -552,14 +552,16 @@ describe('classifier verdicts match the pre-redaction message (go-to-k/cdkd#2319
     }
 
     // The profile exists by then: an "already exists" from attaching its role is
-    // an auxiliary object's (`markAuxiliaryFailure`), and stays no collision.
+    // an auxiliary object's (`markAuxiliaryFailure`), and stays no collision. It
+    // is not restated either: "it" would read as the profile itself.
     failOn('AddRoleToInstanceProfileCommand', collision(), {
       CreateInstanceProfileCommand: { InstanceProfile: { Arn: 'arn', InstanceProfileId: 'AIPA1' } },
     });
     const wiring = await thrown(
       new IAMInstanceProfileProvider().create('Res', PROFILE, { InstanceProfileName: 'ip', Roles: ['r'] })
     );
-    expect(wiring.message).toContain('AWS reports that it already exists.');
+    expect(wiring.message).toContain('EntityAlreadyExistsException');
+    expect(wiring.message).not.toContain('AWS reports that it already exists.');
     expect(isNameCollisionErrorFrom(wiring, 'Res')).toBe(false);
   });
 

@@ -486,7 +486,9 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
           `Post-create step failed for CodeCommit Repository ${logicalId}; deleting the ` +
             `just-created repository ${createdName} to avoid an orphan`
         );
-        if (await this.bestEffortDelete(createdName)) leftLiveName = undefined;
+        if (await this.bestEffortDelete(createdName, maskerOrIdentity(context?.maskSecrets))) {
+          leftLiveName = undefined;
+        }
         // The repository itself was created: an "already exists" from here is
         // an auxiliary object's, not this repository's name collision (#3826).
         throw markAuxiliaryFailure(postCreateError, logicalId);
@@ -583,7 +585,13 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     // path checks the same before renaming. A record with no RepositoryId
     // keeps the historical by-name update: nothing identifies a foreign holder.
     if (!renaming && recordedId !== undefined) {
-      await this.assertRecordedHolder(logicalId, resourceType, physicalId, recordedId);
+      await this.assertRecordedHolder(
+        logicalId,
+        resourceType,
+        physicalId,
+        recordedId,
+        maskerOrIdentity(context?.maskSecrets)
+      );
     }
     // A recorded Triggers cdkd cannot read is replaced by the live set, read
     // before the rename so a failed read changes nothing. A retry after a
@@ -909,13 +917,14 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     physicalId: string,
-    recordedId: string
+    recordedId: string,
+    mask: MaskerFn
   ): Promise<void> {
     let holder: RepositoryMetadata | undefined;
     try {
       holder = await this.getRepositoryMetadata(physicalId);
     } catch (error) {
-      throw this.wrapHolderReadError(logicalId, resourceType, physicalId, error);
+      throw this.wrapHolderReadError(logicalId, resourceType, physicalId, error, mask);
     }
     if (holder?.repositoryId !== undefined && holder.repositoryId !== recordedId) {
       throw this.wrapNotThisRepositoryError(logicalId, resourceType, physicalId, 'recorded-name');
@@ -959,17 +968,26 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    * The update's failed identity read, wrapped. The class, never AWS's text
    * (it quotes the caller's role and session); a redacted message is stamped
    * so the retry classifier still reads the cause's text (an IAM grant still
-   * propagating, go-to-k/cdkd#2302).
+   * propagating, go-to-k/cdkd#2302). AWS's text goes to `debug`, and the class
+   * is masked too: it is AWS-authored text (go-to-k/cdkd#2319).
    */
   private wrapHolderReadError(
     logicalId: string,
     resourceType: string,
     physicalId: string,
-    error: unknown
+    error: unknown,
+    mask: MaskerFn
   ): ProvisioningError {
     const failure = describeAwsFailure(error);
+    if (failure.redacted) {
+      this.logger.debug(
+        mask(
+          `GetRepository failed while checking the holder of CodeCommit Repository ${logicalId}: ${failure.detail}`
+        )
+      );
+    }
     const wrapped = new ProvisioningError(
-      `Failed to update CodeCommit Repository ${logicalId}: ${failure.summary}`,
+      `Failed to update CodeCommit Repository ${logicalId}: ${mask(failure.summary)}`,
       resourceType,
       logicalId,
       physicalId,
@@ -1191,7 +1209,13 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     let deletedRepositoryId: string | undefined;
     try {
       if (recordedId !== undefined) {
-        guard = await this.confirmDeleteTarget(logicalId, resourceType, physicalId, recordedId);
+        guard = await this.confirmDeleteTarget(
+          logicalId,
+          resourceType,
+          physicalId,
+          recordedId,
+          maskerOrIdentity(context?.maskSecrets)
+        );
       }
       const response = await this.getClient().send(
         new DeleteRepositoryCommand({ repositoryName: physicalId })
@@ -1290,7 +1314,8 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     physicalId: string,
-    recordedId: string
+    recordedId: string,
+    mask: MaskerFn
   ): Promise<IndeterminateGuard | undefined> {
     let holder: RepositoryMetadata | undefined;
     try {
@@ -1307,14 +1332,15 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       ) {
         throw error;
       }
-      // The class, never AWS's text (it quotes the caller's role and session).
+      // The class, never AWS's text (it quotes the caller's role and session),
+      // and masked: the class is AWS-authored text too (go-to-k/cdkd#2319).
       const failure = describeAwsFailure(error);
       this.logger.debug(
-        safeMsg`GetRepository failed while confirming CodeCommit Repository ${logicalId}: ${failure.detail}`
+        safeMsg`GetRepository failed while confirming CodeCommit Repository ${logicalId}: ${mask(failure.detail)}`
       );
       return this.proceedUnconfirmed(
         logicalId,
-        `the repository could not be read to compare its id with the recorded one: ${failure.summary}`
+        `the repository could not be read to compare its id with the recorded one: ${mask(failure.summary)}`
       );
     }
     const liveId = holder?.repositoryId;
@@ -1579,14 +1605,23 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    * failure is logged so the orphan is surfaced. Returns whether the delete
    * succeeded (go-to-k/cdkd#4583 marks a repository it left live).
    */
-  private async bestEffortDelete(repositoryName: string): Promise<boolean> {
+  private async bestEffortDelete(repositoryName: string, mask: MaskerFn): Promise<boolean> {
     try {
       await this.getClient().send(new DeleteRepositoryCommand({ repositoryName }));
       return true;
     } catch (cleanupError) {
+      // An AWS-authored failure is named by its class at warn, and AWS's text
+      // (a denied `DeleteRepository` names the caller) goes to `debug` under
+      // the same head, both through the create's masker (go-to-k/cdkd#2319).
+      const cleanupFailure = describeAwsFailure(cleanupError);
+      const cleanupHead = `Failed to clean up CodeCommit Repository ${repositoryName} after a post-create failure: `;
+      if (cleanupFailure.redacted) {
+        this.logger.debug(mask(`${cleanupHead}${cleanupFailure.detail}`));
+      }
       this.logger.warn(
-        `Failed to clean up CodeCommit Repository ${repositoryName} after a post-create failure: ` +
-          `${describeAwsFailure(cleanupError).detail}`
+        mask(
+          `${cleanupHead}${cleanupFailure.redacted ? cleanupFailure.summary : cleanupFailure.detail}`
+        )
       );
       return false;
     }

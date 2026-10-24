@@ -18,6 +18,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { markNotGone } from '../not-gone.js';
 import { isPlainImportValue, normalizeAwsTagsToCfn, VALUE_NOT_SHOWN } from '../import-helpers.js';
 import { logicalIdShown } from '../composite-id.js';
 import { commandHole } from '../../utils/pasteable-command.js';
@@ -374,7 +375,12 @@ export class ACMCertificateProvider implements ResourceProvider {
       // BEFORE the request (a missing DomainName, a rejected input) deletes
       // nothing.
       const survivorNote = requestedArn
-        ? await this.cleanupRequestedCertificate(requestedArn, logicalId, idempotencyToken)
+        ? await this.cleanupRequestedCertificate(
+            requestedArn,
+            logicalId,
+            idempotencyToken,
+            context?.maskSecrets
+          )
         : undefined;
 
       // Pass through cdkd-typed errors untouched (#1272): re-labelling an inner
@@ -486,7 +492,8 @@ export class ACMCertificateProvider implements ResourceProvider {
   private async cleanupRequestedCertificate(
     certificateArn: string,
     logicalId: string,
-    idempotencyToken: IdempotencyToken
+    idempotencyToken: IdempotencyToken,
+    maskSecrets: ((text: string) => string) | undefined
   ): Promise<string | undefined> {
     try {
       await this.acmClient.send(new DeleteCertificateCommand({ CertificateArn: certificateArn }));
@@ -529,16 +536,26 @@ export class ACMCertificateProvider implements ResourceProvider {
         idempotencyToken.release();
         return undefined;
       }
-      const detail = describeAwsFailure(cleanupError).detail;
+      // An AWS-authored failure is named by its class at warn, and AWS's text
+      // (a denied `DeleteCertificate` names the caller) goes to `debug` under
+      // the same head, both through the create's masker (go-to-k/cdkd#2319).
+      const mask = maskSecrets ?? ((text: string) => text);
+      const cleanupFailure = describeAwsFailure(cleanupError);
+      const cleanupHead = `Could not delete the ACM certificate ${certificateArn} that the failed create of ${logicalId} requested: `;
+      if (cleanupFailure.redacted) {
+        this.logger.debug(mask(`${cleanupHead}${cleanupFailure.detail}`));
+      }
       this.logger.warn(
-        `Could not delete the ACM certificate ${certificateArn} that the failed create of ${logicalId} requested: ${detail}`
+        mask(
+          `${cleanupHead}${cleanupFailure.redacted ? cleanupFailure.summary : cleanupFailure.detail}`
+        )
       );
       // Deliberately NOT releasing the token here: the certificate is still
       // there, so a retry being answered with that same one is the outcome we
       // want rather than a hazard -- and it is what stops a retry from adding a
       // SECOND survivor.
       //
-      // The raw `detail` stays in the warn above and out of this note, which is
+      // AWS's text stays in the lines above and out of this note, which is
       // spliced into the THROWN message. `isRetryableTransientError` classifies
       // by substring-matching that message against
       // `RETRYABLE_ERROR_MESSAGE_PATTERNS`, so an AWS cleanup error whose text
@@ -794,7 +811,7 @@ export class ACMCertificateProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted ACM certificate ${logicalId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -806,6 +823,12 @@ export class ACMCertificateProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this one is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
