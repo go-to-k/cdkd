@@ -95,7 +95,7 @@ diff-fail-on-destructive	2026-10-12T13:46:43Z	PASS	85	verify.sh	rc ok, destroy 0
 diff-intrinsic-target-change	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 dlm-lifecycle-policy	2026-10-22T07:45:16Z	PASS	110	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean
 docdb-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	1830	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
-docdb-neptune	2026-10-23T13:26:24Z	PASS	5434	verify.sh	PR #5196 (#5194 helper): rc=0, 0 err 0 orph. Step 3c SG-change redeploy did not hit the new InvalidDBInstanceState/InvalidDBClusterState refusal this run (no modifyDbInstanceWhenAvailable debug line), so the new wait/retry path was not exercised, but is now on this path with no regression. Full re-scan clean: 0 S3 state versions, 0 IAM roles, 0 DocDB/Neptune clusters/instances, 0 manual snapshots
+docdb-neptune	2026-10-24T22:46:19Z	PASS	5299	verify.sh	PR #5268 at 947d06203 (rebased onto #5266); us-east-1; own state bucket; rc=0, 3g --remove-protection compensation ok, final destroy 0 errors, 0 orphans
 docker-image-asset	2026-10-17T13:23:24Z	PASS	90	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
 drift-revert	2026-10-24T05:51:41Z	PASS	360	verify.sh	final #5242 round after 7a30f8edb (engine default --concurrency 20); rebuilt dist (building fixture, ran alone); 16 deleted 0 errors, orph clean
 drift-revert-arrays	2026-10-16T18:55:45Z	PASS	221	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
@@ -154,7 +154,7 @@ generated-name-lifecycle	2026-10-20T19:58:09Z	PASS	1040	verify.sh	PR #5100 pre-m
 generated-name-security-group	2026-10-20T06:06:16Z	PASS	120	verify.sh	deploy+destroy clean, 0 orphans
 getatt-fallback-guard	2026-10-18T04:25:39Z	PASS	172	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 getstackoutput-crossregion	2026-10-18T00:55:44Z	PASS	456	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
-globaltable-fix-forward-orphan	2026-10-19T10:52:49Z	PASS	171	verify.sh	rc ok, orph clean
+globaltable-fix-forward-orphan	2026-10-24T22:46:19Z	PASS	165	verify.sh	PR #5268 at 947d06203 (rebased onto #5266); us-east-1; own state bucket; rc=0, destroy 0 errors, 0 orphans
 glue-securityconfig-replace	2026-10-17T17:11:05Z	PASS	65	verify.sh	rc ok, orph clean (#5032)
 glue-update-hardening	2026-10-24T14:12:33Z	PASS	260	verify.sh	rc ok, orph clean
 guardduty-detector-update	2026-10-15T04:32:09Z	PASS	210	verify.sh	PR #4935 (#4921) maintainer run on f7e8e94cd; own state bucket; all 6 phases incl. Phase 3b reverts; 3 destroys 0 err, no detector left, orph clean
@@ -290,10 +290,10 @@ pipes-fix-forward-orphan	2026-10-22T07:45:16Z	PASS	176	verify.sh	PR #5161 (#2319
 profile-region-default	2026-10-13T14:31:12Z	PASS	155	verify.sh	rc ok, orph clean, own state bucket, after §8-d probe; PR #4864 06b838511
 propagation-races-2	2026-10-22T21:44:19Z	PASS	130	verify.sh	PR #5187; ran alone after batch of 4; rc ok, destroy clean 0 errors, 0 orphans
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-10-23T13:26:24Z	PASS	4932	verify.sh	PR #5196 (#5194 helper): rc=0, 0 err 0 orph. Pre-flight found a LIVE peer lock.json on RdsAuroraStack (future expiresAt); waited, re-scanned, peer's lock + resources cleared before this run started. Full re-scan clean: 0 S3 state, 0 IAM, 0 RDS clusters/instances, 0 manual/automated snapshots
+rds-aurora	2026-10-24T22:46:19Z	PASS	4738	verify.sh	PR #5268 at 947d06203 (rebased onto #5266); us-east-1; own state bucket; rc=0, phase 2b compensation ok, final destroy 0 errors, 0 orphans
 rds-dbinstance-backfill	2026-10-23T13:26:24Z	PASS	954	verify.sh	PR #5196 (#5194 helper): rc=0, 0 err 0 orph. One AWS automated backup snapshot lingered briefly post-destroy (DeleteAutomatedBackups async lag) and self-cleared within minutes — confirmed gone by re-poll, not a cdkd orphan. Full re-scan clean: 0 S3 state, 0 IAM, 0 DBInstances, 0 manual snapshots
-rds-fix-forward-orphan	2026-10-22T11:55:53Z	PASS	3557	verify.sh	PR #5178; us-east-1; own state bucket; verify PASS, destroy 14 deleted 0 errors, orph clean
-rds-full-stack	2026-10-22T11:55:53Z	PASS	1065	verify.sh	PR #5178; us-east-1; verify PASS, destroy clean, 0 orphans
+rds-fix-forward-orphan	2026-10-24T22:46:19Z	PASS	1031	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans
+rds-full-stack	2026-10-24T22:46:19Z	PASS	1011	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans
 recreate-mixed-direction	2026-10-17T05:11:06Z	PASS	130	verify.sh	rc ok, orph clean (ReplacementRunState refactor #5024)
 recreate-nested-logical-id-collision	2026-10-16T16:59:47Z	PASS	150	verify.sh	rc ok, orph clean (stateless-mixins refactor #5015, rebased)
 recreate-parent-child-permission	2026-10-24T14:12:33Z	PASS	90	verify.sh	rc ok, orph clean
