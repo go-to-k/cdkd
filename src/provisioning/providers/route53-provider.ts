@@ -33,8 +33,15 @@ import {
   markNameCollision,
   markRedactedCause,
   relayedNameCollision,
+  wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { markNotGone } from '../not-gone.js';
+import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
   isPlainImportValue,
@@ -127,9 +134,14 @@ class HostedZoneNameNotFoundError extends ProvisioningError {
  * that scalar verbatim before issue #1658, so state files in the wild carry
  * BOTH shapes, and the scalar can contain `|` too.
  */
-export function parseRecordSetCompositeId(
-  physicalId: string
-): { hostedZoneId: string; name: string; type: string; nameCarriesSeparator: boolean } | undefined {
+export function parseRecordSetCompositeId(physicalId: string):
+  | {
+      hostedZoneId: string;
+      name: string;
+      type: string;
+      nameCarriesSeparator: boolean;
+    }
+  | undefined {
   const firstPipe = physicalId.indexOf(COMPOSITE_ID_SEPARATOR);
   const lastPipe = physicalId.lastIndexOf(COMPOSITE_ID_SEPARATOR);
   if (firstPipe < 0 || lastPipe === firstPipe) return undefined;
@@ -394,10 +406,12 @@ export class Route53Provider implements ResourceProvider {
    * classifiers read the withheld text on the `cause` chain (`is marked
    * disabled for mutation`, `not authorized to perform`). An "already exists"
    * (a duplicate record) is restated ({@link relayedNameCollision}), which
-   * `isRecreateRetryableError` reads on the top-level message. A cdkd-authored
-   * or transport error, or a non-`Error` throw, keeps its text; the deploy
-   * engine masks a thrown message. Both deletes recognise "already gone" on
-   * the RAW error before they wrap.
+   * `isRecreateRetryableError` reads on the top-level message, unless a
+   * post-create call raised it ({@link isAuxiliaryFailure}). A cdkd-authored
+   * or transport error keeps its text, masked, stamped only when the mask
+   * changed it (`wrapMaskedAwsError`); a non-`Error` throw is withheld like an
+   * AWS one, unstamped (it has no chain). Both deletes recognise "already
+   * gone" on the RAW error before they wrap.
    *
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor call.
@@ -407,11 +421,48 @@ export class Route53Provider implements ResourceProvider {
     error: unknown,
     build: (text: string) => ProvisioningError
   ): ProvisioningError {
+    const m = maskerOrIdentity(mask);
     const failure = describeAwsFailure(error);
-    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
-    const m = mask ?? ((text: string) => text);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
     this.logger.debug(m(build(m(failure.detail)).message));
-    return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${m(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
+   * {@link wrapCaughtError} for a delete catch. The wrap names an AWS failure
+   * by its CLASS, and the delete classifiers read `NotFound` in a message as
+   * "already deleted": a class naming ANOTHER object's not-found (this
+   * resource's own not-found returned before the wrap) is marked
+   * `markNotGone`, so the record is kept (go-to-k/cdkd#2319).
+   */
+  private wrapDeleteError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const thrown = this.wrapCaughtError(mask, error, build);
+    return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
+  }
+
+  /**
+   * The failure text a cleanup or adopt `warn` quotes after `head`, with its
+   * closing period (go-to-k/cdkd#2319). An AWS-authored failure is named by
+   * its CLASS at warn, since a denied call names the caller's assumed-role
+   * ARN; AWS's own text goes to `debug` under the same `head`, masked. A
+   * cdkd-authored or transport error keeps its text, masked.
+   */
+  private warnFailureText(
+    head: string,
+    error: unknown,
+    mask: ((text: string) => string) | undefined
+  ): string {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return `${m(failure.detail)}.`;
+    this.logger.debug(m(`${head}${m(failure.detail)}`));
+    return m(failure.summary);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -621,29 +672,32 @@ export class Route53Provider implements ResourceProvider {
         maxLength: 128,
       });
 
-      const response = await this.createOrAdoptHostedZone({
-        Name: name,
-        CallerReference: callerReferenceToken.value,
-        ...(createComment !== ''
-          ? {
-              HostedZoneConfig: {
-                Comment: createComment,
-                // When VPCs are specified, this is a private hosted zone
-                ...(firstVpc ? { PrivateZone: true } : {}),
-              },
-            }
-          : firstVpc
-            ? { HostedZoneConfig: { PrivateZone: true } }
+      const response = await this.createOrAdoptHostedZone(
+        {
+          Name: name,
+          CallerReference: callerReferenceToken.value,
+          ...(createComment !== ''
+            ? {
+                HostedZoneConfig: {
+                  Comment: createComment,
+                  // When VPCs are specified, this is a private hosted zone
+                  ...(firstVpc ? { PrivateZone: true } : {}),
+                },
+              }
+            : firstVpc
+              ? { HostedZoneConfig: { PrivateZone: true } }
+              : {}),
+          ...(firstVpc
+            ? {
+                VPC: {
+                  VPCId: firstVpc['VPCId'] as string,
+                  VPCRegion: firstVpc['VPCRegion'] as VPCRegion | undefined,
+                },
+              }
             : {}),
-        ...(firstVpc
-          ? {
-              VPC: {
-                VPCId: firstVpc['VPCId'] as string,
-                VPCRegion: firstVpc['VPCRegion'] as VPCRegion | undefined,
-              },
-            }
-          : {}),
-      });
+        },
+        mask
+      );
       zoneCreated = true;
 
       const hostedZone = response.HostedZone;
@@ -727,13 +781,19 @@ export class Route53Provider implements ResourceProvider {
             // orphan cdkd state never names, where keeping it adopts the zone.
             callerReferenceToken.release();
           } catch (deleteError) {
+            const head = `Best-effort rollback DeleteHostedZone for ${zoneId} also failed: `;
+            const m = maskerOrIdentity(mask);
             this.logger.warn(
-              `Best-effort rollback DeleteHostedZone for ${zoneId} also failed: ${
-                describeAwsFailure(deleteError).detail
-              } — operator may need to clean up the orphan zone`
+              m(
+                `${head}${this.warnFailureText(head, deleteError, mask)} The operator may need to clean up the orphan zone.`
+              )
             );
           }
           const cause = uhfError instanceof Error ? uhfError : undefined;
+          // The zone itself was created: an "already exists" from the feature
+          // call is not this zone's collision, so the wrap does not restate it
+          // (#3826). The outer catch marks the wrap again, a no-op.
+          markAuxiliaryFailure(uhfError, logicalId);
           throw this.wrapCaughtError(
             mask,
             uhfError,
@@ -813,7 +873,8 @@ export class Route53Provider implements ResourceProvider {
    * taken but that names no zone we can see is not something to paper over.
    */
   private async createOrAdoptHostedZone(
-    input: CreateHostedZoneCommandInput
+    input: CreateHostedZoneCommandInput,
+    mask?: (text: string) => string
   ): Promise<Partial<Pick<CreateHostedZoneCommandOutput, 'HostedZone' | 'DelegationSet'>>> {
     try {
       return await this.getClient().send(new CreateHostedZoneCommand(input));
@@ -836,8 +897,11 @@ export class Route53Provider implements ResourceProvider {
       try {
         adopted = await this.findHostedZoneByCallerReference(input.Name!, input.CallerReference!);
       } catch (lookupError) {
+        const head = `CreateHostedZone for ${input.Name} was refused as already-existing, and the lookup that would have adopted the existing zone failed: `;
         this.logger.warn(
-          `CreateHostedZone for ${input.Name} was refused as already-existing, and the lookup that would have adopted the existing zone failed: ${describeAwsFailure(lookupError).detail}. Reporting the original error.`
+          maskerOrIdentity(mask)(
+            `${head}${this.warnFailureText(head, lookupError, mask)} Reporting the original error.`
+          )
         );
         throw error;
       }
@@ -854,8 +918,11 @@ export class Route53Provider implements ResourceProvider {
           ...(described.DelegationSet ? { DelegationSet: described.DelegationSet } : {}),
         };
       } catch (describeError) {
+        const head = `Adopted hosted zone ${adopted.Id} but could not read it back: `;
         this.logger.warn(
-          `Adopted hosted zone ${adopted.Id} but could not read it back: ${describeAwsFailure(describeError).detail}. Reporting the original error rather than returning a zone with no NameServers.`
+          maskerOrIdentity(mask)(
+            `${head}${this.warnFailureText(head, describeError, mask)} Reporting the original error rather than returning a zone with no NameServers.`
+          )
         );
         throw error;
       }
@@ -1073,7 +1140,7 @@ export class Route53Provider implements ResourceProvider {
       const failure =
         error instanceof ProvisioningError
           ? error
-          : this.wrapCaughtError(
+          : this.wrapDeleteError(
               context?.maskSecrets,
               error,
               (text) =>
@@ -1666,7 +1733,7 @@ export class Route53Provider implements ResourceProvider {
       // in `deleteHostedZone`.
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -2488,7 +2555,9 @@ export class Route53Provider implements ResourceProvider {
         lookupErrorMessage = failure.detail;
         lookupErrorCause = error instanceof Error ? error : undefined;
         lookupErrorRedacted = error instanceof Error && failure.redacted;
-        lookupErrorShown = lookupErrorRedacted ? failure.summary : failure.detail;
+        // `failure.redacted`, not `lookupErrorRedacted`: a non-`Error` throw
+        // is withheld too (its `String()` is the whole payload), unstamped.
+        lookupErrorShown = failure.redacted ? failure.summary : failure.detail;
         this.logger.warn(
           `Failed to resolve HostedZoneName "${hostedZoneName}" for ${logicalId}: ${lookupErrorMessage}`
         );
@@ -3151,7 +3220,11 @@ export class Route53Provider implements ResourceProvider {
     try {
       observed = await this.readRecordSetAt(identity);
     } catch (err) {
-      return adoptVerbatim(`verification failed: ${describeAwsFailure(err).detail}`);
+      // The class at warn, AWS's text at debug (go-to-k/cdkd#2319).
+      const head = `Record set ${input.logicalId}: verification of '${known}' failed: `;
+      return adoptVerbatim(
+        `verification failed: ${this.warnFailureText(head, err, undefined).replace(/\.$/, '')}`
+      );
     }
     if (!observed || observed === RESOURCE_NOT_FOUND) {
       return adoptVerbatim('the record was not found under the resolved hosted zone');
@@ -3214,9 +3287,10 @@ export class Route53Provider implements ResourceProvider {
       // gated all the same, as every other value on a command line is.
       const zoneShown = isPlainImportValue(zoneId) ? zoneId : VALUE_NOT_SHOWN;
       const zoneArg = isPasteableIdent(zoneId) ? zoneId : commandHole('hostedZoneId');
+      const head = `Imported hosted zone ${zoneShown} but could not read its NameServers: `;
       this.logger.warn(
-        `Imported hosted zone ${zoneShown} but could not read its NameServers: ` +
-          `${describeAwsFailure(error).detail}.\n` +
+        head +
+          `${this.warnFailureText(head, error, undefined)}\n` +
           `The zone is adopted without them (any attributes already in state for this ` +
           `zone are kept). Re-run ` +
           `\`cdkd import --resource ${remedyLogicalId(logicalId)}=${zoneArg} --force\` once the permission ` +

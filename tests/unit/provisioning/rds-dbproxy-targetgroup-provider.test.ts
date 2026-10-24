@@ -2111,10 +2111,12 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       expect(debugLines().join('\n')).not.toContain('q7z');
     });
 
-    it('a non-Error throw keeps its text, unstamped', async () => {
+    it('a non-Error throw is withheld, unstamped', async () => {
       const failure = await failWith(cases[1]!, 'plain string rejection');
 
-      expect(failure.message).toBe('CREATE (register targets) failed for TG: plain string rejection');
+      expect(failure.message).toBe(
+        `CREATE (register targets) failed for TG: a non-Error value of type string. ${VERBOSE_POINTER}`
+      );
       expect(failure.cause).toBeUndefined();
       expect(hasRedactedCause(failure)).toBe(false);
     });

@@ -1351,7 +1351,16 @@ describe('RDSProvider thrown wraps withhold AWS text (#2319)', () => {
       .catch(() => undefined);
 
     const warns = vi.mocked(getLogger().child('x').warn).mock.calls.map((w) => String(w[0]));
-    expect(warns.some((w) => w.includes(`partially-created DBCluster Db (db-1): ${mask(DENIED)}`))).toBe(true);
+    // The class at warn, AWS's text masked at debug (go-to-k/cdkd#2319).
+    expect(
+      warns.some((w) =>
+        w.includes(`partially-created DBCluster Db (db-1): AccessDenied. ${VERBOSE_POINTER} THE CLUSTER`)
+      )
+    ).toBe(true);
+    expect(warns.join('\n')).not.toContain('not authorized');
+    expect(
+      debugLines().some((d) => d.includes(`partially-created DBCluster Db (db-1): ${mask(DENIED)}`))
+    ).toBe(true);
     expect(debugLines().some((d) => d.includes('Could not disable DeletionProtection'))).toBe(true);
     expect([...warns, ...debugLines()].join('\n')).not.toContain('s3cr3t');
   });

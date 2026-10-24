@@ -263,7 +263,7 @@ describe('DynamoDB thrown wraps keep the caller identity out (go-to-k/cdkd#2319)
     debugSpy.mockReset();
   });
 
-  describe.each(sites())('$site', ({ command, action, prefix, answers, run }) => {
+  describe.each(sites())('$site', ({ site, command, action, prefix, answers, run }) => {
     it('names an AWS-authored failure by its class, keeps cause, and stays retryable', async () => {
       const original = accessDenied(action);
       failOn(command, original, answers);
@@ -299,11 +299,23 @@ describe('DynamoDB thrown wraps keep the caller identity out (go-to-k/cdkd#2319)
       expect(failure.cause).toBe(original);
     });
 
-    it('keeps a non-Error throw as text, unstamped', async () => {
+    // The GlobalTable wraps withhold a non-Error throw like an AWS failure
+    // (go-to-k/cdkd#2319 tail-d): its `String()` is the whole payload.
+    const withholdsNonError = site.startsWith('GlobalTable');
+
+    it.skipIf(withholdsNonError)('keeps a non-Error throw as text, unstamped', async () => {
       failOn(command, 'socket hang up', answers);
       const failure = await thrown(run());
 
       expect(failure.message).toBe(`${prefix}socket hang up`);
+      expect(hasRedactedCause(failure)).toBe(false);
+    });
+
+    it.runIf(withholdsNonError)('withholds a non-Error throw, unstamped', async () => {
+      failOn(command, 'socket hang up', answers);
+      const failure = await thrown(run());
+
+      expect(failure.message).toBe(`${prefix}a non-Error value of type string. ${VERBOSE_POINTER}`);
       expect(hasRedactedCause(failure)).toBe(false);
     });
   });

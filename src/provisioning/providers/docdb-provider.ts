@@ -10,6 +10,7 @@ import {
   DescribeDBInstancesCommand,
 } from '@aws-sdk/client-docdb';
 import { getLogger } from '../../utils/logger.js';
+import { markNotGone } from '../not-gone.js';
 import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
@@ -391,6 +392,22 @@ export class DocDBProvider implements ResourceProvider {
     build: (text: string) => ProvisioningError
   ): ProvisioningError {
     return wrapDocDBFailure(this.logger, mask, error, build);
+  }
+
+  /**
+   * {@link wrapCaughtError} for a delete catch. The wrap names an AWS failure
+   * by its CLASS, and the delete classifiers read `NotFound` in a message as
+   * "already deleted": a class naming ANOTHER object's not-found (this
+   * resource's own not-found returned before the wrap) is marked
+   * `markNotGone`, so the record is kept (go-to-k/cdkd#2319).
+   */
+  private wrapDeleteError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const thrown = this.wrapCaughtError(mask, error, build);
+    return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
   }
 
   // ─── DBCluster ────────────────────────────────────────────────────
@@ -783,7 +800,7 @@ export class DocDBProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -1019,7 +1036,7 @@ export class DocDBProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
         context?.maskSecrets,
         error,
         (text) =>

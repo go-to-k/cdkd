@@ -77,7 +77,12 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { markNotGone } from '../not-gone.js';
 import { earliestOwnCreationTime, serverClockReading, withServerClock } from './server-clock.js';
 
 /**
@@ -276,12 +281,29 @@ export class EFSProvider implements ResourceProvider {
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
     const failure = describeAwsFailure(error);
-    if (!(error instanceof Error)) return build(log.mask(failure.detail));
     if (!failure.redacted) return wrapMaskedAwsError(log.mask, error, build);
     log.debug(build(log.mask(failure.detail)).message);
-    return markRedactedCause(
-      build(`${log.mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
-    );
+    // Not restated when a post-create call raised it (#3826): "it" would read
+    // as this resource.
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${log.mask(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
+   * {@link wrapMaskedError} for a delete catch. The wrap names an AWS failure
+   * by its CLASS, and the delete classifiers read `NotFound` in a message as
+   * "already deleted": a class naming ANOTHER object's not-found (this
+   * resource's own not-found returned before the wrap) is marked
+   * `markNotGone`, so the record is kept (go-to-k/cdkd#2319).
+   */
+  private wrapDeleteError(
+    log: MaskedLogSinks,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    const thrown = this.wrapMaskedError(log, error, build);
+    return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -751,10 +773,13 @@ export class EFSProvider implements ResourceProvider {
           log.debug(`Rolled back partially-created EFS FileSystem ${fileSystemId}`);
         } catch (cleanupError) {
           fileSystemLeftBehind = true;
+          // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a
+          // denied DeleteFileSystem names the caller's assumed-role ARN.
+          const cleanupFailure = describeAwsFailure(cleanupError);
+          const cleanupHead = `Failed to roll back partially-created EFS FileSystem ${fileSystemId}: `;
+          if (cleanupFailure.redacted) log.debug(`${cleanupHead}${cleanupFailure.detail}`);
           log.warn(
-            `Failed to roll back partially-created EFS FileSystem ${fileSystemId}: ${
-              describeAwsFailure(cleanupError).detail
-            }`
+            `${cleanupHead}${cleanupFailure.redacted ? cleanupFailure.summary : cleanupFailure.detail}`
           );
         }
       }
@@ -1185,7 +1210,7 @@ export class EFSProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
-      throw this.wrapMaskedError(
+      throw this.wrapDeleteError(
         log,
         error,
         (text) =>
@@ -1382,7 +1407,7 @@ export class EFSProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
-      throw this.wrapMaskedError(
+      throw this.wrapDeleteError(
         log,
         error,
         (text) =>
@@ -1861,7 +1886,7 @@ export class EFSProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
-      throw this.wrapMaskedError(
+      throw this.wrapDeleteError(
         log,
         error,
         (text) =>
