@@ -774,7 +774,9 @@ export async function updateInPlace(
             logicalId,
             resourceType,
             currentResource,
-            fallbackUpdateReplacePolicy
+            fallbackUpdateReplacePolicy,
+            // The fallback delete's own masker (below), go-to-k/cdkd#2319.
+            createUnionSecretMasker([updateSecrets, secretNameBagFor(engine.secretsRun, logicalId)])
           );
           // Initialized because the catch below can leave it unassigned.
           let fallbackDeleteResult: void | ResourceDeleteResult = undefined;
