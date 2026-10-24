@@ -1357,7 +1357,15 @@ export class S3StateBackend {
       try {
         value = JSON.parse(body);
       } catch (error) {
-        throw new CrossPrefixReadError(key, error);
+        // A snippet-free STAND-IN, not the raw error (issue #5247): V8's
+        // `SyntaxError` quotes a window of this body, which a chain walker
+        // (scrub's `describeFailure` prints every link) would render. The
+        // readers key only on the CLASS name and `$metadata`
+        // (`errorName`, `isAccessDenied`, `isNotImplemented`), so the
+        // stand-in keeps the name and carries no `$metadata`, as V8's did not.
+        const standIn = new Error(describeJsonParseFailure(error, utf8ByteLength(body)));
+        standIn.name = error instanceof Error && error.name ? error.name : 'SyntaxError';
+        throw new CrossPrefixReadError(key, standIn);
       }
       if (value === null || typeof value !== 'object' || Array.isArray(value)) {
         throw new CrossPrefixReadError(key, new TypeError('not a JSON object'));

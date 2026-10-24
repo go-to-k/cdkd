@@ -49,9 +49,10 @@ export function describeJsonParseFailure(err: unknown, bytes: number): string {
 }
 
 /**
- * UTF-8 byte length of a decoded body, for {@link describeJsonParseFailure}.
- * `body.length` counts UTF-16 code units; the number is meant to match the
- * size S3 reports for the object, so it is bytes.
+ * UTF-8 bytes of the decoded body, for {@link describeJsonParseFailure}.
+ * `body.length` counts UTF-16 code units. This is not always the size S3
+ * reports: a torn multibyte sequence decodes to U+FFFD, which re-encodes as
+ * 3 bytes.
  */
 export function utf8ByteLength(body: string): number {
   return Buffer.byteLength(body, 'utf8');
