@@ -395,7 +395,7 @@ if ! grep -qE "partially-created DBCluster OrphanCluster \(${CLUSTER_A}\): [A-Za
   echo "[verify] FAIL: the refused self-cleanup warning is not '${CLEANUP_HEAD}<ErrorClass>. Re-run with --verbose for AWS's own message. THE CLUSTER ...' (#2319); ${#CLEANUP_LINE} chars" >&2
   exit 1
 fi
-if grep -F "partially-created DBCluster" <<<"${INJECT_PLAIN}" | grep -qF "${ACCOUNT_ID}"; then
+if grep -F "partially-created DBCluster" <<<"${INJECT_PLAIN}" | grep -F "${ACCOUNT_ID}" >/dev/null; then
   echo "[verify] FAIL: a partially-created DBCluster cleanup warning quotes AWS's text, with this account's id (#2319)" >&2
   exit 1
 fi

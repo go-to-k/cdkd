@@ -986,12 +986,34 @@ describe('an auxiliary call\'s "already exists" is not restated (#2319, #3826)',
         run: () => new DynamoDBGlobalTableProvider().create('Gt', GT, GT_PROPS, ctx),
       } as Site,
     },
-  ])('$wrap', async ({ wrap, logicalId, site }) => {
-    reject(site, conflict());
+    {
+      wrap: 'Failed to create EFS FileSystem Fs',
+      logicalId: 'Fs',
+      // EFS retries a ConflictException as a control-plane collision.
+      error: awsError('BadRequest', `A lifecycle policy already exists in ${ACCOUNT}.`),
+      site: {
+        wrap: '',
+        command: 'PutLifecycleConfigurationCommand',
+        answers: {
+          CreateFileSystemCommand: { FileSystemId: FS_ID, CreationTime: new Date() },
+          DescribeFileSystemsCommand: { FileSystems: [{ LifeCycleState: 'available' }] },
+        },
+        run: () =>
+          new EFSProvider().create(
+            'Fs',
+            'AWS::EFS::FileSystem',
+            { LifecyclePolicies: [{ TransitionToIA: 'AFTER_30_DAYS' }] },
+            ctx
+          ),
+      } as Site,
+    },
+  ])('$wrap', async ({ wrap, logicalId, site, error }: { wrap: string; logicalId: string; site: Site; error?: Error }) => {
+    const raised = error ?? conflict();
+    reject(site, raised);
 
     const failure = await caught(site.run());
 
-    expect(failure.message).toContain(`${wrap}: ConflictException. ${VERBOSE_POINTER}`);
+    expect(failure.message).toContain(`${wrap}: ${raised.name}. ${VERBOSE_POINTER}`);
     expect(failure.message).not.toContain('already exists');
     expect(isNameCollisionErrorFrom(failure, logicalId)).toBe(false);
   });
@@ -1225,6 +1247,112 @@ describe('cleanup and adopt warns name the class (#2319)', () => {
     );
 
     expectClassAtWarn(`Partial-create cleanup: failed to drop replica us-west-2 on ${TABLE}: `);
+  });
+
+  // The cdkd-authored arm closes its own sentence: the callers no longer add
+  // the period after the text.
+  it.each([
+    {
+      label: 'DynamoDB GlobalTable partial-create cleanup',
+      expected: `Partial-create cleanup failed for ${TABLE}: socket hang up near ***. To remove`,
+      prime: (failure: Error) =>
+        mockSend.mockImplementation(async (command: unknown) => {
+          const name = commandName(command);
+          if (name === 'CreateTableCommand') return { TableDescription: { TableName: TABLE } };
+          if (name === 'DescribeTableCommand') return ACTIVE_TABLE;
+          if (name === 'UpdateTimeToLiveCommand') throw awsError('ValidationException', 'bad');
+          if (name === 'DeleteTableCommand') throw failure;
+          return {};
+        }),
+      run: () =>
+        new DynamoDBGlobalTableProvider().create(
+          'Gt',
+          GT,
+          { ...GT_PROPS, TimeToLiveSpecification: { Enabled: true, AttributeName: 'ttl' } },
+          ctx
+        ),
+    },
+    {
+      label: 'Route 53 rollback DeleteHostedZone',
+      expected: `Best-effort rollback DeleteHostedZone for ${ZONE} also failed: socket hang up near ***. The operator`,
+      prime: (failure: Error) =>
+        mockSend.mockImplementation(async (command: unknown) => {
+          const name = commandName(command);
+          if (name === 'CreateHostedZoneCommand') {
+            return { HostedZone: { Id: `/hostedzone/${ZONE}` } };
+          }
+          if (name === 'UpdateHostedZoneFeaturesCommand') throw denied();
+          if (name === 'DeleteHostedZoneCommand') throw failure;
+          return {};
+        }),
+      run: () =>
+        new Route53Provider().create(
+          'Hz',
+          HZ,
+          { Name: 'example.com', HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' } },
+          ctx
+        ),
+    },
+    {
+      label: 'EFS FileSystem partial-create rollback',
+      expected: `Failed to roll back partially-created EFS FileSystem ${FS_ID}: socket hang up near ***`,
+      prime: (failure: Error) =>
+        mockSend.mockImplementation(async (command: unknown) => {
+          const name = commandName(command);
+          if (name === 'CreateFileSystemCommand') {
+            return { FileSystemId: FS_ID, CreationTime: new Date() };
+          }
+          if (name === 'DescribeFileSystemsCommand') {
+            return { FileSystems: [{ LifeCycleState: 'available' }] };
+          }
+          if (name === 'PutLifecycleConfigurationCommand') throw awsError('BadRequest', 'bad');
+          if (name === 'DeleteFileSystemCommand') throw failure;
+          return {};
+        }),
+      run: () =>
+        new EFSProvider().create(
+          'Fs',
+          'AWS::EFS::FileSystem',
+          { LifecyclePolicies: [{ TransitionToIA: 'AFTER_30_DAYS' }] },
+          ctx
+        ),
+    },
+  ])('$label keeps a cdkd-authored text, masked', async ({ expected, prime, run }) => {
+    prime(new Error('socket hang up near s3cr3t'));
+
+    await caught(run());
+
+    const warned = warnLines().join('\n');
+    expect(warned).toContain(expected);
+    expect(warned).not.toContain(VERBOSE_POINTER);
+    expect(warned).not.toContain('s3cr3t');
+  });
+
+  it('Route 53 record set import whose verification read fails', async () => {
+    mockSend.mockImplementation(async (command: unknown) => {
+      if (commandName(command) === 'ListResourceRecordSetsCommand') throw denied();
+      return {};
+    });
+
+    await new Route53Provider().import({
+      logicalId: 'Rs',
+      resourceType: RS,
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      knownPhysicalId: 'www.example.com.',
+      properties: RECORD,
+    });
+
+    const warned = warnLines().find((w) => w.includes('could not canonicalize'));
+    expect(warned).toContain(
+      `(verification failed: AccessDenied. ${VERBOSE_POINTER.replace(/\.$/, '')})`
+    );
+    expect(warned).not.toContain(ACCOUNT);
+    expect(
+      debugLines().some((d) =>
+        d.includes(`Record set Rs: verification of 'www.example.com.' failed: ${DENIED}`)
+      )
+    ).toBe(true);
   });
 
   it('RDS DBProxyTargetGroup create cleanup note is masked', async () => {

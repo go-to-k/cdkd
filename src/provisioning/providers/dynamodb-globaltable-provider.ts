@@ -539,10 +539,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * and as the finished line. The wrap is stamped `markRedactedCause`, so
    * retry classification reads the withheld text on the `cause` chain. An
    * "already exists" and an index-busy refusal are restated
-   * ({@link relayedNameCollision}, {@link relayedIndexBusyDelete}). A
-   * cdkd-authored or transport error keeps the masked pass-through of the
+   * ({@link relayedNameCollision}, {@link relayedIndexBusyDelete}); the first
+   * is not, when a post-CreateTable call raised it ({@link isAuxiliaryFailure}).
+   * A cdkd-authored or transport error keeps the masked pass-through of the
    * shared `wrapMaskedAwsError`, which stamps when the mask changed the text
-   * (the #4244 class); a non-`Error` throw keeps its masked text, unstamped.
+   * (the #4244 class); a non-`Error` throw is withheld like an AWS one,
+   * unstamped (it has no chain).
    * The delete checks `ResourceNotFoundException` by type before it wraps.
    *
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a

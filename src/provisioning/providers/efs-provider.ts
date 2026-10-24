@@ -261,10 +261,11 @@ export class EFSProvider implements ResourceProvider {
    * caller's assumed-role ARN. AWS's own text goes to `log.debug` (masked), and
    * the wrap is stamped `markRedactedCause`, so the retry classifiers read the
    * withheld text on the `cause` chain. An "already exists" is restated
-   * ({@link relayedNameCollision}).
+   * ({@link relayedNameCollision}), unless a post-create call raised it
+   * ({@link isAuxiliaryFailure}). A non-`Error` throw is withheld like an AWS
+   * one, unstamped (it has no chain).
    *
-   * A cdkd-authored or transport error, or a non-`Error` throw, keeps its text
-   * masked (issue #2177): AWS quotes a rejected request value back (a subnet,
+   * A cdkd-authored or transport error keeps its text masked (issue #2177): AWS quotes a rejected request value back (a subnet,
    * a KMS key, a policy) off the RESOLVED `properties` bag. The `cause` stays
    * unmasked, and a message the mask CHANGED is stamped too
    * (`wrapMaskedAwsError`, issue #4244). A delete builds its sinks from
@@ -778,9 +779,9 @@ export class EFSProvider implements ResourceProvider {
           const cleanupFailure = describeAwsFailure(cleanupError);
           const cleanupHead = `Failed to roll back partially-created EFS FileSystem ${fileSystemId}: `;
           if (cleanupFailure.redacted) log.debug(`${cleanupHead}${cleanupFailure.detail}`);
-          log.warn(
-            `${cleanupHead}${cleanupFailure.redacted ? cleanupFailure.summary : cleanupFailure.detail}`
-          );
+          // `summary` is the class for an AWS failure and the text itself for a
+          // cdkd-authored one.
+          log.warn(`${cleanupHead}${cleanupFailure.summary}`);
         }
       }
       const cause = error instanceof Error ? error : undefined;

@@ -320,6 +320,20 @@ if [ -z "${ALLOW_PROBE}" ]; then
   exit 1
 fi
 
+# This stack's deployments/*.jsonl keys, sorted, one per line (go-to-k/cdkd#2319).
+# A failed listing returns non-zero, so a caller never reads an empty list as
+# "no new events".
+deployment_event_keys() {
+  local listed
+  listed="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+    --prefix "${STATE_PREFIX}deployments/" --output json)" || return 1
+  printf '%s' "${listed}" | jq -r '.Contents // [] | .[].Key | select(endswith(".jsonl"))' | LC_ALL=C sort
+}
+# Only step 2's own event files are read below, so an earlier run's cannot answer.
+if ! deployment_event_keys > "${LOG_DIR}/event-keys-before-2"; then
+  echo "[verify] FAIL: could not list s3://${STATE_BUCKET}/${STATE_PREFIX}deployments/ before step 2" >&2
+  exit 1
+fi
 echo "[verify] step 2: --no-rollback deploy as ${DENY_ROLE}: every orphan CREATE fails after DynamoDB made the table"
 set +e
 as_deny_role env -u ORPHAN_FIX_FORWARD WITH_ORPHANS=true ${CLI} deploy "${STACK}" \
@@ -403,15 +417,16 @@ for t in "${TABLE_A}" "${TABLE_C}"; do
     exit 1
   fi
 done
-if grep -F "Partial-create cleanup" <<<"${INJECT_PLAIN}" | grep -qF "${ACCOUNT_ID}"; then
+if grep -F "Partial-create cleanup" <<<"${INJECT_PLAIN}" | grep -F "${ACCOUNT_ID}" >/dev/null; then
   echo "[verify] FAIL: a partial-create cleanup warning quotes AWS's text, with this account's id (#2319)" >&2
   exit 1
 fi
 # ... and each failed CREATE's persisted RESOURCE_FAILED event is class-only:
 # the deployments/*.jsonl store outlives the run.
-EVENT_KEYS_2="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
-  --prefix "${STATE_PREFIX}deployments/" --output json \
-  | jq -r '.Contents // [] | .[].Key | select(endswith(".jsonl"))')"
+if ! EVENT_KEYS_2="$(deployment_event_keys | LC_ALL=C comm -13 "${LOG_DIR}/event-keys-before-2" -)"; then
+  echo "[verify] FAIL: could not list s3://${STATE_BUCKET}/${STATE_PREFIX}deployments/ after step 2" >&2
+  exit 1
+fi
 # Inside LOG_DIR, which `cleanup` removes on every exit: it holds AWS text.
 FAILED_2="${LOG_DIR}/failed-events-2.jsonl"
 : > "${FAILED_2}"
@@ -420,6 +435,9 @@ while IFS= read -r event_key || [ -n "${event_key}" ]; do
   aws s3 cp "s3://${STATE_BUCKET}/${event_key}" - --quiet \
     | jq -c 'select(.eventType == "RESOURCE_FAILED")' >> "${FAILED_2}"
 done <<< "${EVENT_KEYS_2}"
+# The cdkd-authored prefix of a persisted message, never AWS's text: a message
+# with no colon has no prefix of cdkd's (go-to-k/cdkd#2319).
+msg_prefix() { case "$1" in *:*) printf '%s' "${1%%:*}" ;; *) printf '<none>' ;; esac; }
 assert_failed_event_redacted() { # usage: assert_failed_event_redacted <logicalId> <wrap prefix>
   local msg
   msg="$(jq -r --arg l "$1" 'select(.logicalId == $l) | .error.message // empty' "${FAILED_2}" | tail -n 1)"
@@ -428,12 +446,12 @@ assert_failed_event_redacted() { # usage: assert_failed_event_redacted <logicalI
     exit 1
   fi
   if ! printf '%s' "${msg}" | grep -qE "$2: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
-    echo "[verify] FAIL: $1's RESOURCE_FAILED message is not '$2: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed prefix: '${msg%%:*}', ${#msg} chars" >&2
+    echo "[verify] FAIL: $1's RESOURCE_FAILED message is not '$2: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed prefix: '$(msg_prefix "${msg}")', ${#msg} chars" >&2
     exit 1
   fi
   if jq -r --arg l "$1" 'select(.logicalId == $l) | .error.message // empty' "${FAILED_2}" \
-    | grep -qF "${ACCOUNT_ID}"; then
-    echo "[verify] FAIL: $1's RESOURCE_FAILED message quotes AWS's text, with this account's id (#2319); observed prefix: '${msg%%:*}', ${#msg} chars" >&2
+    | grep -F "${ACCOUNT_ID}" >/dev/null; then
+    echo "[verify] FAIL: $1's RESOURCE_FAILED message quotes AWS's text, with this account's id (#2319); observed prefix: '$(msg_prefix "${msg}")', ${#msg} chars" >&2
     exit 1
   fi
 }

@@ -785,8 +785,9 @@ if [ -n "${UNEXPECTED_3G}" ]; then
   exit 1
 fi
 # go-to-k/cdkd#2319: the failed deletes' persisted RESOURCE_FAILED events name
-# AWS's refusal by its class. AWS words it with the cluster's ARN (this
-# account's id), and deployments/*.jsonl outlives the run. Only this destroy's
+# AWS's refusal by its class, and deployments/*.jsonl outlives the run. The
+# engineered member refusal may quote no account id, so the account-id check
+# guards a regression rather than proving this change. Only this destroy's
 # new event files are read, so an earlier run's events cannot answer.
 EVENTS_3G="$(mktemp)"
 if ! NEW_EVENT_KEYS_3G="$(deployment_event_keys | LC_ALL=C comm -13 "${EVENT_KEYS_3G}" -)"; then
@@ -801,6 +802,9 @@ done <<< "${NEW_EVENT_KEYS_3G}"
 EVENT_ACCOUNT_3G="${ACCOUNT_ID}"
 # A FAIL prints only the cdkd-authored prefix and the length: the rest may be
 # AWS's text, naming accounts, roles or sessions.
+# The cdkd-authored prefix of a persisted message, never AWS's text: a message
+# with no colon has no prefix of cdkd's (go-to-k/cdkd#2319).
+msg_prefix() { case "$1" in *:*) printf '%s' "${1%%:*}" ;; *) printf '<none>' ;; esac; }
 assert_failed_event_class_only_3G() { # usage: <logicalId> <wrap prefix>
   local msg
   msg="$(jq -r --arg l "$1" 'select(.logicalId == $l) | .error.message // empty' "${EVENTS_3G}" | tail -n 1)"
@@ -809,13 +813,13 @@ assert_failed_event_class_only_3G() { # usage: <logicalId> <wrap prefix>
     exit 1
   fi
   if ! printf '%s' "${msg}" | grep -qE "$2: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
-    echo "[verify] FAIL: step 3g: $1's RESOURCE_FAILED message is not '$2: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed prefix: '${msg%%:*}', ${#msg} chars" >&2
+    echo "[verify] FAIL: step 3g: $1's RESOURCE_FAILED message is not '$2: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed prefix: '$(msg_prefix "${msg}")', ${#msg} chars" >&2
     exit 1
   fi
   # Every FAILED event this destroy wrote for it, not only the last.
   if jq -r --arg l "$1" 'select(.logicalId == $l) | .error.message // empty' "${EVENTS_3G}" \
-    | grep -qF "${EVENT_ACCOUNT_3G}"; then
-    echo "[verify] FAIL: step 3g: $1's RESOURCE_FAILED message quotes AWS's text, with this account's id (#2319); observed prefix: '${msg%%:*}', ${#msg} chars" >&2
+    | grep -F "${EVENT_ACCOUNT_3G}" >/dev/null; then
+    echo "[verify] FAIL: step 3g: $1's RESOURCE_FAILED message quotes AWS's text, with this account's id (#2319); observed prefix: '$(msg_prefix "${msg}")', ${#msg} chars" >&2
     exit 1
   fi
 }

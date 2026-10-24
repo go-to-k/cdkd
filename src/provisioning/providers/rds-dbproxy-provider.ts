@@ -56,7 +56,7 @@ import { injectiveKey, injectiveKeyPrefix } from '../../state/record-keys.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { isAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 
 const POLL_INTERVAL_MS = 5000;
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
@@ -878,8 +878,8 @@ export class RDSDBProxyProvider implements ResourceProvider {
    * assumed-role ARN. AWS's own text goes to `debug` through the operation's
    * masker, and the wrap is stamped `markRedactedCause`, so the retry
    * classifiers read the withheld text on the `cause` chain. An "already
-   * exists" is restated ({@link relayedNameCollision}) unless a post-create
-   * step raised it ({@link isAuxiliaryFailure}). A cdkd-authored or transport
+   * exists" is restated ({@link relayedNameCollision}); this provider marks
+   * no post-create call auxiliary, so nothing gates it. A cdkd-authored or transport
    * error keeps its text, masked, stamped only when the mask changed it
    * (`wrapMaskedAwsError`, go-to-k/cdkd#4339); a non-`Error` throw is withheld
    * like an AWS one, unstamped (it has no chain). A delete catch tests
@@ -907,8 +907,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
     const failure = describeAwsFailure(error);
     if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
     this.logger.debug(mask(build(mask(failure.detail)).message));
-    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
-    const wrapped = build(`${mask(failure.summary)}${relay}`);
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
