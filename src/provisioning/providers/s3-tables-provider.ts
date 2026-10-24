@@ -179,7 +179,8 @@ export class S3TablesProvider implements ResourceProvider {
    * transport error, or a non-`Error` throw, keeps its text, as in the
    * EventBridge bus provider's wrap (go-to-k/cdkd#5053); the thrown message is
    * masked by the deploy engine. Every delete checks `NotFoundException`
-   * by type before it wraps, so no "already deleted" reading depends on AWS's
+   * by type before it wraps, and stamps a wrap naming another `NotFound` class
+   * `markNotGone`, so no "already deleted" reading depends on AWS's
    * wording.
    *
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a

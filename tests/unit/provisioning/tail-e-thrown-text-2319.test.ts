@@ -625,6 +625,23 @@ describe('a post-create step failure is not restated as this resource\'s collisi
     );
   });
 
+  it('S3 bucket: no restatement from a post-create wiring step', async () => {
+    only('PutBucketVersioningCommand')(conflict());
+
+    const failure = await caught(
+      new S3BucketProvider().create(
+        'B',
+        'AWS::S3::Bucket',
+        { VersioningConfiguration: { Status: 'Enabled' } },
+        ctx
+      )
+    );
+
+    expect(failure.message).toBe(`Failed to create S3 bucket B: ConflictException. ${VERBOSE_POINTER}`);
+    expect(failure.message).not.toContain(ACCOUNT);
+    expect(isNameCollisionErrorFrom(failure, 'B')).toBe(false);
+  });
+
   it('AppSync GraphQL API: no restatement from the post-create step, class-only rollback warn', async () => {
     mockSend.mockImplementation((command: unknown) => {
       const name = commandName(command);

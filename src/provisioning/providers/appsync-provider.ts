@@ -244,7 +244,6 @@ const MUTABLE_GRAPHQL_API_CONFIG_PROPERTIES = [
  * - AWS::AppSync::Resolver
  * - AWS::AppSync::ApiKey
  */
-
 export class AppSyncProvider implements ResourceProvider {
   private client: AppSyncClient | undefined;
   private createClient: AppSyncClient | undefined;
@@ -1650,8 +1649,9 @@ export class AppSyncProvider implements ResourceProvider {
    * pointer (go-to-k/cdkd#2319), as in {@link withheldAwsFailure}. A
    * cdkd-authored or transport error, or a non-`Error` throw, keeps its text
    * unchanged, as before; the thrown message is masked by the deploy engine.
-   * Every delete checks {@link isNotFoundError} before it wraps, so no
-   * "already deleted" reading depends on AWS's wording.
+   * Every delete checks {@link isNotFoundError} before it wraps, and stamps a
+   * wrap naming another `NotFound` class `markNotGone`: the class itself would
+   * otherwise read as "already deleted".
    *
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor call.
