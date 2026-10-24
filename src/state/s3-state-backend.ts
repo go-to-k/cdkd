@@ -1990,8 +1990,7 @@ export class S3StateBackend {
           displaySafe(mask ? mask(code) : code, { asciiOnly: true }) || UNRENDERABLE;
         failures.push(`${shownKey} (${shownCode})`);
         this.logger.debug(
-          `DeleteObjects failed for ${shownKey} (${shownCode}): ` +
-            `${displaySafe(err.Message ?? '', { asciiOnly: true })}`
+          safeMsg`DeleteObjects failed for ${shownKey} (${shownCode}): ${displaySafe(err.Message ?? '', { asciiOnly: true })}`
         );
       }
     }
