@@ -66,7 +66,7 @@ conditions	2026-10-18T11:16:06Z	PASS	35	verify.sh	#5043 rebased run; rc 0, destr
 conditions-and-if	2026-10-15T19:32:45Z	PASS	67	verify.sh	16 assertions, clean destroy
 conditions-update-2	2026-10-21T08:34:51Z	PASS	99	verify.sh	rc ok, orph clean, PR #5146
 context-test	2026-10-17T13:23:24Z	PASS	30	standard	PR #5029 head dd1a5504a; rc ok, orph clean
-created-before-failure-revert	2026-10-24T07:04:10Z	PASS	130	verify.sh	rc ok, orph clean
+created-before-failure-revert	2026-10-24T11:08:27Z	PASS	126	verify.sh	rc ok, orph clean
 cross-backend-same-stack	2026-10-20T09:31:22Z	PASS	361	verify.sh	#5064 head re-run, clean, own ephemeral bucket swept
 cross-backend-same-stack-migration	2026-10-11T09:33:22Z	PASS	386	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 cross-region-concurrent-stacks	2026-10-23T03:26:26Z	PASS	216	verify.sh	rc ok, orph clean both regions (regression net #5193)
@@ -304,7 +304,7 @@ redacted-delete-address	2026-10-18T18:32:28Z	PASS	91	verify.sh	PR #5059 (#2319) 
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
 refactor-command	2026-10-23T23:41:04Z	PASS	115	verify.sh	rc ok, orph clean; re-run on 4a1466a76 (hint only pairs refactor would plan): ambiguous topics show no hint, table/queue still do (#5232)
 refactor-move	2026-10-23T23:44:43Z	PASS	160	verify.sh	rc ok, orph clean; re-run on 4a1466a76 (hint only pairs refactor would plan), both [-] rows still hinted (#5232)
-remove-protection	2026-10-24T06:34:19Z	PASS	2134	verify.sh	final #5242 round after 7a30f8edb; rebuilt dist (building fixture, ran alone); --remove-protection destroy succeeded, state cleared, orph clean
+remove-protection	2026-10-24T11:08:27Z	PASS	2109	verify.sh	rc ok, orph clean
 remove-protection-compensation	2026-10-22T15:37:12Z	PASS	251	verify.sh	rc ok, orph clean
 remove-protection-journaled-orphan	2026-10-20T10:53:50Z	PASS	675	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -387,7 +387,7 @@ stream-delete-redeploy	2026-10-21T09:46:34Z	PASS	325	verify.sh	rc ok, orph clean
 synthetics-canary	2026-10-11T09:33:22Z	PASS	151	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 tags-propagation	2026-10-19T00:17:40Z	PASS	201	verify.sh	rc ok, orph clean (#5077)
 termination-protection	2026-10-24T05:02:39Z	PASS	60	verify.sh	rc ok, orph clean; re-run on 564761a4b after rebase onto main (incl. #5235 delete path) (#5238)
-throttle-wide-dag	2026-10-11T09:33:22Z	PASS	326	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+throttle-wide-dag	2026-10-24T11:08:27Z	PASS	311	verify.sh	rc ok, orph clean
 type-change-replacement	2026-10-20T19:58:09Z	PASS	210	verify.sh	PR #5100 pre-merge run, own state bucket, rc ok, orph clean
 unrecognized-key-autoroute	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 update-policy-mutations	2026-10-11T09:33:22Z	PASS	95	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean

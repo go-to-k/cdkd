@@ -13,6 +13,7 @@ import {
 import { SECRET_MASK, createSecretMasker } from '../../../src/deployment/secret-redaction.js';
 import { isTransientServerError } from '../../../src/deployment/retryable-errors.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 /**
  * Issue #2050, ELBv2 half. Two distinct disclosure surfaces, both fixed here.
@@ -171,6 +172,18 @@ function nonRetryableAwsError(): Error {
 function loggedLines(): string {
   return [...logger.debug.mock.calls, ...logger.warn.mock.calls]
     .map((c) => String(c[0]))
+    .join('\n');
+}
+
+/**
+ * The debug line a failure wrap writes AWS's withheld text to
+ * (go-to-k/cdkd#2319): it opens with the thrown message's own prefix.
+ */
+function wrapDebugLine(thrown: Error): string {
+  const prefix = `${thrown.message.slice(0, thrown.message.indexOf(': '))}: `;
+  return logger.debug.mock.calls
+    .map((c) => String(c[0]))
+    .filter((line) => line.startsWith(prefix))
     .join('\n');
 }
 
@@ -342,8 +355,12 @@ describe('ELBv2Provider ModifyListenerAttributes retry logging is secret-masked 
         .toHaveLength(1);
 
       expect(thrown.message).toContain('Failed to create Listener Listener');
-      expect(thrown.message).toContain(SECRET_MASK);
+      // go-to-k/cdkd#2319: the thrown (persisted) message names the class only;
+      // AWS's text, which quotes the value back, reaches the debug line, masked.
+      expect(thrown.message).toContain(VERBOSE_POINTER);
       expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(wrapDebugLine(thrown)).toContain(SECRET_MASK);
+      expect(loggedLines()).not.toContain(SECRET_PLAINTEXT);
     });
 
     it('masks the AWS message on an EXHAUSTED retry, where the warn is masked too', async () => {
@@ -355,8 +372,12 @@ describe('ELBv2Provider ModifyListenerAttributes retry logging is secret-masked 
       // followed one line later by this same text unmasked, at the same
       // verbosity.
       expect(warnLines()).toContain(SECRET_MASK);
-      expect(thrown.message).toContain(SECRET_MASK);
+      // go-to-k/cdkd#2319: the thrown (persisted) message names the class only;
+      // AWS's text, which quotes the value back, reaches the debug line, masked.
+      expect(thrown.message).toContain(VERBOSE_POINTER);
       expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(wrapDebugLine(thrown)).toContain(SECRET_MASK);
+      expect(loggedLines()).not.toContain(SECRET_PLAINTEXT);
     });
 
     it('leaves the message untouched when the caller threads no masker', async () => {
@@ -364,7 +385,9 @@ describe('ELBv2Provider ModifyListenerAttributes retry logging is secret-masked 
 
       const thrown = await captureThrow(() => createListener());
 
-      expect(thrown.message).toContain(SECRET_PLAINTEXT);
+      // Absent means unmasked, on the debug line the AWS text now reaches.
+      expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(wrapDebugLine(thrown)).toContain(SECRET_PLAINTEXT);
     });
   });
 
@@ -378,8 +401,12 @@ describe('ELBv2Provider ModifyListenerAttributes retry logging is secret-masked 
       expect(warnLines()).not.toContain('gave up after');
 
       expect(thrown.message).toContain('Failed to update Listener Listener');
-      expect(thrown.message).toContain(SECRET_MASK);
+      // go-to-k/cdkd#2319: the thrown (persisted) message names the class only;
+      // AWS's text, which quotes the value back, reaches the debug line, masked.
+      expect(thrown.message).toContain(VERBOSE_POINTER);
       expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(wrapDebugLine(thrown)).toContain(SECRET_MASK);
+      expect(loggedLines()).not.toContain(SECRET_PLAINTEXT);
     });
 
     it('leaves the message untouched when the caller threads no masker', async () => {
@@ -387,7 +414,9 @@ describe('ELBv2Provider ModifyListenerAttributes retry logging is secret-masked 
 
       const thrown = await captureThrow(() => updateListener());
 
-      expect(thrown.message).toContain(SECRET_PLAINTEXT);
+      // Absent means unmasked, on the debug line the AWS text now reaches.
+      expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(wrapDebugLine(thrown)).toContain(SECRET_PLAINTEXT);
     });
   });
 
@@ -493,8 +522,12 @@ describe('ELBv2Provider ModifyListenerAttributes retry logging is secret-masked 
       // Non-vacuity: nothing was retried, so the throw is the only surface.
       expect(warnLines()).not.toContain('gave up after');
       expect(thrown.message).toContain('Failed to create TargetGroup TG');
-      expect(thrown.message).toContain(SECRET_MASK);
+      // go-to-k/cdkd#2319: the thrown (persisted) message names the class only;
+      // AWS's text, which quotes the value back, reaches the debug line, masked.
+      expect(thrown.message).toContain(VERBOSE_POINTER);
       expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(wrapDebugLine(thrown)).toContain(SECRET_MASK);
+      expect(loggedLines()).not.toContain(SECRET_PLAINTEXT);
     });
 
     it('masks the AWS message on the update path', async () => {
@@ -517,8 +550,12 @@ describe('ELBv2Provider ModifyListenerAttributes retry logging is secret-masked 
       );
 
       expect(thrown.message).toContain('Failed to update TargetGroup TG');
-      expect(thrown.message).toContain(SECRET_MASK);
+      // go-to-k/cdkd#2319: the thrown (persisted) message names the class only;
+      // AWS's text, which quotes the value back, reaches the debug line, masked.
+      expect(thrown.message).toContain(VERBOSE_POINTER);
       expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(wrapDebugLine(thrown)).toContain(SECRET_MASK);
+      expect(loggedLines()).not.toContain(SECRET_PLAINTEXT);
     });
 
     it('leaves the message untouched when the caller threads no masker', async () => {
@@ -533,7 +570,9 @@ describe('ELBv2Provider ModifyListenerAttributes retry logging is secret-masked 
         provider.create('TG', TARGET_GROUP_TYPE, TAGGED_TG_PROPS)
       );
 
-      expect(thrown.message).toContain(SECRET_PLAINTEXT);
+      // Absent means unmasked, on the debug line the AWS text now reaches.
+      expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(wrapDebugLine(thrown)).toContain(SECRET_PLAINTEXT);
     });
   });
 

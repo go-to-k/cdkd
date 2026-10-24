@@ -98,6 +98,11 @@ OOB_ENDPOINT_SERVICE_ID=""
 # Step 4b's captured destroy output; removed by cleanup too, since a signal
 # landing mid-destroy never reaches the step's own `rm`.
 DESTROY_4B_LOG=""
+# Step 4b's go-to-k/cdkd#2319 check: the deployments/*.jsonl keys before the
+# destroy, and the RESOURCE_FAILED events read after it (AWS text: removed by
+# cleanup on every exit).
+EVENT_KEYS_4B=""
+FAILED_4B=""
 
 # Poll until the endpoint service is gone (not found, or Deleted): the NLB
 # stays associated until it is. Returns non-zero when it is still there after
@@ -152,6 +157,16 @@ wait_pool_domain_gone() { # usage: wait_pool_domain_gone <pool id>
   return 1
 }
 
+# This stack's deployments/*.jsonl keys, sorted, one per line (go-to-k/cdkd#2319).
+# A failed listing returns non-zero, so a caller never reads an empty list as
+# "no new events".
+deployment_event_keys() {
+  local listed
+  listed="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+    --prefix "cdkd/${STACK}/${REGION}/deployments/" --output json)" || return 1
+  printf '%s' "${listed}" | jq -r '.Contents // [] | .[].Key | select(endswith(".jsonl"))' | LC_ALL=C sort
+}
+
 # On failure, retry destroy with --remove-protection so we never leak
 # expensive AWS resources. The trap is intentionally aggressive — the
 # whole point of this integ is verifying the bypass path, so using it
@@ -159,6 +174,8 @@ wait_pool_domain_gone() { # usage: wait_pool_domain_gone <pool id>
 cleanup() {
   rc=$?
   [ -n "${DESTROY_4B_LOG}" ] && rm -f "${DESTROY_4B_LOG}"
+  [ -n "${EVENT_KEYS_4B}" ] && rm -f "${EVENT_KEYS_4B}"
+  [ -n "${FAILED_4B}" ] && rm -f "${FAILED_4B}"
   if [ "${rc}" -ne 0 ]; then
     # Step 4b's out-of-band domain first: while it stands, DeleteUserPool
     # refuses and the destroy below leaks the pool.
@@ -387,6 +404,15 @@ if [ "${EPS_STATE}" != "Available" ]; then
   echo "[verify] FAIL: endpoint service ${OOB_ENDPOINT_SERVICE_ID} is '${EPS_STATE}', not Available, after 2 min"
   exit 1
 fi
+# The destroy's RESOURCE_FAILED events carry no physicalId, so the NLB's is
+# found by the logical id its state record holds.
+NLB_LOGICAL_ID="$(${CLI} state show "${STACK}" --state-bucket "${STATE_BUCKET}" --json \
+  | NLB_ARN="${NLB_ARN}" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s).state?.resources??{};const ids=Object.keys(r).filter(k=>r[k]?.physicalId===process.env.NLB_ARN);if(ids.length!==1)throw new Error("expected one state record for the NLB, found "+ids.length);process.stdout.write(ids[0])})')"
+EVENT_KEYS_4B="$(mktemp)"
+if ! deployment_event_keys > "${EVENT_KEYS_4B}"; then
+  echo "[verify] FAIL: could not list s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/deployments/ before step 4b's destroy"
+  exit 1
+fi
 DESTROY_4B_LOG="$(mktemp)"
 # `--resource-timeout 6m`: as in step 3, caps the waits of the resources this
 # destroy cannot finish (the IGW public-IP lag, and the subnets and VPC the
@@ -407,6 +433,41 @@ if [ "${rc}" -eq 0 ]; then
   echo "[verify] FAIL: destroy succeeded although the user pool carries an out-of-band domain and the NLB an endpoint service"
   exit 1
 fi
+# go-to-k/cdkd#2319: the NLB's persisted RESOURCE_FAILED event names AWS's
+# refusal by its class. AWS words it with the NLB's ARN (this account's id),
+# and deployments/*.jsonl outlives the run. Only this destroy's new event files
+# are read, so an earlier run's events cannot answer.
+FAILED_4B="$(mktemp)"
+if ! NEW_EVENT_KEYS_4B="$(deployment_event_keys | LC_ALL=C comm -13 "${EVENT_KEYS_4B}" -)"; then
+  echo "[verify] FAIL: could not list s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/deployments/ after step 4b's destroy"
+  exit 1
+fi
+while IFS= read -r event_key || [ -n "${event_key}" ]; do
+  [ -n "${event_key}" ] || continue
+  aws s3 cp "s3://${STATE_BUCKET}/${event_key}" - --quiet \
+    | jq -c --arg l "${NLB_LOGICAL_ID}" 'select(.eventType == "RESOURCE_FAILED" and .logicalId == $l)' >> "${FAILED_4B}"
+done <<< "${NEW_EVENT_KEYS_4B}"
+NLB_FAILED_MSG="$(jq -r '.error.message // empty' "${FAILED_4B}" | tail -n 1)"
+# A FAIL prints only the cdkd-authored prefix and the length: the rest may be
+# AWS's text, naming accounts, roles or sessions.
+if [ -z "${NLB_FAILED_MSG}" ]; then
+  echo "[verify] FAIL: step 4b's destroy persisted no RESOURCE_FAILED event with an error message for ${NLB_LOGICAL_ID} (the #2319 checks below would pass for free)"
+  exit 1
+fi
+if ! printf '%s' "${NLB_FAILED_MSG}" \
+    | grep -qE "Failed to delete LoadBalancer ${NLB_LOGICAL_ID}: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
+  echo "[verify] FAIL: the NLB's RESOURCE_FAILED message is not 'Failed to delete LoadBalancer <id>: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed prefix: '${NLB_FAILED_MSG%%:*}', ${#NLB_FAILED_MSG} chars"
+  exit 1
+fi
+# Every FAILED event this destroy wrote for the NLB, not only the last.
+if grep -qF "${ACCOUNT_ID}" "${FAILED_4B}"; then
+  echo "[verify] FAIL: the NLB's RESOURCE_FAILED message quotes AWS's text, with this account's id (#2319); observed prefix: '${NLB_FAILED_MSG%%:*}', ${#NLB_FAILED_MSG} chars"
+  exit 1
+fi
+rm -f "${FAILED_4B}" "${EVENT_KEYS_4B}"
+FAILED_4B=""
+EVENT_KEYS_4B=""
+echo "[verify] step 4b ok: the NLB's RESOURCE_FAILED event names the AWS failure by its class, with no account id"
 # The NLB must still be there (its delete really failed) ...
 if ! POST_NLB_DP="$(nlb_deletion_protection "${NLB_ARN}" 2>&1)"; then
   echo "[verify] FAIL: could not read ${NLB_ARN} after the failed destroy: ${POST_NLB_DP}"

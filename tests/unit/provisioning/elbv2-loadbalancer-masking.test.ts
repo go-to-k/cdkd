@@ -7,6 +7,8 @@ import {
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { SECRET_MASK, createSecretMasker } from '../../../src/deployment/secret-redaction.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
+import { isNameCollisionErrorFrom } from '../../../src/deployment/retryable-errors.js';
 
 /**
  * Issue #2063, ELBv2 LoadBalancer arm — the arm issue #2050's threading left
@@ -109,6 +111,10 @@ function awsRejection(prefix: string): Error {
   return err;
 }
 
+function debugLines(): string {
+  return logger.debug.mock.calls.map((c) => String(c[0])).join('\n');
+}
+
 function warnLines(): string {
   return logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
 }
@@ -199,9 +205,12 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
       // message is the fix working rather than the value never arriving.
       expectPayloadCarriedThePlaintext(CreateLoadBalancerCommand);
 
-      expect(thrown.message).toContain('Failed to create LoadBalancer Lb');
-      expect(thrown.message).toContain(SECRET_MASK);
-      expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      // go-to-k/cdkd#2319: the thrown (persisted) message names the class only;
+      // AWS's text, which quotes the value back, reaches the debug line, masked.
+      expect(thrown.message).toBe(`Failed to create LoadBalancer Lb: ValidationError. ${VERBOSE_POINTER}`);
+      expect(debugLines()).toContain('Failed to create LoadBalancer Lb: ValidationError: load balancer attribute');
+      expect(debugLines()).toContain(SECRET_MASK);
+      expect(loggedLines()).not.toContain(SECRET_PLAINTEXT);
     });
 
     it('preserves the ORIGINAL error as `cause` so retry classification is untouched', async () => {
@@ -224,9 +233,12 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
       const thrown = await captureThrow(() => provider.create('Lb', LB_TYPE, LB_PROPERTIES));
 
       // The back-compatible default the SecretMaskingContext contract mandates:
-      // absent means unmasked, and the sentence still reaches the operator.
-      expect(thrown.message).toContain('Failed to create LoadBalancer Lb');
-      expect(thrown.message).toContain(SECRET_PLAINTEXT);
+      // absent means unmasked, and the sentence still reaches the operator --
+      // on the debug line, since the thrown message names the class only
+      // (go-to-k/cdkd#2319).
+      expect(thrown.message).toBe(`Failed to create LoadBalancer Lb: ValidationError. ${VERBOSE_POINTER}`);
+      expect(debugLines()).toContain('Failed to create LoadBalancer Lb');
+      expect(debugLines()).toContain(SECRET_PLAINTEXT);
     });
   });
 
@@ -255,8 +267,70 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
       const warned = warnLines();
       // Non-vacuity: the cleanup-failure branch really did fire.
       expect(warned).toContain('Failed to clean up partially-created LoadBalancer Lb');
-      expect(warned).toContain(SECRET_MASK);
+      // go-to-k/cdkd#2319: a denied DeleteLoadBalancer names the caller, so the
+      // warn carries the class; AWS's text reaches the debug line, masked.
+      expect(warned).toContain(`: ValidationError. ${VERBOSE_POINTER} Manual deletion`);
       expect(warned).not.toContain(SECRET_PLAINTEXT);
+      expect(debugLines()).toContain(
+        `Failed to clean up partially-created LoadBalancer Lb (${LB_ARN}): ValidationError: delete request for ${SECRET_MASK}`
+      );
+      expect(loggedLines()).not.toContain(SECRET_PLAINTEXT);
+    });
+
+    // go-to-k/cdkd#3361: a cleanup rejection `String()` cannot convert (a
+    // null-prototype object) must not out-throw the catch: the warn still
+    // prints and the wiring failure is what the caller sees. A non-Error takes
+    // `cleanupFailureText`'s withheld arm, so this pins the catch as a whole;
+    // `maskErrorMessage` itself only ever receives an `Error` now.
+    it('still warns and rethrows the wiring failure when the cleanup rejects with an unconvertible value', async () => {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof CreateLoadBalancerCommand) {
+          return Promise.resolve({ LoadBalancers: [{ LoadBalancerArn: LB_ARN, DNSName: 'd' }] });
+        }
+        if (command instanceof ModifyLoadBalancerAttributesCommand) {
+          return Promise.reject(awsRejection('load balancer attribute'));
+        }
+        if (command instanceof DeleteLoadBalancerCommand) {
+          return Promise.reject(Object.create(null));
+        }
+        return Promise.resolve({});
+      });
+
+      const thrown = await captureThrow(() =>
+        provider.create('Lb', LB_TYPE, LB_PROPERTIES, { maskSecrets })
+      );
+
+      expect(thrown.message).toBe(`Failed to create LoadBalancer Lb: ValidationError. ${VERBOSE_POINTER}`);
+      expect(warnLines()).toContain(
+        `Failed to clean up partially-created LoadBalancer Lb (${LB_ARN}): a non-Error value of type object. ${VERBOSE_POINTER} Manual deletion`
+      );
+    });
+
+    // Positive control: a cdkd-authored or transport cleanup failure keeps its
+    // text at warn, masked.
+    it('keeps a cdkd-authored cleanup failure at warn, masked', async () => {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof CreateLoadBalancerCommand) {
+          return Promise.resolve({ LoadBalancers: [{ LoadBalancerArn: LB_ARN, DNSName: 'd' }] });
+        }
+        if (command instanceof ModifyLoadBalancerAttributesCommand) {
+          return Promise.reject(awsRejection('load balancer attribute'));
+        }
+        if (command instanceof DeleteLoadBalancerCommand) {
+          return Promise.reject(new Error(`socket hang up near ${SECRET_PLAINTEXT}`));
+        }
+        return Promise.resolve({});
+      });
+
+      await expect(
+        provider.create('Lb', LB_TYPE, LB_PROPERTIES, { maskSecrets })
+      ).rejects.toThrow();
+
+      const warned = warnLines();
+      expect(warned).toContain(
+        `Failed to clean up partially-created LoadBalancer Lb (${LB_ARN}): socket hang up near ${SECRET_MASK}. Manual deletion`
+      );
+      expect(warned).not.toContain(VERBOSE_POINTER);
       expect(loggedLines()).not.toContain(SECRET_PLAINTEXT);
     });
   });
@@ -290,9 +364,10 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
       expectPayloadCarriedThePlaintext(ModifyLoadBalancerAttributesCommand);
 
       // The sentence proves it came out of `update()`'s frame, not an arm's.
-      expect(thrown.message).toContain('Failed to update ELBv2 resource Lb');
-      expect(thrown.message).toContain(SECRET_MASK);
-      expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(thrown.message).toBe(`Failed to update ELBv2 resource Lb: ValidationError. ${VERBOSE_POINTER}`);
+      expect(debugLines()).toContain('Failed to update ELBv2 resource Lb: ValidationError: load balancer property');
+      expect(debugLines()).toContain(SECRET_MASK);
+      expect(loggedLines()).not.toContain(SECRET_PLAINTEXT);
     });
 
     it('masks a SetSubnets rejection too (a different call in the same arm)', async () => {
@@ -311,9 +386,10 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
 
       expectPayloadCarriedThePlaintext(SetSubnetsCommand);
 
-      expect(thrown.message).toContain('Failed to update ELBv2 resource Lb');
-      expect(thrown.message).toContain(SECRET_MASK);
-      expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(thrown.message).toBe(`Failed to update ELBv2 resource Lb: ValidationError. ${VERBOSE_POINTER}`);
+      expect(debugLines()).toContain('Failed to update ELBv2 resource Lb: ValidationError: load balancer property');
+      expect(debugLines()).toContain(SECRET_MASK);
+      expect(loggedLines()).not.toContain(SECRET_PLAINTEXT);
     });
 
     it('leaves the message untouched when the caller threads no masker', async () => {
@@ -323,7 +399,8 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
         provider.update('Lb', LB_ARN, LB_TYPE, LB_PROPERTIES, { Name: 'my-lb' })
       );
 
-      expect(thrown.message).toContain(SECRET_PLAINTEXT);
+      expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(debugLines()).toContain(SECRET_PLAINTEXT);
     });
   });
 
@@ -466,5 +543,77 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
       expect(debugLines()).toContain(SECRET_MASK);
       expect(debugLines()).not.toContain(`=${flagSecret} for`);
     });
+  });
+});
+
+/**
+ * go-to-k/cdkd#2319: a create / update wrap that withholds AWS's text restates
+ * an "already exists" so a create-first replacement still recognises the
+ * collision -- but not from a post-create wiring step's failure, where "it"
+ * would read as this load balancer (#3826).
+ */
+describe('ELBv2Provider LoadBalancer wraps restate a name collision (#2319)', () => {
+  let provider: ELBv2Provider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new ELBv2Provider();
+  });
+
+  const conflict = (): Error =>
+    Object.assign(new Error('A load balancer with the same name already exists'), {
+      name: 'ConflictException',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 409 },
+    });
+
+  it('restates it on the create path', async () => {
+    mockSend.mockImplementation((command: unknown) =>
+      command instanceof CreateLoadBalancerCommand
+        ? Promise.reject(conflict())
+        : Promise.resolve({})
+    );
+
+    const thrown = await captureThrow(() => provider.create('Lb', LB_TYPE, LB_PROPERTIES));
+
+    expect(thrown.message).toBe(
+      `Failed to create LoadBalancer Lb: ConflictException. ${VERBOSE_POINTER} AWS reports that it already exists.`
+    );
+    expect(isNameCollisionErrorFrom(thrown, 'Lb')).toBe(true);
+  });
+
+  it('restates it on the update path', async () => {
+    mockSend.mockImplementation((command: unknown) =>
+      command instanceof ModifyLoadBalancerAttributesCommand
+        ? Promise.reject(conflict())
+        : Promise.resolve({})
+    );
+
+    const thrown = await captureThrow(() =>
+      provider.update('Lb', LB_ARN, LB_TYPE, LB_PROPERTIES, { Name: 'my-lb' })
+    );
+
+    expect(thrown.message).toBe(
+      `Failed to update ELBv2 resource Lb: ConflictException. ${VERBOSE_POINTER} AWS reports that it already exists.`
+    );
+  });
+
+  it('does not restate a wiring step failure after CreateLoadBalancer returned', async () => {
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof CreateLoadBalancerCommand) {
+        return Promise.resolve({ LoadBalancers: [{ LoadBalancerArn: LB_ARN, DNSName: 'd' }] });
+      }
+      if (command instanceof ModifyLoadBalancerAttributesCommand) {
+        return Promise.reject(conflict());
+      }
+      return Promise.resolve({});
+    });
+
+    const thrown = await captureThrow(() => provider.create('Lb', LB_TYPE, LB_PROPERTIES));
+
+    // Premise: the wiring step really failed after the create.
+    expect(mockSend.mock.calls.some((c) => c[0] instanceof DeleteLoadBalancerCommand)).toBe(true);
+    expect(thrown.message).toBe(`Failed to create LoadBalancer Lb: ConflictException. ${VERBOSE_POINTER}`);
+    expect(isNameCollisionErrorFrom(thrown, 'Lb')).toBe(false);
   });
 });

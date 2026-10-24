@@ -76,6 +76,7 @@ import {
   withDerivedNameMasks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
+import { markNotGone } from '../not-gone.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -91,8 +92,17 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
-import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import {
+  markNonRetryable,
+  wrapMaskedAwsError,
+  markRedactedCause,
+  relayedNameCollision,
+} from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -606,6 +616,41 @@ export class ELBv2Provider implements ResourceProvider {
   private elbv2Client?: ElasticLoadBalancingV2Client;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ELBv2Provider');
+
+  /**
+   * The failure wrap this provider's create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}), so a create-first
+   * replacement still recognises the collision, except from a post-create
+   * wiring step's failure ({@link markAuxiliaryFailure}), where "it" would read
+   * as this resource (#3826). A cdkd-authored or transport
+   * error keeps its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like
+   * an AWS one, unstamped (it has no chain). A delete catch tests not-found
+   * before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${mask(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
   /** `--remove-protection` flips per load balancer, kept across `delete()` re-entry (#2204). */
   private readonly protectionFlips = new ProtectionFlipRegistry();
 
@@ -839,8 +884,9 @@ export class ELBv2Provider implements ResourceProvider {
   /**
    * Mask a caught AWS error's message before it is interpolated into a line
    * this provider logs (issue #2050, review round 2). A thrown `create()` /
-   * `update()` failure goes through {@link wrapMaskedError} instead, which
-   * masks the same text and also stamps the wrap.
+   * `update()` / `delete()` failure goes through {@link wrapCaughtError}
+   * instead, which names an AWS-authored failure by its class and masks the
+   * rest the same way; the wrap is stamped when it withholds or masks.
    *
    * Masks `error.message` rather than the assembled sentence ON PURPOSE. The
    * two are NOT equivalent: handing the masker the raw message can reach
@@ -851,7 +897,29 @@ export class ELBv2Provider implements ResourceProvider {
    */
   private maskErrorMessage(error: unknown, maskSecrets: SecretMasker | undefined): string {
     const mask = maskerOrIdentity(maskSecrets);
-    return mask(error instanceof Error ? error.message : String(error));
+    // `.detail`: the same text, without out-throwing the cleanup catch it runs
+    // in on a value `String()` cannot convert (go-to-k/cdkd#3361).
+    return mask(describeAwsFailure(error).detail);
+  }
+
+  /**
+   * The cleanup-failure text a partial-create `warn` quotes after `head`, with
+   * its closing period (go-to-k/cdkd#2319). An AWS-authored failure is named by
+   * its CLASS at warn, since a denied `Delete*` names the caller's assumed-role
+   * ARN; AWS's own text goes to `debug` under the same `head`, masked. A
+   * cdkd-authored or transport error keeps its text, masked as
+   * {@link maskErrorMessage} does.
+   */
+  private cleanupFailureText(
+    head: string,
+    cleanupError: unknown,
+    maskSecrets: SecretMasker | undefined
+  ): string {
+    const failure = describeAwsFailure(cleanupError);
+    if (!failure.redacted) return `${this.maskErrorMessage(cleanupError, maskSecrets)}.`;
+    const mask = maskerOrIdentity(maskSecrets);
+    this.logger.debug(mask(`${head}${mask(failure.detail)}`));
+    return mask(failure.summary);
   }
 
   /**
@@ -890,34 +958,6 @@ export class ELBv2Provider implements ResourceProvider {
     } else {
       this.logger.debug(debugText);
     }
-  }
-
-  /**
-   * A `create()` / `update()` failure wrap quoting the caught error's text
-   * masked RAW, as {@link maskErrorMessage} does (issue #2050).
-   *
-   * NOT a duplicate of {@link maskedRetryLogger}, and strictly WIDER than it.
-   * `withRetry` rethrows the RAW error, and `deploy-engine.ts` prints the
-   * resulting message at ERROR — i.e. at DEFAULT verbosity — so a masked
-   * give-up `warn` was being followed one line later by the identical text
-   * unmasked. It is also the ONLY disclosure surface for a NON-RETRYABLE
-   * rejection, where `withRetry` emits nothing at all: its give-up summary is
-   * gated on `propagationRetries > 0 || serverErrorRetries > 0`, and a
-   * validation error that fails on attempt 0 satisfies neither.
-   *
-   * The `cause` stays the ORIGINAL, unmasked error, and a message the mask
-   * changed is stamped so the retry classifiers read that chain rather than
-   * the masked message (`wrapMaskedAwsError`, issue #4259): a secret that
-   * spells part of the retry table's wording would otherwise turn a transient
-   * failure terminal. A method, so `gen-update-wrap-coverage` sees the catch
-   * that throws it as a wrap.
-   */
-  private wrapMaskedError(
-    mask: MaskerFn,
-    error: unknown,
-    build: (maskedText: string) => ProvisioningError
-  ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -1006,7 +1046,7 @@ export class ELBv2Provider implements ResourceProvider {
               loadBalancerNameFromArn(physicalId)
             )
           : maskerOrIdentity(context?.maskSecrets);
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         mask,
         error,
         (text) =>
@@ -1417,6 +1457,7 @@ export class ELBv2Provider implements ResourceProvider {
             );
           } catch (cleanupError) {
             leftBehindArn = lbArn;
+            const lbCleanupHead = `Failed to clean up partially-created LoadBalancer ${logicalId} (${lbArn}): `;
             this.logger.warn(
               // Masked for uniformity with the sibling lines in this same `try`
               // (issue #2063), matching the Listener / TargetGroup create paths.
@@ -1424,7 +1465,7 @@ export class ELBv2Provider implements ResourceProvider {
               // property value reaching here would be surprising — but
               // "surprising" is not "impossible", and an unmasked line sitting
               // beside masked ones is what a later author copies.
-              `Failed to clean up partially-created LoadBalancer ${logicalId} (${lbArn}): ${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-load-balancer --load-balancer-arn ${lbArn}`.render()}`
+              `${lbCleanupHead}${this.cleanupFailureText(lbCleanupHead, cleanupError, maskSecrets)} Manual deletion may be required before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-load-balancer --load-balancer-arn ${lbArn}`.render()}`
             );
           }
         }
@@ -1444,7 +1485,7 @@ export class ELBv2Provider implements ResourceProvider {
       // NON-RETRYABLE `CreateLoadBalancer` rejection — nothing on this path
       // goes through `withRetry`, so there is no give-up summary behind it.
       const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapMaskedError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -2025,13 +2066,24 @@ export class ELBv2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete LoadBalancer ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete LoadBalancer ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -2198,14 +2250,14 @@ export class ELBv2Provider implements ResourceProvider {
             );
           } catch (cleanupError) {
             leftBehindArn = tgArn;
+            const tgCleanupHead = `Failed to clean up partially-created TargetGroup ${logicalId} (${tgArn}): `;
             this.logger.warn(
               // Masked for uniformity with the sibling lines in this same `try`
               // (issue #2050). The cleanup call carries only a physical ARN, so a
               // resolved property value reaching here would be surprising — but
               // "surprising" is not "impossible", and an unmasked line sitting
               // beside masked ones is what a later author copies.
-              `Failed to clean up partially-created TargetGroup ${logicalId} (${tgArn}): ` +
-                `${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be ` +
+              `${tgCleanupHead}${this.cleanupFailureText(tgCleanupHead, cleanupError, maskSecrets)} Manual deletion may be ` +
                 `required before the next deploy: ` +
                 `${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-target-group --target-group-arn ${tgArn}`.render()}`
             );
@@ -2222,7 +2274,7 @@ export class ELBv2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapMaskedError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -2454,7 +2506,7 @@ export class ELBv2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -2500,13 +2552,24 @@ export class ELBv2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete TargetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete TargetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -2701,11 +2764,11 @@ export class ELBv2Provider implements ResourceProvider {
           );
         } catch (cleanupError) {
           leftBehindArn = listenerArn;
+          const listenerCleanupHead = `Failed to clean up partially-created Listener ${logicalId} (${listenerArn}): `;
           this.logger.warn(
             // Masked for the same reason as the TargetGroup cleanup above
             // (issue #2050).
-            `Failed to clean up partially-created Listener ${logicalId} (${listenerArn}): ` +
-              `${this.maskErrorMessage(cleanupError, maskSecrets)}. Outside a rollback's re-create, the failed deploy's rollback ` +
+            `${listenerCleanupHead}${this.cleanupFailureText(listenerCleanupHead, cleanupError, maskSecrets)} Outside a rollback's re-create, the failed deploy's rollback ` +
               `journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself ` +
               `before the next deploy: ` +
               `${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-listener --listener-arn ${listenerArn}`.render()}`
@@ -2727,7 +2790,7 @@ export class ELBv2Provider implements ResourceProvider {
       // classifier walks it for `$metadata`, so only the human-readable
       // message is masked.
       const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapMaskedError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -2913,7 +2976,7 @@ export class ELBv2Provider implements ResourceProvider {
       // `cause` carries the ORIGINAL error untouched (issue #2050) — see the
       // create path above.
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -2959,13 +3022,24 @@ export class ELBv2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Listener ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Listener ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 

@@ -66,6 +66,8 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
+import { getLogger } from '../../../src/utils/logger.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { provenNothingCreated } from '../../../src/deployment/generated-name-guard.js';
 
@@ -174,8 +176,62 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
 
       const error = await failure(() => provider.create('Res', c.type, c.props));
 
-      expect((error as Error).message).toContain('wiring boom');
+      expect(((error as Error).cause as Error).message).toContain('wiring boom');
       expect(createdBeforeFailure(error, 'Res', c.type)).toBe(c.arn);
+    });
+
+    // go-to-k/cdkd#2319: a denied cleanup Delete* names the caller, so the warn
+    // carries the class; AWS's text goes to the debug line under the same head.
+    it('names a denied cleanup delete by its class at warn', async () => {
+      const denied = Object.assign(
+        new Error('User: arn:aws:sts::111122223333:assumed-role/deployer/s is not authorized'),
+        { name: 'AccessDenied', $fault: 'client', $metadata: { httpStatusCode: 403 } }
+      );
+      mockSend.mockResolvedValueOnce(c.created);
+      mockSend.mockRejectedValueOnce(nonRetryable('wiring boom'));
+      mockSend.mockRejectedValueOnce(denied);
+
+      await failure(() => provider.create('Res', c.type, c.props));
+
+      const log = getLogger().child('ELBv2Provider') as unknown as {
+        warn: ReturnType<typeof vi.fn>;
+        debug: ReturnType<typeof vi.fn>;
+      };
+      const warned = log.warn.mock.calls.map((call) => String(call[0])).join('\n');
+      expect(warned).toContain(`(${c.arn}): AccessDenied. ${VERBOSE_POINTER} `);
+      expect(warned).not.toContain('111122223333');
+      expect(
+        log.debug.mock.calls.some((call) =>
+          String(call[0]).endsWith(`(${c.arn}): ${denied.message}`)
+        )
+      ).toBe(true);
+    });
+
+    // The class is AWS-authored text too: the warn masks it.
+    it('masks a secret spelled in the cleanup failure class at warn', async () => {
+      const deniedWithSecret = Object.assign(new Error('denied'), {
+        name: 'Denieds3cr3tException',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 403 },
+      });
+      mockSend.mockResolvedValueOnce(c.created);
+      mockSend.mockRejectedValueOnce(nonRetryable('wiring boom'));
+      mockSend.mockRejectedValueOnce(deniedWithSecret);
+
+      await failure(() =>
+        provider.create('Res', c.type, c.props, {
+          maskSecrets: (t: string) => t.replaceAll('s3cr3t', '***'),
+        })
+      );
+
+      const log = getLogger().child('ELBv2Provider') as unknown as {
+        warn: ReturnType<typeof vi.fn>;
+        debug: ReturnType<typeof vi.fn>;
+      };
+      const all = [...log.warn.mock.calls, ...log.debug.mock.calls].map((call) => String(call[0]));
+      const warned = log.warn.mock.calls.map((call) => String(call[0])).join('\n');
+      expect(warned).toContain(`(${c.arn}): Denied***Exception. ${VERBOSE_POINTER} `);
+      expect(all.join('\n')).not.toContain('s3cr3t');
     });
 
     it('go-to-k/cdkd#4705 E-3: the 4xx wiring failure with the resource left behind keeps the intent', async () => {
@@ -193,7 +249,7 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
 
       const error = await failure(() => provider.create('Res', c.type, c.props));
 
-      expect((error as Error).message).toContain('wiring boom');
+      expect(((error as Error).cause as Error).message).toContain('wiring boom');
       // The flow reached the cleanup and its delete was sent.
       expect(sentDeletes(c.deleteCommand)).toEqual([deleteInput(c)]);
       expect(createdBeforeFailure(error, 'Res', c.type)).toBeUndefined();
@@ -204,7 +260,7 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
 
       const error = await failure(() => provider.create('Res', c.type, c.props));
 
-      expect((error as Error).message).toContain('create boom');
+      expect(((error as Error).cause as Error).message).toContain('create boom');
       expect(createdBeforeFailure(error, 'Res', c.type)).toBeUndefined();
     });
 
@@ -218,7 +274,7 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
 
         const error = await failure(() => provider.create('Res', c.type, c.props));
 
-        expect((error as Error).message).toContain('wiring boom');
+        expect(((error as Error).cause as Error).message).toContain('wiring boom');
         // The cleanup was skipped, so no delete was sent either.
         expect(mockSend).toHaveBeenCalledTimes(2);
         expect(sentDeletes(c.deleteCommand)).toEqual([]);
@@ -235,7 +291,7 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
 
         const error = await failure(() => provider.create('Res', c.type, c.props));
 
-        expect((error as Error).message).toContain('wiring boom');
+        expect(((error as Error).cause as Error).message).toContain('wiring boom');
         expect(ownershipSend).toHaveBeenCalled();
         expect(mockSend).toHaveBeenCalledTimes(2);
         expect(sentDeletes(c.deleteCommand)).toEqual([]);
@@ -298,7 +354,7 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
 
     const error = await failure(() => provider.create('Res', LISTENER_TYPE, listener.props));
 
-    expect((error as Error).message).toContain('wiring boom');
+    expect(((error as Error).cause as Error).message).toContain('wiring boom');
     // The lookup stopped at its 100-page cap and threw, not at a page answer.
     expect(ownershipSend).toHaveBeenCalledTimes(100);
     expect(mockSend).toHaveBeenCalledTimes(2);
@@ -331,7 +387,7 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
 
     const error = await failure(() => provider.create('Res', LISTENER_TYPE, props));
 
-    expect((error as Error).message).toContain('wiring boom');
+    expect(((error as Error).cause as Error).message).toContain('wiring boom');
     expect(sentDeletes('DeleteListenerCommand')).toEqual([]);
     expect(createdBeforeFailure(error, 'Res', LISTENER_TYPE)).toBeUndefined();
   });
