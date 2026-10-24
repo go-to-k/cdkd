@@ -163,8 +163,28 @@ set -e
 printf '%s\n' "${OUT_DESTROY}"
 [ "${rc_destroy}" -eq 2 ] \
   || { echo "FAIL: destroy --force exited ${rc_destroy}, not 2" >&2; exit 1; }
+# Sentinel: exit 2 alone is any per-stack failure; this is the code's refusal.
+grep -qF -- 'has terminationProtection: true' <<<"${OUT_DESTROY}" \
+  || { echo "FAIL: destroy exited 2 without the termination-protection refusal" >&2; exit 1; }
 aws ssm get-parameter --name "${PARAM_ID}" --region "${REGION}" --query 'Parameter.Name' --output text >/dev/null
 echo "    destroy --force exited 2, parameter still exists"
+
+# --- Phase 2b: the RECORDED protection refuses, with the code's turned off --
+# The code no longer protects the stack, but it was not redeployed: the
+# deployed stack is still protected, as in CloudFormation.
+echo "==> Phase 2b: destroy with protection off in code but not redeployed is refused"
+set +e
+OUT_DESTROY_REC="$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  "${COMMON_FLAGS[@]}" --force 2>&1)"
+rc_destroy_rec=$?
+set -e
+printf '%s\n' "${OUT_DESTROY_REC}"
+[ "${rc_destroy_rec}" -eq 2 ] \
+  || { echo "FAIL: destroy of a stack deployed protected exited ${rc_destroy_rec}, not 2" >&2; exit 1; }
+grep -qF -- 'was last deployed with terminationProtection: true' <<<"${OUT_DESTROY_REC}" \
+  || { echo "FAIL: destroy exited 2 without the recorded-protection refusal" >&2; exit 1; }
+aws ssm get-parameter --name "${PARAM_ID}" --region "${REGION}" --query 'Parameter.Name' --output text >/dev/null
+echo "    refused from the record, parameter still exists"
 
 # --- Phase 3: state destroy refuses --------------------------------------
 echo "==> Phase 3: state destroy (no --remove-protection) is refused"
@@ -178,8 +198,8 @@ printf '%s\n' "${OUT_STATE_DESTROY}"
   || { echo "FAIL: state destroy (no --remove-protection) exited ${rc_state_destroy}, not 2" >&2; exit 1; }
 grep -qF -- '--remove-protection' <<<"${OUT_STATE_DESTROY}" \
   || { echo "FAIL: refusal does not mention --remove-protection" >&2; exit 1; }
-grep -qF -- 'terminationProtection: true' <<<"${OUT_STATE_DESTROY}" \
-  || { echo "FAIL: refusal does not mention terminationProtection: true" >&2; exit 1; }
+grep -qF -- 'was last deployed with terminationProtection: true' <<<"${OUT_STATE_DESTROY}" \
+  || { echo "FAIL: refusal is not the recorded-protection refusal" >&2; exit 1; }
 aws ssm get-parameter --name "${PARAM_ID}" --region "${REGION}" --query 'Parameter.Name' --output text >/dev/null
 aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null
 echo "    state destroy exited 2 naming --remove-protection, parameter and state record still exist"
