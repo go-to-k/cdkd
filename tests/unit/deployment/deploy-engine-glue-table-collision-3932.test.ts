@@ -219,7 +219,8 @@ describe('a Glue table replacement meeting an occupied address (issue #3932)', (
       expect(error!.message).toContain(
         'Table (AWS::Glue::Table) requires replacement, but the create-first attempt collided ' +
           'with the existing resource: Failed to create Glue Table Table: AlreadyExistsException. ' +
-            "Re-run with --verbose for AWS's own message. The resource has"
+            "Re-run with --verbose for AWS's own message. AWS reports that it already exists. " +
+            'The resource has'
       );
       // The provider's summary ends in a period and the refusal adds its own
       // sentence end: one period, not two (go-to-k/cdkd#2319).

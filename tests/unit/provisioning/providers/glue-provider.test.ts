@@ -1686,7 +1686,7 @@ describe('Glue CreateTable name collision (issues #3750, #3932)', () => {
     // the cause's own wording, so the summary must keep it.
     expect((error as Error).message).toContain(': AlreadyExistsException.');
     expect((error as Error).message).toBe(
-      "Failed to create Glue Table MyTable: AlreadyExistsException. Re-run with --verbose for AWS's own message."
+      "Failed to create Glue Table MyTable: AlreadyExistsException. Re-run with --verbose for AWS's own message. AWS reports that it already exists."
     );
     expect(isNameCollisionErrorFrom(error, 'MyTable')).toBe(true);
     // Anchored on the logical id: another resource's create cannot claim it.
