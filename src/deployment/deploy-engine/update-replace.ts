@@ -465,7 +465,9 @@ export async function updateByReplacement(
         logicalId,
         oldResourceType,
         currentResource,
-        updateReplacePolicy
+        updateReplacePolicy,
+        // The recreate delete's own masker (below), go-to-k/cdkd#2319.
+        createUnionSecretMasker([updateSecrets, secretNameBagFor(engine.secretsRun, logicalId)])
       );
       let recreateDeleteResult: void | ResourceDeleteResult;
       try {
@@ -1063,7 +1065,10 @@ export async function updateByReplacement(
           logicalId,
           oldResourceType,
           currentResource,
-          updateReplacePolicy
+          updateReplacePolicy,
+          // The cleanup delete's masker (`deleteReplacedAfterCreate`),
+          // go-to-k/cdkd#2319.
+          createUnionSecretMasker([updateSecrets, secretNameBagFor(engine.secretsRun, logicalId)])
         );
       } catch (snapshotError) {
         if (

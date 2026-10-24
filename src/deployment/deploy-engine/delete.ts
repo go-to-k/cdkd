@@ -197,7 +197,10 @@ Drop the record with: ${dropCommand}`
     logicalId,
     resourceType,
     currentResource,
-    governingPolicy
+    governingPolicy,
+    // The delete's own masker (below): the snapshot helper's debug line
+    // quotes a withheld AWS failure's text (go-to-k/cdkd#2319).
+    createUnionSecretMasker([secretNameBagFor(deps.secretsRun(), logicalId)])
   );
 
   // Schema v7+: route DELETE through the layer recorded on state
