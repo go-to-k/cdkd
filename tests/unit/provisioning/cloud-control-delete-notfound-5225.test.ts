@@ -11,9 +11,10 @@
  *
  * The downstream classifiers (`deploy-engine/delete.ts`,
  * `deploy-engine/update-in-place.ts`, `destroy-runner.ts`) match the same
- * phrases in the THROWN message, behind an `isMarkedNonRetryable` guard. So a
- * kept failure whose message holds one is asserted MARKED, and one without a
- * phrase is asserted unmarked and still retryable.
+ * phrases in the THROWN message, behind an `isMarkedNotGone` guard (#5228). So
+ * a kept failure whose message holds one is asserted MARKED not gone, and one
+ * without a phrase unmarked. Retryability is left to the retry classifiers
+ * either way: a transient failure that holds a phrase keeps its retry.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
@@ -49,6 +50,7 @@ import {
   isMarkedNonRetryable,
   isRetryableTransientError,
 } from '../../../src/deployment/retryable-errors.js';
+import { isMarkedNotGone } from '../../../src/provisioning/not-gone.js';
 
 const TYPE = 'AWS::SQS::Queue';
 const REGION = 'us-east-1';
@@ -115,7 +117,8 @@ describe('CloudControlProvider delete: only typed not-found reads as gone (issue
 
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toContain('is not supported by Cloud Control API');
-      expect(isMarkedNonRetryable(error)).toBe(true);
+      expect(isMarkedNotGone(error)).toBe(true);
+      expect(isMarkedNonRetryable(error)).toBe(false);
     });
 
     it.each([
@@ -135,7 +138,8 @@ describe('CloudControlProvider delete: only typed not-found reads as gone (issue
 
         expect(error).toBeInstanceOf(CloudControlOperationFailedError);
         expect((error as CloudControlOperationFailedError).ccErrorCode).toBe(code);
-        expect(isMarkedNonRetryable(error)).toBe(true);
+        expect(isMarkedNotGone(error)).toBe(true);
+        expect(isMarkedNonRetryable(error)).toBe(false);
       }
     );
 
@@ -145,7 +149,8 @@ describe('CloudControlProvider delete: only typed not-found reads as gone (issue
       const error = await deleteOutcome();
 
       expect(error).toBeInstanceOf(Error);
-      expect(isMarkedNonRetryable(error)).toBe(true);
+      expect(isMarkedNotGone(error)).toBe(true);
+      expect(isMarkedNonRetryable(error)).toBe(false);
     });
 
     it('a cdkd-authored failure for a logical id spelling `NotFound` is not gone', async () => {
@@ -156,7 +161,8 @@ describe('CloudControlProvider delete: only typed not-found reads as gone (issue
       const error = await deleteOutcome('PageNotFound');
 
       expect((error as Error).message).toContain('No request token received');
-      expect(isMarkedNonRetryable(error)).toBe(true);
+      expect(isMarkedNotGone(error)).toBe(true);
+      expect(isMarkedNonRetryable(error)).toBe(false);
     });
 
     it('an ordinary FAILED delete with a not-found logical id is not gone either', async () => {
@@ -165,7 +171,8 @@ describe('CloudControlProvider delete: only typed not-found reads as gone (issue
       const error = await deleteOutcome('ErrorPageNotFound');
 
       expect(error).toBeInstanceOf(CloudControlOperationFailedError);
-      expect(isMarkedNonRetryable(error)).toBe(true);
+      expect(isMarkedNotGone(error)).toBe(true);
+      expect(isMarkedNonRetryable(error)).toBe(false);
     });
   });
 
@@ -182,12 +189,13 @@ describe('CloudControlProvider delete: only typed not-found reads as gone (issue
       await expect(deleteOutcome()).resolves.toEqual({ resolved: undefined });
     });
 
-    it('a throttle for a logical id spelling `NotFound` is left unmarked, so it keeps its retry', async () => {
+    it('a throttle for a logical id spelling `NotFound` is marked not gone AND keeps its retry', async () => {
       wireSyncReject(awsError('ThrottlingException', 'Rate exceeded'));
 
       const error = await deleteOutcome('PageNotFound');
 
       expect((error as Error).message).toContain('PageNotFound');
+      expect(isMarkedNotGone(error)).toBe(true);
       expect(isMarkedNonRetryable(error)).toBe(false);
       expect(isRetryableTransientError(error, (error as Error).message)).toBe(true);
     });
@@ -198,18 +206,20 @@ describe('CloudControlProvider delete: only typed not-found reads as gone (issue
       const error = await deleteOutcome('PageNotFound');
 
       expect(error).toBeInstanceOf(CloudControlOperationFailedError);
+      expect(isMarkedNotGone(error)).toBe(true);
       expect(isMarkedNonRetryable(error)).toBe(false);
       expect(isRetryableTransientError(error, (error as Error).message)).toBe(true);
     });
 
-    it('an IAM-propagation `PrincipalNotFound` keeps its retry', async () => {
+    it('an IAM-propagation `PrincipalNotFound` is marked not gone AND keeps its retry', async () => {
       // The retry table's `Policy Error: PrincipalNotFound` pattern spells a
-      // `NotFound`; cutting it out before asking the table would mark it.
+      // `NotFound`: the race clears with time, so it must keep its retry.
       wireAsyncFailed('InvalidRequest', 'Policy Error: PrincipalNotFound for role app-role');
 
       const error = await deleteOutcome();
 
       expect(error).toBeInstanceOf(CloudControlOperationFailedError);
+      expect(isMarkedNotGone(error)).toBe(true);
       expect(isMarkedNonRetryable(error)).toBe(false);
       expect(isRetryableTransientError(error, (error as Error).message)).toBe(true);
     });
@@ -220,6 +230,7 @@ describe('CloudControlProvider delete: only typed not-found reads as gone (issue
       const error = await deleteOutcome();
 
       expect(error).toBeInstanceOf(Error);
+      expect(isMarkedNotGone(error)).toBe(false);
       expect(isMarkedNonRetryable(error)).toBe(false);
       expect(isRetryableTransientError(error, (error as Error).message)).toBe(true);
     });

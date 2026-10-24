@@ -42,6 +42,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { isMarkedNotGone } from '../../../src/provisioning/not-gone.js';
 import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import { getLogger } from '../../../src/utils/logger.js';
 
@@ -182,6 +183,8 @@ describe('RDSProvider cluster delete detaches a global-cluster member first (iss
     expect(error).toBeInstanceOf(Error);
     expect(error!.message).toContain('detaching db-1 from global cluster my-global failed');
     expect(isMarkedNonRetryable(error)).toBe(true);
+    // go-to-k/cdkd#5228: the not-gone mark is what the classifiers refuse.
+    expect(isMarkedNotGone(error)).toBe(true);
     expect(names()).not.toContain('DeleteDBClusterCommand');
   });
 

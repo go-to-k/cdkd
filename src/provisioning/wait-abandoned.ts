@@ -25,7 +25,7 @@
  *
  * The three decide "the resource is already gone" by SUBSTRING-matching the
  * error message, and each then DROPS the state row. The marker helper matches
- * the same phrases, and an abandoned wait it marked would lose its retry.
+ * the same phrases and leaves an abandoned wait to its own marker.
  * An abandoned wait says the
  * opposite — the delete may still be running — and its message interpolates
  * the LOGICAL ID and the last-seen IDENTIFIER, both user- or template-chosen,

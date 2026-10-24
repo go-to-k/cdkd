@@ -37,6 +37,7 @@ import {
   isRetryableTransientError,
   retryClassificationText,
 } from '../../../src/deployment/retryable-errors.js';
+import { isMarkedNotGone } from '../../../src/provisioning/not-gone.js';
 import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 // The by-name lookup before CreateService (go-to-k/cdkd#4403): the name is free.
@@ -210,7 +211,8 @@ describe('ECSProvider thrown wraps withhold AWS text (#2319)', () => {
     expect(failure.message).toBe(
       `Failed to delete ECS service Svc: NamespaceNotFoundException. ${VERBOSE_POINTER}`
     );
-    expect(isMarkedNonRetryable(failure)).toBe(true);
+    expect(isMarkedNotGone(failure)).toBe(true);
+    expect(isMarkedNonRetryable(failure)).toBe(false);
   });
 
   it('delete service: a missing cluster still reads as gone (unmarked)', async () => {
@@ -222,6 +224,7 @@ describe('ECSProvider thrown wraps withhold AWS text (#2319)', () => {
 
     const failure = await caught(cases[7]!.run(provider));
 
+    expect(isMarkedNotGone(failure)).toBe(false);
     expect(isMarkedNonRetryable(failure)).toBe(false);
   });
 
@@ -237,14 +240,16 @@ describe('ECSProvider thrown wraps withhold AWS text (#2319)', () => {
 
     const failure = await caught(cases[c.index]!.run(provider));
 
-    expect(isMarkedNonRetryable(failure)).toBe(true);
+    expect(isMarkedNotGone(failure)).toBe(true);
+    expect(isMarkedNonRetryable(failure)).toBe(false);
   });
 
-  it('an ordinary delete failure is not marked non-retryable', async () => {
+  it('an ordinary delete failure is not marked', async () => {
     failOn('DeleteClusterCommand', denied());
 
     const failure = await caught(cases[2]!.run(provider));
 
+    expect(isMarkedNotGone(failure)).toBe(false);
     expect(isMarkedNonRetryable(failure)).toBe(false);
   });
 

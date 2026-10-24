@@ -32,6 +32,7 @@ import {
   isRetryableTransientError,
   retryClassificationText,
 } from '../../../src/deployment/retryable-errors.js';
+import { isMarkedNotGone } from '../../../src/provisioning/not-gone.js';
 import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 // go-to-k/cdkd#2319: every create / update / delete wrap is persisted to
@@ -188,14 +189,16 @@ describe('CodeCommitRepositoryProvider thrown wraps withhold AWS text (#2319)', 
     expect(failure.message).toBe(
       `Failed to delete CodeCommit Repository Repo: EncryptionKeyNotFoundException. ${VERBOSE_POINTER}`
     );
-    expect(isMarkedNonRetryable(failure)).toBe(true);
+    expect(isMarkedNotGone(failure)).toBe(true);
+    expect(isMarkedNonRetryable(failure)).toBe(false);
   });
 
-  it('an ordinary delete failure is not marked non-retryable', async () => {
+  it('an ordinary delete failure is not marked', async () => {
     failOn('DeleteRepositoryCommand', denied());
 
     const failure = await caught(provider.delete('Repo', 'repo', TYPE));
 
+    expect(isMarkedNotGone(failure)).toBe(false);
     expect(isMarkedNonRetryable(failure)).toBe(false);
   });
 

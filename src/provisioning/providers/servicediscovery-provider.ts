@@ -45,6 +45,7 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { markNotGone } from '../not-gone.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { withRemovalDefaults } from '../update-removal.js';
@@ -54,7 +55,6 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import {
-  markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
   wrapMaskedAwsError,
@@ -191,18 +191,16 @@ const SERVICE_ID_PATTERN = /^srv-[a-z0-9]{16}$/;
 
 /**
  * A DELETE failure wrap whose caught error's CLASS spells `NotFound`, marked
- * non-retryable (go-to-k/cdkd#2319). The wrap names the class, and the deploy
- * and destroy delete classifiers (`deploy-engine/delete.ts`,
+ * not gone (go-to-k/cdkd#2319, #5228). The wrap names the class, and the
+ * deploy and destroy delete classifiers (`deploy-engine/delete.ts`,
  * `deploy-engine/update-in-place.ts`, `destroy-runner.ts`) read `NotFound`
  * in a message as "already deleted" unless the error is marked. This
  * resource's own not-found returned before the wrap, so a `NotFound` class
  * reaching it is another object's (an operation, a key, a namespace) and the
- * resource may still exist.
+ * resource may still exist. Retryability stays the retry classifiers'.
  */
 function markNotGoneOnNotFoundClass<E extends Error>(error: unknown, wrapped: E): E {
-  return error instanceof Error && error.name.includes('NotFound')
-    ? markNonRetryable(wrapped)
-    : wrapped;
+  return error instanceof Error && error.name.includes('NotFound') ? markNotGone(wrapped) : wrapped;
 }
 
 /**

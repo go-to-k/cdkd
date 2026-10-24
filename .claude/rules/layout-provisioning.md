@@ -16,11 +16,11 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **name-lookup.ts** - helpers for `lookupNames` (#4705). `withApiLimit` is PROCESS-wide per API key, so `deploy --all` shares one limit; a new lookup must go through it, not its own pool.
 
-- **import-helpers.ts** - `resolveExplicitPhysicalId` + `normalizeAwsTagsToCfn` for `import()`. The normalizer strips `aws:`-prefixed tags (false drift); no `aws:cdk:path` tag walk, since AWS rejects `aws:` tag writes.
+- **import-helpers.ts** - `resolveExplicitPhysicalId` + `normalizeAwsTagsToCfn` for `import()`. The normalizer strips `aws:`-prefixed tags (false drift; AWS rejects writing them).
 
-- **data-delete-intent.ts** - The CDK auto-delete tag keys. S3 auto-empties, and ECR sends `force: true`, ONLY with the tag, `EmptyOnDelete: true`, or `DeleteContext.forceDataDelete` — set only by the engine's replacement / recreate deletes under `--force-stateful-recreation`.
+- **data-delete-intent.ts** - The CDK auto-delete tag keys. S3 auto-empties, and ECR sends `force: true`, ONLY with the tag, `EmptyOnDelete: true`, or `DeleteContext.forceDataDelete`.
 
-- **region-check.ts** - `DeleteContext` + `assertRegionMatch()`: THREE outcomes (region unset or empty -> no-op; match -> silent; mismatch or unresolvable client region -> non-retryable refusal). Physical ids are usually NAMES shared across regions, so a wrong-region call hits the WRONG resource.
+- **region-check.ts** - `DeleteContext` + `assertRegionMatch()`: region unset or empty -> no-op; match -> silent; mismatch or unresolvable client region -> non-retryable refusal. Physical ids are usually NAMES shared across regions, so a wrong-region call hits the WRONG resource.
 
 - **config-shape.ts** - Shape guards for reading CFn config blocks, which otherwise substitute a default — often the OPPOSITE of the declared intent — for a malformed container (#1471). **A guard behind a TRUTHINESS gate is skipped by a FALSY malformed container: the gate must be `!= null`.** `onUnusable` (warn + default) is for UPDATE-path sites ONLY, since a rollback replays `update()` with a STATE record as the desired bag.
 
@@ -28,9 +28,11 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **auxiliary-failure.ts** - `markAuxiliaryFailure`: a failing AUXILIARY write inside a provider's `create()` is anchored to a logical id no template can spell, so the name-collision classifier never credits it to the resource ([name-collision-classification.md](name-collision-classification.md), #3826); `isAuxiliaryFailure` is what `withRetry` latches on to carry the mark forward (#3972); `isAuxiliaryMarkOf(link, RETRY_AUXILIARY_OWNER)` tells `withRetry`'s mark from a provider's (#3984). A LEAF.
 
-- **delete-started.ts** - `markDeleteStarted`: a `delete()` that changed the resource (a detach, a disable, a scale-down) before a refused terminal call marks its error, so a replacement's `replacedDeleteFailureVerdict` reads `'unconfirmed'` and a rollback never re-adopts the stripped survivor (#4946). Mark after a strip whose failure propagates, before one whose failure is swallowed. A LEAF.
+- **delete-started.ts** - `markDeleteStarted`: a `delete()` that changed the resource (a detach, a disable) before a refused terminal call marks its error, so a replacement's `replacedDeleteFailureVerdict` reads `'unconfirmed'` and a rollback never re-adopts the stripped survivor (#4946). Mark after a strip whose failure propagates, before one whose failure is swallowed. A LEAF.
 
-- **ec2-instance-state.ts** - `isSettledInstanceState(stateName)`: `pending` and NO state are unsettled, everything else is settled. Shared by the provider and the resolver's live arm. A LEAF.
+- **not-gone.ts** - `markNotGone`: a delete failure not the resource's own not-found; the already-deleted classifiers refuse it, retries untouched (#5228). A LEAF.
+
+- **ec2-instance-state.ts** - `isSettledInstanceState(stateName)`: only `pending` and NO state are unsettled. Shared by the provider and the resolver's live arm. A LEAF.
 
 - **changed-properties-consumers.ts** - `changedProperties` readers (#5112) whose readback returns the keys read get its NoEcho readback. A LEAF.
 

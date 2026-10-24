@@ -126,6 +126,7 @@ import {
 import type { ExportIndexStore } from '../../state/export-index-store.js';
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import { isWaitAbandonedError } from '../../provisioning/wait-abandoned.js';
+import { isMarkedNotGone } from '../../provisioning/not-gone.js';
 import { destroyStackRecordsView, withStackRecords } from '../../deployment/stack-records-scope.js';
 import {
   deleteJournaledOrphans,
@@ -2760,11 +2761,16 @@ async function destroyStackInRegion(
             // Reading it as "already deleted" is the same orphan class the note
             // above describes, arriving from cdkd having stopped WATCHING a
             // delete rather than from a refusal.
+            // `isMarkedNotGone` (go-to-k/cdkd#5228) is a provider's typed
+            // verdict that the failure is not its resource's not-found. It is
+            // apart from `isMarkedNonRetryable` so the retry loop above still
+            // retries a transient failure that carries a needle.
             if (
               !isInterruptedWaitError(error) &&
               !isFinalSnapshotError(error) &&
               !isMarkedNonRetryable(error) &&
               !isWaitAbandonedError(error) &&
+              !isMarkedNotGone(error) &&
               (msg.includes('does not exist') ||
                 msg.includes('not found') ||
                 msg.includes('No policy found') ||

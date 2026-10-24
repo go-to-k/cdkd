@@ -30,6 +30,7 @@ import { printingSecretsFor } from '../../../src/deployment/deploy-engine/maskin
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
+import { markNotGone } from '../../../src/provisioning/not-gone.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
@@ -343,6 +344,28 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
       // ...and the failure is the ABANDONMENT, re-thrown. The wrong behaviour
       // is the create proceeding and the failure being about the CREATE.
       expect(err!.message).toContain('stopped waiting for it');
+      expect(err!.message).not.toContain('is now gone');
+      expect(replProvider.create).not.toHaveBeenCalled();
+    });
+
+    it('REFUSES to read a not-gone-marked failure as "already gone" (go-to-k/cdkd#5228)', async () => {
+      // A provider's typed verdict that the failure is not its resource's
+      // not-found (another object's `*NotFound` class). The mark is apart from
+      // retryability, so it clears `isMarkedNonRetryable`, and the bare
+      // `NotFound` needle below would otherwise create a replacement beside a
+      // live old resource.
+      const notGone = markNotGone(
+        new Error('Failed to delete ECS service HandlePageNotFound: KeyNotFoundFault')
+      );
+      expect(notGone.message).toContain('NotFound');
+      expect(isMarkedNonRetryable(notGone)).toBe(false);
+      deleteRejection = () => notGone;
+
+      const err = await invokeExpectingFailure(makeEngine());
+
+      expect(err).not.toBeNull();
+      expect(deleteCalls).toEqual(['old-pid']);
+      expect(err!.message).toContain('KeyNotFoundFault');
       expect(err!.message).not.toContain('is now gone');
       expect(replProvider.create).not.toHaveBeenCalled();
     });

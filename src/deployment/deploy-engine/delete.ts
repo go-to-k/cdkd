@@ -6,6 +6,7 @@ import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js
 import { effectiveDeletionPolicy } from '../../provisioning/final-snapshot.js';
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import { isWaitAbandonedError } from '../../provisioning/wait-abandoned.js';
+import { isMarkedNotGone } from '../../provisioning/not-gone.js';
 import type { CloudFormationTemplate, ResourceDeleteResult } from '../../types/resource.js';
 import {
   type ResourceChange,
@@ -267,11 +268,15 @@ Drop the record with: ${dropCommand}`
     // riding `isMarkedNonRetryable`: a DELETE abandonment is
     // deliberately left RETRYABLE so the delete can be re-issued, so it
     // carries no non-retryable marker and would fall straight through to
-    // the substring match below.
+    // the substring match below. `isMarkedNotGone` (go-to-k/cdkd#5228) is
+    // a provider's typed verdict that this failure is not its resource's
+    // not-found, kept apart from retryability so the failure keeps its
+    // retries.
     if (
       !isInterruptedWaitError(deleteError) &&
       !isMarkedNonRetryable(deleteError) &&
       !isWaitAbandonedError(deleteError) &&
+      !isMarkedNotGone(deleteError) &&
       (msg.includes('does not exist') ||
         msg.includes('was not found') ||
         msg.includes('not found') ||

@@ -48,6 +48,7 @@ import {
   renderStatefulReason,
 } from '../../provisioning/stateful-types.js';
 import { isWaitAbandonedError } from '../../provisioning/wait-abandoned.js';
+import { isMarkedNotGone } from '../../provisioning/not-gone.js';
 import type {
   CloudFormationTemplate,
   ResourceCreateResult,
@@ -825,11 +826,13 @@ export async function updateInPlace(
             // This arm carried NO typed guard at all, unlike its two
             // siblings — so `isInterruptedWaitError` and
             // `isMarkedNonRetryable` join it here for the same reasons
-            // those siblings state.
+            // those siblings state, and `isMarkedNotGone` (a provider's
+            // typed "not this resource's not-found", go-to-k/cdkd#5228).
             if (
               !isWaitAbandonedError(deleteError) &&
               !isInterruptedWaitError(deleteError) &&
               !isMarkedNonRetryable(deleteError) &&
+              !isMarkedNotGone(deleteError) &&
               (deleteMsg.includes('does not exist') ||
                 deleteMsg.includes('not found') ||
                 deleteMsg.includes('NotFound'))

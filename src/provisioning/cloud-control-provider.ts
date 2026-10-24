@@ -56,12 +56,10 @@ import { getLogger } from '../utils/logger.js';
 import { AccountIdUnavailableError, ProvisioningError } from '../utils/error-handler.js';
 import {
   isAmbiguousCcHandlerErrorCode,
-  isRetryableTransientError,
   isThrottlingError,
   isTransientServerError,
   markNonRetryable,
   markRedactedCause,
-  retryClassificationText,
 } from '../deployment/retryable-errors.js';
 // The same sanitize-and-shell-quote treatment `replacement-protection-advice.ts`
 // gives the physical id it pastes into a command (issue #2669), for the request
@@ -104,6 +102,7 @@ import {
 import { isNonProvisionable } from './unsupported-types.js';
 import { slowCcOperationTimeoutMs } from './slow-cc-operation-timeouts.js';
 import { isWaitAbandonedError, markWaitAbandoned } from './wait-abandoned.js';
+import { markNotGone } from './not-gone.js';
 import type { Logger } from '../types/config.js';
 import type {
   CreateContext,
@@ -583,57 +582,35 @@ function isCcDeleteGoneError(error: unknown, volumePath: boolean): boolean {
 }
 
 /**
- * Mark a delete failure non-retryable when its message holds a phrase the
- * downstream already-deleted classifiers match (issue #5225):
+ * Mark a delete failure NOT GONE when its message holds a phrase the
+ * downstream already-deleted classifiers match (issues #5225, #5228):
  * `deploy-engine/delete.ts`, `deploy-engine/update-in-place.ts` and
  * `destroy-runner.ts`. `NotFound` covers `NotFoundException` and
  * `ResourceNotFoundException`; `not found` covers `was not found`. Those
- * classifiers check `isMarkedNonRetryable` before their substring test.
- * Without the mark, a failure that {@link isCcDeleteGoneError} kept would be
- * read as "already deleted" one level up, and the record dropped there.
+ * classifiers check `isMarkedNotGone` before their substring test. Without
+ * the mark, a failure that {@link isCcDeleteGoneError} kept would be read as
+ * "already deleted" one level up, and the record dropped there.
  *
- * An abandoned wait is left UNMARKED: it stays retryable so the delete can be
- * re-issued, and every downstream classifier refuses it by its own marker.
- * So is a failure that is transient for a reason OTHER than these phrases (a
- * throttle on a resource whose logical id spells `NotFound`): the mark would
- * cost it a retry that used to succeed. Once its retries run out, a
- * downstream classifier can still read its wording, as before this change.
- * The retry table is asked with the phrases cut out, because it lists
- * `does not exist` itself: asked whole, a `TypeNotFoundException` saying
- * "does not exist" would be retried and then dropped downstream.
+ * Retryability is untouched: a throttle on a resource whose logical id
+ * spells `NotFound`, or a `Policy Error: PrincipalNotFound` propagation race,
+ * keeps its retries and, once they run out, is still not read as gone. An
+ * abandoned wait carries its own marker, which every downstream classifier
+ * refuses, so it needs no second one.
  */
 function markNotGoneOnNeedle(error: unknown): unknown {
   if (!(error instanceof Error)) return error;
   const message = error.message;
   if (
     !isWaitAbandonedError(error) &&
-    !isRetryableTransientError(error, withoutNotGoneNeedles(retryClassificationText(error))) &&
     (message.includes('does not exist') ||
       message.includes('not found') ||
       message.includes('NotFound') ||
       message.includes('No policy found') ||
       message.includes('NoSuchEntity'))
   ) {
-    return markNonRetryable(error);
+    return markNotGone(error);
   }
   return error;
-}
-
-/**
- * `text` with every phrase {@link markNotGoneOnNeedle} matches cut out. The
- * SAME five phrases as that condition, kept literal there so
- * `wait-abandoned-guard-population.test.ts` governs it; a regex here, so this
- * helper is not a second already-deleted site.
- *
- * `PrincipalNotFound` is kept: the retry table's IAM-propagation pattern
- * `Policy Error: PrincipalNotFound` needs it to match, and that race clears
- * with time, so it must keep its retry.
- */
-function withoutNotGoneNeedles(text: string): string {
-  return text.replace(
-    /does not exist|not found|(?<!Principal)NotFound|No policy found|NoSuchEntity/g,
-    ' '
-  );
 }
 
 /**

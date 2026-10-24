@@ -24,6 +24,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generatedNameFor } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { markNotGone } from '../not-gone.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   IndeterminateGuard,
@@ -1229,10 +1230,11 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       // "already deleted": `EncryptionKeyNotFoundException` (the repository's
       // KMS key is gone) would drop the record of a repository that still
       // exists. Only `RepositoryDoesNotExistException` (above) means it is
-      // gone, and a missing key does not come back on a retry
-      // (go-to-k/cdkd#2319).
+      // gone (go-to-k/cdkd#2319). Marked not gone rather than non-retryable
+      // (go-to-k/cdkd#5228): whether a relayed AWS failure retries is the
+      // retry classifiers' call, and none of them matches this class.
       throw error instanceof Error && error.name.includes('NotFound')
-        ? markNonRetryable(thrown)
+        ? markNotGone(thrown)
         : thrown;
     }
 
