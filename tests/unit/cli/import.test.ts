@@ -8,6 +8,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
  * the PROMPT has to present as interactive; the refusal cases set it back.
  */
 import { setStdinIsTty } from '../../stdin-tty.js';
+import {
+  LEAK_BODY,
+  LEAK_BODY_BYTES,
+  expectLeakTokenOnlyAtDebug,
+  expectV8QuotesLeakToken,
+} from '../_json-parse-leak.js';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,11 +30,12 @@ import type { CfnStackResourceTree } from '../../../src/cli/commands/retire-cfn-
 const errorSpy = vi.hoisted(() => vi.fn());
 const infoSpy = vi.hoisted(() => vi.fn());
 const warnSpy = vi.hoisted(() => vi.fn());
+const debugSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
-    debug: vi.fn(),
+    debug: debugSpy,
     info: infoSpy,
     warn: warnSpy,
     error: errorSpy,
@@ -390,6 +397,7 @@ describe('cdkd import', () => {
     errorSpy.mockReset();
     infoSpy.mockReset();
     warnSpy.mockReset();
+    debugSpy.mockReset();
     stsSend.mockClear();
     // Restored EXPLICITLY rather than left to `mockClear`: the fallback-arm
     // case replaces the implementation with a rejection, and `mockClear` keeps
@@ -812,6 +820,48 @@ describe('cdkd import', () => {
     expect(details['plain']).toBe(exprPlain);
     expect(details['staged']).toBe(exprStaged);
     expect(JSON.stringify(state)).not.toContain(secretPlaintext);
+  });
+
+  it('names no byte of an unparseable nested-stack template in the refusal (issue #5254)', async () => {
+    expectV8QuotesLeakToken();
+    const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-5254-'));
+    try {
+      const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+      writeFileSync(childTemplatePath, LEAK_BODY);
+      const tmpl = template({
+        Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+      });
+      mockSynthesize.mockResolvedValue({
+        stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+      });
+      mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'p', attributes: {} })),
+      });
+      const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
+      mockGetCfnResourceTree.mockResolvedValue({
+        stackName: 'P',
+        physicalId: 'P',
+        resources: new Map([['Child', childArn]]),
+        nested: new Map([
+          [
+            'Child',
+            { stackName: childArn, physicalId: childArn, resources: new Map(), nested: new Map() },
+          ],
+        ]),
+      });
+
+      await expect(
+        runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation'])
+      ).rejects.toThrow();
+      expect(errorSpy.mock.calls.flat().map(String).join('\n')).toContain(
+        `Failed to parse nested-stack template for 'Child' at ${childTemplatePath}: ` +
+          `invalid JSON; ${LEAK_BODY_BYTES} byte(s) read`
+      );
+      expectLeakTokenOnlyAtDebug({ debug: debugSpy, info: infoSpy, warn: warnSpy, error: errorSpy });
+    } finally {
+      rmSync(tmpdirPath, { recursive: true, force: true });
+    }
   });
 
   it('leaves state untouched by the rewrite for nested-stack children (#1652)', async () => {
@@ -2918,6 +2968,20 @@ describe('cdkd import', () => {
       expect(errorSpy.mock.calls[0]?.[0]).toMatch(
         /Failed to parse --resource-mapping-inline as JSON/
       );
+    });
+
+    it('names no byte of malformed inline JSON in the refusal (issue #5254)', async () => {
+      expectV8QuotesLeakToken();
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', oneResource())] });
+      mockHasProvider.mockReturnValue(true);
+
+      await expect(
+        runImport(['import', '--app', 'x', '--resource-mapping-inline', LEAK_BODY, '--yes'])
+      ).rejects.toThrow();
+      expect(String(errorSpy.mock.calls[0]?.[0])).toContain(
+        `Failed to parse --resource-mapping-inline as JSON: invalid JSON; ${LEAK_BODY_BYTES} byte(s) read`
+      );
+      expectLeakTokenOnlyAtDebug({ debug: debugSpy, info: infoSpy, warn: warnSpy, error: errorSpy });
     });
 
     it('rejects inline JSON that is not an object (e.g. an array)', async () => {

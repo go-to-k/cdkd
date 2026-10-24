@@ -45,13 +45,21 @@ import {
   Document,
   Pair,
   Scalar,
+  YAMLError,
   YAMLMap,
   YAMLSeq,
-  parse as yamlParse,
+  parseDocument as yamlParseDocument,
   stringify as yamlStringify,
 } from 'yaml';
 import type { CollectionTag, ScalarTag } from 'yaml';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { safeMsg } from '../utils/display-safe.js';
+import {
+  describeJsonParseFailure,
+  parseFailureDebugDetail,
+  utf8ByteLength,
+} from '../utils/json-parse-failure.js';
+import { getLogger } from '../utils/logger.js';
 
 export type CfnTemplate = Record<string, unknown>;
 export type TemplateFormat = 'json' | 'yaml';
@@ -147,7 +155,7 @@ function buildCustomTags(): Array<ScalarTag | CollectionTag> {
       // validation error far from the source, so reject at parse time.
       const dot = value.indexOf('.');
       if (dot < 0) {
-        throw new Error(`!GetAtt requires '<LogicalId>.<Attribute>'; got '${value}'`);
+        throw new Error(`${GETATT_SHAPE_REFUSAL}; got '${value}'`);
       }
       return { 'Fn::GetAtt': [value.slice(0, dot), value.slice(dot + 1)] };
     },
@@ -200,6 +208,68 @@ function buildCustomTags(): Array<ScalarTag | CollectionTag> {
 const CUSTOM_TAGS = buildCustomTags();
 
 /**
+ * The reason cdkd's own `!GetAtt` resolver raises for a dot-less scalar. The
+ * `yaml` library reports it as a `TAG_RESOLVE_FAILED` error whose message
+ * starts with this reason, and {@link describeYamlFinding} keeps only this
+ * fixed text, never the scalar.
+ */
+const GETATT_SHAPE_REFUSAL = "!GetAtt requires '<LogicalId>.<Attribute>'";
+
+/**
+ * The `yaml` library's one fixed-text `ReferenceError` (`toJS`'s alias
+ * expansion cap). It names no source token, so it is kept as the reason.
+ */
+const YAML_ALIAS_EXHAUSTION = 'Excessive alias count indicates a resource exhaustion attack';
+
+/**
+ * A `yaml` error or warning WITHOUT the template text it quotes (issue
+ * [#5254](https://github.com/go-to-k/cdkd/issues/5254)). The library builds a
+ * `YAMLError`'s message as `<reason> at line L, column C:` plus a code frame
+ * of the offending source lines, and some reasons interpolate a source token
+ * too (`Not a YAML token: <token>`, `Block scalar header includes extra
+ * characters: <header>`, `Invalid escape sequence <seq>`), so the rendering is
+ * the error CODE, a fixed enum, and the position. cdkd's own `!GetAtt` refusal
+ * keeps its fixed reason, never the scalar it refused. A non-`YAMLError` (an
+ * unresolved alias is a `ReferenceError` naming the alias) renders as its
+ * class name, except the library's fixed alias-exhaustion text.
+ */
+function describeYamlFinding(err: unknown): string {
+  if (err instanceof YAMLError) {
+    const at = err.linePos?.[0];
+    const where = at ? ` at line ${at.line}, column ${at.col}` : '';
+    if (err.code === 'TAG_RESOLVE_FAILED' && err.message.startsWith(GETATT_SHAPE_REFUSAL)) {
+      return `${GETATT_SHAPE_REFUSAL}${where}`;
+    }
+    return `${err.name} ${err.code}${where}`;
+  }
+  if (err instanceof Error) {
+    return err.message === YAML_ALIAS_EXHAUSTION
+      ? `${err.name}: ${YAML_ALIAS_EXHAUSTION}`
+      : err.name || 'Error';
+  }
+  return describeAwsFailure(err).detail;
+}
+
+/**
+ * `yaml`'s `parse`, minus its `process.emitWarning`: a `YAMLWarning` (an
+ * unknown tag, an unknown directive) carries a code frame of the template, and
+ * `parse` prints it to stderr at default verbosity. Here each warning is a
+ * `warn` line rendered by {@link describeYamlFinding}, with the full text at
+ * `debug`; errors throw `doc.errors[0]` exactly as `parse` does (issue
+ * [#5254](https://github.com/go-to-k/cdkd/issues/5254)).
+ */
+function parseYamlTemplate(body: string): unknown {
+  const doc = yamlParseDocument(body, { customTags: CUSTOM_TAGS });
+  const logger = getLogger();
+  for (const warning of doc.warnings) {
+    logger.debug(safeMsg`Template YAML warning: ${parseFailureDebugDetail(warning)}`);
+    logger.warn(safeMsg`Template YAML warning: ${describeYamlFinding(warning)}`);
+  }
+  if (doc.errors.length > 0) throw doc.errors[0];
+  return doc.toJS();
+}
+
+/**
  * Parse a CFn template string. JSON or YAML, auto-detected.
  *
  * @throws Error with a clear message when the input is empty, malformed,
@@ -216,13 +286,20 @@ export function parseCfnTemplate(text: string): CfnTemplate {
     try {
       parsed = JSON.parse(body);
     } catch (err) {
-      throw new Error(`Template is not valid JSON. Cause: ${describeAwsFailure(err).detail}`);
+      // V8's `SyntaxError` quotes a window of the template, which can hold a
+      // plaintext value, so the message names only the failure's offset and
+      // size; V8's text goes to `debug` only (issue #5254).
+      getLogger().debug(safeMsg`Template failed to parse as JSON: ${parseFailureDebugDetail(err)}`);
+      throw new Error(
+        `Template is not valid JSON. Cause: ${describeJsonParseFailure(err, utf8ByteLength(body))}`
+      );
     }
   } else {
     try {
-      parsed = yamlParse(body, { customTags: CUSTOM_TAGS });
+      parsed = parseYamlTemplate(body);
     } catch (err) {
-      throw new Error(`Template is not valid YAML. Cause: ${describeAwsFailure(err).detail}`);
+      getLogger().debug(safeMsg`Template failed to parse as YAML: ${parseFailureDebugDetail(err)}`);
+      throw new Error(`Template is not valid YAML. Cause: ${describeYamlFinding(err)}`);
     }
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {

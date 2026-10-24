@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { isCfnTemplateAssetPath } from './asset-manifest-loader.js';
+import { isCfnTemplateAssetPath, parseAssetManifestBody } from './asset-manifest-loader.js';
 import { FileAssetPublisher } from './file-asset-publisher.js';
 import { DockerAssetPublisher } from './docker-asset-publisher.js';
 import {
@@ -123,7 +123,7 @@ export class AssetPublisher {
     }
   ): string[] {
     const content = readFileSync(manifestPath, 'utf-8');
-    const manifest = JSON.parse(content) as AssetManifest;
+    const manifest = parseAssetManifestBody(content, manifestPath);
     const cdkOutputDir = manifestPath.replace(/\/[^/]+$/, '');
     const assetOutdir = options.assetOutdir ?? cdkOutputDir;
     const prefix = options.nodePrefix || '';

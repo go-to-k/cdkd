@@ -4,7 +4,15 @@ import { S3Client, S3ServiceException, NoSuchKey } from '@aws-sdk/client-s3';
 import { LockManager, abandonedRunHorizon } from '../../../src/state/lock-manager.js';
 import type { LockInfo } from '../../../src/types/state.js';
 import type { StateBackendConfig } from '../../../src/types/config.js';
-import { LockError } from '../../../src/utils/error-handler.js';
+import { LockError, formatError } from '../../../src/utils/error-handler.js';
+import {
+  LEAK_BODY,
+  LEAK_BODY_BYTES,
+  LEAK_TOKEN,
+  causeChainText,
+  expectLeakTokenOnlyAtDebug,
+  expectV8QuotesLeakToken,
+} from '../_json-parse-leak.js';
 
 // Mock the S3Client
 // The stores' standard-shaped client doubles (config.region/credentials
@@ -609,6 +617,7 @@ describe('LockManager', () => {
         },
       });
 
+      childLoggerMock.debug.mockClear();
       const caught = await lockManager
         .getLockInfo('test-stack', 'us-east-1')
         .catch((e: unknown) => e);
@@ -616,10 +625,37 @@ describe('LockManager', () => {
 
       expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
       expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
-      // Not vacuous: it is still the lock-read failure carrying the parser's
-      // own words, flattened rather than dropped.
+      // Issue #5254: the message quotes none of the body at all now.
       expect(message).toContain('Failed to get lock info');
-      expect(message).toContain('PhysicalID');
+      expect(message).not.toContain('PhysicalID');
+      // V8's text, window included, moved to `debug`, and THAT line is where
+      // the #3003 guard now has to hold. `PhysicalID` can only have come FROM
+      // the body, so the line is not vacuous.
+      const line = childLoggerMock.debug.mock.calls
+        .map((c: unknown[]) => String(c[0]))
+        .find((m: string) => m.startsWith('Lock file for stack test-stack failed to parse:'));
+      expect(line).toContain('PhysicalID');
+      expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+    });
+
+    it('names no byte of an unparseable lock body in the refusal, its cause chain or warn (issue #5254)', async () => {
+      expectV8QuotesLeakToken();
+      for (const fn of Object.values(childLoggerMock)) fn.mockClear();
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve(LEAK_BODY) },
+      });
+
+      const caught = await lockManager
+        .getLockInfo('test-stack', 'us-east-1')
+        .catch((e: unknown) => e);
+
+      expect(caught).toBeInstanceOf(LockError);
+      expect((caught as Error).message).toBe(
+        `Failed to get lock info for stack test-stack: invalid JSON; ${LEAK_BODY_BYTES} byte(s) read`
+      );
+      expect(causeChainText(caught)).not.toContain(LEAK_TOKEN);
+      expect(formatError(caught)).not.toContain(LEAK_TOKEN);
+      expectLeakTokenOnlyAtDebug(childLoggerMock);
     });
 
     it('sanitizes the has-no-body refusal, which the catch rethrows UNCHANGED (issue #3003)', async () => {

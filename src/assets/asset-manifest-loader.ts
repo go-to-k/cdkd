@@ -1,7 +1,7 @@
 import { readFile } from 'fs/promises';
 import { isAbsolute, resolve } from 'path';
 import type { AssetManifest, DockerImageAsset, FileAsset } from '../types/assets.js';
-import { displayStackName } from '../utils/display-safe.js';
+import { displayStackName, safeMsg } from '../utils/display-safe.js';
 import {
   absoluteAssemblyPathEscape,
   displayAssemblyPath,
@@ -12,6 +12,11 @@ import {
 import { warnAbsoluteAssetPath, warnWholeAssemblyAsSource } from './absolute-asset-path-warning.js';
 import { getLogger } from '../utils/logger.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import {
+  describeJsonParseFailure,
+  parseFailureDebugDetail,
+  utf8ByteLength,
+} from '../utils/json-parse-failure.js';
 
 /**
  * The two values that decide what {@link resolveFileAssetSourcePath} does, as
@@ -220,6 +225,29 @@ export function isCfnTemplateAssetPath(sourcePath: string): boolean {
 }
 
 /**
+ * `JSON.parse` of an asset manifest body for a caller with no catch of its own
+ * (`AssetPublisher.addAssetsToGraph`, `loadPublishableAssetManifest`). V8's
+ * `SyntaxError` quotes a window of the manifest, so a failure is rethrown
+ * naming only its offset and size, with no cause, and V8's text goes to
+ * `debug` only (issue [#5254](https://github.com/go-to-k/cdkd/issues/5254)).
+ */
+export function parseAssetManifestBody(content: string, manifestPath: string): AssetManifest {
+  try {
+    return JSON.parse(content) as AssetManifest;
+  } catch (err) {
+    getLogger()
+      .child('AssetManifestLoader')
+      .debug(
+        safeMsg`Asset manifest ${manifestPath} failed to parse: ${parseFailureDebugDetail(err)}`
+      );
+    throw new Error(
+      `Failed to load asset manifest from ${manifestPath}: ` +
+        `${describeJsonParseFailure(err, utf8ByteLength(content))}`
+    );
+  }
+}
+
+/**
  * Asset manifest loader
  *
  * Loads and parses CDK asset manifests from the CDK output directory
@@ -248,9 +276,10 @@ export class AssetManifestLoader {
     }
     const manifestPath = resolved.path;
 
+    let content: string | undefined;
     try {
       this.logger.debug(`Loading asset manifest from: ${manifestPath}`);
-      const content = await readFile(manifestPath, 'utf-8');
+      content = await readFile(manifestPath, 'utf-8');
       const manifest = JSON.parse(content) as AssetManifest;
 
       this.logger.debug(
@@ -265,6 +294,20 @@ export class AssetManifestLoader {
         return null;
       }
 
+      // A `JSON.parse` failure: V8's `SyntaxError` quotes a window of the
+      // manifest, so the message names only the failure's offset and size, and
+      // V8's text goes to `debug` only (issue #5254; `describeJsonParseFailure`
+      // owns the rule). `content` is set exactly when the read succeeded, so a
+      // `SyntaxError` here is the parse's.
+      if (error instanceof SyntaxError && content !== undefined) {
+        this.logger.debug(
+          safeMsg`Asset manifest ${manifestPath} failed to parse: ${parseFailureDebugDetail(error)}`
+        );
+        throw new Error(
+          `Failed to load asset manifest from ${manifestPath}: ` +
+            `${describeJsonParseFailure(error, utf8ByteLength(content))}`
+        );
+      }
       throw new Error(
         `Failed to load asset manifest from ${manifestPath}: ${describeAwsFailure(error).detail}`
       );

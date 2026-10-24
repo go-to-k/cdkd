@@ -377,15 +377,75 @@ describe('parseCfnTemplate — dot-less !GetAtt rejection', () => {
     );
   });
 
-  it('error message names the offending scalar', () => {
+  it('error message locates the offending scalar by line and column, without quoting it (issue #5254)', () => {
     let thrown: Error | undefined;
     try {
-      parseCfnTemplate('X: !GetAtt MyResource\n');
+      parseCfnTemplate('Y: 1\nX: !GetAtt MyResource\n');
     } catch (err) {
       thrown = err as Error;
     }
     expect(thrown).toBeDefined();
-    expect(thrown!.message).toContain("'MyResource'");
+    expect(thrown!.message).toContain('at line 2, column 4');
+    expect(thrown!.message).not.toContain('MyResource');
+  });
+});
+
+describe('parseCfnTemplate — YAML acceptance through parseDocument (issue #5254)', () => {
+  it('reads anchors, merge keys, 1.1 booleans, null, hex, dates and block scalars as before', () => {
+    // A literal expectation, so the switch from `yaml.parse` to
+    // `parseDocument().toJS()` cannot change what a template means.
+    const body = [
+      '%YAML 1.1',
+      '---',
+      'Base: &base',
+      '  Runtime: nodejs20.x',
+      '  Memory: 128',
+      'Fn:',
+      '  <<: *base',
+      '  Memory: 256',
+      'Flags: [yes, on, true, no, off]',
+      'Nothing: ~',
+      'Hex: 0x1F',
+      'When: 2026-10-24',
+      'Block: |',
+      '  line one',
+      '  line two',
+      'Folded: >',
+      '  folded',
+      '  text',
+      '',
+    ].join('\n');
+    expect(parseCfnTemplate(body)).toEqual({
+      Base: { Runtime: 'nodejs20.x', Memory: 128 },
+      Fn: { Runtime: 'nodejs20.x', Memory: 256 },
+      Flags: [true, true, true, false, false],
+      Nothing: null,
+      Hex: 31,
+      When: new Date('2026-10-24T00:00:00.000Z'),
+      Block: 'line one\nline two\n',
+      Folded: 'folded text\n',
+    });
+  });
+});
+
+describe('parseCfnTemplate — YAML 1.2 acceptance without a directive (issue #5254)', () => {
+  it('keeps `<<` as a plain key and 1.1 booleans as strings, as `yaml.parse` does', () => {
+    // The ordinary template: no `%YAML` directive, so the 1.2 core schema
+    // applies and neither merge keys nor `yes` / `on` booleans are special.
+    const body = [
+      'Base: &base',
+      '  Runtime: nodejs20.x',
+      'Fn:',
+      '  <<: *base',
+      '  Memory: 256',
+      'Flags: [yes, on, true, no, off]',
+      '',
+    ].join('\n');
+    expect(parseCfnTemplate(body)).toEqual({
+      Base: { Runtime: 'nodejs20.x' },
+      Fn: { '<<': { Runtime: 'nodejs20.x' }, Memory: 256 },
+      Flags: ['yes', 'on', true, 'no', 'off'],
+    });
   });
 });
 

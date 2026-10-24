@@ -21,6 +21,14 @@
  * interpolated value, and the ordinary cases pin the rendered bytes.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import {
+  LEAK_BODY,
+  LEAK_BODY_BYTES,
+  LEAK_TOKEN,
+  causeChainText,
+  expectLeakTokenOnlyAtDebug,
+  expectV8QuotesLeakToken,
+} from '../_json-parse-leak.js';
 
 const waitUntilChangeSetCreateCompleteMock = vi.hoisted(() => vi.fn());
 
@@ -479,10 +487,34 @@ describe('AWS and parser text that ECHOES the template back (#3479)', () => {
     );
     expect(message).toContain('CloudFormation returned a non-JSON Processed-stage');
     expect(message).toContain('Cause: ');
-    // The parse error carried the ESC through before this site was sanitized.
-    expect(message.includes(`${ESC}[2K`)).toBe(false);
-    expect(message).toContain('notjson  [2K forged');
+    // Issue #5254: the message quotes none of the body at all now.
+    expect(message).not.toContain('notjson');
     expect(hasForgingCharacter(message)).toBe(false);
+    // V8's text, window included, moved to `debug`, where the sanitization
+    // now has to hold. `notjson` can only have come FROM the body.
+    const line = debugLines().find((m) =>
+      m.startsWith('Processed-stage template body failed to parse:')
+    );
+    expect(line).toContain('notjson  [2K forged');
+    expect(line!.includes(`${ESC}[2K`)).toBe(false);
+    expect(hasForgingCharacter(line!)).toBe(false);
+  });
+
+  it('names no byte of the Processed-stage body in the message, its cause chain or warn (issue #5254)', async () => {
+    expectV8QuotesLeakToken();
+    const caught = await expandMacros(macroTemplate(['AWS::Serverless-2016-10-31']), {
+      ...OPTS,
+      cfnClient: buildCfnClient({
+        CreateChangeSet: { Id: 'cs-arn', StackId: 's-arn' },
+        GetTemplate: { TemplateBody: LEAK_BODY },
+      }),
+    }).catch((e: unknown) => e);
+    expect((caught as Error).name).toBe('MacroExpansionError');
+    expect((caught as Error).message).toMatch(
+      new RegExp(`Cause: invalid JSON; ${LEAK_BODY_BYTES} byte\\(s\\) read$`)
+    );
+    expect(causeChainText(caught)).not.toContain(LEAK_TOKEN);
+    expectLeakTokenOnlyAtDebug(loggerSpies);
   });
 
   it('leaves an ordinary parse failure readable', async () => {
@@ -496,7 +528,7 @@ describe('AWS and parser text that ECHOES the template back (#3479)', () => {
       })
     );
     expect(message).toContain('Cause: ');
-    expect(message).toContain('is not valid JSON');
+    expect(message).toMatch(/Cause: invalid JSON( at code-unit position \d+)?; \d+ byte\(s\) read$/);
   });
 });
 

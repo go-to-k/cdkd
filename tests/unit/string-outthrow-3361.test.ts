@@ -30,6 +30,12 @@ vi.mock('yaml', async (importOriginal) => {
     ...actual,
     parse: (...args: Parameters<typeof actual.parse>) =>
       yamlParseOverride.fn !== undefined ? yamlParseOverride.fn() : actual.parse(...args),
+    // `parseCfnTemplate` parses through `parseDocument` since #5254, which
+    // stopped `parse`'s `process.emitWarning` printing a code frame.
+    parseDocument: (...args: Parameters<typeof actual.parseDocument>) =>
+      yamlParseOverride.fn !== undefined
+        ? yamlParseOverride.fn()
+        : actual.parseDocument(...args),
   };
 });
 
@@ -137,7 +143,10 @@ describe('src/synthesis (#3361)', () => {
     );
     expect((err as Error).name).toBe('MacroExpansionError');
     expect((err as Error).message).toContain('non-JSON Processed-stage template body');
-    expect((err as Error).message).toContain(PLACEHOLDER);
+    // The size-only form since #5254, which never renders the thrown value.
+    expect((err as Error).message).toContain(
+      `Cause: invalid JSON; ${Buffer.byteLength(MACRO_BODY, 'utf8')} byte(s) read`
+    );
     expect(stub.hits()).toBe(1);
   });
 
@@ -281,7 +290,8 @@ describe('src/cli/yaml-cfn and retire-cfn-stack (#3361)', () => {
     const body = '{"Resources":{},"_3361":"yaml-cfn"}';
     const stub = jsonParseThrowsOn(body);
     expect(() => parseCfnTemplate(body)).toThrow(
-      `Template is not valid JSON. Cause: ${PLACEHOLDER}`
+      // The size-only form since #5254, which never renders the thrown value.
+      `Template is not valid JSON. Cause: invalid JSON; ${Buffer.byteLength(body, 'utf8')} byte(s) read`
     );
     expect(stub.hits()).toBe(1);
   });
@@ -301,7 +311,7 @@ describe('src/cli/yaml-cfn and retire-cfn-stack (#3361)', () => {
     const body = '{"Resources":{},"_3361":"retire"}';
     const stub = jsonParseThrowsOn(body);
     expect(() => injectRetainPolicies(body, 'Legacy')).toThrow(
-      `Cause: Template is not valid JSON. Cause: ${PLACEHOLDER}`
+      `Cause: Template is not valid JSON. Cause: invalid JSON; ${Buffer.byteLength(body, 'utf8')} byte(s) read`
     );
     expect(stub.hits()).toBe(1);
   });

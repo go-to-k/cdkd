@@ -26,6 +26,7 @@ import {
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { parseFailureDebugDetail } from '../../utils/json-parse-failure.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { refusedBaselineRemedy } from './refused-baseline-remedy.js';
 import {
@@ -4944,10 +4945,25 @@ async function refreshObservedForStack(
             refreshed++;
           } catch (err) {
             failed++;
+            // A `SyntaxError` here is almost always a parse failure of a body a
+            // provider read back (`CloudControlProvider.readCurrentState`
+            // parses the resource model), and V8 quotes a window of that body,
+            // which can hold a plaintext value (issue #5254). Only its class is
+            // printed, for any `SyntaxError`, failing safe; its text goes to
+            // `debug`.
+            if (err instanceof SyntaxError) {
+              logger.debug(
+                safeMsg`readCurrentState parse failure for ${displayIdent(logicalId)}: ${parseFailureDebugDetail(err)}`
+              );
+            }
+            const detail =
+              err instanceof SyntaxError
+                ? 'SyntaxError (its text is withheld: a parse error quotes the body it read)'
+                : describeAwsFailure(err).detail;
             logger.warn(
               safeMsg`  ✗ ${displayStackName(stackName)}/${displayIdent(logicalId)} ` +
                 safeMsg`(${displayIdent(resource.resourceType)}): ` +
-                safeMsg`readCurrentState failed — ${describeAwsFailure(err).detail}`
+                safeMsg`readCurrentState failed — ${detail}`
             );
           }
         })

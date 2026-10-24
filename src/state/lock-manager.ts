@@ -17,6 +17,11 @@ import {
   STACK_REF_MAX_CODE_POINTS,
 } from '../utils/display-safe.js';
 import { LockError } from '../utils/error-handler.js';
+import {
+  describeJsonParseFailure,
+  parseFailureDebugDetail,
+  utf8ByteLength,
+} from '../utils/json-parse-failure.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import { purgeNoncurrentKeyVersions } from './s3-noncurrent-version-purge.js';
 import {
@@ -709,7 +714,23 @@ export class LockManager {
       // pre-existing behaviour: `isLocked` is `lockInfo !== null`, so an empty
       // object would report the stack as LOCKED and make `state orphan` refuse
       // to remove a record whose lock.json is `null`.
-      const raw: unknown = JSON.parse(bodyString);
+      let raw: unknown;
+      try {
+        raw = JSON.parse(bodyString);
+      } catch (parseError) {
+        // V8's `SyntaxError` quotes a window of `lock.json`, so the refusal
+        // names only the failure's offset and size and attaches NO cause,
+        // which `formatError` would print on its `Caused by:` line (issue
+        // #5254). No reader keys on this cause. A `LockError` is rethrown
+        // unchanged by the catch below. V8's text goes to `debug` only.
+        this.logger.debug(
+          safeMsg`Lock file for stack ${shownStack} failed to parse: ${parseFailureDebugDetail(parseError)}`
+        );
+        throw new LockError(
+          `Failed to get lock info for stack ${shownStack}: ` +
+            `${describeJsonParseFailure(parseError, utf8ByteLength(bodyString))}`
+        );
+      }
       if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
         this.logger.debug(`Lock file for stack ${shownStack} is not an object; treating as absent`);
         return null;

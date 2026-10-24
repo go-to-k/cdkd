@@ -30,7 +30,8 @@ it would invent a line that reads exactly like a real row.
   `cdkd state show` sees them, and `Version` is refused where the state record
   is read unless it is a known schema number or absent.
 - The refusals these views raise are held to the same rule. An unreadable
-  `state.json` or `lock.json` is quoted back by the JSON parser, an ambiguous
+  `state.json` or `lock.json` is reported by its size and where parsing
+  stopped, never its contents, an ambiguous
   stack has its regions listed, and a nested-stack walk names the child it
   could not find. The diagnostic reports the bad value flattened onto one
   line. Anything that strips to nothing is reported as an explicit

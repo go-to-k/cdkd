@@ -17,6 +17,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
  * legacy refusals) are pinned in `state-ref-display-boundary.test.ts` and in
  * the `state resources` / `state show` / `state refresh-observed` suites.
  */
+import {
+  LEAK_BODY,
+  expectLeakTokenOnlyAtDebug,
+  expectV8QuotesLeakToken,
+} from '../_json-parse-leak.js';
 import { setStdinIsTty } from '../../stdin-tty.js';
 import {
   PASTE_PAYLOADS,
@@ -29,11 +34,12 @@ import {
 const infoSpy = vi.hoisted(() => vi.fn());
 const warnSpy = vi.hoisted(() => vi.fn());
 const errorSpy = vi.hoisted(() => vi.fn());
+const debugSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
-    debug: vi.fn(),
+    debug: debugSpy,
     info: infoSpy,
     warn: warnSpy,
     error: errorSpy,
@@ -235,6 +241,7 @@ describe('the command sites (go-to-k/cdkd#3179, go-to-k/cdkd#3027)', () => {
     infoSpy.mockReset();
     warnSpy.mockReset();
     errorSpy.mockReset();
+    debugSpy.mockReset();
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('process.exit-mock');
     }) as never);
@@ -561,6 +568,33 @@ describe('the command sites (go-to-k/cdkd#3179, go-to-k/cdkd#3027)', () => {
       expect(lines(warnSpy)).toContain(
         '  ✗ S/L ("AWS::S3::Bucket) (x"): readCurrentState failed — boom'
       );
+    });
+
+    it('prints only the class of a readback parse failure, never its body window (issue #5254)', async () => {
+      // `CloudControlProvider.readCurrentState` parses the resource model, and
+      // V8's `SyntaxError` quotes a window of it, which can be a plaintext
+      // property value.
+      expectV8QuotesLeakToken();
+      let v8: unknown;
+      try {
+        JSON.parse(LEAK_BODY);
+      } catch (e) {
+        v8 = e;
+      }
+      mockListStacks.mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue({
+        state: {
+          resources: { L: { resourceType: 'AWS::S3::Bucket', physicalId: 'p', properties: {} } },
+        },
+        etag: 'e',
+      });
+      mockReadCurrentState.mockRejectedValue(v8);
+      await runState(['refresh-observed', '--all', '--yes']);
+      expect(lines(warnSpy)).toContain(
+        '  ✗ S/L (AWS::S3::Bucket): readCurrentState failed — SyntaxError (its text is ' +
+          'withheld: a parse error quotes the body it read)'
+      );
+      expectLeakTokenOnlyAtDebug({ debug: debugSpy, info: infoSpy, warn: warnSpy, error: errorSpy });
     });
 
     it('bounds the record on every per-stack line', async () => {

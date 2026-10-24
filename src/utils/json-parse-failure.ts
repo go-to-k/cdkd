@@ -33,6 +33,7 @@
  * `Caused by:` line, and the CLI's last-resort handler inspects the chain.
  */
 import { describeAwsFailure } from './aws-failure-text.js';
+import { displaySafe, UNRENDERABLE } from './display-safe.js';
 
 export function describeJsonParseFailure(err: unknown, bytes: number): string {
   const raw = describeAwsFailure(err).detail;
@@ -56,4 +57,46 @@ export function describeJsonParseFailure(err: unknown, bytes: number): string {
  */
 export function utf8ByteLength(body: string): number {
   return Buffer.byteLength(body, 'utf8');
+}
+
+/**
+ * A parser's own text for a parse failure (V8's `JSON.parse`, or the `yaml`
+ * library's), for a `debug` line ONLY (issue
+ * [#5254](https://github.com/go-to-k/cdkd/issues/5254)). It still quotes the
+ * body; the ASCII allowlist only keeps a body-supplied newline or escape from
+ * forging a line (issue #3003).
+ */
+export function parseFailureDebugDetail(err: unknown): string {
+  return displaySafe(describeAwsFailure(err).detail, { asciiOnly: true }) || UNRENDERABLE;
+}
+
+/**
+ * A snippet-free STAND-IN for a `JSON.parse` failure, for a site whose readers
+ * need a `cause` (issue [#5254](https://github.com/go-to-k/cdkd/issues/5254)).
+ * It is a real `SyntaxError`, so an `instanceof SyntaxError` or `name` reader
+ * classifies it as before, and its message is {@link describeJsonParseFailure}.
+ */
+export function jsonParseFailureStandIn(err: unknown, bytes: number): SyntaxError {
+  return new SyntaxError(describeJsonParseFailure(err, bytes));
+}
+
+/**
+ * `JSON.parse(body)` for a caller whose own catch interpolates the thrown
+ * message (issue [#5254](https://github.com/go-to-k/cdkd/issues/5254)): a
+ * failure is rethrown as `<subject> is not valid JSON: <offset and size>` with
+ * no cause, and V8's text goes to `debug`, the caller's logger, only.
+ */
+export function parseJsonNamingNoBody(
+  body: string,
+  subject: string,
+  debug: (line: string) => void
+): unknown {
+  try {
+    return JSON.parse(body);
+  } catch (err) {
+    debug(`${subject} failed to parse: ${parseFailureDebugDetail(err)}`);
+    throw new Error(
+      `${subject} is not valid JSON: ${describeJsonParseFailure(err, utf8ByteLength(body))}`
+    );
+  }
 }

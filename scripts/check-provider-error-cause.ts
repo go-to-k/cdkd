@@ -311,6 +311,33 @@ export const EXEMPTIONS: readonly CauseExemption[] = [
       '`SyntaxError` quotes a window of that body, which a `Caused by:` line would print (go-to-k/cdkd#5247)',
   },
   {
+    file: 'state/lock-manager.ts',
+    errorClass: 'LockError',
+    within: 'getLockRecord',
+    count: 1,
+    reason:
+      "a `JSON.parse` failure of `lock.json`, not an AWS error: no classifier reads it, and V8's " +
+      '`SyntaxError` quotes a window of that body, which a `Caused by:` line would print (go-to-k/cdkd#5254)',
+  },
+  {
+    file: 'synthesis/assembly-reader.ts',
+    errorClass: 'SynthesisError',
+    within: 'readManifest',
+    count: 1,
+    reason:
+      "a `JSON.parse` failure of `manifest.json`, not an AWS error: its cause is a snippet-free " +
+      "`SyntaxError` stand-in, because V8's own quotes a window of the file (go-to-k/cdkd#5254)",
+  },
+  {
+    file: 'synthesis/macro-expander.ts',
+    errorClass: 'MacroExpansionError',
+    within: 'parseTemplateBody',
+    count: 1,
+    reason:
+      "a `JSON.parse` failure of the Processed-stage template, not an AWS error: no classifier reads " +
+      "it, and V8's `SyntaxError` quotes a window of the template (go-to-k/cdkd#5254)",
+  },
+  {
     file: 'local/docker-image-builder.ts',
     errorClass: 'LocalInvokeBuildError',
     within: 'buildContainerImage',

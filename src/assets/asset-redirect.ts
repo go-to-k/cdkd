@@ -9,7 +9,7 @@ import type {
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import { AssetModeResolver, type BootstrapMarker } from './asset-storage.js';
-import { isCfnTemplateAssetPath } from './asset-manifest-loader.js';
+import { isCfnTemplateAssetPath, parseAssetManifestBody } from './asset-manifest-loader.js';
 import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { escapeRegExp } from '../utils/regexp.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
@@ -534,7 +534,7 @@ export function loadPublishableAssetManifest(manifestPath: string): AssetManifes
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
   }
-  const manifest = JSON.parse(raw) as AssetManifest;
+  const manifest = parseAssetManifestBody(raw, manifestPath);
   const publishableFiles = Object.values(manifest.files ?? {}).filter(
     (asset) => !isCfnTemplateAssetPath(asset.source.path)
   ).length;

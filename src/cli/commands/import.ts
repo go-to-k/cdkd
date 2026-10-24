@@ -19,6 +19,11 @@ import {
 import { withSharedDrainBudget } from '../../deployment/drain-budget.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import {
+  describeJsonParseFailure,
+  parseFailureDebugDetail,
+  utf8ByteLength,
+} from '../../utils/json-parse-failure.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
@@ -2071,7 +2076,13 @@ function parseMappingJson(raw: string, source: string): Record<string, string> {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    throw new Error(`Failed to parse ${source} as JSON: ` + describeAwsFailure(err).detail);
+    // V8's `SyntaxError` quotes a window of the input, so the message names
+    // only the failure's offset and size (issue #5254); V8's text goes to
+    // `debug` only.
+    getLogger().debug(safeMsg`${source} failed to parse: ${parseFailureDebugDetail(err)}`);
+    throw new Error(
+      `Failed to parse ${source} as JSON: ` + describeJsonParseFailure(err, utf8ByteLength(raw))
+    );
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error(`${source} must be a JSON object {logicalId: physicalId}`);
@@ -4848,9 +4859,15 @@ function readNestedChildTemplate(
   try {
     return JSON.parse(raw) as CloudFormationTemplate;
   } catch (err) {
+    // V8's `SyntaxError` quotes a window of the template, which can hold a
+    // plaintext value, so the message names only the failure's offset and
+    // size (issue #5254); V8's text goes to `debug` only.
+    getLogger().debug(
+      safeMsg`Nested-stack template for '${childLogicalId}' failed to parse: ${parseFailureDebugDetail(err)}`
+    );
     throw new Error(
       `Failed to parse nested-stack template for '${childLogicalId}' at ` +
-        `${templatePath}: ${describeAwsFailure(err).detail}`
+        `${templatePath}: ${describeJsonParseFailure(err, utf8ByteLength(raw))}`
     );
   }
 }

@@ -24,6 +24,11 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
+import {
+  describeJsonParseFailure,
+  parseFailureDebugDetail,
+  utf8ByteLength,
+} from '../../utils/json-parse-failure.js';
 import { describeLocalAwsFailureForWarn, redactedAwsCause } from '../../utils/local-aws-failure.js';
 import { applyRoleArnForLocal } from '../../local/local-role-arn.js';
 import {
@@ -3138,7 +3143,7 @@ function getTemplateEnv(resource: {
 }
 
 /** Read the SAM-shape `--env-vars` JSON file. */
-function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | undefined {
+export function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | undefined {
   if (!filePath) return undefined;
   let raw: string;
   try {
@@ -3152,8 +3157,12 @@ function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | u
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
+    // V8's `SyntaxError` quotes a window of the file, which holds env values
+    // (often secrets), so the message names only the failure's offset and
+    // size; V8's text goes to `debug` only (issue #5254).
+    getLogger().debug(safeMsg`--env-vars file failed to parse: ${parseFailureDebugDetail(err)}`);
     throw new Error(
-      `Failed to parse --env-vars file '${filePath}' as JSON: ${describeAwsFailure(err).detail}`
+      `Failed to parse --env-vars file '${filePath}' as JSON: ${describeJsonParseFailure(err, utf8ByteLength(raw))}`
     );
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
