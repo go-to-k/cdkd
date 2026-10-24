@@ -448,20 +448,20 @@ while IFS= read -r event_key || [ -n "${event_key}" ]; do
     | jq -c --arg l "${NLB_LOGICAL_ID}" 'select(.eventType == "RESOURCE_FAILED" and .logicalId == $l)' >> "${FAILED_4B}"
 done <<< "${NEW_EVENT_KEYS_4B}"
 NLB_FAILED_MSG="$(jq -r '.error.message // empty' "${FAILED_4B}" | tail -n 1)"
-# Never print this account's id on a FAIL.
-NLB_FAILED_SHOWN="$(printf '%s' "${NLB_FAILED_MSG}" | sed -e "s/${ACCOUNT_ID}/<account>/g")"
+# A FAIL prints only the cdkd-authored prefix and the length: the rest may be
+# AWS's text, naming accounts, roles or sessions.
 if [ -z "${NLB_FAILED_MSG}" ]; then
   echo "[verify] FAIL: step 4b's destroy persisted no RESOURCE_FAILED event with an error message for ${NLB_LOGICAL_ID} (the #2319 checks below would pass for free)"
   exit 1
 fi
 if ! printf '%s' "${NLB_FAILED_MSG}" \
     | grep -qE "Failed to delete LoadBalancer ${NLB_LOGICAL_ID}: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
-  echo "[verify] FAIL: the NLB's RESOURCE_FAILED message is not 'Failed to delete LoadBalancer <id>: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed: ${NLB_FAILED_SHOWN}"
+  echo "[verify] FAIL: the NLB's RESOURCE_FAILED message is not 'Failed to delete LoadBalancer <id>: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed prefix: '${NLB_FAILED_MSG%%:*}', ${#NLB_FAILED_MSG} chars"
   exit 1
 fi
 # Every FAILED event this destroy wrote for the NLB, not only the last.
 if grep -qF "${ACCOUNT_ID}" "${FAILED_4B}"; then
-  echo "[verify] FAIL: the NLB's RESOURCE_FAILED message quotes AWS's text, with this account's id (#2319); observed: ${NLB_FAILED_SHOWN}"
+  echo "[verify] FAIL: the NLB's RESOURCE_FAILED message quotes AWS's text, with this account's id (#2319); observed prefix: '${NLB_FAILED_MSG%%:*}', ${#NLB_FAILED_MSG} chars"
   exit 1
 fi
 rm -f "${FAILED_4B}" "${EVENT_KEYS_4B}"

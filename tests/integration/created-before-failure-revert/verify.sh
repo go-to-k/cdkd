@@ -317,20 +317,20 @@ while IFS= read -r event_key || [ -n "${event_key}" ]; do
       >> "${LOG_DIR}/e1-failed-events.jsonl"
 done <<< "${E1_NEW_EVENT_KEYS}"
 E1_FAILED_MSG="$(jq -r '.error.message // empty' "${LOG_DIR}/e1-failed-events.jsonl" | tail -n 1)"
-# Never print this account's id on a FAIL.
-E1_FAILED_SHOWN="$(printf '%s' "${E1_FAILED_MSG}" | sed -e "s/${ACCOUNT_ID}/<account>/g")"
+# A FAIL prints only the cdkd-authored prefix and the length: the rest may be
+# AWS's text, naming accounts, roles or sessions.
 if [ -z "${E1_FAILED_MSG}" ]; then
   echo "[verify] FAIL: phase E1: the deploy persisted no RESOURCE_FAILED event with an error message for OrphanRepo (the #2319 checks below would pass for free)" >&2
   exit 1
 fi
 if ! printf '%s' "${E1_FAILED_MSG}" \
     | grep -qE "Failed to create ECR Repository OrphanRepo: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
-  echo "[verify] FAIL: phase E1: OrphanRepo's RESOURCE_FAILED message is not 'Failed to create ECR Repository OrphanRepo: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed: ${E1_FAILED_SHOWN}" >&2
+  echo "[verify] FAIL: phase E1: OrphanRepo's RESOURCE_FAILED message is not 'Failed to create ECR Repository OrphanRepo: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed prefix: '${E1_FAILED_MSG%%:*}', ${#E1_FAILED_MSG} chars" >&2
   exit 1
 fi
 # Every FAILED event this deploy wrote for OrphanRepo, not only the last.
 if grep -qF "${ACCOUNT_ID}" "${LOG_DIR}/e1-failed-events.jsonl"; then
-  echo "[verify] FAIL: phase E1: OrphanRepo's RESOURCE_FAILED message quotes AWS's text, with this account's id (#2319); observed: ${E1_FAILED_SHOWN}" >&2
+  echo "[verify] FAIL: phase E1: OrphanRepo's RESOURCE_FAILED message quotes AWS's text, with this account's id (#2319); observed prefix: '${E1_FAILED_MSG%%:*}', ${#E1_FAILED_MSG} chars" >&2
   exit 1
 fi
 ECR_OP="$(journal_failed_op "${ECR_JOURNAL_KEY}" OrphanRepo)"
