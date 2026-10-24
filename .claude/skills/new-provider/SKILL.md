@@ -69,6 +69,7 @@ The user provides an AWS resource type like `AWS::SES::EmailIdentity`.
 6. **Register the provider**:
    - Re-export the class from `src/provisioning/provider-classes.ts` (`export { ServiceResourceProvider } from './providers/{service}-{resource}-provider.js';`) — never import it statically in `register-providers.ts` or anywhere else (#4521)
    - In `registerAllProviders()` (`src/provisioning/register-providers.ts`), add the class to the `const { ... } = classes` destructure and add `registry.register('AWS::Service::Resource', new ServiceResourceProvider())`
+   - Regenerate the Provider Coverage Report with `vp run audit:coverage:regenerate` (AWS credentials with `cloudformation:ListTypes`); it moves the type into Tier 1 and refreshes Tier 2 / Tier 3 from AWS
 
 7. **Create test file** at `tests/unit/provisioning/providers/{service}-{resource}-provider.test.ts`:
    - Mock the AWS SDK client

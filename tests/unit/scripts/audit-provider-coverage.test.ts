@@ -14,6 +14,7 @@ import {
   describeTypeWithRetry,
   isMainModule,
   loadCachedReport,
+  listProvisioningTypes,
   paginateListTypes,
   parseCliArgs,
   parseRegisteredTypes,
@@ -371,6 +372,49 @@ describe('assertReportIsComplete', () => {
   });
 });
 
+describe('listProvisioningTypes (go-to-k/cdkd#5214)', () => {
+  it('classifies every type from one filtered ListTypes walk per provisioning type', async () => {
+    const byFilter: Record<string, string[]> = {
+      FULLY_MUTABLE: ['AWS::A::Mutable'],
+      IMMUTABLE: ['AWS::B::Immutable'],
+      NON_PROVISIONABLE: ['AWS::C::Job'],
+    };
+    const filters: unknown[] = [];
+    const client = {
+      // eslint-disable-next-line @typescript-eslint/require-await
+      send: async (cmd: unknown) => {
+        if (!(cmd instanceof ListTypesCommand)) throw new Error('unexpected command');
+        filters.push(cmd.input.ProvisioningType);
+        return {
+          TypeSummaries: (byFilter[cmd.input.ProvisioningType ?? ''] ?? []).map((TypeName) => ({ TypeName })),
+        };
+      },
+    } as CfnClientLike;
+
+    const map = await listProvisioningTypes(client);
+
+    expect(filters).toEqual(['FULLY_MUTABLE', 'IMMUTABLE', 'NON_PROVISIONABLE']);
+    expect(Object.fromEntries(map)).toEqual({
+      'AWS::A::Mutable': 'FULLY_MUTABLE',
+      'AWS::B::Immutable': 'IMMUTABLE',
+      'AWS::C::Job': 'NON_PROVISIONABLE',
+    });
+  });
+
+  it('an unfiltered walk sends no ProvisioningType', async () => {
+    const seen: unknown[] = [];
+    const client = {
+      // eslint-disable-next-line @typescript-eslint/require-await
+      send: async (cmd: unknown) => {
+        seen.push((cmd as ListTypesCommand).input);
+        return { TypeSummaries: [] };
+      },
+    } as CfnClientLike;
+    for await (const _ of paginateListTypes(client)) void _;
+    expect(Object.hasOwn(seen[0] as object, 'ProvisioningType')).toBe(false);
+  });
+});
+
 describe('partitionCoverage', () => {
   function buildClient(provisioningByType: Record<string, ProvisioningType | string>): CfnClientLike {
     return {
@@ -383,6 +427,29 @@ describe('partitionCoverage', () => {
       },
     } as CfnClientLike;
   }
+
+  it('classifies a known type without DescribeType, and DescribeTypes only the rest (go-to-k/cdkd#5214)', async () => {
+    const described: string[] = [];
+    const client = {
+      // eslint-disable-next-line @typescript-eslint/require-await
+      send: async (cmd: unknown) => {
+        if (cmd instanceof DescribeTypeCommand) {
+          described.push(cmd.input.TypeName ?? '');
+          return { ProvisioningType: 'FULLY_MUTABLE' };
+        }
+        throw new Error('unexpected');
+      },
+    } as CfnClientLike;
+    const report = await partitionCoverage(
+      client,
+      new Set(),
+      ['AWS::A::Known', 'AWS::B::Gone', 'AWS::C::New'],
+      { knownProvisioningTypes: new Map([['AWS::A::Known', 'IMMUTABLE'], ['AWS::B::Gone', 'NON_PROVISIONABLE']]) }
+    );
+    expect(described).toEqual(['AWS::C::New']);
+    expect(report.tier2).toEqual(['AWS::A::Known', 'AWS::C::New']);
+    expect(report.tier3).toEqual(['AWS::B::Gone']);
+  });
 
   it('every tier list is a SET — a type ListTypes returns twice appears once', async () => {
     // AWS returned `AWS::Logs::LogStream` twice across `ListTypes` pages

@@ -143,12 +143,16 @@ export interface CfnClientLike {
  * registry extensions — out of scope per the issue, and the long tail
  * would balloon the audit runtime past usefulness.
  */
-export async function* paginateListTypes(client: CfnClientLike): AsyncGenerator<string> {
+export async function* paginateListTypes(
+  client: CfnClientLike,
+  provisioningType?: ProvisioningType
+): AsyncGenerator<string> {
   let nextToken: string | undefined;
   do {
     const resp = await client.send(
       new ListTypesCommand({
         Type: 'RESOURCE',
+        ...(provisioningType !== undefined && { ProvisioningType: provisioningType }),
         Visibility: 'PUBLIC' satisfies Visibility,
         Filters: { Category: 'AWS_TYPES' },
         DeprecatedStatus: 'LIVE' satisfies DeprecatedStatus,
@@ -164,6 +168,25 @@ export async function* paginateListTypes(client: CfnClientLike): AsyncGenerator<
     }
     nextToken = resp.NextToken;
   } while (nextToken);
+}
+
+/**
+ * Every listed type's `ProvisioningType`, from one `ListTypes` walk per value
+ * (go-to-k/cdkd#5214): `ListTypes` filters on it, so the three walks classify
+ * every type in ~25 calls instead of one `DescribeType` per type. A type
+ * missing from the map (published between the walks) falls back to
+ * `DescribeType` in {@link partitionCoverage}.
+ */
+export async function listProvisioningTypes(
+  client: CfnClientLike
+): Promise<Map<string, ProvisioningType>> {
+  const byType = new Map<string, ProvisioningType>();
+  for (const provisioningType of ['FULLY_MUTABLE', 'IMMUTABLE', 'NON_PROVISIONABLE'] as const) {
+    for await (const typeName of paginateListTypes(client, provisioningType)) {
+      byType.set(typeName, provisioningType);
+    }
+  }
+  return byType;
 }
 
 /**
@@ -313,6 +336,11 @@ export interface PartitionOptions {
    * whole audit.
    */
   readonly onError?: (typeName: string, err: unknown) => CoverageTier | undefined;
+  /**
+   * Provisioning types already known (from {@link listProvisioningTypes}); a
+   * type found here is classified without a `DescribeType` call.
+   */
+  readonly knownProvisioningTypes?: ReadonlyMap<string, ProvisioningType | string>;
 }
 
 /**
@@ -377,10 +405,12 @@ export async function partitionCoverage(
       limit(async () => {
         let tier: CoverageTier;
         try {
-          const provisioningType = await describeTypeWithRetry(client, typeName, {
-            ...(options.retryDelaysMs && { retryDelaysMs: options.retryDelaysMs }),
-            ...(options.sleep && { sleep: options.sleep }),
-          });
+          const provisioningType =
+            options.knownProvisioningTypes?.get(typeName) ??
+            (await describeTypeWithRetry(client, typeName, {
+              ...(options.retryDelaysMs && { retryDelaysMs: options.retryDelaysMs }),
+              ...(options.sleep && { sleep: options.sleep }),
+            }));
           tier = classifyProvisioningType(provisioningType);
         } catch (err) {
           const handled = onError(typeName, err);
@@ -624,7 +654,12 @@ async function regenerate(): Promise<void> {
     }
     console.error(`[audit] ListTypes complete: ${allTypes.length} total types`);
 
+    console.error('[audit] reading provisioning types via ListTypes (one walk per type)...');
+    const knownProvisioningTypes = await listProvisioningTypes(client);
+    console.error(`[audit] ${knownProvisioningTypes.size} types classified by ListTypes`);
+
     const report = await partitionCoverage(client, registered, allTypes, {
+      knownProvisioningTypes,
       onProgress: (done, total) => {
         if (done % 25 === 0 || done === total) {
           console.error(`[audit] DescribeType: ${done}/${total}`);
