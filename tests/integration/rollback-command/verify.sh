@@ -1684,6 +1684,13 @@ echo "[verify] step S3 ok: rollback exited 2, recorded the skip, cleared the jou
 echo "[verify] step S4: empty SkipBucket and deploy plainly (SkipBucket deleted)"
 aws s3 rm "s3://${SKIP_BUCKET_NAME}" --recursive >/dev/null
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
+# HeadBucket can still answer 200 for a few seconds after DeleteBucket returns
+# (a pre-fix probe run read the bucket as live right after cdkd's "Deleted: 1").
+# Waits up to ~60s; the assert_gone below is the verdict.
+for _ in $(seq 1 12); do
+  gone_probe aws s3api head-bucket --bucket "${SKIP_BUCKET_NAME}" --region "${REGION}" && break
+  sleep 5
+done
 assert_gone "SkipBucket ${SKIP_BUCKET_NAME} still exists after the converging deploy" \
   aws s3api head-bucket --bucket "${SKIP_BUCKET_NAME}" --region "${REGION}"
 S4_COUNT="$(state_resource_count "${STATE_KEY}")"
