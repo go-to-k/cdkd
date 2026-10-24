@@ -62,6 +62,7 @@ import {
 import { isMarkedNotGone } from '../../../src/provisioning/not-gone.js';
 import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import { awsSdkError, relayedAwsSdkError } from '../_aws-sdk-error.js';
+import { QueueDoesNotExist } from '@aws-sdk/client-sqs';
 
 // go-to-k/cdkd#2319: every create / update / delete wrap of these six
 // providers is persisted to `deployments/{runId}.jsonl`, so an AWS-authored
@@ -344,6 +345,8 @@ describe('ECR / SQS / SNS / Step Functions / WAFv2 / CodeBuild thrown wraps with
 
     expect(failure.message).toBe(`${c.wrap}: a non-Error value of type string. ${VERBOSE_POINTER}`);
     expect(hasRedactedCause(failure)).toBe(false);
+    expect(debugLines()).toContain(`${c.wrap}: raw *** value`);
+    expect(debugLines().join('\n')).not.toContain('s3cr3t');
   });
 
   it.each(deletes)('$wrap: a NotFound class that is not the resource never reads as gone', async (c) => {
@@ -413,7 +416,52 @@ describe('ECR / SQS / SNS / Step Functions / WAFv2 / CodeBuild thrown wraps with
       `Failed to create SQS queue Q: QueueDeletedRecently. ${VERBOSE_POINTER}`
     );
     expect(failure.message).not.toContain('wait 60 seconds');
+    // The withheld sentence is read on the stamped chain, not only the class.
+    expect(retryClassificationText(failure)).toContain('wait 60 seconds');
     expect(isNameCooldownError(retryClassificationText(failure))).toBe(true);
     expect(isRetryableTransientError(failure, retryClassificationText(failure))).toBe(true);
+  });
+
+  it('Step Functions: a create in the name cooldown stays retryable on the cooldown schedule', async () => {
+    const deleting = 'State Machine is being deleted';
+    failOn('CreateStateMachineCommand', awsSdkError(deleting, 'StateMachineDeleting'));
+
+    const failure = await caught(cases[9]!.run());
+
+    expect(failure.message).toBe(
+      `Failed to create Step Functions state machine Sm: StateMachineDeleting. ${VERBOSE_POINTER}`
+    );
+    expect(retryClassificationText(failure)).toContain(deleting);
+    expect(isNameCooldownError(retryClassificationText(failure))).toBe(true);
+  });
+
+  it('SNS: does not restate "already exists" from a post-create step', async () => {
+    failOn(
+      'SetTopicAttributesCommand',
+      awsSdkError('Attribute already exists', 'ResourceAlreadyExistsException'),
+      { CreateTopicCommand: { TopicArn: TOPIC_ARN } }
+    );
+
+    const failure = await caught(
+      new SNSTopicProvider().create(
+        'T',
+        'AWS::SNS::Topic',
+        { TopicName: 't', ArchivePolicy: { MessageRetentionPeriod: '7' } },
+        ctx
+      )
+    );
+
+    expect(mockSend.mock.calls.some((call) => call[0].constructor.name === 'CreateTopicCommand')).toBe(
+      true
+    );
+    expect(failure.message).toBe(
+      `Failed to create SNS topic T: ResourceAlreadyExistsException. ${VERBOSE_POINTER}`
+    );
+  });
+
+  it('SQS: a delete of a queue that is already gone still succeeds', async () => {
+    failOn('DeleteQueueCommand', new QueueDoesNotExist({ message: 'gone', $metadata: {} }));
+
+    await expect(cases[5]!.run()).resolves.toBeUndefined();
   });
 });

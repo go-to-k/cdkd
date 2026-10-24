@@ -40,7 +40,6 @@ import {
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { markNotGone } from '../not-gone.js';
-import { isAuxiliaryFailure } from '../auxiliary-failure.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 
 /**
@@ -461,9 +460,8 @@ export class SQSQueueProvider implements ResourceProvider {
    * wrap is stamped `markRedactedCause`, so the retry classifiers read the
    * withheld text on the `cause` chain. An "already exists" is restated
    * ({@link relayedNameCollision}) so a create-first replacement still
-   * recognises the collision, except from a post-create step's failure
-   * ({@link markAuxiliaryFailure}), where "it" would read as this resource. A
-   * non-`Error` throw is withheld the same way, unstamped: it has no chain.
+   * recognises the collision. A non-`Error` throw is withheld the same way,
+   * unstamped: it has no chain.
    *
    * A cdkd-authored or transport error keeps its text, masked, stamped exactly
    * when the mask changed it (`wrapMaskedAwsError`, issue #4244). The delete
@@ -480,8 +478,7 @@ export class SQSQueueProvider implements ResourceProvider {
     const failure = describeAwsFailure(error);
     if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
     this.logger.debug(mask(build(mask(failure.detail)).message));
-    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
-    const wrapped = build(`${mask(failure.summary)}${relay}`);
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
