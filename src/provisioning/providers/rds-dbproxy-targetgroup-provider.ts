@@ -19,7 +19,9 @@ import {
   markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
+  wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import type { CreateContext, ResourceNotFound, UpdateContext } from '../../types/resource.js';
@@ -37,7 +39,11 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
 import { holdsSecretDerivedEntry, recordedPrincipalsRepair } from '../iam-policy-targets.js';
 import {
   DBPROXY_TAG_OPTIONS,
@@ -316,9 +322,14 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       } catch (error) {
         // An adjustment of the proxy's own target group, not the registration
         // this resource creates: never this resource's collision (#3826).
-        throw markAuxiliaryFailure(
-          this.wrapError(error, 'CREATE (pool config)', resourceType, logicalId, undefined, mask),
-          logicalId
+        // Marked BEFORE the wrap, so the wrap does not restate the collision.
+        throw this.wrapError(
+          markAuxiliaryFailure(error, logicalId),
+          'CREATE (pool config)',
+          resourceType,
+          logicalId,
+          undefined,
+          mask
         );
       }
     }
@@ -1046,7 +1057,13 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         );
         return;
       }
-      throw this.wrapError(error, 'DELETE', resourceType, logicalId, physicalId, mask);
+      const thrown = this.wrapError(error, 'DELETE', resourceType, logicalId, physicalId, mask);
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFound` in a message as "already deleted": only the typed
+      // not-founds above mean this registration is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -1267,7 +1284,7 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       }
       original.message +=
         ` The targets this create registered are still registered and could not be ` +
-        `deregistered (${cleanupFailure.summary.replace(/\.$/, '')}). Manual cleanup: ` +
+        `deregistered (${maskerOrIdentity(maskSecrets)(cleanupFailure.summary).replace(/\.$/, '')}). Manual cleanup: ` +
         aws`aws rds deregister-db-proxy-targets --db-proxy-name ${dbProxyName} --target-group-name ${targetGroupName}${targets}`.render();
       if (leftBehind) {
         markCreatedBeforeFailure(
@@ -1387,9 +1404,12 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
    * AWS's own text goes to `debug` through the operation's masker, the
    * original error stays the `cause`, and the wrap is stamped
    * `markRedactedCause` so the retry classifiers read the withheld text on
-   * that chain. An "already exists" is restated ({@link relayedNameCollision}).
-   * A cdkd-authored or transport error, or a non-`Error` throw, keeps its
-   * text. The delete catch tests not-found by type before it wraps.
+   * that chain. An "already exists" is restated ({@link relayedNameCollision})
+   * unless an auxiliary call raised it ({@link isAuxiliaryFailure}). A
+   * cdkd-authored or transport error keeps its text, masked, stamped only when
+   * the mask changed it (`wrapMaskedAwsError`); a non-`Error` throw is withheld
+   * like an AWS one, unstamped (it has no chain). The delete catch tests
+   * not-found by type before it wraps.
    */
   private wrapError(
     error: unknown,
@@ -1409,9 +1429,11 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         cause
       );
     const failure = describeAwsFailure(error);
-    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
-    this.logger.debug(mask(build(failure.detail).message));
-    return markRedactedCause(build(`${failure.summary}${relayedNameCollision(failure.detail)}`));
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${mask(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 }
 

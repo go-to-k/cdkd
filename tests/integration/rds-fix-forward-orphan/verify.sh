@@ -305,6 +305,20 @@ if ! printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
   exit 1
 fi
 
+# This stack's deployments/*.jsonl keys, sorted, one per line (go-to-k/cdkd#2319).
+# A failed listing returns non-zero, so a caller never reads an empty list as
+# "no new events".
+deployment_event_keys() {
+  local listed
+  listed="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+    --prefix "${STATE_PREFIX}deployments/" --output json)" || return 1
+  printf '%s' "${listed}" | jq -r '.Contents // [] | .[].Key | select(endswith(".jsonl"))' | LC_ALL=C sort
+}
+# Only step 2's own event files are read below, so an earlier run's cannot answer.
+if ! deployment_event_keys > "${LOG_DIR}/event-keys-before-2"; then
+  echo "[verify] FAIL: could not list s3://${STATE_BUCKET}/${STATE_PREFIX}deployments/ before step 2" >&2
+  exit 1
+fi
 echo "[verify] step 2: --no-rollback deploy as ${DENY_ROLE}: all three CREATEs fail after AWS made the resource"
 set +e
 as_deny_role env -u ORPHAN_FIX_FORWARD WITH_ORPHANS=true ${CLI} deploy "${STACK}" \
@@ -380,6 +394,63 @@ esac
 assert_journaled OrphanCluster "${CLUSTER_A}" "${CLUSTER_A_RID}"
 assert_journaled OrphanInstance "${DB_A}" "${DB_A_RID}"
 assert_journaled HeldCluster "${CLUSTER_HELD}" "${CLUSTER_HELD_RID}"
+# go-to-k/cdkd#2319: the refused self-cleanup's warning names the AWS failure
+# by its class. AWS words the explicit deny with this account's id and the deny
+# role's ARN; that text goes to the --verbose debug line only. A FAIL prints
+# only the cdkd-authored head and the length.
+INJECT_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${LOG_DIR}/inject.log")"
+CLEANUP_HEAD="Failed to delete partially-created DBCluster OrphanCluster (${CLUSTER_A}): "
+CLEANUP_LINE="$(grep -F "${CLEANUP_HEAD}" <<<"${INJECT_PLAIN}" | tail -n 1 || true)"
+if [ -z "${CLEANUP_LINE}" ]; then
+  echo "[verify] FAIL: step 2 printed no '${CLEANUP_HEAD}...' warning: the self-cleanup delete was not refused (output above)" >&2
+  exit 1
+fi
+if ! grep -qE "partially-created DBCluster OrphanCluster \(${CLUSTER_A}\): [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\. THE CLUSTER" <<<"${CLEANUP_LINE}"; then
+  echo "[verify] FAIL: the refused self-cleanup warning is not '${CLEANUP_HEAD}<ErrorClass>. Re-run with --verbose for AWS's own message. THE CLUSTER ...' (#2319); ${#CLEANUP_LINE} chars" >&2
+  exit 1
+fi
+if grep -F "partially-created DBCluster" <<<"${INJECT_PLAIN}" | grep -F "${ACCOUNT_ID}" >/dev/null; then
+  echo "[verify] FAIL: a partially-created DBCluster cleanup warning quotes AWS's text, with this account's id (#2319)" >&2
+  exit 1
+fi
+# go-to-k/cdkd#2319: each failed CREATE's persisted RESOURCE_FAILED event is
+# class-only: the deployments/*.jsonl store outlives the run.
+if ! EVENT_KEYS_2="$(deployment_event_keys | LC_ALL=C comm -13 "${LOG_DIR}/event-keys-before-2" -)"; then
+  echo "[verify] FAIL: could not list s3://${STATE_BUCKET}/${STATE_PREFIX}deployments/ after step 2" >&2
+  exit 1
+fi
+# Inside LOG_DIR, which `cleanup` removes on every exit: it holds AWS text.
+FAILED_2="${LOG_DIR}/failed-events-2.jsonl"
+: > "${FAILED_2}"
+while IFS= read -r event_key || [ -n "${event_key}" ]; do
+  [ -n "${event_key}" ] || continue
+  aws s3 cp "s3://${STATE_BUCKET}/${event_key}" - --quiet \
+    | jq -c 'select(.eventType == "RESOURCE_FAILED")' >> "${FAILED_2}"
+done <<< "${EVENT_KEYS_2}"
+# The cdkd-authored prefix of a persisted message, never AWS's text: a message
+# with no colon has no prefix of cdkd's (go-to-k/cdkd#2319).
+msg_prefix() { case "$1" in *:*) printf '%s' "${1%%:*}" ;; *) printf '<none>' ;; esac; }
+assert_failed_event_redacted() { # usage: assert_failed_event_redacted <logicalId> <wrap prefix>
+  local msg
+  # One value, not a line: a message can span lines.
+  msg="$(jq -rs --arg l "$1" '[.[] | select(.logicalId == $l) | .error.message // empty] | last // empty' "${FAILED_2}")"
+  if [ -z "${msg}" ]; then
+    echo "[verify] FAIL: no RESOURCE_FAILED event with an error message for $1 under s3://${STATE_BUCKET}/${STATE_PREFIX}deployments/ after step 2 (the #2319 checks below would pass for free)" >&2
+    exit 1
+  fi
+  if ! printf '%s' "${msg}" | grep -qE "$2: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
+    echo "[verify] FAIL: $1's RESOURCE_FAILED message is not '$2: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed prefix: '$(msg_prefix "${msg}")', ${#msg} chars" >&2
+    exit 1
+  fi
+  if jq -r --arg l "$1" 'select(.logicalId == $l) | .error.message // empty' "${FAILED_2}" \
+    | grep -F "${ACCOUNT_ID}" >/dev/null; then
+    echo "[verify] FAIL: $1's RESOURCE_FAILED message quotes AWS's text, with this account's id (#2319); observed prefix: '$(msg_prefix "${msg}")', ${#msg} chars" >&2
+    exit 1
+  fi
+}
+assert_failed_event_redacted OrphanCluster "Failed to create DBCluster OrphanCluster"
+assert_failed_event_redacted OrphanInstance "Failed to create DBInstance OrphanInstance"
+rm -f "${FAILED_2}"
 echo "[verify] step 2 ok: ${CLUSTER_A}, ${DB_A} and ${CLUSTER_HELD} are in AWS, journaled with their resource ids, with no state record"
 
 # A user fixes forward minutes later, once both are up; an RDS resource still

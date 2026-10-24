@@ -205,53 +205,8 @@ function sites(): Site[] {
       prefix: 'Failed to delete DynamoDB table Res: ',
       run: () => new DynamoDBTableProvider().delete('Res', TABLE_NAME, 'AWS::DynamoDB::Table', {}),
     },
-    {
-      site: 'GlobalTable create (CreateTable)',
-      command: 'CreateTableCommand',
-      action: 'dynamodb:CreateTable',
-      prefix: 'Failed to create DynamoDB GlobalTable Res: ',
-      run: () =>
-        new DynamoDBGlobalTableProvider().create('Res', 'AWS::DynamoDB::GlobalTable', GLOBAL_PROPS),
-    },
-    {
-      site: 'GlobalTable create (post-CreateTable wiring)',
-      command: 'DescribeTableCommand',
-      action: 'dynamodb:DescribeTable',
-      prefix: 'Failed to create DynamoDB GlobalTable Res: ',
-      answers: { CreateTableCommand: { TableDescription: { TableName: TABLE_NAME } } },
-      run: () =>
-        new DynamoDBGlobalTableProvider().create('Res', 'AWS::DynamoDB::GlobalTable', GLOBAL_PROPS),
-    },
-    {
-      site: 'GlobalTable update',
-      command: 'UpdateTableCommand',
-      action: 'dynamodb:UpdateTable',
-      prefix: 'Failed to update DynamoDB GlobalTable Res: ',
-      run: () =>
-        new DynamoDBGlobalTableProvider().update(
-          'Res',
-          TABLE_NAME,
-          'AWS::DynamoDB::GlobalTable',
-          { ...GLOBAL_PROPS, DeletionProtectionEnabled: true },
-          GLOBAL_PROPS
-        ),
-    },
-    {
-      site: 'GlobalTable describe before delete',
-      command: 'DescribeTableCommand',
-      action: 'dynamodb:DescribeTable',
-      prefix: 'Failed to describe DynamoDB GlobalTable Res before delete: ',
-      run: () =>
-        new DynamoDBGlobalTableProvider().delete('Res', TABLE_NAME, 'AWS::DynamoDB::GlobalTable', {}),
-    },
-    {
-      site: 'GlobalTable delete',
-      command: 'DeleteTableCommand',
-      action: 'dynamodb:DeleteTable',
-      prefix: 'Failed to delete DynamoDB GlobalTable Res: ',
-      run: () =>
-        new DynamoDBGlobalTableProvider().delete('Res', TABLE_NAME, 'AWS::DynamoDB::GlobalTable', {}),
-    },
+    // The GlobalTable sites live in `tail-d-thrown-text-2319.test.ts`
+    // (go-to-k/cdkd#2319): their wrap withholds a non-Error throw.
   ];
 }
 
