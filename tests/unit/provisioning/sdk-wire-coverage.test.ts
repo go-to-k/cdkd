@@ -65,7 +65,12 @@ function capturing<T extends Capturable>(client: T): T {
           req.path,
           req.query,
           req.headers['x-amz-target'],
-          typeof req.body === 'string' ? req.body : JSON.stringify(req.body ?? null),
+          // The JSON protocols (SQS) hand the body over as bytes.
+          typeof req.body === 'string'
+            ? req.body
+            : req.body instanceof Uint8Array
+              ? new TextDecoder().decode(req.body)
+              : JSON.stringify(req.body ?? null),
         ])
       );
       return { output: fakeOutput(), response: {} };
@@ -187,19 +192,24 @@ interface Result {
  * lacks the leaf's parent so both sides make the same call and only the value
  * differs.
  */
+/** The fake list answers with `bag`'s subscriptions, the i-th as `<topic>:sub-<i>`. */
+function armLiveSubscriptions(physicalId: string, bag: Bag): void {
+  const subs = Array.isArray(bag['Subscription']) ? (bag['Subscription'] as Bag[]) : [];
+  liveSubscriptions = subs.map((s, i) => ({
+    Protocol: s['Protocol'],
+    Endpoint: s['Endpoint'],
+    SubscriptionArn: `${physicalId}:sub-${i}`,
+    TopicArn: physicalId,
+  }));
+}
+
 async function probe(c: Case): Promise<Result> {
   const p = c.provider();
   const create = (bag: Bag) => () => p.create('L', c.resourceType, structuredClone(bag));
   const update = (next: Bag, prev: Bag) => () =>
     p.update('L', c.physicalId, c.resourceType, structuredClone(next), structuredClone(prev));
 
-  const subs = Array.isArray(c.bag['Subscription']) ? (c.bag['Subscription'] as Bag[]) : [];
-  liveSubscriptions = subs.map((s, i) => ({
-    Protocol: s['Protocol'],
-    Endpoint: s['Endpoint'],
-    SubscriptionArn: `${c.physicalId}:sub-${i}`,
-    TopicArn: c.physicalId,
-  }));
+  armLiveSubscriptions(c.physicalId, c.bag);
 
   const full = await record(create(c.bag));
   const settled = await record(update(c.bag, c.bag));
@@ -282,6 +292,12 @@ interface TypeCase {
   createOnly: ReadonlySet<string>;
   /** `handledProperties` entries no bag carries, each with the reason. */
   exempt: Record<string, string>;
+  /**
+   * Removal probes that only see THAT the wire changed, not WHICH member it
+   * names: removing one element of a two-element list from `bags[0]` must send
+   * `command` exactly once, naming `names` and not `notNames`.
+   */
+  targets: { path: Path; command: string; names: string; notNames: string }[];
   bags: BagCase[];
 }
 
@@ -320,6 +336,12 @@ const CASES: TypeCase[] = [
     physicalId: `arn:aws:sns:us-east-1:${ACCOUNT}:t.fifo`,
     createOnly: new Set(['FifoTopic', 'TopicName']),
     exempt: {},
+    targets: [
+      { path: ['Subscription', 0], command: 'UnsubscribeCommand', names: 'sub-0', notNames: 'sub-1' },
+      { path: ['Subscription', 1], command: 'UnsubscribeCommand', names: 'sub-1', notNames: 'sub-0' },
+      { path: ['Tags', 0], command: 'UntagResourceCommand', names: 'k1', notNames: 'k2' },
+      { path: ['Tags', 1], command: 'UntagResourceCommand', names: 'k2', notNames: 'k1' },
+    ],
     bags: [
       {
         name: 'every declared property',
@@ -391,6 +413,10 @@ const CASES: TypeCase[] = [
     physicalId: `https://sqs.us-east-1.amazonaws.com/${ACCOUNT}/q.fifo`,
     createOnly: new Set(['FifoQueue', 'QueueName']),
     exempt: {},
+    targets: [
+      { path: ['Tags', 0], command: 'UntagQueueCommand', names: 'k1', notNames: 'k2' },
+      { path: ['Tags', 1], command: 'UntagQueueCommand', names: 'k2', notNames: 'k1' },
+    ],
     bags: [
       {
         name: 'KMS encryption',
@@ -460,6 +486,25 @@ describe('SDK wire coverage', () => {
       const { silent, removalThrows } = await probe({ ...t, bag: b.bag, variants: b.variants });
       expect(silent.sort()).toEqual(Object.keys(b.expectedSilent ?? {}).sort());
       expect(removalThrows.sort()).toEqual(Object.keys(b.expectedRemovalThrows ?? {}).sort());
+    });
+
+    it.each(t.targets)('removing $path sends $command naming only $names', async (target) => {
+      const full = t.bags[0]!.bag;
+      armLiveSubscriptions(t.physicalId, full);
+      const outcome = await record(() =>
+        t
+          .provider()
+          .update('L', t.physicalId, t.resourceType, without(full, target.path), structuredClone(full))
+      );
+      expect(outcome).toMatchObject({ threw: false });
+      const bodies = (outcome as { wire: string }).wire
+        .split('\n')
+        .map((line) => JSON.parse(line) as string[])
+        .filter((entry) => entry[0] === target.command)
+        .map((entry) => entry[entry.length - 1]!);
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0]).toContain(target.names);
+      expect(bodies[0]).not.toContain(target.notNames);
     });
   });
 });
