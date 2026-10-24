@@ -24,6 +24,7 @@ import {
 } from '../utils/assembly-path.js';
 import { nullPrototypeRecord } from '../utils/own-keys.js';
 import { CdkdError, SynthesisError } from '../utils/error-handler.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { collectStackMessages, type StackMessage } from './stack-messages.js';
 import { renderStagePath, stageLoadError, stageScopedError } from './failed-stages.js';
 
@@ -219,7 +220,7 @@ export class AssemblyReader {
       return manifest;
     } catch (error) {
       throw new SynthesisError(
-        `Failed to read cloud assembly manifest from ${displaySafe(manifestPath)}: ${displaySafe(error instanceof Error ? error.message : String(error))}`,
+        `Failed to read cloud assembly manifest from ${displaySafe(manifestPath)}: ${displaySafe(describeAwsFailure(error).detail)}`,
         error instanceof Error ? error : undefined
       );
     }

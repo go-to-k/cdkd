@@ -744,7 +744,7 @@ export function injectRetainPolicies(
       `Template for '${cfnStackName}' is not a valid CloudFormation template. ` +
         `cdkd's --migrate-from-cloudformation flow supports both JSON and YAML templates ` +
         `(YAML via a CFn-aware codec that preserves !Ref / !GetAtt / !Sub shorthand). ` +
-        `Cause: ${err instanceof Error ? err.message : String(err)}`
+        `Cause: ${describeAwsFailure(err).detail}`
     );
   }
   if (
@@ -951,7 +951,7 @@ async function injectRetainPoliciesRecursiveInternal(
       `Template for '${cfnStackName}' is not a valid CloudFormation template. ` +
         `cdkd's --migrate-from-cloudformation flow supports both JSON and YAML templates ` +
         `(YAML via a CFn-aware codec that preserves !Ref / !GetAtt / !Sub shorthand). ` +
-        `Cause: ${err instanceof Error ? err.message : String(err)}`
+        `Cause: ${describeAwsFailure(err).detail}`
     );
   }
   if (

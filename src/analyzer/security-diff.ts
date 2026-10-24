@@ -2,6 +2,7 @@ import type { CloudFormationTemplate } from '../types/resource.js';
 import type { PropertyChange, ResourceChange, ResourceState } from '../types/state.js';
 import { safeMsg, terminalSafe } from '../utils/display-safe.js';
 import { CdkdError } from '../utils/error-handler.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
   formatSecurityChanges,
   isScrutinizedProperty,
@@ -242,7 +243,7 @@ export async function diffSecurity(args: {
     return { broadening, rendered: terminalSafe(table + unjudgedNote) };
   } catch (error) {
     throw new CdkdError(
-      safeMsg`Could not compute the security diff of stack ${args.stackName}, so whether its changes broaden permissions is unknown: ${error instanceof Error ? error.message : String(error)}`,
+      safeMsg`Could not compute the security diff of stack ${args.stackName}, so whether its changes broaden permissions is unknown: ${describeAwsFailure(error).detail}`,
       'SECURITY_DIFF_FAILED'
     );
   }
