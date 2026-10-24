@@ -955,8 +955,9 @@ export async function createFirstThenDeleteOld(
         input.oldResourceType,
         currentResource,
         input.snapshotPolicy,
-        // The delete's own masker (below): no PRE_DELETE_SNAPSHOT type reaches
-        // this method today, so no snapshot line is logged here yet.
+        // A superset of the delete's masker below (`createSecretMasker(secrets)`):
+        // the resolved bag plus the #2007 name bag. No PRE_DELETE_SNAPSHOT type
+        // reaches this method today, so no snapshot line is logged here yet.
         createUnionSecretMasker([secrets, secretNameBagFor(deps.secretsRun(), logicalId)])
       );
   deps.logger.info(
