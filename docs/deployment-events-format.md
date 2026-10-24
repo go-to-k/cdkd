@@ -63,6 +63,11 @@ Some details about these fields:
   `AccessDenied. Re-run with --verbose for AWS's own message.` AWS words an
   access denial with your account id and role ARN, and this file outlives the
   stack.
+- A resource deployed through Cloud Control keeps the handler's message, since
+  it says what to fix in the template, with the caller's principal ARN shown
+  as `<caller-principal>` and its account id as `<account-id>` wherever the
+  id sits in an ARN, a name, a path or a host, or after a word such as
+  `account`. `--verbose` prints the unmasked message.
 
 ### Placeholders in the output
 

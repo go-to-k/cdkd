@@ -1331,6 +1331,7 @@
       "integs": [
         "access-key-cloudmap-fix-forward-orphan",
         "cc-abandoned-create-resume",
+        "cc-api-fallback",
         "docdb-fix-forward-orphan",
         "dynamodb-fix-forward-orphan",
         "emr-cluster",
@@ -1762,6 +1763,7 @@
       "flag": "--verbose",
       "integs": [
         "cache-streaming",
+        "cc-api-fallback",
         "cdk-cross-account-lookup-role",
         "cognito",
         "conditions",
