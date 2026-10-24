@@ -7902,7 +7902,14 @@ export class S3BucketProvider implements ResourceProvider {
         this.logger.debug(`Bucket ${displaySafe(physicalId)} does not exist, skipping deletion`);
         return;
       }
-      const thrown = this.wrapOperationError('delete', logicalId, resourceType, physicalId, error);
+      const thrown = this.wrapOperationError(
+        'delete',
+        logicalId,
+        resourceType,
+        physicalId,
+        error,
+        context?.maskSecrets
+      );
       // The wrap names an AWS failure by its CLASS, and the delete classifiers
       // read `NotFound` in a message as "already deleted": only the typed
       // `NoSuchBucket` above means this bucket is gone (go-to-k/cdkd#2319).
@@ -7949,18 +7956,26 @@ export class S3BucketProvider implements ResourceProvider {
    * reads only the TOP-level `message` off it (plus `awsErrorCode` /
    * `requestId` from the chain), so keeping it costs nothing in that store
    * while retaining the retry classifiers' and `formatError`'s access to it.
+   *
+   * `deleteMask` is the delete's own masker (`DeleteContext.maskSecrets`):
+   * `delete()` runs on no masked view, so `maskRaw` alone is identity there,
+   * and the class is AWS-authored text a secret can spell (go-to-k/cdkd#2319).
    */
   private wrapOperationError(
     operation: 'create' | 'update' | 'delete',
     logicalId: string,
     resourceType: string,
     physicalId: string,
-    error: unknown
+    error: unknown,
+    deleteMask?: MaskerFn
   ): ProvisioningError {
+    const mask = (text: string): string => maskerOrIdentity(deleteMask)(this.maskRaw(text));
     const failure = describeAwsFailure(error);
     if (failure.redacted) {
       this.logger.debug(
-        `Failed to ${operation} S3 bucket ${displaySafe(logicalId)} (${this.shown(physicalId)}): ${this.maskRaw(failure.detail)}`
+        mask(
+          `Failed to ${operation} S3 bucket ${displaySafe(logicalId)} (${this.shown(physicalId)}): ${mask(failure.detail)}`
+        )
       );
     }
     // Both halves masked RAW as well (issue #2177): the engine masks the thrown
@@ -7992,7 +8007,7 @@ export class S3BucketProvider implements ResourceProvider {
     const relay =
       failure.redacted && !isAuxiliaryFailure(error) ? relayedNameCollision(failure.detail) : '';
     const wrapped = new ProvisioningError(
-      `Failed to ${operation} S3 bucket ${displaySafe(logicalId)}: ${this.maskRaw(failure.summary)}${relay}${denyNote}${tagResourceNote}${untaggedDenyNote}`,
+      `Failed to ${operation} S3 bucket ${displaySafe(logicalId)}: ${mask(failure.summary)}${relay}${denyNote}${tagResourceNote}${untaggedDenyNote}`,
       resourceType,
       logicalId,
       physicalId,

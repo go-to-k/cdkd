@@ -553,7 +553,7 @@ for pair in OrphanA:RecursiveLoop OrphanC:RecursiveLoop OrphanD:ReservedConcurre
     exit 1
   fi
   if ! printf '%s' "${msg}" | grep -qE "Failed to create Lambda function ${lid}: Failed to set ${prop} on Lambda function ${lid} \(function was deleted to maintain atomicity\): [A-Za-z0-9]+\. Re-run with [-][-]verbose for AWS's own message\."; then
-    echo "[verify] FAIL: ${lid}'s RESOURCE_FAILED message is not the post-create refusal naming '<ErrorClass>' plus the verbose-mode pointer (#2319); observed prefix '${msg%%: Failed to set*}', ${#msg} chars" >&2
+    echo "[verify] FAIL: ${lid}'s RESOURCE_FAILED message is not the post-create refusal naming '<ErrorClass>' plus the verbose-mode pointer (#2319); observed prefix '${msg%%:*}', ${#msg} chars" >&2
     rm -f "${FAILED_2}"
     exit 1
   fi

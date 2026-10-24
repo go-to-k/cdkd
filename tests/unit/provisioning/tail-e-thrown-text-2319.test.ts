@@ -128,6 +128,13 @@ const denied = (): Error => {
   return e;
 };
 const mask = (t: string): string => t.replaceAll('s3cr3t', '***');
+/** An AWS-authored failure whose CLASS spells the secret: only `mask(summary)` removes it. */
+const secretClass = (): Error =>
+  Object.assign(new Error('denied'), {
+    name: 'Denieds3cr3tException',
+    $fault: 'client',
+    $metadata: { httpStatusCode: 400 },
+  });
 const ctx = { maskSecrets: mask };
 const lines = (spy: typeof debug): string[] => spy.mock.calls.map((c) => String(c[0]));
 const commandName = (command: unknown): string =>
@@ -439,7 +446,7 @@ describe('tail-e thrown wraps withhold AWS text (#2319)', () => {
 
   // The class itself is AWS-authored text: `mask(failure.summary)` is what keeps
   // a secret spelled inside it out of the thrown (persisted) message.
-  it.each(wrapCases)('$wrap: a secret spelled in the class is masked', async (c) => {
+  it.each([...wrapCases, ...notGoneOnlyCases])('$wrap: a secret spelled in the class is masked', async (c) => {
     reject(
       c,
       Object.assign(new Error('denied'), {
@@ -599,6 +606,32 @@ describe('a post-create step failure is not restated as this resource\'s collisi
     expect(lines(debug).join('\n')).not.toContain('s3cr3t');
   });
 
+  it('Lambda function: a secret spelled in the class is masked in the refusal, warn and cleanup line', async () => {
+    mockSend.mockImplementation((command: unknown) => {
+      const name = commandName(command);
+      if (name === 'CreateFunctionCommand') {
+        return Promise.resolve({ FunctionName: 'fn', FunctionArn: FN_ARN });
+      }
+      if (name === 'PutFunctionConcurrencyCommand' || name === 'DeleteFunctionCommand') {
+        return Promise.reject(secretClass());
+      }
+      return Promise.resolve({});
+    });
+
+    const failure = await caught(
+      new LambdaFunctionProvider().create('Fn', FN, { ...FN_PROPS, ReservedConcurrentExecutions: 3 }, ctx)
+    );
+
+    expect((failure.cause as Error).message).toContain(
+      `(function was deleted to maintain atomicity): Denied***Exception. ${VERBOSE_POINTER}`
+    );
+    expect((failure.cause as Error).message).not.toContain('s3cr3t');
+    expect(failure.message).not.toContain('s3cr3t');
+    expect(lines(warn).some((l) => l.includes(`PutFunctionConcurrency failed for Fn: Denied***Exception.`))).toBe(true);
+    expect(lines(error).some((l) => l.includes(`function may be orphaned: Denied***Exception.`))).toBe(true);
+    expect([...lines(warn), ...lines(error)].join('\n')).not.toContain('s3cr3t');
+  });
+
   it('Lambda function: a cdkd-authored cleanup failure keeps its text at error level', async () => {
     mockSend.mockImplementation((command: unknown) => {
       const name = commandName(command);
@@ -675,6 +708,33 @@ describe('a post-create step failure is not restated as this resource\'s collisi
     );
   });
 
+  it('AppSync GraphQL API: a secret spelled in the class is masked in the rollback warn', async () => {
+    mockSend.mockImplementation((command: unknown) => {
+      const name = commandName(command);
+      if (name === 'CreateGraphqlApiCommand') {
+        return Promise.resolve({ graphqlApi: { apiId: 'api-1', arn: 'arn:api-1' } });
+      }
+      if (name === 'PutGraphqlApiEnvironmentVariablesCommand') return Promise.reject(conflict());
+      if (name === 'DeleteGraphqlApiCommand') return Promise.reject(secretClass());
+      return Promise.resolve({});
+    });
+
+    await caught(
+      new AppSyncProvider().create(
+        'Api',
+        'AWS::AppSync::GraphQLApi',
+        { Name: 'api', AuthenticationType: 'API_KEY', EnvironmentVariables: { K: 'v' } },
+        ctx
+      )
+    );
+
+    const rollback = lines(warn).find((l) => l.startsWith('Failed to roll back partially-created GraphQL API'));
+    expect(rollback).toBe(
+      `Failed to roll back partially-created GraphQL API api-1: Denied***Exception. ${VERBOSE_POINTER}`
+    );
+    expect(lines(warn).join('\n')).not.toContain('s3cr3t');
+  });
+
   it('AppSync GraphQL API: a cdkd-authored rollback failure keeps its text at warn', async () => {
     mockSend.mockImplementation((command: unknown) => {
       const name = commandName(command);
@@ -730,6 +790,33 @@ describe('a post-create step failure is not restated as this resource\'s collisi
     expect(lines(debug)).toContain(
       `Failed to clean up partially-created ServiceDiscovery Service Svc (srv-1) after ServiceAttributes wiring failure: ${mask(DENIED)}`
     );
+  });
+
+  it('Cloud Map Service: a secret spelled in the class is masked in the cleanup warn', async () => {
+    mockSend.mockImplementation((command: unknown) => {
+      const name = commandName(command);
+      if (name === 'CreateServiceCommand') {
+        return Promise.resolve({ Service: { Id: 'srv-1', Arn: 'arn:srv-1', Name: 'svc' } });
+      }
+      if (name === 'UpdateServiceAttributesCommand') return Promise.reject(conflict());
+      if (name === 'DeleteServiceCommand') return Promise.reject(secretClass());
+      return Promise.resolve({});
+    });
+
+    await caught(
+      new ServiceDiscoveryProvider().create(
+        'Svc',
+        'AWS::ServiceDiscovery::Service',
+        { Name: 'svc', NamespaceId: 'ns-1', ServiceAttributes: { team: 'cdkd' } },
+        ctx
+      )
+    );
+
+    const cleanup = lines(warn).find((l) =>
+      l.startsWith('Failed to clean up partially-created ServiceDiscovery Service')
+    );
+    expect(cleanup).toContain(`wiring failure: Denied***Exception. ${VERBOSE_POINTER} Outside a rollback`);
+    expect(lines(warn).join('\n')).not.toContain('s3cr3t');
   });
 
   it('Cloud Map Service: a cdkd-authored cleanup failure keeps its text at warn', async () => {
