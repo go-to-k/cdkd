@@ -46,6 +46,16 @@ describe('describeJsonParseFailure (issue #5247)', () => {
     );
   });
 
+  it('keeps the offset of the trailing-garbage family (`after JSON at position N`)', () => {
+    const body = '{} x';
+    const err = parseError(body);
+    expect((err as Error).message).toMatch(/after JSON at position 3/);
+
+    expect(describeJsonParseFailure(err, utf8ByteLength(body))).toBe(
+      'invalid JSON at code-unit position 3; 4 byte(s) read'
+    );
+  });
+
   it('keeps the offset of the older V8 form without a line/column suffix', () => {
     const err = new SyntaxError('Unexpected token } in JSON at position 123');
     expect(describeJsonParseFailure(err, 4)).toBe(
