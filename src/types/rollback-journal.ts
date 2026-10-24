@@ -24,6 +24,7 @@
 
 import type { CompletedOperation, FailedOperation } from '../deployment/rollback-executor.js';
 import type { StackState } from './state.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { displaySafe, UNRENDERABLE } from '../utils/display-safe.js';
 
 /**
@@ -661,7 +662,7 @@ export function parseRollbackJournal(bodyString: string, stackName: string): Rol
     // survives the allowlist even when the quoted input sanitises away
     // entirely. A `detail ? ... : ...` ternary here had a dead arm and a test
     // that could not reach it.
-    const detail = safeJournalText(err instanceof Error ? err.message : String(err));
+    const detail = safeJournalText(describeAwsFailure(err).detail);
     throw new Error(`Rollback journal for '${shownStack}' is not valid JSON: ${detail}`);
   }
   if (typeof parsed !== 'object' || parsed === null) {

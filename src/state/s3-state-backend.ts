@@ -3224,9 +3224,9 @@ export class S3StateBackend {
       // the allowlist exists for, not the "legitimately non-ASCII diagnostic"
       // the denylist protects. `formatError`'s cause line is the opposite
       // case and takes the denylist, because a cause can be AWS's own wording.
-      const raw = error instanceof Error ? error.message : String(error);
+      const raw = describeAwsFailure(error).detail;
       const detail = displaySafe(raw, { asciiOnly: true }) || UNRENDERABLE;
-      // `docs/troubleshooting.md` quotes this message, and
+      // `docs/troubleshooting-locks-state.md` quotes this message, and
       // `scripts/check-docs-error-strings.ts` fails when it can no longer
       // derive it from here. Three revisions of this comment tried to say
       // WHICH edit breaks that and each named a different wrong cause, so it

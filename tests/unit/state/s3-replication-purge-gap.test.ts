@@ -478,7 +478,7 @@ describe('S3 replication purge gap (issue #2447)', () => {
       // The arm that decides to stay quiet still has to say WHY somewhere, and
       // it has to name the grant -- otherwise a user who wants the check has no
       // way to find out it is switched off.
-      const debug = vi.fn();
+      const debug = vi.fn<(m: string) => void>();
       const s3 = stub(() => {
         throw s3Error('AccessDenied', 403);
       });
@@ -499,7 +499,7 @@ describe('S3 replication purge gap (issue #2447)', () => {
       // The last text in this module that reaches a terminal from an AWS
       // response. The destination and the bucket are both fenced; without this
       // the reason was the one raw path left.
-      const debug = vi.fn();
+      const debug = vi.fn<(m: string) => void>();
       const s3 = stub(() => {
         throw s3Error('AccessDenied\u001b[31m', 403);
       });
@@ -540,7 +540,7 @@ describe('S3 replication purge gap (issue #2447)', () => {
       // The varying half of the message is the description; the rest is a fact
       // about the bucket. Thirty custom resources repeating a 600-character
       // warning adds nothing and erodes the purge failure warning beside it.
-      const debug = vi.fn();
+      const debug = vi.fn<(m: string) => void>();
       const sink = { warn: warn as unknown as (m: string) => void, debug };
       const dest = (name: string): Record<string, unknown> =>
         enabledRule({ Destination: { Bucket: `arn:aws:s3:::${name}` } });
@@ -564,7 +564,7 @@ describe('S3 replication purge gap (issue #2447)', () => {
       // dedupe case passes an explicit description, so rewording this one was
       // a fully green mutation -- the repeat line could have drifted to its own
       // sentence while the two warn lines stayed shared.
-      const debug = vi.fn();
+      const debug = vi.fn<(m: string) => void>();
       const sink = { warn: warn as unknown as (m: string) => void, debug };
       const s3 = stub({ ReplicationConfiguration: { Rules: [enabledRule()] } });
 
@@ -658,7 +658,7 @@ describe('S3 replication purge gap (issue #2447)', () => {
         if (attempt === 1) throw null;
         return { ReplicationConfiguration: { Rules: [enabledRule()] } };
       });
-      const debug = vi.fn();
+      const debug = vi.fn<(m: string) => void>();
 
       await warnIfPurgeIsReplicated(s3, BUCKET, [KEY], {
         logger: { warn: warn as unknown as (m: string) => void, debug },
@@ -716,11 +716,45 @@ describe('S3 replication purge gap (issue #2447)', () => {
       expect(recorded).toHaveLength(1);
     });
 
-    it('survives a rejection whose own stringification throws', async () => {
+    it('survives a rejection whose `name` getter throws', async () => {
       // Isolates the cached promise's REJECTION ARM from the null-guards in
       // `errorCodes` / `httpStatus`: the guards pass this value through happily
-      // and `describe()` is what explodes, so only the rejection arm keeps the
-      // failure out of the cache. Without it the pair is merely jointly fenced.
+      // and `errorCodes`' read of `name` is what explodes, inside `runProbe`'s
+      // own catch, so only the rejection arm keeps the failure out of the
+      // cache. Without it the pair is merely jointly fenced.
+      let attempt = 0;
+      const s3 = {
+        send: (cmd: unknown) => {
+          const c = cmd as { constructor: { name: string }; input: Record<string, unknown> };
+          recorded.push({ name: c.constructor.name, bucket: undefined, owner: undefined });
+          attempt += 1;
+          if (attempt === 1) {
+            return Promise.reject({
+              get name(): string {
+                throw new Error('name getter exploded');
+              },
+            });
+          }
+          return Promise.resolve({ ReplicationConfiguration: { Rules: [enabledRule()] } });
+        },
+      };
+
+      await expect(
+        warnIfPurgeIsReplicated(s3, BUCKET, [KEY], { logger: logger() })
+      ).resolves.toBeUndefined();
+      expect(warn).not.toHaveBeenCalled();
+
+      await warnIfPurgeIsReplicated(s3, BUCKET, [KEY], { logger: logger() });
+      expect(recorded).toHaveLength(2);
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports a rejection whose own stringification throws instead of out-throwing it (go-to-k/cdkd#3361)', async () => {
+      // `describe()` used to be `String(error)` for a non-`Error`, which
+      // THROWS for a hostile `toString` (and a null-prototype object). It now
+      // renders `describeAwsFailure`'s fallback sentence, so the probe's own
+      // catch answers `unknown` with that reason instead of rejecting.
+      const debug = vi.fn<(m: string) => void>();
       let attempt = 0;
       const s3 = {
         send: (cmd: unknown) => {
@@ -740,10 +774,15 @@ describe('S3 replication purge gap (issue #2447)', () => {
       };
 
       await expect(
-        warnIfPurgeIsReplicated(s3, BUCKET, [KEY], { logger: logger() })
+        warnIfPurgeIsReplicated(s3, BUCKET, [KEY], { logger: { warn: logger().warn, debug } })
       ).resolves.toBeUndefined();
       expect(warn).not.toHaveBeenCalled();
+      expect(debug).toHaveBeenCalledTimes(1);
+      const line = String(debug.mock.calls[0]?.[0]);
+      expect(line).toContain(': a value that could not be converted to text');
+      expect(line).not.toContain('stringification exploded');
 
+      // Still evicted (`unknown` / `retry: true`), so the next purge re-probes.
       await warnIfPurgeIsReplicated(s3, BUCKET, [KEY], { logger: logger() });
       expect(recorded).toHaveLength(2);
       expect(warn).toHaveBeenCalledTimes(1);

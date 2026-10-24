@@ -1,5 +1,6 @@
 import { GetBucketReplicationCommand, type S3Client } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { displaySafe } from '../utils/display-safe.js';
 import { withPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
 import { injectiveKey } from './record-keys.js';
@@ -223,8 +224,7 @@ const TRANSIENT_CREDENTIAL_CODES = new Set([
   'RequestExpired',
 ]);
 
-const describe = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
+const describe = (error: unknown): string => describeAwsFailure(error).detail;
 
 /**
  * Every wire error code the value offers, `name` and `Code` alike.
@@ -250,9 +250,12 @@ const describe = (error: unknown): string =>
  * rejection ever reaches the cache** — and the honest statement of their
  * relationship, measured one mutation at a time on 2026-09-05, is:
  *
- * - removing the ARM alone REDS a case (a rejection whose own `toString`
- *   throws: the guards pass that value through and `describe()` is what
- *   raises), so the arm is independently fenced;
+ * - removing the ARM alone REDS a case (a rejection whose `name` GETTER
+ *   throws: the null-guards pass that value through and `errorCodes`' read of
+ *   `name` is what raises, inside `runProbe`'s catch), so the arm is
+ *   independently fenced. `describe()` no longer raises for a value `String()`
+ *   cannot convert -- a hostile `toString` gets `describeAwsFailure`'s fallback
+ *   (go-to-k/cdkd#3361) -- so it is no longer the case that reaches the arm;
  * - removing these GUARDS alone leaves the CACHING behaviour identical:
  *   `errorCodes` runs inside `runProbe`'s own catch, so a TypeError here is
  *   caught by the arm and produces the same `unknown` / `retry: true` /
