@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parse } from 'yaml';
 
 /**
  * Issue [#5254](https://github.com/go-to-k/cdkd/issues/5254): the siblings of
@@ -136,17 +137,54 @@ describe('JSON.parse failures quote no body (issue #5254)', () => {
     expectLeakTokenOnlyAtDebug(loggerSpies);
   });
 
-  it('parseCfnTemplate (YAML) keeps the reason and position, not the code frame', () => {
+  it('parseCfnTemplate (YAML) renders the error code and position, not the code frame', () => {
     const body = 'Resources:\n  A:\n    Password: hunter2SECRET\n   bad: [unclosed\n';
     // Premise: the `yaml` library quotes the source lines in its message.
+    expect(() => parse(body)).toThrow(LEAK_TOKEN);
     const err = caughtFrom(() => parseCfnTemplate(body));
-    expect(loggedText(loggerSpies.debug)).toContain(LEAK_TOKEN);
-    expect((err as Error).message).toMatch(
-      /^Template is not valid YAML\. Cause: \S.* at line \d+, column \d+$/
+    expect((err as Error).message).toBe(
+      'Template is not valid YAML. Cause: YAMLParseError BAD_INDENT at line 4, column 1'
     );
     expectNoLeakIn(err);
-    for (const fn of [loggerSpies.info, loggerSpies.warn, loggerSpies.error]) {
-      expect(loggedText(fn)).not.toContain(LEAK_TOKEN);
+    expectLeakTokenOnlyAtDebug(loggerSpies);
+  });
+
+  // Reasons that interpolate a source token into the message's FIRST line,
+  // and an unresolved alias, which `yaml` throws as a `ReferenceError` naming
+  // the alias.
+  it.each([
+    ['a block scalar header', 'Password: |hunter2SECRET\n', 'YAMLParseError'],
+    ['a stray token', 'Password: >2 hunter2SECRET\n', 'YAMLParseError'],
+    ['an unresolved alias', 'Password: *hunter2SECRET\n', 'ReferenceError'],
+  ])('parseCfnTemplate (YAML): %s names no source token', (_shape, body, cause) => {
+    let first = '';
+    try {
+      parse(body);
+    } catch (e) {
+      first = String((e as Error).message).split('\n', 1)[0]!;
+    }
+    // Premise: the token is in the first line, so a first-line rule leaks it.
+    expect(first).toContain(LEAK_TOKEN);
+    const err = caughtFrom(() => parseCfnTemplate(body));
+    expect((err as Error).message).toMatch(
+      new RegExp(`^Template is not valid YAML\\. Cause: ${cause}( [A-Z_]+ at line \\d+, column \\d+)?$`)
+    );
+    expectNoLeakIn(err);
+    expectLeakTokenOnlyAtDebug(loggerSpies);
+  });
+
+  it('parseCfnTemplate (YAML): a warning is a warn line without the code frame, never stderr', () => {
+    const emit = vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
+    try {
+      const body = 'Resources:\n  A:\n    Password: !hunter2SECRET value\n';
+      expect(parseCfnTemplate(body)).toEqual({ Resources: { A: { Password: 'value' } } });
+      expect(emit).not.toHaveBeenCalled();
+      expect(loggedText(loggerSpies.warn)).toBe(
+        'Template YAML warning: YAMLWarning TAG_RESOLVE_FAILED at line 3, column 15'
+      );
+      expectLeakTokenOnlyAtDebug(loggerSpies);
+    } finally {
+      emit.mockRestore();
     }
   });
 
@@ -180,6 +218,7 @@ describe('JSON.parse failures quote no body (issue #5254)', () => {
     );
     expect((err as Error).message).toContain('invalid JSON reading');
     expectNoLeakIn(err);
+    expectLeakTokenOnlyAtDebug(loggerSpies);
   });
 
   it('CcApiContextProvider: GetResource model', async () => {

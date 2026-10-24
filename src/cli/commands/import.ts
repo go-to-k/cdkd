@@ -21,7 +21,7 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   describeJsonParseFailure,
-  jsonParseFailureDebugDetail,
+  parseFailureDebugDetail,
   utf8ByteLength,
 } from '../../utils/json-parse-failure.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
@@ -2079,7 +2079,7 @@ function parseMappingJson(raw: string, source: string): Record<string, string> {
     // V8's `SyntaxError` quotes a window of the input, so the message names
     // only the failure's offset and size (issue #5254); V8's text goes to
     // `debug` only.
-    getLogger().debug(safeMsg`${source} failed to parse: ${jsonParseFailureDebugDetail(err)}`);
+    getLogger().debug(safeMsg`${source} failed to parse: ${parseFailureDebugDetail(err)}`);
     throw new Error(
       `Failed to parse ${source} as JSON: ` + describeJsonParseFailure(err, utf8ByteLength(raw))
     );
@@ -4863,7 +4863,7 @@ function readNestedChildTemplate(
     // plaintext value, so the message names only the failure's offset and
     // size (issue #5254); V8's text goes to `debug` only.
     getLogger().debug(
-      safeMsg`Nested-stack template for '${childLogicalId}' failed to parse: ${jsonParseFailureDebugDetail(err)}`
+      safeMsg`Nested-stack template for '${childLogicalId}' failed to parse: ${parseFailureDebugDetail(err)}`
     );
     throw new Error(
       `Failed to parse nested-stack template for '${childLogicalId}' at ` +

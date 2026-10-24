@@ -5,7 +5,7 @@ import { getLogger } from '../utils/logger.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
   describeJsonParseFailure,
-  jsonParseFailureDebugDetail,
+  parseFailureDebugDetail,
   utf8ByteLength,
 } from '../utils/json-parse-failure.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
@@ -52,7 +52,7 @@ function loadJsonConfig(filePath: string): CdkConfig | null {
     // only the failure's offset and size; V8's text goes to `debug` (issue
     // #5254). `content` is set exactly when the read succeeded.
     if (error instanceof SyntaxError && content !== undefined) {
-      logger.debug(safeMsg`${filePath} failed to parse: ${jsonParseFailureDebugDetail(error)}`);
+      logger.debug(safeMsg`${filePath} failed to parse: ${parseFailureDebugDetail(error)}`);
       logger.warn(
         safeMsg`Failed to parse ${filePath}: ${describeJsonParseFailure(error, utf8ByteLength(content))}`
       );

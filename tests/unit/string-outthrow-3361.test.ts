@@ -30,6 +30,12 @@ vi.mock('yaml', async (importOriginal) => {
     ...actual,
     parse: (...args: Parameters<typeof actual.parse>) =>
       yamlParseOverride.fn !== undefined ? yamlParseOverride.fn() : actual.parse(...args),
+    // `parseCfnTemplate` parses through `parseDocument` since #5254, which
+    // stopped `parse`'s `process.emitWarning` printing a code frame.
+    parseDocument: (...args: Parameters<typeof actual.parseDocument>) =>
+      yamlParseOverride.fn !== undefined
+        ? yamlParseOverride.fn()
+        : actual.parseDocument(...args),
   };
 });
 

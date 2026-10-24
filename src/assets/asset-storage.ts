@@ -19,7 +19,7 @@ import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import { CdkdError, normalizeAwsError } from '../utils/error-handler.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
-  jsonParseFailureDebugDetail,
+  parseFailureDebugDetail,
   jsonParseFailureStandIn,
   utf8ByteLength,
 } from '../utils/json-parse-failure.js';
@@ -592,7 +592,7 @@ export function parseBootstrapMarker(body: string, markerKey: string): Bootstrap
     // a cause on its `Caused by:` line. The stand-in is still a `SyntaxError`
     // and carries the offset and size; V8's own text goes to `debug` only.
     getLogger().debug(
-      safeMsg`${markerSubject(markerKey)} failed to parse: ${jsonParseFailureDebugDetail(error)}`
+      safeMsg`${markerSubject(markerKey)} failed to parse: ${parseFailureDebugDetail(error)}`
     );
     throw new CdkdError(
       `${markerSubject(markerKey)} in the state bucket is not valid JSON. ` +

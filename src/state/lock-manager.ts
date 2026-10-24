@@ -19,7 +19,7 @@ import {
 import { LockError } from '../utils/error-handler.js';
 import {
   describeJsonParseFailure,
-  jsonParseFailureDebugDetail,
+  parseFailureDebugDetail,
   utf8ByteLength,
 } from '../utils/json-parse-failure.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
@@ -724,7 +724,7 @@ export class LockManager {
         // #5254). No reader keys on this cause. A `LockError` is rethrown
         // unchanged by the catch below. V8's text goes to `debug` only.
         this.logger.debug(
-          safeMsg`Lock file for stack ${shownStack} failed to parse: ${jsonParseFailureDebugDetail(parseError)}`
+          safeMsg`Lock file for stack ${shownStack} failed to parse: ${parseFailureDebugDetail(parseError)}`
         );
         throw new LockError(
           `Failed to get lock info for stack ${shownStack}: ` +

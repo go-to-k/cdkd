@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   describeJsonParseFailure,
+  jsonParseFailureStandIn,
+  parseFailureDebugDetail,
+  parseJsonNamingNoBody,
   utf8ByteLength,
 } from '../../../src/utils/json-parse-failure.js';
+import { UNRENDERABLE } from '../../../src/utils/display-safe.js';
 
 function parseError(body: string): unknown {
   try {
@@ -72,5 +76,55 @@ describe('describeJsonParseFailure (issue #5247)', () => {
   it('counts UTF-8 bytes, not UTF-16 code units', () => {
     expect(utf8ByteLength('ö')).toBe(2);
     expect(utf8ByteLength('\u{1F600}')).toBe(4);
+  });
+});
+
+describe('parseFailureDebugDetail (issue #5254)', () => {
+  it('keeps V8 text but drops the non-ASCII bytes it quotes from the body', () => {
+    // A bidi override and a plain non-ASCII letter inside V8's quote window:
+    // the denylist would keep the `ö`, so only the allowlist drops it.
+    const body = '[1,\u202e\u00f6x hunter2]';
+    const err = parseError(body);
+    expect((err as Error).message).toContain('\u00f6');
+    const line = parseFailureDebugDetail(err);
+    expect(line).toContain('hunter2');
+    expect(line).not.toMatch(/[^\x20-\x7e]/);
+  });
+
+  it('answers UNRENDERABLE when nothing survives the allowlist', () => {
+    expect(parseFailureDebugDetail(new Error('\u00f6\u00f6'))).toBe(UNRENDERABLE);
+  });
+});
+
+describe('jsonParseFailureStandIn (issue #5254)', () => {
+  it('is a SyntaxError carrying only the offset and size', () => {
+    const body = '{"password":hunter2SECRET,"x":1}';
+    const standIn = jsonParseFailureStandIn(parseError(body), utf8ByteLength(body));
+    expect(standIn).toBeInstanceOf(SyntaxError);
+    expect(standIn.name).toBe('SyntaxError');
+    expect(standIn.message).toBe(`invalid JSON; ${body.length} byte(s) read`);
+    expect(String(standIn.stack)).not.toContain('hunter2');
+  });
+});
+
+describe('parseJsonNamingNoBody (issue #5254)', () => {
+  it('returns the parsed value', () => {
+    expect(parseJsonNamingNoBody('{"a":1}', 'the X', () => undefined)).toEqual({ a: 1 });
+  });
+
+  it('throws the subject and size with no cause, and hands V8 text to debug only', () => {
+    const body = '{"password":hunter2SECRET,"x":1}';
+    const debug: string[] = [];
+    let caught: unknown;
+    try {
+      parseJsonNamingNoBody(body, 'the X', (line) => debug.push(line));
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as Error).message).toBe(
+      `the X is not valid JSON: invalid JSON; ${body.length} byte(s) read`
+    );
+    expect((caught as Error).cause).toBeUndefined();
+    expect(debug.join('\n')).toContain('hunter2');
   });
 });

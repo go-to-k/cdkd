@@ -28,7 +28,7 @@ import { CdkdError, SynthesisError } from '../utils/error-handler.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
   describeJsonParseFailure,
-  jsonParseFailureDebugDetail,
+  parseFailureDebugDetail,
   jsonParseFailureStandIn,
   utf8ByteLength,
 } from '../utils/json-parse-failure.js';
@@ -237,7 +237,7 @@ export class AssemblyReader {
       if (error instanceof SyntaxError && content !== undefined) {
         const bytes = utf8ByteLength(content);
         this.logger.debug(
-          safeMsg`Cloud assembly manifest ${manifestPath} failed to parse: ${jsonParseFailureDebugDetail(error)}`
+          safeMsg`Cloud assembly manifest ${manifestPath} failed to parse: ${parseFailureDebugDetail(error)}`
         );
         throw new SynthesisError(
           `Failed to read cloud assembly manifest from ${displaySafe(manifestPath)}: ` +

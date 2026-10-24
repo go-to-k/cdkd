@@ -21,7 +21,7 @@ import { getLogger } from '../utils/logger.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
   describeJsonParseFailure,
-  jsonParseFailureDebugDetail,
+  parseFailureDebugDetail,
   utf8ByteLength,
 } from '../utils/json-parse-failure.js';
 import {
@@ -812,7 +812,7 @@ function parseTemplateBody(body: unknown): CloudFormationTemplate {
       getLogger()
         .child('MacroExpander')
         .debug(
-          safeMsg`Processed-stage template body failed to parse: ${jsonParseFailureDebugDetail(err)}`
+          safeMsg`Processed-stage template body failed to parse: ${parseFailureDebugDetail(err)}`
         );
       throw new MacroExpansionError(
         `CloudFormation returned a non-JSON Processed-stage template body. ` +

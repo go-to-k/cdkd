@@ -41,11 +41,7 @@ import { parseCreateOnlyPropertyPointers } from './create-only-paths.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from './create-only-snapshot.generated.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { getLogger } from '../utils/logger.js';
-import {
-  describeJsonParseFailure,
-  jsonParseFailureDebugDetail,
-  utf8ByteLength,
-} from '../utils/json-parse-failure.js';
+import { parseJsonNamingNoBody } from '../utils/json-parse-failure.js';
 import { safeMsg } from '../utils/display-safe.js';
 
 /**
@@ -366,22 +362,14 @@ export function isIntrinsicShaped(value: object): boolean {
 /**
  * `JSON.parse` of a DescribeType `Schema`, whose failure names only its offset
  * and size (issue [#5254](https://github.com/go-to-k/cdkd/issues/5254)): the
- * caller's warning interpolates the thrown message, and V8's `SyntaxError`
- * quotes a window of the body. V8's own text goes to `debug` only.
+ * caller's warning interpolates the thrown message.
  */
 function parseRegistrySchema(resourceType: string, schema: string): unknown {
-  try {
-    return JSON.parse(schema);
-  } catch (err) {
+  return parseJsonNamingNoBody(schema, 'the DescribeType schema', (line) =>
     getLogger()
       .child('CreateOnlyProperties')
-      .debug(
-        safeMsg`DescribeType schema for ${resourceType} failed to parse: ${jsonParseFailureDebugDetail(err)}`
-      );
-    throw new Error(
-      `the DescribeType schema is not valid JSON: ${describeJsonParseFailure(err, utf8ByteLength(schema))}`
-    );
-  }
+      .debug(safeMsg`${resourceType}: ${line}`)
+  );
 }
 
 /**

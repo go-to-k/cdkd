@@ -591,8 +591,8 @@ describe('the command sites (go-to-k/cdkd#3179, go-to-k/cdkd#3027)', () => {
       mockReadCurrentState.mockRejectedValue(v8);
       await runState(['refresh-observed', '--all', '--yes']);
       expect(lines(warnSpy)).toContain(
-        '  ✗ S/L (AWS::S3::Bucket): readCurrentState failed — SyntaxError (the parser detail is ' +
-          'withheld because it quotes the body read back)'
+        '  ✗ S/L (AWS::S3::Bucket): readCurrentState failed — SyntaxError (its text is ' +
+          'withheld: a parse error quotes the body it read)'
       );
       expectLeakTokenOnlyAtDebug({ debug: debugSpy, info: infoSpy, warn: warnSpy, error: errorSpy });
     });

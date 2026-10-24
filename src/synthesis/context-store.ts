@@ -4,7 +4,7 @@ import { getLogger } from '../utils/logger.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
   describeJsonParseFailure,
-  jsonParseFailureDebugDetail,
+  parseFailureDebugDetail,
   utf8ByteLength,
 } from '../utils/json-parse-failure.js';
 import { safeMsg } from '../utils/display-safe.js';
@@ -50,7 +50,7 @@ export class ContextStore {
       // #5254). `content` is set exactly when the read succeeded.
       if (error instanceof SyntaxError && content !== undefined) {
         this.logger.debug(
-          safeMsg`cdk.context.json failed to parse: ${jsonParseFailureDebugDetail(error)}`
+          safeMsg`cdk.context.json failed to parse: ${parseFailureDebugDetail(error)}`
         );
         this.logger.warn(
           safeMsg`Failed to parse cdk.context.json: ${describeJsonParseFailure(error, utf8ByteLength(content))}`

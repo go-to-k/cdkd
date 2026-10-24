@@ -16,7 +16,7 @@ import { describeLocalAwsFailureForWarn, redactedAwsCause } from '../../utils/lo
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   describeJsonParseFailure,
-  jsonParseFailureDebugDetail,
+  parseFailureDebugDetail,
   utf8ByteLength,
 } from '../../utils/json-parse-failure.js';
 import {
@@ -1007,9 +1007,7 @@ export function readEnvOverridesFile(
     // V8's `SyntaxError` quotes a window of the file, which holds env values
     // (often secrets), so the message names only the failure's offset and
     // size; V8's text goes to `debug` only (issue #5254).
-    getLogger().debug(
-      safeMsg`--env-vars file failed to parse: ${jsonParseFailureDebugDetail(err)}`
-    );
+    getLogger().debug(safeMsg`--env-vars file failed to parse: ${parseFailureDebugDetail(err)}`);
     throw new Error(
       `Failed to parse --env-vars file '${filePath}' as JSON: ${describeJsonParseFailure(err, utf8ByteLength(raw))}`
     );

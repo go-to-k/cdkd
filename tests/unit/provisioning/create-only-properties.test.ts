@@ -4,6 +4,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 const mockCloudFormationSend = vi.fn();
 const mockLoggerWarn = vi.fn();
+const mockLoggerInfo = vi.fn();
+const mockLoggerError = vi.fn();
 const mockLoggerDebug = vi.fn();
 // Stands in for `runWithStackAwsClients`: a scope's own CloudFormation client.
 const clientScope = new AsyncLocalStorage<{ send: (...args: unknown[]) => unknown }>();
@@ -18,9 +20,9 @@ vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     child: () => ({
       debug: mockLoggerDebug,
-      info: vi.fn(),
+      info: mockLoggerInfo,
       warn: mockLoggerWarn,
-      error: vi.fn(),
+      error: mockLoggerError,
     }),
     debug: vi.fn(),
     info: vi.fn(),
@@ -39,6 +41,7 @@ import {
 import {
   LEAK_BODY,
   LEAK_TOKEN,
+  expectLeakTokenOnlyAtDebug,
   expectV8QuotesLeakToken,
   loggedText,
 } from '../_json-parse-leak.js';
@@ -1011,7 +1014,11 @@ describe('an unparseable DescribeType schema (issue #5254)', () => {
     expect(warned).toContain(
       `the DescribeType schema is not valid JSON: invalid JSON; ${Buffer.byteLength(LEAK_BODY, 'utf8')} byte(s) read`
     );
-    expect(warned).not.toContain(LEAK_TOKEN);
-    expect(loggedText(mockLoggerDebug)).toContain(LEAK_TOKEN);
+    expectLeakTokenOnlyAtDebug({
+      debug: mockLoggerDebug,
+      info: mockLoggerInfo,
+      warn: mockLoggerWarn,
+      error: mockLoggerError,
+    });
   });
 });

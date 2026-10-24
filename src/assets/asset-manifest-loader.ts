@@ -14,7 +14,7 @@ import { getLogger } from '../utils/logger.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
   describeJsonParseFailure,
-  jsonParseFailureDebugDetail,
+  parseFailureDebugDetail,
   utf8ByteLength,
 } from '../utils/json-parse-failure.js';
 
@@ -238,7 +238,7 @@ export function parseAssetManifestBody(content: string, manifestPath: string): A
     getLogger()
       .child('AssetManifestLoader')
       .debug(
-        safeMsg`Asset manifest ${manifestPath} failed to parse: ${jsonParseFailureDebugDetail(err)}`
+        safeMsg`Asset manifest ${manifestPath} failed to parse: ${parseFailureDebugDetail(err)}`
       );
     throw new Error(
       `Failed to load asset manifest from ${manifestPath}: ` +
@@ -301,7 +301,7 @@ export class AssetManifestLoader {
       // `SyntaxError` here is the parse's.
       if (error instanceof SyntaxError && content !== undefined) {
         this.logger.debug(
-          safeMsg`Asset manifest ${manifestPath} failed to parse: ${jsonParseFailureDebugDetail(error)}`
+          safeMsg`Asset manifest ${manifestPath} failed to parse: ${parseFailureDebugDetail(error)}`
         );
         throw new Error(
           `Failed to load asset manifest from ${manifestPath}: ` +

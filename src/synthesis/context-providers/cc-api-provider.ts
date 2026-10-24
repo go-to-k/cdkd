@@ -8,7 +8,7 @@ import { getLogger } from '../../utils/logger.js';
 import { displayIdent, safeMsg } from '../../utils/display-safe.js';
 import {
   describeJsonParseFailure,
-  jsonParseFailureDebugDetail,
+  parseFailureDebugDetail,
   utf8ByteLength,
 } from '../../utils/json-parse-failure.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
@@ -26,7 +26,7 @@ function parseResourceModel(body: string, typeName: string): ResourceModel {
     return JSON.parse(body) as ResourceModel;
   } catch (err) {
     getLogger().debug(
-      safeMsg`Cloud Control resource model for ${displayIdent(typeName)} failed to parse: ${jsonParseFailureDebugDetail(err)}`
+      safeMsg`Cloud Control resource model for ${displayIdent(typeName)} failed to parse: ${parseFailureDebugDetail(err)}`
     );
     throw new Error(
       `Cloud Control returned a resource model for ${displayIdent(typeName)} that is not ` +
