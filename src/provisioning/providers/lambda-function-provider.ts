@@ -1026,7 +1026,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    const raw = error instanceof Error ? error.message : String(error);
+    // `.detail` is byte-identical to the `.message` / `String()` ternary and
+    // cannot throw on an unconvertible value (go-to-k/cdkd#3361).
+    const raw = describeAwsFailure(error).detail;
     // A failed waiter's payload is withheld in the caught error itself.
     const text = withholdWaiterPayload(error, log.mask)?.masked ?? log.mask(raw);
     const wrapped = build(text);

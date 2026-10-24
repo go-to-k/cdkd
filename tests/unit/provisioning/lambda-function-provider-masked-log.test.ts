@@ -1149,6 +1149,20 @@ describe('LambdaFunctionProvider masked log sinks (issue #2177)', () => {
       expect(retryClassificationText(failure)).toContain(LONG);
       expect(failure.message).not.toContain(LONG);
     });
+
+    // go-to-k/cdkd#3361: `wrapMaskedError` rendered a non-`Error` with a bare
+    // `String()`, so a value it cannot convert replaced the create failure with
+    // a TypeError.
+    it('wraps a throw String() cannot convert instead of throwing a TypeError', async () => {
+      fakeLambda('plain-fn', {
+        CreateFunctionCommand: () => {
+          throw Object.create(null);
+        },
+      });
+      const failure = await thrown(provider.create('Fn', TYPE, createProps(), { maskSecrets }));
+      expect(failure).toBeInstanceOf(ProvisioningError);
+      expect(failure.message).toContain('Failed to create Lambda function Fn');
+    });
   });
 
   describe('secrets only the operation masker knows stay out of the printed cause', () => {

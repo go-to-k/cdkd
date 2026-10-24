@@ -490,6 +490,18 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     expect(childLogger.warn).not.toHaveBeenCalledWith(expect.stringContaining('left on'));
   });
 
+  // go-to-k/cdkd#3361: `isRefusedEcho` read the echo failure's `name` with a
+  // bare `String()`. A thrown value's `name` is as arbitrary as the value, and
+  // one `String()` cannot convert threw a TypeError out of the echo's catch in
+  // place of the delete's own refusal.
+  it('a refused echo whose name cannot be stringified does not fall back, and the delete reports its own refusal', async () => {
+    const err = named('InvalidParameterException', 'refused');
+    Object.defineProperty(err, 'name', { value: Object.create(null) });
+    script({ echoError: { INACTIVE: err }, dels: [named('InvalidParameterException', 'deletion protection is activated')] });
+    await expect(del()).rejects.toSatisfy(says('deletion protection is activated'));
+    expect(updates()).toHaveLength(1);
+  });
+
   it('names cognito-idp:UpdateUserPool when the echo is access-denied', async () => {
     script({ echoError: { INACTIVE: named('AccessDeniedException', 'no') }, dels: [domainRefusal()] });
     await expect(del()).rejects.toThrow();

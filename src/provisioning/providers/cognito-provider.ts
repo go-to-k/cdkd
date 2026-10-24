@@ -41,7 +41,7 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
-import { describeAwsFailure, isAwsAuthoredFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, isAwsAuthoredFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import {
   isThrottlingError,
@@ -335,10 +335,12 @@ function isAmbiguousWriteFailure(error: unknown): boolean {
 }
 
 export function isRefusedEcho(error: unknown): boolean {
+  // `safeStringify`: a thrown value's `name` is as arbitrary as the value, and
+  // this gates a catch's bare-write fallback (go-to-k/cdkd#3361).
   return (
     typeof error === 'object' &&
     error !== null &&
-    REFUSED_ECHO_ERRORS.has(String((error as { name?: unknown }).name))
+    REFUSED_ECHO_ERRORS.has(safeStringify((error as { name?: unknown }).name))
   );
 }
 
@@ -3929,7 +3931,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     echoError?: unknown
   ): void {
     const name =
-      typeof error === 'object' && error !== null ? String((error as { name?: unknown }).name) : '';
+      typeof error === 'object' && error !== null ? safeStringify((error as { name?: unknown }).name) : '';
     const accessHint = /AccessDenied|NotAuthorized|Unauthorized/.test(name)
       ? ' The caller needs cognito-idp:UpdateUserPool.'
       : '';
