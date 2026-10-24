@@ -49,6 +49,17 @@ vi.mock('@aws-sdk/client-redshift', () => ({
   DescribeClustersCommand: vi.fn((input: unknown) => ({ __type: 'DescribeClusters', input })),
 }));
 
+// go-to-k/cdkd#5260: an imported HTTP API's definition change goes through
+// ReimportApi on a client the provider builds itself.
+const mockApiGwV2Send = vi.hoisted(() => vi.fn());
+const mockApiGwV2Client = vi.hoisted(() =>
+  vi.fn(() => ({ send: mockApiGwV2Send, destroy: vi.fn() }))
+);
+vi.mock('@aws-sdk/client-apigatewayv2', () => ({
+  ApiGatewayV2Client: mockApiGwV2Client,
+  ReimportApiCommand: vi.fn((input: unknown) => ({ __type: 'ReimportApi', input })),
+}));
+
 vi.mock('@aws-sdk/client-opensearch', () => ({
   OpenSearchClient: vi.fn(() => ({ send: mockOpenSearchSend })),
   DescribeDomainCommand: vi.fn((input: unknown) => ({ __type: 'DescribeDomain', input })),
@@ -2552,6 +2563,301 @@ describe('CloudControlProvider update: GuardDuty detector read-back keys (go-to-
     expect(updateCalls()).toEqual([]);
   });
 });
+
+describe('CloudControlProvider update: an ApiGatewayV2 Api imported from Body (go-to-k/cdkd#5260)', () => {
+  // No Cloud Control patch can change an imported HTTP API's definition: the
+  // read model's Name / ProtocolType / ... are refused beside Body, and a
+  // `remove /ProtocolType` is refused as a create-only change (both measured
+  // live). The definition goes through ReimportApi; Cloud Control gets the rest.
+  let provider: CloudControlProvider;
+
+  const TYPE = 'AWS::ApiGatewayV2::Api';
+  const BODY_V1 = { openapi: '3.0.1', info: { title: 'probe', version: '1.0' }, paths: {} };
+  const BODY_V2 = { ...BODY_V1, info: { ...BODY_V1.info, description: 'edited' } };
+  // The live schema declares the import keys write-only, so every update
+  // re-adds them; the split must drop those re-adds too.
+  const SCHEMA = {
+    writeOnlyProperties: [
+      '/properties/Body',
+      '/properties/BodyS3Location',
+      '/properties/BasePath',
+      '/properties/FailOnWarnings',
+      '/properties/CredentialsArn',
+    ],
+  };
+
+  function wire(): void {
+    mockCloudControlSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+      const name = cmd.constructor.name;
+      if (name === 'GetResourceCommand') {
+        return Promise.resolve({
+          ResourceDescription: {
+            Identifier: 'api123',
+            Properties: JSON.stringify({ ApiId: 'api123', Name: 'probe', ProtocolType: 'HTTP' }),
+          },
+        });
+      }
+      if (name === 'UpdateResourceCommand') {
+        return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-update' } });
+      }
+      if (name === 'GetResourceRequestStatusCommand') {
+        return Promise.resolve({ ProgressEvent: { OperationStatus: 'SUCCESS', Identifier: 'api123' } });
+      }
+      return Promise.resolve({});
+    });
+    mockApiGwV2Send.mockResolvedValue({ ApiId: 'api123' });
+  }
+
+  function sentPatches(): Array<Array<{ op: string; path: string; value?: unknown }>> {
+    return mockCloudControlSend.mock.calls
+      .filter((c) => c[0]?.constructor?.name === 'UpdateResourceCommand')
+      .map(
+        (c) =>
+          JSON.parse((c[0] as { input: { PatchDocument: string } }).input.PatchDocument) as Array<{
+            op: string;
+            path: string;
+            value?: unknown;
+          }>
+      );
+  }
+
+  function reimports(): unknown[] {
+    return mockApiGwV2Send.mock.calls.map((c) => (c[0] as { input: unknown }).input);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearWriteOnlyPropertiesCache();
+    clearCreateOnlyPropertiesCache();
+    mockCloudControlConfigRegion.mockResolvedValue('us-east-1');
+    mockCloudFormationSend.mockResolvedValue({ Schema: JSON.stringify(SCHEMA) });
+    wire();
+    provider = new CloudControlProvider();
+  });
+
+  it('sends a Body change through ReimportApi, in the Cloud Control region, and no Cloud Control patch', async () => {
+    const result = await provider.update('Api', 'api123', TYPE, { Body: BODY_V2 }, { Body: BODY_V1 });
+
+    expect(reimports()).toEqual([{ ApiId: 'api123', Body: JSON.stringify(BODY_V2) }]);
+    expect(mockApiGwV2Client).toHaveBeenCalledWith(expect.objectContaining({ region: 'us-east-1' }));
+    expect(sentPatches()).toEqual([]);
+    expect(result.wasReplaced).toBe(false);
+    expect(result.sentNothing).toBeUndefined();
+    // With no Cloud Control call, the attributes still come from the read-back
+    // (masked here: the stub schema declares no attribute, so every model key
+    // is a non-attribute one).
+    expect(Object.keys(result.attributes ?? {})).toEqual(
+      expect.arrayContaining(['ApiId', 'Name', 'ProtocolType'])
+    );
+  });
+
+  it('refuses the reimport, non-retryable, when the Cloud Control region cannot be resolved', async () => {
+    mockCloudControlConfigRegion.mockResolvedValue('');
+    const error = await provider
+      .update('Api', 'api123', TYPE, { Body: BODY_V2 }, { Body: BODY_V1 })
+      .then(
+        () => new Error('expected a refusal'),
+        (e: unknown) => e as Error
+      );
+
+    expect(error.message).toContain("could not resolve the Cloud Control client's region");
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect(reimports()).toEqual([]);
+    expect(sentPatches()).toEqual([]);
+  });
+
+  it('sends nothing when the only change is a removed write-only key beside an unchanged Body', async () => {
+    const result = await provider.update(
+      'Api',
+      'api123',
+      TYPE,
+      { Body: BODY_V1 },
+      { Body: BODY_V1, CredentialsArn: 'arn:aws:iam::123456789012:role/r' }
+    );
+
+    expect(reimports()).toEqual([]);
+    expect(sentPatches()).toEqual([]);
+    expect(result.sentNothing).toBe(true);
+  });
+
+  it('passes BasePath and a string-spelled FailOnWarnings to ReimportApi', async () => {
+    await provider.update(
+      'Api',
+      'api123',
+      TYPE,
+      { Body: BODY_V2, BasePath: 'split', FailOnWarnings: 'true' },
+      { Body: BODY_V1, BasePath: 'split', FailOnWarnings: 'true' }
+    );
+
+    expect(reimports()).toEqual([
+      { ApiId: 'api123', Body: JSON.stringify(BODY_V2), Basepath: 'split', FailOnWarnings: true },
+    ]);
+  });
+
+  it('sends the rest of a Body + Description change through Cloud Control, without the import keys', async () => {
+    await provider.update(
+      'Api',
+      'api123',
+      TYPE,
+      { Body: BODY_V2, Description: 'd2' },
+      { Body: BODY_V1, Description: 'd1' }
+    );
+
+    expect(reimports()).toHaveLength(1);
+    expect(sentPatches()).toEqual([[{ op: 'replace', path: '/Description', value: 'd2' }]]);
+  });
+
+  it('a Tags-only change leaves the unchanged Body alone and drops its write-only re-add', async () => {
+    await provider.update(
+      'Api',
+      'api123',
+      TYPE,
+      { Body: BODY_V1, Tags: { team: 'b' } },
+      { Body: BODY_V1, Tags: { team: 'a' } }
+    );
+
+    expect(reimports()).toEqual([]);
+    expect(sentPatches()).toEqual([[{ op: 'replace', path: '/Tags', value: { team: 'b' } }]]);
+  });
+
+  it('sends nothing for an unchanged Body (regression guard)', async () => {
+    const result = await provider.update('Api', 'api123', TYPE, { Body: BODY_V1 }, { Body: BODY_V1 });
+
+    expect(reimports()).toEqual([]);
+    expect(sentPatches()).toEqual([]);
+    expect(result.sentNothing).toBe(true);
+  });
+
+  it('refuses a BodyS3Location change, non-retryable, before any write', async () => {
+    const error = await provider
+      .update(
+        'Api',
+        'api123',
+        TYPE,
+        { BodyS3Location: { Bucket: 'b', Key: 'v2.yaml' } },
+        { BodyS3Location: { Bucket: 'b', Key: 'v1.yaml' } }
+      )
+      .then(
+        () => new Error('expected a refusal'),
+        (e: unknown) => e as Error
+      );
+
+    expect(error.message).toContain('the change is to BodyS3Location');
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect(reimports()).toEqual([]);
+    expect(sentPatches()).toEqual([]);
+  });
+
+  it('refuses an import-option change on an API defined by BodyS3Location, naming that case', async () => {
+    const location = { Bucket: 'b', Key: 'v1.yaml' };
+    const error = await provider
+      .update(
+        'Api',
+        'api123',
+        TYPE,
+        { BodyS3Location: location, BasePath: 'split' },
+        { BodyS3Location: location, BasePath: 'ignore' }
+      )
+      .then(
+        () => new Error('expected a refusal'),
+        (e: unknown) => e as Error
+      );
+
+    expect(error.message).toContain(
+      'or to an import option (BasePath / FailOnWarnings) on an API defined by BodyS3Location'
+    );
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect(reimports()).toEqual([]);
+    expect(sentPatches()).toEqual([]);
+  });
+
+  it('re-sends an unchanged declared Description after a reimport, which can overwrite it', async () => {
+    await provider.update(
+      'Api',
+      'api123',
+      TYPE,
+      { Body: BODY_V2, Description: 'declared' },
+      { Body: BODY_V1, Description: 'declared' }
+    );
+
+    expect(reimports()).toHaveLength(1);
+    expect(sentPatches()).toEqual([[{ op: 'add', path: '/Description', value: 'declared' }]]);
+  });
+
+  it('a failed ReimportApi throws and sends no Cloud Control update', async () => {
+    mockApiGwV2Send.mockRejectedValue(
+      Object.assign(new Error('Invalid OpenAPI definition'), {
+        name: 'BadRequestException',
+        $metadata: { httpStatusCode: 400 },
+      })
+    );
+    const error = await provider
+      .update(
+        'Api',
+        'api123',
+        TYPE,
+        { Body: BODY_V2, Description: 'd2' },
+        { Body: BODY_V1, Description: 'd1' }
+      )
+      .then(
+        () => new Error('expected the update to fail'),
+        (e: unknown) => e as Error
+      );
+
+    expect(error.message).toContain('UPDATE failed for Api: Invalid OpenAPI definition');
+    expect(sentPatches()).toEqual([]);
+  });
+
+  it('a Cloud Control failure after a successful reimport is thrown as the update failure', async () => {
+    mockCloudControlSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+      const name = cmd.constructor.name;
+      if (name === 'UpdateResourceCommand') {
+        return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-update' } });
+      }
+      if (name === 'GetResourceRequestStatusCommand') {
+        return Promise.resolve({
+          ProgressEvent: {
+            OperationStatus: 'FAILED',
+            TypeName: TYPE,
+            ErrorCode: 'InvalidRequest',
+            StatusMessage: 'Tags are invalid',
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+    const error = await provider
+      .update(
+        'Api',
+        'api123',
+        TYPE,
+        { Body: BODY_V2, Tags: { team: 'b' } },
+        { Body: BODY_V1, Tags: { team: 'a' } }
+      )
+      .then(
+        () => new Error('expected the update to fail'),
+        (e: unknown) => e as Error
+      );
+
+    expect(reimports()).toHaveLength(1);
+    expect(error).toBeInstanceOf(CloudControlOperationFailedError);
+    expect(error.message).toContain('UPDATE failed for Api: Tags are invalid');
+  });
+
+  it('leaves an API that imports nothing on the Cloud Control patch', async () => {
+    await provider.update(
+      'Api',
+      'api123',
+      TYPE,
+      { Name: 'probe', ProtocolType: 'HTTP', Description: 'edited' },
+      { Name: 'probe', ProtocolType: 'HTTP' }
+    );
+
+    expect(reimports()).toEqual([]);
+    expect(sentPatches()).toEqual([[{ op: 'add', path: '/Description', value: 'edited' }]]);
+  });
+});
+
 
 describe('CloudControlProvider - phase timings of a wait (go-to-k/cdkd#5200)', () => {
   let provider: CloudControlProvider;
