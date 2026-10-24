@@ -527,6 +527,34 @@ describe.each(PROVIDERS)(
       );
     }, 120_000);
 
+    // go-to-k/cdkd#2319: the class is AWS-authored text, so the delete's
+    // masker must reach the re-enable report. The GlobalTable delete is
+    // another lane's file.
+    it.skipIf(provider.resourceType !== 'AWS::DynamoDB::Table')(
+      'masks a secret spelled in the failed re-enable class',
+      async () => {
+        install({
+          protectionOn: true,
+          onDelete: () => Promise.reject(terminalDeleteRefusal()),
+          reEnableFails: true,
+          reEnableError: () => Object.assign(new Error('denied'), { name: 'Denieds3cr3tException', $fault: 'client', $metadata: { httpStatusCode: 400 } }),
+        });
+
+        await expect(
+          provider
+            .make()
+            .delete(LOGICAL_ID, TABLE_NAME, provider.resourceType, {}, {
+              ...REMOVE_PROTECTION,
+              maskSecrets: (t: string) => t.split('s3cr3t').join('***'),
+            })
+        ).rejects.toThrow(/Attempt to change a resource which is still in use/);
+
+        expect(errorLines()).toContain('(Denied***Exception. Re-run with --verbose');
+        expect(errorLines()).not.toContain('s3cr3t');
+      },
+      120_000
+    );
+
     it('re-enables the guard when a Ctrl-C aborts the path after the flip', async () => {
       install(provider.armInterruptRoute(fireInterrupt));
 

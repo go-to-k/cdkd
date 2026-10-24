@@ -688,6 +688,9 @@ export async function compensateProtectionFlip(
     // The class (or a cdkd-authored text) in the line; AWS's own text at debug.
     const detail = mask(failure.summary);
     if (failure.redacted) {
+      // Masked before `safeMsg` too: it flattens line breaks and control
+      // characters inside the value, which can split a secret the outer pass
+      // would then miss (the #5180 shape of `observeThenDisableProtection`).
       opts.logger.debug(
         mask(
           safeMsg`${site.subject} ${opts.logicalId}: re-enabling ${site.guardName} on ` +

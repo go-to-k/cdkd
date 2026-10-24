@@ -3920,6 +3920,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
           physicalId,
           typeLabel: 'table',
           logger: this.logger,
+          mask: context?.maskSecrets,
           ...(context?.expectedRegion ? { region: context.expectedRegion } : {}),
           reEnable: async () => {
             await this.dynamoDBClient.send(
