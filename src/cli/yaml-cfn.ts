@@ -53,7 +53,7 @@ import {
 } from 'yaml';
 import type { CollectionTag, ScalarTag } from 'yaml';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
-import { displaySafe, safeMsg } from '../utils/display-safe.js';
+import { safeMsg } from '../utils/display-safe.js';
 import {
   describeJsonParseFailure,
   parseFailureDebugDetail,
@@ -209,10 +209,17 @@ const CUSTOM_TAGS = buildCustomTags();
 
 /**
  * The reason cdkd's own `!GetAtt` resolver raises for a dot-less scalar. The
- * `yaml` library reports it as a `TAG_RESOLVE_FAILED` error whose first line
- * is this reason, and {@link describeYamlFinding} keeps that line.
+ * `yaml` library reports it as a `TAG_RESOLVE_FAILED` error whose message
+ * starts with this reason, and {@link describeYamlFinding} keeps only this
+ * fixed text, never the scalar.
  */
 const GETATT_SHAPE_REFUSAL = "!GetAtt requires '<LogicalId>.<Attribute>'";
+
+/**
+ * The `yaml` library's one fixed-text `ReferenceError` (`toJS`'s alias
+ * expansion cap). It names no source token, so it is kept as the reason.
+ */
+const YAML_ALIAS_EXHAUSTION = 'Excessive alias count indicates a resource exhaustion attack';
 
 /**
  * A `yaml` error or warning WITHOUT the template text it quotes (issue
@@ -221,23 +228,26 @@ const GETATT_SHAPE_REFUSAL = "!GetAtt requires '<LogicalId>.<Attribute>'";
  * of the offending source lines, and some reasons interpolate a source token
  * too (`Not a YAML token: <token>`, `Block scalar header includes extra
  * characters: <header>`, `Invalid escape sequence <seq>`), so the rendering is
- * the error CODE, a fixed enum, and the position. The one free-text reason
- * kept is cdkd's own `!GetAtt` refusal, which names the scalar it refused. A
- * non-`YAMLError` (an unresolved alias is a `ReferenceError` naming the alias)
- * renders as its class name only.
+ * the error CODE, a fixed enum, and the position. cdkd's own `!GetAtt` refusal
+ * keeps its fixed reason, never the scalar it refused. A non-`YAMLError` (an
+ * unresolved alias is a `ReferenceError` naming the alias) renders as its
+ * class name, except the library's fixed alias-exhaustion text.
  */
 function describeYamlFinding(err: unknown): string {
   if (err instanceof YAMLError) {
-    const reason = err.message.split('\n', 1)[0]!.replace(/:$/, '');
-    if (err.code === 'TAG_RESOLVE_FAILED' && reason.startsWith(GETATT_SHAPE_REFUSAL)) {
-      // The refused scalar is template text, so it is flattened like any other
-      // value interpolated into a message.
-      return displaySafe(reason);
-    }
     const at = err.linePos?.[0];
-    return `${err.name} ${err.code}${at ? ` at line ${at.line}, column ${at.col}` : ''}`;
+    const where = at ? ` at line ${at.line}, column ${at.col}` : '';
+    if (err.code === 'TAG_RESOLVE_FAILED' && err.message.startsWith(GETATT_SHAPE_REFUSAL)) {
+      return `${GETATT_SHAPE_REFUSAL}${where}`;
+    }
+    return `${err.name} ${err.code}${where}`;
   }
-  return err instanceof Error ? err.name || 'Error' : describeAwsFailure(err).detail;
+  if (err instanceof Error) {
+    return err.message === YAML_ALIAS_EXHAUSTION
+      ? `${err.name}: ${YAML_ALIAS_EXHAUSTION}`
+      : err.name || 'Error';
+  }
+  return describeAwsFailure(err).detail;
 }
 
 /**

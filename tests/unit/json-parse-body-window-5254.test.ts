@@ -173,10 +173,32 @@ describe('JSON.parse failures quote no body (issue #5254)', () => {
     expectLeakTokenOnlyAtDebug(loggerSpies);
   });
 
-  it("parseCfnTemplate (YAML): cdkd's !GetAtt refusal keeps its reason, flattened", () => {
-    const err = caughtFrom(() => parseCfnTemplate('X: !GetAtt "Logical\\u202eId"\n'));
-    expect((err as Error).message).toContain("!GetAtt requires '<LogicalId>.<Attribute>'; got 'Logical");
-    expect((err as Error).message).not.toContain('\u202e');
+  it("parseCfnTemplate (YAML): cdkd's !GetAtt refusal keeps its fixed reason, never the scalar or the frame", () => {
+    const body = 'A: hunter2SECRET\nX: !GetAtt hunter2Logical\nB: hunter2OTHER\n';
+    const err = caughtFrom(() => parseCfnTemplate(body));
+    // Premise: the library message (now only at debug) quotes the scalar and
+    // a code frame of its line.
+    const raw = loggedText(loggerSpies.debug);
+    expect(raw).toContain("got 'hunter2Logical'");
+    expect(raw).toContain('X: !GetAtt hunter2Logical');
+    expect((err as Error).message).toBe(
+      "Template is not valid YAML. Cause: !GetAtt requires '<LogicalId>.<Attribute>' at line 2, column 4"
+    );
+    expectNoLeakIn(err);
+    expectLeakTokenOnlyAtDebug(loggerSpies);
+  });
+
+  it('parseCfnTemplate (YAML): the alias-exhaustion refusal keeps its fixed text', () => {
+    // 11 levels of 10 aliases each: far past `toJS`'s alias count cap.
+    const lines = ['a0: &a0 [hunter2]'];
+    for (let n = 1; n <= 11; n++) {
+      lines.push(`a${n}: &a${n} [${Array(10).fill(`*a${n - 1}`).join(', ')}]`);
+    }
+    const err = caughtFrom(() => parseCfnTemplate(lines.join('\n') + '\n'));
+    expect((err as Error).message).toBe(
+      'Template is not valid YAML. Cause: ReferenceError: Excessive alias count indicates a resource exhaustion attack'
+    );
+    expectNoLeakIn(err);
   });
 
   it('parseCfnTemplate (YAML): a warning is a warn line without the code frame, never stderr', () => {
