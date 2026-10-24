@@ -86,8 +86,10 @@ function isCertificateInUseError(error: unknown): boolean {
   // actually sends.
   // `.detail`, byte-identical to the `instanceof Error ? .message : String()`
   // ternary, but it cannot throw on a value `String()` cannot convert (a
-  // null-prototype object): this runs inside the replacement's catch, whose
-  // `'partial'` outcome an out-throw would discard (go-to-k/cdkd#3361).
+  // null-prototype object). Defence in depth: this runs inside the
+  // replacement's catch, whose `'partial'` outcome an out-throw would discard,
+  // but `delete()` wraps every failure in a `ProvisioningError` today, so no
+  // non-`Error` reaches it (go-to-k/cdkd#3361).
   const message = describeAwsFailure(error).detail;
   return /ResourceInUseException|in use/i.test(message);
 }

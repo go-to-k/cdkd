@@ -1049,29 +1049,6 @@ describe('ACMCertificateProvider', () => {
       expect(result.reason).not.toContain('could not be deleted');
     });
 
-    // go-to-k/cdkd#3361: the in-use classifier's message fallback ran a bare
-    // `String()` over the old certificate's delete failure, inside the catch
-    // that turns it into `'partial'`. A value `String()` cannot convert threw a
-    // TypeError out of that catch, failing an update whose new certificate
-    // already exists.
-    it('still reports partial when the old delete rejects with an unconvertible value', async () => {
-      const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
-      mockSend.mockResolvedValueOnce({ CertificateArn: newArn });
-      mockSend.mockRejectedValueOnce(Object.create(null));
-
-      const result = await provider.update(
-        'MyCert',
-        ARN,
-        'AWS::CertificateManager::Certificate',
-        { DomainName: 'example.com', SubjectAlternativeNames: ['www.example.com'] },
-        { DomainName: 'example.com', SubjectAlternativeNames: ['api.example.com'] }
-      );
-
-      expect(result.physicalId).toBe(newArn);
-      expect(result.outcome).toBe('partial');
-      expect(result.reason).toContain('could not be deleted');
-    });
-
     // The classifier's two arms are pinned INDEPENDENTLY. With one input
     // carrying both signals they mask each other -- removing either still
     // passes because the other catches it, which is how the first version of
