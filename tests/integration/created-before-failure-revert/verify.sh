@@ -196,6 +196,16 @@ strip_ansi() { # usage: strip_ansi <raw log> <plain log>
   sed $'s/\x1b\\[[0-9;]*m//g' "$1" > "$2"
 }
 
+# A stack's deployments/*.jsonl keys, sorted, one per line (go-to-k/cdkd#2319).
+# A failed listing returns non-zero, so a caller never reads an empty list as
+# "no new events".
+deployment_event_keys() { # usage: deployment_event_keys <stack>
+  local listed
+  listed="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+    --prefix "cdkd/$1/${REGION}/deployments/" --output json)" || return 1
+  printf '%s' "${listed}" | jq -r '.Contents // [] | .[].Key | select(endswith(".jsonl"))' | LC_ALL=C sort
+}
+
 trap cleanup EXIT
 trap '(exit 130); cleanup; exit 130' INT
 trap '(exit 143); cleanup; exit 143' TERM
@@ -262,6 +272,10 @@ state_has_resource() { # usage: state_has_resource <state key> <logical id> — 
 # PHASE E: ECR — the created repository is journaled and the rollback deletes it
 # ---------------------------------------------------------------------------
 echo "[verify] phase E1: deploy ${ECR_STACK} --no-rollback (expect FAILURE at PutLifecyclePolicy)"
+if ! deployment_event_keys "${ECR_STACK}" > "${LOG_DIR}/e1-event-keys-before"; then
+  echo "[verify] FAIL: phase E1: could not list ${ECR_STACK}'s deployments/ events before the deploy" >&2
+  exit 1
+fi
 deploy_expect_failure "${ECR_STACK}" "${LOG_DIR}/e1.log"
 if ! grep -qF "Failed to create ECR Repository OrphanRepo" "${LOG_DIR}/e1.log"; then
   echo "[verify] FAIL: phase E1: the deploy did not fail in the OrphanRepo create (or the wording drifted)" >&2
@@ -283,6 +297,39 @@ assert_gone "phase E1: ${REPO_NAME} carries a lifecycle policy — PutLifecycleP
   aws ecr get-lifecycle-policy --repository-name "${REPO_NAME}" --region "${REGION}"
 if [ "$(state_has_resource "${ECR_STATE_KEY}" OrphanRepo)" != "false" ]; then
   echo "[verify] FAIL: phase E1: state records OrphanRepo (expected no record for a CREATE that threw)" >&2
+  exit 1
+fi
+# go-to-k/cdkd#2319: OrphanRepo's persisted RESOURCE_FAILED event names ECR's
+# PutLifecyclePolicy rejection by its class, never AWS's own text:
+# deployments/*.jsonl outlives the run. Only this deploy's new event files are
+# read, so an earlier run's events cannot answer. The copy lives in LOG_DIR,
+# which cleanup removes on every exit.
+if ! E1_NEW_EVENT_KEYS="$(deployment_event_keys "${ECR_STACK}" \
+    | LC_ALL=C comm -13 "${LOG_DIR}/e1-event-keys-before" -)"; then
+  echo "[verify] FAIL: phase E1: could not list ${ECR_STACK}'s deployments/ events after the deploy" >&2
+  exit 1
+fi
+: > "${LOG_DIR}/e1-failed-events.jsonl"
+while IFS= read -r event_key || [ -n "${event_key}" ]; do
+  [ -n "${event_key}" ] || continue
+  aws s3 cp "s3://${STATE_BUCKET}/${event_key}" - --quiet \
+    | jq -c 'select(.eventType == "RESOURCE_FAILED" and .logicalId == "OrphanRepo")' \
+      >> "${LOG_DIR}/e1-failed-events.jsonl"
+done <<< "${E1_NEW_EVENT_KEYS}"
+E1_FAILED_MSG="$(jq -r '.error.message // empty' "${LOG_DIR}/e1-failed-events.jsonl" | tail -n 1)"
+# Never print this account's id on a FAIL.
+E1_FAILED_SHOWN="$(printf '%s' "${E1_FAILED_MSG}" | sed -e "s/${ACCOUNT_ID}/<account>/g")"
+if [ -z "${E1_FAILED_MSG}" ]; then
+  echo "[verify] FAIL: phase E1: the deploy persisted no RESOURCE_FAILED event with an error message for OrphanRepo (the #2319 checks below would pass for free)" >&2
+  exit 1
+fi
+if ! printf '%s' "${E1_FAILED_MSG}" \
+    | grep -qE "Failed to create ECR Repository OrphanRepo: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
+  echo "[verify] FAIL: phase E1: OrphanRepo's RESOURCE_FAILED message is not 'Failed to create ECR Repository OrphanRepo: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed: ${E1_FAILED_SHOWN}" >&2
+  exit 1
+fi
+if printf '%s' "${E1_FAILED_MSG}" | grep -qF "${ACCOUNT_ID}"; then
+  echo "[verify] FAIL: phase E1: OrphanRepo's RESOURCE_FAILED message quotes AWS's text, with this account's id (#2319); observed: ${E1_FAILED_SHOWN}" >&2
   exit 1
 fi
 ECR_OP="$(journal_failed_op "${ECR_JOURNAL_KEY}" OrphanRepo)"
