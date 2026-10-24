@@ -8,7 +8,11 @@
 # auto-routed via Cloud Control API and that the spec's route reaches
 # AWS — the silent-drop bug is closed by default. Also asserts the
 # destroy path works through CC API. Step 0 reds self-diagnosingly if
-# the trigger is ever backfilled.
+# the trigger is ever backfilled. Phase 1b (go-to-k/cdkd#2319) destroys the
+# stack as a role denied API Gateway's write verbs, so the Cloud Control
+# DELETE handler FAILs with a denial, and asserts the persisted
+# RESOURCE_FAILED message carries `<caller-principal>` and none of the
+# caller's identity. Phase 2 then destroys it as the caller.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -55,11 +59,25 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 API_TITLE="cdkd-cc-api-fallback-probe"
 PROBE_ROUTE="GET /cdkd-2473-probe"
+DENY_ROLE="${STACK}-no-apigw-write"
+DENY_POLICY_NAME="cc-delete-without-apigw-write"
+DENY_SESSION="cdkd-cc-deny-probe"
+DENY_ROLE_CREATED=""
+# Holds AWS text (the deny destroy's log, the events it wrote); removed on
+# every exit.
+LOG_DIR="$(mktemp -d)"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+
+delete_deny_role() { ( # usage: delete_deny_role
+  set +eu
+  aws iam delete-role-policy --role-name "${DENY_ROLE}" --policy-name "${DENY_POLICY_NAME}" >/dev/null 2>&1
+  aws iam delete-role --role-name "${DENY_ROLE}" >/dev/null 2>&1
+  true
+); }
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS probe"
@@ -67,6 +85,18 @@ cleanup() {
   # cleanup on the first `"${STATE_BUCKET}"` expansion — best-effort
   # cleanup should run as much as it can with the env it has.
   set +eu
+  if [ -n "${DENY_ROLE_CREATED}" ]; then
+    delete_deny_role
+    for _ in $(seq 1 12); do
+      if ( gone_probe aws iam get-role --role-name "${DENY_ROLE}" ); then break; fi
+      sleep 5
+    done
+    if ( gone_probe aws iam get-role --role-name "${DENY_ROLE}" ); then
+      DENY_ROLE_CREATED=""
+    else
+      echo "WARN: role ${DENY_ROLE} could not be confirmed deleted; delete it by hand" >&2
+    fi
+  fi
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -80,10 +110,15 @@ cleanup() {
   fi
   set -eu
 }
+# The real exit only: the pre-run `cleanup` below must keep LOG_DIR.
+on_exit() {
+  cleanup
+  rm -rf "${LOG_DIR}"
+}
 
-trap cleanup EXIT
-trap '(exit 130); cleanup; exit 130' INT
-trap '(exit 143); cleanup; exit 143' TERM
+trap on_exit EXIT
+trap '(exit 130); on_exit; exit 130' INT
+trap '(exit 143); on_exit; exit 143' TERM
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET env var is required" >&2
@@ -121,8 +156,25 @@ if [ ! -d node_modules ]; then
   pnpm install --ignore-workspace --prefer-offline
 fi
 
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+CALLER_USERID="$(aws sts get-caller-identity --query UserId --output text)"
+case "${ACCOUNT_ID}" in
+  [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+  *)
+    echo "FAIL: could not read this account's id (got '${ACCOUNT_ID}')" >&2
+    exit 1
+    ;;
+esac
+if [ -z "${CALLER_USERID}" ] || [ "${CALLER_USERID}" = "None" ]; then
+  echo "FAIL: could not read the caller's UserId" >&2
+  exit 1
+fi
+
 echo "==> Pre-run cleanup"
 cleanup
+# A role left by an earlier run would carry another run's policy.
+assert_gone "precondition: role ${DENY_ROLE} already exists (left by an earlier run); delete it first" \
+  aws iam get-role --role-name "${DENY_ROLE}"
 
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
@@ -183,6 +235,192 @@ if [ "${ROUTE_COUNT}" -lt 1 ]; then
 fi
 echo "    OK: route '${PROBE_ROUTE}' exists on AWS (silent-drop CLOSED by #614)"
 
+# --- Phase 1b: a denied Cloud Control DELETE (go-to-k/cdkd#2319) ------------
+# The Cloud Control handler calls API Gateway with the CALLER's credentials, so
+# a caller denied API Gateway's write verbs makes the handler FAIL, and AWS
+# words that denial with the caller's principal: `User:
+# arn:aws:sts::<account>:assumed-role/<role>/<session> is not authorized ...`.
+# cdkd keeps the handler's StatusMessage in the persisted RESOURCE_FAILED
+# event (it is what a user fixes a template from) with the caller's identity
+# masked. The handler's exact wording is known only from a run, so a message
+# that quotes no principal at all FAILs as an unmet PREMISE, not a pass.
+# A DELETE, not an UPDATE: Cloud Control applies an UPDATE to the model it
+# READ, which carries `Name` / `ProtocolType` beside `Body`, and API Gateway
+# refuses that model ("Redundant fields ... when either Body or BodyS3Location
+# is not empty") before IAM is consulted. DeleteApi has no such validation.
+echo "==> Phase 1b: destroy the stack as a role denied API Gateway writes (#2319)"
+TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Principal:{AWS:`arn:aws:iam::${process.argv[1]}:root`},Action:"sts:AssumeRole",Condition:{StringEquals:{"aws:userid":process.argv[2]}}}]}))' "${ACCOUNT_ID}" "${CALLER_USERID}")"
+# Scoped to what this destroy calls. The S3 verbs are the state path's
+# (state.json, lock.json, deployments/*.jsonl under this stack's prefix); the
+# `cloudformation:` verbs are Cloud Control's own (DeleteResource and its
+# status poll, GetResource). API Gateway's reads stay allowed so the handler
+# reaches DeleteApi; every write verb is denied. Nothing grants `iam:` writes,
+# so the stack's SDK-routed IAM Role survives this destroy too.
+DENY_POLICY="$(node -e 'const [bucket,stack]=process.argv.slice(1);process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["cloudformation:DeleteResource","cloudformation:GetResource","cloudformation:GetResourceRequestStatus","cloudformation:Describe*","cloudformation:List*","apigateway:GET","iam:GetRole","iam:ListRolePolicies","iam:ListAttachedRolePolicies","ssm:GetParameter","ssm:GetParameters","kms:Decrypt","kms:GenerateDataKey","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:["apigateway:PUT","apigateway:PATCH","apigateway:POST","apigateway:DELETE"],Resource:"*"}]}))' "${STATE_BUCKET}" "${STACK}")"
+# Flagged BEFORE the create: an interrupt between the two would otherwise
+# leave the role for the next run's precondition; a delete of a role that
+# never existed is harmless.
+DENY_ROLE_CREATED=1
+DENY_ROLE_ID="$(aws iam create-role --role-name "${DENY_ROLE}" --assume-role-policy-document "${TRUST}" \
+  --tags Key=cdkd-integ,Value=cc-api-fallback --query Role.RoleId --output text)"
+case "${DENY_ROLE_ID}" in
+  AROA?*) ;;
+  *)
+    echo "FAIL: precondition -- create-role returned no AROA... RoleId (got '${DENY_ROLE_ID}')" >&2
+    exit 1
+    ;;
+esac
+aws iam put-role-policy --role-name "${DENY_ROLE}" --policy-name "${DENY_POLICY_NAME}" \
+  --policy-document "${DENY_POLICY}"
+# A new role is assumable only once IAM has propagated it.
+DENY_CREDS=""
+for _ in $(seq 1 24); do
+  if DENY_CREDS="$(aws sts assume-role --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${DENY_ROLE}" \
+    --role-session-name "${DENY_SESSION}" \
+    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text 2>/dev/null)"; then
+    break
+  fi
+  DENY_CREDS=""
+  sleep 5
+done
+if [ -z "${DENY_CREDS}" ]; then
+  echo "FAIL: precondition -- could not assume ${DENY_ROLE} within 2 minutes" >&2
+  exit 1
+fi
+# Process substitution, not a here-string: bash 3.2 backs a here-string with a
+# temp file, and these are live credentials.
+read -r DENY_AK DENY_SK DENY_ST < <(printf '%s\n' "${DENY_CREDS}")
+unset DENY_CREDS
+# Run a command as the role. A profile in the environment would win over the
+# key variables in the SDK's credential chain, so it is dropped; the keys are
+# exported inside a subshell, never placed in a process's argv.
+as_deny_role() {
+  (
+    unset AWS_PROFILE AWS_DEFAULT_PROFILE
+    export AWS_ACCESS_KEY_ID="${DENY_AK}" AWS_SECRET_ACCESS_KEY="${DENY_SK}" AWS_SESSION_TOKEN="${DENY_ST}"
+    exec "$@"
+  )
+}
+# The deny must bind before the destroy, or a pass would test nothing. The probe
+# is a no-op PATCH (the API's own name) that the deny refuses.
+DENY_PROBE=""
+for _ in $(seq 1 24); do
+  if DENY_PROBE="$(as_deny_role aws apigatewayv2 update-api --api-id "${API_ID}" --name "${API_TITLE}" \
+    --region "${REGION}" 2>&1)"; then
+    DENY_PROBE=""
+  elif printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+    break
+  fi
+  sleep 5
+done
+if ! printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+  echo "FAIL: precondition -- ${DENY_ROLE}'s explicit deny on apigateway:PATCH never bound within 2 minutes" >&2
+  exit 1
+fi
+EVENTS_PREFIX="cdkd/${STACK}/${REGION}/deployments/"
+list_event_keys() {
+  aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" --prefix "${EVENTS_PREFIX}" --output json \
+    | jq -r '.Contents // [] | .[].Key | select(endswith(".jsonl"))' | sort
+}
+list_event_keys > "${LOG_DIR}/event-keys-before"
+set +e
+as_deny_role node "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --verbose \
+  --force > "${LOG_DIR}/deny-destroy.log" 2>&1
+DENY_RC=$?
+set -e
+# The role is not needed again. Still flagged until confirmed gone, so a
+# failure here leaves `cleanup` to retry the delete.
+delete_deny_role
+for _ in $(seq 1 12); do
+  if gone_probe aws iam get-role --role-name "${DENY_ROLE}"; then break; fi
+  sleep 5
+done
+assert_gone "role ${DENY_ROLE} still exists a minute after its delete" aws iam get-role --role-name "${DENY_ROLE}"
+DENY_ROLE_CREATED=""
+if [ "${DENY_RC}" -eq 0 ]; then
+  echo "FAIL: the destroy as ${DENY_ROLE} SUCCEEDED -- the DELETE never reached a denied API Gateway write" >&2
+  exit 1
+fi
+list_event_keys > "${LOG_DIR}/event-keys-after"
+FAILED_EVENTS="${LOG_DIR}/failed-events.jsonl"
+: > "${FAILED_EVENTS}"
+while IFS= read -r event_key || [ -n "${event_key}" ]; do
+  [ -n "${event_key}" ] || continue
+  aws s3 cp "s3://${STATE_BUCKET}/${event_key}" - --quiet \
+    | jq -c 'select(.eventType == "RESOURCE_FAILED" and .resourceType == "AWS::ApiGatewayV2::Api")' >> "${FAILED_EVENTS}"
+done < <(comm -13 "${LOG_DIR}/event-keys-before" "${LOG_DIR}/event-keys-after")
+# The last MESSAGE, not the last line: a StatusMessage may hold a newline.
+FAILED_MSG="$(jq -rs 'map(.error.message // empty) | last // empty' "${FAILED_EVENTS}")"
+if [ -z "${FAILED_MSG}" ]; then
+  echo "FAIL: premise not met -- the deny destroy wrote no RESOURCE_FAILED event with an error message for the AWS::ApiGatewayV2::Api under s3://${STATE_BUCKET}/${EVENTS_PREFIX} (the #2319 checks below would pass for free)" >&2
+  exit 1
+fi
+case "${FAILED_MSG}" in
+  *"DELETE failed for "*) ;;
+  *)
+    echo "FAIL: premise not met -- the RESOURCE_FAILED message does not carry Cloud Control's 'DELETE failed for <logicalId>: <StatusMessage>' text" >&2
+    exit 1
+    ;;
+esac
+# Masks every identity spelling this phase can produce, for the one FAIL that
+# prints AWS text.
+scrub_identity() {
+  sed -E \
+    -e 's#arn:aws[a-z-]*:(sts|iam)::[^[:space:]"'"'"',)]*#<principal-arn>#g' \
+    -e 's/[0-9]{12}/<account>/g' \
+    -e "s/${DENY_ROLE}/<deny-role>/g" \
+    -e "s/${DENY_SESSION}/<deny-session>/g" \
+    -e 's/(AROA|AIDA|ASIA|AKIA)[A-Z0-9]{12,}/<unique-id>/g'
+}
+# A FAIL names only the needle class that matched: echoing the message would
+# print what it leaked.
+# `case`, not `printf | grep -q`: no pipe, so no SIGPIPE false negative.
+leak_class() { # usage: leak_class <message>; prints the first needle class it holds
+  case "$1" in
+    *"${ACCOUNT_ID}"*) echo "this account's id" ;;
+    *"assumed-role/"*) echo "an assumed-role ARN" ;;
+    *"${DENY_ROLE}"*) echo "the deny role's name" ;;
+    *"${DENY_SESSION}"*) echo "the deny role's session name" ;;
+    *"${DENY_ROLE_ID}"*) echo "the deny role's unique id" ;;
+    *AROA*) echo "a role unique id (AROA...)" ;;
+  esac
+}
+# EVERY RESOURCE_FAILED message for the API, not only the last: a retried
+# attempt writes its own event, and each one is persisted.
+FAILED_COUNT="$(jq -s 'length' "${FAILED_EVENTS}")"
+for i in $(seq 0 $((FAILED_COUNT - 1))); do
+  each_msg="$(jq -rs --argjson i "${i}" '.[$i].error.message // empty' "${FAILED_EVENTS}")"
+  LEAK="$(leak_class "${each_msg}")"
+  if [ -n "${LEAK}" ]; then
+    echo "FAIL: persisted RESOURCE_FAILED message $((i + 1)) of ${FAILED_COUNT} quotes the caller: it contains ${LEAK} (#2319)" >&2
+    exit 1
+  fi
+done
+unset each_msg
+case "${FAILED_MSG}" in *"<caller-principal>"*) HAS_MASK=1 ;; *) HAS_MASK="" ;; esac
+if [ -z "${HAS_MASK}" ]; then
+  if printf '%s\n' "${FAILED_MSG}" | grep -qiF "not authorized"; then
+    echo "FAIL: premise not met: handler text quoted no principal (it does say 'not authorized'; read ${STACK}'s denial wording with --verbose and widen the mask or this arm)" >&2
+  else
+    echo "FAIL: premise not met: handler text quoted no principal (and says no 'not authorized'; the handler may not have reached the denied write)" >&2
+  fi
+  # Only here, where the checks above found no identity: show the handler's
+  # real wording, and the destroy log's tail, so the next run can re-pin the
+  # arm. Scrubbed first anyway, belt and braces.
+  echo "    persisted RESOURCE_FAILED message (scrubbed):" >&2
+  printf '%s\n' "${FAILED_MSG}" | scrub_identity | sed 's/^/      /' >&2
+  echo "    deny destroy log (--verbose), last 40 failure-related lines (scrubbed):" >&2
+  sed $'s/\x1b\\[[0-9;]*m//g' "${LOG_DIR}/deny-destroy.log" \
+    | grep -iE 'fail|error|denied|authoriz|exception|DeleteResource|ProgressEvent|StatusMessage' \
+    | tail -n 40 | scrub_identity | sed 's/^/      /' >&2 || true
+  exit 1
+fi
+rm -f "${FAILED_EVENTS}"
+echo "    OK: the denied DELETE's RESOURCE_FAILED message keeps the handler text with <caller-principal> and no account id, role or session (#2319)"
+
 # --- Phase 2: destroy -----------------------------------------------------
 echo "==> Phase 2: destroy via CC delete path"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -197,4 +435,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> cc-api-fallback test passed (silent-drop closed by CC auto-route + clean destroy)"
+echo "==> cc-api-fallback test passed (silent-drop closed by CC auto-route, denied DELETE masked the caller, clean destroy)"
