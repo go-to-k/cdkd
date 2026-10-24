@@ -801,6 +801,14 @@ const globalTableSites: Site[] = [
     run: () => new DynamoDBGlobalTableProvider().create('Gt', GT, GT_PROPS, ctx),
   },
   {
+    // Post-CreateTable wiring: DescribeTable after CreateTable returned.
+    wrap: 'Failed to create DynamoDB GlobalTable Gt',
+    command: 'DescribeTableCommand',
+    answers: { CreateTableCommand: { TableDescription: { TableName: TABLE } } },
+    fallback: ACTIVE_TABLE,
+    run: () => new DynamoDBGlobalTableProvider().create('Gt', GT, GT_PROPS, ctx),
+  },
+  {
     wrap: 'Failed to update DynamoDB GlobalTable Gt',
     command: 'UpdateTableCommand',
     fallback: ACTIVE_TABLE,
@@ -845,7 +853,7 @@ describe('tail-d thrown wraps withhold AWS text (#2319)', () => {
   });
 
   it('covers every wrap of the slice', () => {
-    expect(sites).toHaveLength(73);
+    expect(sites).toHaveLength(74);
     expect(deleteSites).toHaveLength(22);
   });
 
@@ -892,6 +900,17 @@ describe('tail-d thrown wraps withhold AWS text (#2319)', () => {
     expect(hasRedactedCause(failure)).toBe(true);
   });
 
+  it.each(sites)('$wrap: a cdkd-authored failure the mask leaves alone is not stamped', async (site) => {
+    const original = new Error('connect ECONNREFUSED 10.0.0.1:443');
+    reject(site, original);
+
+    const failure = await caught(site.run());
+
+    expect(failure.message).toContain(`${site.wrap}: connect ECONNREFUSED 10.0.0.1:443`);
+    expect(failure.cause).toBe(original);
+    expect(hasRedactedCause(failure)).toBe(false);
+  });
+
   it.each(sites)('$wrap: a non-Error throw is withheld, unstamped', async (site) => {
     reject(site, 'raw s3cr3t value');
 
@@ -929,7 +948,11 @@ describe('tail-d thrown wraps withhold AWS text (#2319)', () => {
 
   // A ConflictException matches no collision pattern by its class, so only the
   // restatement keeps a create-first replacement recognising a taken name.
-  const collisionSites = sites.filter((s) => !s.wrap.startsWith('CREATE (pool config)'));
+  // The auxiliary arms (no restatement) are in the next describe.
+  const isAuxiliarySite = (s: Site): boolean =>
+    s.wrap.startsWith('CREATE (pool config)') ||
+    (s.command === 'DescribeTableCommand' && s.wrap.startsWith('Failed to create'));
+  const collisionSites = sites.filter((s) => !isAuxiliarySite(s));
   it.each(collisionSites)('$wrap: restates an "already exists"', async (site) => {
     reject(site, awsError('ConflictException', `A resource named x already exists in ${ACCOUNT}.`));
 
