@@ -2672,6 +2672,11 @@
       "name": "wide-independent",
       "annotated": false,
       "scenarios": []
+    },
+    {
+      "name": "wide-web-functions",
+      "annotated": false,
+      "scenarios": []
     }
   ],
   "perScenarioCoverage": [
@@ -3600,6 +3605,7 @@
     "synthetics-canary",
     "termination-protection",
     "unrecognized-key-autoroute",
-    "wide-independent"
+    "wide-independent",
+    "wide-web-functions"
   ]
 }

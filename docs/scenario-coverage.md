@@ -308,3 +308,4 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`termination-protection`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/termination-protection/)
 - [`unrecognized-key-autoroute`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/unrecognized-key-autoroute/)
 - [`wide-independent`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/wide-independent/)
+- [`wide-web-functions`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/wide-web-functions/)

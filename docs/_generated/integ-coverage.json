@@ -4703,7 +4703,8 @@
         "tags-propagation",
         "throttle-wide-dag",
         "update-replace",
-        "vpc-lambda-cr-race"
+        "vpc-lambda-cr-race",
+        "wide-web-functions"
       ],
       "signals": {
         "agentcore-tools": [
@@ -5050,6 +5051,10 @@
         ],
         "vpc-lambda-cr-race": [
           "l2"
+        ],
+        "wide-web-functions": [
+          "l2",
+          "literal"
         ]
       }
     },
@@ -6017,10 +6022,15 @@
     {
       "resourceType": "AWS::Lambda::WebFunctionEndpoint",
       "integs": [
-        "lambda-web-function-revision-replace"
+        "lambda-web-function-revision-replace",
+        "wide-web-functions"
       ],
       "signals": {
         "lambda-web-function-revision-replace": [
+          "l1",
+          "literal"
+        ],
+        "wide-web-functions": [
           "l1",
           "literal"
         ]
@@ -6029,10 +6039,15 @@
     {
       "resourceType": "AWS::Lambda::WebFunctionRevision",
       "integs": [
-        "lambda-web-function-revision-replace"
+        "lambda-web-function-revision-replace",
+        "wide-web-functions"
       ],
       "signals": {
         "lambda-web-function-revision-replace": [
+          "l1",
+          "literal"
+        ],
+        "wide-web-functions": [
           "l1",
           "literal"
         ]

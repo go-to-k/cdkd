@@ -72,7 +72,8 @@
       "flag": "--concurrency",
       "integs": [
         "throttle-wide-dag",
-        "wide-independent"
+        "wide-independent",
+        "wide-web-functions"
       ]
     },
     {
@@ -421,7 +422,8 @@
         "update-replace",
         "vpc-nat-gateway",
         "wait-condition-handle",
-        "wide-independent"
+        "wide-independent",
+        "wide-web-functions"
       ]
     },
     {
@@ -874,7 +876,8 @@
         "update-replace",
         "vpc-nat-gateway",
         "wait-condition-handle",
-        "wide-independent"
+        "wide-independent",
+        "wide-web-functions"
       ]
     },
     {
@@ -1271,7 +1274,8 @@
         "update-replace",
         "vpc-nat-gateway",
         "wait-condition-handle",
-        "wide-independent"
+        "wide-independent",
+        "wide-web-functions"
       ]
     },
     {
@@ -1722,7 +1726,8 @@
         "update-replace",
         "vpc-nat-gateway",
         "wait-condition-handle",
-        "wide-independent"
+        "wide-independent",
+        "wide-web-functions"
       ]
     },
     {
@@ -2114,7 +2119,8 @@
         "update-replace",
         "vpc-nat-gateway",
         "wait-condition-handle",
-        "wide-independent"
+        "wide-independent",
+        "wide-web-functions"
       ]
     }
   ],
