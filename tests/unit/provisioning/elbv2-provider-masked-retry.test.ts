@@ -178,8 +178,16 @@ describe('ELBv2Provider: a masked failure still classifies as retryable (issue #
     provider = new ELBv2Provider();
   });
 
-  it.each(SITES)('$site: the stamp keeps it retryable', async ({ command, wrap, run }) => {
-    rejectOn(command, awsRejection(TRANSIENT));
+  // Both shapes stamp: an AWS-authored failure because its text is withheld
+  // (go-to-k/cdkd#2319), a cdkd-authored / transport one because the mask
+  // changed the text it keeps (issue #4259).
+  it.each(
+    SITES.flatMap((s) => [
+      { ...s, shape: 'AWS-authored', make: awsRejection },
+      { ...s, shape: 'cdkd-authored', make: (m: string) => new Error(m) },
+    ])
+  )('$site ($shape): the stamp keeps it retryable', async ({ command, wrap, run, make }) => {
+    rejectOn(command, make(TRANSIENT));
     const failure = await thrown(run(provider, retryMasker));
     // Non-vacuity: the rejection came from the site's own command, and the
     // wrap that reached us is the site's own.
@@ -195,7 +203,10 @@ describe('ELBv2Provider: a masked failure still classifies as retryable (issue #
   it.each(SITES)(
     '$site: a failure the mask left unchanged is not stamped',
     async ({ command, wrap, run }) => {
-      rejectOn(command, awsRejection('Bad request parameter'));
+      // A cdkd-authored / transport error (no smithy marker): its text is kept,
+      // so only a mask that changed it stamps the wrap. An AWS-authored one is
+      // always withheld and stamped (go-to-k/cdkd#2319).
+      rejectOn(command, new Error('Bad request parameter'));
       const failure = await thrown(run(provider, retryMasker));
       expect(failure.message).toContain(wrap);
       expect(failure.message).toContain('Bad request parameter');

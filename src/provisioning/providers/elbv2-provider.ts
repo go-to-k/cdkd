@@ -92,7 +92,12 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
-import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  wrapMaskedAwsError,
+  markRedactedCause,
+  relayedNameCollision,
+} from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -606,6 +611,37 @@ export class ELBv2Provider implements ResourceProvider {
   private elbv2Client?: ElasticLoadBalancingV2Client;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ELBv2Provider');
+
+  /**
+   * The failure wrap this provider's create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}), so a create-first
+   * replacement still recognises the collision. A cdkd-authored or transport
+   * error keeps its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like
+   * an AWS one, unstamped (it has no chain). A delete catch tests not-found
+   * before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
   /** `--remove-protection` flips per load balancer, kept across `delete()` re-entry (#2204). */
   private readonly protectionFlips = new ProtectionFlipRegistry();
 
@@ -839,8 +875,9 @@ export class ELBv2Provider implements ResourceProvider {
   /**
    * Mask a caught AWS error's message before it is interpolated into a line
    * this provider logs (issue #2050, review round 2). A thrown `create()` /
-   * `update()` failure goes through {@link wrapMaskedError} instead, which
-   * masks the same text and also stamps the wrap.
+   * `update()` / `delete()` failure goes through {@link wrapCaughtError}
+   * instead, which names an AWS-authored failure by its class and masks the
+   * rest the same way, stamping the wrap.
    *
    * Masks `error.message` rather than the assembled sentence ON PURPOSE. The
    * two are NOT equivalent: handing the masker the raw message can reach
@@ -890,34 +927,6 @@ export class ELBv2Provider implements ResourceProvider {
     } else {
       this.logger.debug(debugText);
     }
-  }
-
-  /**
-   * A `create()` / `update()` failure wrap quoting the caught error's text
-   * masked RAW, as {@link maskErrorMessage} does (issue #2050).
-   *
-   * NOT a duplicate of {@link maskedRetryLogger}, and strictly WIDER than it.
-   * `withRetry` rethrows the RAW error, and `deploy-engine.ts` prints the
-   * resulting message at ERROR — i.e. at DEFAULT verbosity — so a masked
-   * give-up `warn` was being followed one line later by the identical text
-   * unmasked. It is also the ONLY disclosure surface for a NON-RETRYABLE
-   * rejection, where `withRetry` emits nothing at all: its give-up summary is
-   * gated on `propagationRetries > 0 || serverErrorRetries > 0`, and a
-   * validation error that fails on attempt 0 satisfies neither.
-   *
-   * The `cause` stays the ORIGINAL, unmasked error, and a message the mask
-   * changed is stamped so the retry classifiers read that chain rather than
-   * the masked message (`wrapMaskedAwsError`, issue #4259): a secret that
-   * spells part of the retry table's wording would otherwise turn a transient
-   * failure terminal. A method, so `gen-update-wrap-coverage` sees the catch
-   * that throws it as a wrap.
-   */
-  private wrapMaskedError(
-    mask: MaskerFn,
-    error: unknown,
-    build: (maskedText: string) => ProvisioningError
-  ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -1006,7 +1015,7 @@ export class ELBv2Provider implements ResourceProvider {
               loadBalancerNameFromArn(physicalId)
             )
           : maskerOrIdentity(context?.maskSecrets);
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         mask,
         error,
         (text) =>
@@ -1444,7 +1453,7 @@ export class ELBv2Provider implements ResourceProvider {
       // NON-RETRYABLE `CreateLoadBalancer` rejection — nothing on this path
       // goes through `withRetry`, so there is no give-up summary behind it.
       const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapMaskedError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -2025,12 +2034,17 @@ export class ELBv2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete LoadBalancer ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete LoadBalancer ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -2222,7 +2236,7 @@ export class ELBv2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapMaskedError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -2454,7 +2468,7 @@ export class ELBv2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -2500,12 +2514,17 @@ export class ELBv2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete TargetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete TargetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -2727,7 +2746,7 @@ export class ELBv2Provider implements ResourceProvider {
       // classifier walks it for `$metadata`, so only the human-readable
       // message is masked.
       const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapMaskedError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -2913,7 +2932,7 @@ export class ELBv2Provider implements ResourceProvider {
       // `cause` carries the ORIGINAL error untouched (issue #2050) — see the
       // create path above.
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -2959,12 +2978,17 @@ export class ELBv2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Listener ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Listener ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

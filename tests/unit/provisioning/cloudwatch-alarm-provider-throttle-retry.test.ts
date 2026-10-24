@@ -37,6 +37,8 @@ import {
   PutMetricAlarmCommand,
 } from '@aws-sdk/client-cloudwatch';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
+import { hasRedactedCause, retryClassificationText } from '../../../src/deployment/retryable-errors.js';
 
 const TYPE = 'AWS::CloudWatch::Alarm';
 const ARN = 'arn:aws:cloudwatch:us-east-1:123456789012:alarm:alarm-1';
@@ -149,10 +151,14 @@ describe('CloudWatchAlarmProvider throttle retry (go-to-k/cdkd#4774, #4781)', ()
       expect(writeCalls(write)).toHaveLength(4);
       expect(sleeps).toHaveLength(3);
       expect(failure).toBeInstanceOf(ProvisioningError);
+      // go-to-k/cdkd#2319: AWS's text is withheld from the thrown (persisted)
+      // message; the stamp keeps the throttle readable on the cause chain.
       expect((failure as Error).message).toBe(
-        `Failed to ${verb} CloudWatch alarm Alarm1: Rate exceeded`
+        `Failed to ${verb} CloudWatch alarm Alarm1: Throttling. ${VERBOSE_POINTER}`
       );
       expect((failure as Error).cause).toBe(last);
+      expect(hasRedactedCause(failure)).toBe(true);
+      expect(retryClassificationText(failure)).toContain('Rate exceeded');
     });
 
     it('does not retry a failure that is not a throttle', async () => {

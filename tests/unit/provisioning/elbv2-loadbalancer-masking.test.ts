@@ -7,6 +7,7 @@ import {
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { SECRET_MASK, createSecretMasker } from '../../../src/deployment/secret-redaction.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 /**
  * Issue #2063, ELBv2 LoadBalancer arm — the arm issue #2050's threading left
@@ -109,6 +110,10 @@ function awsRejection(prefix: string): Error {
   return err;
 }
 
+function debugLines(): string {
+  return logger.debug.mock.calls.map((c) => String(c[0])).join('\n');
+}
+
 function warnLines(): string {
   return logger.warn.mock.calls.map((c) => String(c[0])).join('\n');
 }
@@ -199,9 +204,12 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
       // message is the fix working rather than the value never arriving.
       expectPayloadCarriedThePlaintext(CreateLoadBalancerCommand);
 
-      expect(thrown.message).toContain('Failed to create LoadBalancer Lb');
-      expect(thrown.message).toContain(SECRET_MASK);
-      expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      // go-to-k/cdkd#2319: the thrown (persisted) message names the class only;
+      // AWS's text, which quotes the value back, reaches the debug line, masked.
+      expect(thrown.message).toBe(`Failed to create LoadBalancer Lb: ValidationError. ${VERBOSE_POINTER}`);
+      expect(debugLines()).toContain('Failed to create LoadBalancer Lb: ValidationError: load balancer attribute');
+      expect(debugLines()).toContain(SECRET_MASK);
+      expect(loggedLines()).not.toContain(SECRET_PLAINTEXT);
     });
 
     it('preserves the ORIGINAL error as `cause` so retry classification is untouched', async () => {
@@ -224,9 +232,12 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
       const thrown = await captureThrow(() => provider.create('Lb', LB_TYPE, LB_PROPERTIES));
 
       // The back-compatible default the SecretMaskingContext contract mandates:
-      // absent means unmasked, and the sentence still reaches the operator.
-      expect(thrown.message).toContain('Failed to create LoadBalancer Lb');
-      expect(thrown.message).toContain(SECRET_PLAINTEXT);
+      // absent means unmasked, and the sentence still reaches the operator --
+      // on the debug line, since the thrown message names the class only
+      // (go-to-k/cdkd#2319).
+      expect(thrown.message).toBe(`Failed to create LoadBalancer Lb: ValidationError. ${VERBOSE_POINTER}`);
+      expect(debugLines()).toContain('Failed to create LoadBalancer Lb');
+      expect(debugLines()).toContain(SECRET_PLAINTEXT);
     });
   });
 
@@ -290,9 +301,10 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
       expectPayloadCarriedThePlaintext(ModifyLoadBalancerAttributesCommand);
 
       // The sentence proves it came out of `update()`'s frame, not an arm's.
-      expect(thrown.message).toContain('Failed to update ELBv2 resource Lb');
-      expect(thrown.message).toContain(SECRET_MASK);
-      expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(thrown.message).toBe(`Failed to update ELBv2 resource Lb: ValidationError. ${VERBOSE_POINTER}`);
+      expect(debugLines()).toContain('Failed to update ELBv2 resource Lb: ValidationError: load balancer property');
+      expect(debugLines()).toContain(SECRET_MASK);
+      expect(loggedLines()).not.toContain(SECRET_PLAINTEXT);
     });
 
     it('masks a SetSubnets rejection too (a different call in the same arm)', async () => {
@@ -311,9 +323,10 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
 
       expectPayloadCarriedThePlaintext(SetSubnetsCommand);
 
-      expect(thrown.message).toContain('Failed to update ELBv2 resource Lb');
-      expect(thrown.message).toContain(SECRET_MASK);
-      expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(thrown.message).toBe(`Failed to update ELBv2 resource Lb: ValidationError. ${VERBOSE_POINTER}`);
+      expect(debugLines()).toContain('Failed to update ELBv2 resource Lb: ValidationError: load balancer property');
+      expect(debugLines()).toContain(SECRET_MASK);
+      expect(loggedLines()).not.toContain(SECRET_PLAINTEXT);
     });
 
     it('leaves the message untouched when the caller threads no masker', async () => {
@@ -323,7 +336,8 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
         provider.update('Lb', LB_ARN, LB_TYPE, LB_PROPERTIES, { Name: 'my-lb' })
       );
 
-      expect(thrown.message).toContain(SECRET_PLAINTEXT);
+      expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(debugLines()).toContain(SECRET_PLAINTEXT);
     });
   });
 

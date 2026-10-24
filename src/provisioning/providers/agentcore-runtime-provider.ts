@@ -25,12 +25,19 @@ import {
 } from '@aws-sdk/client-bedrock-agentcore-control';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { pascalToCamelCaseKeys, camelToPascalCaseKeys } from './agentcore-case-convert.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { definedAttributes } from '../attribute-map.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -50,6 +57,37 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 export class AgentCoreRuntimeProvider implements ResourceProvider {
   private client: BedrockAgentCoreControlClient;
   private logger = getLogger().child('AgentCoreRuntimeProvider');
+
+  /**
+   * The failure wrap this provider's create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}), so a create-first
+   * replacement still recognises the collision. A cdkd-authored or transport
+   * error keeps its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like
+   * an AWS one, unstamped (it has no chain). A delete catch tests not-found
+   * before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -80,7 +118,8 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating BedrockAgentCore Runtime ${logicalId}`);
 
@@ -161,12 +200,17 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create BedrockAgentCore Runtime ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create BedrockAgentCore Runtime ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -279,12 +323,17 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update BedrockAgentCore Runtime ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update BedrockAgentCore Runtime ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -323,12 +372,17 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete BedrockAgentCore Runtime ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete BedrockAgentCore Runtime ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

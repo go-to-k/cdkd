@@ -32,6 +32,7 @@ import {
 } from '@aws-sdk/client-firehose';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import {
   CdkdError,
   ProvisioningError,
@@ -40,6 +41,7 @@ import {
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -53,7 +55,12 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { waitForGoneAfterDelete } from '../delete-gone-wait.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { generatedNameFor } from '../resource-name.js';
@@ -131,6 +138,37 @@ export class FirehoseProvider implements ResourceProvider {
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('FirehoseProvider');
 
+  /**
+   * The failure wrap this provider's create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}), so a create-first
+   * replacement still recognises the collision. A cdkd-authored or transport
+   * error keeps its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like
+   * an AWS one, unstamped (it has no chain). A delete catch tests not-found
+   * before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::KinesisFirehose::DeliveryStream',
@@ -194,7 +232,8 @@ export class FirehoseProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Firehose delivery stream ${logicalId}`);
 
@@ -537,12 +576,17 @@ export class FirehoseProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create Firehose delivery stream ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              undefined,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              maskerOrIdentity(context?.maskSecrets),
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create Firehose delivery stream ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  undefined,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#4583: the stream exists and no state record will hold it;
       // never before CreateDeliveryStream returned (another owner's name).
@@ -695,12 +739,17 @@ export class FirehoseProvider implements ResourceProvider {
       // ProvisioningError already carries better context than a re-wrap.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Firehose delivery stream ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Firehose delivery stream ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1028,12 +1077,17 @@ export class FirehoseProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Firehose delivery stream ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Firehose delivery stream ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
 

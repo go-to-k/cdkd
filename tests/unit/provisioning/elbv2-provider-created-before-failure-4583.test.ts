@@ -174,7 +174,7 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
 
       const error = await failure(() => provider.create('Res', c.type, c.props));
 
-      expect((error as Error).message).toContain('wiring boom');
+      expect(((error as Error).cause as Error).message).toContain('wiring boom');
       expect(createdBeforeFailure(error, 'Res', c.type)).toBe(c.arn);
     });
 
@@ -193,7 +193,7 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
 
       const error = await failure(() => provider.create('Res', c.type, c.props));
 
-      expect((error as Error).message).toContain('wiring boom');
+      expect(((error as Error).cause as Error).message).toContain('wiring boom');
       // The flow reached the cleanup and its delete was sent.
       expect(sentDeletes(c.deleteCommand)).toEqual([deleteInput(c)]);
       expect(createdBeforeFailure(error, 'Res', c.type)).toBeUndefined();
@@ -204,7 +204,7 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
 
       const error = await failure(() => provider.create('Res', c.type, c.props));
 
-      expect((error as Error).message).toContain('create boom');
+      expect(((error as Error).cause as Error).message).toContain('create boom');
       expect(createdBeforeFailure(error, 'Res', c.type)).toBeUndefined();
     });
 
@@ -218,7 +218,7 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
 
         const error = await failure(() => provider.create('Res', c.type, c.props));
 
-        expect((error as Error).message).toContain('wiring boom');
+        expect(((error as Error).cause as Error).message).toContain('wiring boom');
         // The cleanup was skipped, so no delete was sent either.
         expect(mockSend).toHaveBeenCalledTimes(2);
         expect(sentDeletes(c.deleteCommand)).toEqual([]);
@@ -235,7 +235,7 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
 
         const error = await failure(() => provider.create('Res', c.type, c.props));
 
-        expect((error as Error).message).toContain('wiring boom');
+        expect(((error as Error).cause as Error).message).toContain('wiring boom');
         expect(ownershipSend).toHaveBeenCalled();
         expect(mockSend).toHaveBeenCalledTimes(2);
         expect(sentDeletes(c.deleteCommand)).toEqual([]);
@@ -298,7 +298,7 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
 
     const error = await failure(() => provider.create('Res', LISTENER_TYPE, listener.props));
 
-    expect((error as Error).message).toContain('wiring boom');
+    expect(((error as Error).cause as Error).message).toContain('wiring boom');
     // The lookup stopped at its 100-page cap and threw, not at a page answer.
     expect(ownershipSend).toHaveBeenCalledTimes(100);
     expect(mockSend).toHaveBeenCalledTimes(2);
@@ -331,7 +331,7 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
 
     const error = await failure(() => provider.create('Res', LISTENER_TYPE, props));
 
-    expect((error as Error).message).toContain('wiring boom');
+    expect(((error as Error).cause as Error).message).toContain('wiring boom');
     expect(sentDeletes('DeleteListenerCommand')).toEqual([]);
     expect(createdBeforeFailure(error, 'Res', LISTENER_TYPE)).toBeUndefined();
   });
