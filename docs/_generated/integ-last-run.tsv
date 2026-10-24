@@ -399,4 +399,4 @@ vpc-nat-gateway	2026-10-18T21:41:29Z	PASS	809	verify.sh	rc ok, orph clean (#5071
 wafv2	2026-10-20T06:35:00Z	PASS	180	standard	deploy+destroy clean, 0 orphans
 wait-condition-handle	2026-09-30T12:06:02Z	PASS	66	verify.sh	rc ok, orph clean (#4228)
 wide-independent	2026-10-24T04:57:30Z	PASS	1458	verify.sh	#5242: WIDE_SDK_SETTINGS=20, WIDE_CC_SETTINGS='15 20 15 20' (SDK --concurrency 20; CC at 15/20/15/20); 0 destroy errors, orph clean incl SSM docs + Athena wg
-wide-web-functions	2026-10-24T05:15:58Z	PASS	396	verify.sh	#5242: WIDE_WEBFN_SETTINGS='20 20'; retry lines now name wrapped error (ValidationException); destroy 0 errors, orph clean
+wide-web-functions	2026-10-24T05:40:09Z	PASS	641	verify.sh	#5242: WIDE_WEBFN_COUNT=24 (73 resources), WIDE_WEBFN_SETTINGS='10 20'; log groups now swept+asserted gone on PASS path; destroy 0 errors, orph clean incl log groups
