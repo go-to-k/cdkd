@@ -364,6 +364,12 @@ describe('runDestroyForStack refuses a malformed `resources` bag (go-to-k/cdkd#3
     const state = stateWithResources({
       Param: { physicalId: 'p', resourceType: 'AWS::SSM::Parameter', properties: {} },
     });
+    // Under-lock re-read (#5220): same record, so it must not block the
+    // delete path this case is actually about.
+    (h.ctx.stateBackend.getState as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state,
+      etag: 'e',
+    });
     await runDestroyForStack(STACK, state, h.ctx).catch(() => undefined);
     expect(
       h.getProviderFor,

@@ -139,6 +139,12 @@ describe('runDestroyForStack refuses an unfinished cdkd refactor move (go-to-k/c
   it('refuses when the shared marker (not the record) lists a move whose destination is this stack', async () => {
     const h = makeCtx();
     const state = stateWith({ A: RES_A, B: RES_B });
+    // Under-lock re-read (#5220): the record itself did not change, only the
+    // shared marker this case is about -- it must not pre-empt that refusal.
+    (h.ctx.stateBackend.getState as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state,
+      etag: 'e',
+    });
     (h.ctx.stateBackend as unknown as Record<string, unknown>)['refactorMarkerKey'] = () =>
       'cdkd/_refactor/pending.json';
     (h.ctx.stateBackend as unknown as Record<string, unknown>)['getRefactorMarker'] = vi
@@ -174,6 +180,10 @@ describe('runDestroyForStack refuses an unfinished cdkd refactor move (go-to-k/c
   it('CONTROL: the same record minus pendingMovesOut destroys normally', async () => {
     const h = makeCtx();
     const state = stateWith({ A: RES_A, B: RES_B });
+    (h.ctx.stateBackend.getState as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state,
+      etag: 'e',
+    });
 
     await runDestroyForStack(STACK, state, h.ctx).catch(() => undefined);
 

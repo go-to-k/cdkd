@@ -85,8 +85,15 @@ function res(): ResourceState {
   };
 }
 
+// The under-lock re-read (#5220) needs to see the record each case destroys.
+// `makeState` is always evaluated as an ARGUMENT to `runDestroyForStack`
+// immediately before `makeCtx` (left-to-right argument evaluation), so
+// tracking the last call here is the one place the default `getState`
+// (below) needs to echo it back from.
+let lastMadeState: StackState | undefined;
+
 function makeState(resources: Record<string, ResourceState>): StackState {
-  return {
+  const state: StackState = {
     version: 8,
     stackName: 'TestStack',
     region: REGION,
@@ -94,6 +101,8 @@ function makeState(resources: Record<string, ResourceState>): StackState {
     outputs: {},
     lastModified: 1,
   };
+  lastMadeState = state;
+  return state;
 }
 
 function journalOf(failedOperations: unknown[]) {
@@ -164,7 +173,9 @@ describe('runDestroyForStack: --remove-protection reaches a journaled orphan (go
     mockLoadJournal.mockReset().mockResolvedValue(journalOf([structuredClone(orphanOp)]));
     readlineQuestion.mockReset();
     mockListStacks.mockReset().mockResolvedValue([]);
-    mockGetState.mockReset().mockResolvedValue(null);
+    mockGetState.mockReset().mockImplementation(async (name: string) =>
+      name === 'TestStack' && lastMadeState ? { state: lastMadeState, etag: 'e' } : null
+    );
     infoSpy.mockReset();
     warnSpy.mockReset();
   });
@@ -187,25 +198,23 @@ describe('runDestroyForStack: --remove-protection reaches a journaled orphan (go
   // go-to-k/cdkd#4696: kept, delete and all, not only its protection.
   it("sends no delete to an orphan another stack's record holds", async () => {
     mockListStacks.mockResolvedValue([{ stackName: 'B', region: REGION }]);
+    const bState = {
+      ...makeState({
+        Adopted: {
+          physicalId: LB_ARN,
+          resourceType: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      }),
+      stackName: 'B',
+    };
+    const state = makeState({ R: res() });
     mockGetState.mockImplementation(async (name: string) =>
-      name === 'B'
-        ? {
-            state: {
-              ...makeState({
-                Adopted: {
-                  physicalId: LB_ARN,
-                  resourceType: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
-                  properties: {},
-                  attributes: {},
-                  dependencies: [],
-                },
-              }),
-              stackName: 'B',
-            },
-          }
-        : null
+      name === 'B' ? { state: bState } : name === 'TestStack' ? { state, etag: 'e' } : null
     );
-    await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx({ removeProtection: true }));
+    await runDestroyForStack('TestStack', state, makeCtx({ removeProtection: true }));
     expect(seen.has('OrphanLb')).toBe(false);
     expect(seen.get('R')?.context['removeProtection']).toBe(true);
     expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(

@@ -114,8 +114,16 @@ function nestedRes(): ResourceState {
   });
 }
 
+// The under-lock re-read (#5220) needs to see the record each case actually
+// destroys. Every case builds that record through `makeState`, evaluated as
+// an ARGUMENT to `runDestroyForStack` immediately before `makeCtx()` runs
+// (left-to-right argument evaluation), so tracking the last call here is the
+// one place `makeCtx`'s default `getState` (below) needs to echo it back
+// from, instead of every one of this file's call sites doing so.
+let lastMadeState: StackState | undefined;
+
 function makeState(resources: Record<string, ResourceState>): StackState {
-  return {
+  const state: StackState = {
     version: 8,
     stackName: 'TestStack',
     region: REGION,
@@ -123,6 +131,8 @@ function makeState(resources: Record<string, ResourceState>): StackState {
     outputs: {},
     lastModified: 1,
   };
+  lastMadeState = state;
+  return state;
 }
 
 describe('runDestroyForStack: a nested-stack child that did not go away (issues #1752 / #1777)', () => {
@@ -136,6 +146,9 @@ describe('runDestroyForStack: a nested-stack child that did not go away (issues 
       stateBackend: {
         saveState: mockSaveState,
         deleteState: mockDeleteState,
+        getState: vi.fn(async () =>
+          lastMadeState ? { state: lastMadeState, etag: 'e' } : null
+        ),
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: {

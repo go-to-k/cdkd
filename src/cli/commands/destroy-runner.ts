@@ -1,6 +1,7 @@
 import { refusePendingMovesOut } from '../../state/pending-moves.js';
 import { readRefactorMarker, refuseRefactorMarker } from '../../state/refactor-marker.js';
 import * as readline from 'node:readline/promises';
+import { isDeepStrictEqual } from 'node:util';
 import {
   pasteableCommand,
   plainOrDescribed,
@@ -700,6 +701,24 @@ async function releaseRegistryMarkerAfterDestroy(
  *   file is preserved (trimmed to the remaining resources, outputs/imports
  *   cleared) so the user can retry.
  */
+/**
+ * Whether `current` still holds exactly the resources `snapshot` holds
+ * (go-to-k/cdkd#5220): the same `resources` rows, field for field, and the
+ * same `supersededResources`. The delete loop acts on the snapshot's rows --
+ * their physical ids, deletion policies and properties -- and the end of a
+ * clean run deletes the whole record, so any difference is unsafe: a row gone
+ * or re-pointed deletes a resource the record no longer owns, a row changed in
+ * place deletes under a stale deletion policy, and a row added since would be
+ * dropped with the record while its resource stays live. Exported for its
+ * unit tests.
+ */
+export function holdsSameResourcesAs(snapshot: StackState, current: StackState): boolean {
+  return (
+    isDeepStrictEqual(snapshot.resources, current.resources) &&
+    isDeepStrictEqual(snapshot.supersededResources, current.supersededResources)
+  );
+}
+
 export async function runDestroyForStack(
   stackName: string,
   state: StackState,
@@ -1633,21 +1652,32 @@ async function destroyStackInRegion(
     onAcquireFailure: restoreBaseRegionAndClients,
   });
 
-  // go-to-k/cdkd#5212: the refactor marker, under the lock -- this destroy's
-  // only read of it, so a move started while the confirmation prompt waited
-  // is seen. (A move that FINISHED in that window is the general
-  // destroy-snapshot race, go-to-k/cdkd#5220.)
+  // Under the lock, re-read what the checks above saw BEFORE the confirmation
+  // prompt (go-to-k/cdkd#5220): another command may have written this record
+  // while the prompt waited -- a `cdkd refactor` that moved a resource to
+  // another stack, a deploy that replaced one -- and deleting from the stale
+  // snapshot would delete a resource the record no longer owns, and one added
+  // since would be dropped with the record. The record must still hold exactly
+  // the snapshot's resources. The refactor marker is read beside it
+  // (go-to-k/cdkd#5212), this destroy's only read of it, so both cost one
+  // concurrent round trip.
   try {
-    refuseRefactorMarker(
-      await readRefactorMarker(ctx.stateBackend),
-      stackName,
-      regionForState,
-      'cdkd destroy'
-    );
+    const [current, marker] = await Promise.all([
+      ctx.stateBackend.getState(stackName, regionForState),
+      readRefactorMarker(ctx.stateBackend),
+    ]);
+    if (current === null || !holdsSameResourcesAs(state, current.state)) {
+      throw new CdkdError(
+        safeMsg`cdkd destroy refused stack ${stackName} (${regionForState}): its state ` +
+          'changed after it was read (another command wrote it while this one waited for ' +
+          'confirmation), so nothing was deleted. Re-run cdkd destroy.',
+        'STATE_CHANGED'
+      );
+    }
+    refusePendingMovesOut(current.state, stackName, regionForState, 'cdkd destroy');
+    refuseRefactorMarker(marker, stackName, regionForState, 'cdkd destroy');
   } catch (error) {
-    await lock.release({
-      failureMessage: 'Failed to release lock after a refactor-marker refusal',
-    });
+    await lock.release({ failureMessage: 'Failed to release lock after a state re-check refusal' });
     restoreBaseRegionAndClients();
     throw error;
   }

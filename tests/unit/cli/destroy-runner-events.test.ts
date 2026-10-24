@@ -55,9 +55,13 @@ describe('runDestroyForStack - #808 deployment events', () => {
   function makeContext(opts: {
     provider: { delete: ReturnType<typeof vi.fn> };
     recorder: DeploymentEventRecorder;
+    state: StackState;
   }) {
     const stateBackend = {
       deleteState: vi.fn().mockResolvedValue(undefined),
+      // Under-lock re-read (#5220): the same record this run was handed, so
+      // it must not pre-empt the delete/event behavior each case is about.
+      getState: vi.fn(async () => ({ state: opts.state, etag: 'e' })),
       // No outputs -> needsStrongRefCheck is false, scanActiveConsumers skipped.
     } as unknown as S3StateBackend;
     const lockManager = {
@@ -108,7 +112,7 @@ describe('runDestroyForStack - #808 deployment events', () => {
       },
     });
 
-    const result = await runDestroyForStack('S', state, makeContext({ provider, recorder }));
+    const result = await runDestroyForStack('S', state, makeContext({ provider, recorder, state }));
     expect(result.deletedCount).toBe(1);
     expect(result.errorCount).toBe(0);
 
@@ -149,7 +153,7 @@ describe('runDestroyForStack - #808 deployment events', () => {
       },
     });
 
-    const result = await runDestroyForStack('S', state, makeContext({ provider, recorder }));
+    const result = await runDestroyForStack('S', state, makeContext({ provider, recorder, state }));
     expect(result.errorCount).toBe(1);
     expect(result.deletedCount).toBe(0);
 
@@ -178,7 +182,7 @@ describe('runDestroyForStack - #808 deployment events', () => {
       },
     });
 
-    const result = await runDestroyForStack('S', state, makeContext({ provider, recorder }));
+    const result = await runDestroyForStack('S', state, makeContext({ provider, recorder, state }));
     expect(result.retainedCount).toBe(1);
     expect(result.deletedCount).toBe(0);
     // The AWS resource is kept — provider.delete is never called.
@@ -213,7 +217,7 @@ describe('runDestroyForStack - #808 deployment events', () => {
     await runDestroyForStack(
       `S${planted}`,
       state,
-      makeContext({ provider, recorder: new CollectingRecorder() })
+      makeContext({ provider, recorder: new CollectingRecorder(), state })
     );
 
     const lines = logInfo.mock.calls.map((c) => String(c[0]));
@@ -249,7 +253,7 @@ describe('runDestroyForStack - #808 deployment events', () => {
       [`Plain${planted}`]: resource('AWS::SQS::Queue'),
     });
 
-    await runDestroyForStack('S', state, makeContext({ provider, recorder: new CollectingRecorder() }));
+    await runDestroyForStack('S', state, makeContext({ provider, recorder: new CollectingRecorder(), state }));
 
     const failed = logError.mock.calls
       .map((c) => String(c[0]))
@@ -291,7 +295,7 @@ describe('runDestroyForStack - #808 deployment events', () => {
         },
       });
 
-      await runDestroyForStack('S', state, makeContext({ provider, recorder: new CollectingRecorder() }));
+      await runDestroyForStack('S', state, makeContext({ provider, recorder: new CollectingRecorder(), state }));
 
       const timeoutCall = logError.mock.calls.find((c) => String(c[0]).includes('Failed to delete Topic'))!;
       const body = String(timeoutCall[1]);
@@ -346,7 +350,7 @@ describe('runDestroyForStack - #808 deployment events', () => {
     });
 
     await runDestroyForStack('S', state, {
-      ...makeContext({ provider, recorder: new CollectingRecorder() }),
+      ...makeContext({ provider, recorder: new CollectingRecorder(), state }),
       resourceWarnAfterMs: 1,
       resourceTimeoutMs: 10_000,
     });
@@ -361,12 +365,6 @@ describe('runDestroyForStack - #808 deployment events', () => {
 
   it('renders a planted stack name inert in the lock-release warning (issue #3811)', async () => {
     const provider = { delete: vi.fn().mockResolvedValue(undefined) };
-    const ctx = makeContext({ provider, recorder: new CollectingRecorder() });
-    const lockManager = {
-      acquireLock: vi.fn().mockResolvedValue(true),
-      releaseLock: vi.fn().mockRejectedValue(new Error('boom')),
-    } as unknown as LockManager;
-
     const state = makeState({
       Topic: {
         physicalId: 'phys',
@@ -377,6 +375,11 @@ describe('runDestroyForStack - #808 deployment events', () => {
         provisionedBy: 'sdk',
       },
     });
+    const ctx = makeContext({ provider, recorder: new CollectingRecorder(), state });
+    const lockManager = {
+      acquireLock: vi.fn().mockResolvedValue(true),
+      releaseLock: vi.fn().mockRejectedValue(new Error('boom')),
+    } as unknown as LockManager;
 
     await runDestroyForStack('S\r\nX‮', state, { ...ctx, lockManager });
 
@@ -403,7 +406,7 @@ describe('runDestroyForStack - #808 deployment events', () => {
       },
     });
 
-    const result = await runDestroyForStack('S', state, makeContext({ provider, recorder }));
+    const result = await runDestroyForStack('S', state, makeContext({ provider, recorder, state }));
     expect(result.deletedCount).toBe(1);
     expect(result.errorCount).toBe(0);
     const types = recorder.events.map((e) => e.eventType);
@@ -412,9 +415,6 @@ describe('runDestroyForStack - #808 deployment events', () => {
 
   it('is a no-op when no recorder is supplied (back-compat)', async () => {
     const provider = { delete: vi.fn().mockResolvedValue(undefined) };
-    const ctx = makeContext({ provider, recorder: new CollectingRecorder() });
-    // Strip the recorder entirely.
-    const { eventRecorder: _omit, ...ctxNoRecorder } = ctx;
     const state = makeState({
       Bucket: {
         physicalId: 'phys-bucket',
@@ -424,6 +424,9 @@ describe('runDestroyForStack - #808 deployment events', () => {
         dependencies: [],
       },
     });
+    const ctx = makeContext({ provider, recorder: new CollectingRecorder(), state });
+    // Strip the recorder entirely.
+    const { eventRecorder: _omit, ...ctxNoRecorder } = ctx;
     const result = await runDestroyForStack('S', state, ctxNoRecorder);
     expect(result.deletedCount).toBe(1);
   });
@@ -490,7 +493,7 @@ describe('runDestroyForStack - #808 deployment events', () => {
       },
     });
 
-    const ctx = makeContext({ provider, recorder });
+    const ctx = makeContext({ provider, recorder, state });
     const result = await runDestroyForStack('S', state, ctx);
 
     // 1. The run was not abandoned: the SECOND level was still attempted.

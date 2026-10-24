@@ -85,7 +85,7 @@ data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 er
 deep-getatt-chains	2026-10-18T05:53:52Z	PASS	61	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 deletion-ordering-complex	2026-10-11T09:33:22Z	PASS	205	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 deletion-policy-retain	2026-10-17T07:24:50Z	PASS	40	verify.sh	rc ok, orph clean (resolver-context refactor #5025)
-deletion-policy-snapshot	2026-09-29T08:18:12Z	PASS	241	verify.sh	rc ok, orph clean (#4029 PR #4072)
+deletion-policy-snapshot	2026-10-23T23:14:16Z	PASS	265	verify.sh	rc ok, orph clean; re-run on 3d64872f4 (destroy re-read is now deep-equality) (#5220)
 deletion-policy-snapshot-heavy	2026-08-03T06:58:15Z	PASS	1500	verify.sh	#1353 Redshift+ElastiCache RepGroup pre-delete snapshots verified; found 4 live defects across 5 runs
 deployment-events	2026-10-13T02:41:29Z	PASS	35	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 destroy-data-guard	2026-10-11T09:33:22Z	PASS	110	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -265,13 +265,13 @@ monitoring	2026-08-10T05:19:05Z	PASS	43	standard	0810 P2 sweep b6; 7 del 0 err, 
 multi-asset	2026-09-21T12:02:26Z	PASS	97	verify.sh	rc ok, orph clean; #3489 asset-publish sites (file + docker)
 multi-region-same-stack	2026-10-11T21:09:57Z	PASS	59	standard	PR #4809, standard flow + us-west-2 arm, orph clean
 multi-resource	2026-10-23T16:19:29Z	PASS	76	standard	destroy 0 errors, 0 orphans (17 deleted); swept this run's 2 CR log groups (#3885 pre-existing gap)
-multi-stack-deps	2026-10-23T20:31:27Z	PASS	105	standard	deploy+diff(no change)+destroy clean all 3 stacks, 0 orphans; regression check for fix/refactor-interrupt@e7af89b9e
+multi-stack-deps	2026-10-23T23:18:50Z	PASS	105	standard	deploy+diff(no change)+destroy clean all 3 stacks, 0 orphans; re-run on 3d64872f4 (destroy re-read is now deep-equality) (#5220)
 neptune-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	2280	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
 nested-required-preflight	2026-10-11T09:33:22Z	PASS	55	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 nested-stack	2026-10-13T02:41:29Z	PASS	65	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 nested-stack-3level	2026-10-15T09:24:20Z	PASS	490	verify.sh	PR #4939 (#4929) 504262f2b; own state bucket; rc ok, no seeded secret in any version, orph clean
 nested-stack-deep	2026-10-23T21:03:40Z	PASS	130	verify.sh	rc ok, orph clean; re-run on 62a976c7f after rebase onto main (#5211 merge)
-nested-stack-replace-guard	2026-10-12T05:36:03Z	PASS	61	verify.sh	PR #4812 head build, rc ok, orph clean
+nested-stack-replace-guard	2026-10-23T23:16:13Z	PASS	60	verify.sh	rc ok, orph clean; re-run on 3d64872f4 (destroy re-read is now deep-equality) (#5220)
 nested-stack-rollback	2026-10-20T10:30:19Z	PASS	124	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 nested-stack-secret	2026-10-18T13:32:15Z	PASS	360	verify.sh	PR #5052 (stage2 RedactionContext refactor) b22bc1158; pnpm/mise shim used; rc 0, destroy 0 errors, 0 surviving state versions
 nlb-source-nat	2026-10-14T14:46:11Z	PASS	370	verify.sh	PR #4915 (#1160) ce4ffaf68; rc 0, destroy 0 errors, orph clean
@@ -303,7 +303,7 @@ recreate-via-sdk-provider	2026-10-17T13:29:07Z	PASS	106	verify.sh	rc ok, orph cl
 redacted-delete-address	2026-10-18T18:32:28Z	PASS	91	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
 refactor-command	2026-10-23T20:45:22Z	PASS	95	verify.sh	rc ok, orph clean, no refactor-map.json left; mktemp-dir ordering fixed on e48470db5 (#5201)
-refactor-move	2026-10-23T20:58:27Z	PASS	151	verify.sh	rc ok, orph clean; re-run on 62a976c7f after rebase onto main (merged #5211 deploy-flow perf change) (#5212)
+refactor-move	2026-10-23T23:22:22Z	PASS	160	verify.sh	rc ok, orph clean; re-run on 3d64872f4 (destroy re-read is now deep-equality) (#5212, #5220)
 remove-protection	2026-10-23T17:17:04Z	PASS	2113	verify.sh	--remove-protection destroy succeeded, ASG-launched instance confirmed terminated (#796), state cleared, orph clean
 remove-protection-compensation	2026-10-22T15:37:12Z	PASS	251	verify.sh	rc ok, orph clean
 remove-protection-journaled-orphan	2026-10-20T10:53:50Z	PASS	675	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean

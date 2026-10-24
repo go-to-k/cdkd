@@ -96,7 +96,7 @@ function makeState(logicalId: string): StackState {
   };
 }
 
-function makeCtx(mockProviderDelete: ReturnType<typeof vi.fn>) {
+function makeCtx(mockProviderDelete: ReturnType<typeof vi.fn>, current: StackState = makeState('Table')) {
   const saveState = vi.fn().mockResolvedValue('"etag"');
   const deleteState = vi.fn().mockResolvedValue(undefined);
   return {
@@ -106,6 +106,10 @@ function makeCtx(mockProviderDelete: ReturnType<typeof vi.fn>) {
       stateBackend: {
         saveState,
         deleteState,
+        // The under-lock re-read (#5220) sees the same record this run
+        // started with by default -- nothing changed -- unless a case
+        // overrides it to exercise a divergent re-read.
+        getState: vi.fn().mockResolvedValue({ state: current, etag: 'e' }),
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: {
@@ -364,6 +368,12 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
       },
       parentStack: 'Parent',
     } as unknown as StackState;
+    // Under-lock re-read (#5220): the same child record, so it must not
+    // pre-empt the WARNING throw this case is actually about.
+    (ctx.stateBackend.getState as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state: child,
+      etag: 'e',
+    });
     logs.warn.mockImplementation((msg: unknown) => {
       if (String(msg).includes('destroy it through its parent stack')) {
         throw new Error('EPIPE: broken pipe');
@@ -415,6 +425,12 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
     // the second level's log line then throws out of the loop.
     const state = makeState('A');
     state.resources['B'] = { ...state.resources['A']!, dependencies: ['A'] };
+    // Under-lock re-read (#5220): the same two-resource record, so it must
+    // not pre-empt the mid-loop EPIPE throw this case is actually about.
+    (ctx.stateBackend.getState as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state,
+      etag: 'e',
+    });
     logs.debug.mockImplementation((msg: unknown) => {
       if (String(msg).startsWith('Deletion level 2/')) throw new Error('EPIPE: broken pipe');
     });
@@ -433,6 +449,10 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
    * between the pre-flight scan and the under-lock one makes the runner release
    * on its own path, before the main `try` opens. It owes the same ordering.
    */
+  function producerState(): StackState {
+    return { ...makeState('Table'), outputs: { Out: 'v' } };
+  }
+
   function strongRefRefusalCtx(releaseImpl: () => Promise<undefined>) {
     const base = makeCtx(vi.fn().mockResolvedValue(undefined));
     const releaseLock = vi.fn().mockImplementation(releaseImpl);
@@ -452,7 +472,15 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
             .fn()
             .mockResolvedValueOnce([])
             .mockResolvedValue([{ stackName: 'Consumer', region: REGION }]),
-          getState: vi.fn().mockResolvedValue({ state: consumerState, etag: '"e"' }),
+          // The producer's OWN under-lock re-read (#5220) must see its own
+          // unchanged record; `scanActiveConsumers` separately reads the
+          // CONSUMER's record by its own name. Same mock, keyed on which
+          // stack is asked for.
+          getState: vi.fn(async (name: string) =>
+            name === 'Consumer'
+              ? { state: consumerState, etag: '"e"' }
+              : { state: producerState(), etag: 'e' }
+          ),
         } as unknown as S3StateBackend,
         lockManager: {
           acquireLock: vi.fn().mockResolvedValue(true),
@@ -460,10 +488,6 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
         } as unknown as LockManager,
       },
     };
-  }
-
-  function producerState(): StackState {
-    return { ...makeState('Table'), outputs: { Out: 'v' } };
   }
 
   it('the strong-ref REFUSAL keeps the handler armed across its release, then removes it', async () => {

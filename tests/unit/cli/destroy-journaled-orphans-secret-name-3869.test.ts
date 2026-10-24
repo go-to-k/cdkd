@@ -110,8 +110,15 @@ function journalOf(failedOperations: unknown[]) {
   };
 }
 
+// The under-lock re-read (#5220) needs to see the record each case destroys.
+// `stateOf` is always evaluated as an ARGUMENT to `runDestroyForStack`
+// immediately before the matching `ctx()` call (left-to-right argument
+// evaluation), so tracking the last call here is the one place `ctx()`'s
+// default `getState` (below) needs to echo it back from.
+let lastMadeState: StackState | undefined;
+
 function stateOf(resources: Record<string, ResourceState>, stackInstanceId?: string): StackState {
-  return {
+  const state: StackState = {
     version: 8,
     stackName: 'TestStack',
     region: REGION,
@@ -120,6 +127,8 @@ function stateOf(resources: Record<string, ResourceState>, stackInstanceId?: str
     lastModified: 1,
     ...(stackInstanceId !== undefined && { stackInstanceId }),
   };
+  lastMadeState = state;
+  return state;
 }
 
 describe('cdkd destroy masks a secret-derived name on journaled-orphan deletes and events (go-to-k/cdkd#3869)', () => {
@@ -133,7 +142,9 @@ describe('cdkd destroy masks a secret-derived name on journaled-orphan deletes a
       stateBackend: {
         saveState: vi.fn().mockResolvedValue('"etag"'),
         deleteState: vi.fn().mockResolvedValue(undefined),
-        getState: vi.fn().mockResolvedValue(null),
+        getState: vi.fn(async () =>
+          lastMadeState ? { state: lastMadeState, etag: 'e' } : null
+        ),
         loadRollbackJournal: loadJournal,
         dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(0),
         listStacks: vi.fn().mockResolvedValue([]),

@@ -141,16 +141,26 @@ describe('cdkd destroy of a cross-region stack with a nested child (go-to-k/cdkd
   let callerClients: AwsClients;
 
   function run(stackRegion: string) {
-    const live = new Set([CHILD, GRANDCHILD]);
+    const live = new Set([PARENT, CHILD, GRANDCHILD]);
     const nestedRow = (name: string): ResourceState =>
       res({
         resourceType: 'AWS::CloudFormation::Stack',
         physicalId: `arn:cdkd-local:${stackRegion}:123456789012:nested-stack/${name}`,
         properties: {},
       });
+    const parentState = stateOf(PARENT, stackRegion, {
+      Child: res({
+        resourceType: 'AWS::CloudFormation::Stack',
+        physicalId: `arn:cdkd-local:${stackRegion}:123456789012:nested-stack/${PARENT}/Child`,
+        properties: {},
+      }),
+    });
     const stateBackend = {
+      // Under-lock re-read (#5220): the parent sees its own unchanged
+      // record; each nested level sees ITS unchanged record, keyed by name.
       getState: vi.fn(async (name: string) => {
         if (!live.has(name)) return null;
+        if (name === PARENT) return { state: parentState, etag: '"e"' };
         // The child holds a stream AND a grandchild, whose context is the
         // child's spread of the one the runner set.
         const resources: Record<string, ResourceState> =
@@ -186,13 +196,6 @@ describe('cdkd destroy of a cross-region stack with a nested child (go-to-k/cdkd
       awsClients: callerClients,
       stateBucket: 'test-bucket',
     } as NestedStackProviderContext;
-    const parentState = stateOf(PARENT, stackRegion, {
-      Child: res({
-        resourceType: 'AWS::CloudFormation::Stack',
-        physicalId: `arn:cdkd-local:${stackRegion}:123456789012:nested-stack/${PARENT}/Child`,
-        properties: {},
-      }),
-    });
     return withNestedStackContext(nestedCtx, () =>
       runDestroyForStack(PARENT, parentState, {
         stateBackend,

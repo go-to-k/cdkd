@@ -231,7 +231,14 @@ describe('runDestroyForStack refuses an unreadable resource ROW (go-to-k/cdkd#32
   // THE OTHER DIRECTION.
   it('lets a map of readable rows through to the delete path', async () => {
     const h = makeCtx();
-    await runDestroyForStack(STACK, stateWith({ Good: HEALTHY }), h.ctx).catch(() => undefined);
+    const state = stateWith({ Good: HEALTHY });
+    // The under-lock re-read (#5220) sees the same record this run started
+    // with — nothing changed — so it must not block the delete path.
+    (h.ctx.stateBackend.getState as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state,
+      etag: 'e',
+    });
+    await runDestroyForStack(STACK, state, h.ctx).catch(() => undefined);
     expect(h.getProviderFor, 'a healthy record no longer reaches the delete path').toHaveBeenCalled();
   });
 
@@ -241,11 +248,14 @@ describe('runDestroyForStack refuses an unreadable resource ROW (go-to-k/cdkd#32
     // delete loop as a skip (go-to-k/cdkd#3211,
     // `destroy-runner-malformed-fields.test.ts`), not as a refusal of the run.
     const h = makeCtx();
-    const result = await runDestroyForStack(
-      STACK,
-      stateWith({ Typed: { resourceType: 'AWS::SSM::Parameter', properties: {} } }),
-      h.ctx
-    );
+    const state = stateWith({ Typed: { resourceType: 'AWS::SSM::Parameter', properties: {} } });
+    // Under-lock re-read (#5220): same record, so the run proceeds to the
+    // per-resource skip this test is actually about.
+    (h.ctx.stateBackend.getState as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state,
+      etag: 'e',
+    });
+    const result = await runDestroyForStack(STACK, state, h.ctx);
     expect(result.skippedCount).toBe(1);
     expect(h.getProviderFor).not.toHaveBeenCalled();
     expect(h.deleteState).not.toHaveBeenCalled();

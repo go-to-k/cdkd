@@ -84,8 +84,18 @@ const TEMPLATE = {
   },
 } as CloudFormationTemplate;
 
+// The under-lock re-read (#5220) needs to see the record each case destroys.
+// Every case builds it through `makeState`, evaluated as an ARGUMENT to
+// `runDestroyForStack` immediately before `ctx(...)` runs (left-to-right
+// argument evaluation), so tracking the last call here is the one place
+// `ctx`'s default `getState` (below) needs to echo it back from. A later
+// in-place mutation of the returned object (two cases add resources before
+// the call) is still the SAME object `getState` then returns, so it matches
+// by construction.
+let lastMadeState: StackState | undefined;
+
 function makeState(): StackState {
-  return {
+  const state = {
     version: 11,
     stackName: 'NoEchoStack',
     region: REGION,
@@ -102,6 +112,8 @@ function makeState(): StackState {
     outputs: {},
     lastModified: 1,
   } as StackState;
+  lastMadeState = state;
+  return state;
 }
 
 describe('runDestroyForStack: a custom resource reading a NoEcho parameter (go-to-k/cdkd#4682)', () => {
@@ -115,6 +127,9 @@ describe('runDestroyForStack: a custom resource reading a NoEcho parameter (go-t
       stateBackend: {
         saveState,
         deleteState,
+        getState: vi.fn(async () =>
+          lastMadeState ? { state: lastMadeState, etag: 'e' } : null
+        ),
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: {

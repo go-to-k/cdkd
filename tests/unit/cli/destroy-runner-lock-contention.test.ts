@@ -239,11 +239,17 @@ describe('a cross-region destroy restores region + clients when the lock is held
     const baseAwsClients = { marker: 'base' } as unknown as AwsClients;
     const acquireLock = vi.fn().mockResolvedValue(true); // lock IS acquired here
     const releaseLock = vi.fn().mockResolvedValue(undefined);
+    // A producer state with an output → needsStrongRefCheck is true.
+    const state = makeState();
+    state.region = stackRegion;
+    state.outputs = { X: 'export-value' };
     const crossCtx = {
       stateBackend: {
         saveState: vi.fn().mockResolvedValue('"etag"'),
         deleteState: vi.fn(),
-        getState: vi.fn(),
+        // Under-lock re-read (#5220): the same record, so it must not
+        // pre-empt the lock-protected strong-ref scan this case is about.
+        getState: vi.fn(async () => ({ state, etag: 'e' })),
         // Pre-flight scan (before the lock) sees no consumers and passes; the
         // lock-protected scan (after the lock) fails, driving the refusal exit.
         listStacks: vi
@@ -260,10 +266,6 @@ describe('a cross-region destroy restores region + clients when the lock is held
       stateBucket: 'test-bucket',
       skipConfirmation: true,
     } as unknown as Parameters<typeof runDestroyForStack>[2];
-    // A producer state with an output → needsStrongRefCheck is true.
-    const state = makeState();
-    state.region = stackRegion;
-    state.outputs = { X: 'export-value' };
 
     const before = process.listeners('SIGINT');
 
@@ -322,10 +324,15 @@ describe('a cross-region destroy restores region + clients when the lock is held
     const baseAwsClients = { marker: 'base' } as unknown as AwsClients;
     const acquireLock = vi.fn().mockResolvedValue(true);
     const releaseLock = vi.fn().mockRejectedValue(new Error('S3 DeleteObject failed'));
+    const state = makeState(); // no outputs → strong-ref scan skipped, delete runs
+    state.region = stackRegion;
     const crossCtx = {
       stateBackend: {
         saveState: vi.fn().mockResolvedValue('"etag"'),
         deleteState: vi.fn().mockResolvedValue(undefined),
+        // Under-lock re-read (#5220): the same record, so it must not
+        // pre-empt the success path this case is actually about.
+        getState: vi.fn(async () => ({ state, etag: 'e' })),
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: { acquireLock, releaseLock } as unknown as LockManager,
@@ -337,8 +344,6 @@ describe('a cross-region destroy restores region + clients when the lock is held
       stateBucket: 'test-bucket',
       skipConfirmation: true,
     } as unknown as Parameters<typeof runDestroyForStack>[2];
-    const state = makeState(); // no outputs → strong-ref scan skipped, delete runs
-    state.region = stackRegion;
 
     const before = process.listeners('SIGINT');
 
@@ -463,10 +468,15 @@ describe('a cross-region destroy restores region + clients when the lock is held
     renderer.start.mockImplementationOnce(() => {
       throw new Error('renderer start EPIPE');
     });
+    const state = makeState();
+    state.region = stackRegion;
     const crossCtx = {
       stateBackend: {
         saveState: vi.fn().mockResolvedValue('"etag"'),
         deleteState: vi.fn(),
+        // Under-lock re-read (#5220): the same record, so it must not
+        // pre-empt the renderer-start throw this case is actually about.
+        getState: vi.fn(async () => ({ state, etag: 'e' })),
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: { acquireLock, releaseLock } as unknown as LockManager,
@@ -478,8 +488,6 @@ describe('a cross-region destroy restores region + clients when the lock is held
       stateBucket: 'test-bucket',
       skipConfirmation: true,
     } as unknown as Parameters<typeof runDestroyForStack>[2];
-    const state = makeState();
-    state.region = stackRegion;
 
     const before = process.listeners('SIGINT');
 

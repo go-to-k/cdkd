@@ -81,8 +81,16 @@ function res(extra: Partial<ResourceState> = {}): ResourceState {
   };
 }
 
+// The under-lock re-read (#5220) needs to see the record each case destroys.
+// `makeState` is always evaluated as an ARGUMENT to `runDestroyForStack`
+// immediately before `makeCtx` (left-to-right argument evaluation), or into
+// a local the case spreads WITHOUT overriding `resources` (every case but
+// the one that hands its own ctx a `getState`), so tracking the last call
+// here is what `makeCtx`'s default `getState` (below) echoes back.
+let lastMadeState: StackState | undefined;
+
 function makeState(resources: Record<string, ResourceState>): StackState {
-  return {
+  const state: StackState = {
     version: 8,
     stackName: 'TestStack',
     region: REGION,
@@ -90,6 +98,8 @@ function makeState(resources: Record<string, ResourceState>): StackState {
     outputs: {},
     lastModified: 1,
   };
+  lastMadeState = state;
+  return state;
 }
 
 describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
@@ -97,11 +107,24 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
   const mockDeleteState = vi.fn();
   const mockProviderDelete = vi.fn();
 
+  /** `makeCtx` whose under-lock re-read (#5220) returns `state` itself. */
+  function ctxFor(state: StackState, extra: Record<string, unknown> = {}) {
+    const ctx = makeCtx(extra);
+    (ctx.stateBackend as unknown as { getState: unknown }).getState = vi.fn(async () => ({
+      state,
+      etag: 'e',
+    }));
+    return ctx;
+  }
+
   function makeCtx(extra: Record<string, unknown> = {}) {
     return {
       stateBackend: {
         saveState: mockSaveState,
         deleteState: mockDeleteState,
+        getState: vi.fn(async () =>
+          lastMadeState ? { state: lastMadeState, etag: 'e' } : null
+        ),
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: {
@@ -287,7 +310,7 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
       mockSaveState.mockResolvedValue('"etag"');
       mockProviderDelete.mockResolvedValue(undefined);
     };
-    await runDestroyForStack('Parent~Child', child, makeCtx({ resolveSecretDerivedPrincipals: {} }));
+    await runDestroyForStack('Parent~Child', child, ctxFor(child, { resolveSecretDerivedPrincipals: {} }));
     expect(deleteContextArg()['resolveSecretDerivedPrincipals']).toEqual({
       importedProducerRegions: ['us-west-2'],
       producerRegionsIncomplete: true,
@@ -306,7 +329,7 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
         } as Partial<ResourceState>),
       },
     } as unknown as StackState;
-    await runDestroyForStack('Parent~Child', recordedChild, makeCtx({ resolveSecretDerivedPrincipals: {} }));
+    await runDestroyForStack('Parent~Child', recordedChild, ctxFor(recordedChild, { resolveSecretDerivedPrincipals: {} }));
     expect(deleteContextArg()['resolveSecretDerivedPrincipals']).toMatchObject({
       producerRegionsIncomplete: true,
       recordedRegions: new Map([[REF, 'us-west-2']]),
@@ -314,7 +337,7 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     expect(hinted()).toBe(false);
     // No opt-in (a deploy's nested removal): no hint, even with the record.
     reset();
-    await runDestroyForStack('Parent~Child', child, makeCtx());
+    await runDestroyForStack('Parent~Child', child, ctxFor(child));
     expect(deleteContextArg()).not.toHaveProperty('resolveSecretDerivedPrincipals');
     expect(hinted()).toBe(false);
     // No such record: no hint.
@@ -330,7 +353,7 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     await runDestroyForStack(
       'Parent~Child',
       child,
-      makeCtx({ resolveSecretDerivedPrincipals: { inheritedProducerRegions: [] } })
+      ctxFor(child, { resolveSecretDerivedPrincipals: { inheritedProducerRegions: [] } })
     );
     expect(deleteContextArg()['resolveSecretDerivedPrincipals']).toEqual({
       importedProducerRegions: ['us-west-2'],
@@ -343,7 +366,7 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     await runDestroyForStack(
       'Parent~Child~Grandchild',
       child,
-      makeCtx({
+      ctxFor(child, {
         resolveSecretDerivedPrincipals: {
           inheritedProducerRegions: ['eu-west-1'],
           producerRegionsIncomplete: true,

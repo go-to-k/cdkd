@@ -462,7 +462,10 @@ describe('a stack holding orphan records is NOT empty (issue #2934)', () => {
   }
 
   it('does NOT take the empty fast path, so state.json is not deleted unconfirmed', async () => {
-    const h = makeCtx({ acquired: true, recheck: null });
+    // Not empty (orphanCount > 0), so this run never reaches the empty
+    // fast-path's own recheck -- it goes through the non-empty under-lock
+    // re-read (#5220) instead, which must see the same, unchanged record.
+    const h = makeCtx({ acquired: true, recheck: { state: withOrphan(), etag: '"e"' } });
 
     const result = await runDestroyForStack('TestStack', withOrphan(), h.ctx);
 

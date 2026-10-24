@@ -246,6 +246,13 @@ describe('runDestroyForStack: a journaled abandoned Cloud Control CREATE (#3252)
         },
       },
     };
+    // Under-lock re-read (#5220): the same record (plus its resource), so it
+    // must not pre-empt the journal-gained-an-entry refusal this case is
+    // actually about.
+    (ctx.stateBackend.getState as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state: withResource,
+      etag: 'e',
+    });
     await expect(runDestroyForStack('TestStack', withResource, ctx)).rejects.toThrow(
       /now records a Cloud Control CREATE a failed deploy stopped waiting for/
     );
