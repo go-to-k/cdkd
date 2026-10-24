@@ -8,7 +8,8 @@
 # auto-routed via Cloud Control API and that the spec's route reaches
 # AWS — the silent-drop bug is closed by default. Also asserts the
 # destroy path works through CC API. Step 0 reds self-diagnosingly if
-# the trigger is ever backfilled. Phase 1b (go-to-k/cdkd#2319) destroys the
+# the trigger is ever backfilled. Phase 1a (go-to-k/cdkd#5260) redeploys two
+# in-place edits of Body. Phase 1b (go-to-k/cdkd#2319) destroys the
 # stack as a role denied API Gateway's write verbs, so the Cloud Control
 # DELETE handler FAILs with a denial, and asserts the persisted
 # RESOURCE_FAILED message carries `<caller-principal>` and none of the
@@ -235,6 +236,91 @@ if [ "${ROUTE_COUNT}" -lt 1 ]; then
 fi
 echo "    OK: route '${PROBE_ROUTE}' exists on AWS (silent-drop CLOSED by #614)"
 
+# --- Phase 1a: edit Body in place, twice (go-to-k/cdkd#5260) ---------------
+# Before #5260 every Body change failed: Cloud Control applies a patch to the
+# model it READ, which carries Name / ProtocolType / ..., and API Gateway
+# refuses those beside Body ("Redundant fields [...] provided when either Body
+# or BodyS3Location is not empty"). cdkd now sends the definition through
+# ReimportApi, and the rest of the change through Cloud Control.
+# `CC_BODY_EDIT=<n>` adds route `GET /cdkd-5260-edit-<n>` to the Body. From
+# edit 2 the template also declares `Description` and `Tags`, the changes
+# Cloud Control still applies, and the definition holds its own
+# `info.description`, which a reimport writes over the API's description:
+# - edit 1: Body only (ReimportApi alone);
+# - edit 2: Body + an added Description + added Tags (reimport, then CC);
+# - edit 3: Body + changed Tags, Description UNCHANGED, so only cdkd's
+#   re-send of the declared Description keeps it over the definition's.
+route_count() { # usage: route_count <route key>; prints a validated count
+  local n
+  n="$(aws apigatewayv2 get-routes --api-id "${API_ID}" --region "${REGION}" \
+    --query "length(Items[?RouteKey=='$1'])" --output text)" || return 1
+  case "${n}" in
+    '' | *[!0-9]*)
+      echo "FAIL: could not read the count of route '$1' (got '${n}')" >&2
+      exit 1
+      ;;
+  esac
+  printf '%s\n' "${n}"
+}
+api_field() { # usage: api_field <JMESPath>; prints the live API's value
+  local v
+  v="$(aws apigatewayv2 get-api --api-id "${API_ID}" --region "${REGION}" \
+    --query "$1" --output text)" || return 1
+  printf '%s\n' "${v}"
+}
+for edit in 1 2 3; do
+  echo "==> Phase 1a: redeploy with Body edit ${edit} (#5260)"
+  if ! CC_BODY_EDIT="${edit}" node "${LOCAL_DIST}" deploy "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" \
+    --yes; then
+    echo "FAIL: the redeploy editing Body (edit ${edit}) failed -- an in-place Body change must succeed, as it does under the CDK CLI (#5260)" >&2
+    exit 1
+  fi
+  EDIT_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)" || {
+    echo "FAIL: could not read s3://${STATE_BUCKET}/${STATE_KEY} after Body edit ${edit}" >&2
+    exit 1
+  }
+  EDIT_API_ID="$(printf '%s' "${EDIT_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::ApiGatewayV2::Api") | .value.physicalId // ""] | first')"
+  if [ "${EDIT_API_ID}" != "${API_ID}" ]; then
+    echo "FAIL: Body edit ${edit} changed the API id from ${API_ID} to '${EDIT_API_ID}' -- an in-place edit must not replace the API (#5260)" >&2
+    exit 1
+  fi
+  # Assigned first: under `set -e` a failed read in an assignment stops the
+  # run, where inside `[ ]` it would compare an empty string and pass on.
+  EDIT_ROUTES="$(route_count "GET /cdkd-5260-edit-${edit}")"
+  PROBE_ROUTES="$(route_count "${PROBE_ROUTE}")"
+  if [ "${EDIT_ROUTES}" -lt 1 ]; then
+    echo "FAIL: route 'GET /cdkd-5260-edit-${edit}' is missing on API ${API_ID} after Body edit ${edit} -- the edited definition never reached AWS (#5260)" >&2
+    exit 1
+  fi
+  if [ "${PROBE_ROUTES}" -lt 1 ]; then
+    echo "FAIL: route '${PROBE_ROUTE}' is missing on API ${API_ID} after Body edit ${edit}" >&2
+    exit 1
+  fi
+  if [ "${edit}" -ge 2 ]; then
+    # The reimport REPLACES the definition: this edit's Body no longer holds
+    # the previous edit's route. A merge would keep it.
+    PREV_ROUTES="$(route_count "GET /cdkd-5260-edit-$((edit - 1))")"
+    if [ "${PREV_ROUTES}" -ne 0 ]; then
+      echo "FAIL: route 'GET /cdkd-5260-edit-$((edit - 1))' survived Body edit ${edit}, whose definition dropped it -- the update merged instead of replacing the definition (#5260)" >&2
+      exit 1
+    fi
+    LIVE_DESC="$(api_field Description)"
+    if [ "${LIVE_DESC}" != "cdkd-5260-declared" ]; then
+      echo "FAIL: after Body edit ${edit} the API's Description reads '${LIVE_DESC}', not the declared 'cdkd-5260-declared' -- the reimport's info.description won, or the Cloud Control half never ran (#5260)" >&2
+      exit 1
+    fi
+    LIVE_TAG="$(api_field Tags.cdkd5260)"
+    if [ "${LIVE_TAG}" != "edit-${edit}" ]; then
+      echo "FAIL: after Body edit ${edit} the API's cdkd5260 tag reads '${LIVE_TAG}', not 'edit-${edit}' -- the Cloud Control half of the update never reached AWS (#5260)" >&2
+      exit 1
+    fi
+  fi
+  echo "    OK: Body edit ${edit} deployed in place (same API id), and its route is live"
+done
+echo "    OK: each edit replaced the definition, and the declared Description and Tags read back (#5260)"
+
 # --- Phase 1b: a denied Cloud Control DELETE (go-to-k/cdkd#2319) ------------
 # The Cloud Control handler calls API Gateway with the CALLER's credentials, so
 # a caller denied API Gateway's write verbs makes the handler FAIL, and AWS
@@ -435,4 +521,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> cc-api-fallback test passed (silent-drop closed by CC auto-route, denied DELETE masked the caller, clean destroy)"
+echo "==> cc-api-fallback test passed (silent-drop closed by CC auto-route, Body edited in place, denied DELETE masked the caller, clean destroy)"

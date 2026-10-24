@@ -75,6 +75,11 @@ import { displaySafe, safeMsg } from '../utils/display-safe.js';
 import { withPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { withGuardDutyDetectorReadBackOps } from './guardduty-detector-patch.js';
+import {
+  isApiGatewayV2Import,
+  splitApiGatewayV2ImportPatch,
+  type ApiGatewayV2Reimport,
+} from './apigwv2-body-import-patch.js';
 import { unchangedBehindSecretReference } from './secret-reference-immutable.js';
 import { isSecretDerivedValue, maskerOrIdentity, type MaskerFn } from './masked-retry-logger.js';
 import {
@@ -1634,6 +1639,23 @@ export class CloudControlProvider implements ResourceProvider {
         context?.desiredFromAwsReadback === true ? { previous: cleanPreviousProperties } : undefined
       );
 
+      // go-to-k/cdkd#5260: no Cloud Control patch can change an imported
+      // HTTP API's definition; it goes through `ReimportApi`, and Cloud
+      // Control gets the rest. See the helper.
+      let reimported = false;
+      if (isApiGatewayV2Import(resourceType, cleanProperties)) {
+        const split = splitApiGatewayV2ImportPatch(patch, cleanPreviousProperties, cleanProperties);
+        patch = split.rest;
+        if (split.reimport !== undefined) {
+          await this.reimportApiGatewayV2(logicalId, physicalId, resourceType, split.reimport);
+          reimported = true;
+        } else if (patch.length === 0) {
+          // Only the write-only re-add touched the import keys: nothing changed.
+          this.logger.debug(`No property changes detected for ${logicalId}, skipping update`);
+          return { physicalId, wasReplaced: false, sentNothing: true };
+        }
+      }
+
       // Log the patch OPERATIONS + PATHS only, never the values (GHSA fix): a
       // patch value can be a resolved secret (a Cloud-Control-routed
       // `{{resolve:secretsmanager:...}}` property, e.g. Cognito
@@ -1649,35 +1671,40 @@ export class CloudControlProvider implements ResourceProvider {
         )}`
       );
 
-      // Start resource update
-      const updateResponse = await this.cloudControlClient.send(
-        new UpdateResourceCommand({
-          TypeName: resourceType,
-          Identifier: physicalId,
-          PatchDocument: JSON.stringify(patch),
-        })
-      );
+      // A reimport that left Cloud Control nothing to apply skips it; the
+      // attribute read-back below still runs.
+      let progressEvent: ProgressEvent | undefined;
+      if (!(reimported && patch.length === 0)) {
+        // Start resource update
+        const updateResponse = await this.cloudControlClient.send(
+          new UpdateResourceCommand({
+            TypeName: resourceType,
+            Identifier: physicalId,
+            PatchDocument: JSON.stringify(patch),
+          })
+        );
 
-      if (!updateResponse.ProgressEvent?.RequestToken) {
-        throw new ProvisioningError(
-          `Failed to update resource ${logicalId}: No request token received`,
-          resourceType,
+        if (!updateResponse.ProgressEvent?.RequestToken) {
+          throw new ProvisioningError(
+            `Failed to update resource ${logicalId}: No request token received`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+
+        this.logger.debug(
+          `Update request submitted for ${logicalId}, token: ${updateResponse.ProgressEvent.RequestToken}`
+        );
+
+        // Wait for update to complete
+        progressEvent = await this.waitForOperation(
+          updateResponse.ProgressEvent.RequestToken,
           logicalId,
-          physicalId
+          'UPDATE',
+          resourceType
         );
       }
-
-      this.logger.debug(
-        `Update request submitted for ${logicalId}, token: ${updateResponse.ProgressEvent.RequestToken}`
-      );
-
-      // Wait for update to complete
-      const progressEvent = await this.waitForOperation(
-        updateResponse.ProgressEvent.RequestToken,
-        logicalId,
-        'UPDATE',
-        resourceType
-      );
 
       this.logger.debug(`Updated resource ${logicalId}`);
 
@@ -1690,7 +1717,7 @@ export class CloudControlProvider implements ResourceProvider {
         wasReplaced: false,
       };
 
-      if (progressEvent.ResourceModel) {
+      if (progressEvent?.ResourceModel) {
         result.attributes = this.parseResourceModel(progressEvent.ResourceModel, idLog);
       }
 
@@ -1731,6 +1758,75 @@ export class CloudControlProvider implements ResourceProvider {
     } catch (error) {
       this.handleError(error, 'UPDATE', resourceType, logicalId, physicalId);
     }
+  }
+
+  /**
+   * Send an imported `AWS::ApiGatewayV2::Api`'s definition change through
+   * `ReimportApi` (go-to-k/cdkd#5260; see `splitApiGatewayV2ImportPatch` for
+   * why Cloud Control cannot). The client targets the Cloud Control client's
+   * region, refused when that region cannot be resolved, as the SDK delete
+   * delegates are.
+   *
+   * A `BodyS3Location` definition is refused: `ReimportApi` takes the
+   * definition's text only, and cdkd does not fetch it from S3 on the
+   * template's behalf.
+   */
+  private async reimportApiGatewayV2(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    reimport: ApiGatewayV2Reimport
+  ): Promise<void> {
+    if (reimport.fromS3 || reimport.body === undefined) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Cannot update ${logicalId} (${resourceType}) in place: the change is to ` +
+            `BodyS3Location, or to an import option (BasePath / FailOnWarnings) on an API defined ` +
+            `by BodyS3Location, and Cloud Control cannot change an imported API's definition ` +
+            `(API Gateway refuses the fields it reads back beside it), while ReimportApi takes ` +
+            `the definition's text only. Declare the definition inline as Body, or give the ` +
+            `API a new logical ID so it is replaced.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    let region: string | undefined;
+    try {
+      region = canonicalizeRegion((await this.cloudControlClient.config.region())?.trim());
+    } catch {
+      region = undefined;
+    }
+    if (region === undefined || region === '') {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Refusing to update ${logicalId} (${resourceType}, ${physicalId}): cdkd could not ` +
+            `resolve the Cloud Control client's region, so it cannot show ReimportApi would ` +
+            `reach this API. Re-run with --region set to the stack's region.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    const { ApiGatewayV2Client, ReimportApiCommand } = await import('@aws-sdk/client-apigatewayv2');
+    const client = new ApiGatewayV2Client({ ...ambientClientDefaults(), region });
+    try {
+      await client.send(
+        new ReimportApiCommand({
+          ApiId: physicalId,
+          Body: reimport.body,
+          ...(reimport.basePath !== undefined ? { Basepath: reimport.basePath } : {}),
+          ...(reimport.failOnWarnings !== undefined
+            ? { FailOnWarnings: reimport.failOnWarnings }
+            : {}),
+        })
+      );
+    } finally {
+      client.destroy();
+    }
+    this.logger.debug(`Reimported the OpenAPI definition of ${logicalId}`);
   }
 
   /**

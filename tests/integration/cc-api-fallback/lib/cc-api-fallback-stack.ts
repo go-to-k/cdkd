@@ -38,7 +38,11 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  *   (a) state.resources.SilentDropApi.provisionedBy === 'cc-api'
  *   (b) the spec reached AWS: the route declared ONLY inside `Body`
  *       exists on the live API (`aws apigatewayv2 get-routes`)
- *   (c) `cdkd destroy` cleans up via the CC delete path
+ *   (c) three redeploys that edit `Body` succeed in place (go-to-k/cdkd#5260):
+ *       each adds its own route, on the same API id; from edit 2 the
+ *       declared `Description` and `Tags` read back, the description
+ *       surviving a reimport of a definition holding its own
+ *   (d) `cdkd destroy` cleans up via the CC delete path
  */
 export class CcApiFallbackStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -63,25 +67,41 @@ export class CcApiFallbackStack extends cdk.Stack {
     // which imports the spec; the `GET /cdkd-2473-probe` route below
     // exists nowhere else in the template, so its presence on the live
     // API proves `Body` was forwarded rather than dropped.
+    // HTTP APIs accept only HTTP_PROXY / AWS_PROXY integrations (MOCK is
+    // REST-only), so each route proxies to a public host — never invoked;
+    // only its EXISTENCE is asserted.
+    const probeGet = {
+      get: {
+        responses: { '200': { description: 'ok' } },
+        'x-amazon-apigateway-integration': {
+          type: 'http_proxy',
+          httpMethod: 'GET',
+          uri: 'https://example.com',
+          payloadFormatVersion: '1.0',
+        },
+      },
+    };
+    // go-to-k/cdkd#5260: `CC_BODY_EDIT=<n>` adds `GET /cdkd-5260-edit-<n>`,
+    // so a redeploy with it EDITS the inline Body in place. From edit 2 the
+    // API also declares `Description` and `Tags` (the non-import changes
+    // Cloud Control still applies), and the definition carries its own
+    // `info.description`, which a reimport writes over the API's description.
+    const bodyEdit = process.env.CC_BODY_EDIT;
+    const declares = bodyEdit !== undefined && Number(bodyEdit) >= 2;
     new apigwv2.CfnApi(this, 'SilentDropApi', {
+      ...(declares
+        ? { description: 'cdkd-5260-declared', tags: { cdkd5260: `edit-${bodyEdit}` } }
+        : {}),
       body: {
         openapi: '3.0.1',
-        info: { title: 'cdkd-cc-api-fallback-probe', version: '1.0' },
+        info: {
+          title: 'cdkd-cc-api-fallback-probe',
+          version: '1.0',
+          ...(declares ? { description: 'cdkd-5260-from-body' } : {}),
+        },
         paths: {
-          '/cdkd-2473-probe': {
-            get: {
-              responses: { '200': { description: 'ok' } },
-              // HTTP APIs accept only HTTP_PROXY / AWS_PROXY integrations
-              // (MOCK is REST-only), so proxy to a public host — the
-              // route is never invoked; only its EXISTENCE is asserted.
-              'x-amazon-apigateway-integration': {
-                type: 'http_proxy',
-                httpMethod: 'GET',
-                uri: 'https://example.com',
-                payloadFormatVersion: '1.0',
-              },
-            },
-          },
+          '/cdkd-2473-probe': probeGet,
+          ...(bodyEdit ? { [`/cdkd-5260-edit-${bodyEdit}`]: probeGet } : {}),
         },
       },
     });
