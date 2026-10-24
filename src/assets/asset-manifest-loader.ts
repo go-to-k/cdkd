@@ -225,6 +225,29 @@ export function isCfnTemplateAssetPath(sourcePath: string): boolean {
 }
 
 /**
+ * `JSON.parse` of an asset manifest body for a caller with no catch of its own
+ * (`AssetPublisher.addAssetsToGraph`, `loadPublishableAssetManifest`). V8's
+ * `SyntaxError` quotes a window of the manifest, so a failure is rethrown
+ * naming only its offset and size, with no cause, and V8's text goes to
+ * `debug` only (issue [#5254](https://github.com/go-to-k/cdkd/issues/5254)).
+ */
+export function parseAssetManifestBody(content: string, manifestPath: string): AssetManifest {
+  try {
+    return JSON.parse(content) as AssetManifest;
+  } catch (err) {
+    getLogger()
+      .child('AssetManifestLoader')
+      .debug(
+        safeMsg`Asset manifest ${manifestPath} failed to parse: ${jsonParseFailureDebugDetail(err)}`
+      );
+    throw new Error(
+      `Failed to load asset manifest from ${manifestPath}: ` +
+        `${describeJsonParseFailure(err, utf8ByteLength(content))}`
+    );
+  }
+}
+
+/**
  * Asset manifest loader
  *
  * Loads and parses CDK asset manifests from the CDK output directory

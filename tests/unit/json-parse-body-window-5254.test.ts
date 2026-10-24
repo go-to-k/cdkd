@@ -39,6 +39,19 @@ import { ContextStore } from '../../src/synthesis/context-store.js';
 import { CcApiContextProvider } from '../../src/synthesis/context-providers/cc-api-provider.js';
 import { formatError } from '../../src/utils/error-handler.js';
 import {
+  parseEvent as parseInvokeEvent,
+  readEnvOverridesFile as readInvokeEnvVars,
+} from '../../src/cli/commands/local-invoke.js';
+import {
+  parseEvent as parseAgentCoreEvent,
+  readEnvOverridesFile as readAgentCoreEnvVars,
+} from '../../src/cli/commands/local-invoke-agentcore.js';
+import { readEnvOverridesFile as readRunTaskEnvVars } from '../../src/cli/commands/local-run-task.js';
+import { readEnvOverridesFile as readStartApiEnvVars } from '../../src/cli/commands/local-start-api.js';
+import { AssetPublisher } from '../../src/assets/asset-publisher.js';
+import { loadPublishableAssetManifest } from '../../src/assets/asset-redirect.js';
+import { WorkGraph } from '../../src/deployment/work-graph.js';
+import {
   LEAK_BODY,
   LEAK_BODY_BYTES,
   LEAK_TOKEN,
@@ -189,6 +202,61 @@ describe('JSON.parse failures quote no body (issue #5254)', () => {
     expect((err as Error).message).toBe(
       `Cloud Control returned a resource model for AWS::IAM::Role that is not valid JSON: ${SIZE_ONLY}`
     );
+    expectNoLeakIn(err);
+    expectLeakTokenOnlyAtDebug(loggerSpies);
+  });
+});
+
+describe('user-supplied local-* bodies quote no window (issue #5254)', () => {
+  it.each([
+    ['local invoke', readInvokeEnvVars],
+    ['local invoke-agentcore', readAgentCoreEnvVars],
+    ['local run-task', readRunTaskEnvVars],
+    ['local start-api', readStartApiEnvVars],
+  ] as const)('%s --env-vars file', (_name, read) => {
+    const file = join(dir, 'env.json');
+    writeFileSync(file, LEAK_BODY);
+    const err = caughtFrom(() => read(file));
+    expect((err as Error).message).toBe(
+      `Failed to parse --env-vars file '${file}' as JSON: ${SIZE_ONLY}`
+    );
+    expectNoLeakIn(err);
+    expectLeakTokenOnlyAtDebug(loggerSpies);
+  });
+
+  it.each([
+    ['local invoke', parseInvokeEvent],
+    ['local invoke-agentcore', parseAgentCoreEvent],
+  ] as const)('%s event payload', (_name, parse) => {
+    const err = caughtFrom(() => parse(LEAK_BODY, '<stdin>'));
+    expect((err as Error).message).toBe(
+      `Failed to parse event payload from <stdin> as JSON: ${SIZE_ONLY}`
+    );
+    expectNoLeakIn(err);
+    expectLeakTokenOnlyAtDebug(loggerSpies);
+  });
+});
+
+describe('asset manifest parses with no catch of their own (issue #5254)', () => {
+  it('AssetPublisher.addAssetsToGraph', () => {
+    const file = join(dir, 'S.assets.json');
+    writeFileSync(file, LEAK_BODY);
+    const err = caughtFrom(() =>
+      new AssetPublisher().addAssetsToGraph(new WorkGraph(), file, {
+        accountId: '123456789012',
+        region: 'us-east-1',
+      })
+    );
+    expect((err as Error).message).toBe(`Failed to load asset manifest from ${file}: ${SIZE_ONLY}`);
+    expectNoLeakIn(err);
+    expectLeakTokenOnlyAtDebug(loggerSpies);
+  });
+
+  it('loadPublishableAssetManifest', () => {
+    const file = join(dir, 'S.assets.json');
+    writeFileSync(file, LEAK_BODY);
+    const err = caughtFrom(() => loadPublishableAssetManifest(file));
+    expect((err as Error).message).toBe(`Failed to load asset manifest from ${file}: ${SIZE_ONLY}`);
     expectNoLeakIn(err);
     expectLeakTokenOnlyAtDebug(loggerSpies);
   });

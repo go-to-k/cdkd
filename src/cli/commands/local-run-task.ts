@@ -14,7 +14,17 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeLocalAwsFailureForWarn, redactedAwsCause } from '../../utils/local-aws-failure.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { displayIdent, plainIdentOr, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
+import {
+  describeJsonParseFailure,
+  jsonParseFailureDebugDetail,
+  utf8ByteLength,
+} from '../../utils/json-parse-failure.js';
+import {
+  displayIdent,
+  plainIdentOr,
+  ROLE_ARN_MAX_CODE_POINTS,
+  safeMsg,
+} from '../../utils/display-safe.js';
 import { VALUE_NOT_SHOWN } from '../../provisioning/import-helpers.js';
 import { applyRoleArnForLocal } from '../../local/local-role-arn.js';
 import {
@@ -978,7 +988,7 @@ async function resolveStackAccountId(source: StackAccountSource): Promise<string
  * `cdkd local invoke --env-vars`: top-level keys are container names, with
  * `Parameters` reserved for global entries.
  */
-function readEnvOverridesFile(
+export function readEnvOverridesFile(
   filePath: string | undefined
 ): Record<string, Record<string, string | null> | undefined> | undefined {
   if (!filePath) return undefined;
@@ -994,8 +1004,14 @@ function readEnvOverridesFile(
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
+    // V8's `SyntaxError` quotes a window of the file, which holds env values
+    // (often secrets), so the message names only the failure's offset and
+    // size; V8's text goes to `debug` only (issue #5254).
+    getLogger().debug(
+      safeMsg`--env-vars file failed to parse: ${jsonParseFailureDebugDetail(err)}`
+    );
     throw new Error(
-      `Failed to parse --env-vars file '${filePath}' as JSON: ${describeAwsFailure(err).detail}`
+      `Failed to parse --env-vars file '${filePath}' as JSON: ${describeJsonParseFailure(err, utf8ByteLength(raw))}`
     );
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {

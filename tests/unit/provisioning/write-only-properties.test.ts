@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 
 const mockCloudFormationSend = vi.fn();
 const mockLoggerWarn = vi.fn();
+const mockLoggerDebug = vi.fn();
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -12,7 +13,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     child: () => ({
-      debug: vi.fn(),
+      debug: mockLoggerDebug,
       info: vi.fn(),
       warn: mockLoggerWarn,
       error: vi.fn(),
@@ -25,6 +26,12 @@ import {
   tryGetTopLevelWriteOnlyProperties,
   clearWriteOnlyPropertiesCache,
 } from '../../../src/provisioning/write-only-properties.js';
+import {
+  LEAK_BODY,
+  LEAK_TOKEN,
+  expectV8QuotesLeakToken,
+  loggedText,
+} from '../_json-parse-leak.js';
 import { describeTypeRetryDelays } from '../../../src/provisioning/describe-type.js';
 
 function throttlingError(): Error {
@@ -119,5 +126,26 @@ describe('tryGetTopLevelWriteOnlyProperties (go-to-k/cdkd#3803)', () => {
     await getTopLevelWriteOnlyProperties('AWS::SNS::Topic');
     await tryGetTopLevelWriteOnlyProperties('AWS::SNS::Topic');
     expect(mockCloudFormationSend).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('an unparseable DescribeType schema (issue #5254)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearWriteOnlyPropertiesCache();
+  });
+
+  it('warns with the size only, never a window of the schema', async () => {
+    expectV8QuotesLeakToken();
+    mockCloudFormationSend.mockResolvedValueOnce({ Schema: LEAK_BODY });
+
+    await getTopLevelWriteOnlyProperties('AWS::NoSnapshot::Type');
+
+    const warned = loggedText(mockLoggerWarn);
+    expect(warned).toContain(
+      `the DescribeType schema is not valid JSON: invalid JSON; ${Buffer.byteLength(LEAK_BODY, 'utf8')} byte(s) read`
+    );
+    expect(warned).not.toContain(LEAK_TOKEN);
+    expect(loggedText(mockLoggerDebug)).toContain(LEAK_TOKEN);
   });
 });

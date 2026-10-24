@@ -36,6 +36,12 @@ import {
   createOnlyChangeRequiresReplacement,
   clearCreateOnlyPropertiesCache,
 } from '../../../src/provisioning/create-only-properties.js';
+import {
+  LEAK_BODY,
+  LEAK_TOKEN,
+  expectV8QuotesLeakToken,
+  loggedText,
+} from '../_json-parse-leak.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from '../../../src/provisioning/create-only-snapshot.generated.js';
 import {
   DESCRIBE_TYPE_MAX_IN_FLIGHT,
@@ -986,5 +992,26 @@ describe('createOnlyChangeRequiresReplacement (pure path-granular comparison, is
     expect(createOnlyChangeRequiresReplacement(PIPE_PATHS, 'Target', 'arn:a', 'arn:b', eq)).toBe(
       false
     );
+  });
+});
+
+describe('an unparseable DescribeType schema (issue #5254)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearCreateOnlyPropertiesCache();
+  });
+
+  it('warns with the size only, never a window of the schema', async () => {
+    expectV8QuotesLeakToken();
+    mockCloudFormationSend.mockResolvedValueOnce({ Schema: LEAK_BODY });
+
+    await getCreateOnlyPropertyPaths(UNSNAPSHOTTED);
+
+    const warned = loggedText(mockLoggerWarn);
+    expect(warned).toContain(
+      `the DescribeType schema is not valid JSON: invalid JSON; ${Buffer.byteLength(LEAK_BODY, 'utf8')} byte(s) read`
+    );
+    expect(warned).not.toContain(LEAK_TOKEN);
+    expect(loggedText(mockLoggerDebug)).toContain(LEAK_TOKEN);
   });
 });
