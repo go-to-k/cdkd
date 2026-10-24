@@ -5,9 +5,11 @@
 # a slot, read off the `CDKD_PHASE_TIMINGS` report.
 #
 # Phases:
-#   1. Deploy at the default --concurrency, with the phase report on. Assert
+#   1. Deploy at --concurrency 10, with the phase report on. Assert
 #      every resource exists, and that the report carries the slot-wait line
 #      for all 48 resources. Destroy, assert gone.
+#   (Settings: WIDE_SDK_SETTINGS, default "10 30"; WIDE_CC_SETTINGS, default
+#   "10 20 30". Every phase passes --concurrency explicitly.)
 #   2. The same at --concurrency 30, under a fresh name token (SQS holds a
 #      deleted queue's name for 60s). Destroy, assert gone.
 #   3. Issue #5242: CDKD_WIDE_KIND=cc, 48 resources of types with no SDK
@@ -61,12 +63,14 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 PER_TYPE=12
 # One name token per phase; lowercase letters and digits only (an SQS name).
-RUN_A="a$$"
-RUN_B="b$$"
-# The Cloud Control mode's tokens, one per setting.
-RUN_C="c$$"
-RUN_D="d$$"
-RUN_E="e$$"
+# The --concurrency settings each mode runs at, in order. Overridable to
+# measure others (a setting may repeat, to see run-to-run spread).
+SDK_SETTINGS="${WIDE_SDK_SETTINGS:-10 30}"
+CC_SETTINGS="${WIDE_CC_SETTINGS:-10 20 30}"
+# One name token per phase, `<letter><pid>`: at most ten phases.
+TOKEN_LETTERS="a b c d e f g h i j"
+ALL_TOKENS=""
+for letter in ${TOKEN_LETTERS}; do ALL_TOKENS="${ALL_TOKENS} ${letter}$$"; done
 CC_PER_TYPE=24
 DEPLOY_LOG="${TMPDIR:-/tmp}/cdkd-5209-deploy.$$.log"
 CLEANED_UP=0
@@ -87,7 +91,7 @@ reap_run() { # usage: reap_run <token>
   (
     set +eu
     case "${1:-}" in
-      [a-e][0-9]?*) ;;
+      [a-j][0-9]?*) ;;
       *)
         echo "WARN: teardown sweep refused — '${1:-}' is not one of this fixture's run tokens" >&2
         exit 0
@@ -125,11 +129,7 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   rm -f "${DEPLOY_LOG}"
-  reap_run "${RUN_A}"
-  reap_run "${RUN_B}"
-  reap_run "${RUN_C}"
-  reap_run "${RUN_D}"
-  reap_run "${RUN_E}"
+  for token in ${ALL_TOKENS}; do reap_run "${token}"; done
   node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
   aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -225,11 +225,21 @@ run_phase() { # usage: run_phase <kind: sdk|cc> <token> <label> [deploy args...]
 cleanup
 CLEANED_UP=0
 
-run_phase sdk "${RUN_A}" "default --concurrency"
-run_phase sdk "${RUN_B}" "--concurrency 30" --concurrency 30
-run_phase cc "${RUN_C}" "cloud control, default --concurrency"
-run_phase cc "${RUN_D}" "cloud control, --concurrency 20" --concurrency 20
-run_phase cc "${RUN_E}" "cloud control, --concurrency 30" --concurrency 30
+set -- ${ALL_TOKENS}
+phases=0
+for n in ${SDK_SETTINGS}; do
+  [ "$#" -gt 0 ] || { echo "FAIL: more than ten phases requested" >&2; exit 1; }
+  run_phase sdk "$1" "--concurrency ${n}" --concurrency "${n}"
+  shift
+  phases=$((phases + 1))
+done
+for n in ${CC_SETTINGS}; do
+  [ "$#" -gt 0 ] || { echo "FAIL: more than ten phases requested" >&2; exit 1; }
+  run_phase cc "$1" "cloud control, --concurrency ${n}" --concurrency "${n}"
+  shift
+  phases=$((phases + 1))
+done
+[ "${phases}" -gt 0 ] || { echo "FAIL: no phase ran" >&2; exit 1; }
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 
