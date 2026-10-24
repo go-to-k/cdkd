@@ -131,8 +131,8 @@ count_rows() { # usage: count_rows <command...>; prints the number of non-empty 
 
 assert_live() { # usage: assert_live <token>
   local prefix="cdkd-wide-$1" n i
-  # Each queue by name (strongly consistent): `ListQueues` is not, and the
-  # pre-run sweep's listing of this prefix makes it answer empty for a while.
+  # Each queue by name (strongly consistent): `ListQueues` is not, and a
+  # listing of a prefix that did not exist yet goes on answering empty.
   for i in $(seq 0 $((PER_TYPE - 1))); do
     aws sqs get-queue-url --queue-name "${prefix}-q-${i}" --region "${REGION}" >/dev/null \
       || { echo "FAIL: SQS queue ${prefix}-q-${i} is not live" >&2; exit 1; }
@@ -179,8 +179,8 @@ run_phase() { # usage: run_phase <token> <label> [deploy args...]
   echo "[measure] ${label}: $(grep -cE 'Rate exceeded|Throttl' "${DEPLOY_LOG}" || true) throttling line(s)"
   echo "==> ${label}: destroy"
   CDKD_WIDE_RUN="${token}" node "${LOCAL_DIST}" destroy "${STACK}" \
-    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force >/dev/null 2>&1 \
-    || { echo "FAIL: ${label} destroy failed" >&2; exit 1; }
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force >"${DEPLOY_LOG}" 2>&1 \
+    || { cat "${DEPLOY_LOG}" >&2; echo "FAIL: ${label} destroy failed" >&2; exit 1; }
   assert_run_gone "${token}"
 }
 
