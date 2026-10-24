@@ -516,6 +516,17 @@ describe('tail-e thrown wraps withhold AWS text (#2319)', () => {
     expect(isMarkedNotGone(failure)).toBe(true);
   });
 
+  // `delete()` runs on no masked view, so only the delete's own masker keeps a
+  // secret out of the --verbose line (go-to-k/cdkd#2319).
+  it('Failed to delete S3 bucket B: the debug line goes through the delete masker', async () => {
+    mockSend.mockRejectedValue(denied());
+
+    await caught(new S3BucketProvider().delete('B', 'bkt', 'AWS::S3::Bucket', {}, ctx));
+
+    expect(lines(debug)).toContain(`Failed to delete S3 bucket B (bkt): ${mask(DENIED)}`);
+    expect(lines(debug).join('\n')).not.toContain('s3cr3t');
+  });
+
   it.each(deleteCases)('$wrap: a failure that is not a NotFound is not marked', async (c) => {
     reject(c, denied());
 
