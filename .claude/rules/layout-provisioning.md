@@ -75,7 +75,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **ec2-termination-protection.ts** - Shared `--remove-protection` helper for `AWS::EC2::Instance`: the modify WRITE lags the delete READ, so both routes flip protection off AND retry the delete. The FIRST flip goes through `observeThenDisableInstanceApiTermination`, or the compensation (#2204) records nothing. A CC-routed protected ASG is delegated to `ASGProvider.delete`.
 
-- **ec2-volume-delete.ts** - `CloudControlProvider.delete` deletes EVERY `AWS::EC2::Volume` with EC2 `DeleteVolume`, never `DeleteResource`: the registry handler can snapshot the volume itself and then hang (#3455). Its region check runs OUTSIDE the delete `try`, and its timeout is a marked abandoned wait, because the already-deleted arm matches substrings of the logical id.
+- **ec2-volume-delete.ts** - `CloudControlProvider.delete` deletes EVERY `AWS::EC2::Volume` with EC2 `DeleteVolume`, never `DeleteResource`: the registry handler can snapshot the volume itself and then hang (#3455). Its region check runs OUTSIDE the delete `try`, and its timeout is a marked abandoned wait, because already-deleted classifiers match logical-id substrings.
 
 - **guardduty-detector-patch.ts** - a GuardDuty detector's Cloud Control update patch (#4910).
 

@@ -56,10 +56,12 @@ import { getLogger } from '../utils/logger.js';
 import { AccountIdUnavailableError, ProvisioningError } from '../utils/error-handler.js';
 import {
   isAmbiguousCcHandlerErrorCode,
+  isRetryableTransientError,
   isThrottlingError,
   isTransientServerError,
   markNonRetryable,
   markRedactedCause,
+  retryClassificationText,
 } from '../deployment/retryable-errors.js';
 // The same sanitize-and-shell-quote treatment `replacement-protection-advice.ts`
 // gives the physical id it pastes into a command (issue #2669), for the request
@@ -542,13 +544,95 @@ export function isTransientPollFailure(error: unknown): boolean {
  * "No Deployment Group found for name: ..."). Deliberately scoped to the
  * failed-CREATE remnant-cleanup path, where a false positive only downgrades
  * a warning to an info — it is NOT used for the main DELETE idempotency
- * decision, which relies on the structured `ErrorCode: NotFound` /
- * `ResourceNotFoundException` signals plus the long-standing narrow
- * substrings (issue #1252).
+ * decision, which reads only the structured `ErrorCode: NotFound` /
+ * `ResourceNotFoundException` signals (issues #1252, #5225; see
+ * {@link isCcDeleteGoneError}).
  */
 export function isNotFoundMessage(message: string): boolean {
   return /not\s*found|does\s*not\s*exist|no\s*such|non\s*existent|\bno\b[^.;:]{0,80}\bfound\b/i.test(
     message
+  );
+}
+
+/**
+ * Whether a failure of `deleteThroughCloudControl`'s delete says THIS
+ * resource is gone (issue #5225). Returning true drops the state record.
+ *
+ * Only typed signals count: the handler's `ErrorCode: NotFound` on a FAILED
+ * DELETE event, `DeleteResource`'s own `ResourceNotFoundException`, and, on
+ * the EC2 volume path (`volumePath`), `DeleteVolume`'s
+ * `InvalidVolume.NotFound`. Message prose never counts. The message holds the
+ * handler's `StatusMessage`, which can name a missing DEPENDENCY ("subnet ...
+ * not found") under a non-`NotFound` code, and it holds the logical id.
+ * `TypeNotFoundException` names the registry TYPE, never the resource.
+ *
+ * Before #5225 the arm also matched `does not exist` / `not found` /
+ * `NotFound` in the message. Those needles date from the first commit, and no
+ * handler was ever recorded as needing them. #1252 went the other way: the
+ * needles MISSED a gone resource, so it added the typed `NotFound` code.
+ * An abandoned wait is never gone (issue #3236), whatever its class.
+ */
+function isCcDeleteGoneError(error: unknown, volumePath: boolean): boolean {
+  if (isWaitAbandonedError(error)) return false;
+  if (error instanceof CloudControlOperationFailedError) {
+    return error.ccOperation === 'DELETE' && error.ccErrorCode === 'NotFound';
+  }
+  const name = (error as { name?: unknown } | null | undefined)?.name;
+  if (volumePath) return name === 'InvalidVolume.NotFound';
+  return name === 'ResourceNotFoundException';
+}
+
+/**
+ * Mark a delete failure non-retryable when its message holds a phrase the
+ * downstream already-deleted classifiers match (issue #5225):
+ * `deploy-engine/delete.ts`, `deploy-engine/update-in-place.ts` and
+ * `destroy-runner.ts`. `NotFound` covers `NotFoundException` and
+ * `ResourceNotFoundException`; `not found` covers `was not found`. Those
+ * classifiers check `isMarkedNonRetryable` before their substring test.
+ * Without the mark, a failure that {@link isCcDeleteGoneError} kept would be
+ * read as "already deleted" one level up, and the record dropped there.
+ *
+ * An abandoned wait is left UNMARKED: it stays retryable so the delete can be
+ * re-issued, and every downstream classifier refuses it by its own marker.
+ * So is a failure that is transient for a reason OTHER than these phrases (a
+ * throttle on a resource whose logical id spells `NotFound`): the mark would
+ * cost it a retry that used to succeed. Once its retries run out, a
+ * downstream classifier can still read its wording, as before this change.
+ * The retry table is asked with the phrases cut out, because it lists
+ * `does not exist` itself: asked whole, a `TypeNotFoundException` saying
+ * "does not exist" would be retried and then dropped downstream.
+ */
+function markNotGoneOnNeedle(error: unknown): unknown {
+  if (!(error instanceof Error)) return error;
+  const message = error.message;
+  if (
+    !isWaitAbandonedError(error) &&
+    !isRetryableTransientError(error, withoutNotGoneNeedles(retryClassificationText(error))) &&
+    (message.includes('does not exist') ||
+      message.includes('not found') ||
+      message.includes('NotFound') ||
+      message.includes('No policy found') ||
+      message.includes('NoSuchEntity'))
+  ) {
+    return markNonRetryable(error);
+  }
+  return error;
+}
+
+/**
+ * `text` with every phrase {@link markNotGoneOnNeedle} matches cut out. The
+ * SAME five phrases as that condition, kept literal there so
+ * `wait-abandoned-guard-population.test.ts` governs it; a regex here, so this
+ * helper is not a second already-deleted site.
+ *
+ * `PrincipalNotFound` is kept: the retry table's IAM-propagation pattern
+ * `Policy Error: PrincipalNotFound` needs it to match, and that race clears
+ * with time, so it must keep its retry.
+ */
+function withoutNotGoneNeedles(text: string): string {
+  return text.replace(
+    /does not exist|not found|(?<!Principal)NotFound|No policy found|NoSuchEntity/g,
+    ' '
   );
 }
 
@@ -2053,48 +2137,21 @@ export class CloudControlProvider implements ResourceProvider {
         ) {
           flip.deleteAccepted = true;
         }
-        // Treat "not found" / "does not exist" as idempotent success for DELETE,
-        // but only when the AWS client is operating against the same region the
+        // Treat a typed not-found as idempotent success for DELETE, but only
+        // when the AWS client is operating against the same region the
         // resource was deployed to. A region mismatch must surface — otherwise a
         // destroy run with the wrong region would silently strip every resource
         // from state while leaving the actual AWS resources orphaned.
         //
-        // The handler-reported `ErrorCode: NotFound` on an async FAILED DELETE
-        // is the STRUCTURED form of the same signal — some service handlers
-        // word their StatusMessage without any of the canonical substrings
-        // (CodeDeploy: "No Deployment Group found for name: ..."), so the
-        // message match alone misses them (issue #1252).
+        // TYPED signals only (issue #5225, `isCcDeleteGoneError`): the
+        // handler's `ErrorCode: NotFound` (issue #1252), `DeleteResource`'s
+        // `ResourceNotFoundException`, and the volume path's
+        // `InvalidVolume.NotFound`. Message needles read a missing DEPENDENCY,
+        // a `TypeNotFoundException` or a logical id such as `PageNotFound` as
+        // gone. An ABANDONED wait (issue #3236) is refused through the SHARED
+        // predicate, one of FOUR classifiers that must refuse it.
         const err = error as { name?: string; message?: string };
-        const notFoundErrorCode =
-          error instanceof CloudControlOperationFailedError &&
-          error.ccOperation === 'DELETE' &&
-          error.ccErrorCode === 'NotFound';
-        // An ABANDONED wait is the one shape here that says the OPPOSITE of
-        // already-gone: cdkd stopped watching a delete that may still be
-        // running (issue #3236). The heuristics below are message SUBSTRING
-        // tests over a message that interpolates the LOGICAL ID, so a resource
-        // named `PageNotFound` — or any name containing `not found` /
-        // `does not exist` — would satisfy them and this arm would drop the
-        // state row over a live resource. Measured: it did.
-        //
-        // Structural, not a wording rule, because the wording cannot be made
-        // safe: the interpolated inputs are the user's. This is also the one
-        // consumer of those phrases with no `isMarkedNonRetryable` guard in
-        // front of it, and a DELETE abandonment is deliberately unmarked so
-        // the destroy runner can re-issue the delete.
-        // Through the SHARED predicate, not a local `instanceof`: this is one
-        // of FOUR classifiers that must refuse an abandoned wait, and the
-        // other three (`deploy-engine.ts` x2, `destroy-runner.ts`) cannot see
-        // the class. One spelling means they cannot disagree about what an
-        // abandoned wait is — the divergence this area keeps collapsing.
-        if (
-          !isWaitAbandonedError(error) &&
-          (notFoundErrorCode ||
-            err.name === 'ResourceNotFoundException' ||
-            err.message?.includes('does not exist') ||
-            err.message?.includes('not found') ||
-            err.message?.includes('NotFound'))
-        ) {
+        if (isCcDeleteGoneError(error, volumeEc2Client !== undefined)) {
           // Through the SAME helper as the pre-flight above (issue #2301
           // review), not a second hand-rolled comparison. Two comparisons of
           // the same two values in one method, normalised differently, is a
@@ -2141,7 +2198,13 @@ export class CloudControlProvider implements ResourceProvider {
           await this.sleep(3000 * attempt);
           continue;
         }
-        this.handleError(error, 'DELETE', resourceType, logicalId, physicalId);
+        // Issue #5225: what this arm kept must not be dropped one level up by
+        // the engine's or the destroy runner's substring classifiers.
+        try {
+          this.handleError(error, 'DELETE', resourceType, logicalId, physicalId);
+        } catch (wrapped) {
+          throw markNotGoneOnNeedle(wrapped);
+        }
       }
     }
   }

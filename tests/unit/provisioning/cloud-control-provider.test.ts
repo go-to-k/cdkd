@@ -165,8 +165,9 @@ describe('CloudControlProvider delete region verification', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('also accepts message-pattern NotFound matches with region check', async () => {
-    // CC API surfaces some not-found cases via message rather than name.
+  it('does not read a message-only "does not exist" as already deleted (issue #5225)', async () => {
+    // Same region, so the pre-flight passes and the error reaches the arm: only
+    // a typed not-found counts there, never message prose.
     mockCloudControlSend.mockRejectedValueOnce(new Error('Topic does not exist'));
 
     await expect(
@@ -175,9 +176,9 @@ describe('CloudControlProvider delete region verification', () => {
         'arn:aws:sns:us-east-1:123:t',
         'AWS::SNS::Topic',
         {},
-        { expectedRegion: 'eu-west-1' }
+        { expectedRegion: 'us-east-1' }
       )
-    ).rejects.toThrow(/eu-west-1/);
+    ).rejects.toThrow(/DELETE failed for MyTopic: Topic does not exist/);
   });
 });
 
