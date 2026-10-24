@@ -77,7 +77,7 @@ cross-stack-secret-import	2026-10-23T02:59:31Z	PASS	656	verify.sh	rc ok, orph cl
 custom-resource-getatt-data	2026-10-09T09:36:48Z	PASS	95	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)
 custom-resource-masked-service-token	2026-10-15T02:06:45Z	PASS	161	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
 custom-resource-noecho-nested	2026-10-23T03:22:35Z	PASS	1358	verify.sh	rc ok, orph clean, 0 surviving versions (regression net #5193)
-custom-resource-provider	2026-10-20T14:12:10Z	PASS	692	verify.sh	rc ok (PASS banner, 26 deleted 0 errors), orph clean (#2319 PR #5126)
+custom-resource-provider	2026-10-23T20:43:13Z	PASS	640	verify.sh	referenced-Lambda Active wait branch; rc ok, orph clean; Arm D lifecycle rule restored
 custom-resource-resolved-secret	2026-10-20T06:06:02Z	PASS	401	verify.sh	deploy+destroy clean, 0 orphans
 custom-resource-service-token-change	2026-10-11T18:48:18Z	PASS	144	verify.sh	PR #4796, rc ok, orph clean
 data-analytics	2026-10-11T09:33:22Z	PASS	121	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -332,7 +332,7 @@ s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) 
 s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 PR #4449)
 s3-cloudfront	2026-10-23T23:55:45Z	PASS	235	verify.sh	rc ok, orph clean
 s3-directory-bucket	2026-10-20T06:32:13Z	PASS	221	verify.sh	deploy+destroy clean, 0 orphans
-s3-event-notification	2026-10-11T09:33:22Z	PASS	100	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+s3-event-notification	2026-10-23T20:32:20Z	PASS	90	verify.sh	referenced-Lambda Active wait branch; rc ok, orph clean; shared state bucket
 s3-fix-forward-orphan	2026-10-15T19:17:17Z	PASS	281	verify.sh	PR #4966 (#3252) d92a5794e; us-west-2; own state bucket; rc ok, destroy clean, orph clean
 s3-lifecycle	2026-10-11T09:33:22Z	PASS	496	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-object-lock	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -393,7 +393,7 @@ unrecognized-key-autoroute	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#47
 update-policy-mutations	2026-10-11T09:33:22Z	PASS	95	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 update-replace	2026-10-17T13:29:07Z	PASS	86	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
 vpc-lambda	2026-10-18T21:41:29Z	PASS	328	standard	rc ok, orph clean (#5071)
-vpc-lambda-cr-race	2026-08-10T06:18:10Z	PASS	302	standard	0810 P2 sweep b12; 0 err 0 orph incl hyperplane ENI
+vpc-lambda-cr-race	2026-10-23T21:29:28Z	PASS	290	standard	new S3-notification arm; eu-west-1 (state bucket region); 21 deleted 0 errors, orph clean; fix-disabled build fails on Unable to validate
 vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-provider loop ok, 0 err 0 orph
 vpc-nat-gateway	2026-10-18T21:41:29Z	PASS	809	verify.sh	rc ok, orph clean (#5071)
 wafv2	2026-10-20T06:35:00Z	PASS	180	standard	deploy+destroy clean, 0 orphans
