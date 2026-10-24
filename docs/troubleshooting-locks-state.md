@@ -179,14 +179,18 @@ with an already-exists error. See
 ## State File is Corrupted
 
 ```
-StateError: State file for stack MyStack is not valid JSON: Unexpected token } in JSON at position 123
-Caused by: Unexpected token } in JSON at position 123
+StateError: State file for stack MyStack is not valid JSON: invalid JSON at code-unit position 123; 4096 byte(s) read
 ```
 
 The state file is not valid JSON. Either an upload of `state.json` was
 interrupted, or a manual edit broke it. A state bucket created by
 `cdkd bootstrap` keeps every version of the file, so restore the last good
 one.
+
+The message gives where parsing stopped (when the parser reports it) and the
+file's size, but never the file's contents, because `state.json` can hold
+plaintext values. `--verbose` adds the parser's own wording, which can quote
+a few dozen characters of the file.
 
 ::: steps
 1. List the versions of the state file

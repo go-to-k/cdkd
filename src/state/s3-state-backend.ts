@@ -54,6 +54,7 @@ import {
   STACK_REF_MAX_CODE_POINTS,
 } from '../utils/display-safe.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { describeJsonParseFailure, utf8ByteLength } from '../utils/json-parse-failure.js';
 import { UNRENDERABLE } from './lock-contention-message.js';
 // The LEAF directly, not the re-export: this module needs one pure function,
 // and routing it through `malformed-resources-bag.ts` would add an edge to a
@@ -1356,7 +1357,15 @@ export class S3StateBackend {
       try {
         value = JSON.parse(body);
       } catch (error) {
-        throw new CrossPrefixReadError(key, error);
+        // A snippet-free STAND-IN, not the raw error (issue #5247): V8's
+        // `SyntaxError` quotes a window of this body, which a chain walker
+        // (scrub's `describeFailure` prints every link) would render. The
+        // readers key only on the CLASS name and `$metadata`
+        // (`errorName`, `isAccessDenied`, `isNotImplemented`), so the
+        // stand-in keeps the name and carries no `$metadata`, as V8's did not.
+        const standIn = new Error(describeJsonParseFailure(error, utf8ByteLength(body)));
+        standIn.name = error instanceof Error && error.name ? error.name : 'SyntaxError';
+        throw new CrossPrefixReadError(key, standIn);
       }
       if (value === null || typeof value !== 'object' || Array.isArray(value)) {
         throw new CrossPrefixReadError(key, new TypeError('not a JSON object'));
@@ -3211,30 +3220,30 @@ export class S3StateBackend {
     try {
       root = JSON.parse(bodyString);
     } catch (error) {
-      // Sanitized for the same reason `probeLegacyState` sanitizes its own
-      // `JSON.parse` failure: V8's `SyntaxError` quotes the offending INPUT,
-      // so this message carries bytes of the state body — a file anyone with
-      // `s3:PutObject` on the bucket can write. cdkd's output is
-      // line-oriented, so an unsanitized newline here invents a line that
-      // reads like a row of the very diagnostic a reader trusts most
-      // (issue #3003).
-      // ASCII allowlist. V8's `SyntaxError` says its own words in ASCII and
-      // QUOTES the offending input, so the non-ASCII content here is body
-      // bytes from a file anyone with `s3:PutObject` can write -- the value
-      // the allowlist exists for, not the "legitimately non-ASCII diagnostic"
-      // the denylist protects. `formatError`'s cause line is the opposite
-      // case and takes the denylist, because a cause can be AWS's own wording.
-      const raw = describeAwsFailure(error).detail;
-      const detail = displaySafe(raw, { asciiOnly: true }) || UNRENDERABLE;
+      // V8's `SyntaxError` quotes a window of the offending INPUT, and before
+      // `cdkd scrub` this body holds plaintext property and output values, so
+      // the message names only the failure's offset and size (issue #5247;
+      // `describeJsonParseFailure` owns the rule). V8's full text goes to
+      // `debug` only, ASCII-allowlisted as `probeLegacyState` does its own
+      // (issue #3003: the body is writable by anyone with `s3:PutObject`, and
+      // an unsanitized newline forges a line).
+      this.logger.debug(
+        safeMsg`State file for stack ${this.displayName(stackName)} failed to parse: ${displaySafe(describeAwsFailure(error).detail, { asciiOnly: true }) || UNRENDERABLE}`
+      );
       // `docs/troubleshooting-locks-state.md` quotes this message, and
       // `scripts/check-docs-error-strings.ts` fails when it can no longer
-      // derive it from here. Three revisions of this comment tried to say
-      // WHICH edit breaks that and each named a different wrong cause, so it
-      // no longer tries: the checker is the authority, it runs in CI, and it
-      // says so when an edit here un-anchors the sample.
+      // derive it from here: the checker is the authority, and it runs in CI.
+      //
+      // NO `cause`, deliberately (issue #5247): the `SyntaxError` carries the
+      // same body window, and `formatError` prints a cause on its `Caused by:`
+      // line while the CLI's last-resort handler inspects the whole chain. No
+      // reader keys on this cause -- `getState` rethrows a `StateError`
+      // unchanged, and the retry classifiers and `extractDeploymentEventError`
+      // look for AWS markers a `SyntaxError` never carries -- and a snippet-free
+      // wrapper would only print this message's own detail a second time.
       throw new StateError(
-        `State file for stack ${this.displayName(stackName)} is not valid JSON: ${detail}`,
-        error instanceof Error ? error : undefined
+        `State file for stack ${this.displayName(stackName)} is not valid JSON: ` +
+          `${describeJsonParseFailure(error, utf8ByteLength(bodyString))}`
       );
     }
 

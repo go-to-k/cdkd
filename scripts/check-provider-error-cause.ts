@@ -136,7 +136,7 @@
  * `src/provisioning/providers`, #2040's subject; widened over `src/` on
  * 2026-10-02 the run flagged 17 sites in 10 files: 10 sat behind a composer
  * the rule could not see yet, 4 were genuine drops under `src/local/`
- * (threaded since), and 3 are the deliberate omissions in {@link EXEMPTIONS}. The providers subtree
+ * (threaded since), and 3 were deliberate omissions, now among {@link EXEMPTIONS}. The providers subtree
  * keeps its own file floor so the original subject cannot drop out of a scan
  * that is otherwise large enough.
  *
@@ -300,6 +300,15 @@ export const EXEMPTIONS: readonly CauseExemption[] = [
     reason:
       'a local metadata-file read failure, not an AWS error: same path-echo reason as ' +
       'assembly-reader.ts (go-to-k/cdkd#3617)',
+  },
+  {
+    file: 'state/s3-state-backend.ts',
+    errorClass: 'StateError',
+    within: 'parseStateBody',
+    count: 1,
+    reason:
+      "a `JSON.parse` failure of the state body, not an AWS error: no classifier reads it, and V8's " +
+      '`SyntaxError` quotes a window of that body, which a `Caused by:` line would print (go-to-k/cdkd#5247)',
   },
   {
     file: 'local/docker-image-builder.ts',

@@ -12,7 +12,7 @@ import {
 import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { StateBackendConfig } from '../../../src/types/config.js';
 import { STATE_SCHEMA_VERSION_CURRENT, type StackState } from '../../../src/types/state.js';
-import { StateError } from '../../../src/utils/error-handler.js';
+import { StateError, formatError } from '../../../src/utils/error-handler.js';
 import { clearBucketRegionCache } from '../../../src/utils/aws-region-resolver.js';
 
 // The backend's standard-shaped client double passes
@@ -1101,20 +1101,78 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         ETag: '"e"',
       });
 
+      childLoggerMock.debug.mockClear();
       const caught = await backend.getState('X', 'us-east-1').catch((e: unknown) => e);
       expect(caught).toBeInstanceOf(StateError);
       const message = (caught as Error).message;
       expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
-      // Not vacuous, and specifically about the QUOTING form: `is not valid
-      // JSON` is in the production template whether or not V8 quoted the body,
-      // so asserting only that would let a Node upgrade flip this fixture back
-      // to the position-only message and silently restore the vacuity this
-      // case was rewritten to escape. `PhysicalID` can only have come FROM the
-      // body.
-      expect(message).toContain('is not valid JSON');
-      // The needle fits V8's quote window, which truncates mid-word.
-      expect(message).toContain('Phys ical');
-      expect(message).not.toMatch(/[\u200b-\u200f\ufeff]/);
+      // Issue #5247: the message quotes none of the body at all now.
+      expect(message).not.toContain('Phys');
+      // V8's text, window included, moved to `debug` -- and THAT line is where
+      // the #3003 guard now has to hold. Not vacuous: `Phys ical` can only
+      // have come FROM the body (the needle fits V8's quote window, which
+      // truncates mid-word), so a Node upgrade flipping this fixture to the
+      // position-only form fails here instead of passing silently.
+      const line = childLoggerMock.debug.mock.calls
+        .map((c: unknown[]) => String(c[0]))
+        .find((m: string) => m.startsWith('State file for stack X failed to parse:'));
+      expect(line).toContain('Phys ical');
+      expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(line).not.toMatch(/[\u200b-\u200f\ufeff]/);
+    });
+
+    it('names no byte of the body in the invalid-JSON refusal or its cause chain (issue #5247)', async () => {
+      const body = '{"password":hunter2SECRET,"x":1}';
+      // Premise, measured rather than assumed: V8 QUOTES the token for this
+      // body. Without this, a V8 that stopped quoting would leave the absence
+      // assertions below passing with the fix reverted.
+      let v8: unknown;
+      try {
+        JSON.parse(body);
+      } catch (e) {
+        v8 = e;
+      }
+      expect((v8 as Error).message).toContain('hunter2');
+
+      for (const fn of Object.values(childLoggerMock)) fn.mockClear();
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve(body) },
+        ETag: '"e"',
+      });
+      const caught = await backend.getState('X', 'us-east-1').catch((e: unknown) => e);
+      // V8's text is at `debug` and nowhere louder: a `debug` -> `warn` slip
+      // would print it at default verbosity.
+      const logged = (fn: { mock: { calls: unknown[][] } }): string =>
+        fn.mock.calls.map((c) => c.map(String).join(' ')).join('\n');
+      expect(logged(childLoggerMock.debug)).toContain('hunter2');
+      for (const fn of [childLoggerMock.info, childLoggerMock.warn, childLoggerMock.error]) {
+        expect(logged(fn)).not.toContain('hunter2');
+      }
+      expect(caught).toBeInstanceOf(StateError);
+      expect((caught as Error).message).toBe(
+        `State file for stack X is not valid JSON: invalid JSON; ${Buffer.byteLength(body, 'utf8')} byte(s) read`
+      );
+      // The cause chain is what `formatError`'s `Caused by:` line and the
+      // CLI's last-resort `util.inspect` render; walk all of it.
+      const chain: string[] = [];
+      for (let e: unknown = caught; e instanceof Error; e = e.cause) {
+        chain.push(e.message, String(e.stack));
+      }
+      expect(chain.join('\n')).not.toContain('hunter2');
+      expect(formatError(caught)).not.toContain('hunter2');
+    });
+
+    it('keeps the code-unit offset when V8 states one (issue #5247)', async () => {
+      // `Expected ...` family: V8 gives `at position N` and quotes nothing.
+      const body = '{"a":1,';
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve(body) },
+        ETag: '"e"',
+      });
+      const caught = await backend.getState('X', 'us-east-1').catch((e: unknown) => e);
+      expect((caught as Error).message).toMatch(
+        /^State file for stack X is not valid JSON: invalid JSON at code-unit position \d+; 7 byte\(s\) read$/
+      );
     });
 
     it('sanitizes the STACK NAME in the invalid-JSON refusal (issue #3003)', async () => {

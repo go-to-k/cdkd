@@ -517,6 +517,40 @@ describe('cdkd gc', () => {
     expectNothingDeleted();
   });
 
+  it('names no byte of the corrupt state body in the abort or its cause chain (issue #5247)', async () => {
+    const body = '{"password":hunter2SECRET,"x":1}';
+    // Premise: V8 itself quotes the token for this body.
+    let v8: unknown;
+    try {
+      JSON.parse(body);
+    } catch (e) {
+      v8 = e;
+    }
+    expect((v8 as Error).message).toContain('hunter2');
+
+    stateBackendMocks.getRawObject.mockImplementation(async (key: string) => {
+      if (key === MARKER_KEY) return MARKER_BODY;
+      if (key === STATE_KEY) return body;
+      return PREFIXED_STATE_BODY;
+    });
+
+    const caught = await runGc(['--yes']).catch((e: unknown) => e);
+    expect((caught as Error).message).toMatch(/not valid JSON/);
+    const chain: string[] = [];
+    for (let e: unknown = caught; e instanceof Error; e = e.cause) {
+      chain.push(e.message, String(e.stack));
+    }
+    expect(chain.join('\n')).not.toContain('hunter2');
+    // V8's text is at `debug` and nowhere louder: a `debug` -> `warn` slip
+    // would print it at default verbosity.
+    const logged = (fn: { mock: { calls: unknown[][] } }): string =>
+      fn.mock.calls.map((c) => c.map(String).join(' ')).join('\n');
+    expect(logged(loggerMocks.debug)).toContain('hunter2');
+    for (const fn of [loggerMocks.info, loggerMocks.warn, loggerMocks.error]) {
+      expect(logged(fn)).not.toContain('hunter2');
+    }
+  });
+
   describe('European Sovereign Cloud state keys (issue #2001)', () => {
     // The downstream half of the `REGION_SEGMENT` widening. `gc` does not just
     // DISPLAY the described key — the corrupt-state abort builds a recovery

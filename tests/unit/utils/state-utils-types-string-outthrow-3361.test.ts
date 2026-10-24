@@ -80,7 +80,8 @@ describe('JSON.parse catches render an unconvertible throw (#3361)', () => {
     ).parseStateBody.bind(backend);
 
     expect(() => parse('{}', 'MyStack')).toThrow(
-      `State file for stack MyStack is not valid JSON: ${PLACEHOLDER}`
+      // The size-only form since #5247, which never renders the thrown value.
+      'State file for stack MyStack is not valid JSON: invalid JSON; 2 byte(s) read'
     );
   });
 
@@ -90,7 +91,8 @@ describe('JSON.parse catches render an unconvertible throw (#3361)', () => {
     });
 
     expect(() => parseRollbackJournal('{}', 'MyStack')).toThrow(
-      `Rollback journal for 'MyStack' is not valid JSON: ${PLACEHOLDER}`
+      // The size-only form since #5247, which never renders the thrown value.
+      "Rollback journal for 'MyStack' is not valid JSON: invalid JSON; 2 byte(s) read"
     );
   });
 
@@ -142,7 +144,7 @@ describe('ExportIndexStore corrupt-index warning (#3361)', () => {
   it('does not echo the index body that V8 quotes into its parse message', async () => {
     // The index holds resolved Output VALUES. V8's `Unexpected token` family
     // quotes the body in its message, which this warning printed verbatim --
-    // the leak `describeParseFailure` already closes for `readPersistedEntries`.
+    // the leak `describeJsonParseFailure` already closes for `readPersistedEntries`.
     const body = '{"value": hunter2-plaintext}';
     expect(() => JSON.parse(body)).toThrow(/hunter2/);
     const { store: s } = store(body);
