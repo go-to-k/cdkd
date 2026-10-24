@@ -173,6 +173,12 @@ describe('JSON.parse failures quote no body (issue #5254)', () => {
     expectLeakTokenOnlyAtDebug(loggerSpies);
   });
 
+  it("parseCfnTemplate (YAML): cdkd's !GetAtt refusal keeps its reason, flattened", () => {
+    const err = caughtFrom(() => parseCfnTemplate('X: !GetAtt "Logical\\u202eId"\n'));
+    expect((err as Error).message).toContain("!GetAtt requires '<LogicalId>.<Attribute>'; got 'Logical");
+    expect((err as Error).message).not.toContain('\u202e');
+  });
+
   it('parseCfnTemplate (YAML): a warning is a warn line without the code frame, never stderr', () => {
     const emit = vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
     try {

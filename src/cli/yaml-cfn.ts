@@ -53,7 +53,7 @@ import {
 } from 'yaml';
 import type { CollectionTag, ScalarTag } from 'yaml';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
-import { safeMsg } from '../utils/display-safe.js';
+import { displaySafe, safeMsg } from '../utils/display-safe.js';
 import {
   describeJsonParseFailure,
   parseFailureDebugDetail,
@@ -230,7 +230,9 @@ function describeYamlFinding(err: unknown): string {
   if (err instanceof YAMLError) {
     const reason = err.message.split('\n', 1)[0]!.replace(/:$/, '');
     if (err.code === 'TAG_RESOLVE_FAILED' && reason.startsWith(GETATT_SHAPE_REFUSAL)) {
-      return reason;
+      // The refused scalar is template text, so it is flattened like any other
+      // value interpolated into a message.
+      return displaySafe(reason);
     }
     const at = err.linePos?.[0];
     return `${err.name} ${err.code}${at ? ` at line ${at.line}, column ${at.col}` : ''}`;
