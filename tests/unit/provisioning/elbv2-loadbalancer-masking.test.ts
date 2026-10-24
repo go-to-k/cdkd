@@ -8,6 +8,7 @@ import {
 import { SECRET_MASK, createSecretMasker } from '../../../src/deployment/secret-redaction.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
+import { isNameCollisionErrorFrom } from '../../../src/deployment/retryable-errors.js';
 
 /**
  * Issue #2063, ELBv2 LoadBalancer arm — the arm issue #2050's threading left
@@ -540,5 +541,77 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
       expect(debugLines()).toContain(SECRET_MASK);
       expect(debugLines()).not.toContain(`=${flagSecret} for`);
     });
+  });
+});
+
+/**
+ * go-to-k/cdkd#2319: a create / update wrap that withholds AWS's text restates
+ * an "already exists" so a create-first replacement still recognises the
+ * collision -- but not from a post-create wiring step's failure, where "it"
+ * would read as this load balancer (#3826).
+ */
+describe('ELBv2Provider LoadBalancer wraps restate a name collision (#2319)', () => {
+  let provider: ELBv2Provider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new ELBv2Provider();
+  });
+
+  const conflict = (): Error =>
+    Object.assign(new Error('A load balancer with the same name already exists'), {
+      name: 'ConflictException',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 409 },
+    });
+
+  it('restates it on the create path', async () => {
+    mockSend.mockImplementation((command: unknown) =>
+      command instanceof CreateLoadBalancerCommand
+        ? Promise.reject(conflict())
+        : Promise.resolve({})
+    );
+
+    const thrown = await captureThrow(() => provider.create('Lb', LB_TYPE, LB_PROPERTIES));
+
+    expect(thrown.message).toBe(
+      `Failed to create LoadBalancer Lb: ConflictException. ${VERBOSE_POINTER} AWS reports that it already exists.`
+    );
+    expect(isNameCollisionErrorFrom(thrown, 'Lb')).toBe(true);
+  });
+
+  it('restates it on the update path', async () => {
+    mockSend.mockImplementation((command: unknown) =>
+      command instanceof ModifyLoadBalancerAttributesCommand
+        ? Promise.reject(conflict())
+        : Promise.resolve({})
+    );
+
+    const thrown = await captureThrow(() =>
+      provider.update('Lb', LB_ARN, LB_TYPE, LB_PROPERTIES, { Name: 'my-lb' })
+    );
+
+    expect(thrown.message).toBe(
+      `Failed to update ELBv2 resource Lb: ConflictException. ${VERBOSE_POINTER} AWS reports that it already exists.`
+    );
+  });
+
+  it('does not restate a wiring step failure after CreateLoadBalancer returned', async () => {
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof CreateLoadBalancerCommand) {
+        return Promise.resolve({ LoadBalancers: [{ LoadBalancerArn: LB_ARN, DNSName: 'd' }] });
+      }
+      if (command instanceof ModifyLoadBalancerAttributesCommand) {
+        return Promise.reject(conflict());
+      }
+      return Promise.resolve({});
+    });
+
+    const thrown = await captureThrow(() => provider.create('Lb', LB_TYPE, LB_PROPERTIES));
+
+    // Premise: the wiring step really failed after the create.
+    expect(mockSend.mock.calls.some((c) => c[0] instanceof DeleteLoadBalancerCommand)).toBe(true);
+    expect(thrown.message).toBe(`Failed to create LoadBalancer Lb: ConflictException. ${VERBOSE_POINTER}`);
+    expect(isNameCollisionErrorFrom(thrown, 'Lb')).toBe(false);
   });
 });

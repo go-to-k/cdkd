@@ -49,6 +49,7 @@ import {
   retryClassificationText,
 } from '../../../src/deployment/retryable-errors.js';
 import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
+import { isMarkedNotGone } from '../../../src/provisioning/not-gone.js';
 import { allowUnscopedCreateTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
 
@@ -360,6 +361,25 @@ describe('provider thrown wraps withhold AWS text (#2319)', () => {
     expect(debugLines().join('\n')).not.toContain('s3cr3t');
   });
 
+  // The class itself is AWS-authored text: `mask(failure.summary)` is what keeps
+  // a secret spelled inside it out of the thrown (persisted) message.
+  it.each(cases)('$wrap: a secret spelled in the class is masked', async (c) => {
+    reject(
+      c,
+      Object.assign(new Error('denied'), {
+        name: 'Denieds3cr3tException',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 400 },
+      })
+    );
+
+    const failure = await caught(c.run());
+
+    expect(failure.message).toContain(`${c.wrap}: Denied***Exception. ${VERBOSE_POINTER}`);
+    expect(failure.message).not.toContain('s3cr3t');
+    expect(hasRedactedCause(failure)).toBe(true);
+  });
+
   it.each(cases)('$wrap: a cdkd-authored failure keeps its text, masked', async (c) => {
     reject(c, new Error('socket hang up near s3cr3t'));
 
@@ -391,6 +411,38 @@ describe('provider thrown wraps withhold AWS text (#2319)', () => {
     );
     expect(failure.message).not.toContain('s3cr3t');
     expect(hasRedactedCause(failure)).toBe(false);
+  });
+
+  // go-to-k/cdkd#2319: a delete wrap naming a FOREIGN NotFound by its class
+  // spells `NotFoundException`, which the delete classifiers read as "already
+  // deleted"; the mark keeps the record (only the typed not-found means gone).
+  const deleteCases = cases.filter((c) => /^Failed to (delete|deregister) /.test(c.wrap));
+  it('covers every delete wrap', () => {
+    expect(deleteCases).toHaveLength(12);
+  });
+
+  it.each(deleteCases)('$wrap: a foreign NotFound is marked not gone', async (c) => {
+    reject(
+      c,
+      Object.assign(new Error('Key arn:aws:kms:us-east-1:111122223333:key/k is pending deletion'), {
+        name: 'KMSNotFoundException',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 400 },
+      })
+    );
+
+    const failure = await caught(c.run());
+
+    expect(failure.message).toContain(`${c.wrap}: KMSNotFoundException. ${VERBOSE_POINTER}`);
+    expect(isMarkedNotGone(failure)).toBe(true);
+  });
+
+  it.each(deleteCases)('$wrap: a failure that is not a NotFound is not marked', async (c) => {
+    reject(c, denied());
+
+    const failure = await caught(c.run());
+
+    expect(isMarkedNotGone(failure)).toBe(false);
   });
 
   // A ConflictException matches no collision pattern by its class, so only the
