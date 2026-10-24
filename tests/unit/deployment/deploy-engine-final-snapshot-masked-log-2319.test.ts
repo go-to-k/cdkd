@@ -185,7 +185,7 @@ describe('the deploy-engine delete sites mask the final snapshot lines (go-to-k/
   it('update-replace.ts: the delete-first recreate', async () => {
     const engine = engineWithSecret({
       forceStatefulRecreation: true,
-      recreateViaSdkProvider: ['Target'],
+      recreateTargets: { stackName: 'MyStack', viaCcApi: new Set(), viaSdkProvider: new Set(['Target']) },
     });
     await provisionResource(
       engine,
