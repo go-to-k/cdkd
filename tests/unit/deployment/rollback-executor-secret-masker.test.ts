@@ -10,7 +10,7 @@ import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { CreateContext, UpdateContext } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
-import { awsSdkError } from '../_aws-sdk-error.js';
+import { relayedAwsSdkError } from '../_aws-sdk-error.js';
 
 // Issue #1932 item 3, rollback half. The rollback path needs the masker MORE
 // than the forward deploy does: `resolveReplayProps` deliberately re-resolves
@@ -209,7 +209,7 @@ describe('rollback replay - provider calls carry a working secret masker (issue 
       // A collision rejection that ECHOES the resolved secret, which is what
       // makes this discriminate: a fixture whose rejection carries no secret
       // passes with the masking removed.
-      awsSdkError(`Idp already exists (client_secret "${SECRET_PLAINTEXT}")`)
+      relayedAwsSdkError(`Idp already exists (client_secret "${SECRET_PLAINTEXT}")`)
     );
     const del = vi.fn().mockResolvedValue(undefined);
     const ctx = makeCtx({ create, delete: del });

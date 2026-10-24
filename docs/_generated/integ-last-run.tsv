@@ -190,7 +190,7 @@ importvalue-chain	2026-10-23T02:48:10Z	PASS	130	verify.sh	rc ok, orph clean (reg
 infra-security	2026-10-22T22:32:36Z	PASS	204	verify.sh	PR #5187 HEAD: destroy 31 deleted, 0 errors; trail-stop+bucket-empty-before-destroy fix confirmed, 0 orphans
 inplace-attr-propagation	2026-10-03T05:58:37Z	PASS	60	verify.sh	rc ok, orph clean (#4497)
 intrinsic-functions	2026-08-15T00:12:35Z	PASS	20	standard	0 err / 0 orph; resolver change regression check (#1916)
-intrinsics-torture	2026-10-11T09:33:22Z	PASS	60	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+intrinsics-torture	2026-10-24T03:05:49Z	PASS	50	verify.sh	PR 5234 rc0, destroy 0 errors, orph clean (2457d0149)
 intrinsics-torture-2	2026-10-11T09:33:22Z	PASS	65	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 kinesis-esm-filter	2026-10-16T08:48:48Z	PASS	70	verify.sh	rc ok, orph clean (#3341 slice 4996)
 kinesis-stream-mode-switch	2026-10-20T06:08:39Z	PASS	105	verify.sh	deploy+destroy clean, 0 orphans
@@ -367,10 +367,10 @@ sg-circular-dependency	2026-10-18T21:41:29Z	PASS	440	verify.sh	rc ok, orph clean
 shared-stackname-multi-region	2026-10-23T02:44:18Z	PASS	150	verify.sh	rc ok, orph clean both regions (#5193)
 sns-event-source	2026-10-11T09:33:22Z	PASS	85	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 sns-inline-subscription	2026-10-13T05:13:33Z	PASS	90	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95)
-sns-pending-subscription	2026-10-13T05:13:33Z	PASS	85	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95)
+sns-pending-subscription	2026-10-24T03:05:49Z	PASS	50	verify.sh	PR 5234 rc0, destroy 0 errors, orph clean (2457d0149)
 sns-sqs-event	2026-10-20T06:36:42Z	PASS	300	verify.sh	deploy+destroy clean, 0 orphans
-sns-subscription-filter	2026-10-13T05:13:33Z	PASS	335	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95, re-run on b9a821718 after #4842)
-sns-subscription-update	2026-10-13T11:42:44Z	PASS	135	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean
+sns-subscription-filter	2026-10-24T03:05:49Z	PASS	275	verify.sh	PR 5234 rc0, destroy 0 errors, orph clean (2457d0149)
+sns-subscription-update	2026-10-24T03:05:49Z	PASS	115	verify.sh	PR 5234 rc0, destroy 0 errors, orph clean (2457d0149)
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 sqs-esm-max-concurrency	2026-10-20T12:43:49Z	PASS	80	verify.sh	issue #1160 BatchSize reset to 10, destroy clean
 ssm-secure-dynamic-ref	2026-10-18T05:02:48Z	PASS	143	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean

@@ -16,7 +16,7 @@ import { createdBeforeFailure } from '../../provisioning/auxiliary-failure.js';
 import { deleteSkipReason } from '../delete-outcome.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { displaySafe, safeMsg } from '../../utils/display-safe.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, VERBOSE_POINTER } from '../../utils/aws-failure-text.js';
 import {
   maskSecretsInError,
   noEchoLeavesOf,
@@ -28,6 +28,7 @@ import {
   isNameCooldownError,
   isRecreateRetryableError,
   markNonRetryable,
+  markRedactedCause,
 } from '../retryable-errors.js';
 import { redactRollbackRecord } from './replay-secrets.js';
 import {
@@ -702,25 +703,36 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       // leaves the whole unit suite green, exactly as the deploy engine's
       // twins do, because every reader masks independently. Do not record
       // it in a PR body as a tested behavior.
-      throw new Error(
+      // go-to-k/cdkd#2319: an AWS-authored failure is named by its class,
+      // AWS's text at `debug` ({@link embeddedFailureText}).
+      const recreateFailure = (text: string): string =>
         mask(
           `Failed to re-create the old ${safe(op.logicalId)} after the new resource ` +
             `(${mask(current.physicalId)}) was already deleted: ` +
-            `${displaySafe(describeAwsFailure(recreateError).detail)}. ` +
+            `${displaySafe(text)}${text.endsWith('.') ? '' : '.'} ` +
             // No command on this line (go-to-k/cdkd#4214): it carries
             // the provider's text and the new physical id.
             `The resource is now absent — fix forward by re-deploying the stack.`
+        );
+      // Rendered whole: the line carries the new physical id from state.
+      const recreateText = embeddedFailureText(recreateError, (detail) =>
+        logger.debug(displaySafe(recreateFailure(detail)))
+      );
+      throw stampRedacted(
+        new Error(
+          recreateFailure(recreateText.text),
+          // Issue #2616's sweep reached this third site: without a `cause`
+          // the wrap is the LAST link, so `extractDeploymentEventError`
+          // walks a chain with no `$metadata` and the persisted event
+          // names no AWS code. Masked for the same reason the message is.
+          {
+            cause: maskSecretsInError(
+              recreateError instanceof Error ? recreateError : undefined,
+              secrets
+            ),
+          }
         ),
-        // Issue #2616's sweep reached this third site: without a `cause`
-        // the wrap is the LAST link, so `extractDeploymentEventError`
-        // walks a chain with no `$metadata` and the persisted event
-        // names no AWS code. Masked for the same reason the message is.
-        {
-          cause: maskSecretsInError(
-            recreateError instanceof Error ? recreateError : undefined,
-            secrets
-          ),
-        }
+        recreateText.redacted
       );
     }
   };
@@ -800,7 +812,6 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       );
     } catch (createError) {
       const deletedMade = await deleteMarkedRecreate(createError, recreateCleanup);
-      const msg = describeAwsFailure(createError).detail;
       // Reads the ERROR, not the rendered message (issue go-to-k/cdkd#3208):
       // ELBv2 states the collision in prose this predicate cannot see, and
       // the exception NAME that does say it is dropped by the provider wrap.
@@ -811,7 +822,39 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       // across its retry) was just cleared by deleting that resource: the arms
       // below would blame another holder, so fail the op here and let a re-run
       // create it.
-      if (!nameCollision || deletedMade) throw createError;
+      if (!nameCollision || deletedMade) {
+        // go-to-k/cdkd#2319: rethrown as-is it is persisted as the op's
+        // failure, so an SDK error a provider let escape is wrapped and named
+        // by its class, AWS's text at `debug`. A provider's own wrap passes
+        // through unchanged.
+        const failureText = (text: string): string =>
+          mask(`Failed to re-create the old ${safe(op.logicalId)}: ${displaySafe(text)}`);
+        const createText = embeddedFailureText(createError, (detail) =>
+          logger.debug(failureText(detail))
+        );
+        if (!createText.redacted) throw createError;
+        throw stampRedacted(
+          new Error(failureText(createText.text), {
+            cause: maskSecretsInError(
+              createError instanceof Error ? createError : undefined,
+              secrets
+            ),
+          }),
+          true
+        );
+      }
+      // The refusals below quote it on their `Underlying collision:` line, and
+      // a refusal is persisted as the op's failure (go-to-k/cdkd#2319): an
+      // AWS-authored collision is named by its class, AWS's text at `debug`.
+      // Not stamped `markRedactedCause`: every refusal is `markNonRetryable`,
+      // which the classifiers read first.
+      const msg = embeddedFailureText(createError, (detail) =>
+        logger.debug(
+          mask(
+            `  Rollback: the re-create of ${safe(op.logicalId)} collided: ${displaySafe(detail)}`
+          )
+        )
+      ).text;
       // Issue #3979, ahead of every other arm: each of them — the delete
       // below, and the Retain refusal's "held by the new one" — presumes
       // the NEW resource holds the name the re-create collided on. The
@@ -1338,10 +1381,14 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         // over this binding, exactly as it does for the `Retain` arms.
         // Masking twice is a no-op but reads as though one of the two were
         // load-bearing.
+        //
+        // go-to-k/cdkd#2319: the reason is persisted, so an AWS-authored
+        // failure is named by its class; the warn above carries AWS's text.
+        const survivorFailure = embeddedFailureText(deleteError).text;
         survivorReason =
           `The replacement's new ${op.resourceType} (${current.physicalId}) could not be ` +
           `deleted after the old resource was re-created: ` +
-          `${describeAwsFailure(deleteError).detail}. ` +
+          `${survivorFailure}${survivorFailure.endsWith('.') ? '' : '.'} ` +
           (recordSuperseded
             ? `It is live and still billing; ${SUPERSEDED_KEPT_REMEDY}.`
             : `It is live, still billing, and no longer tracked by cdkd — delete it yourself.`);
@@ -1510,6 +1557,52 @@ interface MarkedRecreateScope {
   /** The delete's printing bags ({@link withReplayDeletePrinting}). */
   ctx: ReplayOpScope['ctx'];
   secrets: ReplayOpScope['secrets'];
+}
+
+/**
+ * A caught failure as a reverse-replacement message embeds it
+ * (go-to-k/cdkd#2319). These messages are persisted to
+ * `deployments/{runId}.jsonl` (a thrown one as the failed op's error, a
+ * survivor reason as its event's `reason`), and an AWS-authored failure (an
+ * SDK error a provider let escape) names the caller's ARN on an access denial.
+ * Such a failure is reduced to its class plus a FLAG-FREE pointer
+ * ({@link REPLAY_VERBOSE_POINTER}) and its own text handed to `logDetail` for
+ * a `debug` line; a cdkd-authored or transport failure (a provider's own
+ * wrap), or a non-`Error` value (#3361), keeps its text, a pointer it already
+ * carries made flag-free the same way. `redacted` says to
+ * stamp a wrap ({@link stampRedacted}).
+ */
+function embeddedFailureText(
+  error: unknown,
+  logDetail?: (detail: string) => void
+): { text: string; redacted: boolean } {
+  const failure = describeAwsFailure(error);
+  if (!(error instanceof Error) || !failure.redacted) {
+    // A provider's own wrap can already carry the pointer; flag-free here too.
+    return {
+      text: failure.detail.replaceAll(VERBOSE_POINTER, REPLAY_VERBOSE_POINTER),
+      redacted: false,
+    };
+  }
+  logDetail?.(failure.detail);
+  return {
+    text: failure.summary.replace(VERBOSE_POINTER, REPLAY_VERBOSE_POINTER),
+    redacted: true,
+  };
+}
+
+/**
+ * {@link VERBOSE_POINTER} without its `--verbose`: every line these messages
+ * land on displays an untrusted value (a logical id, a physical id from state,
+ * a provider's collision text), and a line that displays one carries no
+ * pasteable flag (go-to-k/cdkd#3950). The wording matches open #5218's
+ * `COLLISION_VERBOSE_POINTER`.
+ */
+const REPLAY_VERBOSE_POINTER = "Re-run with verbose logging for AWS's own message.";
+
+/** {@link markRedactedCause} when `redacted` and the wrap has a cause to read. */
+function stampRedacted(error: Error, redacted: boolean): Error {
+  return redacted && error.cause instanceof Error ? markRedactedCause(error) : error;
 }
 
 /**

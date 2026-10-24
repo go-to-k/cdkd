@@ -160,8 +160,16 @@ export class WorkGraph {
               );
               return;
             }
+            // An `Error`'s `.summary` (go-to-k/cdkd#2319): this rejection is
+            // thrown, and an AWS-authored failure (an asset upload's
+            // `AccessDenied`) names the caller's ARN; it is named by its class
+            // here, its text already on the `Failed: <node>` line above. cdkd's
+            // own text, and a non-`Error` value's (#3361), are unchanged.
             const msg = errors
-              .map((e) => `  - ${e.nodeId}: ${describeAwsFailure(e.error).detail}`)
+              .map((e) => {
+                const failure = describeAwsFailure(e.error);
+                return `  - ${e.nodeId}: ${e.error instanceof Error ? failure.summary : failure.detail}`;
+              })
               .join('\n');
             reject(
               new Error(
