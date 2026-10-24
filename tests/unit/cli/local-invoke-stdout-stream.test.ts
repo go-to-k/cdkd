@@ -571,4 +571,71 @@ describe('local invoke keeps stdout to the response payload (issue #2410)', () =
     },
     20_000
   );
+
+  /**
+   * Issue [#3361](https://github.com/go-to-k/cdkd/issues/3361): the teardown's
+   * handlers rendered the failure with `err instanceof Error ? err.message :
+   * String(err)`, and `String()` THROWS for a null-prototype object. The
+   * rendering throw replaced the failure being reported, so the degradation
+   * the handler exists for died with it.
+   */
+  describe('a failure String() cannot convert does not stop the teardown (issue #3361)', () => {
+    const PLACEHOLDER = 'a value that could not be converted to text';
+
+    async function runInvokeNoExit(args: string[]): Promise<Streams & { exitCodes: unknown[] }> {
+      const exitCodes: unknown[] = [];
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        exitCodes.push(code);
+        return undefined as never;
+      }) as typeof process.exit);
+      try {
+        return { ...(await runInvoke(args)), exitCodes };
+      } finally {
+        exitSpy.mockRestore();
+      }
+    }
+
+    it('a log drain rejecting with one still removes the container and writes the payload', async () => {
+      // `drainLogs`'s single-flight error callback threw on this value, so the
+      // drain REJECTED: the success path's `await drainLogs()` skipped the
+      // payload write, and `cleanup()` stopped at its own first `await
+      // drainLogs()`, before `docker rm -f`.
+      mocks.killAndDrainContainerLogs.mockRejectedValue(Object.create(null));
+
+      const { stdout, stderr, error, exitCodes } = await runInvokeNoExit([
+        'LocalStack/EchoHandler',
+        '--no-pull',
+        '--verbose',
+      ]);
+
+      expect(error).toBeUndefined();
+      expect(exitCodes).toEqual([]);
+      expect(mocks.removeContainer).toHaveBeenCalledWith('cdkd-local-lane2410');
+      expect(stdout).toContain(`${PAYLOAD}\n`);
+      expect(stdout + stderr).toContain(`container log drain failed: ${PLACEHOLDER}`);
+    });
+
+    it('a docker rm rejecting with one is reported, and the rest of the cleanup still runs', async () => {
+      // The `removeContainer` catch threw on this value, which aborted
+      // `cleanup()` before the tmpdir / credentials disposes and the stdio
+      // flush, and surfaced only as a `cleanup failed:` line naming the
+      // converter's own `TypeError`.
+      mocks.removeContainer.mockRejectedValue(Object.create(null));
+
+      const { stdout, stderr, error, exitCodes } = await runInvokeNoExit([
+        'LocalStack/EchoHandler',
+        '--no-pull',
+        '--verbose',
+      ]);
+
+      expect(error).toBeUndefined();
+      expect(exitCodes).toEqual([]);
+      const transcript = stdout + stderr;
+      expect(transcript).toContain(`removeContainer(cdkd-local-lane2410) failed: ${PLACEHOLDER}`);
+      expect(transcript).not.toContain('cleanup failed:');
+      // The stdio flush is the step after the disposes; reaching it is what
+      // "the rest of the cleanup ran" means here.
+      expect(lastSeq).toContain('flush');
+    });
+  });
 });

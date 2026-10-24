@@ -541,6 +541,32 @@ describe('localRunTaskCommand body: --profile credentials file (issue #3394)', (
     expect(existsSync(path.dirname(hostPath!))).toBe(false);
   });
 
+  // Issue #3361: the `cleanup failed:` catch rendered the rejection with
+  // `err instanceof Error ? err.message : String(err)`, and `String()` THROWS
+  // for a null-prototype object -- so the catch itself threw, `cleanup()`
+  // rejected, and the dispose after it (the one covering a `cleanupEcsRun`
+  // that threw before its hook) never ran, stranding the credentials file.
+  it('still disposes the credentials file when cleanupEcsRun rejects with a value String() cannot convert', async () => {
+    let hostPath: string | undefined;
+    runEcsTaskMock.mockImplementation(
+      (_task: unknown, runOpts: { profileCredentialsFile?: { hostPath: string } }) => {
+        hostPath = runOpts.profileCredentialsFile?.hostPath;
+        if (hostPath) createdCredsDirs.add(path.dirname(hostPath));
+        return Promise.resolve({
+          state: { network: { networkName: 'cdkd-unit-net' } },
+          exitCode: 0,
+          essentialContainerName: undefined,
+        });
+      }
+    );
+    cleanupEcsRunMock.mockRejectedValue(Object.create(null));
+
+    await runTask();
+
+    expect(hostPath, 'no credentials file was mounted').toBeDefined();
+    expect(existsSync(path.dirname(hostPath!))).toBe(false);
+  });
+
   // Issue #4480: the credentials file is removed right after `docker stop`,
   // BEFORE the bounded log drain. A second ^C in the drain must not claim the
   // file is still there; one that lands before the dispose must still name it.
