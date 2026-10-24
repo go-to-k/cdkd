@@ -398,6 +398,10 @@ describe('provider thrown wraps withhold AWS text (#2319)', () => {
       `${c.wrap}: ConflictException. ${VERBOSE_POINTER} AWS reports that it already exists.`
     );
     expect(failure.message).not.toContain('111122223333');
+    // The verdict the restatement exists for: a create-first replacement
+    // still reads the wrap as a name collision.
+    const logicalId = /\b(Lb|Tg|L|Fh|Al|Ad|Oac|Dir|Rt|Ev|Br|Vb|Co)\b/.exec(c.wrap)![1]!;
+    expect(isNameCollisionErrorFrom(failure, logicalId)).toBe(true);
   });
 
   // RegisterStreamConsumer reports a taken name as ResourceInUseException,
