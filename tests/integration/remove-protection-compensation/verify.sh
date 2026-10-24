@@ -223,8 +223,9 @@ deployment_event_keys() {
 # go-to-k/cdkd#2319: the last persisted RESOURCE_FAILED event Phase 2 wrote for
 # <logical id> starts with <cdkd-authored prefix>, and no event for it quotes
 # this account's id. With <class-only> set, the rest must be AWS's error class
-# plus the --verbose pointer. A FAIL prints only the cdkd-authored prefix and
-# the length: the rest may be AWS's text, naming accounts, roles or sessions.
+# plus the --verbose pointer. A FAIL prints only the logical id and the
+# message's length: the message may be AWS's text, naming accounts, roles or
+# sessions.
 assert_failed_event_redacted() { # usage: assert_failed_event_redacted <logical id> <prefix> [class-only]
   local lid="$1" prefix="$2" class_only="${3:-}" msg events
   msg="$(jq -r --arg l "${lid}" 'select(.logicalId == $l) | .error.message // empty' \
@@ -239,14 +240,14 @@ assert_failed_event_redacted() { # usage: assert_failed_event_redacted <logical 
   fi
   if [ -n "${class_only}" ] && ! printf '%s' "${msg}" \
       | grep -qE -- "${prefix}: [A-Za-z0-9.]+\. Re-run with --verbose for AWS's own message\."; then
-    echo "FAIL: ${lid}'s RESOURCE_FAILED message is not '${prefix}: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed prefix: '${msg%%:*}', ${#msg} chars" >&2
+    echo "FAIL: ${lid}'s RESOURCE_FAILED message is not '${prefix}: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); ${#msg} chars" >&2
     exit 1
   fi
   # A here-string, not a pipe: an early `grep -q` exit could SIGPIPE `jq`,
   # which `pipefail` would turn into a false "no".
   events="$(jq -c --arg l "${lid}" 'select(.logicalId == $l)' "${DESTROY_LOG}.failed")"
   if grep -qF -- "${ACCOUNT_ID}" <<<"${events}"; then
-    echo "FAIL: ${lid}'s RESOURCE_FAILED event quotes AWS's text, with this account's id (#2319); observed prefix: '${msg%%:*}', ${#msg} chars" >&2
+    echo "FAIL: ${lid}'s RESOURCE_FAILED event quotes AWS's text, with this account's id (#2319); ${#msg} chars" >&2
     exit 1
   fi
 }

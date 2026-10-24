@@ -3491,6 +3491,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
               flipRecord !== undefined && this.emailOmittedFlips.get(flipRecord) === 'definite';
             await this.sendEchoedDeletionProtection(physicalId, pool, 'ACTIVE', {
               emailFallback: !readOn || emailAlreadyReset,
+              mask: maskerOrIdentity(context?.maskSecrets),
             });
           } catch (echoError) {
             let failure: unknown = echoError;
@@ -3660,7 +3661,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
                 const reason =
                   observeError === undefined
                     ? 'DescribeUserPool returned no pool'
-                    : describeAwsFailure(observeError).summary;
+                    : maskerOrIdentity(context?.maskSecrets)(
+                        describeAwsFailure(observeError).summary
+                      );
                 this.logger.warn(
                   safeMsg`Cognito User Pool ${physicalId}: DeletionProtection was left on, because ` +
                     safeMsg`the pool could not be read first (${reason}) and turning it off without ` +
@@ -3751,8 +3754,10 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     physicalId: string,
     pool: UserPoolType,
     value: DeletionProtectionType,
-    opts: { readonly emailFallback?: boolean } = {}
+    opts: { readonly emailFallback?: boolean; readonly mask?: MaskerFn } = {}
   ): Promise<'echoed' | 'without-email'> {
+    // The class is AWS-authored text too, so the warns below mask it.
+    const mask = maskerOrIdentity(opts.mask);
     try {
       await this.getClient().send(
         new UpdateUserPoolCommand(userPoolDeletionProtectionUpdate(physicalId, pool, value))
@@ -3791,8 +3796,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         ) {
           this.logger.warn(
             safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool refused the write carrying the ` +
-              safeMsg`pool's SES EmailConfiguration (${describeAwsFailure(echoError).summary}), and the ` +
-              safeMsg`write re-sent without it answered ${describeAwsFailure(resendError).summary}. If ` +
+              safeMsg`pool's SES EmailConfiguration (${mask(describeAwsFailure(echoError).summary)}), and the ` +
+              safeMsg`write re-sent without it answered ${mask(describeAwsFailure(resendError).summary)}. If ` +
               safeMsg`that write landed, the pool's email configuration was ${resetClause}`
           );
         }
@@ -3800,7 +3805,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       }
       this.logger.warn(
         safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool refused the write (possibly the ` +
-          safeMsg`pool's SES EmailConfiguration, ${describeAwsFailure(echoError).summary}), so ` +
+          safeMsg`pool's SES EmailConfiguration, ${mask(describeAwsFailure(echoError).summary)}), so ` +
           safeMsg`DeletionProtection was set to ${value} with the pool's other settings but without ` +
           safeMsg`that EmailConfiguration. The pool's email configuration was ${resetClause}`
       );
@@ -3840,7 +3845,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     // but nothing is owed back.
     const observedOn = pool.DeletionProtection === 'ACTIVE';
     try {
-      const sent = await this.sendEchoedDeletionProtection(physicalId, pool, 'INACTIVE');
+      const sent = await this.sendEchoedDeletionProtection(physicalId, pool, 'INACTIVE', { mask });
       if (sent === 'without-email') this.emailOmittedFlips.set(flip, 'definite');
       // An echo that CARRIED the DEVELOPER sender landed: it holds it again.
       else if (echoesDeveloperEmail(pool)) this.emailOmittedFlips.delete(flip);
@@ -3895,7 +3900,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           if (isAmbiguousWriteFailure(bareError)) {
             this.logger.warn(
               safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool with DeletionProtection alone ` +
-                safeMsg`(the pool's own configuration was refused) answered ${describeAwsFailure(bareError).summary}; ` +
+                safeMsg`(the pool's own configuration was refused) answered ${mask(describeAwsFailure(bareError).summary)}; ` +
                 safeMsg`if that write landed, the pool's self sign-up, Lambda triggers and advanced ` +
                 safeMsg`security were reset. Retrying the delete.`
             );
@@ -3920,7 +3925,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       );
       this.logger.warn(
         safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool refused the pool's own configuration ` +
-          safeMsg`echoed back (${describeAwsFailure(echoError).summary}), so DeletionProtection was ` +
+          safeMsg`echoed back (${mask(describeAwsFailure(echoError).summary)}), so DeletionProtection was ` +
           safeMsg`turned off alone. That write resets the settings it omits -- self sign-up, Lambda ` +
           safeMsg`triggers and advanced security among them -- which stays that way if the delete fails.`
       );
@@ -3964,7 +3969,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     this.logger.warn(
       refused
         ? safeMsg`Cognito User Pool ${physicalId}: DeletionProtection was left on, because UpdateUserPool ` +
-            safeMsg`refused to turn it off (${describeAwsFailure(error).summary})` +
+            safeMsg`refused to turn it off (${mask(describeAwsFailure(error).summary)})` +
             echoClause +
             safeMsg`. The delete will be refused while it is on.${accessHint}`
         : safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool failed without an answer from AWS ` +

@@ -1448,7 +1448,14 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::InternetGateway':
         return this.updateInternetGateway(logicalId, physicalId);
       case 'AWS::EC2::EIP':
-        return this.updateEip(logicalId, physicalId, resourceType, properties, previousProperties);
+        return this.updateEip(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          context
+        );
       case 'AWS::EC2::VPCGatewayAttachment':
         return this.updateVpcGatewayAttachment(
           logicalId,
@@ -1972,7 +1979,13 @@ export class EC2Provider implements ResourceProvider {
         }
 
         // Apply tags the create did not carry (go-to-k/cdkd#4971)
-        if (!tagsApplied) await this.applyTags(vpcId, desiredTags, logicalId);
+        if (!tagsApplied)
+          await this.applyTags(
+            vpcId,
+            desiredTags,
+            logicalId,
+            maskerOrIdentity(context?.maskSecrets)
+          );
 
         // Fetch VPC details for attributes
         await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [vpcId] }));
@@ -2108,7 +2121,8 @@ export class EC2Provider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       this.logger.debug(`Successfully updated VPC ${logicalId}`);
@@ -2372,7 +2386,13 @@ export class EC2Provider implements ResourceProvider {
       // associations attached, so a single DeleteSubnet suffices.
       try {
         // Apply tags the create did not carry (go-to-k/cdkd#4971)
-        if (!tagsApplied) await this.applyTags(subnetId, desiredTags, logicalId);
+        if (!tagsApplied)
+          await this.applyTags(
+            subnetId,
+            desiredTags,
+            logicalId,
+            maskerOrIdentity(context?.maskSecrets)
+          );
 
         // Set MapPublicIpOnLaunch if specified
         const mapPublicIp = properties['MapPublicIpOnLaunch'];
@@ -2491,7 +2511,8 @@ export class EC2Provider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       this.logger.debug(`Successfully updated Subnet ${logicalId}`);
@@ -2768,7 +2789,8 @@ export class EC2Provider implements ResourceProvider {
       }
 
       // Apply tags the create did not carry (go-to-k/cdkd#4971)
-      if (!tagsApplied) await this.applyTags(igwId, desiredTags, logicalId);
+      if (!tagsApplied)
+        await this.applyTags(igwId, desiredTags, logicalId, maskerOrIdentity(context?.maskSecrets));
 
       this.logger.debug(`Successfully created InternetGateway ${logicalId}: ${igwId}`);
 
@@ -2995,7 +3017,13 @@ export class EC2Provider implements ResourceProvider {
       }
 
       // Tags the create did not carry (go-to-k/cdkd#4971)
-      if (!tagsApplied) await this.applyTags(allocationId, desiredTags, logicalId);
+      if (!tagsApplied)
+        await this.applyTags(
+          allocationId,
+          desiredTags,
+          logicalId,
+          maskerOrIdentity(context?.maskSecrets)
+        );
 
       // Associate to an instance on the fast SDK path, keeping EIP+InstanceId
       // off the ~20s Cloud Control async-poll route.
@@ -3132,7 +3160,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // Tags and InstanceId (association) are mutable in place; Domain / pool /
     // border group are create-only and handled by the replacement path.
@@ -3146,7 +3175,8 @@ export class EC2Provider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       const oldInstanceId = previousProperties['InstanceId'] as string | undefined;
@@ -4064,7 +4094,13 @@ export class EC2Provider implements ResourceProvider {
       createdId = natGatewayId;
 
       // Tags the create did not carry (go-to-k/cdkd#4971)
-      if (!tagsApplied) await this.applyTags(natGatewayId, desiredTags, logicalId);
+      if (!tagsApplied)
+        await this.applyTags(
+          natGatewayId,
+          desiredTags,
+          logicalId,
+          maskerOrIdentity(context?.maskSecrets)
+        );
 
       // Wait for `available` state unless --no-wait is set. Same gating
       // pattern as CloudFront / RDS / ElastiCache providers (env var
@@ -4289,7 +4325,13 @@ export class EC2Provider implements ResourceProvider {
       const routeTableId = response.RouteTable!.RouteTableId!;
 
       // Apply tags the create did not carry (go-to-k/cdkd#4971)
-      if (!tagsApplied) await this.applyTags(routeTableId, desiredTags, logicalId);
+      if (!tagsApplied)
+        await this.applyTags(
+          routeTableId,
+          desiredTags,
+          logicalId,
+          maskerOrIdentity(context?.maskSecrets)
+        );
 
       this.logger.debug(`Successfully created RouteTable ${logicalId}: ${routeTableId}`);
 
@@ -4639,7 +4681,12 @@ export class EC2Provider implements ResourceProvider {
     // route table change that did not take the replacement path): delete the
     // recorded route and create the desired one.
     try {
-      await this.deleteRoute(logicalId, physicalId, resourceType);
+      await this.deleteRoute(
+        logicalId,
+        physicalId,
+        resourceType,
+        maskSecrets ? { maskSecrets } : undefined
+      );
       const createResult = await this.createRoute(
         logicalId,
         resourceType,
@@ -4992,7 +5039,14 @@ export class EC2Provider implements ResourceProvider {
           });
         await Promise.all([
           // Only tags the create did not carry (go-to-k/cdkd#4971).
-          recordRejection(this.applyTags(groupId, tagsApplied ? [] : desiredTags, logicalId)),
+          recordRejection(
+            this.applyTags(
+              groupId,
+              tagsApplied ? [] : desiredTags,
+              logicalId,
+              maskerOrIdentity(context?.maskSecrets)
+            )
+          ),
           recordRejection(this.authorizeInlineIngress(groupId, ingressRules)),
           recordRejection(this.applyInlineEgress(groupId, egressRules)),
         ]);
@@ -5165,7 +5219,8 @@ export class EC2Provider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       // Diff and apply ingress rule changes (symmetric with egress below).
@@ -6203,7 +6258,12 @@ export class EC2Provider implements ResourceProvider {
               previousProperties,
               // The old rule's recorded `sgr-` id, when there is one, revokes
               // exactly it (go-to-k/cdkd#4355).
-              recordedAttributes ? { recordedAttributes } : undefined
+              recordedAttributes || maskSecrets
+                ? {
+                    ...(recordedAttributes && { recordedAttributes }),
+                    ...(maskSecrets && { maskSecrets }),
+                  }
+                : undefined
             );
       // go-to-k/cdkd#3952: delete-then-create must ABORT when the revoke was
       // skipped (provider-delete-path.md): authorizing the new rule would leave
@@ -6645,7 +6705,13 @@ export class EC2Provider implements ResourceProvider {
       // failed.
       try {
         // Apply tags the create did not carry (go-to-k/cdkd#4971)
-        if (!tagsApplied) await this.applyTags(instanceId, desiredTags, logicalId);
+        if (!tagsApplied)
+          await this.applyTags(
+            instanceId,
+            desiredTags,
+            logicalId,
+            maskerOrIdentity(context?.maskSecrets)
+          );
 
         // Wait for instance to reach running state unless --no-wait is set.
         // Same gating pattern as the NAT Gateway wait above. Before issue
@@ -7043,7 +7109,8 @@ export class EC2Provider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       await this.updateInstanceSecurityProps(physicalId, properties, previousProperties);
@@ -7880,7 +7947,13 @@ export class EC2Provider implements ResourceProvider {
       const networkAclId = response.NetworkAcl!.NetworkAclId!;
 
       // Apply tags the create did not carry (go-to-k/cdkd#4971)
-      if (!tagsApplied) await this.applyTags(networkAclId, desiredTags, logicalId);
+      if (!tagsApplied)
+        await this.applyTags(
+          networkAclId,
+          desiredTags,
+          logicalId,
+          maskerOrIdentity(context?.maskSecrets)
+        );
 
       this.logger.debug(`Successfully created NetworkAcl ${logicalId}: ${networkAclId}`);
 
@@ -8387,7 +8460,8 @@ export class EC2Provider implements ResourceProvider {
   private async applyTags(
     resourceId: string,
     tags: CfnTagEntry[],
-    logicalId: string
+    logicalId: string,
+    mask: MaskerFn
   ): Promise<void> {
     if (tags.length > 0) {
       try {
@@ -8400,7 +8474,7 @@ export class EC2Provider implements ResourceProvider {
         this.logger.debug(`Applied ${tags.length} tag(s) to ${logicalId}`);
       } catch (error) {
         const tagHead = `Failed to apply tags to ${logicalId}: `;
-        this.logger.warn(`${tagHead}${this.warnFailureText(tagHead, error, (t) => t)}`);
+        this.logger.warn(`${tagHead}${this.warnFailureText(tagHead, error, mask)}`);
       }
     }
   }
@@ -8417,7 +8491,8 @@ export class EC2Provider implements ResourceProvider {
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
-    newTagsRaw: unknown
+    newTagsRaw: unknown,
+    mask: MaskerFn
   ): Promise<void> {
     const plan = planTagDiff(oldTagsRaw, newTagsRaw);
     const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
@@ -8438,7 +8513,7 @@ export class EC2Provider implements ResourceProvider {
         this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from ${resourceId}`);
       } catch (error) {
         const tagHead = `Failed to remove tags from ${resourceId}: `;
-        this.logger.warn(`${tagHead}${this.warnFailureText(tagHead, error, (t) => t)}`);
+        this.logger.warn(`${tagHead}${this.warnFailureText(tagHead, error, mask)}`);
       }
     }
     if (tagsToAdd.length > 0) {
@@ -8452,7 +8527,7 @@ export class EC2Provider implements ResourceProvider {
         this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on ${resourceId}`);
       } catch (error) {
         const tagHead = `Failed to add tags on ${resourceId}: `;
-        this.logger.warn(`${tagHead}${this.warnFailureText(tagHead, error, (t) => t)}`);
+        this.logger.warn(`${tagHead}${this.warnFailureText(tagHead, error, mask)}`);
       }
     }
   }
@@ -8585,7 +8660,10 @@ export class EC2Provider implements ResourceProvider {
    */
   private warnFailureText(head: string, error: unknown, mask: MaskerFn): string {
     const failure = describeAwsFailure(error);
-    if (!failure.redacted) return `${mask(failure.detail)}.`;
+    if (!failure.redacted) {
+      const text = mask(failure.detail);
+      return /[.!?]$/.test(text) ? text : `${text}.`;
+    }
     this.logger.debug(mask(`${head}${mask(failure.detail)}`));
     return mask(failure.summary);
   }

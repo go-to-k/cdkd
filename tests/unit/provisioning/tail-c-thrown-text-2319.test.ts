@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vite-plus/test';
 
 const { mockSend, debug, warn } = vi.hoisted(() => ({
@@ -253,6 +255,17 @@ const ec2Cases: Case[] = [
   },
   { wrap: 'Failed to delete Route Res', run: ec2Delete('AWS::EC2::Route', 'rtb-1|0.0.0.0/0') },
   {
+    // A destination the physical id does not name: the update deletes the
+    // recorded route first, and passes that delete's wrap through.
+    wrap: 'Failed to delete Route Res',
+    run: ec2Update(
+      'AWS::EC2::Route',
+      'rtb-1|0.0.0.0/0',
+      { ...EC2_ROUTE, DestinationCidrBlock: '10.0.0.0/8' },
+      EC2_ROUTE
+    ),
+  },
+  {
     wrap: 'Failed to create SubnetRouteTableAssociation Res',
     run: ec2Create('AWS::EC2::SubnetRouteTableAssociation', {
       SubnetId: 'subnet-1',
@@ -284,6 +297,17 @@ const ec2Cases: Case[] = [
   {
     wrap: 'Failed to delete SecurityGroupIngress Res',
     run: ec2Delete('AWS::EC2::SecurityGroupIngress', 'sg-1|tcp|443|443', EC2_INGRESS),
+  },
+  {
+    // A rule change is a revoke then an authorize; the update passes the
+    // revoke's wrap through.
+    wrap: 'Failed to delete SecurityGroupIngress Res',
+    run: ec2Update(
+      'AWS::EC2::SecurityGroupIngress',
+      'sg-1|tcp|443|443',
+      { ...EC2_INGRESS, FromPort: 444, ToPort: 444 },
+      EC2_INGRESS
+    ),
   },
   {
     wrap: 'Failed to create EC2 Instance Res',
@@ -425,11 +449,19 @@ describe('tail-c provider wraps withhold AWS text (#2319)', () => {
   });
 
   it('covers every wrap of the slice', () => {
-    // 39 EC2 sites minus the three no single rejection reaches (the in-place
-    // VPCGatewayAttachment swap, the delete-then-create Route and
-    // SecurityGroupIngress updates, which pass their inner wraps through),
-    // plus three DynamoDB, three ASG and three Cognito wraps.
-    expect(ec2Cases).toHaveLength(36);
+    // Every EC2 wrap call site but the in-place VPCGatewayAttachment swap and
+    // the delete-then-create Route / SecurityGroupIngress updates' own wraps,
+    // which no single rejection reaches (the latter two pass the inner delete
+    // wrap through, which the two update rows here reach instead).
+    const ec2Source = readFileSync(
+      fileURLToPath(new URL('../../../src/provisioning/providers/ec2-provider.ts', import.meta.url)),
+      'utf8'
+    );
+    // Minus one: `wrapDeleteError`'s own call into `wrapCaughtError`.
+    const ec2Wraps = (ec2Source.match(/this\.wrap(Caught|Delete)Error\(/g) ?? []).length - 1;
+    expect(ec2Wraps).toBe(39);
+    expect(new Set(ec2Cases.map((c) => c.wrap)).size).toBe(ec2Wraps - 3);
+    expect(ec2Cases).toHaveLength(38);
     expect(otherCases).toHaveLength(9);
   });
 
@@ -509,8 +541,9 @@ describe('tail-c provider wraps withhold AWS text (#2319)', () => {
   // deleted"; the mark keeps the record (only the typed not-found means gone).
   const deleteCases = cases.filter((c) => /^Failed to (delete|terminate) /.test(c.wrap));
   it('covers every delete wrap', () => {
-    // 14 EC2, one each for DynamoDB, ASG and Cognito.
-    expect(deleteCases).toHaveLength(17);
+    // 14 EC2 delete wraps plus the two updates reaching one, and one each for
+    // DynamoDB, ASG and Cognito.
+    expect(deleteCases).toHaveLength(19);
   });
 
   it.each(deleteCases)('$wrap: a foreign NotFound is marked not gone', async (c) => {
@@ -773,6 +806,7 @@ describe('tail-c cleanup warnings name an AWS failure by its class (#2319)', () 
     expect(mockSend.mock.calls.some(([command]) => commandName(command) === 'CreateTagsCommand')).toBe(true);
     const lines = warnLines().filter((l) => l.startsWith('Failed to add tags on vpc-1: '));
     expect(lines).toEqual([`Failed to add tags on vpc-1: AccessDenied. ${VERBOSE_POINTER}`]);
-    expect(debugLines()).toContain(`Failed to add tags on vpc-1: ${DENIED}`);
+    expect(debugLines()).toContain(`Failed to add tags on vpc-1: ${mask(DENIED)}`);
+    expect(debugLines().join('\n')).not.toContain('s3cr3t');
   });
 });
