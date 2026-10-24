@@ -6492,7 +6492,8 @@
         "synthetics-canary",
         "tags-propagation",
         "update-policy-mutations",
-        "update-replace"
+        "update-replace",
+        "vpc-lambda-cr-race"
       ],
       "signals": {
         "asset-migration": [
@@ -6690,6 +6691,9 @@
         "update-replace": [
           "l2",
           "literal"
+        ],
+        "vpc-lambda-cr-race": [
+          "l2"
         ]
       }
     },
