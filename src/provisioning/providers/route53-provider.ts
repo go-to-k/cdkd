@@ -2558,9 +2558,10 @@ export class Route53Provider implements ResourceProvider {
         // `failure.redacted`, not `lookupErrorRedacted`: a non-`Error` throw
         // is withheld too (its `String()` is the whole payload), unstamped.
         lookupErrorShown = failure.redacted ? failure.summary : failure.detail;
-        this.logger.warn(
-          `Failed to resolve HostedZoneName "${hostedZoneName}" for ${logicalId}: ${lookupErrorMessage}`
-        );
+        // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a denied
+        // listing names the caller's assumed-role ARN.
+        const lookupHead = `Failed to resolve HostedZoneName "${hostedZoneName}" for ${logicalId}: `;
+        this.logger.warn(`${lookupHead}${this.warnFailureText(lookupHead, error, undefined)}`);
       }
 
       if (matched.length > 1 && options?.requireUnambiguousZoneName) {

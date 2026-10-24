@@ -872,7 +872,8 @@ EVENT_ACCOUNT_2B="$(aws sts get-caller-identity --query Account --output text)"
 msg_prefix() { case "$1" in *:*) printf '%s' "${1%%:*}" ;; *) printf '<none>' ;; esac; }
 assert_failed_event_class_only_2B() { # usage: <logicalId> <wrap prefix>
   local msg
-  msg="$(jq -r --arg l "$1" 'select(.logicalId == $l) | .error.message // empty' "${EVENTS_2B}" | tail -n 1)"
+  # One value, not a line: a message can span lines.
+  msg="$(jq -rs --arg l "$1" '[.[] | select(.logicalId == $l) | .error.message // empty] | last // empty' "${EVENTS_2B}")"
   if [ -z "${msg}" ]; then
     echo "FAIL: phase 2b: the destroy persisted no RESOURCE_FAILED event with an error message for $1 (the #2319 checks below would pass for free)" >&2
     exit 1

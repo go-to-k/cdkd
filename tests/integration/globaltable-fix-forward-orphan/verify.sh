@@ -440,7 +440,8 @@ done <<< "${EVENT_KEYS_2}"
 msg_prefix() { case "$1" in *:*) printf '%s' "${1%%:*}" ;; *) printf '<none>' ;; esac; }
 assert_failed_event_redacted() { # usage: assert_failed_event_redacted <logicalId> <wrap prefix>
   local msg
-  msg="$(jq -r --arg l "$1" 'select(.logicalId == $l) | .error.message // empty' "${FAILED_2}" | tail -n 1)"
+  # One value, not a line: a message can span lines.
+  msg="$(jq -rs --arg l "$1" '[.[] | select(.logicalId == $l) | .error.message // empty] | last // empty' "${FAILED_2}")"
   if [ -z "${msg}" ]; then
     echo "[verify] FAIL: no RESOURCE_FAILED event with an error message for $1 under s3://${STATE_BUCKET}/${STATE_PREFIX}deployments/ after step 2 (the #2319 checks below would pass for free)" >&2
     exit 1

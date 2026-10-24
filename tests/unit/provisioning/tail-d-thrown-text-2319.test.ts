@@ -1070,6 +1070,51 @@ describe('cleanup and adopt warns name the class (#2319)', () => {
     expectClassAtWarn('Failed to delete partially-created DBCluster Db (db-1): ');
   });
 
+  // The warn's only mask is the one on the class: the logger has no outer one.
+  it('RDS DBCluster partial-create cleanup masks a secret spelled in the class', async () => {
+    mockSend.mockImplementation(async (command: unknown) => {
+      const name = commandName(command);
+      if (name === 'CreateDBClusterCommand') return { DBCluster: { DBClusterIdentifier: 'db-1' } };
+      if (name === 'DeleteDBClusterCommand') throw awsError('Denieds3cr3tException', 'denied');
+      throw denied();
+    });
+
+    await caught(new RDSProvider().create('Db', 'AWS::RDS::DBCluster', RDS_CLUSTER, ctx));
+
+    const warned = warnLines().join('\n');
+    expect(warned).toContain(
+      `Failed to delete partially-created DBCluster Db (db-1): Denied***Exception. ${VERBOSE_POINTER}`
+    );
+    expect(warned).not.toContain('s3cr3t');
+  });
+
+  it('Route 53 HostedZoneName lookup failure', async () => {
+    mockSend.mockImplementation(async (command: unknown) => {
+      if (commandName(command) === 'ListHostedZonesByNameCommand') throw denied();
+      return {};
+    });
+
+    await caught(
+      new Route53Provider().create(
+        'Rs',
+        RS,
+        {
+          HostedZoneName: 'example.com.',
+          Name: 'www.example.com.',
+          Type: 'A',
+          TTL: '300',
+          ResourceRecords: ['192.0.2.1'],
+        },
+        ctx
+      )
+    );
+
+    const head = 'Failed to resolve HostedZoneName "example.com." for Rs: ';
+    const warned = warnLines().find((w) => w.includes(head));
+    expect(warned).toBe(`${head}AccessDenied. ${VERBOSE_POINTER}`);
+    expect(debugLines()).toContain(`${head}${DENIED}`);
+  });
+
   it('RDS DBCluster partial-create cleanup keeps a cdkd-authored text', async () => {
     mockSend.mockImplementation(async (command: unknown) => {
       if (commandName(command) === 'CreateDBClusterCommand') {

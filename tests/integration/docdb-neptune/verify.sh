@@ -807,7 +807,8 @@ EVENT_ACCOUNT_3G="${ACCOUNT_ID}"
 msg_prefix() { case "$1" in *:*) printf '%s' "${1%%:*}" ;; *) printf '<none>' ;; esac; }
 assert_failed_event_class_only_3G() { # usage: <logicalId> <wrap prefix>
   local msg
-  msg="$(jq -r --arg l "$1" 'select(.logicalId == $l) | .error.message // empty' "${EVENTS_3G}" | tail -n 1)"
+  # One value, not a line: a message can span lines.
+  msg="$(jq -rs --arg l "$1" '[.[] | select(.logicalId == $l) | .error.message // empty] | last // empty' "${EVENTS_3G}")"
   if [ -z "${msg}" ]; then
     echo "[verify] FAIL: step 3g: the destroy persisted no RESOURCE_FAILED event with an error message for $1 (the #2319 checks below would pass for free)" >&2
     exit 1
