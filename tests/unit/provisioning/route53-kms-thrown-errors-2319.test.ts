@@ -344,11 +344,9 @@ describe('Route 53 / KMS thrown wraps keep the caller identity out (go-to-k/cdkd
       expect(retryClassificationText(failure)).toContain('not authorized to perform');
       expect(isRetryableTransientError(failure, retryClassificationText(failure))).toBe(true);
 
-      // AWS's own text is not discarded: it is logged (debug, or the lookup's
-      // existing warn), never only dropped.
-      expect(command === 'ListHostedZonesByNameCommand' ? warned() : debugged()).toContain(
-        CALLER_ARN
-      );
+      // AWS's own text is not discarded: it is on the debug line, never only
+      // dropped (the lookup's warn names the class since go-to-k/cdkd#2319).
+      expect(debugged()).toContain(CALLER_ARN);
     });
 
     it('keeps a cdkd-authored or transport failure verbatim, unstamped', async () => {
