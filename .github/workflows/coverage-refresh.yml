@@ -1,0 +1,148 @@
+name: Provider coverage refresh
+
+# Regenerates the Provider Coverage Report (Tier 1/2/3) and the Tier-2
+# stateful-candidate derivation from live AWS, and opens a PR when either
+# changed (go-to-k/cdkd#5214). Only `ListTypes` / `DescribeType` know a type's
+# provisioning type exactly: the public schema bundle the schema refresh reads
+# lacks types AWS lists and gives handlers to types AWS does not provision.
+#
+# Two jobs, so the AWS role and the write token never share one:
+#   - `audit` holds only `id-token: write` (the read-only role) and
+#     `contents: read`, and hands the regenerated files on as an artifact;
+#   - `publish` holds the write token and no AWS credentials, and runs no
+#     dependency code (no install, no generator).
+#
+# Off until the maintainer sets the repository variable
+# COVERAGE_AUDIT_ROLE_ARN to a role this repository's OIDC subject may assume,
+# allowing only `cloudformation:ListTypes` and `cloudformation:DescribeType`.
+
+on:
+  schedule:
+    - cron: '30 4 * * *'
+  workflow_dispatch:
+
+# Deny by default, grant per job — the house style set by release.yml.
+permissions: {}
+
+concurrency:
+  group: coverage-refresh
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    if: vars.COVERAGE_AUDIT_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    # The stateful derivation reads one DescribeType per Tier-2 type (~1600).
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+
+      - uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1
+        with:
+          node-version: "24"
+          cache: true
+          run-install: false
+
+      # BEFORE the credentials: install scripts never see them.
+      - run: vp install --frozen-lockfile
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.COVERAGE_AUDIT_ROLE_ARN }}
+          role-session-name: cdkd-coverage-refresh
+          aws-region: us-east-1
+
+      - name: Regenerate from live AWS
+        run: |
+          set -euo pipefail
+          vp run audit:coverage:regenerate
+          vp run audit:stateful-candidates:regenerate
+          vp run gen:unsupported-types
+
+      - name: Collect what changed
+        id: diff
+        run: |
+          set -euo pipefail
+          files="docs/_generated/provider-coverage.json docs/_generated/provider-coverage.md docs/_generated/stateful-candidates.json docs/_generated/stateful-candidates.md src/provisioning/unsupported-types.generated.ts"
+          # Assigned on its own line: `set -e` does not fire inside an `if`
+          # condition, so an inlined git failure would read as "no change".
+          # shellcheck disable=SC2086
+          changes=$(git status --porcelain -- ${files})
+          mkdir -p /tmp/coverage-refresh
+          if [ -z "${changes}" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No coverage change."
+            exit 0
+          fi
+          echo "${changes}"
+          for f in ${files}; do
+            mkdir -p "/tmp/coverage-refresh/$(dirname "${f}")"
+            cp "${f}" "/tmp/coverage-refresh/${f}"
+          done
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - if: steps.diff.outputs.changed == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-refresh
+          path: /tmp/coverage-refresh/
+          retention-days: 3
+
+  publish:
+    needs: audit
+    if: needs.audit.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: coverage-refresh
+          path: .
+
+      - name: Open the refresh PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # One open refresh PR at a time: the next run after it merges picks
+          # up whatever changed since.
+          open=$(gh pr list --state open --search "head:bot/coverage-refresh/" --json number --jq 'length')
+          if [ "${open}" != "0" ]; then
+            echo "A coverage refresh PR is already open; not opening another."
+            exit 0
+          fi
+          cycle=$(date -u +%Y-%m-%d)
+          branch="bot/coverage-refresh/${cycle}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "${branch}"
+          git add docs/_generated/ src/provisioning/unsupported-types.generated.ts
+          git commit -m "fix(coverage): refresh the Provider Coverage Report from live AWS (${cycle})"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${branch}"
+          summary=$(jq -r '.summary | "Tier 1 \(.tier1Count), Tier 2 \(.tier2Count), Tier 3 \(.tier3Count), \(.totalCount) types"' docs/_generated/provider-coverage.json)
+          body=$(cat <<EOF
+          The daily coverage refresh found a change (go-to-k/cdkd#5214): ${summary}.
+
+          - A type entering Tier 3 is refused at pre-flight from this release on; one leaving it now routes through Cloud Control.
+          - If \`audit:stateful-candidates:check\` is red, a new Tier-2 type looks data-bearing: add it to \`STATEFUL_TYPES\` (and \`docs/cli-deploy-safety.md\`) or to \`NOT_GUARDED\` with its reason, on this branch.
+          - Also review types that LEFT Tier 3 for data they hold: the candidate scan does not propose every one.
+          - Add a changelog entry under \`changelog.d/entries/\` naming the user-visible tier moves before merging.
+          EOF
+          )
+          gh pr create --base main --head "${branch}" \
+            --title "fix(coverage): refresh the Provider Coverage Report from live AWS (${cycle})" \
+            --body "${body}"
