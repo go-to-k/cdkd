@@ -8,6 +8,7 @@
  * `./retryable-errors.ts`.
  */
 
+import { recordPhase } from '../utils/phase-timings.js';
 import {
   formatRetryClassificationSignals,
   hasReplayMayCollide,
@@ -670,6 +671,9 @@ export async function withRetry<T>(
       const backoffThroughThisAttemptMs = propagation
         ? propagationSleptMs + delay
         : propagationSleptMs;
+      // go-to-k/cdkd#5242: inert unless CDKD_PHASE_TIMINGS=1. The error's class
+      // only, never its message (it can quote a value).
+      recordPhase('retries (every stack)', `retry after ${retryErrorClass(error)}`, delay, shownId);
       opts.logger?.debug(
         `  ⏳ Retrying ${shownId} in ${delay / 1000}s (attempt ${attempt + 1}/${attemptLimit}${
           propagation
@@ -728,4 +732,17 @@ export async function withRetry<T>(
   }
 
   throw lastError;
+}
+
+/**
+ * The class a retried error is reported under (go-to-k/cdkd#5242): its `name`,
+ * and a Cloud Control handler's error code beside it, each only when it is a
+ * plain identifier.
+ */
+function retryErrorClass(error: unknown): string {
+  const ident = (value: unknown): string | undefined =>
+    typeof value === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(value) ? value : undefined;
+  const name = ident((error as { name?: unknown } | null)?.name) ?? 'Error';
+  const code = ident((error as { ccErrorCode?: unknown } | null)?.ccErrorCode);
+  return code !== undefined ? `${name} (${code})` : name;
 }
