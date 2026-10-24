@@ -766,10 +766,11 @@ describe('provider error-cause critic — probes against the REAL src/ tree', ()
     mutate(
       dir,
       `${PROVIDERS}/rds-dbproxy-provider.ts`,
-      // The helper builds its error inside a `wrapMaskedAwsError` callback
-      // since go-to-k/cdkd#4339; the probe drops the cause from that build.
-      '          physicalId,\n          cause\n        )\n    );\n  }\n}',
-      '          physicalId\n        )\n    );\n  }\n}'
+      // The helper's `build`, which both its arms (the class-only wrap and the
+      // `wrapMaskedAwsError` pass-through) construct through since
+      // go-to-k/cdkd#2319; the probe drops the cause from that build.
+      '        physicalId,\n        cause\n      );\n    const failure',
+      '        physicalId\n      );\n    const failure'
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
