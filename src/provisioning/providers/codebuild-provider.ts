@@ -31,6 +31,7 @@ import type {
   ResourceCreateResult,
   ResourceUpdateResult,
   UpdateContext,
+  CreateContext,
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
@@ -40,6 +41,14 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
+import { isAuxiliaryFailure } from '../auxiliary-failure.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { generatedNameFor } from '../resource-name.js';
 
 /**
@@ -467,7 +476,8 @@ export class CodeBuildProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CodeBuild Project ${logicalId}`);
 
@@ -495,12 +505,17 @@ export class CodeBuildProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create CodeBuild Project ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create CodeBuild Project ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -578,14 +593,53 @@ export class CodeBuildProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update CodeBuild Project ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update CodeBuild Project ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
+  }
+
+  /**
+   * The failure wrap the create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through `mask`, and the
+   * wrap is stamped `markRedactedCause`, so the retry classifiers read the
+   * withheld text on the `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}) so a create-first replacement still
+   * recognises the collision, except from a post-create step's failure
+   * ({@link markAuxiliaryFailure}), where "it" would read as this resource. A
+   * non-`Error` throw is withheld the same way, unstamped: it has no chain.
+   *
+   * A cdkd-authored or transport error keeps its text, masked, stamped exactly
+   * when the mask changed it (`wrapMaskedAwsError`, issue #4244). The delete
+   * tests its typed not-found before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${mask(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   async delete(
@@ -614,13 +668,24 @@ export class CodeBuildProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete CodeBuild Project ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete CodeBuild Project ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
