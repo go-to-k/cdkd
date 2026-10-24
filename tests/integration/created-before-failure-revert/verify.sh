@@ -328,7 +328,8 @@ if ! printf '%s' "${E1_FAILED_MSG}" \
   echo "[verify] FAIL: phase E1: OrphanRepo's RESOURCE_FAILED message is not 'Failed to create ECR Repository OrphanRepo: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed: ${E1_FAILED_SHOWN}" >&2
   exit 1
 fi
-if printf '%s' "${E1_FAILED_MSG}" | grep -qF "${ACCOUNT_ID}"; then
+# Every FAILED event this deploy wrote for OrphanRepo, not only the last.
+if grep -qF "${ACCOUNT_ID}" "${LOG_DIR}/e1-failed-events.jsonl"; then
   echo "[verify] FAIL: phase E1: OrphanRepo's RESOURCE_FAILED message quotes AWS's text, with this account's id (#2319); observed: ${E1_FAILED_SHOWN}" >&2
   exit 1
 fi

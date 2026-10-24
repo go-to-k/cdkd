@@ -404,6 +404,10 @@ if [ "${EPS_STATE}" != "Available" ]; then
   echo "[verify] FAIL: endpoint service ${OOB_ENDPOINT_SERVICE_ID} is '${EPS_STATE}', not Available, after 2 min"
   exit 1
 fi
+# The destroy's RESOURCE_FAILED events carry no physicalId, so the NLB's is
+# found by the logical id its state record holds.
+NLB_LOGICAL_ID="$(${CLI} state show "${STACK}" --state-bucket "${STATE_BUCKET}" --json \
+  | NLB_ARN="${NLB_ARN}" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s).state?.resources??{};const ids=Object.keys(r).filter(k=>r[k]?.physicalId===process.env.NLB_ARN);if(ids.length!==1)throw new Error("expected one state record for the NLB, found "+ids.length);process.stdout.write(ids[0])})')"
 EVENT_KEYS_4B="$(mktemp)"
 if ! deployment_event_keys > "${EVENT_KEYS_4B}"; then
   echo "[verify] FAIL: could not list s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/deployments/ before step 4b's destroy"
@@ -441,21 +445,22 @@ fi
 while IFS= read -r event_key || [ -n "${event_key}" ]; do
   [ -n "${event_key}" ] || continue
   aws s3 cp "s3://${STATE_BUCKET}/${event_key}" - --quiet \
-    | jq -c --arg arn "${NLB_ARN}" 'select(.eventType == "RESOURCE_FAILED" and .physicalId == $arn)' >> "${FAILED_4B}"
+    | jq -c --arg l "${NLB_LOGICAL_ID}" 'select(.eventType == "RESOURCE_FAILED" and .logicalId == $l)' >> "${FAILED_4B}"
 done <<< "${NEW_EVENT_KEYS_4B}"
 NLB_FAILED_MSG="$(jq -r '.error.message // empty' "${FAILED_4B}" | tail -n 1)"
 # Never print this account's id on a FAIL.
 NLB_FAILED_SHOWN="$(printf '%s' "${NLB_FAILED_MSG}" | sed -e "s/${ACCOUNT_ID}/<account>/g")"
 if [ -z "${NLB_FAILED_MSG}" ]; then
-  echo "[verify] FAIL: step 4b's destroy persisted no RESOURCE_FAILED event with an error message for ${NLB_ARN} (the #2319 checks below would pass for free)"
+  echo "[verify] FAIL: step 4b's destroy persisted no RESOURCE_FAILED event with an error message for ${NLB_LOGICAL_ID} (the #2319 checks below would pass for free)"
   exit 1
 fi
 if ! printf '%s' "${NLB_FAILED_MSG}" \
-    | grep -qE "Failed to delete LoadBalancer [A-Za-z0-9]+: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
+    | grep -qE "Failed to delete LoadBalancer ${NLB_LOGICAL_ID}: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
   echo "[verify] FAIL: the NLB's RESOURCE_FAILED message is not 'Failed to delete LoadBalancer <id>: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed: ${NLB_FAILED_SHOWN}"
   exit 1
 fi
-if printf '%s' "${NLB_FAILED_MSG}" | grep -qF "${ACCOUNT_ID}"; then
+# Every FAILED event this destroy wrote for the NLB, not only the last.
+if grep -qF "${ACCOUNT_ID}" "${FAILED_4B}"; then
   echo "[verify] FAIL: the NLB's RESOURCE_FAILED message quotes AWS's text, with this account's id (#2319); observed: ${NLB_FAILED_SHOWN}"
   exit 1
 fi
