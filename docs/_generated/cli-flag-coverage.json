@@ -71,7 +71,8 @@
     {
       "flag": "--concurrency",
       "integs": [
-        "throttle-wide-dag"
+        "throttle-wide-dag",
+        "wide-independent"
       ]
     },
     {
@@ -418,7 +419,8 @@
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",
-        "wait-condition-handle"
+        "wait-condition-handle",
+        "wide-independent"
       ]
     },
     {
@@ -869,7 +871,8 @@
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",
-        "wait-condition-handle"
+        "wait-condition-handle",
+        "wide-independent"
       ]
     },
     {
@@ -1264,7 +1267,8 @@
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",
-        "wait-condition-handle"
+        "wait-condition-handle",
+        "wide-independent"
       ]
     },
     {
@@ -1712,7 +1716,8 @@
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",
-        "wait-condition-handle"
+        "wait-condition-handle",
+        "wide-independent"
       ]
     },
     {
@@ -2100,7 +2105,8 @@
         "unrecognized-key-autoroute",
         "update-replace",
         "vpc-nat-gateway",
-        "wait-condition-handle"
+        "wait-condition-handle",
+        "wide-independent"
       ]
     }
   ],

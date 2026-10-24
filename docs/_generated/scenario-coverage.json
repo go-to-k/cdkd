@@ -2662,6 +2662,11 @@
       "name": "wait-condition-handle",
       "annotated": true,
       "scenarios": []
+    },
+    {
+      "name": "wide-independent",
+      "annotated": false,
+      "scenarios": []
     }
   ],
   "perScenarioCoverage": [
@@ -3588,6 +3593,7 @@
     "stepfunctions-s3-definition",
     "stream-delete-redeploy",
     "synthetics-canary",
-    "unrecognized-key-autoroute"
+    "unrecognized-key-autoroute",
+    "wide-independent"
   ]
 }

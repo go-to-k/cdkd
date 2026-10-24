@@ -6077,7 +6077,8 @@
         "secret-derived-immutable-names",
         "stepfunctions-logging",
         "tags-propagation",
-        "type-change-replacement"
+        "type-change-replacement",
+        "wide-independent"
       ],
       "signals": {
         "apigatewayv2-update-removal": [
@@ -6206,6 +6207,10 @@
           "l2"
         ],
         "type-change-replacement": [
+          "literal"
+        ],
+        "wide-independent": [
+          "l2",
           "literal"
         ]
       }
@@ -6864,7 +6869,8 @@
         "throttle-wide-dag",
         "type-change-replacement",
         "unrecognized-key-autoroute",
-        "update-policy-mutations"
+        "update-policy-mutations",
+        "wide-independent"
       ],
       "signals": {
         "bench-sdk": [
@@ -7050,6 +7056,10 @@
         "update-policy-mutations": [
           "l2",
           "literal"
+        ],
+        "wide-independent": [
+          "l2",
+          "literal"
         ]
       }
     },
@@ -7165,7 +7175,8 @@
         "sns-subscription-filter",
         "sns-subscription-update",
         "sqs-esm-max-concurrency",
-        "tags-propagation"
+        "tags-propagation",
+        "wide-independent"
       ],
       "signals": {
         "appsync": [
@@ -7406,6 +7417,10 @@
         ],
         "tags-propagation": [
           "l2"
+        ],
+        "wide-independent": [
+          "l2",
+          "literal"
         ]
       }
     },
@@ -7551,7 +7566,8 @@
         "type-change-replacement",
         "update-policy-mutations",
         "vpc-lookup",
-        "wait-condition-handle"
+        "wait-condition-handle",
+        "wide-independent"
       ],
       "signals": {
         "bench-sdk": [
@@ -7939,6 +7955,10 @@
         ],
         "wait-condition-handle": [
           "l2"
+        ],
+        "wide-independent": [
+          "l2",
+          "literal"
         ]
       }
     },
