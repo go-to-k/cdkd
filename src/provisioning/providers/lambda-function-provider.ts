@@ -1036,7 +1036,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * exist(s)" is restated ({@link relayedNameCollision}), so a create-first
    * replacement still recognises the collision (issue #1625), except from a
    * post-create call's failure ({@link markAuxiliaryFailure}), where "it" would
-   * read as this function. A non-`Error` throw is withheld the same way, and
+   * read as this function. Every post-create call today reaches this wrap as
+   * {@link applyPostCreateConfig}'s cdkd-authored refusal, which keeps its
+   * text, so the gate guards a post-create call made outside it. A non-`Error` throw is withheld the same way, and
    * stamped only when `build` threads a cause for it (create / update do: a
    * thrown string keeps its retry classification on that chain).
    *
