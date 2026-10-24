@@ -26,6 +26,17 @@ const fakeOutput = (): unknown =>
     }
   );
 
+// What `ListSubscriptionsByTopic` answers: the subscriptions of the bag under
+// probe, each with a confirmed ARN, so a removed inline subscription resolves
+// to an ARN and the update reaches `Unsubscribe`. A fake that lists nothing
+// leaves the removal path at the list call (`silentPaths` sets it per bag).
+let liveSubscriptions: Record<string, unknown>[] = [];
+
+// A read delivers no property, so it is left out of the comparison: otherwise
+// an update that lists subscriptions but never unsubscribes one still differs
+// from one that does nothing.
+const READ_COMMAND = /^(Get|List|Describe)/;
+
 // Each client's stack is typed by its own service's inputs, so no one generic
 // signature accepts all three; `never` parameters let any of them through.
 interface Capturable {
@@ -33,25 +44,32 @@ interface Capturable {
 }
 
 function capturing<T extends Capturable>(client: T): T {
-  const middleware = () => async (args: { request: unknown }) => {
-    const req = args.request as {
-      method: string;
-      path: string;
-      query?: Record<string, unknown>;
-      headers: Record<string, string>;
-      body?: unknown;
+  const middleware =
+    (_next: unknown, context: { commandName?: string }) => async (args: { request: unknown }) => {
+      const command = context.commandName ?? '';
+      if (command === 'ListSubscriptionsByTopicCommand') {
+        return { output: { $metadata: {}, Subscriptions: liveSubscriptions }, response: {} };
+      }
+      if (READ_COMMAND.test(command)) return { output: fakeOutput(), response: {} };
+      const req = args.request as {
+        method: string;
+        path: string;
+        query?: Record<string, unknown>;
+        headers: Record<string, string>;
+        body?: unknown;
+      };
+      wire.push(
+        JSON.stringify([
+          command,
+          req.method,
+          req.path,
+          req.query,
+          req.headers['x-amz-target'],
+          typeof req.body === 'string' ? req.body : JSON.stringify(req.body ?? null),
+        ])
+      );
+      return { output: fakeOutput(), response: {} };
     };
-    wire.push(
-      JSON.stringify([
-        req.method,
-        req.path,
-        req.query,
-        req.headers['x-amz-target'],
-        typeof req.body === 'string' ? req.body : JSON.stringify(req.body ?? null),
-      ])
-    );
-    return { output: fakeOutput(), response: {} };
-  };
   const options = { step: 'build', name: 'wireCapture', priority: 'low' };
   client.middlewareStack.add(middleware as never, options as never);
   return client;
@@ -79,7 +97,7 @@ type Path = (string | number)[];
 /** Every key path in the bag, so nested members are probed individually. */
 function paths(value: unknown, prefix: Path = []): Path[] {
   if (Array.isArray(value)) {
-    return value.flatMap((v, i) => paths(v, [...prefix, i]));
+    return value.flatMap((v, i) => [[...prefix, i], ...paths(v, [...prefix, i])]);
   }
   if (value !== null && typeof value === 'object') {
     return Object.entries(value).flatMap(([k, v]) => [[...prefix, k], ...paths(v, [...prefix, k])]);
@@ -87,71 +105,208 @@ function paths(value: unknown, prefix: Path = []): Path[] {
   return [];
 }
 
+function parentOf(bag: Bag, path: Path): Record<string | number, unknown> {
+  let node: Record<string | number, unknown> = bag;
+  for (const seg of path.slice(0, -1)) node = node[seg] as Record<string | number, unknown>;
+  return node;
+}
+
 function without(bag: Bag, path: Path): Bag {
   const copy = structuredClone(bag);
-  let node: Record<string | number, unknown> = copy;
-  for (const seg of path.slice(0, -1)) node = node[seg] as Record<string | number, unknown>;
+  const node = parentOf(copy, path);
   const last = path[path.length - 1]!;
   if (Array.isArray(node)) node.splice(last as number, 1);
   else delete node[last];
   return copy;
 }
 
-async function record(run: () => Promise<unknown>): Promise<string> {
+/**
+ * The bag with the leaf at `path` changed: to `variant` when given (an enum
+ * member needs a valid alternative), else to another value of its type.
+ * Undefined for a non-leaf.
+ */
+function varied(bag: Bag, path: Path, variant?: { value: unknown }): Bag | undefined {
+  const copy = structuredClone(bag);
+  const node = parentOf(copy, path);
+  const last = path[path.length - 1]!;
+  const value = node[last];
+  if (variant) node[last] = variant.value;
+  else if (typeof value === 'string') node[last] = `${value}-alt`;
+  else if (typeof value === 'number') node[last] = value + 1;
+  else if (typeof value === 'boolean') node[last] = !value;
+  else return undefined;
+  return copy;
+}
+
+type Outcome = { threw: false; wire: string } | { threw: true; message: string };
+
+async function record(run: () => Promise<unknown>): Promise<Outcome> {
   wire.length = 0;
   try {
     await run();
   } catch (error) {
-    return `THROW ${(error as Error).message}`;
+    return { threw: true, message: (error as Error).message };
   }
-  return wire.join('\n');
+  return { threw: false, wire: wire.join('\n') };
 }
 
 interface Case {
   resourceType: string;
   provider: () => ResourceProvider;
   physicalId: string;
+  /** Top-levels the engine replaces on instead of updating; skipped on update. */
+  createOnly: ReadonlySet<string>;
   bag: Bag;
+  /** Path label -> the value a removal-throwing leaf is varied to. */
+  variants?: Record<string, unknown>;
+}
+
+interface Result {
+  /** Probes whose removal (or variation) left the write sequence unchanged. */
+  silent: string[];
+  /** Probes where the reduced side THREW: removal cannot observe delivery there. */
+  removalThrows: string[];
 }
 
 /**
  * Removing any one path must change what reaches the wire; if it does not, the
- * member is dropped. Probed on create, and on update in both directions.
- * Create-only top-levels are excluded from update: the engine replaces instead.
+ * member is dropped. Probed on create, and on update in both directions, with
+ * ONE argument varying per comparison: an `update()` that re-sends every desired
+ * attribute would otherwise mask a change on the side under test.
+ *
+ * - `create`: `create(full)` vs `create(full - P)`
+ * - `update-add`: `update(next=full, prev=full-P)` vs `update(next=full-P, prev=full-P)`
+ *   (only `next` varies)
+ * - `update-remove`: `update(next=full-P, prev=full)` vs `update(next=full-P, prev=full-P)`
+ *   (only `prev` varies, so the removal-reset path is what is observed)
+ *
+ * A reduced side that THROWS is not delivery: it lands in `removalThrows`, and
+ * that path is probed instead by changing its value on create.
  */
-async function silentPaths(c: Case, createOnly: ReadonlySet<string>): Promise<string[]> {
+async function probe(c: Case): Promise<Result> {
   const p = c.provider();
   const create = (bag: Bag) => () => p.create('L', c.resourceType, structuredClone(bag));
   const update = (next: Bag, prev: Bag) => () =>
     p.update('L', c.physicalId, c.resourceType, structuredClone(next), structuredClone(prev));
 
-  // Only ONE argument varies per comparison: an update() that always re-sends
-  // the full attribute set would otherwise look identical to a no-op.
+  const subs = Array.isArray(c.bag['Subscription']) ? (c.bag['Subscription'] as Bag[]) : [];
+  liveSubscriptions = subs.map((s, i) => ({
+    Protocol: s['Protocol'],
+    Endpoint: s['Endpoint'],
+    SubscriptionArn: `${c.physicalId}:sub-${i}`,
+    TopicArn: c.physicalId,
+  }));
+
   const full = await record(create(c.bag));
   const settled = await record(update(c.bag, c.bag));
+  // A throwing baseline would make every comparison against it vacuous.
+  expect(full).toMatchObject({ threw: false });
+  expect(settled).toMatchObject({ threw: false });
+  const fullWire = (full as { wire: string }).wire;
+
   const silent: string[] = [];
+  const removalThrows: string[] = [];
+  const compare = (direction: string, label: string, a: Outcome, b: Outcome): boolean => {
+    if (a.threw || b.threw) {
+      removalThrows.push(`${direction}:${label}`);
+      return true;
+    }
+    if (a.wire === b.wire) silent.push(`${direction}:${label}`);
+    return false;
+  };
+
   for (const path of paths(c.bag)) {
     const label = path.join('.');
     const reduced = without(c.bag, path);
-    if ((await record(create(reduced))) === full) silent.push(`create:${label}`);
-    if (createOnly.has(String(path[0]))) continue;
-    if ((await record(update(c.bag, reduced))) === (await record(update(reduced, reduced)))) {
-      silent.push(`update-add:${label}`);
+    let threw = compare('create', label, await record(create(reduced)), full);
+    if (!c.createOnly.has(String(path[0]))) {
+      threw =
+        compare(
+          'update-add',
+          label,
+          await record(update(c.bag, reduced)),
+          await record(update(reduced, reduced))
+        ) || threw;
+      threw =
+        compare(
+          'update-remove',
+          label,
+          await record(update(reduced, c.bag)),
+          await record(update(reduced, reduced))
+        ) || threw;
     }
-    if ((await record(update(reduced, c.bag))) === settled) silent.push(`update-remove:${label}`);
+    if (!threw) continue;
+    const alt = varied(
+      c.bag,
+      path,
+      c.variants && label in c.variants ? { value: c.variants[label] } : undefined
+    );
+    const altOutcome = alt === undefined ? undefined : await record(create(alt));
+    if (altOutcome === undefined || altOutcome.threw || altOutcome.wire === fullWire) {
+      silent.push(`create-vary:${label}`);
+    }
   }
-  return silent;
+  return { silent, removalThrows };
+}
+
+interface BagCase {
+  name: string;
+  bag: Bag;
+  variants?: Record<string, unknown>;
+  /** Probe label -> why it is silent. Exact: a fixed gap must leave the list. */
+  expectedSilent?: Record<string, string>;
+  /** Probe label -> why removing that path throws. Exact, like `expectedSilent`. */
+  expectedRemovalThrows?: Record<string, string>;
+}
+
+interface TypeCase {
+  resourceType: string;
+  provider: () => ResourceProvider;
+  physicalId: string;
+  createOnly: ReadonlySet<string>;
+  /** `handledProperties` entries no bag carries, each with the reason. */
+  exempt: Record<string, string>;
+  bags: BagCase[];
 }
 
 const ROLE = `arn:aws:iam::${ACCOUNT}:role/r`;
+const QUEUE_ARN = (name: string) => `arn:aws:sqs:us-east-1:${ACCOUNT}:${name}`;
 
-describe('SDK wire coverage (PoC)', () => {
-  it('AWS::SNS::Topic delivers every declared path', async () => {
-    const silent = await silentPaths(
+const TAGS_REFUSED =
+  'a Tags entry without its Key or Value is refused before any call (go-to-k/cdkd#3994)';
+const SUBSCRIPTION_REFUSED =
+  'an inline Subscription without a string Protocol and Endpoint is refused before Subscribe';
+
+// Known gaps, listed so the test pins them: fixing one turns this test red
+// until its row is deleted here, so the list only shrinks.
+const REMOVAL_RESET_GAP =
+  'missing from SQS_ATTRIBUTE_REMOVAL_RESET, so a removal keeps the live value (go-to-k/cdkd#1160)';
+// Not a gap: SetQueueAttributes re-sends the whole policy from `next` and never
+// reads `prev`, so a member removed from a still-declared policy is delivered
+// by `next` alone (the update-add probe of the same path observes that).
+const WHOLE_POLICY_FROM_NEXT =
+  'update() re-sends the whole policy from next; prev is not read for a declared policy';
+
+const TAG_THROWS = (directions: string[], count: number): Record<string, string> =>
+  Object.fromEntries(
+    directions.flatMap((d) =>
+      Array.from({ length: count }, (_, i) => [
+        [`${d}:Tags.${i}.Key`, TAGS_REFUSED],
+        [`${d}:Tags.${i}.Value`, TAGS_REFUSED],
+      ]).flat()
+    )
+  );
+
+const CASES: TypeCase[] = [
+  {
+    resourceType: 'AWS::SNS::Topic',
+    provider: () => new SNSTopicProvider(),
+    physicalId: `arn:aws:sns:us-east-1:${ACCOUNT}:t.fifo`,
+    createOnly: new Set(['FifoTopic', 'TopicName']),
+    exempt: {},
+    bags: [
       {
-        resourceType: 'AWS::SNS::Topic',
-        provider: () => new SNSTopicProvider(),
-        physicalId: `arn:aws:sns:us-east-1:${ACCOUNT}:t.fifo`,
+        name: 'every declared property',
         bag: {
           TopicName: 't.fifo',
           FifoTopic: true,
@@ -172,21 +327,52 @@ describe('SDK wire coverage (PoC)', () => {
               SuccessFeedbackSampleRate: '50',
             },
           ],
-          Subscription: [{ Protocol: 'sqs', Endpoint: `arn:aws:sqs:us-east-1:${ACCOUNT}:q` }],
-          Tags: [{ Key: 'k', Value: 'v' }],
+          Subscription: [
+            { Protocol: 'sqs', Endpoint: QUEUE_ARN('q1') },
+            { Protocol: 'sqs', Endpoint: QUEUE_ARN('q2') },
+          ],
+          Tags: [
+            { Key: 'k1', Value: 'v1' },
+            { Key: 'k2', Value: 'v2' },
+          ],
+        },
+        variants: { 'DeliveryStatusLogging.0.Protocol': 'sqs' },
+        expectedRemovalThrows: {
+          ...TAG_THROWS(['create', 'update-add', 'update-remove'], 2),
+          'create:DeliveryStatusLogging.0.Protocol':
+            'create() refuses a DeliveryStatusLogging entry without a supported Protocol (update() warns and skips it)',
+          ...Object.fromEntries(
+            [0, 1].flatMap((i) =>
+              ['create', 'update-remove'].flatMap((d) => [
+                [`${d}:Subscription.${i}.Protocol`, SUBSCRIPTION_REFUSED],
+                [`${d}:Subscription.${i}.Endpoint`, SUBSCRIPTION_REFUSED],
+              ])
+            )
+          ),
         },
       },
-      new Set(['FifoTopic', 'TopicName'])
-    );
-    expect(silent).toEqual([]);
-  });
-
-  it('AWS::SQS::Queue delivers every declared path', async () => {
-    const silent = await silentPaths(
       {
-        resourceType: 'AWS::SQS::Queue',
-        provider: () => new SQSQueueProvider(),
-        physicalId: `https://sqs.us-east-1.amazonaws.com/${ACCOUNT}/q.fifo`,
+        // A value-dependent drop is invisible to a bag of truthy values only.
+        name: 'falsy values',
+        bag: { TopicName: 't', ContentBasedDeduplication: false, DisplayName: '' },
+        expectedSilent: {
+          'create:ContentBasedDeduplication':
+            'CreateTopic gates on truthiness; false is the service default, so omitting it is equivalent',
+          'create:DisplayName':
+            'CreateTopic gates on truthiness; an empty display name is the service default',
+        },
+      },
+    ],
+  },
+  {
+    resourceType: 'AWS::SQS::Queue',
+    provider: () => new SQSQueueProvider(),
+    physicalId: `https://sqs.us-east-1.amazonaws.com/${ACCOUNT}/q.fifo`,
+    createOnly: new Set(['FifoQueue', 'QueueName']),
+    exempt: {},
+    bags: [
+      {
+        name: 'KMS encryption',
         bag: {
           QueueName: 'q.fifo',
           FifoQueue: true,
@@ -201,15 +387,58 @@ describe('SDK wire coverage (PoC)', () => {
           KmsMasterKeyId: 'alias/k',
           KmsDataKeyReusePeriodSeconds: 600,
           RedrivePolicy: {
-            deadLetterTargetArn: `arn:aws:sqs:us-east-1:${ACCOUNT}:dlq.fifo`,
+            deadLetterTargetArn: QUEUE_ARN('dlq.fifo'),
             maxReceiveCount: 5,
           },
           RedriveAllowPolicy: { redrivePermission: 'allowAll' },
-          Tags: [{ Key: 'k', Value: 'v' }],
+          Tags: [
+            { Key: 'k1', Value: 'v1' },
+            { Key: 'k2', Value: 'v2' },
+          ],
+        },
+        expectedSilent: {
+          'update-remove:DeduplicationScope': REMOVAL_RESET_GAP,
+          'update-remove:FifoThroughputLimit': REMOVAL_RESET_GAP,
+          'update-remove:RedrivePolicy.deadLetterTargetArn': WHOLE_POLICY_FROM_NEXT,
+          'update-remove:RedrivePolicy.maxReceiveCount': WHOLE_POLICY_FROM_NEXT,
+          'update-remove:RedriveAllowPolicy.redrivePermission': WHOLE_POLICY_FROM_NEXT,
+        },
+        expectedRemovalThrows: TAG_THROWS(['create', 'update-add', 'update-remove'], 2),
+      },
+      {
+        // `SqsManagedSseEnabled` is mutually exclusive with `KmsMasterKeyId`.
+        name: 'SQS-managed encryption',
+        bag: { QueueName: 'q', SqsManagedSseEnabled: true },
+        expectedSilent: { 'update-remove:SqsManagedSseEnabled': REMOVAL_RESET_GAP },
+      },
+      {
+        name: 'falsy values',
+        bag: {
+          QueueName: 'q',
+          ContentBasedDeduplication: false,
+          DelaySeconds: 0,
+          ReceiveMessageWaitTimeSeconds: 0,
         },
       },
-      new Set(['FifoQueue', 'QueueName'])
-    );
-    expect(silent).toEqual([]);
+    ],
+  },
+];
+
+describe('SDK wire coverage', () => {
+  describe.each(CASES)('$resourceType', (t) => {
+    it('its bags carry every handledProperties entry not exempted', () => {
+      const handled = [...(t.provider().handledProperties?.get(t.resourceType) ?? [])].sort();
+      expect(handled.length).toBeGreaterThan(0);
+      const carried = new Set(t.bags.flatMap((b) => Object.keys(b.bag)));
+      for (const key of carried) expect(handled).toContain(key);
+      for (const key of Object.keys(t.exempt)) expect(carried.has(key)).toBe(false);
+      expect([...carried, ...Object.keys(t.exempt)].sort()).toEqual(handled);
+    });
+
+    it.each(t.bags)('delivers every path of the $name bag', async (b) => {
+      const { silent, removalThrows } = await probe({ ...t, bag: b.bag, variants: b.variants });
+      expect(silent.sort()).toEqual(Object.keys(b.expectedSilent ?? {}).sort());
+      expect(removalThrows.sort()).toEqual(Object.keys(b.expectedRemovalThrows ?? {}).sort());
+    });
   });
 });
