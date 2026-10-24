@@ -160,6 +160,8 @@ AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd state show '<stack>' --stack-
 AWS_PROFILE='<profile>' AWS_REGION='<region>' cdkd events '<stack>' --stack-region '<region>'
 ```
 
+`cdkd state browse` is an interactive picker for a person at a terminal; without one it refuses (exit `1`), so read state with `cdkd state list`, `cdkd state resources` and `cdkd state show` instead, and suggest `cdkd state browse` to a user who wants to look around themselves.
+
 Also verify the stack outputs, the critical AWS resource state, and an application-level smoke test when applicable. Treat a non-zero exit as an unsuccessful command, but interpret it per command: exit `1` normally indicates failure, while `diff --fail` / `diff --fail-on` and `drift` also use it to report detected changes; exit `2` indicates partial failure for commands that support it. Inspect state and events, then follow the command-specific recovery guidance.
 
 For an interrupted or failed deployment:
