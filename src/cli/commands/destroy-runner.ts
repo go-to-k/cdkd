@@ -1687,9 +1687,18 @@ async function destroyStackInRegion(
     // above passes it; the protection the callers checked before the prompt
     // is checked again here.
     if (current.state.terminationProtection === true && ctx.removeProtection !== true) {
-      throw new StackTerminationProtectionError(stackName, undefined, undefined, {
-        command: ctx.stateDestroy === true ? 'cdkd state destroy' : 'cdkd destroy',
-      });
+      throw new StackTerminationProtectionError(
+        stackName,
+        undefined,
+        {
+          args: accountArgs(refusalRecovery),
+          clause: withheldAccountClause(refusalRecovery, 'the command below prints'),
+        },
+        {
+          command: ctx.stateDestroy === true ? 'cdkd state destroy' : 'cdkd destroy',
+          stackRegion: regionForState,
+        }
+      );
     }
     refusePendingMovesOut(current.state, stackName, regionForState, 'cdkd destroy');
     refuseRefactorMarker(marker, stackName, regionForState, 'cdkd destroy');
