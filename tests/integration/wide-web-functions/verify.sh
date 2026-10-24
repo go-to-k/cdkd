@@ -278,7 +278,7 @@ assert_run_gone() { # usage: assert_run_gone <token>
     aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null
   done
   left="$(aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/web/${prefix}-" \
-    --region "${REGION}" --query 'logGroups[].logGroupName' --output text)"
+    --region "${REGION}" --query 'logGroups[].logGroupName' --output text)" || return 1
   [ -z "${left}" ] || [ "${left}" = "None" ] \
     || { echo "FAIL: log groups of ${prefix} still exist after destroy: ${left}" >&2; exit 1; }
   echo "    OK: ${FUNCTIONS} web functions, their endpoints, the role and the log groups are gone"
