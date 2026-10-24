@@ -86,6 +86,9 @@ const CASES = [
     logicalId: 'MyTopic',
     physicalId: 'arn:aws:sns:us-east-1:123456789012:my-topic',
     expectedPrefix: 'Failed to update SNS topic MyTopic',
+    // go-to-k/cdkd#2319: a non-Error throw is withheld from the persisted
+    // message rather than stringified into it.
+    nonErrorText: `a non-Error value of type string. ${VERBOSE_POINTER}`,
     mock: () => mockSnsSend,
     make: () => new SNSTopicProvider(),
     next: { TopicName: 'my-topic', DisplayName: 'after' },

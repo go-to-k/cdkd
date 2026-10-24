@@ -899,7 +899,9 @@ describe('CodeBuildProvider rethrow of an unconvertible thrown value (#3341)', (
     expect(rejected).toBeInstanceOf(ProvisioningError);
     const message = (rejected as Error).message;
     expect(message).toContain('Failed to create CodeBuild Project MyProject');
-    expect(message).toContain('a value that could not be converted to text');
+    // go-to-k/cdkd#2319: a non-Error throw is named by its type, never
+    // stringified into the persisted message.
+    expect(message).toContain('a non-Error value of type object.');
     expect(message).not.toContain('Cannot convert object to primitive value');
   });
 });
