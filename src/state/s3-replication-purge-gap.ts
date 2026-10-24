@@ -253,8 +253,8 @@ const describe = (error: unknown): string => describeAwsFailure(error).detail;
  * - removing the ARM alone REDS a case (a rejection whose `name` GETTER
  *   throws: the null-guards pass that value through and `errorCodes`' read of
  *   `name` is what raises, inside `runProbe`'s catch), so the arm is
- *   independently fenced. `describe()` no longer raises for any value -- a
- *   hostile `toString` is rendered by `describeAwsFailure`'s fallback
+ *   independently fenced. `describe()` no longer raises for a value `String()`
+ *   cannot convert -- a hostile `toString` gets `describeAwsFailure`'s fallback
  *   (go-to-k/cdkd#3361) -- so it is no longer the case that reaches the arm;
  * - removing these GUARDS alone leaves the CACHING behaviour identical:
  *   `errorCodes` runs inside `runProbe`'s own catch, so a TypeError here is
