@@ -12,7 +12,12 @@ import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.
 import { safeMsg } from '../../utils/display-safe.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { definedAttributes } from '../attribute-map.js';
@@ -498,10 +503,21 @@ export class SNSSubscriptionProvider implements ResourceProvider {
   }
 
   /**
-   * A create / update failure, quoting the AWS error's text MASKED: AWS
-   * quotes a rejected value back (a filter policy can carry a resolved
-   * secret). The `cause` stays unmasked, and a message the mask changed is
-   * stamped so the retry classifiers read that chain (`wrapMaskedAwsError`).
+   * The failure wrap the create / update / delete catches throw.
+   *
+   * An AWS-authored failure is named by its CLASS plus the `--verbose` pointer
+   * (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AuthorizationErrorException` names
+   * the caller's ARN. AWS's own text goes to `debug` through `mask` (AWS
+   * quotes a rejected value back, and a filter policy can carry a resolved
+   * secret), and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}).
+   *
+   * A cdkd-authored or transport error keeps its text, masked, stamped exactly
+   * when the mask changed it (`wrapMaskedAwsError`). A non-`Error` throw keeps
+   * its masked text (`describeAwsFailure`'s, which an unconvertible value
+   * cannot make throw): it has no class to name.
    */
   private wrapMaskedAwsCallError(
     mask: (text: string) => string,
@@ -511,17 +527,20 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string | undefined
   ): ProvisioningError {
-    return wrapMaskedAwsError(
-      mask,
-      error,
-      (text) =>
-        new ProvisioningError(
-          `${prefix}: ${text}`,
-          resourceType,
-          logicalId,
-          physicalId,
-          error instanceof Error ? error : undefined
-        )
+    const build = (text: string): ProvisioningError =>
+      new ProvisioningError(
+        `${prefix}: ${text}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      );
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error)) return build(mask(failure.detail));
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    return markRedactedCause(
+      build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
     );
   }
 
@@ -768,13 +787,17 @@ export class SNSSubscriptionProvider implements ResourceProvider {
         return;
       }
 
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        mask(`Failed to delete SNS subscription ${logicalId}: ${describeAwsFailure(error).detail}`),
+      // AWS's failure is named by its class (go-to-k/cdkd#2319). No `NotFound`
+      // class reaches here: `Unsubscribe`'s only one is this subscription's
+      // own `NotFoundException`, which returned above, so the class cannot
+      // satisfy an "already deleted" classifier's needle.
+      throw this.wrapMaskedAwsCallError(
+        mask,
+        error,
+        mask(`Failed to delete SNS subscription ${logicalId}`),
         resourceType,
         logicalId,
-        physicalId,
-        cause
+        physicalId
       );
     }
   }

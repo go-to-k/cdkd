@@ -80,7 +80,7 @@ import { finalSnapshotDelays } from '../../../src/provisioning/final-snapshot.js
 import { withSkipPrefix, withStackScope } from '../../../src/provisioning/resource-name.js';
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
 import type { ResourceState } from '../../../src/types/state.js';
-import { awsSdkError } from '../_aws-sdk-error.js';
+import { awsSdkError, relayedAwsSdkError } from '../_aws-sdk-error.js';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 const STACK = 'MyStack';
@@ -600,7 +600,7 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
     const create = vi
       .fn()
       .mockRejectedValue(
-        awsSdkError(`Role with name ${KEPT} already exists.`, 'EntityAlreadyExistsException')
+        relayedAwsSdkError(`Role with name ${KEPT} already exists.`, 'EntityAlreadyExistsException')
       );
     const del = vi.fn();
     const { ctx, lines, events } = makeCtx({ create, delete: del });
@@ -1084,7 +1084,7 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
     });
     const create = vi
       .fn()
-      .mockRejectedValue(awsSdkError('Queue back already exists.', 'QueueAlreadyExists'));
+      .mockRejectedValue(relayedAwsSdkError('Queue back already exists.', 'QueueAlreadyExists'));
     const { ctx, lines } = makeCtx({ create, delete: vi.fn() });
     const newId = pinned ? `${url}${SECRET_NAME}` : `${url}plain-new`;
     const op: CompletedOperation = {
@@ -1355,7 +1355,7 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
     const create = vi
       .fn()
       .mockRejectedValue(
-        awsSdkError(`Role with name ${SPACED_NAME} already exists.`, 'EntityAlreadyExistsException')
+        relayedAwsSdkError(`Role with name ${SPACED_NAME} already exists.`, 'EntityAlreadyExistsException')
       );
     const { ctx, lines } = makeCtx({ create, delete: vi.fn() });
     const { op, state } = replacement('old-plain', SPACED_EXPR, 'plain-new', 'plain-new');
