@@ -628,23 +628,15 @@ export class ResourceUpdateNotSupportedError extends CdkdError {
 }
 
 /**
- * Signals a refusal to destroy a stack whose CDK manifest has
- * `terminationProtection: true`.
+ * Signals a refusal to destroy a stack with `terminationProtection: true`:
+ * in its CDK manifest (`cdkd destroy`), or in the state record its last
+ * deploy wrote (`cdkd destroy` and `cdkd state destroy`, go-to-k/cdkd#5238).
  *
- * Surfaced from `cdkd destroy <stack>` / `cdkd destroy --all` BEFORE
- * any lock acquisition or per-resource delete. In multi-stack runs
- * (e.g. `--all`) this counts as a per-stack failure and the rest of
- * the targets continue — the aggregated count is wrapped in
- * {@link PartialFailureError} so the command exits with code 2.
- *
- * The bypass workflow is documented in the message: edit the CDK code
- * (`new Stack(app, '...', { terminationProtection: false })`),
- * redeploy, then retry the destroy. A future `--remove-protection`
- * flag (separate scope) will provide an explicit one-shot bypass.
- *
- * Note: `cdkd state destroy` (the synth-free destroy) does NOT honor
- * `terminationProtection` — the flag is a CDK property not persisted
- * in cdkd's state.json. Use `cdkd destroy` when synth is available.
+ * Raised BEFORE any lock acquisition or per-resource delete, and again under
+ * the lock (a deploy can turn it on while the prompt waits). In multi-stack
+ * runs this counts as a per-stack failure and the rest of the targets
+ * continue — the aggregated count is wrapped in {@link PartialFailureError}
+ * so the command exits with code 2. `--remove-protection` is the bypass.
  */
 export class StackTerminationProtectionError extends CdkdError {
   public readonly stackName: string;
@@ -659,23 +651,52 @@ export class StackTerminationProtectionError extends CdkdError {
      */
     account?: { args: readonly CommandArg[]; clause: string },
     /**
-     * `cdkd state destroy` (go-to-k/cdkd#5238) reads the setting from the
-     * record its last deploy wrote and has no CDK code to edit, so its
-     * remedy is `--remove-protection`.
+     * The refusal of a stack whose RECORD carries the setting (go-to-k/cdkd#5238):
+     * its last deploy had it, whatever the CDK code says now. `command` is
+     * the destroy to retry with `--remove-protection` (`cdkd state destroy`
+     * has no CDK code to edit); `root` the protected root stack when
+     * `stackName` is a nested child under it; `stackRegion` the record's
+     * region, so the pasted command addresses the same record.
      */
-    command: 'cdkd destroy' | 'cdkd state destroy' = 'cdkd destroy'
+    recorded?: {
+      command: 'cdkd destroy' | 'cdkd state destroy';
+      root?: string;
+      stackRegion?: string;
+    }
   ) {
-    if (command === 'cdkd state destroy') {
-      const bypass = pasteableCommand('cdkd state destroy', [
-        { value: stackName, hole: 'stack', opts: { plainIdent: true } },
+    if (recorded !== undefined) {
+      const { command, root, stackRegion } = recorded;
+      const bypass = pasteableCommand(command, [
+        {
+          value: stackName,
+          hole: 'stack',
+          opts: { plainIdent: true, ...(command === 'cdkd destroy' && { patternMatched: true }) },
+        },
+        ...(stackRegion !== undefined && command === 'cdkd state destroy'
+          ? [
+              {
+                flag: '--stack-region',
+                value: stackRegion,
+                hole: 'region',
+                opts: { plainIdent: true },
+              },
+            ]
+          : []),
         { literal: '--remove-protection' },
         ...(account?.args ?? []),
       ]);
       super(
-        `Stack ${quotedOrDescribed(stackName, 'stack name')} was last deployed with ` +
-          `terminationProtection: true and cannot be destroyed. To destroy it anyway, ` +
-          `pass --remove-protection.` +
-          withheldTargetClause(bypass, 'stack', 'cdkd state destroy', "This stack's name") +
+        (root === undefined
+          ? `Stack ${quotedOrDescribed(stackName, 'stack name')} was last deployed with ` +
+            `terminationProtection: true and cannot be destroyed.`
+          : `Stack ${quotedOrDescribed(stackName, 'stack name')} is nested under ` +
+            `${quotedOrDescribed(root, 'stack name')}, which was last deployed with ` +
+            `terminationProtection: true, so it cannot be destroyed.`) +
+          (command === 'cdkd destroy'
+            ? ` Redeploy it with the protection off, or pass --remove-protection to destroy it anyway;`
+            : ` To destroy it anyway, pass --remove-protection;`) +
+          ` the flag also turns off the deletion protection of each resource it deletes.` +
+          withheldTargetClause(bypass, 'stack', command, "This stack's name") +
           (account?.clause ? ` ${account.clause.trimEnd()}` : '') +
           `\nDestroy it with: ${bypass.command}`,
         'STACK_TERMINATION_PROTECTION',

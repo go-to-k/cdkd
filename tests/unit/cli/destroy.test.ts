@@ -268,7 +268,10 @@ describe('cdkd destroy: terminationProtection guard', () => {
       await expect(runDestroy(['Protected', '--yes'])).rejects.toThrow();
       expect(exitSpy).toHaveBeenCalledWith(2);
       expect(mockRunDestroyForStack).not.toHaveBeenCalled();
-      expect(errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n')).toMatch(/redeploy/);
+      const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+      expect(messages).toContain('was last deployed with terminationProtection: true');
+      expect(messages).toContain('Redeploy it with the protection off');
+      expect(messages).toContain('cdkd destroy Protected --remove-protection');
     });
 
     it('--remove-protection bypasses it with a warning', async () => {

@@ -121,6 +121,7 @@ import {
   ProvisioningError,
   ResourceTimeoutError,
   StackHasActiveImportsError,
+  StackTerminationProtectionError,
   type ActiveImportConsumer,
 } from '../../utils/error-handler.js';
 import type { ExportIndexStore } from '../../state/export-index-store.js';
@@ -247,6 +248,12 @@ export interface DestroyRunnerContext {
    * Resource types without a protection field treat this as a no-op.
    */
   removeProtection?: boolean;
+  /**
+   * The command this destroy runs for, when it is `cdkd state destroy`
+   * (go-to-k/cdkd#5238): names its remedy in the under-lock termination-
+   * protection refusal.
+   */
+  stateDestroy?: boolean;
 
   /**
    * `--skip-final-snapshot` (issues #1352 / #1353) — delete
@@ -1674,6 +1681,15 @@ async function destroyStackInRegion(
           'confirmation), so nothing was deleted. Re-run cdkd destroy.',
         'STATE_CHANGED'
       );
+    }
+    // go-to-k/cdkd#5238: a deploy turning termination protection on while
+    // the prompt waited saves the record with the same rows, so the check
+    // above passes it; the protection the callers checked before the prompt
+    // is checked again here.
+    if (current.state.terminationProtection === true && ctx.removeProtection !== true) {
+      throw new StackTerminationProtectionError(stackName, undefined, undefined, {
+        command: ctx.stateDestroy === true ? 'cdkd state destroy' : 'cdkd destroy',
+      });
     }
     refusePendingMovesOut(current.state, stackName, regionForState, 'cdkd destroy');
     refuseRefactorMarker(marker, stackName, regionForState, 'cdkd destroy');

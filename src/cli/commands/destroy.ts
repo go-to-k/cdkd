@@ -1075,10 +1075,15 @@ async function destroyCommand(
             safeMsg`Stack ${stackName} was deployed with terminationProtection: true — bypassing because --remove-protection set`
           );
         } else {
-          const err = new StackTerminationProtectionError(stackName, undefined, {
-            args: stateCommandAccount.args,
-            clause: withheldAccountClause(accountRecovery, 'the command below prints'),
-          });
+          const err = new StackTerminationProtectionError(
+            stackName,
+            undefined,
+            {
+              args: stateCommandAccount.args,
+              clause: withheldAccountClause(accountRecovery, 'the command below prints'),
+            },
+            { command: 'cdkd destroy' }
+          );
           logger.error(safeMsg`  ✗ ${asIsMessage(err.message)}`);
           totalErrors++;
           continue;
