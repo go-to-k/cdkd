@@ -952,6 +952,9 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       // one type; no module state). The provider hands it the context's masker
       // and name pairs, never the minted value.
       '../masked-retry-logger.js',
+      // go-to-k/cdkd#2319: the import-free LEAF `markNotGone` module (a
+      // registered symbol, no module state), stamped on the delete wrap.
+      '../not-gone.js',
       '../region-check.js',
       '../resource-name.js',
       // go-to-k/cdkd#3994: the stateless Tags reader (no module state; it

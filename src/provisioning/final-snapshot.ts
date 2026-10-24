@@ -18,6 +18,7 @@ import {
 import { CdkdError } from '../utils/error-handler.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { markRedactedCause } from '../deployment/retryable-errors.js';
+import { safeMsg } from '../utils/display-safe.js';
 import { logicalIdShown, resourceTypeShown } from './composite-id.js';
 
 /** Minimal logger surface used here (avoids coupling to the full Logger type). */
@@ -287,7 +288,7 @@ function errMsg(error: unknown): string {
 function failureSentence(logger: InfoLogger, head: string, error: unknown): string {
   const failure = describeAwsFailure(error);
   if (!failure.redacted) return `${failure.detail}.`;
-  logger.debug(`${head}: ${failure.detail}`);
+  logger.debug(safeMsg`${head}: ${failure.detail}`);
   return failure.summary;
 }
 
