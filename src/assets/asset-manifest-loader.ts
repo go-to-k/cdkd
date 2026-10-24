@@ -11,6 +11,7 @@ import {
 } from '../utils/assembly-path.js';
 import { warnAbsoluteAssetPath, warnWholeAssemblyAsSource } from './absolute-asset-path-warning.js';
 import { getLogger } from '../utils/logger.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 
 /**
  * The two values that decide what {@link resolveFileAssetSourcePath} does, as
@@ -265,7 +266,7 @@ export class AssetManifestLoader {
       }
 
       throw new Error(
-        `Failed to load asset manifest from ${manifestPath}: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to load asset manifest from ${manifestPath}: ${describeAwsFailure(error).detail}`
       );
     }
   }

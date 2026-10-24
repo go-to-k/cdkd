@@ -1,5 +1,6 @@
 import { displayIdent, displaySafe, STACK_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { SynthesisError } from '../utils/error-handler.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 
 /**
  * A CDK Stage (`cdk:cloud-assembly` artifact) whose own `manifest.json` could
@@ -91,7 +92,7 @@ const STAGE_SCOPED_MARKER = Symbol.for('cdkd.stageScopedError');
 export function stageScopedError(stagePath: string, error: unknown): unknown {
   if (error instanceof Error && STAGE_SCOPED_MARKER in error) return error;
 
-  const message = displaySafe(error instanceof Error ? error.message : String(error));
+  const message = displaySafe(describeAwsFailure(error).detail);
   const scoped = new SynthesisError(`Stage ${renderStagePath(stagePath)}: ${message}`);
   // Keep the ORIGIN's frames under this error's own header line. Without it
   // `handleError`'s `--verbose` stack trace points at this re-raise rather

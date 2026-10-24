@@ -51,6 +51,7 @@ import {
   stringify as yamlStringify,
 } from 'yaml';
 import type { CollectionTag, ScalarTag } from 'yaml';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 
 export type CfnTemplate = Record<string, unknown>;
 export type TemplateFormat = 'json' | 'yaml';
@@ -215,19 +216,13 @@ export function parseCfnTemplate(text: string): CfnTemplate {
     try {
       parsed = JSON.parse(body);
     } catch (err) {
-      throw new Error(
-        `Template is not valid JSON. ` +
-          `Cause: ${err instanceof Error ? err.message : String(err)}`
-      );
+      throw new Error(`Template is not valid JSON. Cause: ${describeAwsFailure(err).detail}`);
     }
   } else {
     try {
       parsed = yamlParse(body, { customTags: CUSTOM_TAGS });
     } catch (err) {
-      throw new Error(
-        `Template is not valid YAML. ` +
-          `Cause: ${err instanceof Error ? err.message : String(err)}`
-      );
+      throw new Error(`Template is not valid YAML. Cause: ${describeAwsFailure(err).detail}`);
     }
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {

@@ -454,7 +454,7 @@ async function expandMacrosAttempt(
       // content, the same class as the `StatusReason` below. `displayAwsMessage`
       // sanitizes AND bounds it; the retry verdict is taken from the RAW text,
       // because a hook rejection can surface here too.
-      const rawMessage = err instanceof Error ? err.message : String(err);
+      const rawMessage = describeAwsFailure(err).detail;
       throw withEarlyValidationVerdict(
         new MacroExpansionError(
           `CloudFormation rejected the macro-expansion changeset: ` +
@@ -810,7 +810,7 @@ function parseTemplateBody(body: unknown): CloudFormationTemplate {
         `CloudFormation returned a non-JSON Processed-stage template body. ` +
           `cdkd's macro-expansion path only supports JSON-shaped synth ` +
           `templates (CDK apps emit JSON by default). Cause: ` +
-          `${displayAwsMessage(err instanceof Error ? err.message : String(err))}`,
+          `${displayAwsMessage(describeAwsFailure(err).detail)}`,
         err instanceof Error ? err : undefined
       );
     }

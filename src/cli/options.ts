@@ -4,6 +4,7 @@ import {
   DEFAULT_RESOURCE_TIMEOUT_MS,
 } from '../deployment/deploy-engine.js';
 import { getLogger } from '../utils/logger.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { isIamRoleArn } from '../utils/role-arn.js';
 import { TIMEOUT_FLAG_RESOURCE_TYPE } from '../utils/resource-type-shape.js';
@@ -325,7 +326,7 @@ function parseResourceTimeoutToken(flagName: string) {
     try {
       ms = parseDuration(durationPart);
     } catch (err) {
-      const inner = err instanceof Error ? err.message : String(err);
+      const inner = describeAwsFailure(err).detail;
       throw new Error(`Invalid ${flagName} value "${raw}": ${inner}`);
     }
 

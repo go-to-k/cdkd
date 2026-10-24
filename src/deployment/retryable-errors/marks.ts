@@ -1,4 +1,5 @@
 import { RETRYABLE_HTTP_STATUS_CODES } from './patterns.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
  * AWS SDK v3 canonical throttling error names. Mirrors
@@ -132,7 +133,7 @@ export function wrapMaskedAwsError<E extends Error>(
   error: unknown,
   build: (maskedText: string) => E
 ): E {
-  const raw = error instanceof Error ? error.message : String(error);
+  const raw = describeAwsFailure(error).detail;
   const masked = mask(raw);
   const wrapped = build(masked);
   return masked === raw ? wrapped : markRedactedCause(wrapped);
