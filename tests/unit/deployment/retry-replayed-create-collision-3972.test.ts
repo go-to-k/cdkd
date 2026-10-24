@@ -58,6 +58,7 @@ import { KinesisStreamProvider } from '../../../src/provisioning/providers/kines
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 const LOGICAL_ID = 'Stream';
 const TYPE = 'AWS::Kinesis::Stream';
@@ -71,6 +72,11 @@ const PROPERTIES = {
 };
 /** Kinesis's own wording for a stream name that is taken. */
 const COLLISION = 'Stream stream under account 123456789012 already exists.';
+/**
+ * What the Kinesis wrap relays of {@link COLLISION} (go-to-k/cdkd#2319): the
+ * class, the --verbose pointer and the restated collision, never AWS's text.
+ */
+const RELAYED = `ResourceInUseException. ${VERBOSE_POINTER} AWS reports that it already exists.`;
 const THROTTLE = 'Rate exceeded for stream stream under account 123456789012.';
 
 type Sendable = { send: (command: unknown) => Promise<unknown> };
@@ -211,9 +217,10 @@ describe('a replayed create colliding with its own earlier attempt (#3972)', () 
     expect(sent.filter((c) => c === 'IncreaseStreamRetentionPeriodCommand')).toHaveLength(1);
     expect(error).toBeInstanceOf(Error);
     // What the wrapper throws is the replay's, and it still RELAYS AWS's
-    // "already exists": the message is unchanged, so only the carried mark
-    // can keep the verdict false.
-    expect((error as Error).message).toContain(COLLISION);
+    // "already exists" (restated, go-to-k/cdkd#2319): the message reads as a
+    // collision, so only the carried mark can keep the verdict false.
+    expect((error as Error).message).toContain(RELAYED);
+    expect((error as Error).message).not.toContain('123456789012');
     expect(isNameCollisionError((error as Error).message)).toBe(true);
     expect(isNameCollisionErrorFrom(error, LOGICAL_ID)).toBe(false);
   });
@@ -247,7 +254,7 @@ describe('a replayed create colliding with its own earlier attempt (#3972)', () 
     // Outer attempt 1 = inner (ok+throttle, collide); outer attempts 2 and 3 =
     // one colliding CreateStream each.
     expect(sent.filter((c) => c === 'CreateStreamCommand')).toHaveLength(4);
-    expect((error as Error).message).toContain(COLLISION);
+    expect((error as Error).message).toContain(RELAYED);
     expect(isNameCollisionErrorFrom(error, LOGICAL_ID)).toBe(false);
   });
 
@@ -456,7 +463,7 @@ describe('the rollback reverse-replacement arm does not delete the live new stre
       .mock.calls.map((c) => String(c[0]))
       .filter((l) => l.includes('Rollback failed for'));
     expect(failed).toHaveLength(1);
-    expect(failed[0]).toContain(COLLISION);
+    expect(failed[0]).toContain(RELAYED);
     expect(failed[0]).not.toContain('Cannot reverse the replacement');
   }, 15_000);
 });

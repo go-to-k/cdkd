@@ -16,6 +16,7 @@ import { reserveStackCreateToken } from './create-token-ledger.js';
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../types/resource.js';
 import type {
   ResourceProvider,
+  CreateContext,
   UpdateContext,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -23,6 +24,12 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 
 /**
  * SDK Provider for AWS::CloudFront::CloudFrontOriginAccessIdentity
@@ -53,7 +60,8 @@ export class CloudFrontOAIProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CloudFront OAI ${logicalId}`);
 
@@ -112,12 +120,17 @@ export class CloudFrontOAIProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create CloudFront OAI ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create CloudFront OAI ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -228,12 +241,17 @@ export class CloudFrontOAIProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update CloudFront OAI ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update CloudFront OAI ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -299,14 +317,51 @@ export class CloudFrontOAIProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete CloudFront OAI ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete CloudFront OAI ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
+  }
+
+  /**
+   * The failure wrap the create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" (`CloudFrontOriginAccessIdentityAlreadyExists`, a reused
+   * `CallerReference` with another config) is restated
+   * ({@link relayedNameCollision}). A cdkd-authored or transport error keeps
+   * its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like
+   * an AWS one, unstamped (it has no chain). The delete catch tests not-found
+   * before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   /**

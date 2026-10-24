@@ -33,7 +33,12 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { maskerOrIdentity } from '../masked-retry-logger.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import {
   hasErrorName,
   nameHeldBefore,
@@ -391,6 +396,13 @@ export class EventBridgeRuleProvider implements ResourceProvider {
             );
           } catch (cleanupError) {
             leftLiveArn = ruleArn;
+            // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a
+            // denied DeleteRule names the caller's assumed-role ARN.
+            const cleanupFailure = describeAwsFailure(cleanupError);
+            const cleanupHead = `Failed to clean up partially-created EventBridge rule ${logicalId} (${ruleName}): `;
+            if (cleanupFailure.redacted) {
+              this.logger.debug(mask(`${cleanupHead}${cleanupFailure.detail}`));
+            }
             this.logger.warn(
               mask(
                 // When RemoveTargets already succeeded, the listing is `[]` and the
@@ -398,7 +410,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
                 // the delete-rule after it runs; the message says so up front, so
                 // that error line does not read as the cleanup failing. Only when
                 // the command is PRINTED: a withheld one has no steps to describe.
-                `Failed to clean up partially-created EventBridge rule ${logicalId} (${ruleName}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy` +
+                `${cleanupHead}${cleanupFailure.redacted ? `${cleanupFailure.summary} ` : `${cleanupFailure.detail}. `}Manual deletion may be required before the next deploy` +
                   (command.text === undefined
                     ? `: ${command.render()}`
                     : `. If the rule has no targets left, the remove-targets step reports an empty id list; that error is harmless and the delete-rule step still runs: ${command.render()}`)
@@ -419,12 +431,17 @@ export class EventBridgeRuleProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      const thrown = new ProvisioningError(
-        `Failed to create EventBridge rule ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        ruleName,
-        cause
+      const thrown = this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create EventBridge rule ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            ruleName,
+            cause
+          )
       );
       // Only a rule the name was free for: a held one is not ours to delete.
       if (leftLiveArn) markCreatedBeforeFailure(thrown, logicalId, resourceType, leftLiveArn);
@@ -578,12 +595,17 @@ export class EventBridgeRuleProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update EventBridge rule ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update EventBridge rule ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -670,12 +692,17 @@ export class EventBridgeRuleProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        `Failed to delete EventBridge rule ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const failure = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete EventBridge rule ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
       throw stripped ? markDeleteStarted(failure) : failure;
     }
@@ -937,6 +964,37 @@ export class EventBridgeRuleProvider implements ResourceProvider {
     // DescribeStackResources or the template's physical-name property; a rule
     // reaching here needs an explicit `--resource` override.
     return null;
+  }
+
+  /**
+   * The failure wrap the create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}); one from the targets
+   * step keeps its auxiliary mark on the chain, so it is still not read as the
+   * rule's own name collision. A cdkd-authored or transport error keeps its
+   * text, masked, stamped only when the mask changed it (`wrapMaskedAwsError`,
+   * issue #4244); a non-`Error` throw is withheld like an AWS one, unstamped
+   * (it has no chain). The delete catch tests not-found before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   /**

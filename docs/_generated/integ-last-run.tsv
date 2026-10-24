@@ -316,7 +316,7 @@ replacement-rename-onto-holder	2026-10-20T06:29:59Z	PASS	626	verify.sh	deploy+de
 require-approval-broadening	2026-10-12T18:28:19Z	PASS	100	verify.sh	rc ok, orph clean (own security classifier, #4845)
 retain-orphan-redeploy	2026-10-20T09:30:01Z	PASS	298	verify.sh	#5064 head re-run, clean
 retain-orphan-secret	2026-10-20T06:27:45Z	PASS	100	verify.sh	deploy+destroy clean, 0 orphans
-rollback-command	2026-10-20T10:20:58Z	PASS	974	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
+rollback-command	2026-10-24T04:03:09Z	PASS	927	verify.sh	rc ok, orph clean
 rollback-cross-region-secret	2026-10-18T04:35:14Z	PASS	372	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean; first attempt hit the known pnpm/mise-shim env issue (5s rc=1), passed clean on retry with a scratch PATH shim
 rollback-deletion-policy-snapshot	2026-10-17T10:48:50Z	PASS	145	verify.sh	rc ok, orph clean (rollback refactor #5027)
 rollback-explicit-name-rewrite	2026-10-17T10:48:50Z	PASS	216	verify.sh	rc ok, orph clean (rollback refactor #5027)

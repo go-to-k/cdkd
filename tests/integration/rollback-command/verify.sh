@@ -120,7 +120,9 @@
 #         stream as a proven orphan.
 #     D2. A role scoped to this destroy, which may not call kinesis:DeleteStream.
 #     D3. `cdkd destroy` as that role fails, keeps the stream and its entry, and its
-#         warning names `cdkd rollback <stack> --drop-failed OrphanStream`.
+#         warning names `cdkd rollback <stack> --drop-failed OrphanStream`. The
+#         persisted ROLLBACK_RESOURCE_FAILED event names the denial by its class,
+#         never AWS's text (account id, role ARN; go-to-k/cdkd#2319).
 #     D4. `--drop-failed` of an unknown id, and one without a terminal or
 #         --force, are refused and leave the journal byte-identical.
 #     D5. `cdkd rollback --drop-failed OrphanStream --force` (the operator's own
@@ -374,6 +376,11 @@ aggressive_cleanup() {
   )
 }
 
+# Every cdkd run's log goes under LOG_DIR, which `cleanup` and the success path
+# remove: a log can hold AWS's text, and PHASE D's --verbose destroy names the
+# deny role's ARN on a debug line.
+LOG_DIR="$(mktemp -d)"
+
 cleanup() {
   rc=$?
   if [ "${rc}" -ne 0 ]; then
@@ -393,6 +400,7 @@ cleanup() {
   echo "[verify] cleanup: remove sidecars for both stacks"
   aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
   aws s3 rm "s3://${STATE_BUCKET}/cdkd/${INIT_STACK}/" --recursive >/dev/null 2>&1 || true
+  rm -rf "${LOG_DIR}"
   exit "${rc}"
 }
 trap cleanup EXIT
@@ -428,10 +436,10 @@ echo "[verify] step 2 ok: v1 deployed, Marker=v1, state has 3 resources"
 echo "[verify] step 3: deploy ${STACK} v2 (Marker=v2 + Extra + INJECT_FAIL) --no-rollback (expect FAILURE)"
 set +e
 MARKER_VALUE=v2 WITH_EXTRA=true INJECT_FAIL=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-v2.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${LOG_DIR}/rollback-cmd-v2.log" 2>&1
 DEPLOY_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-v2.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-v2.log" || true
 if [ "${DEPLOY_RC}" -eq 0 ]; then
   echo "[verify] FAIL: v2 --no-rollback deploy unexpectedly SUCCEEDED (rc=0)"
   exit 1
@@ -633,10 +641,10 @@ echo "[verify] step R1: deploy ${STACK} with REPLACE_SUFFIX=b + INJECT_FAIL --no
 # data-loss confirmation flag.
 set +e
 REPLACE_SUFFIX=b INJECT_FAIL=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback --force-stateful-recreation > /tmp/rollback-cmd-replace.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback --force-stateful-recreation > "${LOG_DIR}/rollback-cmd-replace.log" 2>&1
 REPLACE_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-replace.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-replace.log" || true
 if [ "${REPLACE_RC}" -eq 0 ]; then
   echo "[verify] FAIL: REPLACE_SUFFIX=b --no-rollback deploy unexpectedly SUCCEEDED"
   exit 1
@@ -659,15 +667,15 @@ echo "[verify] step R2: cdkd rollback ${STACK} --force (expect reverse-replaceme
 # code — a bare invocation under `set -e` would abort before the sed echo,
 # losing the failing rollback's output from the harness log (issue #1220).
 set +e
-${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-replace-rb.log 2>&1
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > "${LOG_DIR}/rollback-cmd-replace-rb.log" 2>&1
 R2_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-replace-rb.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-replace-rb.log" || true
 if [ "${R2_RC}" -ne 0 ]; then
   echo "[verify] FAIL: reverse-replacement rollback exited ${R2_RC} (output above)"
   exit 1
 fi
-if ! grep -qi 'reverse-replace\|Reversing replacement' /tmp/rollback-cmd-replace-rb.log; then
+if ! grep -qi 'reverse-replace\|Reversing replacement' "${LOG_DIR}/rollback-cmd-replace-rb.log"; then
   echo "[verify] FAIL: rollback output does not mention the reverse-replacement"
   exit 1
 fi
@@ -694,10 +702,10 @@ echo "[verify] step R2 ok: replacement reversed (a re-created, b deleted), journ
 echo "[verify] step F1: deploy ${STACK} with MARKER_VALUE=vF + INJECT_UPDATE_FAIL --no-rollback (expect FAILURE on the RevertQueue UPDATE)"
 set +e
 MARKER_VALUE=vF INJECT_UPDATE_FAIL=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-updfail.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${LOG_DIR}/rollback-cmd-updfail.log" 2>&1
 UPDFAIL_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-updfail.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-updfail.log" || true
 if [ "${UPDFAIL_RC}" -eq 0 ]; then
   echo "[verify] FAIL: INJECT_UPDATE_FAIL --no-rollback deploy unexpectedly SUCCEEDED"
   exit 1
@@ -726,15 +734,15 @@ echo "[verify] step F1 ok: deploy failed on the UPDATE, journal carries the fail
 echo "[verify] step F2: cdkd rollback ${STACK} --force --revert-failed (expect exit 0)"
 # Same echo-before-assert pattern as step R2 (issue #1220).
 set +e
-${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force --revert-failed > /tmp/rollback-cmd-updfail-rb.log 2>&1
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force --revert-failed > "${LOG_DIR}/rollback-cmd-updfail-rb.log" 2>&1
 F2_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-updfail-rb.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-updfail-rb.log" || true
 if [ "${F2_RC}" -ne 0 ]; then
   echo "[verify] FAIL: --revert-failed rollback exited ${F2_RC} (output above)"
   exit 1
 fi
-if ! grep -qi 'force-reverting failed UPDATE' /tmp/rollback-cmd-updfail-rb.log; then
+if ! grep -qi 'force-reverting failed UPDATE' "${LOG_DIR}/rollback-cmd-updfail-rb.log"; then
   echo "[verify] FAIL: rollback output does not mention the failed-op force-revert"
   exit 1
 fi
@@ -768,10 +776,10 @@ if ! delete_orphan_stream; then
 fi
 set +e
 INJECT_ORPHAN_CREATE=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${LOG_DIR}/rollback-cmd-orphan.log" 2>&1
 ORPHAN_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan.log" || true
 if [ "${ORPHAN_RC}" -eq 0 ]; then
   echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
   exit 1
@@ -805,15 +813,15 @@ echo "[verify] step O1 ok: stream created then the CREATE failed; journal carrie
 
 echo "[verify] step O2: cdkd rollback ${STACK} --force --revert-failed (expect exit 0, the stream deleted)"
 set +e
-${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force --revert-failed > /tmp/rollback-cmd-orphan-rb.log 2>&1
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force --revert-failed > "${LOG_DIR}/rollback-cmd-orphan-rb.log" 2>&1
 O2_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-rb.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-rb.log" || true
 if [ "${O2_RC}" -ne 0 ]; then
   echo "[verify] FAIL: --revert-failed rollback of the orphaned create exited ${O2_RC} (output above)"
   exit 1
 fi
-if ! grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-rb.log; then
+if ! grep -q 'deleting partially-created OrphanStream' "${LOG_DIR}/rollback-cmd-orphan-rb.log"; then
   echo "[verify] FAIL: rollback output does not mention deleting the partially-created OrphanStream"
   exit 1
 fi
@@ -835,17 +843,17 @@ echo "[verify] step O2 ok: the orphaned stream was deleted, journal gone"
 echo "[verify] step O3: deploy ${STACK} with INJECT_ORPHAN_CREATE, automatic rollback (expect FAILURE, the stream deleted)"
 set +e
 INJECT_ORPHAN_CREATE=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > /tmp/rollback-cmd-orphan-auto.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > "${LOG_DIR}/rollback-cmd-orphan-auto.log" 2>&1
 O3_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-auto.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-auto.log" || true
 if [ "${O3_RC}" -eq 0 ]; then
   echo "[verify] FAIL: INJECT_ORPHAN_CREATE deploy unexpectedly SUCCEEDED"
   exit 1
 fi
 # PREMISE: the CREATE reached CreateStream. The rollback's delete line names
 # the stream only when the journaled op carried its proven id.
-if ! grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-auto.log; then
+if ! grep -q 'deleting partially-created OrphanStream' "${LOG_DIR}/rollback-cmd-orphan-auto.log"; then
   echo "[verify] FAIL: the automatic rollback did not delete the partially-created OrphanStream (output above)"
   echo "         (before go-to-k/cdkd#4584 it left the stream and only printed the --revert-failed command)"
   exit 1
@@ -866,15 +874,15 @@ echo "[verify] step O3 ok: the automatic rollback deleted the stream, journal go
 echo "[verify] step O4: the same with ORPHAN_RETAIN=true (expect FAILURE, the stream KEPT)"
 set +e
 INJECT_ORPHAN_CREATE=true ORPHAN_RETAIN=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > /tmp/rollback-cmd-orphan-retain.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > "${LOG_DIR}/rollback-cmd-orphan-retain.log" 2>&1
 O4_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-retain.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-retain.log" || true
 if [ "${O4_RC}" -eq 0 ]; then
   echo "[verify] FAIL: INJECT_ORPHAN_CREATE ORPHAN_RETAIN deploy unexpectedly SUCCEEDED"
   exit 1
 fi
-if ! grep -q 'leaving partially-created OrphanStream' /tmp/rollback-cmd-orphan-retain.log; then
+if ! grep -q 'leaving partially-created OrphanStream' "${LOG_DIR}/rollback-cmd-orphan-retain.log"; then
   echo "[verify] FAIL: the automatic rollback did not report keeping the Retain OrphanStream (output above)"
   exit 1
 fi
@@ -902,10 +910,10 @@ echo "[verify] step O4 ok: the Retain stream was kept (then removed by the fixtu
 echo "[verify] step O5: deploy with INJECT_ORPHAN_CREATE --no-rollback, then a PLAIN cdkd rollback (the stream deleted)"
 set +e
 INJECT_ORPHAN_CREATE=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan-plain.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${LOG_DIR}/rollback-cmd-orphan-plain.log" 2>&1
 O5_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-plain.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-plain.log" || true
 if [ "${O5_RC}" -eq 0 ]; then
   echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
   exit 1
@@ -920,15 +928,15 @@ assert_orphan_stream_journaled "after the --no-rollback deploy of step O5"
 # NotFound as done, the checks below fail.
 set +e
 AWS_REGION="${O5_AMBIENT_REGION}" AWS_DEFAULT_REGION="${O5_AMBIENT_REGION}" \
-  ${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-orphan-plain-rb.log 2>&1
+  ${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > "${LOG_DIR}/rollback-cmd-orphan-plain-rb.log" 2>&1
 O5_RB_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-plain-rb.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-plain-rb.log" || true
 if [ "${O5_RB_RC}" -ne 0 ]; then
   echo "[verify] FAIL: the plain rollback of the orphaned create exited ${O5_RB_RC} (output above)"
   exit 1
 fi
-if ! grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-plain-rb.log; then
+if ! grep -q 'deleting partially-created OrphanStream' "${LOG_DIR}/rollback-cmd-orphan-plain-rb.log"; then
   echo "[verify] FAIL: the plain rollback did not delete the partially-created OrphanStream (output above)"
   echo "         (before go-to-k/cdkd#4584 it popped the entry and left the stream)"
   exit 1
@@ -948,10 +956,10 @@ echo "[verify] step O5 ok: the plain rollback deleted the stream, journal gone"
 echo "[verify] step O6: deploy with INJECT_ORPHAN_CREATE --no-rollback, then a deploy WITHOUT it (succeeds, the stream deleted)"
 set +e
 INJECT_ORPHAN_CREATE=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan-success.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${LOG_DIR}/rollback-cmd-orphan-success.log" 2>&1
 O6_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-success.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-success.log" || true
 if [ "${O6_RC}" -eq 0 ]; then
   echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
   exit 1
@@ -961,15 +969,15 @@ set +e
 # A CHANGES deploy (Marker's value moves), so the settle runs on the path that
 # also saves new state; step O7's runs on the no-change path.
 MARKER_VALUE=vO6 \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > /tmp/rollback-cmd-orphan-success-2.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > "${LOG_DIR}/rollback-cmd-orphan-success-2.log" 2>&1
 O6_DEPLOY_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-success-2.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-success-2.log" || true
 if [ "${O6_DEPLOY_RC}" -ne 0 ]; then
   echo "[verify] FAIL: the deploy without INJECT_ORPHAN_CREATE exited ${O6_DEPLOY_RC} (expected 0 -- output above)"
   exit 1
 fi
-if ! grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-success-2.log; then
+if ! grep -q 'deleting partially-created OrphanStream' "${LOG_DIR}/rollback-cmd-orphan-success-2.log"; then
   echo "[verify] FAIL: the successful deploy did not delete the partially-created OrphanStream (output above)"
   echo "         (before go-to-k/cdkd#4600 it dropped the journal and left the stream)"
   exit 1
@@ -996,25 +1004,25 @@ echo "[verify] step O6 ok: the successful (changes) deploy deleted the stream, j
 echo "[verify] step O7: the same with ORPHAN_RETAIN=true (the successful deploy KEEPS the stream)"
 set +e
 INJECT_ORPHAN_CREATE=true ORPHAN_RETAIN=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan-success-retain.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${LOG_DIR}/rollback-cmd-orphan-success-retain.log" 2>&1
 O7_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-success-retain.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-success-retain.log" || true
 if [ "${O7_RC}" -eq 0 ]; then
   echo "[verify] FAIL: INJECT_ORPHAN_CREATE ORPHAN_RETAIN --no-rollback deploy unexpectedly SUCCEEDED"
   exit 1
 fi
 assert_orphan_stream_journaled "after the --no-rollback deploy of step O7"
 set +e
-${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > /tmp/rollback-cmd-orphan-success-retain-2.log 2>&1
+${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > "${LOG_DIR}/rollback-cmd-orphan-success-retain-2.log" 2>&1
 O7_DEPLOY_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-success-retain-2.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-success-retain-2.log" || true
 if [ "${O7_DEPLOY_RC}" -ne 0 ]; then
   echo "[verify] FAIL: the deploy without INJECT_ORPHAN_CREATE exited ${O7_DEPLOY_RC} (expected 0 -- output above)"
   exit 1
 fi
-if ! grep -q 'leaving partially-created OrphanStream' /tmp/rollback-cmd-orphan-success-retain-2.log; then
+if ! grep -q 'leaving partially-created OrphanStream' "${LOG_DIR}/rollback-cmd-orphan-success-retain-2.log"; then
   echo "[verify] FAIL: the successful deploy did not report keeping the Retain OrphanStream (output above)"
   exit 1
 fi
@@ -1050,10 +1058,10 @@ if ! delete_orphan_stream "${FIX_FORWARD_STREAM_NAME}"; then
 fi
 set +e
 INJECT_ORPHAN_CREATE=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan-ff.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${LOG_DIR}/rollback-cmd-orphan-ff.log" 2>&1
 O8_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-ff.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-ff.log" || true
 if [ "${O8_RC}" -eq 0 ]; then
   echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
   exit 1
@@ -1061,20 +1069,20 @@ fi
 assert_orphan_stream_journaled "after the --no-rollback deploy of step O8"
 set +e
 INJECT_ORPHAN_CREATE=true ORPHAN_FIX_FORWARD=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > /tmp/rollback-cmd-orphan-ff-2.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > "${LOG_DIR}/rollback-cmd-orphan-ff-2.log" 2>&1
 O8_DEPLOY_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-ff-2.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-ff-2.log" || true
 if [ "${O8_DEPLOY_RC}" -ne 0 ]; then
   echo "[verify] FAIL: the fix-forward deploy exited ${O8_DEPLOY_RC} (expected 0: the earlier stream is proven another one and deleted -- output above)"
   echo "         (before go-to-k/cdkd#4606 it exited 2 and left the earlier stream)"
   exit 1
 fi
-if ! grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-ff-2.log; then
+if ! grep -q 'deleting partially-created OrphanStream' "${LOG_DIR}/rollback-cmd-orphan-ff-2.log"; then
   echo "[verify] FAIL: the fix-forward deploy did not delete the earlier attempt's OrphanStream (output above)"
   exit 1
 fi
-if grep -q 'Skipping failed CREATE of OrphanStream' /tmp/rollback-cmd-orphan-ff-2.log; then
+if grep -q 'Skipping failed CREATE of OrphanStream' "${LOG_DIR}/rollback-cmd-orphan-ff-2.log"; then
   echo "[verify] FAIL: the fix-forward deploy still warned about the earlier OrphanStream instead of deleting it (output above)"
   exit 1
 fi
@@ -1115,10 +1123,10 @@ echo "[verify] step O8 ok: the fix-forward deleted the earlier stream, kept its 
 echo "[verify] step O9: --no-rollback, delete the stream by hand, re-create its name, then a successful deploy (the new stream KEPT)"
 set +e
 INJECT_ORPHAN_CREATE=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan-reuse.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${LOG_DIR}/rollback-cmd-orphan-reuse.log" 2>&1
 O9_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-reuse.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-reuse.log" || true
 if [ "${O9_RC}" -eq 0 ]; then
   echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
   exit 1
@@ -1144,10 +1152,10 @@ aws kinesis wait stream-exists --stream-name "${ORPHAN_STREAM_NAME}" --region "$
 O9_CREATED="$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" \
   --query 'StreamDescriptionSummary.StreamCreationTimestamp' --output text)"
 set +e
-${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > /tmp/rollback-cmd-orphan-reuse-2.log 2>&1
+${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > "${LOG_DIR}/rollback-cmd-orphan-reuse-2.log" 2>&1
 O9_DEPLOY_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-reuse-2.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-reuse-2.log" || true
 if [ "${O9_DEPLOY_RC}" -ne 2 ]; then
   echo "[verify] FAIL: the deploy after the name reuse exited ${O9_DEPLOY_RC} (expected 2: the stream under the name is not the one the failed CREATE made -- output above)"
   exit 1
@@ -1156,18 +1164,18 @@ fi
 # from the journaled one. The "nothing proves" line (no token, no read) would
 # pass the exit-2 and kept-stream checks too without proving the comparison.
 if ! grep -q 'OrphanStream.*is not deleted: the resource now under its physical id is another one' \
-  /tmp/rollback-cmd-orphan-reuse-2.log; then
+  "${LOG_DIR}/rollback-cmd-orphan-reuse-2.log"; then
   echo "[verify] FAIL: the deploy did not report that the stream under OrphanStream's name has another identity (output above)"
-  if grep -q 'OrphanStream.*nothing proves the resource now under its physical id' /tmp/rollback-cmd-orphan-reuse-2.log; then
+  if grep -q 'OrphanStream.*nothing proves the resource now under its physical id' "${LOG_DIR}/rollback-cmd-orphan-reuse-2.log"; then
     echo "         (it kept the stream without reading a live identity to compare)"
   fi
   exit 1
 fi
-if ! grep -q 'Skipping failed CREATE of OrphanStream' /tmp/rollback-cmd-orphan-reuse-2.log; then
+if ! grep -q 'Skipping failed CREATE of OrphanStream' "${LOG_DIR}/rollback-cmd-orphan-reuse-2.log"; then
   echo "[verify] FAIL: the deploy did not name the kept OrphanStream for manual attention (output above)"
   exit 1
 fi
-if grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-reuse-2.log; then
+if grep -q 'deleting partially-created OrphanStream' "${LOG_DIR}/rollback-cmd-orphan-reuse-2.log"; then
   echo "[verify] FAIL: the deploy deleted the stream that reused OrphanStream's name (output above)"
   exit 1
 fi
@@ -1207,10 +1215,10 @@ echo "[verify] step O9 ok: the stream that reused the name was kept and warned a
 echo "[verify] step O10: --no-rollback, delete the stream by hand, re-create its name, then a PLAIN cdkd rollback (the new stream KEPT)"
 set +e
 INJECT_ORPHAN_CREATE=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan-reuse-rb.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${LOG_DIR}/rollback-cmd-orphan-reuse-rb.log" 2>&1
 O10_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-reuse-rb.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-reuse-rb.log" || true
 if [ "${O10_RC}" -eq 0 ]; then
   echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
   exit 1
@@ -1225,10 +1233,10 @@ aws kinesis wait stream-exists --stream-name "${ORPHAN_STREAM_NAME}" --region "$
 O10_CREATED="$(aws kinesis describe-stream-summary --stream-name "${ORPHAN_STREAM_NAME}" --region "${REGION}" \
   --query 'StreamDescriptionSummary.StreamCreationTimestamp' --output text)"
 set +e
-${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-orphan-reuse-rb-2.log 2>&1
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > "${LOG_DIR}/rollback-cmd-orphan-reuse-rb-2.log" 2>&1
 O10_RB_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-reuse-rb-2.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-reuse-rb-2.log" || true
 if [ "${O10_RB_RC}" -ne 2 ]; then
   echo "[verify] FAIL: the plain rollback after the name reuse exited ${O10_RB_RC} (expected 2: the stream under the name is not the one the failed CREATE made -- output above)"
   exit 1
@@ -1237,14 +1245,14 @@ fi
 # differs; the "nothing proves" one (no token, or no answer) would pass the
 # exit-2 and kept-stream checks without proving the comparison.
 if ! grep -q 'Skipping failed CREATE of OrphanStream.*the resource now under that id is another one' \
-  /tmp/rollback-cmd-orphan-reuse-rb-2.log; then
+  "${LOG_DIR}/rollback-cmd-orphan-reuse-rb-2.log"; then
   echo "[verify] FAIL: the rollback did not report that the stream under OrphanStream's name has another identity (output above)"
-  if grep -q 'OrphanStream.*nothing proves the resource now under that id' /tmp/rollback-cmd-orphan-reuse-rb-2.log; then
+  if grep -q 'OrphanStream.*nothing proves the resource now under that id' "${LOG_DIR}/rollback-cmd-orphan-reuse-rb-2.log"; then
     echo "         (it kept the stream without reading a live identity to compare)"
   fi
   exit 1
 fi
-if grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-reuse-rb-2.log; then
+if grep -q 'deleting partially-created OrphanStream' "${LOG_DIR}/rollback-cmd-orphan-reuse-rb-2.log"; then
   echo "[verify] FAIL: the rollback deleted the stream that reused OrphanStream's name (output above)"
   exit 1
 fi
@@ -1289,10 +1297,10 @@ if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${INIT_S
 fi
 set +e
 INJECT_ORPHAN_CREATE=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan-held.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${LOG_DIR}/rollback-cmd-orphan-held.log" 2>&1
 O11_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-held.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-held.log" || true
 if [ "${O11_RC}" -eq 0 ]; then
   echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
   exit 1
@@ -1309,20 +1317,20 @@ if [ "${O11_HELD}" != "${ORPHAN_STREAM_NAME}" ]; then
   exit 1
 fi
 set +e
-${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-orphan-held-rb.log 2>&1
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > "${LOG_DIR}/rollback-cmd-orphan-held-rb.log" 2>&1
 O11_RB_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-held-rb.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-held-rb.log" || true
 if [ "${O11_RB_RC}" -ne 2 ]; then
   echo "[verify] FAIL: the plain rollback of an orphan ${INIT_STACK} holds exited ${O11_RB_RC} (expected 2 -- output above)"
   exit 1
 fi
 if ! grep -q "Skipping failed CREATE of OrphanStream.*${INIT_STACK}.* holds a resource of that type" \
-  /tmp/rollback-cmd-orphan-held-rb.log; then
+  "${LOG_DIR}/rollback-cmd-orphan-held-rb.log"; then
   echo "[verify] FAIL: the rollback did not report that ${INIT_STACK}'s state record holds the stream (output above)"
   exit 1
 fi
-if grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-held-rb.log; then
+if grep -q 'deleting partially-created OrphanStream' "${LOG_DIR}/rollback-cmd-orphan-held-rb.log"; then
   echo "[verify] FAIL: the rollback deleted the stream ${INIT_STACK}'s state records (output above)"
   exit 1
 fi
@@ -1363,10 +1371,10 @@ echo "[verify] step O11 ok: the plain rollback kept the stream ${INIT_STACK} hol
 echo "[verify] step O12: --no-rollback, strip the journaled identity, then a PLAIN cdkd rollback (the stream KEPT)"
 set +e
 INJECT_ORPHAN_CREATE=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan-notoken.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${LOG_DIR}/rollback-cmd-orphan-notoken.log" 2>&1
 O12_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-notoken.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-notoken.log" || true
 if [ "${O12_RC}" -eq 0 ]; then
   echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
   exit 1
@@ -1384,20 +1392,20 @@ fi
 aws s3 cp "${O12_JOURNAL}" "s3://${STATE_BUCKET}/${JOURNAL_KEY}" --content-type application/json >/dev/null
 rm -f "${O12_JOURNAL}"
 set +e
-${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-orphan-notoken-rb.log 2>&1
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > "${LOG_DIR}/rollback-cmd-orphan-notoken-rb.log" 2>&1
 O12_RB_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-notoken-rb.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-notoken-rb.log" || true
 if [ "${O12_RB_RC}" -ne 2 ]; then
   echo "[verify] FAIL: the plain rollback of an orphan with no journaled identity exited ${O12_RB_RC} (expected 2 -- output above)"
   exit 1
 fi
 if ! grep -q 'Skipping failed CREATE of OrphanStream.*the journal recorded no identity for it' \
-  /tmp/rollback-cmd-orphan-notoken-rb.log; then
+  "${LOG_DIR}/rollback-cmd-orphan-notoken-rb.log"; then
   echo "[verify] FAIL: the rollback did not report that nothing proves the stream is the one the failed CREATE made (output above)"
   exit 1
 fi
-if grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-orphan-notoken-rb.log; then
+if grep -q 'deleting partially-created OrphanStream' "${LOG_DIR}/rollback-cmd-orphan-notoken-rb.log"; then
   echo "[verify] FAIL: the rollback deleted a stream it had no identity for (output above)"
   exit 1
 fi
@@ -1500,10 +1508,10 @@ echo "[verify] step P1: replace ReplaceStream (suffix b, failing retention) unde
 set +e
 WITH_REPLACE_STREAM=true REPLACE_STREAM_SUFFIX=b REPLACE_STREAM_FAIL=true \
   ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback --force-stateful-recreation \
-  > /tmp/rollback-cmd-replace-orphan.log 2>&1
+  > "${LOG_DIR}/rollback-cmd-replace-orphan.log" 2>&1
 P1_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-replace-orphan.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-replace-orphan.log" || true
 if [ "${P1_RC}" -eq 0 ]; then
   echo "[verify] FAIL: the failing replacement deploy unexpectedly SUCCEEDED"
   exit 1
@@ -1512,15 +1520,15 @@ assert_replacement_orphan_journaled "after the --no-rollback replacement"
 
 echo "[verify] step P2: cdkd rollback ${STACK} --force --revert-failed (expect exit 0, ${REPLACE_STREAM_B_NAME} deleted)"
 set +e
-${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force --revert-failed > /tmp/rollback-cmd-replace-orphan-rb.log 2>&1
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force --revert-failed > "${LOG_DIR}/rollback-cmd-replace-orphan-rb.log" 2>&1
 P2_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-replace-orphan-rb.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-replace-orphan-rb.log" || true
 if [ "${P2_RC}" -ne 0 ]; then
   echo "[verify] FAIL: --revert-failed rollback of the failed replacement exited ${P2_RC} (output above)"
   exit 1
 fi
-if ! grep -q 'deleting partially-created ReplaceStream' /tmp/rollback-cmd-replace-orphan-rb.log; then
+if ! grep -q 'deleting partially-created ReplaceStream' "${LOG_DIR}/rollback-cmd-replace-orphan-rb.log"; then
   echo "[verify] FAIL: the rollback did not delete the replacement's new ReplaceStream (output above)"
   exit 1
 fi
@@ -1531,15 +1539,15 @@ echo "[verify] step P3: the same replacement with the automatic rollback (expect
 set +e
 WITH_REPLACE_STREAM=true REPLACE_STREAM_SUFFIX=b REPLACE_STREAM_FAIL=true \
   ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --force-stateful-recreation \
-  > /tmp/rollback-cmd-replace-orphan-auto.log 2>&1
+  > "${LOG_DIR}/rollback-cmd-replace-orphan-auto.log" 2>&1
 P3_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-replace-orphan-auto.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-replace-orphan-auto.log" || true
 if [ "${P3_RC}" -eq 0 ]; then
   echo "[verify] FAIL: the failing replacement deploy unexpectedly SUCCEEDED"
   exit 1
 fi
-if ! grep -q 'deleting partially-created ReplaceStream' /tmp/rollback-cmd-replace-orphan-auto.log; then
+if ! grep -q 'deleting partially-created ReplaceStream' "${LOG_DIR}/rollback-cmd-replace-orphan-auto.log"; then
   echo "[verify] FAIL: the automatic rollback did not delete the replacement's new ReplaceStream (output above)"
   echo "         (before go-to-k/cdkd#4604 nothing recorded it, so nothing deleted it)"
   exit 1
@@ -1575,10 +1583,10 @@ echo "[verify] step S1 ok: SkipBucket (holding keep.txt) + SkipDoomed deployed"
 
 echo "[verify] step S2: deploy ${STACK} WITHOUT the pair, automatic rollback (expect FAILURE on SkipBucket's DELETE)"
 set +e
-${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > /tmp/rollback-cmd-skip.log 2>&1
+${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > "${LOG_DIR}/rollback-cmd-skip.log" 2>&1
 SKIP_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-skip.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-skip.log" || true
 if [ "${SKIP_RC}" -eq 0 ]; then
   echo "[verify] FAIL: the pair-removal deploy unexpectedly SUCCEEDED (SkipBucket was not empty)"
   exit 1
@@ -1644,10 +1652,10 @@ echo "[verify] step S2 ok: skip recorded as an event, journal kept"
 
 echo "[verify] step S3: cdkd rollback ${STACK} --force (expect exit 2: the skip again)"
 set +e
-${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-skip-rb.log 2>&1
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > "${LOG_DIR}/rollback-cmd-skip-rb.log" 2>&1
 S3_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-skip-rb.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-skip-rb.log" || true
 if [ "${S3_RC}" -ne 2 ]; then
   echo "[verify] FAIL: the rollback of a skipped op exited ${S3_RC} (expected 2, partial)"
   exit 1
@@ -1676,6 +1684,13 @@ echo "[verify] step S3 ok: rollback exited 2, recorded the skip, cleared the jou
 echo "[verify] step S4: empty SkipBucket and deploy plainly (SkipBucket deleted)"
 aws s3 rm "s3://${SKIP_BUCKET_NAME}" --recursive >/dev/null
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
+# HeadBucket can still answer 200 for a few seconds after DeleteBucket returns
+# (a pre-fix probe run read the bucket as live right after cdkd's "Deleted: 1").
+# Waits up to ~60s; the assert_gone below is the verdict.
+for _ in $(seq 1 12); do
+  gone_probe aws s3api head-bucket --bucket "${SKIP_BUCKET_NAME}" --region "${REGION}" && break
+  sleep 5
+done
 assert_gone "SkipBucket ${SKIP_BUCKET_NAME} still exists after the converging deploy" \
   aws s3api head-bucket --bucket "${SKIP_BUCKET_NAME}" --region "${REGION}"
 S4_COUNT="$(state_resource_count "${STATE_KEY}")"
@@ -1694,10 +1709,10 @@ echo "[verify] step S4 ok: SkipBucket gone, state has 3 resources, journal gone"
 # ---------------------------------------------------------------------------
 echo "[verify] step 5: first-ever deploy of ${INIT_STACK} with INJECT_FAIL --no-rollback (expect FAILURE)"
 set +e
-INJECT_FAIL=true ${CLI} deploy "${INIT_STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-init.log 2>&1
+INJECT_FAIL=true ${CLI} deploy "${INIT_STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${LOG_DIR}/rollback-cmd-init.log" 2>&1
 INIT_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-init.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-init.log" || true
 if [ "${INIT_RC}" -eq 0 ]; then
   echo "[verify] FAIL: first-ever ${INIT_STACK} --no-rollback deploy unexpectedly SUCCEEDED"
   exit 1
@@ -1733,10 +1748,10 @@ echo "[verify] step 6 ok: initialDeploy rollback deleted InitMarker + state.json
 echo "[verify] step 6b: deploy ${STACK} with INJECT_ORPHAN_CREATE --no-rollback (only the journal records the stream)"
 set +e
 INJECT_ORPHAN_CREATE=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-orphan-destroy.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${LOG_DIR}/rollback-cmd-orphan-destroy.log" 2>&1
 D_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-orphan-destroy.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-orphan-destroy.log" || true
 if [ "${D_RC}" -eq 0 ]; then
   echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
   exit 1
@@ -1746,15 +1761,15 @@ echo "[verify] step 6b ok: the stream exists and only the journal records it"
 
 echo "[verify] step 7: cdkd destroy ${STACK} --force (go-to-k/cdkd#4584: deletes the journaled stream first)"
 set +e
-${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-destroy.log 2>&1
+${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force > "${LOG_DIR}/rollback-cmd-destroy.log" 2>&1
 DESTROY_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-destroy.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-destroy.log" || true
 if [ "${DESTROY_RC}" -ne 0 ]; then
   echo "[verify] FAIL: destroy exited ${DESTROY_RC} (output above)"
   exit 1
 fi
-if ! grep -q 'deleting partially-created OrphanStream' /tmp/rollback-cmd-destroy.log; then
+if ! grep -q 'deleting partially-created OrphanStream' "${LOG_DIR}/rollback-cmd-destroy.log"; then
   echo "[verify] FAIL: destroy did not delete the journaled OrphanStream (output above)"
   echo "         (before go-to-k/cdkd#4584 it swept the journal and left the stream)"
   exit 1
@@ -1778,10 +1793,10 @@ echo "[verify] step 7a ok: destroy clean"
 echo "[verify] step D1: deploy ${STACK} with INJECT_ORPHAN_CREATE --no-rollback (only the journal records the stream)"
 set +e
 INJECT_ORPHAN_CREATE=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > /tmp/rollback-cmd-drop-deploy.log 2>&1
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --no-rollback > "${LOG_DIR}/rollback-cmd-drop-deploy.log" 2>&1
 D1_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-drop-deploy.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-drop-deploy.log" || true
 if [ "${D1_RC}" -eq 0 ]; then
   echo "[verify] FAIL: INJECT_ORPHAN_CREATE --no-rollback deploy unexpectedly SUCCEEDED"
   exit 1
@@ -1855,11 +1870,23 @@ case "${DENY_ARN}" in
 esac
 
 echo "[verify] step D3: cdkd destroy ${STACK} --force, as the deny role, must fail and keep the journal entry"
+EVENTS_PREFIX="cdkd/${STACK}/${REGION}/deployments/"
+list_event_streams() { # the run streams under EVENTS_PREFIX, one key per line
+  aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" --prefix "${EVENTS_PREFIX}" --output json \
+    | jq -r '.Contents // [] | .[].Key | select(endswith(".jsonl"))'
+}
+if ! EVENT_KEYS_BEFORE_D3="$(list_event_streams)"; then
+  echo "[verify] FAIL: could not list s3://${STATE_BUCKET}/${EVENTS_PREFIX} before step D3 (list_event_streams failed)"
+  exit 1
+fi
 set +e
-as_deny_role ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-drop-destroy1.log 2>&1
+# --verbose: the thrown message names the AWS failure by its class only
+# (go-to-k/cdkd#2319); AWS's own text, which the premise check below reads,
+# is on the debug line.
+as_deny_role ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force --verbose > "${LOG_DIR}/rollback-cmd-drop-destroy1.log" 2>&1
 D3_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-drop-destroy1.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-drop-destroy1.log" || true
 if [ "${D3_RC}" -eq 0 ]; then
   echo "[verify] FAIL: destroy SUCCEEDED -- the DeleteStream deny did not hold, so this phase tests nothing (premise)"
   exit 1
@@ -1882,31 +1909,73 @@ if [ "$(journal_orphan_entries)" != "1" ]; then
 fi
 # The premise is the DeleteStream deny itself: an action the narrowed Allow
 # lacks would fail the orphan delete too, naming another action.
-if ! grep -qF 'kinesis:DeleteStream' /tmp/rollback-cmd-drop-destroy1.log; then
+if ! grep -qF 'kinesis:DeleteStream' "${LOG_DIR}/rollback-cmd-drop-destroy1.log"; then
   echo "[verify] FAIL: the failed destroy's error does not name kinesis:DeleteStream -- it failed for another reason, not the deny (output above)"
   exit 1
 fi
 # The way out, named by the retry warning (go-to-k/cdkd#4633).
-if ! grep -qF "Drop with: cdkd rollback ${STACK} --stack-region ${REGION} --drop-failed OrphanStream" /tmp/rollback-cmd-drop-destroy1.log; then
+if ! grep -qF "Drop with: cdkd rollback ${STACK} --stack-region ${REGION} --drop-failed OrphanStream" "${LOG_DIR}/rollback-cmd-drop-destroy1.log"; then
   echo "[verify] FAIL: the failed destroy did not name 'cdkd rollback ${STACK} --stack-region ${REGION} --drop-failed OrphanStream' (output above)"
   exit 1
 fi
-echo "[verify] step D3 ok: destroy failed (rc ${D3_RC}), the stream and its journal entry are kept, and the warning names --drop-failed"
+# go-to-k/cdkd#2319: the failed delete's event is persisted to
+# deployments/*.jsonl, which outlives the run, so it carries the AWS error
+# class only: never this account's id, the deny role or AWS's text. Read from
+# the streams D3 added, so an earlier phase's event cannot answer for it. Kept
+# in a variable, never a file: it may hold AWS's text.
+if ! EVENT_KEYS_AFTER_D3="$(list_event_streams)"; then
+  echo "[verify] FAIL: could not list s3://${STATE_BUCKET}/${EVENTS_PREFIX} after step D3 (list_event_streams failed)"
+  exit 1
+fi
+D3_FAILED_MSG=""
+while IFS= read -r event_key || [ -n "${event_key}" ]; do
+  [ -n "${event_key}" ] || continue
+  # Matched in bash, not `printf | grep -q`: under pipefail a grep that exits
+  # on its first match can SIGPIPE the printf and read as no match.
+  case $'\n'"${EVENT_KEYS_BEFORE_D3}"$'\n' in *$'\n'"${event_key}"$'\n'*) continue ;; esac
+  # A failed read or an unparseable line FAILs with a name, never a bare set -e exit.
+  if ! msg="$(aws s3 cp "s3://${STATE_BUCKET}/${event_key}" - --quiet \
+    | jq -r 'select((.eventType == "ROLLBACK_RESOURCE_FAILED" or .eventType == "RESOURCE_FAILED") and .logicalId == "OrphanStream") | .error.message // empty' \
+    | tail -n 1)"; then
+    echo "[verify] FAIL: could not read the event stream s3://${STATE_BUCKET}/${event_key} after step D3"
+    exit 1
+  fi
+  if [ -n "${msg}" ]; then D3_FAILED_MSG="${msg}"; fi
+done <<< "${EVENT_KEYS_AFTER_D3}"
+# Never print this account's id, the deny role's name or its session on a FAIL.
+D3_SHOWN="$(printf '%s' "${D3_FAILED_MSG}" | sed -e "s/${ACCOUNT_ID}/<account>/g" -e "s/${DENY_ROLE}/<deny-role>/g" -e "s/cdkd-rollback-drop/<session>/g")"
+if [ -z "${D3_FAILED_MSG}" ]; then
+  echo "[verify] FAIL: no new ROLLBACK_RESOURCE_FAILED / RESOURCE_FAILED event with an error message for OrphanStream under s3://${STATE_BUCKET}/${EVENTS_PREFIX} after step D3 (the #2319 checks below would pass for free)"
+  exit 1
+fi
+D3_CLASS_ONLY="Failed to delete Kinesis stream OrphanStream: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."
+if ! [[ "${D3_FAILED_MSG}" =~ ${D3_CLASS_ONLY} ]]; then
+  echo "[verify] FAIL: OrphanStream's persisted failure is not 'Failed to delete Kinesis stream OrphanStream: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed: ${D3_SHOWN}"
+  exit 1
+fi
+D3_LOWER="$(printf '%s' "${D3_FAILED_MSG}" | tr '[:upper:]' '[:lower:]')"
+if [[ "${D3_FAILED_MSG}" == *"${ACCOUNT_ID}"* || "${D3_LOWER}" == *"not authorized"* \
+  || "${D3_FAILED_MSG}" == *"${DENY_ROLE}"* ]]; then
+  echo "[verify] FAIL: OrphanStream's persisted failure quotes AWS's text (account id, deny role or 'not authorized') (#2319); observed: ${D3_SHOWN}"
+  exit 1
+fi
+unset D3_FAILED_MSG D3_SHOWN D3_LOWER msg
+echo "[verify] step D3 ok: destroy failed (rc ${D3_RC}), the stream and its journal entry are kept, the warning names --drop-failed, and the persisted event names the denial by its class"
 
 echo "[verify] step D4: refusals change nothing (unknown id; no terminal and no --force)"
 JOURNAL_ETAG_BEFORE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" --query ETag --output text)"
 set +e
-${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --drop-failed NoSuchResource --force > /tmp/rollback-cmd-drop-unknown.log 2>&1
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --drop-failed NoSuchResource --force > "${LOG_DIR}/rollback-cmd-drop-unknown.log" 2>&1
 D4A_RC=$?
-${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --drop-failed OrphanStream < /dev/null > /tmp/rollback-cmd-drop-noforce.log 2>&1
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --drop-failed OrphanStream < /dev/null > "${LOG_DIR}/rollback-cmd-drop-noforce.log" 2>&1
 D4B_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-drop-unknown.log /tmp/rollback-cmd-drop-noforce.log || true
-if [ "${D4A_RC}" -eq 0 ] || ! grep -q 'has no entry for NoSuchResource' /tmp/rollback-cmd-drop-unknown.log; then
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-drop-unknown.log" "${LOG_DIR}/rollback-cmd-drop-noforce.log" || true
+if [ "${D4A_RC}" -eq 0 ] || ! grep -q 'has no entry for NoSuchResource' "${LOG_DIR}/rollback-cmd-drop-unknown.log"; then
   echo "[verify] FAIL: --drop-failed of an unknown id exited ${D4A_RC} without its refusal (output above)"
   exit 1
 fi
-if [ "${D4B_RC}" -eq 0 ] || ! grep -q 'confirmation prompt cannot run in a non-interactive' /tmp/rollback-cmd-drop-noforce.log; then
+if [ "${D4B_RC}" -eq 0 ] || ! grep -q 'confirmation prompt cannot run in a non-interactive' "${LOG_DIR}/rollback-cmd-drop-noforce.log"; then
   echo "[verify] FAIL: --drop-failed without a terminal or --force exited ${D4B_RC} without its refusal (output above)"
   exit 1
 fi
@@ -1923,10 +1992,10 @@ journal_shape() { # per segment: its completed-op count and its failed ops other
 }
 SHAPE_BEFORE="$(journal_shape)"
 set +e
-${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --drop-failed OrphanStream --force > /tmp/rollback-cmd-drop.log 2>&1
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --drop-failed OrphanStream --force > "${LOG_DIR}/rollback-cmd-drop.log" 2>&1
 D5_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-drop.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-drop.log" || true
 if [ "${D5_RC}" -ne 0 ]; then
   echo "[verify] FAIL: --drop-failed exited ${D5_RC} (output above)"
   exit 1
@@ -1949,10 +2018,10 @@ echo "[verify] step D5 ok: the entry is dropped and the stream is untouched"
 
 echo "[verify] step D6: cdkd destroy ${STACK} --force now succeeds (the stack is no longer undestroyable)"
 set +e
-${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-drop-destroy2.log 2>&1
+${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force > "${LOG_DIR}/rollback-cmd-drop-destroy2.log" 2>&1
 D6_RC=$?
 set -e
-sed 's/^/  /' /tmp/rollback-cmd-drop-destroy2.log || true
+sed 's/^/  /' "${LOG_DIR}/rollback-cmd-drop-destroy2.log" || true
 if [ "${D6_RC}" -ne 0 ]; then
   echo "[verify] FAIL: destroy after --drop-failed exited ${D6_RC} (output above)"
   exit 1
@@ -1995,6 +2064,7 @@ done
 echo "[verify] step 8 ok: sidecars removed"
 
 trap - EXIT INT TERM
+rm -rf "${LOG_DIR}"
 
 # --- SUCCESS-PATH VERSION SWEEP + ASSERTION (issue #2096) -------------------
 # Step 8 above removes the sidecars with `aws s3 rm` and then proves it with

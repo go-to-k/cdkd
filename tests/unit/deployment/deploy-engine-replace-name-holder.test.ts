@@ -79,6 +79,7 @@ import { withStackScope } from '../../../src/provisioning/resource-name.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import { reverseReplacementNameKeyKind } from '../../../src/deployment/replacement-name-holder.js';
 
 type Inner = Error & { code?: string; cause?: unknown };
@@ -278,7 +279,12 @@ describe('deploy --replace proves the old resource holds the SENT name before de
     );
     expect(err!.message.split('cdkd cannot show').length - 1).toBe(1);
     expect(err!.message).toContain('--replace was NOT applied and nothing was deleted');
-    expect(err!.message).toContain(`Stream ${GENERATED} under account`);
+    // The Kinesis wrap names AWS's rejection by its class (go-to-k/cdkd#2319);
+    // AWS's text, which names the account, stays on the chain.
+    expect(err!.message).toContain(
+      `Underlying collision: Failed to create Kinesis stream Stream: ResourceInUseException. ${VERBOSE_POINTER} AWS reports that it already exists.`
+    );
+    expect(err!.message).not.toContain('123456789012');
     // Chained, so the persisted event names the AWS rejection.
     expect((err!.cause as Error).message).toContain('already exists');
   });

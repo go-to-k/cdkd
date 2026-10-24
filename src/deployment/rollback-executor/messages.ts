@@ -28,7 +28,7 @@ import {
   safeMsg,
 } from '../../utils/display-safe.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, VERBOSE_POINTER } from '../../utils/aws-failure-text.js';
 import { createSecretMasker, SECRET_MASK, type RecordedSecretValues } from '../secret-redaction.js';
 import {
   deleteIndeterminateGuards,
@@ -511,6 +511,9 @@ function rollbackFailureText(error: unknown): string {
   return displaySafe(describeAwsFailure(error).detail);
 }
 
+/** {@link VERBOSE_POINTER} without the `--flag` spelling, for {@link collisionText}. */
+const COLLISION_VERBOSE_POINTER = "Re-run with verbose logging for AWS's own message.";
+
 /**
  * The AWS rejection text quoted in the collision refusal: sanitized, every
  * run of BLANK-RENDERING characters collapsed to one space, and capped (M8 and
@@ -530,11 +533,20 @@ function rollbackFailureText(error: unknown): string {
  * blank, which is in neither category. The class overlaps the one
  * `outputs-export-alias/secret-scan.ts` scans with, but is not the same. Collapsing
  * removes the padding; the cap is `displayAwsMessage`'s.
+ *
+ * A provider wrap that withheld AWS's text (go-to-k/cdkd#2319) ends in
+ * {@link VERBOSE_POINTER}, which spells a `--flag`; the provider's text can
+ * echo a payload logical id, and a line displaying one carries no pasteable
+ * command (go-to-k/cdkd#3950). The pointer is restated without the flag
+ * spelling, before the cap, so a cut cannot leave a `--verbo` behind.
  */
-function collisionText(msg: string): string {
-  // The caller MASKS `msg` first: `maskSecretsInText` matches a secret's exact
-  // spelling, so collapsing a whitespace run or cutting the text before it ran
-  // would turn an echoed secret into a spelling the mask no longer finds.
+function collisionText(maskedMsg: string): string {
+  // The caller MASKS the text first: `maskSecretsInText` matches a secret's
+  // exact spelling, so collapsing a whitespace run or cutting the text before
+  // it ran would turn an echoed secret into a spelling the mask no longer
+  // finds. The pointer is a fixed cdkd sentence, so restating it touches no
+  // secret's spelling.
+  const msg = maskedMsg.replaceAll(VERBOSE_POINTER, COLLISION_VERBOSE_POINTER);
   return displayAwsMessage(
     displaySafe(msg).replace(/[\s\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]{2,}/gu, ' ')
   );
