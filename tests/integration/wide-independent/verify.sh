@@ -245,4 +245,4 @@ assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-
 
 trap - EXIT INT TERM
 rm -f "${DEPLOY_LOG}"
-echo "[verify] PASS — wide-independent: 48 independent SDK-route resources at --concurrency 10 and 30, 48 Cloud Control resources at 10, 20 and 30"
+echo "[verify] PASS — wide-independent: 48 independent SDK-route resources at --concurrency ${SDK_SETTINGS}, 48 Cloud Control resources at ${CC_SETTINGS}"
