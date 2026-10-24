@@ -70,7 +70,9 @@ Phase timings (CDKD_PHASE_TIMINGS=1):
 | `state saves`, `cloud control polls`, `provider waits` | Steps inside the state saves, the Cloud Control waits and a provider's own waits, added up across the run |
 
 When most of the time is in `resource DAG`, the slowest resource decides the
-deploy. Time in the other steps is cdkd's own work, mostly round trips to the
+deploy, unless the stack has more independent resources than `--concurrency`
+(default 10). The `ready, waiting for a --concurrency slot` line shows how long
+resources waited for a free slot; when it is large, raise `--concurrency`. Time in the other steps is cdkd's own work, mostly round trips to the
 state bucket.
 
 ### Inspect the dependency graph
