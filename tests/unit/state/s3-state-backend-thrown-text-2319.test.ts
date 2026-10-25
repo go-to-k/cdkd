@@ -14,16 +14,21 @@
  *   positive control);
  * - keep the original error as `cause`, stamped `markRedactedCause`, so a
  *   retry classifier still reads `not authorized` on the chain;
- * - log AWS's text at `debug`, under the logger's bound-secret mask;
+ * - log AWS's text at `debug` (masked by the real logger: see
+ *   `thrown-text-real-logger-2319.test.ts`);
  * - mask a secret spelled in the CLASS (it is AWS-authored text too), and
  *   flatten a class that forges a line.
  *
  * A cdkd-authored failure (`normalizeAwsError`'s rewrite of S3's body-less
  * `Unknown`) keeps its text, unstamped.
+ *
+ * `LockManager`'s acquire / lock-info / release refusals take the same shape:
+ * a lock refusal ends the run and is persisted the same way.
  */
 import { describe, it, expect, beforeEach, vi } from 'vite-plus/test';
 import { S3Client, S3ServiceException, NoSuchKey } from '@aws-sdk/client-s3';
 import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+import { LockManager } from '../../../src/state/lock-manager.js';
 import type { StateBackendConfig } from '../../../src/types/config.js';
 import type { StackState } from '../../../src/types/state.js';
 import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
@@ -31,7 +36,6 @@ import { hasRedactedCause } from '../../../src/deployment/retryable-errors/marks
 import { retryClassificationText } from '../../../src/deployment/retryable-errors/transient.js';
 import { withPrintingSecrets } from '../../../src/deployment/resource-secrets-scope.js';
 import { recordLogOnlyValue, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
-import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 
 const { logs } = vi.hoisted(() => ({
   logs: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -241,22 +245,17 @@ describe('S3StateBackend thrown messages name an AWS failure by its class (go-to
     expect(lines[0]).toContain(AWS_TEXT);
   });
 
-  it.each(SITES)('$site: a bound secret is masked in the class and on the debug line', async (site) => {
+  // The debug line's mask is the REAL logger's, which this file mocks:
+  // `thrown-text-real-logger-2319.test.ts` asserts it against the real sink.
+  it.each(SITES)('$site: a bound secret spelled in the class is masked', async (site) => {
     const SECRET = 'class-secret-q7';
     const bag = new Map<string, string>();
     recordLogOnlyValue(bag, SECRET);
-    let debugMasked = '<not run>';
-    const thrown = await withPrintingSecrets(bag, async () => {
-      const t = await rejection(site, s3err(`Denied${SECRET}`, `${AWS_TEXT} ${SECRET}`));
-      const line = debugLines().find((l) => l.startsWith(site.prefix)) ?? '<no debug line>';
-      const mask = currentLogLineMasker();
-      debugMasked = mask === undefined ? '<no masker bound>' : mask(line);
-      return t;
-    });
+    const thrown = await withPrintingSecrets(bag, () =>
+      rejection(site, s3err(`Denied${SECRET}`, `${AWS_TEXT} ${SECRET}`))
+    );
     expect(thrown.message).not.toContain(SECRET);
     expect(thrown.message).toContain(`Denied${SECRET_MASK}. ${VERBOSE_POINTER}`);
-    expect(debugMasked).not.toContain(SECRET);
-    expect(debugMasked).toContain(SECRET_MASK);
   });
 
   it.each(SITES)('$site: a class forging a line is flattened', async (site) => {
@@ -316,5 +315,168 @@ describe('deleteRawObjects names each key failure by its code (go-to-k/cdkd#2319
     const message = await withPrintingSecrets(bag, () => run(`Denied${SECRET}`, AWS_TEXT));
     expect(message).not.toContain(SECRET);
     expect(message).toContain(`(Denied${SECRET_MASK})`);
+  });
+});
+
+/**
+ * A lock-path client double: an unqueued PUT stores its body and answers an
+ * ETag, an unqueued GET returns the stored body (or `NoSuchKey`), so a case
+ * scripts only the call it is about.
+ */
+function makeLockClient(): { client: S3Client; queue: (command: string, ...r: Reply[]) => void } {
+  const queues = new Map<string, Reply[]>();
+  let body: string | undefined;
+  const send = vi.fn(
+    async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+      const next = queues.get(command.constructor.name)?.shift();
+      if (next) return next();
+      switch (command.constructor.name) {
+        case 'PutObjectCommand':
+          body = command.input['Body'] as string;
+          return { ETag: '"e1"' };
+        case 'GetObjectCommand':
+          if (body === undefined) throw noSuchKey();
+          return {
+            Body: { transformToString: () => Promise.resolve(body) },
+            ETag: '"e1"',
+          };
+        case 'ListObjectVersionsCommand':
+          return { IsTruncated: false };
+        default:
+          return {};
+      }
+    }
+  );
+  return {
+    client: {
+      send,
+      config: {
+        region: () => Promise.resolve('us-east-1'),
+        credentials: () => Promise.resolve({ accessKeyId: 'AKIAFAKE', secretAccessKey: 'x' }),
+      },
+    } as unknown as S3Client,
+    queue: (command, ...replies) => {
+      queues.set(command, [...(queues.get(command) ?? []), ...replies]);
+    },
+  };
+}
+
+interface LockSite {
+  site: string;
+  prefix: string;
+  /** Run the site with `error` queued where its failing S3 call meets it. */
+  run: (error: unknown) => Promise<unknown>;
+}
+
+const newLock = (c: ReturnType<typeof makeLockClient>): LockManager =>
+  new LockManager(c.client, config, { disableRenewal: true });
+
+const LOCK_SITES: LockSite[] = [
+  {
+    site: 'acquireLock',
+    prefix: `Failed to acquire lock for stack ${STACK} (${REGION}): `,
+    run: (e) => {
+      const c = makeLockClient();
+      c.queue('PutObjectCommand', fail(e));
+      return newLock(c).acquireLock(STACK, REGION);
+    },
+  },
+  {
+    site: 'getLockInfo',
+    prefix: `Failed to get lock info for stack ${STACK}`,
+    run: (e) => {
+      const c = makeLockClient();
+      c.queue('GetObjectCommand', fail(e));
+      return newLock(c).getLockInfo(STACK, REGION);
+    },
+  },
+  {
+    site: 'releaseLock (a failure that is not a condition one)',
+    prefix: `Failed to release lock for stack ${STACK} (${REGION}): `,
+    run: async (e) => {
+      const c = makeLockClient();
+      const lm = newLock(c);
+      await lm.acquireLock(STACK, REGION);
+      c.queue('DeleteObjectCommand', fail(e));
+      return lm.releaseLock(STACK, REGION);
+    },
+  },
+  {
+    site: 'releaseLock (the unconditional fallback)',
+    prefix: `Failed to release lock for stack ${STACK} (${REGION}): `,
+    run: async (e) => {
+      const c = makeLockClient();
+      const lm = newLock(c);
+      await lm.acquireLock(STACK, REGION);
+      // The conditional delete cannot be evaluated (a 403 AccessDenied); the
+      // body is still ours, so the unconditional retry runs and meets `e`.
+      c.queue('DeleteObjectCommand', fail(s3err('AccessDenied', 'condition')), fail(e));
+      return lm.releaseLock(STACK, REGION);
+    },
+  },
+];
+
+async function lockRejection(site: LockSite, error: unknown): Promise<Error> {
+  const thrown = await site.run(error).then(
+    () => undefined,
+    (e: unknown) => e
+  );
+  expect(thrown, `${site.site} did not reject`).toBeInstanceOf(Error);
+  return thrown as Error;
+}
+
+describe('LockManager thrown messages name an AWS failure by its class (go-to-k/cdkd#2319)', () => {
+  // A class the release path does not route elsewhere: not a 412 (foreign),
+  // a 404 (gone) or a 403 (condition unsupported).
+  const lockErr = (name = 'InternalError', message = AWS_TEXT): S3ServiceException =>
+    new S3ServiceException({
+      name,
+      message,
+      $fault: 'server',
+      $metadata: { httpStatusCode: 500 },
+    } as never);
+
+  it.each(LOCK_SITES)('$site: the class, no AWS text, cause kept and stamped', async (site) => {
+    const original = lockErr();
+    expect(original.message).toContain(ACCOUNT);
+    const thrown = await lockRejection(site, original);
+    expect(thrown.message.startsWith(site.prefix), thrown.message).toBe(true);
+    expect(thrown.message).toContain(`InternalError. ${VERBOSE_POINTER}`);
+    expect(thrown.message).not.toContain(ACCOUNT);
+    expect(thrown.message).not.toContain('not authorized');
+    expect(thrown.cause).toBe(original);
+    expect(hasRedactedCause(thrown)).toBe(true);
+    expect(retryClassificationText(thrown)).toContain('not authorized');
+  });
+
+  it.each(LOCK_SITES)("$site: AWS's text is on the debug line, after the same prefix", async (site) => {
+    await lockRejection(site, lockErr());
+    const lines = debugLines().filter((l) => l.startsWith(site.prefix) && l.includes(AWS_TEXT));
+    expect(lines).toHaveLength(1);
+  });
+
+  it.each(LOCK_SITES)('$site: a bound secret spelled in the class is masked', async (site) => {
+    const SECRET = 'lock-class-secret-w2';
+    const bag = new Map<string, string>();
+    recordLogOnlyValue(bag, SECRET);
+    const thrown = await withPrintingSecrets(bag, () =>
+      lockRejection(site, lockErr(`Denied${SECRET}`))
+    );
+    expect(thrown.message).not.toContain(SECRET);
+    expect(thrown.message).toContain(`Denied${SECRET_MASK}. ${VERBOSE_POINTER}`);
+  });
+
+  it.each(LOCK_SITES)('$site: a class forging a line is flattened', async (site) => {
+    const thrown = await lockRejection(site, lockErr('Bad\n[ok] FORGED\u001b[2J'));
+    expect(thrown.message).toContain('Bad [ok] FORGED [2J.');
+    // eslint-disable-next-line no-control-regex
+    expect(thrown.message).not.toMatch(/[\u0000-\u001f]/);
+  });
+
+  it.each(LOCK_SITES)('$site: a cdkd-authored or transport failure keeps its text, unstamped', async (site) => {
+    const thrown = await lockRejection(site, new Error('connect ECONNREFUSED 10.0.0.1:443'));
+    expect(thrown.message).toContain('connect ECONNREFUSED 10.0.0.1:443');
+    expect(thrown.message).not.toContain(VERBOSE_POINTER);
+    expect(hasRedactedCause(thrown)).toBe(false);
   });
 });

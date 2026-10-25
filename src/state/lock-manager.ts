@@ -17,6 +17,9 @@ import {
   STACK_REF_MAX_CODE_POINTS,
 } from '../utils/display-safe.js';
 import { LockError } from '../utils/error-handler.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { markRedactedCause } from '../deployment/retryable-errors/marks.js';
+import { currentLogLineMasker } from '../utils/log-line-masker.js';
 import {
   describeJsonParseFailure,
   parseFailureDebugDetail,
@@ -284,6 +287,31 @@ export function isLockInfoExpired(lockInfo: LockInfo): boolean {
  */
 export class LockManager {
   private logger = getLogger().child('LockManager');
+
+  /**
+   * The `LockError` a failed S3 lock call throws, with the failure named by
+   * its CLASS (go-to-k/cdkd#2319) -- the shape of `S3StateBackend`'s
+   * `wrapS3Failure`, for the same reason: a lock refusal ends the run and is
+   * persisted to `deployments/{runId}.jsonl` whole, and S3's `AccessDenied`
+   * text names the caller's assumed-role ARN and account id. An AWS-authored
+   * failure reaches `build` as `<Class>. Re-run with --verbose for AWS's own
+   * message.`, the class through the bound-secret mask and the ASCII
+   * allowlist; AWS's own text goes to `debug`; the wrap is stamped
+   * `markRedactedCause`. Anything else keeps its text (`errorDetail`). `build`
+   * must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor.
+   */
+  private wrapS3Failure(error: unknown, build: (text: string) => LockError): LockError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return build(errorDetail(error));
+    this.logger.debug(
+      build(displaySafe(failure.detail, { asciiOnly: true }) || UNRENDERABLE).message
+    );
+    const mask = currentLogLineMasker();
+    const summary = mask ? mask(failure.summary) : failure.summary;
+    const wrapped = build(displaySafe(summary, { asciiOnly: true }) || UNRENDERABLE);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
   private s3Client: S3Client;
   private config: StateBackendConfig;
   private readonly ttlMs: number;
@@ -617,14 +645,18 @@ export class LockManager {
       // terminal and the same persisted events store through the very path
       // that fix covers, and leaving it raw would make that fix conditional on
       // which of the two threw.
-      throw new LockError(
-        `Failed to acquire lock for stack ` +
-          `${safeSegment(stackName)} ` +
-          `(${safeSegment(region)}): ` +
-          // Two-of-three is the exact shape `custom-resource-provider.ts`'s
-          // cleanup line argues against; `errorDetail` says why.
-          errorDetail(error),
-        error instanceof Error ? error : undefined
+      throw this.wrapS3Failure(
+        error,
+        (text) =>
+          new LockError(
+            `Failed to acquire lock for stack ` +
+              `${safeSegment(stackName)} ` +
+              `(${safeSegment(region)}): ` +
+              // Two-of-three is the exact shape `custom-resource-provider.ts`'s
+              // cleanup line argues against; `errorDetail` says why.
+              text,
+            error instanceof Error ? error : undefined
+          )
       );
     }
   }
@@ -787,9 +819,13 @@ export class LockManager {
 
       // `cdkd state show` surfaces this message as its fatal error (issue
       // #3003).
-      throw new LockError(
-        `Failed to get lock info for stack ${shownStack}: ${errorDetail(error)}`,
-        error instanceof Error ? error : undefined
+      throw this.wrapS3Failure(
+        error,
+        (text) =>
+          new LockError(
+            `Failed to get lock info for stack ${shownStack}: ${text}`,
+            error instanceof Error ? error : undefined
+          )
       );
     }
   }
@@ -954,16 +990,24 @@ export class LockManager {
           this.logger.debug(`Lock released for stack: ${stackRef(stackName, region)}`);
           return;
         } catch (fallbackError) {
-          throw new LockError(
-            `Failed to release lock for stack ${stackRef(stackName, region)}: ${errorDetail(fallbackError)}`,
-            fallbackError instanceof Error ? fallbackError : undefined
+          throw this.wrapS3Failure(
+            fallbackError,
+            (text) =>
+              new LockError(
+                `Failed to release lock for stack ${stackRef(stackName, region)}: ${text}`,
+                fallbackError instanceof Error ? fallbackError : undefined
+              )
           );
         }
       }
 
-      throw new LockError(
-        `Failed to release lock for stack ${stackRef(stackName, region)}: ${errorDetail(error)}`,
-        error instanceof Error ? error : undefined
+      throw this.wrapS3Failure(
+        error,
+        (text) =>
+          new LockError(
+            `Failed to release lock for stack ${stackRef(stackName, region)}: ${text}`,
+            error instanceof Error ? error : undefined
+          )
       );
     } finally {
       // Issue #2346 site 5. ONE purge covers BOTH deletes above -- the

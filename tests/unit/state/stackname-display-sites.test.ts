@@ -285,7 +285,10 @@ describe('LockManager renders a hostile stack name, region and error flattened (
       fail(s3err('InternalError', 500))
     );
     const message = await thrownMessage(lm.releaseLock(STACK, REGION));
-    expectFlattened([message], 'Failed to release lock for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
+    // go-to-k/cdkd#2319: the thrown message names the class; AWS's text is
+    // on the debug line, flattened the same way.
+    expectFlattened([message], 'Failed to release lock for stack', SHOWN_STACK, SHOWN_REGION, 'InternalError.');
+    expectFlattened(logged(), 'Failed to release lock for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
     expectFlattened(logged(), 'is not supported here', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
   });
 
@@ -307,9 +310,12 @@ describe('LockManager renders a hostile stack name, region and error flattened (
     c.queue('GetObjectCommand', fail(s3err('InternalError', 500)));
     const lm = manager(c);
     const acquire = await thrownMessage(lm.acquireLock(STACK, REGION));
-    expectFlattened([acquire], 'Failed to acquire lock for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
+    expectFlattened([acquire], 'Failed to acquire lock for stack', SHOWN_STACK, SHOWN_REGION, 'InternalError.');
     const info = await thrownMessage(lm.getLockInfo(STACK, REGION));
-    expectFlattened([info], 'Failed to get lock info for stack', SHOWN_STACK, SHOWN_ERROR);
+    expectFlattened([info], 'Failed to get lock info for stack', SHOWN_STACK, 'InternalError.');
+    const texts = logged();
+    expectFlattened(texts, 'Failed to acquire lock for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
+    expectFlattened(texts, 'Failed to get lock info for stack', SHOWN_STACK, SHOWN_ERROR);
   });
 
   it('release: any other failure', async () => {
@@ -318,7 +324,8 @@ describe('LockManager renders a hostile stack name, region and error flattened (
     await lm.acquireLock(STACK, REGION);
     c.queue('DeleteObjectCommand', fail(s3err('InternalError', 500)));
     const message = await thrownMessage(lm.releaseLock(STACK, REGION));
-    expectFlattened([message], 'Failed to release lock for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
+    expectFlattened([message], 'Failed to release lock for stack', SHOWN_STACK, SHOWN_REGION, 'InternalError.');
+    expectFlattened(logged(), 'Failed to release lock for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
   });
 
   it('release: the lock-key purge could not start', async () => {

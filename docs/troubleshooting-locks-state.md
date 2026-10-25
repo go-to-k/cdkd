@@ -302,12 +302,12 @@ cdkd deploy MyStack
 StateError: Failed to verify state bucket 'my-bucket': Bucket 'my-bucket' (in ap-northeast-1) is in a different region than the client. cdkd resolves this automatically; if you see this message, please report it.
 ```
 
-The lock path reports the same condition as S3's raw redirect:
+The lock path reports the same condition by S3's error class. With
+`--verbose`, the debug log shows S3's own text: "The bucket you are attempting
+to access must be addressed using the specified endpoint."
 
 ```
-LockError: Failed to acquire lock for stack MyStack (ap-northeast-1):
-The bucket you are attempting to access must be addressed using the
-specified endpoint. Please send all future requests to this endpoint.
+LockError: Failed to acquire lock for stack MyStack (ap-northeast-1): PermanentRedirect. Re-run with --verbose for AWS's own message.
 ```
 
 The state bucket is in a different region from the one your credentials
