@@ -1087,6 +1087,80 @@ describe('DagBuilder', () => {
       expect(deps).not.toContain('SomePolicy');
     });
 
+    describe('custom resources chained on one shared handler', () => {
+      // CDK `AwsCustomResource`: one singleton Lambda and role, one policy per
+      // resource, and `addDependency` chaining the resources. The policy of a later
+      // resource depends on the earlier resource, so it must not become a
+      // prerequisite of that earlier resource.
+      const chain = (length: number): CloudFormationTemplate => {
+        const resources: CloudFormationTemplate['Resources'] = {
+          Role: { Type: 'AWS::IAM::Role', Properties: {} },
+          Fn: {
+            Type: 'AWS::Lambda::Function',
+            Properties: { Role: { 'Fn::GetAtt': ['Role', 'Arn'] } },
+          },
+        };
+        for (let i = 0; i < length; i++) {
+          const previous = i === 0 ? [] : [`Cr${i - 1}`, `Policy${i - 1}`];
+          resources[`Policy${i}`] = {
+            Type: 'AWS::IAM::Policy',
+            Properties: { Roles: [{ Ref: 'Role' }], PolicyDocument: {} },
+            ...(previous.length > 0 ? { DependsOn: previous } : {}),
+          };
+          resources[`Cr${i}`] = {
+            Type: 'Custom::AWS',
+            Properties: { ServiceToken: { 'Fn::GetAtt': ['Fn', 'Arn'] } },
+            DependsOn: [`Policy${i}`, ...previous],
+          };
+        }
+        return { Resources: resources };
+      };
+
+      it('builds a chain of two without reporting a cycle', () => {
+        expect(() => dagBuilder.buildGraph(chain(2))).not.toThrow();
+      });
+
+      it('builds a chain of five and runs the resources in order', () => {
+        const graph = dagBuilder.buildGraph(chain(5));
+        const levels = dagBuilder.getExecutionLevels(graph);
+        const levelOf = (id: string): number => levels.findIndex((lvl) => lvl.includes(id));
+        for (let i = 1; i < 5; i++) {
+          expect(levelOf(`Cr${i}`)).toBeGreaterThan(levelOf(`Cr${i - 1}`));
+        }
+      });
+
+      it('still makes each resource wait for its own policy and for earlier ones', () => {
+        const graph = dagBuilder.buildGraph(chain(3));
+        expect(graph.hasEdge('Policy2', 'Cr2')).toBe(true);
+        expect(graph.hasEdge('Policy0', 'Cr2')).toBe(true);
+        expect(graph.hasEdge('Policy1', 'Cr2')).toBe(true);
+      });
+
+      it('does not make an earlier resource wait for the policy of a later one', () => {
+        const graph = dagBuilder.buildGraph(chain(3));
+        expect(graph.hasEdge('Policy1', 'Cr0')).toBe(false);
+        expect(graph.hasEdge('Policy2', 'Cr0')).toBe(false);
+        expect(graph.hasEdge('Policy2', 'Cr1')).toBe(false);
+      });
+
+      it('keeps the edge from a policy the resource does not already precede', () => {
+        const template = chain(2);
+        template.Resources['Extra'] = {
+          Type: 'AWS::IAM::Policy',
+          Properties: { Roles: [{ Ref: 'Role' }], PolicyDocument: {} },
+        };
+        const graph = dagBuilder.buildGraph(template);
+        expect(graph.hasEdge('Extra', 'Cr0')).toBe(true);
+        expect(graph.hasEdge('Extra', 'Cr1')).toBe(true);
+      });
+
+      it('still reports a cycle that is in the template itself', () => {
+        const template = chain(2);
+        template.Resources['Cr0'].DependsOn = ['Policy0', 'Cr1'];
+        expect(() => dagBuilder.buildGraph(template)).toThrow(DependencyError);
+      });
+    });
+
     it('is idempotent when policy already has an explicit edge', () => {
       const template = buildCustomResourceTemplate({
         SeederCustomResource: {

@@ -38,7 +38,9 @@ graphlib graph. On top:
 
 - **Custom Resource edge** — an IAM policy on a Custom Resource's ServiceToken
   Lambda role gets an edge to it, so the handler does not run before the
-  attachment returns.
+  attachment returns. Skipped for a policy the resource already reaches (a
+  `DependsOn` chain of `AwsCustomResource`s sharing one handler): that edge
+  would close a cycle CloudFormation never sees.
 - **Lambda `VpcConfig` edge** (`lambda-vpc-deps.ts`) — subnets and SGs in
   `VpcConfig` get explicit edges to the Lambda, so the reversed delete traversal
   removes the Lambda first and the async ENI detach finishes before EC2 refuses.
