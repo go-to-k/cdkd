@@ -4665,6 +4665,7 @@
         "local-run-task-from-state",
         "local-start-alb-from-state",
         "local-start-api-websocket",
+        "local-start-web-function",
         "log-pipeline",
         "macro-expansion",
         "migrate-from-cfn",
@@ -4922,6 +4923,9 @@
         ],
         "local-start-api-websocket": [
           "literal"
+        ],
+        "local-start-web-function": [
+          "l2"
         ],
         "log-pipeline": [
           "l2"

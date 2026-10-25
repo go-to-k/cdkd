@@ -51,8 +51,14 @@ import {
  * go-to-k/cdkd#2523.
  */
 
-/** The four commands whose `--assume-role` help advertises the opt-out. */
-const NEGATABLE = ['invoke', 'invoke-agentcore', 'start-agentcore', 'start-cloudfront'] as const;
+/** The five commands whose `--assume-role` help advertises the opt-out. */
+const NEGATABLE = [
+  'invoke',
+  'invoke-agentcore',
+  'start-agentcore',
+  'start-cloudfront',
+  'start-web-function',
+] as const;
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const TARGET = 'MyStack/MyThing';
@@ -141,11 +147,12 @@ describe('cdkd local *: --no-assume-role is registered where it is advertised (#
         'start-api',
         'start-cloudfront',
         'start-service',
+        'start-web-function',
       ].sort()
     );
     // The three that carry `--assume-role` but deliberately have NO negation.
     // Asserted as the complement rather than left implicit, so DROPPING the
-    // advertisement from one of the four (rather than adding it to one of the
+    // advertisement from one of the five (rather than adding it to one of the
     // three) also reds — the parity fence above would go quiet either way.
     expect(withPositive.filter((name) => !NEGATABLE.includes(name as never))).toEqual([
       'start-alb',

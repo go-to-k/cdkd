@@ -174,7 +174,7 @@ the app's source code is gone.
 | `deploy`, `destroy`, `diff`, `synth`, `list`, `import`, `export`, `orphan`, `scrub`, `publish-assets` | Yes |
 | `bootstrap`, `drift`, `rollback`, `events`, `gc`, `force-unlock` | No |
 | [`cdkd state ...`](cli-state.md): `info`, `list`, `resources`, `show`, `orphan`, `destroy`, `migrate`, `refresh-observed` | No |
-| [`cdkd local ...`](local-emulation.md): `invoke`, `start-api`, `run-task`, `start-service`, `start-alb`, `start-cloudfront`, `invoke-agentcore`, `start-agentcore` | Yes |
+| [`cdkd local ...`](local-emulation.md): `invoke`, `start-api`, `run-task`, `start-service`, `start-alb`, `start-cloudfront`, `invoke-agentcore`, `start-agentcore`, `start-web-function` | Yes |
 
 The `cdkd local` commands synthesize the app to find what to run, and deploy
 nothing.
