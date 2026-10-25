@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { SNSClient } from '@aws-sdk/client-sns';
 import { SQSClient } from '@aws-sdk/client-sqs';
@@ -8,15 +8,17 @@ import { EventBridgeClient } from '@aws-sdk/client-eventbridge';
 import { CloudWatchClient } from '@aws-sdk/client-cloudwatch';
 import {
   ACCOUNT,
-  armFor,
+  DECLARED_DEFAULT,
+  TAG_THROWS,
+  createOnlyOf,
+  describeWireCases,
   paths,
-  probe,
-  record,
   setOutputOverrides,
-  without,
   type Bag,
-  type Path,
+  type Throw,
+  type TypeCase,
 } from './sdk-wire-harness.js';
+import { CASES_2 } from './sdk-wire-cases-2.js';
 
 // Every client class a covered provider reaches, wrapped so each instance
 // (shared or provider-built) is captured. A `vi.mock` factory is hoisted, so
@@ -51,7 +53,6 @@ import { SQSQueuePolicyProvider } from '../../../src/provisioning/providers/sqs-
 import { SSMParameterProvider } from '../../../src/provisioning/providers/ssm-parameter-provider.js';
 import { EventBridgeBusProvider } from '../../../src/provisioning/providers/eventbridge-bus-provider.js';
 import { CloudWatchAlarmProvider } from '../../../src/provisioning/providers/cloudwatch-alarm-provider.js';
-import type { ResourceProvider, UpdateContext } from '../../../src/types/resource.js';
 
 /**
  * `ListSubscriptionsByTopic` answers the subscriptions of the bag under probe,
@@ -70,69 +71,9 @@ function armTopicSubscriptions(physicalId: string, bag: Bag): void {
   setOutputOverrides({ ListSubscriptionsByTopicCommand: () => ({ Subscriptions: listed }) });
 }
 
-/** Why a removal throws, and a needle its message must match. */
-interface Throw {
-  why: string;
-  says: RegExp;
-}
-
-interface BagCase {
-  name: string;
-  bag: Bag;
-  variants?: Record<string, unknown>;
-  /** Overrides the type's `arm` for this bag, e.g. a live state no bag spells. */
-  arm?: (physicalId: string, bag: Bag) => void;
-  /** Probe label -> why it is silent. Exact: a fixed gap must leave the list. */
-  expectedSilent?: Record<string, string>;
-  /**
-   * Probe label -> why removing that path throws. Exact, like `expectedSilent`,
-   * and each throw's message must match its needle: a throw for another reason
-   * is not the refusal the entry names.
-   */
-  expectedRemovalThrows?: Record<string, Throw>;
-}
-
-interface TypeCase {
-  resourceType: string;
-  provider: () => ResourceProvider;
-  physicalId: string;
-  createOnly: ReadonlySet<string>;
-  /** Arms the fake reads for a bag (default: none), e.g. what a list answers. */
-  arm?: (physicalId: string, bag: Bag) => void;
-  /** What every `update()` receives as its context (the record's attributes). */
-  updateContext?: UpdateContext;
-  /**
-   * Top-levels whose `update()` re-sends the WHOLE value from `next` and never
-   * reads `prev`: every `update-remove` probe at or under such a key is silent
-   * by design (`next` alone delivers it, as its `update-add` probe observes).
-   */
-  wholeFromNext?: { keys: (key: string) => boolean; reason: string };
-  /** `handledProperties` entries no bag carries, each with the reason. */
-  exempt: Record<string, string>;
-  /**
-   * `<Top>.<path>` -> why no bag carries that nested path (array indices
-   * dropped) of a carried top-level the schema fixture's `nestedPropertyPaths`
-   * lists.
-   */
-  nestedExempt?: Record<string, string>;
-  /**
-   * Removal probes that only see THAT the wire changed, not WHICH member it
-   * names: removing one element of a two-element list (or one key of a map)
-   * from `bags[0]` must send `command` exactly once, naming `names` and not
-   * `notNames`. With `where`, only `command` requests whose body contains it
-   * count (a clear among the same command's writes).
-   */
-  targets: { path: Path; command: string; names: string; notNames: string; where?: string }[];
-  bags: BagCase[];
-}
-
 const ROLE = `arn:aws:iam::${ACCOUNT}:role/r`;
 const QUEUE_ARN = (name: string) => `arn:aws:sqs:us-east-1:${ACCOUNT}:${name}`;
 
-const TAGS_REFUSED: Throw = {
-  why: 'a Tags entry without its Key or Value is refused before any call (go-to-k/cdkd#3994)',
-  says: /is not a list of tags/,
-};
 const SUBSCRIPTION_REFUSED: Throw = {
   why: 'an inline Subscription without a string Protocol and Endpoint is refused before Subscribe',
   says: /inline Subscription entry requires string Protocol and/,
@@ -157,30 +98,6 @@ const POLICY = (action: string, resource: string) => ({
     { Sid: 's1', Effect: 'Allow', Principal: { AWS: ROLE }, Action: action, Resource: resource },
   ],
 });
-
-interface SchemaFixture {
-  createOnlyPropertyPaths: string[][];
-  nestedPropertyPaths?: Record<string, string[]>;
-}
-
-/** A type's committed schema fixture. */
-function fixtureOf(resourceType: string): SchemaFixture {
-  const file = new URL(
-    `../../fixtures/cfn-schemas/${resourceType.replaceAll('::', '-')}.json`,
-    import.meta.url
-  );
-  return JSON.parse(readFileSync(file, 'utf8')) as SchemaFixture;
-}
-
-/** A type's create-only top-levels, from its committed schema fixture. */
-function createOnlyOf(resourceType: string): ReadonlySet<string> {
-  return new Set(fixtureOf(resourceType).createOnlyPropertyPaths.map((p) => p[0]!));
-}
-
-/** Top-level -> every dotted nested path beneath it (no array indices), from the fixture. */
-function nestedPathsOf(resourceType: string): Record<string, string[]> {
-  return fixtureOf(resourceType).nestedPropertyPaths ?? {};
-}
 
 /**
  * `GetSubscriptionAttributes` answers the live subscription `bag` describes,
@@ -238,10 +155,6 @@ const METRIC_STAT_WITHOUT_METRIC: Throw = {
   why: 'a MetricStat without its schema-required Metric fails before PutMetricAlarm (an unguarded read)',
   says: /reading 'MetricName'/,
 };
-// Not a gap: the value IS what the service holds when the member is unset (no
-// filter, raw delivery off, type String, no pattern / description / key), so
-// sending it and omitting it leave the same resource.
-const DECLARED_DEFAULT = 'the declared value is what an unset member reads as';
 const SSM_VALUE_REQUIRED: Throw = {
   why: 'Value is refused when absent, before PutParameter',
   says: /Value is required for SSM parameter/,
@@ -278,16 +191,6 @@ const SUBSCRIPTION_FULL: Bag = {
   ReplayPolicy: { PointType: 'Timestamp', StartingPoint: '2026-01-01T00:00:00Z' },
   SubscriptionRoleArn: ROLE,
 };
-
-const TAG_THROWS = (directions: string[], count: number): Record<string, Throw> =>
-  Object.fromEntries(
-    directions.flatMap((d) =>
-      Array.from({ length: count }, (_, i) => [
-        [`${d}:Tags.${i}.Key`, TAGS_REFUSED],
-        [`${d}:Tags.${i}.Value`, TAGS_REFUSED],
-      ]).flat()
-    )
-  );
 
 const CASES: TypeCase[] = [
   {
@@ -665,6 +568,7 @@ const CASES: TypeCase[] = [
         expectedSilent: {
           'update-add:EventSourceName': EVENT_SOURCE_PINNED_BY_NAME,
           'update-remove:EventSourceName': EVENT_SOURCE_PINNED_BY_NAME,
+          'update-vary:EventSourceName': EVENT_SOURCE_PINNED_BY_NAME,
         },
         expectedRemovalThrows: { 'create:Name': BUS_NAME_REQUIRED },
       },
@@ -796,7 +700,8 @@ const CASES: TypeCase[] = [
 ];
 
 /**
- * Registered SDK provider classes no case above covers yet (#3723). It only
+ * Registered SDK provider classes no case covers yet (#3723), here or in
+ * `sdk-wire-cases-2.ts` (run by `sdk-wire-coverage-2.test.ts`). It only
  * SHRINKS: a class leaves it in the PR that adds its case, and a NEW provider
  * class lands with a case, never a row here. `MAX_UNCOVERED` is its exact
  * size, lowered by hand with each removal.
@@ -813,8 +718,6 @@ const NOT_YET_COVERED = new Set([
   'AppSyncProvider',
   'BudgetsBudgetProvider',
   'CloudFrontDistributionProvider',
-  'CloudFrontOACProvider',
-  'CloudFrontOAIProvider',
   'CloudTrailProvider',
   'CloudWatchAnomalyDetectorProvider',
   'CodeBuildProvider',
@@ -826,7 +729,6 @@ const NOT_YET_COVERED = new Set([
   'DynamoDBGlobalTableProvider',
   'DynamoDBTableProvider',
   'EC2Provider',
-  'ECRProvider',
   'ECSProvider',
   'EFSProvider',
   'ELBv2Provider',
@@ -851,16 +753,12 @@ const NOT_YET_COVERED = new Set([
   'IAMRoleProvider',
   'IAMUserGroupProvider',
   'KMSProvider',
-  'KinesisStreamConsumerProvider',
   'KinesisStreamProvider',
-  'LambdaEventInvokeConfigProvider',
   'LambdaEventSourceMappingProvider',
   'LambdaFunctionProvider',
   'LambdaLayerVersionProvider',
   'LambdaMicrovmImageProvider',
   'LambdaNetworkConnectorProvider',
-  'LambdaPermissionProvider',
-  'LambdaUrlProvider',
   'LambdaWebFunctionEndpointProvider',
   'LambdaWebFunctionRevisionProvider',
   'LogsLogGroupProvider',
@@ -872,7 +770,6 @@ const NOT_YET_COVERED = new Set([
   'RDSDBProxyTargetGroupProvider',
   'RDSProvider',
   'Route53Provider',
-  'S3BucketPolicyProvider',
   'S3BucketProvider',
   'S3DirectoryBucketProvider',
   'S3TablesProvider',
@@ -884,16 +781,36 @@ const NOT_YET_COVERED = new Set([
   'WAFv2WebACLProvider',
   'WaitConditionHandleProvider',
 ]);
-const MAX_UNCOVERED = 81;
+const MAX_UNCOVERED = 73;
+
+/**
+ * Every case list, with the test file that runs it and the list's name there.
+ * A list counts as covered only while that file exists beside this one, is a
+ * `*.test.ts` the suite collects, and still hands the list to
+ * `describeWireCases`.
+ */
+const CASE_LISTS: { cases: TypeCase[]; name: string; file: string }[] = [
+  { cases: CASES, name: 'CASES', file: 'sdk-wire-coverage.test.ts' },
+  { cases: CASES_2, name: 'CASES_2', file: 'sdk-wire-coverage-2.test.ts' },
+];
+const ALL_CASES: TypeCase[] = CASE_LISTS.flatMap((l) => l.cases);
 
 describe('SDK wire coverage ledger', () => {
+  it.each(CASE_LISTS)('$name is run by $file', ({ name, file }) => {
+    expect(file).toMatch(/\.test\.ts$/);
+    const url = new URL(`./${file}`, import.meta.url);
+    expect(existsSync(url), file).toBe(true);
+    // Anchored to a line start, so a commented-out call does not count.
+    expect(readFileSync(url, 'utf8')).toMatch(new RegExp(`^\\s*describeWireCases\\(${name}\\);`, 'm'));
+  });
+
   it('names every registered provider class exactly once: covered by a case, or not yet', async () => {
     // Every class `registerAllProviders` destructures comes from this module.
     const classes = Object.entries(
       await import('../../../src/provisioning/provider-classes.js')
     ).filter(([, value]) => typeof value === 'function');
     expect(classes.length).toBeGreaterThan(80);
-    const covered = new Set(CASES.map((t) => t.provider().constructor.name));
+    const covered = new Set(ALL_CASES.map((t) => t.provider().constructor.name));
     for (const [name] of classes) {
       expect(covered.has(name) !== NOT_YET_COVERED.has(name), name).toBe(true);
     }
@@ -905,8 +822,8 @@ describe('SDK wire coverage ledger', () => {
   });
 
   it('covers every resource type a covered class handles', () => {
-    const cased = new Set(CASES.map((t) => t.resourceType));
-    for (const t of CASES) {
+    const cased = new Set(ALL_CASES.map((t) => t.resourceType));
+    for (const t of ALL_CASES) {
       for (const type of t.provider().handledProperties?.keys() ?? []) {
         expect(cased.has(type), `${t.provider().constructor.name}: ${type}`).toBe(true);
       }
@@ -915,101 +832,5 @@ describe('SDK wire coverage ledger', () => {
 });
 
 describe('SDK wire coverage', () => {
-  describe.each(CASES)('$resourceType', (t) => {
-    it('its bags carry every handledProperties entry not exempted', () => {
-      const handled = [...(t.provider().handledProperties?.get(t.resourceType) ?? [])].sort();
-      expect(handled.length).toBeGreaterThan(0);
-      const carried = new Set(t.bags.flatMap((b) => Object.keys(b.bag)));
-      for (const key of carried) expect(handled).toContain(key);
-      for (const key of Object.keys(t.exempt)) expect(carried.has(key)).toBe(false);
-      expect([...carried, ...Object.keys(t.exempt)].sort()).toEqual(handled);
-    });
-
-    it('its bags carry every nested path the schema lists under a carried top-level', () => {
-      const nested = nestedPathsOf(t.resourceType);
-      const exempt = t.nestedExempt ?? {};
-      const missing: string[] = [];
-      for (const [top, schemaPaths] of Object.entries(nested)) {
-        const carriers = t.bags.filter((b) => top in b.bag).map((b) => b.bag[top]);
-        if (carriers.length === 0) continue;
-        // Path-scoped: a member counts only at the depth the schema puts it.
-        const seen = new Set(
-          carriers.flatMap((v) =>
-            paths(v).map((p) => p.filter((seg) => typeof seg === 'string').join('.'))
-          )
-        );
-        for (const path of schemaPaths) {
-          const label = `${top}.${path}`;
-          if (label in exempt) {
-            // A stale exemption: a bag now carries it.
-            expect(seen.has(path), label).toBe(false);
-          } else if (!seen.has(path)) {
-            missing.push(label);
-          }
-        }
-      }
-      expect(missing).toEqual([]);
-      // An exemption naming no schema path is stale too.
-      for (const label of Object.keys(exempt)) {
-        const [top, ...rest] = label.split('.');
-        expect(nested[top!] ?? [], label).toContain(rest.join('.'));
-      }
-    });
-
-    it.each(t.bags)('delivers every path of the $name bag', async (b) => {
-      const { silent, removalThrows, messages } = await probe({
-        ...t,
-        bag: b.bag,
-        variants: b.variants,
-        arm: b.arm ?? t.arm,
-      });
-      const byDesign = t.wholeFromNext;
-      const wholeFromNext = byDesign
-        ? paths(b.bag)
-            .filter((p) => byDesign.keys(String(p[0])) && !t.createOnly.has(String(p[0])))
-            .map((p) => `update-remove:${p.join('.')}`)
-            // A removal that throws is a removal throw, not a silent probe.
-            .filter((label) => !(label in (b.expectedRemovalThrows ?? {})))
-        : [];
-      const expectedSilent = [...new Set([...Object.keys(b.expectedSilent ?? {}), ...wholeFromNext])];
-      // One assertion, so a failure shows both lists and each throw's message.
-      expect(
-        { silent: silent.sort(), removalThrows: removalThrows.sort() },
-        JSON.stringify(messages, null, 2)
-      ).toEqual({
-        silent: expectedSilent.sort(),
-        removalThrows: Object.keys(b.expectedRemovalThrows ?? {}).sort(),
-      });
-      for (const [label, expected] of Object.entries(b.expectedRemovalThrows ?? {})) {
-        expect(messages[label], `${label}: ${expected.why}`).toMatch(expected.says);
-      }
-    });
-
-    it.each(t.targets)('removing $path sends $command naming only $names', async (target) => {
-      const full = t.bags[0]!.bag;
-      armFor(t, full);
-      const outcome = await record(() =>
-        t
-          .provider()
-          .update(
-            'L',
-            t.physicalId,
-            t.resourceType,
-            without(full, target.path),
-            structuredClone(full),
-            t.updateContext
-          )
-      );
-      expect(outcome).toMatchObject({ threw: false });
-      const bodies = (outcome as { wire: string }).wire
-        .split('\n')
-        .map((line) => JSON.parse(line) as string[])
-        .filter((entry) => entry[0] === target.command)
-        .map((entry) => entry[entry.length - 1]!)
-        .filter((body) => target.where === undefined || body.includes(target.where));
-      expect(bodies).toHaveLength(1);
-      expect(bodies[0]).toContain(target.names);
-      expect(bodies[0]).not.toContain(target.notNames);
-    });
-  });
+  describeWireCases(CASES);
 });

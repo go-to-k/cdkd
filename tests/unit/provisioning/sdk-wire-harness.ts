@@ -1,4 +1,5 @@
-import { expect } from 'vite-plus/test';
+import { readFileSync } from 'node:fs';
+import { describe, it, expect } from 'vite-plus/test';
 import type { ResourceProvider, UpdateContext } from '../../../src/types/resource.js';
 
 /**
@@ -388,11 +389,21 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
           await record(update(reduced, reduced))
         ) || updateThrew;
     }
-    if (!createThrew && !updateThrew) continue;
+    const isLeaf = paths(parentOf(c.bag, [...path, ''])).length === 0;
+    const leaf = parentOf(c.bag, path)[path[path.length - 1]!];
+    // Every updatable scalar leaf is also varied on update, whether or not its
+    // removal threw: a provider that skips its setter while next equals prev
+    // makes the removal comparisons call-versus-no-call, which any call passes
+    // whatever it carries. Varying the value with `prev` fixed observes WHAT
+    // the call sends (an empty container has no value to vary).
+    const varyOnUpdate =
+      updateThrew ||
+      (isLeaf && leaf !== null && typeof leaf !== 'object' && !c.createOnly.has(String(path[0])));
+    if (!createThrew && !varyOnUpdate) continue;
     // A container whose removal throws (a required list or document) cannot be
     // varied, but each path beneath it is probed on its own: those probes are
     // its delivery evidence. An EMPTY one has none, so it stays silent below.
-    if (paths(parentOf(c.bag, [...path, ''])).length > 0) continue;
+    if (!isLeaf) continue;
     const alt = varied(
       c.bag,
       path,
@@ -404,7 +415,7 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
         silent.push(`create-vary:${label}`);
       }
     }
-    if (updateThrew) {
+    if (varyOnUpdate) {
       const base = without(c.bag, path.length > 1 ? path.slice(0, -1) : path);
       const before = await record(update(c.bag, base));
       const after = alt === undefined ? undefined : await record(update(alt, base));
@@ -414,4 +425,208 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
     }
   }
   return { silent, removalThrows, messages };
+}
+
+// --- Cases and the suite that runs them ---------------------------------------
+
+/** Why a removal throws, and a needle its message must match. */
+export interface Throw {
+  why: string;
+  says: RegExp;
+}
+
+export interface BagCase {
+  name: string;
+  bag: Bag;
+  variants?: Record<string, unknown>;
+  /** Overrides the type's `arm` for this bag, e.g. a live state no bag spells. */
+  arm?: (physicalId: string, bag: Bag) => void;
+  /** Probe label -> why it is silent. Exact: a fixed gap must leave the list. */
+  expectedSilent?: Record<string, string>;
+  /**
+   * Probe label -> why removing that path throws. Exact, like `expectedSilent`,
+   * and each throw's message must match its needle: a throw for another reason
+   * is not the refusal the entry names.
+   */
+  expectedRemovalThrows?: Record<string, Throw>;
+}
+
+export interface TypeCase {
+  resourceType: string;
+  provider: () => ResourceProvider;
+  physicalId: string;
+  createOnly: ReadonlySet<string>;
+  /** Arms the fake reads for a bag (default: none), e.g. what a list answers. */
+  arm?: (physicalId: string, bag: Bag) => void;
+  /** What every `update()` receives as its context (the record's attributes). */
+  updateContext?: UpdateContext;
+  /**
+   * Top-levels whose `update()` re-sends the WHOLE value from `next` and never
+   * reads `prev`: every `update-remove` probe at or under such a key is silent
+   * by design (`next` alone delivers it, as its `update-add` probe observes).
+   */
+  wholeFromNext?: { keys: (key: string) => boolean; reason: string };
+  /** `handledProperties` entries no bag carries, each with the reason. */
+  exempt: Record<string, string>;
+  /**
+   * `<Top>.<path>` -> why no bag carries that nested path (array indices
+   * dropped) of a carried top-level the schema fixture's `nestedPropertyPaths`
+   * lists.
+   */
+  nestedExempt?: Record<string, string>;
+  /**
+   * Removal probes that only see THAT the wire changed, not WHICH member it
+   * names: removing one element of a two-element list (or one key of a map)
+   * from `bags[0]` must send `command` exactly once, naming `names` and not
+   * `notNames`. With `where`, only `command` requests whose body contains it
+   * count (a clear among the same command's writes).
+   */
+  targets: { path: Path; command: string; names: string; notNames: string; where?: string }[];
+  bags: BagCase[];
+}
+
+interface SchemaFixture {
+  createOnlyPropertyPaths: string[][];
+  nestedPropertyPaths?: Record<string, string[]>;
+}
+
+/** A type's committed schema fixture. */
+function fixtureOf(resourceType: string): SchemaFixture {
+  const file = new URL(
+    `../../fixtures/cfn-schemas/${resourceType.replaceAll('::', '-')}.json`,
+    import.meta.url
+  );
+  return JSON.parse(readFileSync(file, 'utf8')) as SchemaFixture;
+}
+
+/** A type's create-only top-levels, from its committed schema fixture. */
+export function createOnlyOf(resourceType: string): ReadonlySet<string> {
+  return new Set(fixtureOf(resourceType).createOnlyPropertyPaths.map((p) => p[0]!));
+}
+
+/** Top-level -> every dotted nested path beneath it (no array indices), from the fixture. */
+function nestedPathsOf(resourceType: string): Record<string, string[]> {
+  return fixtureOf(resourceType).nestedPropertyPaths ?? {};
+}
+
+export const TAGS_REFUSED: Throw = {
+  why: 'a Tags entry without its Key or Value is refused before any call (go-to-k/cdkd#3994)',
+  says: /is not a list of tags/,
+};
+
+/** `TAGS_REFUSED` for `Tags.<i>.Key` / `.Value`, i < `count`, in each direction. */
+export const TAG_THROWS = (directions: string[], count: number): Record<string, Throw> =>
+  Object.fromEntries(
+    directions.flatMap((d) =>
+      Array.from({ length: count }, (_, i) => [
+        [`${d}:Tags.${i}.Key`, TAGS_REFUSED],
+        [`${d}:Tags.${i}.Value`, TAGS_REFUSED],
+      ]).flat()
+    )
+  );
+
+// Not a gap: the value IS what the service holds when the member is unset (no
+// filter, raw delivery off, type String, no pattern / description / key), so
+// sending it and omitting it leave the same resource.
+export const DECLARED_DEFAULT = 'the declared value is what an unset member reads as';
+
+/** The per-type wire suite over `cases`: property coverage, path delivery, targets. */
+export function describeWireCases(cases: TypeCase[]): void {
+  describe.each(cases)('$resourceType', (t) => {
+    it('its bags carry every handledProperties entry not exempted', () => {
+      const handled = [...(t.provider().handledProperties?.get(t.resourceType) ?? [])].sort();
+      expect(handled.length).toBeGreaterThan(0);
+      const carried = new Set(t.bags.flatMap((b) => Object.keys(b.bag)));
+      for (const key of carried) expect(handled).toContain(key);
+      for (const key of Object.keys(t.exempt)) expect(carried.has(key)).toBe(false);
+      expect([...carried, ...Object.keys(t.exempt)].sort()).toEqual(handled);
+    });
+
+    it('its bags carry every nested path the schema lists under a carried top-level', () => {
+      const nested = nestedPathsOf(t.resourceType);
+      const exempt = t.nestedExempt ?? {};
+      const missing: string[] = [];
+      for (const [top, schemaPaths] of Object.entries(nested)) {
+        const carriers = t.bags.filter((b) => top in b.bag).map((b) => b.bag[top]);
+        if (carriers.length === 0) continue;
+        // Path-scoped: a member counts only at the depth the schema puts it.
+        const seen = new Set(
+          carriers.flatMap((v) =>
+            paths(v).map((p) => p.filter((seg) => typeof seg === 'string').join('.'))
+          )
+        );
+        for (const path of schemaPaths) {
+          const label = `${top}.${path}`;
+          if (label in exempt) {
+            // A stale exemption: a bag now carries it.
+            expect(seen.has(path), label).toBe(false);
+          } else if (!seen.has(path)) {
+            missing.push(label);
+          }
+        }
+      }
+      expect(missing).toEqual([]);
+      // An exemption naming no schema path is stale too.
+      for (const label of Object.keys(exempt)) {
+        const [top, ...rest] = label.split('.');
+        expect(nested[top!] ?? [], label).toContain(rest.join('.'));
+      }
+    });
+
+    it.each(t.bags)('delivers every path of the $name bag', async (b) => {
+      const { silent, removalThrows, messages } = await probe({
+        ...t,
+        bag: b.bag,
+        variants: b.variants,
+        arm: b.arm ?? t.arm,
+      });
+      const byDesign = t.wholeFromNext;
+      const wholeFromNext = byDesign
+        ? paths(b.bag)
+            .filter((p) => byDesign.keys(String(p[0])) && !t.createOnly.has(String(p[0])))
+            .map((p) => `update-remove:${p.join('.')}`)
+            // A removal that throws is a removal throw, not a silent probe.
+            .filter((label) => !(label in (b.expectedRemovalThrows ?? {})))
+        : [];
+      const expectedSilent = [...new Set([...Object.keys(b.expectedSilent ?? {}), ...wholeFromNext])];
+      // One assertion, so a failure shows both lists and each throw's message.
+      expect(
+        { silent: silent.sort(), removalThrows: removalThrows.sort() },
+        JSON.stringify(messages, null, 2)
+      ).toEqual({
+        silent: expectedSilent.sort(),
+        removalThrows: Object.keys(b.expectedRemovalThrows ?? {}).sort(),
+      });
+      for (const [label, expected] of Object.entries(b.expectedRemovalThrows ?? {})) {
+        expect(messages[label], `${label}: ${expected.why}`).toMatch(expected.says);
+      }
+    });
+
+    it.each(t.targets)('removing $path sends $command naming only $names', async (target) => {
+      const full = t.bags[0]!.bag;
+      armFor(t, full);
+      const outcome = await record(() =>
+        t
+          .provider()
+          .update(
+            'L',
+            t.physicalId,
+            t.resourceType,
+            without(full, target.path),
+            structuredClone(full),
+            t.updateContext
+          )
+      );
+      expect(outcome).toMatchObject({ threw: false });
+      const bodies = (outcome as { wire: string }).wire
+        .split('\n')
+        .map((line) => JSON.parse(line) as string[])
+        .filter((entry) => entry[0] === target.command)
+        .map((entry) => entry[entry.length - 1]!)
+        .filter((body) => target.where === undefined || body.includes(target.where));
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0]).toContain(target.names);
+      expect(bodies[0]).not.toContain(target.notNames);
+    });
+  });
 }
