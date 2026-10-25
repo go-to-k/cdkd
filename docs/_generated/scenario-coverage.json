@@ -1830,6 +1830,11 @@
       "scenarios": []
     },
     {
+      "name": "local-start-web-function-from-state",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "log-pipeline",
       "annotated": true,
       "scenarios": []
@@ -3542,6 +3547,7 @@
     "local-start-cloudfront-from-state",
     "local-start-service-watch-fast",
     "local-start-web-function",
+    "local-start-web-function-from-state",
     "loggroup-class-guard",
     "loggroup-kms-associate",
     "loggroup-never-expire-guard",

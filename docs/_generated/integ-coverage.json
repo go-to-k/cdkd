@@ -4666,6 +4666,7 @@
         "local-start-alb-from-state",
         "local-start-api-websocket",
         "local-start-web-function",
+        "local-start-web-function-from-state",
         "log-pipeline",
         "macro-expansion",
         "migrate-from-cfn",
@@ -4926,6 +4927,10 @@
         ],
         "local-start-web-function": [
           "l2"
+        ],
+        "local-start-web-function-from-state": [
+          "l2",
+          "literal"
         ],
         "log-pipeline": [
           "l2"
@@ -6027,10 +6032,15 @@
       "resourceType": "AWS::Lambda::WebFunctionEndpoint",
       "integs": [
         "lambda-web-function-revision-replace",
+        "local-start-web-function-from-state",
         "wide-web-functions"
       ],
       "signals": {
         "lambda-web-function-revision-replace": [
+          "l1",
+          "literal"
+        ],
+        "local-start-web-function-from-state": [
           "l1",
           "literal"
         ],
@@ -6044,10 +6054,15 @@
       "resourceType": "AWS::Lambda::WebFunctionRevision",
       "integs": [
         "lambda-web-function-revision-replace",
+        "local-start-web-function-from-state",
         "wide-web-functions"
       ],
       "signals": {
         "lambda-web-function-revision-replace": [
+          "l1",
+          "literal"
+        ],
+        "local-start-web-function-from-state": [
           "l1",
           "literal"
         ],
