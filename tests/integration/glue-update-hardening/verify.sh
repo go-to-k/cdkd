@@ -324,6 +324,7 @@ echo "    OK: Workflow MAP-shape tags reached AWS (env=integ, team=data-platform
 BASE_TAGS='{"env":"integ","team":"data-platform"}'
 UPDATED_TAGS='{"env":"integ-updated","owner":"cdkd"}'
 JOB_ARN="arn:aws:glue:${REGION}:${ACCOUNT_ID}:job/${JOB_NAME}"
+CONNECTION_ARN="arn:aws:glue:${REGION}:${ACCOUNT_ID}:connection/${CONNECTION_NAME}"
 TAGGED_LG_ARN="arn:aws:logs:${REGION}:${ACCOUNT_ID}:log-group:${TAGGED_LG_NAME}"
 assert_tag_set() { # usage: assert_tag_set <label> <want tag map JSON> aws <service> <read-verb> [args...]
   local label="$1" want="$2" raw got
@@ -344,10 +345,23 @@ assert_all_tag_sets() { # usage: assert_all_tag_sets <want tag map JSON> <phase 
     --region "${REGION}" --query 'Tags' --output json
   assert_tag_set "${phase}: Job" "${want}" aws glue get-tags --resource-arn "${JOB_ARN}" \
     --region "${REGION}" --query 'Tags' --output json
+  # go-to-k/cdkd#2762: the Connection's Tags (create on CreateConnection,
+  # update through TagResource / UntagResource).
+  assert_tag_set "${phase}: Connection" "${want}" aws glue get-tags \
+    --resource-arn "${CONNECTION_ARN}" --region "${REGION}" --query 'Tags' --output json
   assert_tag_set "${phase}: log group" "${want}" aws logs list-tags-for-resource \
     --resource-arn "${TAGGED_LG_ARN}" --region "${REGION}" --query 'tags' --output json
 }
 assert_all_tag_sets "${BASE_TAGS}" 'create'
+# go-to-k/cdkd#2762 routing guard: a Connection declaring Tags used to
+# auto-route to Cloud Control, which would satisfy the tag read too.
+CONNECTION_ROUTE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -r \
+  '[.resources[] | select(.resourceType == "AWS::Glue::Connection") | .provisionedBy // "sdk"] | join(" ")')
+if [ "${CONNECTION_ROUTE}" != "sdk" ]; then
+  echo "FAIL: the Glue Connection's routing layer is '${CONNECTION_ROUTE}', expected 'sdk'" >&2
+  exit 1
+fi
+echo "    OK: the Glue Connection is provisioned by the SDK provider"
 
 # --- Assertion 3: Crawler DynamoDB scan tuning reached AWS (#1391) -----
 # The SDK `DynamoDBTarget` spells the scan tuning `scanAll` / `scanRate`

@@ -14,10 +14,14 @@
 #     pass-through is parity. Asserting these is what stops an over-eager
 #     provider that reset everything from passing this fixture.
 #
+# Phase 1 also declares `Visibility: PUBLIC_READ` + `ResourceAccessRole`
+# (go-to-k/cdkd#2762), sent through UpdateProjectVisibility; Phase 2 drops both
+# and asserts the PRIVATE / no-role reset CloudFormation applies.
+#
 # Then destroys and confirms a clean teardown.
 #
 # Phase 0 first deploys with CDKD_TEST_NONPROV_REFUSAL=true, which adds a
-# `Visibility` property the SDK provider does not handle, and asserts the
+# `Triggers` property the SDK provider does not handle, and asserts the
 # deploy is refused pre-flight with nothing provisioned (issue #3866).
 # Phase 1b asserts `--recreate-via-cc-api` on the deployed project is refused
 # and leaves it intact (issue #3887).
@@ -159,13 +163,13 @@ assert_field() { # usage: assert_field <description> <jq-path> <expected>
 # Control, which failed mid-deploy with UnsupportedActionException after the
 # role had been created -- also a non-zero exit, so the rc alone proves
 # nothing: the refusal's own wording is the discriminator.
-echo "==> Phase 0: a Visibility property is refused pre-flight (issue #3866)"
+echo "==> Phase 0: a Triggers property is refused pre-flight (issue #3866)"
 if REFUSAL_OUT="$(env CDKD_TEST_NONPROV_REFUSAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes 2>&1)"; then
   printf '%s\n' "${REFUSAL_OUT}" >&2
-  echo "FAIL: Phase 0 deploy exited 0; a Visibility property on AWS::CodeBuild::Project must be refused" >&2
+  echo "FAIL: Phase 0 deploy exited 0; a Triggers property on AWS::CodeBuild::Project must be refused" >&2
   exit 1
 fi
 REFUSAL_PLAIN="$(printf '%s\n' "${REFUSAL_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
@@ -177,8 +181,8 @@ fi
 for needle in \
   'AWS::CodeBuild::Project uses properties' \
   'cannot fall back to Cloud Control API' \
-  '- Visibility: ' \
-  '--prefer-sdk-route AWS::CodeBuild::Project:Visibility'; do
+  '- Triggers: ' \
+  '--prefer-sdk-route AWS::CodeBuild::Project:Triggers'; do
   if ! printf '%s\n' "${REFUSAL_PLAIN}" | grep -qF -- "${needle}"; then
     echo "FAIL: Phase 0 output lacks the pre-flight refusal wording: '${needle}'" >&2
     exit 1
@@ -213,6 +217,20 @@ assert_field "concurrentBuildLimit"            '.concurrentBuildLimit'   '2'
 assert_field "autoRetryLimit"                  '.autoRetryLimit'         '3'
 assert_field "cache.type"                      '.cache.type'             'LOCAL'
 assert_field "logsConfig.cloudWatchLogs.status" '.logsConfig.cloudWatchLogs.status' 'DISABLED'
+# go-to-k/cdkd#2762: the UpdateProjectVisibility pair after CreateProject.
+assert_field "projectVisibility"               '.projectVisibility'      'PUBLIC_READ'
+ROLE_ARN_P1="$(project_field '.serviceRole')"
+assert_field "resourceAccessRole (the service role)" '.resourceAccessRole' "${ROLE_ARN_P1}"
+# Routing guard: the reads above prove the pair reached AWS, not which layer
+# sent it. Declaring either used to be refused pre-flight (no Cloud Control
+# route), so the SDK provider is the only layer that can have.
+PROVISIONED_BY_P1="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r \
+  '[.resources[] | select(.resourceType == "AWS::CodeBuild::Project") | .provisionedBy // "sdk"] | join(" ")')"
+if [ "${PROVISIONED_BY_P1}" != "sdk" ]; then
+  echo "FAIL: the project's routing layer is '${PROVISIONED_BY_P1}', expected 'sdk'" >&2
+  exit 1
+fi
+echo "    ok: provisionedBy = sdk"
 
 PROJECT_ARN_P1="$(project_field '.arn')"
 PROJECT_CREATED_P1="$(project_field '.created')"
@@ -278,6 +296,10 @@ echo "==> Phase 2: the ONE field CFn resets must be gone"
 # cdkd and invisible to the next `cdkd diff`. Post-fix the removal sends the
 # empty object and AWS nulls the block out.
 assert_field "buildBatchConfig cleared on removal" '.buildBatchConfig' 'null'
+# go-to-k/cdkd#2762: CloudFormation resets a removed Visibility to PRIVATE and
+# clears a removed ResourceAccessRole (CFn A/B); so must cdkd.
+assert_field "projectVisibility reset on removal" '.projectVisibility'  'PRIVATE'
+assert_field "resourceAccessRole cleared on removal" '.resourceAccessRole' 'null'
 
 echo "==> Phase 2: the seven fields CFn RETAINS must be unchanged"
 # These are the CFn-parity pins. If a future change "fixes" them into resets,

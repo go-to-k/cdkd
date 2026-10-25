@@ -7,6 +7,7 @@ import {
   UpdateStreamModeCommand,
   UpdateShardCountCommand,
   UpdateMaxRecordSizeCommand,
+  UpdateStreamRecordDistributionStrategyCommand,
   EnableEnhancedMonitoringCommand,
   DisableEnhancedMonitoringCommand,
   AddTagsToStreamCommand,
@@ -19,6 +20,7 @@ import {
   ResourceNotFoundException,
   type EncryptionType,
   type MetricsName,
+  type RecordDistributionStrategy,
 } from '@aws-sdk/client-kinesis';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
@@ -313,6 +315,39 @@ function comparableRecordSize(value: unknown, mask: MaskerFn): number | undefine
 }
 
 /**
+ * `RecordDistributionStrategy`'s documented default (CreateStream: "If you do
+ * not specify this parameter, the stream uses `USER_PARTITION_KEY`"). A CFn
+ * A/B (us-east-1, go-to-k/cdkd#2762) showed CloudFormation RESETS a removed
+ * `AUTO` to it, so a template removal sends it.
+ */
+const DEFAULT_RECORD_DISTRIBUTION_STRATEGY = 'USER_PARTITION_KEY';
+
+/**
+ * The `RecordDistributionStrategy` read (go-to-k/cdkd#2762), with the same
+ * three answers as {@link readShardLevelMetrics}. The value set is AWS's to
+ * judge (`AUTO` / `USER_PARTITION_KEY` today), so only the SHAPE is checked: a
+ * non-empty string is `usable`, anything else present `unusable` — an
+ * unresolved intrinsic must not reach the wire as `[object Object]`.
+ */
+type DistributionStrategyRead =
+  | { kind: 'absent' }
+  | { kind: 'usable'; strategy: RecordDistributionStrategy }
+  | { kind: 'unusable'; reason: string };
+
+function readDistributionStrategy(value: unknown, mask: MaskerFn): DistributionStrategyRead {
+  if (value == null) return { kind: 'absent' };
+  if (typeof value === 'string' && value.trim() !== '') {
+    return { kind: 'usable', strategy: value as RecordDistributionStrategy };
+  }
+  return {
+    kind: 'unusable',
+    reason:
+      `AWS::Kinesis::Stream RecordDistributionStrategy must be a non-empty string, got ` +
+      `${JSON.stringify(maskDeep(value, mask))}`,
+  };
+}
+
+/**
  * Poll cadence and cap for the post-delete gone-wait (issue #3872). The
  * DELETING window measured 4-7s (us-east-1), so the cap is generous headroom,
  * not an estimate, and sits well under the 30-min per-resource deadline.
@@ -351,6 +386,27 @@ export class KinesisStreamProvider implements ResourceProvider {
         'StreamEncryption',
         'DesiredShardLevelMetrics',
         'MaxRecordSizeInKiB',
+        // go-to-k/cdkd#2762: on `CreateStream`, and on update through
+        // `reconcileDistributionStrategy`.
+        'RecordDistributionStrategy',
+      ]),
+    ],
+  ]);
+
+  /**
+   * `WarmThroughputMiBps` stays on the Cloud Control route by maintainer
+   * decision (go-to-k/cdkd#1695, closed as not planned): AWS refuses it on an
+   * account without the minimum throughput billing commitment, so no integ can
+   * prove an SDK wiring delivers it.
+   */
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::Kinesis::Stream',
+      new Map([
+        [
+          'WarmThroughputMiBps',
+          'AWS accepts it only on an account enrolled in the Kinesis minimum throughput billing commitment, so the SDK path is not wired (go-to-k/cdkd#1695); Cloud Control forwards it.',
+        ],
       ]),
     ],
   ]);
@@ -476,6 +532,19 @@ export class KinesisStreamProvider implements ResourceProvider {
     if (encryptionRead.kind === 'unusable') {
       throw new ProvisioningError(encryptionRead.reason, resourceType, logicalId, streamName);
     }
+    // go-to-k/cdkd#2762: it rides on `CreateStream` itself, so an unusable
+    // value is refused here rather than sent; a state replay omits it (AWS's
+    // default applies) with a warning instead of refusing the restore.
+    const strategyRead = readDistributionStrategy(properties['RecordDistributionStrategy'], mask);
+    if (strategyRead.kind === 'unusable') {
+      if (context?.replayingState !== true) {
+        throw new ProvisioningError(strategyRead.reason, resourceType, logicalId, streamName);
+      }
+      warn(
+        `${strategyRead.reason}. Replaying a state record, so ${streamName} is created with ` +
+          `AWS's default record distribution strategy rather than refusing the restore`
+      );
+    }
 
     // Set once CreateStream returns. No failure after it is this stream's name
     // collision: it is an auxiliary call's (the retention change,
@@ -522,6 +591,12 @@ export class KinesisStreamProvider implements ResourceProvider {
             StreamMode: streamMode as 'PROVISIONED' | 'ON_DEMAND',
           },
           ...(maxRecordSizeInKiB !== undefined && { MaxRecordSizeInKiB: maxRecordSizeInKiB }),
+          // go-to-k/cdkd#2762: a `CreateStreamInput` member, as CloudFormation
+          // sends it; AWS accepts it only on an ON_DEMAND stream and judges
+          // that itself.
+          ...(strategyRead.kind === 'usable' && {
+            RecordDistributionStrategy: strategyRead.strategy,
+          }),
           ...(Object.keys(tags).length > 0 && { Tags: tags }),
         })
       );
@@ -882,6 +957,15 @@ export class KinesisStreamProvider implements ResourceProvider {
         await this.waitForStreamActive(physicalId);
       }
 
+      await this.reconcileDistributionStrategy(
+        physicalId,
+        streamMode,
+        properties,
+        previousProperties,
+        mask,
+        warn
+      );
+
       // Reconcile DesiredShardLevelMetrics. There is no "set" API — enhanced
       // monitoring is a set mutated by Enable / Disable — so the diff is
       // applied as a removal pass then an addition pass. Both sides are
@@ -1174,6 +1258,63 @@ export class KinesisStreamProvider implements ResourceProvider {
   }
 
   /**
+   * Reconcile `RecordDistributionStrategy` on update (go-to-k/cdkd#2762) via
+   * `UpdateStreamRecordDistributionStrategy`, which takes the stream ARN.
+   *
+   * - usable and different from the record: sent.
+   * - ABSENT while the record held one: a template REMOVAL. CloudFormation
+   *   resets it to `USER_PARTITION_KEY` (CFn A/B), so that is sent — unless the
+   *   stream is now PROVISIONED, where the strategy does not apply and AWS
+   *   accepts it only on ON_DEMAND.
+   * - unusable: warned and left alone (the update path is state-replay
+   *   reachable, so it cannot refuse; the same value is refused on create).
+   *
+   * The previous side is a state record, read leniently: an unusable one
+   * counts as "not recorded".
+   */
+  private async reconcileDistributionStrategy(
+    physicalId: string,
+    streamMode: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    mask: MaskerFn,
+    warn: (message: string) => void
+  ): Promise<void> {
+    const desired = readDistributionStrategy(properties['RecordDistributionStrategy'], mask);
+    if (desired.kind === 'unusable') {
+      warn(
+        `${desired.reason}. Leaving the record distribution strategy on ${physicalId} ` +
+          `unchanged; the same value is REFUSED on a template-path create`
+      );
+      return;
+    }
+    const previous = readDistributionStrategy(
+      previousProperties['RecordDistributionStrategy'],
+      mask
+    );
+    const recorded = previous.kind === 'usable' ? previous.strategy : undefined;
+    let target: RecordDistributionStrategy | undefined;
+    if (desired.kind === 'usable') {
+      if (desired.strategy === recorded) return;
+      target = desired.strategy;
+    } else {
+      if (recorded === undefined || recorded === DEFAULT_RECORD_DISTRIBUTION_STRATEGY) return;
+      if (streamMode !== 'ON_DEMAND') return;
+      target = DEFAULT_RECORD_DISTRIBUTION_STRATEGY;
+    }
+    this.logger.debug(
+      `Updating record distribution strategy for ${physicalId}: from ${recorded ?? 'no value'} to ${target}`
+    );
+    await this.getClient().send(
+      new UpdateStreamRecordDistributionStrategyCommand({
+        StreamARN: await this.resolveStreamArn(physicalId),
+        RecordDistributionStrategy: target,
+      })
+    );
+    await this.waitForStreamActive(physicalId);
+  }
+
+  /**
    * The `effectiveProperties` half of the `ALL` expansion (issue #609).
    *
    * Returns a spreadable `{ effectiveProperties }` ONLY when the expansion
@@ -1366,6 +1507,10 @@ export class KinesisStreamProvider implements ResourceProvider {
       );
       const maxRecordSize = summaryResp.StreamDescriptionSummary?.MaxRecordSizeInKiB;
       if (maxRecordSize !== undefined) result['MaxRecordSizeInKiB'] = maxRecordSize;
+      // go-to-k/cdkd#2762: present for ON_DEMAND streams only, so
+      // emit-when-present.
+      const strategy = summaryResp.StreamDescriptionSummary?.RecordDistributionStrategy;
+      if (strategy !== undefined) result['RecordDistributionStrategy'] = strategy;
     } catch (err) {
       if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;

@@ -15,7 +15,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **89**
-- Declared properties: **1175** (**1173** with read evidence)
+- Declared properties: **1179** (**1177** with read evidence)
 - Fully wired classes: **87**
 - Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **38**
@@ -99,7 +99,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `CloudTrailProvider` | cloudtrail-provider.ts | wired | 15 | 15 |
 | `CloudWatchAlarmProvider` | cloudwatch-alarm-provider.ts | wired | 22 | 22 |
 | `CloudWatchAnomalyDetectorProvider` | cloudwatch-anomaly-detector-provider.ts | wired | 8 | 8 |
-| `CodeBuildProvider` | codebuild-provider.ts | wired | 22 | 22 |
+| `CodeBuildProvider` | codebuild-provider.ts | wired | 24 | 24 |
 | `CodeCommitRepositoryProvider` | codecommit-repository-provider.ts | wired | 6 | 6 |
 | `CognitoUserPoolProvider` | cognito-provider.ts | wired | 30 | 30 |
 | `DLMLifecyclePolicyProvider` | dlm-lifecycle-policy-provider.ts | wired | 12 | 12 |
@@ -120,7 +120,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `EventBridgeRuleProvider` | eventbridge-rule-provider.ts | wired | 9 | 9 |
 | `FirehoseProvider` | firehose-provider.ts | wired | 13 | 13 |
 | `FSxFileSystemProvider` | fsx-filesystem-provider.ts | wired | 14 | 14 |
-| `GlueConnectionProvider` | glue-provider.ts | wired | 2 | 2 |
+| `GlueConnectionProvider` | glue-provider.ts | wired | 3 | 3 |
 | `GlueCrawlerProvider` | glue-provider.ts | wired | 15 | 15 |
 | `GlueJobProvider` | glue-provider.ts | wired | 24 | 24 |
 | `GlueProvider` | glue-provider.ts | wired | 6 | 6 |
@@ -133,7 +133,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `IAMPolicyProvider` | iam-policy-provider.ts | wired | 5 | 5 |
 | `IAMRoleProvider` | iam-role-provider.ts | wired | 9 | 9 |
 | `IAMUserGroupProvider` | iam-user-group-provider.ts | wired | 10 | 10 |
-| `KinesisStreamProvider` | kinesis-provider.ts | wired | 8 | 8 |
+| `KinesisStreamProvider` | kinesis-provider.ts | wired | 9 | 9 |
 | `KinesisStreamConsumerProvider` | kinesis-streamconsumer-provider.ts | wired | 3 | 3 |
 | `KMSProvider` | kms-provider.ts | wired | 14 | 14 |
 | `LambdaEventInvokeConfigProvider` | lambda-event-invoke-config-provider.ts | wired | 5 | 5 |

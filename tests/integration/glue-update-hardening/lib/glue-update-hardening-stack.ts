@@ -75,6 +75,7 @@ const CRAWLER_CONFIGURATION =
  * 15. A Glue Connection (issue #4639): `CreateConnection` goes through the
  *     provider's dedicated create client, which refuses the SDK's 5xx replay.
  *     verify.sh asserts it exists after the deploy and is gone after destroy.
+ *     Its `Tags` (go-to-k/cdkd#2762) change with the #4073 tag sets in 13.
  * 16. Removal of optional Workflow / Trigger properties (issue #1160):
  *     CDKD_TEST_REMOVAL drops the Workflow's Description, DefaultRunProperties
  *     and MaxConcurrentRuns, the ON_DEMAND trigger's Description, and the
@@ -222,6 +223,10 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
           PASSWORD: 'cdkd-integ-not-a-secret',
         },
       },
+      // go-to-k/cdkd#2762: Tags on CreateConnection, then diffed by
+      // TagResource / UntagResource on update (one changed, one dropped, one
+      // added), asserted with the other #4073 tag sets.
+      tags: isUpdate ? UPDATED_TAG_MAP : BASE_TAG_MAP,
     });
 
     // CloudWatch Logs log group whose `Tags` list changes on update (issue

@@ -7,7 +7,10 @@ import * as kinesis from 'aws-cdk-lib/aws-kinesis';
 // Phase 1 (base): PROVISIONED, 1 shard, two explicit shard-level metrics,
 //                 MaxRecordSizeInKiB 2048.
 // Phase 2 (CDKD_TEST_UPDATE=true): ON_DEMAND, metrics switched to the `ALL`
-//                 shorthand, MaxRecordSizeInKiB 4096.
+//                 shorthand, MaxRecordSizeInKiB 4096, RecordDistributionStrategy
+//                 AUTO.
+// Phase 2c (+ CDKD_TEST_REMOVAL=true): the second, always-ON_DEMAND stream
+//                 drops its RecordDistributionStrategy (created as AUTO).
 //
 // The Phase 2 property changes are the issue #609 backfill of
 // `DesiredShardLevelMetrics` + `MaxRecordSizeInKiB`. Both are asserted against
@@ -54,5 +57,23 @@ export class KinesisStreamModeSwitchStack extends cdk.Stack {
       ? ['ALL']
       : ['IncomingBytes', 'OutgoingBytes'];
     cfnStream.maxRecordSizeInKiB = toOnDemand ? 4096 : 2048;
+    // go-to-k/cdkd#2762 UPDATE path: `RecordDistributionStrategy` is ON_DEMAND
+    // only, so it arrives with the Phase 2 mode switch and must be sent AFTER
+    // UpdateStreamMode. Kept under CDKD_TEST_REMOVAL: it is the retained
+    // sibling of the removal below.
+    if (toOnDemand) cfnStream.recordDistributionStrategy = 'AUTO';
+
+    // go-to-k/cdkd#2762 CREATE + REMOVAL path: an ON_DEMAND stream created with
+    // `AUTO` (on `CreateStream` itself). CDKD_TEST_REMOVAL drops the property,
+    // and CloudFormation resets a removed strategy to `USER_PARTITION_KEY`
+    // (CFn A/B), so cdkd must too.
+    const strategyStream = new kinesis.Stream(this, 'StrategyStream', {
+      streamName: `${streamName}-rds`,
+      streamMode: kinesis.StreamMode.ON_DEMAND,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    if (process.env.CDKD_TEST_REMOVAL !== 'true') {
+      (strategyStream.node.defaultChild as kinesis.CfnStream).recordDistributionStrategy = 'AUTO';
+    }
   }
 }

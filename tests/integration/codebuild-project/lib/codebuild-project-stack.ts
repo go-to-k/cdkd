@@ -55,6 +55,14 @@ export class CodeBuildProjectStack extends cdk.Stack {
     // so both ride the L1 escape hatch. Phase 2 drops them entirely, which
     // is what makes the CFn removal reachable.
     if (!removalPhase) {
+      // go-to-k/cdkd#2762: both go through UpdateProjectVisibility after
+      // CreateProject. PUBLIC_READ is the non-default (a new project is
+      // PRIVATE with no role), so an unsent pair cannot pass the Phase 1 read.
+      // The project never runs a build, so nothing becomes public. Phase 2
+      // drops both: CloudFormation then resets to PRIVATE and clears the role
+      // (CFn A/B), and so must cdkd.
+      cfnProject.visibility = 'PUBLIC_READ';
+      cfnProject.resourceAccessRole = project.role!.roleArn;
       cfnProject.autoRetryLimit = 3;
       cfnProject.buildBatchConfig = {
         serviceRole: project.role!.roleArn,
@@ -71,12 +79,13 @@ export class CodeBuildProjectStack extends cdk.Stack {
       cfnProject.addPropertyDeletionOverride('Cache');
     }
 
-    // Issue #3866 refusal phase (verify.sh Phase 0): `Visibility` is a
-    // property the SDK provider does not handle, on a type Cloud Control has
-    // no handlers for, so cdkd must refuse the deploy pre-flight rather than
-    // route the project to Cloud Control. Never set on a deploy that succeeds.
+    // Issue #3866 refusal phase (verify.sh Phase 0): `Triggers` (CDK's
+    // `webhook: true`) is a property the SDK provider does not handle, on a
+    // type Cloud Control has no handlers for, so cdkd must refuse the deploy
+    // pre-flight rather than route the project to Cloud Control. Never set on
+    // a deploy that succeeds. (It was `Visibility` until #2762 handled it.)
     if (process.env['CDKD_TEST_NONPROV_REFUSAL'] === 'true') {
-      cfnProject.addPropertyOverride('Visibility', 'PRIVATE');
+      cfnProject.addPropertyOverride('Triggers', { Webhook: true });
     }
 
     new cdk.CfnOutput(this, 'ProjectName', { value: project.projectName });

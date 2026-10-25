@@ -14,7 +14,10 @@
 #   1. Deploy a PROVISIONED (1 shard) stream. Assert AWS reports PROVISIONED.
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (ON_DEMAND). Assert AWS now reports
 #      ON_DEMAND (the switch actually reached AWS, not just cdkd state).
-#   3. Destroy + assert the stream is gone and the cdkd state file is removed.
+#   2c. Re-deploy with CDKD_TEST_REMOVAL=true: the second stream's
+#      RecordDistributionStrategy (created AUTO) is removed and must reset to
+#      USER_PARTITION_KEY; the first stream keeps AUTO (go-to-k/cdkd#2762).
+#   3. Destroy + assert both streams are gone and the cdkd state file is removed.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -65,6 +68,8 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 # reads it via CDKD_KINESIS_STREAM_NAME.
 STREAM_NAME="cdkd-kinesis-mode-switch-$(date +%s)"
 export CDKD_KINESIS_STREAM_NAME="${STREAM_NAME}"
+# go-to-k/cdkd#2762: the stack's second, always-ON_DEMAND stream.
+STRATEGY_STREAM_NAME="${STREAM_NAME}-rds"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -78,6 +83,8 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   aws kinesis delete-stream --stream-name "${STREAM_NAME}" --enforce-consumer-deletion \
+    --region "${REGION}" >/dev/null 2>&1 || true
+  aws kinesis delete-stream --stream-name "${STRATEGY_STREAM_NAME}" --enforce-consumer-deletion \
     --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -122,6 +129,12 @@ shard_level_metrics() {
     --query "join(' ', sort(StreamDescriptionSummary.EnhancedMonitoring[0].ShardLevelMetrics || \`[]\`))" \
     --output text
 }
+# go-to-k/cdkd#2762: `RecordDistributionStrategy`, reported for ON_DEMAND
+# streams only.
+distribution_strategy() { # usage: distribution_strategy <stream name>
+  aws kinesis describe-stream-summary --stream-name "$1" --region "${REGION}" \
+    --query 'StreamDescriptionSummary.RecordDistributionStrategy' --output text
+}
 max_record_size() {
   aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}" \
     --query 'StreamDescriptionSummary.MaxRecordSizeInKiB' --output text
@@ -163,6 +176,12 @@ echo "    AWS MaxRecordSizeInKiB (Phase 1): ${SIZE_P1}"
 assert_eq "MaxRecordSizeInKiB after Phase 1 (create path)" "2048" "${SIZE_P1}"
 echo "    create-path DesiredShardLevelMetrics + MaxRecordSizeInKiB reached AWS"
 
+# go-to-k/cdkd#2762 create path: AUTO rides on CreateStream. The AWS default is
+# USER_PARTITION_KEY, so AUTO cannot be satisfied by cdkd sending nothing.
+RDS_CREATE="$(distribution_strategy "${STRATEGY_STREAM_NAME}")"
+echo "    AWS RecordDistributionStrategy on ${STRATEGY_STREAM_NAME} (Phase 1): ${RDS_CREATE}"
+assert_eq "RecordDistributionStrategy after Phase 1 (create path)" "AUTO" "${RDS_CREATE}"
+
 # --- Phase 2: switch to ON_DEMAND (must actually reach AWS) ------------
 echo "==> Phase 2: re-deploy as ON_DEMAND (StreamMode switch via UpdateStreamMode)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -188,6 +207,12 @@ echo "    AWS MaxRecordSizeInKiB (Phase 2): ${SIZE_P2}"
 assert_eq "MaxRecordSizeInKiB after Phase 2 (UpdateMaxRecordSize)" "4096" "${SIZE_P2}"
 echo "    update-path DesiredShardLevelMetrics + MaxRecordSizeInKiB reached AWS"
 
+# go-to-k/cdkd#2762 update path: AUTO arrives with the switch to ON_DEMAND, so
+# UpdateStreamRecordDistributionStrategy must follow UpdateStreamMode.
+RDS_UPDATE="$(distribution_strategy "${STREAM_NAME}")"
+echo "    AWS RecordDistributionStrategy on ${STREAM_NAME} (Phase 2): ${RDS_UPDATE}"
+assert_eq "RecordDistributionStrategy after Phase 2 (update path)" "AUTO" "${RDS_UPDATE}"
+
 # `effectiveProperties`: cdkd must RECORD the expanded list, not the literal
 # `ALL` the template declared — a state record AWS's readback can never match
 # is exactly the permanent phantom drift this mechanism exists to prevent.
@@ -210,9 +235,11 @@ echo "    state records the EXPANDED metric list (effectiveProperties applied)"
 # wiring — the thing this PR adds — completely unexercised.
 PROVISIONED_BY="$(printf '%s' "${STATE_JSON}" \
   | jq -r '[.resources[] | select(.resourceType == "AWS::Kinesis::Stream")
-            | .provisionedBy // "sdk"] | first')"
-assert_eq "AWS::Kinesis::Stream routing layer" "sdk" "${PROVISIONED_BY}"
-echo "    stream was provisioned by the SDK provider (provisionedBy=sdk)"
+            | .provisionedBy // "sdk"] | join(" ")')"
+# Two streams; both must be on the SDK route (#2762's RecordDistributionStrategy
+# used to auto-route a stream declaring it to Cloud Control).
+assert_eq "AWS::Kinesis::Stream routing layer (both streams)" "sdk sdk" "${PROVISIONED_BY}"
+echo "    both streams were provisioned by the SDK provider (provisionedBy=sdk)"
 
 # `canonicalizeDesiredProperties`: the paired half. With only the recording
 # half, the template still says `ALL` while state holds seven names, so the very
@@ -230,13 +257,30 @@ if ! printf '%s' "${DIFF_OUT}" | grep -q "No changes detected"; then
   echo "FAIL: cdkd diff did not report 'No changes detected' for ${STACK} — the cleanliness check below would pass vacuously" >&2
   exit 1
 fi
-for PROP in DesiredShardLevelMetrics MaxRecordSizeInKiB; do
+for PROP in DesiredShardLevelMetrics MaxRecordSizeInKiB RecordDistributionStrategy; do
   if printf '%s' "${DIFF_OUT}" | grep -q "${PROP}"; then
     echo "FAIL: cdkd diff reports a ${PROP} change on an untouched stream — the desired and wire-path narrowing disagree" >&2
     exit 1
   fi
 done
 echo "    diff reports no changes; neither backfilled property appears (both sides narrowed identically)"
+
+# --- Phase 2c: remove RecordDistributionStrategy (go-to-k/cdkd#2762) ----
+# The second stream drops its AUTO; CloudFormation resets a removed strategy to
+# USER_PARTITION_KEY (CFn A/B), so cdkd must send that reset. The first stream
+# keeps declaring AUTO and must keep it (the retained sibling).
+echo "==> Phase 2c: re-deploy with CDKD_TEST_REMOVAL=true (strategy removed from ${STRATEGY_STREAM_NAME})"
+CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+RDS_REMOVED="$(distribution_strategy "${STRATEGY_STREAM_NAME}")"
+echo "    AWS RecordDistributionStrategy on ${STRATEGY_STREAM_NAME} (Phase 2c): ${RDS_REMOVED}"
+assert_eq "RecordDistributionStrategy after its removal (reset to the default)" \
+  "USER_PARTITION_KEY" "${RDS_REMOVED}"
+RDS_KEPT="$(distribution_strategy "${STREAM_NAME}")"
+echo "    AWS RecordDistributionStrategy on ${STREAM_NAME} (Phase 2c): ${RDS_KEPT}"
+assert_eq "RecordDistributionStrategy on the retained sibling" "AUTO" "${RDS_KEPT}"
+echo "    removal reset the strategy; the sibling kept AUTO"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
@@ -247,7 +291,9 @@ node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --regio
 # #3872), so it must already be gone when destroy returns.
 assert_gone "stream ${STREAM_NAME} still exists after destroy" \
   aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}"
-echo "    stream deleted"
+assert_gone "stream ${STRATEGY_STREAM_NAME} still exists after destroy" \
+  aws kinesis describe-stream-summary --stream-name "${STRATEGY_STREAM_NAME}" --region "${REGION}"
+echo "    streams deleted"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"

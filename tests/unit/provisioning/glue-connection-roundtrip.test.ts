@@ -4,9 +4,23 @@ import {
   UpdateConnectionCommand,
   DeleteConnectionCommand,
   GetConnectionCommand,
+  GetTagsCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
 } from '@aws-sdk/client-glue';
 
 const mockSend = vi.fn();
+const mockStsSend = vi.fn();
+
+// The Connection's tag ARN names the caller's account when no CatalogId is
+// declared (go-to-k/cdkd#2762), resolved through STS.
+vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
+  return {
+    ...actual,
+    STSClient: vi.fn().mockImplementation(() => ({ send: mockStsSend })),
+  };
+});
 
 vi.mock('@aws-sdk/client-glue', async () => {
   const actual =
@@ -48,7 +62,10 @@ describe('GlueConnectionProvider', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     provider = new GlueConnectionProvider();
+    mockSend.mockReset();
     mockSend.mockResolvedValue({});
+    mockStsSend.mockReset();
+    mockStsSend.mockResolvedValue({ Account: '111122223333' });
   });
 
   it('create() builds CreateConnection with full ConnectionInput surface', async () => {
@@ -238,6 +255,7 @@ describe('GlueConnectionProvider', () => {
         PythonProperties: {},
         PhysicalConnectionRequirements: {},
       },
+      Tags: [],
     });
   });
 
@@ -279,6 +297,7 @@ describe('GlueConnectionProvider', () => {
           SubnetId: 'subnet-12345',
         },
       },
+      Tags: [],
     });
   });
 
@@ -316,6 +335,145 @@ describe('GlueConnectionProvider', () => {
   it('handledProperties declares the documented surface', () => {
     const set = provider.handledProperties.get('AWS::Glue::Connection');
     expect(set).toBeDefined();
-    expect([...(set ?? new Set())].sort()).toEqual(['CatalogId', 'ConnectionInput']);
+    expect([...(set ?? new Set())].sort()).toEqual(['CatalogId', 'ConnectionInput', 'Tags']);
+  });
+});
+
+describe('GlueConnectionProvider Tags (go-to-k/cdkd#2762)', () => {
+  let provider: GlueConnectionProvider;
+  const CONNECTION_INPUT = {
+    Name: 'my-connection',
+    ConnectionType: 'JDBC',
+    ConnectionProperties: { JDBC_CONNECTION_URL: 'jdbc:mysql://host/db' },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new GlueConnectionProvider();
+    mockSend.mockReset();
+    mockSend.mockResolvedValue({});
+    mockStsSend.mockReset();
+    mockStsSend.mockResolvedValue({ Account: '111122223333' });
+  });
+
+  function sent<T>(ctor: new (...args: never[]) => T): T[] {
+    return mockSend.mock.calls.map((c) => c[0]).filter((c): c is T => c instanceof ctor);
+  }
+
+  it('sends the tag MAP on CreateConnection itself, with no separate TagResource', async () => {
+    await provider.create('L', 'AWS::Glue::Connection', {
+      ConnectionInput: CONNECTION_INPUT,
+      Tags: { env: 'integ', team: 'data' },
+    });
+    const [create] = sent(CreateConnectionCommand);
+    expect(create!.input.Tags).toEqual({ env: 'integ', team: 'data' });
+    expect(sent(TagResourceCommand)).toHaveLength(0);
+  });
+
+  it('omits Tags from CreateConnection when the template declares none', async () => {
+    await provider.create('L', 'AWS::Glue::Connection', { ConnectionInput: CONNECTION_INPUT });
+    const [create] = sent(CreateConnectionCommand);
+    expect(create!.input).not.toHaveProperty('Tags');
+  });
+
+  it('refuses a malformed Tags before any call', async () => {
+    await expect(
+      provider.create('L', 'AWS::Glue::Connection', {
+        ConnectionInput: CONNECTION_INPUT,
+        Tags: 'not-tags',
+      })
+    ).rejects.toThrow(/Tags/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('diffs tags on update: sets the changed and added keys, untags the dropped one', async () => {
+    await provider.update(
+      'L',
+      'my-connection',
+      'AWS::Glue::Connection',
+      { ConnectionInput: CONNECTION_INPUT, Tags: { env: 'updated', owner: 'cdkd' } },
+      { ConnectionInput: CONNECTION_INPUT, Tags: { env: 'integ', team: 'data' } }
+    );
+    const arn = 'arn:aws:glue:us-east-1:111122223333:connection/my-connection';
+    const [tag] = sent(TagResourceCommand);
+    expect(tag!.input).toEqual({ ResourceArn: arn, TagsToAdd: { env: 'updated', owner: 'cdkd' } });
+    const [untag] = sent(UntagResourceCommand);
+    expect(untag!.input).toEqual({ ResourceArn: arn, TagsToRemove: ['team'] });
+  });
+
+  it('untags every key when the template removes Tags', async () => {
+    await provider.update(
+      'L',
+      'my-connection',
+      'AWS::Glue::Connection',
+      { ConnectionInput: CONNECTION_INPUT },
+      { ConnectionInput: CONNECTION_INPUT, Tags: { env: 'integ' } }
+    );
+    expect(sent(TagResourceCommand)).toHaveLength(0);
+    const [untag] = sent(UntagResourceCommand);
+    expect(untag!.input.TagsToRemove).toEqual(['env']);
+  });
+
+  it('makes no tag call when the tags are unchanged', async () => {
+    await provider.update(
+      'L',
+      'my-connection',
+      'AWS::Glue::Connection',
+      { ConnectionInput: CONNECTION_INPUT, Tags: { env: 'integ' } },
+      { ConnectionInput: CONNECTION_INPUT, Tags: { env: 'integ' } }
+    );
+    expect(sent(TagResourceCommand)).toHaveLength(0);
+    expect(sent(UntagResourceCommand)).toHaveLength(0);
+    expect(mockStsSend).not.toHaveBeenCalled();
+  });
+
+  it('addresses the tag ARN by a declared CatalogId, without STS', async () => {
+    await provider.update(
+      'L',
+      'my-connection',
+      'AWS::Glue::Connection',
+      { ConnectionInput: CONNECTION_INPUT, CatalogId: '444455556666', Tags: { env: 'b' } },
+      { ConnectionInput: CONNECTION_INPUT, CatalogId: '444455556666', Tags: { env: 'a' } }
+    );
+    const [tag] = sent(TagResourceCommand);
+    expect(tag!.input.ResourceArn).toBe(
+      'arn:aws:glue:us-east-1:444455556666:connection/my-connection'
+    );
+    expect(mockStsSend).not.toHaveBeenCalled();
+  });
+
+  it('refuses a malformed desired Tags on update before UpdateConnection', async () => {
+    await expect(
+      provider.update(
+        'L',
+        'my-connection',
+        'AWS::Glue::Connection',
+        { ConnectionInput: CONNECTION_INPUT, Tags: ['not-a-tag'] },
+        { ConnectionInput: CONNECTION_INPUT }
+      )
+    ).rejects.toThrow(/Tags/);
+    expect(sent(UpdateConnectionCommand)).toHaveLength(0);
+  });
+
+  it('reads the tags back from GetTags on the connection ARN', async () => {
+    mockSend.mockImplementation((cmd) => {
+      if (cmd instanceof GetConnectionCommand) {
+        return Promise.resolve({ Connection: { Name: 'my-connection' } });
+      }
+      if (cmd instanceof GetTagsCommand) {
+        return Promise.resolve({ Tags: { env: 'integ', 'aws:cloudformation:stack-name': 'x' } });
+      }
+      return Promise.resolve({});
+    });
+    const result = (await provider.readCurrentState(
+      'my-connection',
+      'L',
+      'AWS::Glue::Connection'
+    )) as Record<string, unknown>;
+    expect(result['Tags']).toEqual([{ Key: 'env', Value: 'integ' }]);
+    const [getTags] = sent(GetTagsCommand);
+    expect(getTags!.input.ResourceArn).toBe(
+      'arn:aws:glue:us-east-1:111122223333:connection/my-connection'
+    );
   });
 });
