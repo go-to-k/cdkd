@@ -285,7 +285,10 @@ describe('LockManager renders a hostile stack name, region and error flattened (
       fail(s3err('InternalError', 500))
     );
     const message = await thrownMessage(lm.releaseLock(STACK, REGION));
-    expectFlattened([message], 'Failed to release lock for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
+    // go-to-k/cdkd#2319: the thrown message names the class; AWS's text is
+    // on the debug line, flattened the same way.
+    expectFlattened([message], 'Failed to release lock for stack', SHOWN_STACK, SHOWN_REGION, 'InternalError.');
+    expectFlattened(logged(), 'Failed to release lock for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
     expectFlattened(logged(), 'is not supported here', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
   });
 
@@ -307,9 +310,12 @@ describe('LockManager renders a hostile stack name, region and error flattened (
     c.queue('GetObjectCommand', fail(s3err('InternalError', 500)));
     const lm = manager(c);
     const acquire = await thrownMessage(lm.acquireLock(STACK, REGION));
-    expectFlattened([acquire], 'Failed to acquire lock for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
+    expectFlattened([acquire], 'Failed to acquire lock for stack', SHOWN_STACK, SHOWN_REGION, 'InternalError.');
     const info = await thrownMessage(lm.getLockInfo(STACK, REGION));
-    expectFlattened([info], 'Failed to get lock info for stack', SHOWN_STACK, SHOWN_ERROR);
+    expectFlattened([info], 'Failed to get lock info for stack', SHOWN_STACK, 'InternalError.');
+    const texts = logged();
+    expectFlattened(texts, 'Failed to acquire lock for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
+    expectFlattened(texts, 'Failed to get lock info for stack', SHOWN_STACK, SHOWN_ERROR);
   });
 
   it('release: any other failure', async () => {
@@ -318,7 +324,8 @@ describe('LockManager renders a hostile stack name, region and error flattened (
     await lm.acquireLock(STACK, REGION);
     c.queue('DeleteObjectCommand', fail(s3err('InternalError', 500)));
     const message = await thrownMessage(lm.releaseLock(STACK, REGION));
-    expectFlattened([message], 'Failed to release lock for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
+    expectFlattened([message], 'Failed to release lock for stack', SHOWN_STACK, SHOWN_REGION, 'InternalError.');
+    expectFlattened(logged(), 'Failed to release lock for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
   });
 
   it('release: the lock-key purge could not start', async () => {
@@ -494,7 +501,10 @@ describe('S3StateBackend renders a hostile stack name, region and error flattene
     const cause = (noEtagError as Error & { cause?: unknown }).cause as Error;
     expectFlattened([cause.message], 'No ETag returned after saving state', SHOWN_STACK, SHOWN_REGION);
     const failed = await thrownMessage(b.saveState(STACK, REGION, state));
-    expectFlattened([failed], 'Failed to save state for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
+    // go-to-k/cdkd#2319: the thrown message names the class; AWS's text is
+    // on the debug line, flattened the same way.
+    expectFlattened([failed], 'Failed to save state for stack', SHOWN_STACK, SHOWN_REGION, 'InternalError.');
+    expectFlattened(logged(), 'Failed to save state for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
   });
 
   it('deleteState, sweeping a legacy record, and a journal delete that fails', async () => {
@@ -535,9 +545,12 @@ describe('S3StateBackend renders a hostile stack name, region and error flattene
     );
     const b = backend(c);
     const failed = await thrownMessage(b.deleteState(STACK, REGION));
-    expectFlattened([failed], 'Failed to delete state for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
+    expectFlattened([failed], 'Failed to delete state for stack', SHOWN_STACK, SHOWN_REGION, 'InternalError.');
     const legacy = await thrownMessage(b.deleteLegacyState(STACK));
-    expectFlattened([legacy], 'Failed to delete legacy state for stack', SHOWN_STACK, SHOWN_ERROR);
+    expectFlattened([legacy], 'Failed to delete legacy state for stack', SHOWN_STACK, 'InternalError.');
+    const texts = logged();
+    expectFlattened(texts, 'Failed to delete state for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
+    expectFlattened(texts, 'Failed to delete legacy state for stack', SHOWN_STACK, SHOWN_ERROR);
   });
 
   it('deleteLegacyState logs the name and the key it deletes', async () => {
@@ -577,9 +590,12 @@ describe('S3StateBackend renders a hostile stack name, region and error flattene
     );
     const b = backend(c);
     const scoped = await thrownMessage(b.getState(STACK, REGION));
-    expectFlattened([scoped], 'Failed to get state for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
+    expectFlattened([scoped], 'Failed to get state for stack', SHOWN_STACK, SHOWN_REGION, 'InternalError.');
     const legacy = await thrownMessage(b.getState(STACK, REGION));
-    expectFlattened([legacy], 'Failed to get legacy state for stack', SHOWN_STACK, SHOWN_ERROR);
+    expectFlattened([legacy], 'Failed to get legacy state for stack', SHOWN_STACK, 'InternalError.');
+    const texts = logged();
+    expectFlattened(texts, 'Failed to get state for stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
+    expectFlattened(texts, 'Failed to get legacy state for stack', SHOWN_STACK, SHOWN_ERROR);
   });
 
   it('getState over a legacy record naming no usable region', async () => {
@@ -604,7 +620,8 @@ describe('S3StateBackend renders a hostile stack name, region and error flattene
     const c = makeClient();
     c.queue('GetObjectCommand', fail(s3err('AccessDenied', 403)));
     const failed = await thrownMessage(backend(c).rotateCreateTokenNonce(STACK, REGION, ['X']));
-    expectFlattened([failed], 'Failed to renew the create-token ledger of stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
+    expectFlattened([failed], 'Failed to renew the create-token ledger of stack', SHOWN_STACK, SHOWN_REGION, 'AccessDenied.');
+    expectFlattened(logged(), 'Failed to renew the create-token ledger of stack', SHOWN_STACK, SHOWN_REGION, SHOWN_ERROR);
   });
 
   it('a purge that could not start', async () => {
@@ -645,8 +662,12 @@ describe('S3StateBackend renders a hostile stack name, region and error flattene
       [message],
       'Failed to delete 2 object(s)',
       '"stacks/Evil [ok] FORGED-STACK [2J/r/deployments/a.jsonl"',
-      `(Denied [ok]: ${SHOWN_ERROR})`,
-      '(<unrenderable>: x)'
+      '(Denied [ok])',
+      '(<unrenderable>)'
     );
+    // go-to-k/cdkd#2319: S3's per-key Message is on the debug line only.
+    expect(message).not.toContain('denied:');
+    expectFlattened(logged(), '(Denied [ok]): ', SHOWN_ERROR);
+    expectFlattened(logged(), '(<unrenderable>): ', 'x');
   });
 });

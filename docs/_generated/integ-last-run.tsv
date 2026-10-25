@@ -70,9 +70,9 @@ created-before-failure-revert	2026-10-24T19:26:15Z	PASS	121	verify.sh	rc ok, orp
 cross-backend-same-stack	2026-10-25T00:07:44Z	PASS	306	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 cross-backend-same-stack-migration	2026-10-11T09:33:22Z	PASS	386	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 cross-region-concurrent-stacks	2026-10-23T03:26:26Z	PASS	216	verify.sh	rc ok, orph clean both regions (regression net #5193)
-cross-region-state-bucket	2026-10-03T07:02:29Z	PASS	32	verify.sh	rc ok, orph clean (#4283 PR #4449)
+cross-region-state-bucket	2026-10-25T02:23:30Z	PASS	32	verify.sh	rc ok, orph clean
 cross-stack-cfn-fallback	2026-10-18T11:16:06Z	PASS	125	verify.sh	#5043 rebased run; rc 0, destroy 0 errors, orphans clean
-cross-stack-references	2026-10-24T06:41:12Z	PASS	60	standard	final #5242 round (engine default --concurrency 20); both stacks destroyed 0 errors, 0 orphans
+cross-stack-references	2026-10-25T02:23:30Z	PASS	38	standard	rc ok, orph clean
 cross-stack-secret-import	2026-10-23T02:59:31Z	PASS	656	verify.sh	rc ok, orph clean, 0 surviving secret versions (regression net #5193)
 custom-resource-getatt-data	2026-10-09T09:36:48Z	PASS	95	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)
 custom-resource-masked-service-token	2026-10-15T02:06:45Z	PASS	161	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
@@ -97,7 +97,7 @@ dlm-lifecycle-policy	2026-10-22T07:45:16Z	PASS	110	verify.sh	PR #5161 (#2319) @4
 docdb-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	1830	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
 docdb-neptune	2026-10-24T22:46:19Z	PASS	5299	verify.sh	PR #5268 at 947d06203 (rebased onto #5266); us-east-1; own state bucket; rc=0, 3g --remove-protection compensation ok, final destroy 0 errors, 0 orphans
 docker-image-asset	2026-10-17T13:23:24Z	PASS	90	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
-drift-revert	2026-10-24T05:51:41Z	PASS	360	verify.sh	final #5242 round after 7a30f8edb (engine default --concurrency 20); rebuilt dist (building fixture, ran alone); 16 deleted 0 errors, orph clean
+drift-revert	2026-10-25T02:23:30Z	PASS	291	verify.sh	rc ok, orph clean
 drift-revert-arrays	2026-10-16T18:55:45Z	PASS	221	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
 drift-revert-vpc	2026-10-24T05:58:14Z	PASS	366	verify.sh	final #5242 round after 7a30f8edb; rebuilt dist (building fixture, ran alone); 22 deleted 0 errors, orph clean
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
@@ -185,8 +185,8 @@ import-noecho-parameter	2026-10-16T23:38:07Z	PASS	150	verify.sh	rc ok, orph clea
 import-reimport-masked-attrs	2026-10-18T05:25:05Z	PASS	246	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 import-retain-destroy	2026-10-11T09:33:22Z	PASS	161	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 import-secret-observed	2026-10-18T05:14:02Z	PASS	150	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
-import-value-strong-ref	2026-10-23T16:21:26Z	PASS	173	verify.sh	deploy+destroy clean, 0 orphans, swept 2 Lambda log groups
-importvalue-chain	2026-10-23T02:48:10Z	PASS	130	verify.sh	rc ok, orph clean (regression net #5193)
+import-value-strong-ref	2026-10-25T02:23:30Z	PASS	133	verify.sh	rc ok, orph clean
+importvalue-chain	2026-10-25T02:23:30Z	PASS	83	verify.sh	rc ok, orph clean
 infra-security	2026-10-22T22:32:36Z	PASS	204	verify.sh	PR #5187 HEAD: destroy 31 deleted, 0 errors; trail-stop+bucket-empty-before-destroy fix confirmed, 0 orphans
 inplace-attr-propagation	2026-10-03T05:58:37Z	PASS	60	verify.sh	rc ok, orph clean (#4497)
 intrinsic-functions	2026-08-15T00:12:35Z	PASS	20	standard	0 err / 0 orph; resolver change regression check (#1916)
@@ -374,8 +374,8 @@ sns-subscription-update	2026-10-24T03:05:49Z	PASS	115	verify.sh	PR 5234 rc0, des
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 sqs-esm-max-concurrency	2026-10-20T12:43:49Z	PASS	80	verify.sh	issue #1160 BatchSize reset to 10, destroy clean
 ssm-secure-dynamic-ref	2026-10-18T05:02:48Z	PASS	143	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
-stack-copy-create-tokens	2026-10-11T09:33:22Z	PASS	2034	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-stack-lock-renewal	2026-10-13T02:41:29Z	PASS	416	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
+stack-copy-create-tokens	2026-10-25T02:23:30Z	PASS	1747	verify.sh	rc ok, orph clean
+stack-lock-renewal	2026-10-25T02:23:30Z	PASS	342	verify.sh	rc ok, orph clean
 stage-assets	2026-10-22T20:04:14Z	PASS	186	verify.sh	PR #5174 cdk-local 0.154.0 bump; Stage-asset ../ containment, ZIP+Docker asset publish, both markers correct; destroy+sweep clean
 stale-attribute-heal	2026-10-18T00:55:44Z	PASS	85	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
 state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
