@@ -800,7 +800,8 @@ describe('SDK wire coverage ledger', () => {
     expect(file).toMatch(/\.test\.ts$/);
     const url = new URL(`./${file}`, import.meta.url);
     expect(existsSync(url), file).toBe(true);
-    expect(readFileSync(url, 'utf8')).toContain(`describeWireCases(${name});`);
+    // Anchored to a line start, so a commented-out call does not count.
+    expect(readFileSync(url, 'utf8')).toMatch(new RegExp(`^\\s*describeWireCases\\(${name}\\);`, 'm'));
   });
 
   it('names every registered provider class exactly once: covered by a case, or not yet', async () => {
