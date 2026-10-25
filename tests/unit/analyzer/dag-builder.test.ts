@@ -1159,6 +1159,45 @@ describe('DagBuilder', () => {
         template.Resources['Cr0'].DependsOn = ['Policy0', 'Cr1'];
         expect(() => dagBuilder.buildGraph(template)).toThrow(DependencyError);
       });
+
+      it('sees the edges added for an earlier resource on another handler', () => {
+        // CrZ is processed first and gains PolicyP -> CrZ, which makes CrX reach
+        // PolicyQ. A reachable set computed before that edge would add
+        // PolicyQ -> CrX and close CrX -> PolicyP -> CrZ -> PolicyQ -> CrX.
+        const handler = (role: string): CloudFormationTemplate['Resources'][string] => ({
+          Type: 'AWS::Lambda::Function',
+          Properties: { Role: { 'Fn::GetAtt': [role, 'Arn'] } },
+        });
+        const template: CloudFormationTemplate = {
+          Resources: {
+            RoleZ: { Type: 'AWS::IAM::Role', Properties: {} },
+            FnZ: handler('RoleZ'),
+            RoleX: { Type: 'AWS::IAM::Role', Properties: {} },
+            FnX: handler('RoleX'),
+            CrZ: {
+              Type: 'Custom::Z',
+              Properties: { ServiceToken: { 'Fn::GetAtt': ['FnZ', 'Arn'] } },
+            },
+            CrX: {
+              Type: 'Custom::X',
+              Properties: { ServiceToken: { 'Fn::GetAtt': ['FnX', 'Arn'] } },
+            },
+            PolicyP: {
+              Type: 'AWS::IAM::Policy',
+              Properties: { Roles: [{ Ref: 'RoleZ' }], PolicyDocument: {} },
+              DependsOn: ['CrX'],
+            },
+            PolicyQ: {
+              Type: 'AWS::IAM::Policy',
+              Properties: { Roles: [{ Ref: 'RoleX' }], PolicyDocument: {} },
+              DependsOn: ['CrZ'],
+            },
+          },
+        };
+        const graph = dagBuilder.buildGraph(template);
+        expect(graph.hasEdge('PolicyP', 'CrZ')).toBe(true);
+        expect(graph.hasEdge('PolicyQ', 'CrX')).toBe(false);
+      });
     });
 
     it('is idempotent when policy already has an explicit edge', () => {
