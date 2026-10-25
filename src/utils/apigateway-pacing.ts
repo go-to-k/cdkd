@@ -17,24 +17,27 @@
  * the method stays behind, and the replay dies with `Method already exists for
  * this resource`.
  *
- * So the calls are spaced instead of retried: {@link apiGatewayPacing} waits
- * for a free slot before every attempt, keeping this process under the
- * documented rates with headroom for the other callers of the same account. The
- * waits are the time the throttled retries would have spent, without the
- * failures, so an unthrottled deploy is not slowed beyond a few seconds on a
- * very wide API.
+ * So the calls are paced instead of retried: {@link withApiGatewayPacing} takes a
+ * token before every attempt, from token buckets shaped like the service's own
+ * (a burst, then a steady refill), at a steady rate under the documented one
+ * with headroom for the other callers of the same account. A small API fits in
+ * the burst and is not delayed at all; a wide one settles at the steady rate,
+ * which is the time the throttled retries would have spent, without the
+ * failures.
  *
  * A LEAF: it imports nothing from cdkd.
  */
 
-/** Spacing between two calls, in milliseconds, for one operation. */
-const GLOBAL_INTERVAL_MS = 125; // 8 per second of the 10 allowed in total
-const OPERATION_INTERVAL_MS: Readonly<Record<string, number>> = {
-  CreateResource: 250, // 4 per second of the 5 allowed
-  DeleteResource: 250,
-  CreateApiKey: 250,
-  DeleteApiKey: 250,
-};
+/** All operations together: the account limit is 10 per second, burst 40. */
+const GLOBAL_BUCKET = { capacity: 30, perSecond: 8 };
+
+/**
+ * Operations with a lower limit of their own: 5 per second. `CreateApiKey` and
+ * `DeleteApiKey` share it but are left out: no cdkd SDK path sends them
+ * (`AWS::ApiGateway::ApiKey` goes through Cloud Control, which is not paced).
+ */
+const OPERATION_BUCKET = { capacity: 5, perSecond: 4 };
+const LIMITED_OPERATIONS: ReadonlySet<string> = new Set(['CreateResource', 'DeleteResource']);
 
 /**
  * SDK attempts for an API Gateway call. Pacing keeps this process under the
@@ -44,48 +47,64 @@ const OPERATION_INTERVAL_MS: Readonly<Record<string, number>> = {
  */
 export const API_GATEWAY_MAX_ATTEMPTS = 8;
 
-/** Hands out start times at least `intervalMs` apart. */
-class Lane {
-  private nextStart = 0;
-  private readonly intervalMs: number;
+/**
+ * A token bucket that hands out its tokens ahead of time: a caller that finds
+ * it empty reserves the next token and waits for it, so waiters are served in
+ * order and none is overtaken. `last` is the moment `tokens` is counted at, and
+ * can be in the future while reservations are outstanding.
+ */
+class Bucket {
+  private tokens: number;
+  private last = 0;
+  private readonly capacity: number;
+  private readonly perMs: number;
 
-  constructor(intervalMs: number) {
-    this.intervalMs = intervalMs;
+  constructor(config: { capacity: number; perSecond: number }) {
+    this.capacity = config.capacity;
+    this.perMs = config.perSecond / 1000;
+    this.tokens = config.capacity;
   }
 
-  /** Reserves the next slot and returns how long to wait for it. */
-  reserve(now: number): number {
-    const start = Math.max(now, this.nextStart);
-    this.nextStart = start + this.intervalMs;
-    return start - now;
+  /** The first moment, not before `now`, at which a token is available. */
+  availableAt(now: number): number {
+    const at = Math.max(now, this.last);
+    const tokens = Math.min(this.capacity, this.tokens + (at - this.last) * this.perMs);
+    return tokens >= 1 ? at : at + (1 - tokens) / this.perMs;
+  }
+
+  /** Takes a token at `at`, which is not before {@link availableAt}. */
+  take(at: number): void {
+    this.tokens = Math.min(this.capacity, this.tokens + (at - this.last) * this.perMs) - 1;
+    this.last = at;
   }
 }
 
 /**
- * The pacer of one account and Region: one lane for all operations and one per
- * operation that has its own, lower, limit. A call waits for the later of its
- * two slots, and takes both, so neither lane runs ahead of the calls that
- * really went out.
+ * The pacer of one Region: a bucket for all operations and one per operation
+ * that has its own, lower, limit. A call is sent at ONE moment, the latest
+ * either bucket allows, and takes a token from both at that moment, so the
+ * shared bucket never runs ahead of the calls that really went out. Keyed by
+ * Region only: two accounts in one Region share it, which errs on the safe side.
  */
 export class ApiGatewayPacer {
-  private readonly all = new Lane(GLOBAL_INTERVAL_MS);
-  private readonly perOperation = new Map<string, Lane>();
+  private readonly all = new Bucket(GLOBAL_BUCKET);
+  private readonly perOperation = new Map<string, Bucket>();
 
   /** Milliseconds `operation` has to wait before it is sent. */
   reserve(operation: string, now: number = Date.now()): number {
-    const interval = OPERATION_INTERVAL_MS[operation];
-    let wait = this.all.reserve(now);
-    if (interval !== undefined) {
-      let lane = this.perOperation.get(operation);
+    let lane: Bucket | undefined;
+    if (LIMITED_OPERATIONS.has(operation)) {
+      lane = this.perOperation.get(operation);
       if (lane === undefined) {
-        lane = new Lane(interval);
+        lane = new Bucket(OPERATION_BUCKET);
         this.perOperation.set(operation, lane);
       }
-      // The operation's own slot can be later than the shared one. The shared
-      // slot is already taken, which only ever spaces other calls further.
-      wait = Math.max(wait, lane.reserve(now));
     }
-    return wait;
+    const start = Math.max(this.all.availableAt(now), lane?.availableAt(now) ?? now);
+    this.all.take(start);
+    lane?.take(start);
+    // A float slot a hair past a whole millisecond is not worth a millisecond.
+    return Math.max(0, Math.ceil(start - now - 1e-6));
   }
 }
 
