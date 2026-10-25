@@ -2,6 +2,7 @@ import {
   LambdaClient,
   InvokeCommand,
   GetFunctionCommand,
+  GetFunctionConfigurationCommand,
   UpdateFunctionConfigurationCommand,
   waitUntilFunctionActiveV2,
   waitUntilFunctionUpdatedV2,
@@ -991,18 +992,21 @@ function describeWaiterFailure(
  * `waitForBackingLambdaReady`; the thrown error is `markNonRetryable` (the
  * waiter already polled to its budget) and its text carries no AWS message
  * or `GetFunction` payload. `abortSignal` stops the wait on a Ctrl-C.
+ * `maxWaitSeconds` caps the budget (default 600) for a caller that shares one
+ * deadline across several functions.
  */
 export async function waitForLambdaFunctionActive(
   client: LambdaClient,
   functionArn: string,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  maxWaitSeconds = 600
 ): Promise<void> {
   const rejections = new WaiterRejections();
   try {
     await waitUntilFunctionActiveV2(
       {
         client: observingLambdaClient(client, rejections),
-        maxWaitTime: 600,
+        maxWaitTime: maxWaitSeconds,
         minDelay: 1,
         maxDelay: 5,
         ...(abortSignal ? { abortSignal } : {}),
@@ -1025,6 +1029,59 @@ export async function waitForLambdaFunctionActive(
       )
     );
   }
+}
+
+/**
+ * `arn:<partition>:lambda:<region>:<account>:function:<name>[:<qualifier>]`.
+ * A layer (`:layer:`) or an event-source mapping ARN never matches: only a
+ * function can be `Pending`.
+ */
+const LAMBDA_FUNCTION_ARN =
+  /^arn:aws(?:-[a-z]+)*:lambda:[a-z0-9-]+:\d{12}:function:[\w-]+(?::[\w$-]+)?$/;
+
+/** Bounds on the property walk: a custom resource bag is user data, not a trusted shape. */
+const REFERENCED_LAMBDA_MAX_DEPTH = 8;
+const REFERENCED_LAMBDA_MAX_ARNS = 16;
+/** ONE budget for the whole scan: stuck functions must not add up to hours before the handler runs. */
+const REFERENCED_LAMBDA_MAX_WAIT_SECONDS = 600;
+
+/**
+ * The Lambda function ARNs a custom resource's resolved properties point at,
+ * other than its own backing function (`excludeArn`), in first-seen order and
+ * de-duplicated. Only string VALUES are read, never keys.
+ *
+ * A handler that hands such an ARN to an AWS API (the CDK `BucketNotifications`
+ * handler passes it to `PutBucketNotificationConfiguration` as a destination)
+ * is a consumer that AWS rejects while the function is still `Pending`, exactly
+ * as an ELBv2 Lambda target is (go-to-k/cdkd#5002).
+ *
+ * `maxArns` bounds the scan (default {@link REFERENCED_LAMBDA_MAX_ARNS}). A caller
+ * that filters the result afterwards passes `Infinity` and caps the FILTERED list
+ * itself, so a function that is new on update is not hidden behind ARNs that
+ * were already there.
+ */
+export function collectReferencedLambdaFunctionArns(
+  properties: unknown,
+  excludeArn: string,
+  maxArns: number = REFERENCED_LAMBDA_MAX_ARNS
+): string[] {
+  const found = new Set<string>();
+  const walk = (value: unknown, depth: number): void => {
+    if (found.size >= maxArns || depth > REFERENCED_LAMBDA_MAX_DEPTH) return;
+    if (typeof value === 'string') {
+      if (value !== excludeArn && LAMBDA_FUNCTION_ARN.test(value)) found.add(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item, depth + 1);
+      return;
+    }
+    if (value !== null && typeof value === 'object') {
+      for (const item of Object.values(value)) walk(item, depth + 1);
+    }
+  };
+  walk(properties, 0);
+  return [...found];
 }
 
 /**
@@ -1979,7 +2036,8 @@ export class CustomResourceProvider implements ResourceProvider {
         // Issue #2178: the handler's response can echo the RESOLVED
         // `ResourceProperties` back, so the payload refusal masks before it
         // stringifies. Absent means unmasked.
-        maskerOrIdentity(context?.maskSecrets)
+        maskerOrIdentity(context?.maskSecrets),
+        { properties }
       );
 
       if (cfnResponse.Status === 'FAILED') {
@@ -2083,7 +2141,8 @@ export class CustomResourceProvider implements ResourceProvider {
           OldResourceProperties: this.stringifyProperties(previousProperties),
         }),
         // Issue #2178: see `create()` — same payload refusal, same bag.
-        maskerOrIdentity(context?.maskSecrets)
+        maskerOrIdentity(context?.maskSecrets),
+        { properties, previousProperties }
       );
 
       if (cfnResponse.Status === 'FAILED') {
@@ -2566,7 +2625,11 @@ export class CustomResourceProvider implements ResourceProvider {
       responseURL: string;
       stackId: string;
     }) => Record<string, unknown>,
-    mask: MaskerFn | undefined
+    mask: MaskerFn | undefined,
+    referenced?: {
+      properties: Record<string, unknown>;
+      previousProperties?: Record<string, unknown>;
+    }
   ): Promise<CfnCustomResourceResponse> {
     // One watch for the whole invocation, disposed in the `finally` below, so
     // Ctrl-C aborts a 47.75s pre-delivery backoff and the placeholder
@@ -2582,6 +2645,18 @@ export class CustomResourceProvider implements ResourceProvider {
       // fail, and delete — after a bounded re-ask — reports the resource
       // `skipped` and keeps it.
       const stackId = await this.resolveSyntheticStackId(logicalId, operation, watch);
+      // Once per call, never per attempt: a retry re-invokes the handler, not the
+      // functions its properties name. Create / update only (delete passes none).
+      if (referenced !== undefined) {
+        await this.waitForReferencedLambdasActive(
+          logicalId,
+          serviceToken,
+          referenced.properties,
+          referenced.previousProperties,
+          watch,
+          mask
+        );
+      }
       // Two budgets, counted SEPARATELY (issue #2033). Sharing the loop counter
       // would let a pre-delivery throw consume the FAILED-response arm's budget
       // — with the arms on 26 and 2, three thrown retries would silently leave
@@ -3203,6 +3278,110 @@ export class CustomResourceProvider implements ResourceProvider {
           { cause: error }
         )
       );
+    }
+  }
+
+  /**
+   * Wait for each Lambda function the resource's properties point at (other
+   * than its own backing function) to leave `Pending`, before the handler runs
+   * (go-to-k/cdkd#5002 class; the first instance seen was an S3 notification
+   * destination: `PutBucketNotificationConfiguration` answers "Unable to
+   * validate the following destination configurations" for a `Pending` function).
+   * `LambdaFunctionProvider.create` returns while the function is `Pending`, and
+   * only a handler can tell what it will do with the ARN, so the wait lives here.
+   *
+   * **Best effort, never fatal.** One `GetFunctionConfiguration` per ARN, and
+   * only a `Pending` function starts the waiter: the waiter's generated
+   * `checkState` turns EVERY exception into RETRY, so calling it for an ARN cdkd
+   * cannot read (deleted, another account or region, `lambda:GetFunction`
+   * denied) would burn its whole 600s budget on a property the handler may never
+   * touch. A read error, a `Failed` function or a spent waiter therefore skips
+   * the wait and leaves the verdict to the handler, which is what a deploy did
+   * before this wait existed. Only Ctrl-C throws.
+   *
+   * **One budget for the whole scan**: the waiters share a single
+   * {@link REFERENCED_LAMBDA_MAX_WAIT_SECONDS} deadline, so several stuck
+   * functions cannot turn a fast handler failure into a long hang.
+   *
+   * On update only an ARN absent from `previousProperties` is read: one that was
+   * already there belongs to a function an earlier deploy created.
+   *
+   * Costs nothing for a custom resource whose properties name no function ARN.
+   */
+  private async waitForReferencedLambdasActive(
+    logicalId: string,
+    serviceToken: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown> | undefined,
+    watch: InterruptWatch,
+    mask: MaskerFn | undefined
+  ): Promise<void> {
+    // An ARN can come from an SSM or NoEcho value, and an AWS failure summary can echo
+    // it, so every line is masked as a whole.
+    const debug = (line: string): void => this.logger.debug(maskerOrIdentity(mask)(line));
+    // Neither scan is capped: the cap applies to what is left AFTER the filter, so
+    // an ARN that is new on update is read even when 16 older ones precede it.
+    const already = new Set(
+      previousProperties === undefined
+        ? []
+        : collectReferencedLambdaFunctionArns(previousProperties, serviceToken, Infinity)
+    );
+    const fresh = collectReferencedLambdaFunctionArns(properties, serviceToken, Infinity).filter(
+      (arn) => !already.has(arn)
+    );
+    if (fresh.length > REFERENCED_LAMBDA_MAX_ARNS) {
+      debug(
+        safeMsg`${logicalId} references ${fresh.length} Lambda functions; only the first ${REFERENCED_LAMBDA_MAX_ARNS} are waited for`
+      );
+    }
+    const arns = fresh.slice(0, REFERENCED_LAMBDA_MAX_ARNS);
+    const deadline = Date.now() + REFERENCED_LAMBDA_MAX_WAIT_SECONDS * 1000;
+    // One controller for the reads and the waiters: a Ctrl-C aborts whichever is running.
+    const abort = new AbortController();
+    const poll = setInterval(() => {
+      if (watch.isInterrupted()) abort.abort();
+    }, 1000);
+    try {
+      for (const arn of arns) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        let state: string | undefined;
+        try {
+          const config = await this.lambdaClient.send(
+            new GetFunctionConfigurationCommand({ FunctionName: arn }),
+            { abortSignal: abort.signal }
+          );
+          state = config.State;
+        } catch (error) {
+          // A Ctrl-C that landed during the read aborts it and is seen here.
+          if (watch.isInterrupted()) throw watch.onInterrupted();
+          debug(
+            safeMsg`Not waiting for ${arn} referenced by ${logicalId}: ${describeAwsFailure(error).summary}`
+          );
+          continue;
+        }
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        if (state !== 'Pending') continue;
+
+        // `waitUntil*` rejects a `maxWaitTime` that is not above its 1s minimum delay.
+        const remainingSeconds = Math.floor((deadline - Date.now()) / 1000);
+        if (remainingSeconds <= 1) {
+          debug(
+            safeMsg`The wait budget for the functions referenced by ${logicalId} is spent; leaving ${arn} to the handler`
+          );
+          break;
+        }
+        debug(safeMsg`Waiting for ${arn} referenced by ${logicalId} to become Active`);
+        try {
+          await waitForLambdaFunctionActive(this.lambdaClient, arn, abort.signal, remainingSeconds);
+        } catch (error) {
+          if (watch.isInterrupted()) throw watch.onInterrupted();
+          debug(
+            safeMsg`Referenced function ${arn} of ${logicalId} did not become Active; leaving it to the handler: ${describeAwsFailure(error).summary}`
+          );
+        }
+      }
+    } finally {
+      clearInterval(poll);
     }
   }
 
