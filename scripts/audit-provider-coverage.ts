@@ -145,11 +145,18 @@ export interface CfnClientLike {
  */
 export async function* paginateListTypes(
   client: CfnClientLike,
-  provisioningType?: ProvisioningType
+  provisioningType?: ProvisioningType,
+  /**
+   * Retry each page on throttling and transport errors, as `DescribeType`
+   * does (go-to-k/cdkd#5214 follow-up): back-to-back walks exceed the
+   * account's `ListTypes` rate, and the SDK's own three attempts do not
+   * outlast it.
+   */
+  retry: DescribeTypeRetryOptions = {}
 ): AsyncGenerator<string> {
   let nextToken: string | undefined;
   do {
-    const resp = await client.send(
+    const resp = await sendListTypesWithRetry(client, retry, () =>
       new ListTypesCommand({
         Type: 'RESOURCE',
         ...(provisioningType !== undefined && { ProvisioningType: provisioningType }),
@@ -173,16 +180,17 @@ export async function* paginateListTypes(
 /**
  * Every listed type's `ProvisioningType`, from one `ListTypes` walk per value
  * (go-to-k/cdkd#5214): `ListTypes` filters on it, so the three walks classify
- * every type in ~25 calls instead of one `DescribeType` per type. A type
- * missing from the map (published between the walks) falls back to
- * `DescribeType` in {@link partitionCoverage}.
+ * every type in ~25 calls instead of one `DescribeType` per type. The three
+ * walks partition the unfiltered listing (measured), so the map's keys ARE
+ * the universe the report covers.
  */
 export async function listProvisioningTypes(
-  client: CfnClientLike
+  client: CfnClientLike,
+  retry: DescribeTypeRetryOptions = {}
 ): Promise<Map<string, ProvisioningType>> {
   const byType = new Map<string, ProvisioningType>();
   for (const provisioningType of ['FULLY_MUTABLE', 'IMMUTABLE', 'NON_PROVISIONABLE'] as const) {
-    for await (const typeName of paginateListTypes(client, provisioningType)) {
+    for await (const typeName of paginateListTypes(client, provisioningType, retry)) {
       byType.set(typeName, provisioningType);
     }
   }
@@ -266,6 +274,28 @@ const defaultSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve,
 export interface DescribeTypeRetryOptions {
   readonly retryDelaysMs?: readonly number[];
   readonly sleep?: Sleep;
+}
+
+/**
+ * `client.send(make())`, retried on a throttling or transport error with the
+ * {@link DEFAULT_RETRY_DELAYS_MS} backoff, as {@link describeTypeWithRetry}
+ * does. `make` builds a fresh command per attempt.
+ */
+async function sendListTypesWithRetry(
+  client: CfnClientLike,
+  options: DescribeTypeRetryOptions,
+  make: () => ListTypesCommand
+): Promise<{ TypeSummaries?: Array<{ TypeName?: string }>; NextToken?: string }> {
+  const delays = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
+  const sleep = options.sleep ?? defaultSleep;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await client.send(make());
+    } catch (err) {
+      if (!isRetryableDescribeTypeError(err) || attempt >= delays.length) throw err;
+      await sleep(delays[attempt] ?? 1000);
+    }
+  }
 }
 
 /**
@@ -644,19 +674,10 @@ async function regenerate(): Promise<void> {
   // Agent otherwise holds the event loop open for a few seconds).
   const client = getAwsClients().cloudFormation;
   try {
-    console.error('[audit] enumerating public AWS CFn resource types via ListTypes...');
-    const allTypes: string[] = [];
-    for await (const typeName of paginateListTypes(client)) {
-      allTypes.push(typeName);
-      if (allTypes.length % 100 === 0) {
-        console.error(`[audit] ListTypes: ${allTypes.length} types so far...`);
-      }
-    }
-    console.error(`[audit] ListTypes complete: ${allTypes.length} total types`);
-
-    console.error('[audit] reading provisioning types via ListTypes (one walk per type)...');
+    console.error('[audit] listing public AWS CFn resource types by provisioning type...');
     const knownProvisioningTypes = await listProvisioningTypes(client);
-    console.error(`[audit] ${knownProvisioningTypes.size} types classified by ListTypes`);
+    const allTypes = [...knownProvisioningTypes.keys()];
+    console.error(`[audit] ListTypes complete: ${allTypes.length} total types`);
 
     const report = await partitionCoverage(client, registered, allTypes, {
       knownProvisioningTypes,

@@ -372,6 +372,50 @@ describe('assertReportIsComplete', () => {
   });
 });
 
+describe('ListTypes pages retry throttling (go-to-k/cdkd#5214 follow-up)', () => {
+  const throttle = (): Error => Object.assign(new Error('Rate exceeded'), { name: 'Throttling' });
+
+  it('waits and retries a throttled page, then carries on', async () => {
+    let calls = 0;
+    const slept: number[] = [];
+    const client = {
+      // eslint-disable-next-line @typescript-eslint/require-await
+      send: async () => {
+        calls++;
+        if (calls <= 2) throw throttle();
+        return { TypeSummaries: [{ TypeName: 'AWS::A::B' }] };
+      },
+    } as CfnClientLike;
+    const map = await listProvisioningTypes(client, {
+      retryDelaysMs: [5, 10],
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    });
+    expect(slept).toEqual([5, 10]);
+    expect(map.get('AWS::A::B')).toBe('NON_PROVISIONABLE');
+  });
+
+  it('gives up after the last delay, and never retries a non-retryable error', async () => {
+    const always = { send: async () => Promise.reject(throttle()) } as unknown as CfnClientLike;
+    await expect(
+      listProvisioningTypes(always, { retryDelaysMs: [1], sleep: async () => undefined })
+    ).rejects.toThrow('Rate exceeded');
+
+    let calls = 0;
+    const denied = {
+      send: async () => {
+        calls++;
+        return Promise.reject(Object.assign(new Error('no'), { name: 'AccessDeniedException' }));
+      },
+    } as unknown as CfnClientLike;
+    await expect(
+      listProvisioningTypes(denied, { retryDelaysMs: [1, 1], sleep: async () => undefined })
+    ).rejects.toThrow('no');
+    expect(calls).toBe(1);
+  });
+});
+
 describe('listProvisioningTypes (go-to-k/cdkd#5214)', () => {
   it('classifies every type from one filtered ListTypes walk per provisioning type', async () => {
     const byFilter: Record<string, string[]> = {
