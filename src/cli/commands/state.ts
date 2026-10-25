@@ -4946,11 +4946,12 @@ async function refreshObservedForStack(
           } catch (err) {
             failed++;
             // A `SyntaxError` here is almost always a parse failure of a body a
-            // provider read back (`CloudControlProvider.readCurrentState`
-            // parses the resource model), and V8 quotes a window of that body,
-            // which can hold a plaintext value (issue #5254). Only its class is
-            // printed, for any `SyntaxError`, failing safe; its text goes to
-            // `debug`.
+            // provider read back, and V8's own one quotes a window of that body,
+            // which can hold a plaintext value (issue #5254).
+            // `CloudControlProvider.readCurrentState` throws a snippet-free
+            // `SyntaxError` for its resource model, but a provider's raw one
+            // would not be, so only the class is printed, for any
+            // `SyntaxError`, failing safe; its text goes to `debug`.
             if (err instanceof SyntaxError) {
               logger.debug(
                 safeMsg`readCurrentState parse failure for ${displayIdent(logicalId)}: ${parseFailureDebugDetail(err)}`

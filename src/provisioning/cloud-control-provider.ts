@@ -74,7 +74,12 @@ import { describeAwsFailure, VERBOSE_POINTER } from '../utils/aws-failure-text.j
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import { quietS3Logger } from '../utils/sdk-call-log.js';
-import { displaySafe, safeMsg } from '../utils/display-safe.js';
+import { displayIdent, displaySafe, safeMsg } from '../utils/display-safe.js';
+import {
+  describeJsonParseFailure,
+  parseFailureDebugDetail,
+  utf8ByteLength,
+} from '../utils/json-parse-failure.js';
 import { withPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { withGuardDutyDetectorReadBackOps } from './guardduty-detector-patch.js';
@@ -1394,27 +1399,23 @@ export class CloudControlProvider implements ResourceProvider {
     } catch (cleanupError) {
       // Deliberately the RAW message, and deliberately NOT the guarded
       // `describePollFailure(...).display` that `disableCcProtection`'s twin
-      // catch takes. Two reasons, both measured after a round-10 review
+      // catch takes. Two points, both measured after a round-10 review
       // proposed converting this site as well:
       //
-      //  - the bare `String()` arm is UNREACHABLE here, and the proof has TWO
-      //    parts rather than the one an earlier revision of this comment gave.
-      //    (a) Everything inside `delete()`'s own `handleError` try is wrapped
-      //    into a `ProvisioningError` — always an `Error`. (b) `delete()` also
-      //    has four awaits OUTSIDE that try. Three — `asgProvider.delete`,
-      //    `disableInstanceApiTermination` and `disableCcProtection` — CAN let
-      //    a non-`Error` escape; what makes them unreachable from HERE is that
-      //    all three are gated on `context?.removeProtection === true`, and
-      //    this site's call passes NO `removeProtection` (its context carries
-      //    only the create's masker, go-to-k/cdkd#2007). The fourth,
-      //    `ec2ClientInCcRegion` (an `AWS::EC2::Volume` only, issue #3455), is
-      //    NOT gated and IS reachable from here, but it catches its own region
-      //    reads and throws only a cdkd-authored `ProvisioningError`. So the gate is
-      //    load-bearing: give this call a context with `removeProtection` and
-      //    the arm becomes live. The flip's own catch differs for the mirror
-      //    reason — its `UpdateResource` SEND is inside it, so a non-`Error`
-      //    rejection reaches that one raw. A case written against this site
-      //    stayed green under the bare form; that is why.
+      //  - `describeAwsFailure(...).detail` is NOT that reduction: it is the
+      //    `Error`'s message verbatim, and `String(value)` without the throw
+      //    for anything else (go-to-k/cdkd#3361). Its non-`Error` arm is
+      //    UNREACHABLE here today: `delete()` wraps everything inside its
+      //    `handleError` try into a `ProvisioningError`, and of its four
+      //    awaits outside that try, three (`asgProvider.delete`,
+      //    `disableInstanceApiTermination`, `disableCcProtection`) are gated on
+      //    `context?.removeProtection === true`, which this call never passes
+      //    (its context carries only the create's masker, go-to-k/cdkd#2007),
+      //    while the fourth, `ec2ClientInCcRegion` (issue #3455), throws only
+      //    a cdkd-authored `ProvisioningError`. It is still the guarded form,
+      //    as defence in depth: give this call a `removeProtection` context
+      //    and a null-prototype rejection would otherwise make a bare
+      //    `String()` throw out of this catch and replace the create failure.
       //  - reducing the text here would be a NO-OP today and a decision-changer
       //    the moment the wrapper stops being cdkd-authored. Measured: applying
       //    the conversion leaves the whole provisioning suite green, because
@@ -1428,7 +1429,7 @@ export class CloudControlProvider implements ResourceProvider {
       //    silently stop that classifier recognising the shapes it exists for.
       //    An earlier revision of this comment stated that as a live risk,
       //    which review measured false.
-      const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      const message = describeAwsFailure(cleanupError).detail;
       // Ahead of `isNotFoundMessage`, and NOT a duplicate of the four
       // already-deleted guards elsewhere — this one matches with a
       // case-INSENSITIVE regex, so it has a failure mode they do not. Since
@@ -4958,7 +4959,22 @@ export class CloudControlProvider implements ResourceProvider {
       if (typeof raw !== 'string' || raw.length === 0) {
         return undefined;
       }
-      const parsed = JSON.parse(raw) as unknown;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw) as unknown;
+      } catch (parseError) {
+        // V8 TRUNCATES its echo of the model, so while the call withholds its
+        // id (go-to-k/cdkd#3869) the first characters of a longer
+        // secret-derived name can print and no needle matches a prefix: the
+        // gate `parseResourceModel` applies. The snippet-free rendering keeps
+        // the line diagnosable then.
+        const detail =
+          log.withheld === true
+            ? describeJsonParseFailure(parseError, utf8ByteLength(raw))
+            : displaySafe(describeAwsFailure(parseError).detail);
+        log.debug(`Failed to read CC model for ${resourceType} ${physicalId}: ${detail}`);
+        return undefined;
+      }
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         return undefined;
       }
@@ -5132,7 +5148,26 @@ export class CloudControlProvider implements ResourceProvider {
         return undefined;
       }
 
-      const parsed = JSON.parse(raw) as unknown;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw) as unknown;
+      } catch (parseError) {
+        // V8's `SyntaxError` quotes a window of the model, which can hold a
+        // plaintext property value, and the raw error reached `cdkd drift`'s
+        // and `cdkd state refresh-observed`'s warn lines (issue #5254). So
+        // V8's text goes to `debug` only, and what is thrown names the type,
+        // the failure's offset when V8 reports one, and the model's size, with
+        // no cause. It stays
+        // a `SyntaxError`: `refresh-observed` routes that class to a
+        // class-only line.
+        this.logger.debug(
+          safeMsg`Cloud Control resource model for ${displayIdent(resourceType)} failed to parse: ${parseFailureDebugDetail(parseError)}`
+        );
+        throw new SyntaxError(
+          `Cloud Control returned a resource model for ${displayIdent(resourceType)} that is not ` +
+            `valid JSON: ${describeJsonParseFailure(parseError, utf8ByteLength(raw))}`
+        );
+      }
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         return undefined;
       }

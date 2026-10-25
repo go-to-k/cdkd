@@ -4341,9 +4341,10 @@ export async function captureObservedForImportedResources(
           // `resolveImportedProperties` masks with `maskSecretsInText`; that is
           // not available here, because the secrets map on this path is EMPTY by
           // construction, so there is no needle set to mask against. And the
-          // message can carry a plaintext: `CloudControlProvider.readCurrentState`
-          // does a bare `JSON.parse` on the resource model and rethrows, and V8
-          // embeds an input snippet in a `SyntaxError` -- measured on node
+          // message can carry a plaintext: a provider's `readCurrentState` that
+          // rethrows a `JSON.parse` failure (`CloudControlProvider`'s did until
+          // issue #5254) carries V8's `SyntaxError`, which embeds an input
+          // snippet -- measured on node
           // v24.19.0, `JSON.parse('{"Password": SUPER-SECRET-abc}')` reports
           // `..."assword": SUPER-SECR"...`. So log what identifies the failure
           // without quoting the input, the way `parseResourceModel` already does.
