@@ -2385,11 +2385,13 @@ describe('FSxFileSystemProvider update removal (#1160)', () => {
     ]);
   });
 
-  it('claims nothing about CloudFormation for an unmeasured sub-property of a measured variant', async () => {
+  it('claims nothing about CloudFormation for a measured Lustre sub-property on an unmeasured storage class', async () => {
     routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
 
+    // AutomaticBackupRetentionDays was measured on PERSISTENT_2 SSD only.
     const prev = {
       ...LUSTRE_PROPS,
+      StorageType: 'INTELLIGENT_TIERING',
       LustreConfiguration: {
         DeploymentType: 'PERSISTENT_2',
         AutomaticBackupRetentionDays: 7,
@@ -2603,6 +2605,129 @@ describe('FSxFileSystemProvider update removal (#1160)', () => {
     });
   }
 
+  // The Lustre removals the CFn A/B on issue #1160 (2026-10-25) measured:
+  // DailyAutomaticBackupStartTime, AutomaticBackupRetentionDays,
+  // PerUnitStorageThroughput and MetadataConfiguration on PERSISTENT_2 SSD,
+  // each alone and all four together, and the first three on PERSISTENT_1 HDD
+  // (the claim covers SSD / HDD, never INTELLIGENT_TIERING);
+  // DataReadCacheConfiguration and ThroughputCapacity on PERSISTENT_2
+  // INTELLIGENT_TIERING, each the update's only removal, that shape only.
+  const lustre = (
+    deploymentType: string | undefined,
+    top: Record<string, unknown>,
+    sub: Record<string, unknown>
+  ): Record<string, unknown> => ({
+    ...LUSTRE_PROPS,
+    ...top,
+    LustreConfiguration: {
+      ...(deploymentType !== undefined && { DeploymentType: deploymentType }),
+      ...sub,
+    },
+  });
+  const LUSTRE_SSD_SET = {
+    DailyAutomaticBackupStartTime: '05:00',
+    AutomaticBackupRetentionDays: 3,
+    PerUnitStorageThroughput: 125,
+    MetadataConfiguration: { Mode: 'USER_PROVISIONED', Iops: 3000 },
+  };
+  const LUSTRE_IT_SET = {
+    ThroughputCapacity: 4000,
+    DataReadCacheConfiguration: { SizingMode: 'USER_PROVISIONED', SizeGiB: 32 },
+    MetadataConfiguration: { Mode: 'USER_PROVISIONED', Iops: 6000 },
+  };
+  const SSD = { StorageType: 'SSD' };
+  const IT = { StorageType: 'INTELLIGENT_TIERING' };
+
+  for (const [title, prev, desired, expected] of [
+    ...(Object.keys(LUSTRE_SSD_SET) as (keyof typeof LUSTRE_SSD_SET)[]).map(
+      (key) =>
+        [
+          `${key} on PERSISTENT_2 SSD`,
+          lustre('PERSISTENT_2', SSD, LUSTRE_SSD_SET),
+          lustre('PERSISTENT_2', SSD, { ...LUSTRE_SSD_SET, [key]: undefined }),
+          keepsLine(`LustreConfiguration.${key}`),
+        ] as const
+    ),
+    [
+      'all four PERSISTENT_2 SSD removals in one deploy',
+      lustre('PERSISTENT_2', SSD, LUSTRE_SSD_SET),
+      lustre('PERSISTENT_2', SSD, {}),
+      keepsLine(
+        'LustreConfiguration.DailyAutomaticBackupStartTime, LustreConfiguration.AutomaticBackupRetentionDays, LustreConfiguration.PerUnitStorageThroughput, LustreConfiguration.MetadataConfiguration'
+      ),
+    ],
+    [
+      'PerUnitStorageThroughput on PERSISTENT_1 HDD',
+      lustre('PERSISTENT_1', { StorageType: 'HDD' }, { PerUnitStorageThroughput: 12 }),
+      lustre('PERSISTENT_1', { StorageType: 'HDD' }, {}),
+      keepsLine('LustreConfiguration.PerUnitStorageThroughput'),
+    ],
+    [
+      'DataReadCacheConfiguration on PERSISTENT_2 INTELLIGENT_TIERING',
+      lustre('PERSISTENT_2', IT, LUSTRE_IT_SET),
+      lustre('PERSISTENT_2', IT, { ...LUSTRE_IT_SET, DataReadCacheConfiguration: undefined }),
+      keepsLine('LustreConfiguration.DataReadCacheConfiguration'),
+    ],
+    [
+      'ThroughputCapacity on PERSISTENT_2 INTELLIGENT_TIERING',
+      lustre('PERSISTENT_2', IT, LUSTRE_IT_SET),
+      lustre('PERSISTENT_2', IT, { ...LUSTRE_IT_SET, ThroughputCapacity: undefined }),
+      keepsLine('LustreConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'DataReadCacheConfiguration and ThroughputCapacity together (unmeasured: each was removed alone)',
+      lustre('PERSISTENT_2', IT, LUSTRE_IT_SET),
+      lustre('PERSISTENT_2', IT, { MetadataConfiguration: LUSTRE_IT_SET.MetadataConfiguration }),
+      neutralLine(
+        'LustreConfiguration.ThroughputCapacity, LustreConfiguration.DataReadCacheConfiguration'
+      ),
+    ],
+    [
+      'ThroughputCapacity on PERSISTENT_2 SSD (unmeasured)',
+      lustre('PERSISTENT_2', SSD, { ThroughputCapacity: 4000 }),
+      lustre('PERSISTENT_2', SSD, {}),
+      neutralLine('LustreConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'DataReadCacheConfiguration while StorageType leaves INTELLIGENT_TIERING (unmeasured)',
+      lustre('PERSISTENT_2', IT, LUSTRE_IT_SET),
+      lustre('PERSISTENT_2', SSD, { ...LUSTRE_IT_SET, DataReadCacheConfiguration: undefined }),
+      neutralLine('LustreConfiguration.DataReadCacheConfiguration'),
+    ],
+    [
+      'ThroughputCapacity on INTELLIGENT_TIERING with no PERSISTENT_2 declared (unmeasured)',
+      lustre(undefined, IT, { ThroughputCapacity: 4000 }),
+      lustre(undefined, IT, {}),
+      neutralLine('LustreConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'MetadataConfiguration on PERSISTENT_2 INTELLIGENT_TIERING (unmeasured)',
+      lustre('PERSISTENT_2', IT, LUSTRE_IT_SET),
+      lustre('PERSISTENT_2', IT, { ...LUSTRE_IT_SET, MetadataConfiguration: undefined }),
+      neutralLine('LustreConfiguration.MetadataConfiguration'),
+    ],
+  ] as const) {
+    it(`sends nothing for the Lustre removal and words it by its measured shape: ${title}`, async () => {
+      routeSend({
+        UpdateFileSystemCommand: {},
+        DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+      });
+      // A key spelled `undefined` in a fixture is a removal: drop it.
+      const desiredClean = JSON.parse(JSON.stringify(desired)) as Record<string, unknown>;
+      const migratesStorageType = prev['StorageType'] !== desiredClean['StorageType'];
+
+      const result = await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desiredClean, prev);
+
+      expect(result.wasReplaced).toBe(false);
+      expect(callsOf(UpdateFileSystemCommand).map((call) => call.input)).toEqual(
+        migratesStorageType
+          ? [{ FileSystemId: FS_ID, StorageType: desiredClean['StorageType'] }]
+          : []
+      );
+      expect(warnings()).toEqual([expected]);
+    });
+  }
+
   it('still claims nothing about CloudFormation for a rollback revert of a shape-measured removal', async () => {
     routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
     const prev = openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, {});
@@ -2762,20 +2887,18 @@ describe('FSxFileSystemProvider update removal (#1160)', () => {
   it('claims nothing about CloudFormation when a measured top-level removal shares the line with an unmeasured one', async () => {
     routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
 
-    const prev = {
-      ...LUSTRE_PROPS,
-      StorageType: 'SSD',
-      LustreConfiguration: { DeploymentType: 'PERSISTENT_2', AutomaticBackupRetentionDays: 7 },
-    };
+    // OpenZFS ThroughputCapacity is unmeasured on SINGLE_AZ_1.
+    const { ThroughputCapacity: _tc, ...zfsWithoutThroughput } = OPENZFS_PROPS.OpenZFSConfiguration;
+    const prev = { ...OPENZFS_PROPS, StorageType: 'SSD' };
     const { StorageType: _st, ...desired } = {
       ...prev,
-      LustreConfiguration: { DeploymentType: 'PERSISTENT_2' },
+      OpenZFSConfiguration: zfsWithoutThroughput,
     };
     await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desired, prev);
 
     expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
     expect(warnings()).toEqual([
-      'MyFs (AWS::FSx::FileSystem): properties StorageType, LustreConfiguration.AutomaticBackupRetentionDays are no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.',
+      'MyFs (AWS::FSx::FileSystem): properties StorageType, OpenZFSConfiguration.ThroughputCapacity are no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.',
     ]);
   });
 

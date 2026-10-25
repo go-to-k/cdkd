@@ -272,21 +272,37 @@ const TOP_LEVEL_LEFT_IN_PLACE_PROPS = [
  * FileSystemId, the live value unchanged and no administrative action: an
  * OpenZFS SINGLE_AZ_1 file system kept `NetworkType` DUAL (the non-default),
  * `StorageCapacity` 64 and `StorageType` SSD; a Lustre PERSISTENT_1 one kept
- * `StorageType` HDD (the non-default) and `StorageCapacity` 6000. A top-level
+ * `StorageType` HDD (the non-default) and `StorageCapacity` 6000. CFn A/B
+ * us-east-1 2026-10-25, each removal its own update, every one
+ * `UPDATE_COMPLETE` with the same FileSystemId, the value read back unchanged
+ * and no administrative action: a Lustre PERSISTENT_2 SSD file system kept
+ * `DailyAutomaticBackupStartTime` 05:00, `AutomaticBackupRetentionDays` 3,
+ * `PerUnitStorageThroughput` 125 and `MetadataConfiguration` USER_PROVISIONED
+ * 3000 IOPS, and a second one kept all four removed in ONE update; a Lustre
+ * PERSISTENT_1 HDD file system kept `PerUnitStorageThroughput` 12,
+ * `DailyAutomaticBackupStartTime` and `AutomaticBackupRetentionDays`. (The
+ * PERSISTENT_2 `CopyTagsToBackups` removal REPLACED the file system;
+ * `update()` refuses that change with a `--replace` pointer.) A top-level
  * name counts as measured only for the `FileSystemType` it was measured on
  * ({@link CFN_KEEPS_TOP_LEVEL_ON_REMOVAL}); Windows / ONTAP, and their
  * sub-properties, are unmeasured, so a warning naming one of them keeps the
  * line that claims nothing about CloudFormation. The claim is generalised from
- * the measured shapes (Lustre SCRATCH_2 and PERSISTENT_1 HDD; OpenZFS
- * SINGLE_AZ_1 SSD, NetworkType DUAL) to the rest of that type's SSD / HDD
+ * the measured shapes (Lustre SCRATCH_2, PERSISTENT_1 HDD and PERSISTENT_2
+ * SSD; OpenZFS SINGLE_AZ_1 SSD, NetworkType DUAL) to the rest of that type's
+ * SSD / HDD
  * deployments; an `INTELLIGENT_TIERING` file system is a different storage
- * class nobody measured, so it never gets the claim ({@link cfnKeepsOnRemoval}).
- * The OpenZFS sub-properties measured on one narrower shape only are not here
+ * class none of these names was measured on, so a name here never gets the
+ * claim there ({@link cfnKeepsOnRemoval}).
+ * The sub-properties measured on one narrower shape only are not here
  * ({@link CFN_KEEPS_ON_REMOVAL_FOR_SHAPE}).
  */
 const CFN_KEEPS_ON_REMOVAL: ReadonlySet<string> = new Set([
   'LustreConfiguration.AutoImportPolicy',
+  'LustreConfiguration.AutomaticBackupRetentionDays',
+  'LustreConfiguration.DailyAutomaticBackupStartTime',
   'LustreConfiguration.DataCompressionType',
+  'LustreConfiguration.MetadataConfiguration',
+  'LustreConfiguration.PerUnitStorageThroughput',
   'LustreConfiguration.WeeklyMaintenanceStartTime',
   'OpenZFSConfiguration.AutomaticBackupRetentionDays',
   'OpenZFSConfiguration.CopyTagsToBackups',
@@ -330,6 +346,19 @@ const keepsStorageType = (shape: RemovalClaimShape): boolean =>
   JSON.stringify(shape.storageTypes[0]) === JSON.stringify(shape.storageTypes[1]);
 
 /**
+ * The measured Lustre INTELLIGENT_TIERING shape: PERSISTENT_2 with
+ * INTELLIGENT_TIERING on both sides, the property the deploy's only removal.
+ */
+const isLustreIntelligentTieringSoleRemoval = (
+  shape: RemovalClaimShape,
+  removed: readonly string[]
+): boolean =>
+  removed.length === 1 &&
+  shape.fileSystemType === 'LUSTRE' &&
+  shape.deploymentTypes.every((deploymentType) => deploymentType === 'PERSISTENT_2') &&
+  shape.storageTypes.every((storageType) => storageType === 'INTELLIGENT_TIERING');
+
+/**
  * Removals CloudFormation is measured to keep on ONE narrower shape only, each
  * judged by its own predicate instead of {@link CFN_KEEPS_ON_REMOVAL}'s rule
  * (issue #1160). CFn A/B us-east-1 2026-10-24, every removal `UPDATE_COMPLETE`
@@ -348,6 +377,12 @@ const keepsStorageType = (shape: RemovalClaimShape): boolean =>
  *   the SAME update that removed `NetworkType` (removing `NetworkType` alone
  *   with the range still set failed), so the claim is made only when this
  *   deploy removes `NetworkType` as well.
+ *
+ * CFn A/B us-east-1 2026-10-25, same outcome per row: a Lustre PERSISTENT_2
+ * INTELLIGENT_TIERING file system kept `DataReadCacheConfiguration`
+ * (USER_PROVISIONED, 32 GiB) and `ThroughputCapacity` (4000), each the
+ * deploy's only removal. Both exist only on INTELLIGENT_TIERING, so both sides
+ * must declare it.
  */
 const CFN_KEEPS_ON_REMOVAL_FOR_SHAPE: ReadonlyMap<
   string,
@@ -384,6 +419,8 @@ const CFN_KEEPS_ON_REMOVAL_FOR_SHAPE: ReadonlyMap<
       !shape.storageTypes.includes('INTELLIGENT_TIERING') &&
       removed.includes('NetworkType'),
   ],
+  ['LustreConfiguration.DataReadCacheConfiguration', isLustreIntelligentTieringSoleRemoval],
+  ['LustreConfiguration.ThroughputCapacity', isLustreIntelligentTieringSoleRemoval],
 ]);
 
 /**

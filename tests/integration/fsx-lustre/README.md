@@ -13,6 +13,9 @@ the SDK provider, built on the CDK L2 (`aws-fsx.LustreFileSystem`).
   the file system is GONE from AWS afterwards (by id AND by tag).
 - `AWS::EC2::VPC` + `AWS::EC2::SecurityGroup` — minimal network (1 AZ,
   public subnet only, no NAT). The security group is created by the L2.
+- `AWS::FSx::FileSystem` `PersistentFs` — `PERSISTENT_2` SSD at 1200 GiB,
+  125 MB/s/TiB, in the same subnet and security group. It carries the
+  persistent-only settings Phase 2b removes (issue #1160).
 
 ## Phases (verify.sh)
 
@@ -37,6 +40,14 @@ the SDK provider, built on the CDK L2 (`aws-fsx.LustreFileSystem`).
        and saying CloudFormation keeps it too;
      - the value stays `LZ4`;
      - the maintenance window landed, which proves the call fired.
+
+     The same deploy also drops `DailyAutomaticBackupStartTime`,
+     `AutomaticBackupRetentionDays`, `PerUnitStorageThroughput` and
+     `MetadataConfiguration` from `PersistentFs`, a `PERSISTENT_2` SSD file
+     system declared from Phase 1. CloudFormation keeps each of them (CFn A/B
+     on issue #1160), so this asserts that `PersistentFs` is the same file
+     system, every value is unchanged, and its one warning line names all four
+     and says CloudFormation keeps them too.
 
      Phase 2's output is the negative control: that deploy removes nothing,
      so it must not carry the warning.

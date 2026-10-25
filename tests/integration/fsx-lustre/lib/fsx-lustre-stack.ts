@@ -30,6 +30,11 @@ import type { Construct } from 'constructs';
  *     in a warning saying CloudFormation keeps it too.
  *   - WeeklyMaintenanceStartTime is ADDED in the same deploy, a companion
  *     change proving UpdateFileSystem fired with the removal beside it.
+ *   - `PersistentFs` (PERSISTENT_2 SSD, declared from Phase 1) drops
+ *     DailyAutomaticBackupStartTime, AutomaticBackupRetentionDays,
+ *     PerUnitStorageThroughput and MetadataConfiguration. CloudFormation keeps
+ *     each (CFn A/B on issue #1160, 2026-10-25), so every value must stay and
+ *     the warning must say CloudFormation keeps them too.
  *
  * FIX-FORWARD phase (INJECT_FS_ORPHAN=true, issue #4606): an `OrphanFs`
  * whose first CREATE fails after FSx made it; see the block below.
@@ -89,6 +94,28 @@ export class FsxLustreStack extends cdk.Stack {
       cdk.Tags.of(fileSystem).add('dropme', 'yes');
     }
 
+    // Issue #1160: the persistent-only sub-properties, each set to a value the
+    // REMOVAL phase drops. Created beside `Fs` in Phase 1 (cdkd provisions the
+    // two in parallel), in the security group the L2 opened for Lustre.
+    const persistentFs = new fsx.CfnFileSystem(this, 'PersistentFs', {
+      fileSystemType: 'LUSTRE',
+      fileSystemTypeVersion: '2.15',
+      storageType: 'SSD',
+      storageCapacity: 1200,
+      subnetIds: [vpc.publicSubnets[0]!.subnetId],
+      securityGroupIds: [fileSystem.connections.securityGroups[0]!.securityGroupId],
+      lustreConfiguration: {
+        deploymentType: 'PERSISTENT_2',
+        ...(!isRemoval && {
+          dailyAutomaticBackupStartTime: '05:00',
+          automaticBackupRetentionDays: 3,
+          perUnitStorageThroughput: 125,
+          metadataConfiguration: { mode: 'USER_PROVISIONED', iops: 3000 },
+        }),
+      },
+    });
+    cdk.Tags.of(persistentFs).add('cdkd-integ', 'fsx-lustre');
+
     // go-to-k/cdkd#4606: the fix-forward arm (Phase 2c of `verify.sh`). The
     // injection deploy runs under a role denied DescribeFileSystems and
     // DeleteFileSystem, so this file system's CREATE fails after FSx made it
@@ -119,6 +146,7 @@ export class FsxLustreStack extends cdk.Stack {
     }
 
     new cdk.CfnOutput(this, 'FileSystemId', { value: fileSystem.fileSystemId });
+    new cdk.CfnOutput(this, 'PersistentFileSystemId', { value: persistentFs.ref });
     // Fn::GetAtt DNSName / LustreMountName — proves the provider's
     // attribute wiring end to end.
     new cdk.CfnOutput(this, 'DnsName', { value: fileSystem.dnsName });
