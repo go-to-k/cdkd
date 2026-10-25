@@ -252,6 +252,8 @@ local-start-cloudfront	2026-10-22T19:48:48Z	PASS	10	verify.sh	PR #5174 cdk-local
 local-start-cloudfront-from-state	2026-10-22T19:53:26Z	PASS	240	verify.sh	PR #5174 cdk-local 0.154.0 bump; served deployed S3 origin byte-for-byte; destroy+docker sweep clean
 local-start-service	2026-10-22T19:41:02Z	PASS	105	verify.sh	PR #5174 cdk-local 0.154.0 bump; 2 replicas + dual-stack/FIPS ECR pull; destroy+docker sweep clean
 local-start-service-watch-fast	2026-10-22T05:48:49Z	PASS	62	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
+local-start-web-function	2026-10-25T18:43:18Z	PASS	15	verify.sh	rc ok, docker clean; rerun @c9cdb4870
+local-start-web-function-from-state	2026-10-25T18:43:18Z	PASS	95	verify.sh	rc ok, orph clean; rerun @c9cdb4870
 log-pipeline	2026-10-20T06:16:25Z	PASS	185	standard	PASS on retry; 1st attempt hit CWL subscription-filter invoke-permission eventual-consistency (env flake)
 loggroup-class-guard	2026-10-22T07:45:16Z	PASS	135	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean; own state bucket
 loggroup-kms-associate	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean

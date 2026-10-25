@@ -140,14 +140,14 @@ Which inputs are lower-cased depends on the command:
 | Every command outside `cdkd local` | `--region`, `AWS_REGION` and `AWS_DEFAULT_REGION` |
 | `local invoke`, `local run-task`, `local invoke-agentcore` | The flag and both environment variables |
 | `local start-api` | The flag only |
-| `local start-service`, `local start-alb`, `local start-cloudfront`, `local start-agentcore` | The flag, `--stack-region` and both environment variables |
+| `local start-service`, `local start-alb`, `local start-cloudfront`, `local start-agentcore`, `local start-web-function` | The flag, `--stack-region` and both environment variables |
 
 ### Edge cases
 
 - **`local start-api` and the environment variables.** An upper-cased
   `AWS_REGION` is not lower-cased there, so it reaches the Lambda containers
   that the command starts.
-- **`--stack-region` on the four `local start-*` commands in the last row.**
+- **`--stack-region` on the five `local start-*` commands in the last row.**
   The value is lower-cased, but your exact spelling is still used to match
   the state record.
 - **The bootstrap marker keeps the spelling you typed.** `cdkd bootstrap`

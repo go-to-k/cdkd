@@ -522,6 +522,7 @@ describe('every `cdkd local *` command folds the region it forwards (#2522)', ()
       'local-start-alb.ts',
       'local-start-cloudfront.ts',
       'local-start-service.ts',
+      'local-start-web-function.ts',
     ]);
   });
 });
