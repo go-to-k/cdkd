@@ -110,11 +110,20 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 }
 # ---------------------------------------------------------------------------
 
+# Phase 2 resolves the L2 cluster's generated master password into the
+# SecurityCluster through a dynamic reference (issue #1160), so state versions
+# are swept like every secret-consuming fixture (issue #2096). Sourced by
+# absolute path before the `cd` below, so the helper exists before the first
+# `cleanup` can fire.
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+. "${REPO_ROOT}/tests/integration/s3-versions.sh"
+
 cd "$(dirname "$0")"
 
 STACK="RdsAuroraStack"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 
 EXPECTED_MONITORING_INTERVAL=60
 EXPECTED_IAM_AUTH="true"
@@ -277,6 +286,10 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  # NONCURRENT only, per ../s3-versions.sh: this also runs from the failure
+  # and signal traps, where a live state.json may be the only record of a
+  # standing resource. The success path does the full sweep.
+  s3_purge_prefix_versions "${STATE_BUCKET:-}" "${STATE_PREFIX:-}" noncurrent || true
   set -eu
 }
 
@@ -1037,6 +1050,15 @@ if [ -n "${LEAKED_SNAPSHOTS}" ]; then
   exit 1
 fi
 echo "    OK: no manual snapshot of ${AURORA_CLUSTER_ID} since ${RUN_START}Z (#3993)"
+
+# --- State-version sweep, on the success path ------------------------------
+# The bucket is VERSIONED: `aws s3 rm` and destroy leave every prior state
+# version readable, phase 2's resolved master password included. Run cleanup
+# (it deletes this run's final snapshot) with the trap disarmed, then sweep.
+trap - EXIT INT TERM
+cleanup
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "rds-aurora state teardown"
 
 echo ""
 echo "=== PASS: RDS Aurora integ + #609 DBCluster security backfill + #5004 removal keeps ==="
