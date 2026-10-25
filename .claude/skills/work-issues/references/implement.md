@@ -73,6 +73,10 @@ done                                                               # RIGHT
   fixture impact": fixtures deploy malformed values ON PURPOSE (go-to-k/cdkd#3780).
 - **Count the population BEFORE the fix, assert it afterwards.** A fix REMOVING
   a behaviour owes a second count: the assertions that it happens, which stay green when it stops (§8-d).
+  A masking fix's population is every SINK the value reaches, each `warn` that
+  names the error CLASS included (a test puts the secret IN the class), and the
+  lane prompt NAMES each one: "warn cases" alone missed it 4x (#5248, #5267,
+  #5268, #5270).
 - A defect this lane is NOT fixing gets FILED (`filing.md`, §5-f).
 
 ### 5-c. The fix itself
@@ -162,5 +166,6 @@ with "REPORT ONLY". A subagent's Bash bypasses the PreToolUse hooks.
   worktree, so `git status --porcelain` must be EMPTY before a probe and
   otherwise they WAIT; and leave those files alone until the round ends
   (`.claude/agents/pr-code-reviewer.md` holds the rest).
-- Give each agent a unique scratch dir IN ITS PROMPT, one per LANE
-  (`$SCRATCHPAD/lane<issue><slice>-private/`): same-named files overwrite.
+- Give each agent a unique scratch dir IN ITS PROMPT, one per AGENT, the
+  parent's reviewers too (`$SCRATCHPAD/lane<issue><slice>-<role>/`): same-named
+  files overwrite (a reviewer's `git archive` clobbered a peer's probe tree, #5268).

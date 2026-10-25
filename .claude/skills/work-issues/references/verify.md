@@ -67,7 +67,8 @@ tests passing is necessary but NOT sufficient:
   --include='*.mjs' --exclude-dir=node_modules '<old text>' tests/integration`
   (`.ts` / `.mjs` helpers read output; a top-level helper's hit means every
   fixture sourcing it); dropped AWS text (an id an SDK error echoes) has no
-  literal, so grep its error code and API call. Run each fixture named before
+  literal, so grep its error code and API call, in fixtures the PR never edits
+  too (#5268 lost a 5236s run to one). Run each fixture named before
   merge, whatever the change's own tier: no vitest run executes them, so one
   stays red on `main` (#4394, #5046).
 - **Any diff with no `src/**` change** (docs, toolchain, CI, hooks, skills,
