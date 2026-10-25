@@ -64,6 +64,8 @@ import {
   relayedNameCollision,
 } from '../../deployment/retryable-errors.js';
 import { markNotGone } from '../not-gone.js';
+import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
+import { DEFAULT_RESOURCE_TIMEOUT_MS } from '../../deployment/deploy-engine/options.js';
 import { generatedNameFor } from '../resource-name.js';
 import {
   isAuxiliaryFailure,
@@ -712,6 +714,11 @@ export class LambdaFunctionProvider implements ResourceProvider {
   private readonly eniInitialSleepMs: number = 10_000;
   private readonly eniDeleteRetryBudgetMs: number = 30 * 60 * 1000;
   private readonly eniDeleteRetryIntervalMs: number = 15_000;
+  // - deadline margin: the per-ENI budget also ends this long before the
+  //   per-resource deadline (#5276). The budget alone equals the default
+  //   deadline, which also covers the detach and the delete, so without it a
+  //   slow release failed the delete instead of reaching the give-up.
+  private readonly eniDeadlineMarginMs: number = 2 * 60 * 1000;
 
   constructor() {
     const awsClients = getAwsClients();
@@ -1641,6 +1648,12 @@ export class LambdaFunctionProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Lambda function ${logicalId}: ${physicalId}`);
+    // Measured from here, a little after the engine's own clock started, so
+    // the margin also absorbs that gap.
+    const eniPhaseDeadline =
+      Date.now() +
+      (resolvedResourceTimeoutMs(resourceType) ?? DEFAULT_RESOURCE_TIMEOUT_MS) -
+      this.eniDeadlineMarginMs;
 
     const hasVpcConfig = this.hasVpcConfig(properties?.['VpcConfig']);
     // go-to-k/cdkd#4946: set once the VPC detach may have landed, so a refused
@@ -1738,7 +1751,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
     }
 
     if (hasVpcConfig) {
-      await this.cleanupLambdaEnis(physicalId);
+      await this.cleanupLambdaEnis(physicalId, eniPhaseDeadline);
     }
   }
 
@@ -2023,7 +2036,13 @@ export class LambdaFunctionProvider implements ResourceProvider {
     }
   }
 
-  private async cleanupLambdaEnis(functionName: string): Promise<void> {
+  /**
+   * `deadline` is where the ENI phase must END (go-to-k/cdkd#5276): the engine
+   * fails the whole delete at the per-resource deadline, so a give-up after it
+   * never runs and a slow hyperplane ENI release fails the function's delete
+   * instead of handing the ENI to the Subnet / SecurityGroup deletes.
+   */
+  private async cleanupLambdaEnis(functionName: string, deadline: number): Promise<void> {
     this.logger.debug(`Cleaning up Lambda VPC ENIs for function ${functionName}`);
 
     // Mirror delstack's ENI cleanup pattern: an unconditional initial sleep
@@ -2053,11 +2072,18 @@ export class LambdaFunctionProvider implements ResourceProvider {
     // Per-ENI parallel delete with retry. An in-use ENI cannot be deleted
     // until AWS finishes the asynchronous detach triggered by the prior
     // UpdateFunctionConfiguration; budget gives that detach time to land.
-    await Promise.all(enis.map((eni) => this.deleteEniWithRetry(eni.id, functionName)));
+    await Promise.all(
+      enis.map((eni) => this.deleteEniWithRetry(eni.id, functionName, deadline))
+    );
   }
 
-  private async deleteEniWithRetry(eniId: string, functionName: string): Promise<void> {
+  private async deleteEniWithRetry(
+    eniId: string,
+    functionName: string,
+    deadline: number
+  ): Promise<void> {
     const start = Date.now();
+    const giveUpAt = Math.min(start + this.eniDeleteRetryBudgetMs, deadline);
     for (;;) {
       try {
         await this.ec2Client.send(new DeleteNetworkInterfaceCommand({ NetworkInterfaceId: eniId }));
@@ -2069,15 +2095,15 @@ export class LambdaFunctionProvider implements ResourceProvider {
           // Already gone — treat as success.
           return;
         }
-        const elapsed = Date.now() - start;
-        if (elapsed >= this.eniDeleteRetryBudgetMs) {
+        const now = Date.now();
+        if (now >= giveUpAt) {
           this.logger.warn(
-            `Gave up deleting ENI ${eniId} for ${functionName} after ${elapsed}ms: ${msg} — ` +
+            `Gave up deleting ENI ${eniId} for ${functionName} after ${now - start}ms: ${msg} — ` +
               `downstream Subnet/SG deletion will retry`
           );
           return;
         }
-        await this.sleep(this.eniDeleteRetryIntervalMs);
+        await this.sleep(Math.min(this.eniDeleteRetryIntervalMs, giveUpAt - now));
       }
     }
   }

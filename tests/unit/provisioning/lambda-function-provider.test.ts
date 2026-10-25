@@ -53,6 +53,10 @@ import {
   inlineCodeFileNameForRuntime,
 } from '../../../src/provisioning/providers/lambda-function-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import {
+  clearResolvedResourceTimeouts,
+  setResolvedResourceTimeouts,
+} from '../../../src/provisioning/resource-timeout-registry.js';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 import * as zlib from 'node:zlib';
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
@@ -1851,6 +1855,82 @@ describe('LambdaFunctionProvider', () => {
       // Past initial sleep + the 30-minute per-ENI budget.
       await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
       await expect(promise).resolves.toBeUndefined();
+    });
+
+    // go-to-k/cdkd#5276: the per-ENI budget equalled the default per-resource
+    // deadline, so a slow hyperplane release failed the delete at the engine's
+    // deadline before the give-up could hand the ENI to the Subnet / SG deletes.
+    describe('ENI phase ends before the per-resource deadline (#5276)', () => {
+      const stuckEni = () =>
+        mockEc2Send.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+          if (cmd.constructor.name === 'DescribeNetworkInterfacesCommand') {
+            return {
+              NetworkInterfaces: [
+                {
+                  NetworkInterfaceId: 'eni-stuck',
+                  Description: 'AWS Lambda VPC ENI-fn-vpc',
+                  Status: 'in-use',
+                },
+              ],
+            };
+          }
+          throw new Error('InvalidParameterValue: in-use');
+        });
+
+      const startDelete = () => {
+        mockLambdaSend
+          .mockResolvedValueOnce({})
+          .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
+          .mockResolvedValueOnce({});
+        let settled = false;
+        const promise = provider
+          .delete('Fn', 'fn-vpc', 'AWS::Lambda::Function', {
+            VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
+          })
+          .finally(() => {
+            settled = true;
+          });
+        return { promise, isSettled: () => settled };
+      };
+
+      afterEach(() => {
+        clearResolvedResourceTimeouts();
+      });
+
+      it('at the default 30m deadline, gives up 2m before it rather than at the 30m budget', async () => {
+        stuckEni();
+        const { promise, isSettled } = startDelete();
+
+        await vi.advanceTimersByTimeAsync(27 * 60 * 1000);
+        expect(isSettled()).toBe(false);
+        await vi.advanceTimersByTimeAsync(60 * 1000);
+        expect(isSettled()).toBe(true);
+        await expect(promise).resolves.toBeUndefined();
+      });
+
+      it('follows an explicit --resource-timeout for the type', async () => {
+        setResolvedResourceTimeouts({ perTypeMs: { 'AWS::Lambda::Function': 10 * 60 * 1000 } });
+        stuckEni();
+        const { promise, isSettled } = startDelete();
+
+        await vi.advanceTimersByTimeAsync(7 * 60 * 1000);
+        expect(isSettled()).toBe(false);
+        await vi.advanceTimersByTimeAsync(60 * 1000);
+        expect(isSettled()).toBe(true);
+        await expect(promise).resolves.toBeUndefined();
+      });
+
+      it('keeps the 30m budget when the deadline is longer', async () => {
+        setResolvedResourceTimeouts({ globalMs: 60 * 60 * 1000 });
+        stuckEni();
+        const { promise, isSettled } = startDelete();
+
+        await vi.advanceTimersByTimeAsync(29 * 60 * 1000);
+        expect(isSettled()).toBe(false);
+        await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+        expect(isSettled()).toBe(true);
+        await expect(promise).resolves.toBeUndefined();
+      });
     });
 
     it('returns gracefully when the initial DescribeNetworkInterfaces fails', async () => {
