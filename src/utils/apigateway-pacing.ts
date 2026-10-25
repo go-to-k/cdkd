@@ -48,16 +48,16 @@ const LIMITED_OPERATIONS: ReadonlySet<string> = new Set(['CreateResource', 'Dele
 export const API_GATEWAY_MAX_ATTEMPTS = 8;
 
 /**
- * A token bucket that hands out its tokens ahead of time: a caller that finds
- * it empty reserves the next token and waits for it, so waiters are served in
- * order and none is overtaken. `last` is the moment `tokens` is counted at, and
- * can be in the future while reservations are outstanding.
+ * A token bucket whose tokens are booked ahead of time: a caller that finds it
+ * empty reserves the next token and waits for it, so callers of one operation
+ * are served in order. `last` is the moment `tokens` is counted at, and can be
+ * in the future while bookings are outstanding.
  */
 class Bucket {
-  private tokens: number;
-  private last = 0;
-  private readonly capacity: number;
-  private readonly perMs: number;
+  protected tokens: number;
+  protected last = 0;
+  protected readonly capacity: number;
+  protected readonly perMs: number;
 
   constructor(config: { capacity: number; perSecond: number }) {
     this.capacity = config.capacity;
@@ -80,31 +80,46 @@ class Bucket {
 }
 
 /**
- * The pacer of one Region: a bucket for all operations and one per operation
- * that has its own, lower, limit. A call is sent at ONE moment, the latest
- * either bucket allows, and takes a token from both at that moment, so the
- * shared bucket never runs ahead of the calls that really went out. Keyed by
- * Region only: two accounts in one Region share it, which errs on the safe side.
+ * The pacer of one Region, in two steps a call goes through in order:
+ *
+ *  1. {@link reserveOperation}: wait for the operation's OWN bucket, when it has
+ *     one. Booked ahead, so the calls of one operation queue in order.
+ *  2. {@link takeShared}: take a token of the bucket all operations share, at
+ *     the moment the call is about to go. Never booked ahead, so a call that is
+ *     still queued on its own bucket holds nothing of the shared one, and only a
+ *     call that has satisfied its own limit can use up the shared tokens. Other
+ *     operations go out beside a `CreateResource` queue instead of behind it.
+ *
+ * Keyed by Region only: two accounts in one Region share it, which errs on the
+ * safe side.
  */
 export class ApiGatewayPacer {
   private readonly all = new Bucket(GLOBAL_BUCKET);
   private readonly perOperation = new Map<string, Bucket>();
 
-  /** Milliseconds `operation` has to wait before it is sent. */
-  reserve(operation: string, now: number = Date.now()): number {
-    let lane: Bucket | undefined;
-    if (LIMITED_OPERATIONS.has(operation)) {
-      lane = this.perOperation.get(operation);
-      if (lane === undefined) {
-        lane = new Bucket(OPERATION_BUCKET);
-        this.perOperation.set(operation, lane);
-      }
+  /** Milliseconds `operation` waits for its own bucket; 0 when it has none. */
+  reserveOperation(operation: string, now: number = performance.now()): number {
+    if (!LIMITED_OPERATIONS.has(operation)) return 0;
+    let lane = this.perOperation.get(operation);
+    if (lane === undefined) {
+      lane = new Bucket(OPERATION_BUCKET);
+      this.perOperation.set(operation, lane);
     }
-    const start = Math.max(this.all.availableAt(now), lane?.availableAt(now) ?? now);
-    this.all.take(start);
-    lane?.take(start);
+    const start = lane.availableAt(now);
+    lane.take(start);
     // A float slot a hair past a whole millisecond is not worth a millisecond.
     return Math.max(0, Math.ceil(start - now - 1e-6));
+  }
+
+  /**
+   * Takes a shared token and returns 0, or takes none and returns how long to
+   * wait before asking again.
+   */
+  takeShared(now: number = performance.now()): number {
+    const start = this.all.availableAt(now);
+    if (start > now) return Math.max(1, Math.ceil(start - now - 1e-6));
+    this.all.take(now);
+    return 0;
   }
 }
 
@@ -136,7 +151,7 @@ interface MiddlewareStack {
 }
 
 /**
- * Makes every attempt of every call on `client` wait for its slot. Installed
+ * Makes every attempt of every call on `client` wait for its tokens. Installed
  * AFTER the SDK's retry middleware, so a retried attempt is paced like a first
  * one. Returns `client` for chaining.
  */
@@ -156,8 +171,12 @@ export function withApiGatewayPacing<
       // The SDK names the command `CreateResourceCommand`; the limits name the
       // operation `CreateResource`.
       const operation = (context.commandName ?? '').replace(/Command$/, '');
-      const wait = apiGatewayPacerFor(region).reserve(operation);
-      if (wait > 0) await new Promise<void>((resolve) => setTimeout(resolve, wait));
+      const pacer = apiGatewayPacerFor(region);
+      const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+      const ownWait = pacer.reserveOperation(operation);
+      if (ownWait > 0) await sleep(ownWait);
+      // A call that loses the shared token to another asks again.
+      for (let wait = pacer.takeShared(); wait > 0; wait = pacer.takeShared()) await sleep(wait);
       return next(args);
     },
     {

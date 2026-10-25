@@ -22,75 +22,107 @@ afterEach(() => {
 });
 
 describe('ApiGatewayPacer', () => {
-  const burst = (pacer: ApiGatewayPacer, operation: string, count: number, now = 0) =>
-    Array.from({ length: count }, () => pacer.reserve(operation, now));
+  type Call = { operation: string; at: number };
+  const calls = (operation: string, count: number, at = 0): Call[] =>
+    Array.from({ length: count }, () => ({ operation, at }));
+
+  /**
+   * The send time of each call, in the order given, the way the middleware
+   * goes: wait for the operation's own bucket, then take a shared token at the
+   * moment of sending. Events run in time order, as timers would.
+   */
+  const simulate = (pacer: ApiGatewayPacer, input: Call[]): number[] => {
+    const sent: number[] = [];
+    const queue = input.map((call, index) => ({
+      index,
+      time: call.at + pacer.reserveOperation(call.operation, call.at),
+    }));
+    while (queue.length > 0) {
+      queue.sort((x, y) => x.time - y.time || x.index - y.index);
+      const next = queue.shift()!;
+      const wait = pacer.takeShared(next.time);
+      if (wait === 0) sent[next.index] = next.time;
+      else queue.push({ index: next.index, time: next.time + wait });
+    }
+    return sent;
+  };
 
   it('does not delay a small API: 30 calls of any kind go out at once', () => {
-    const pacer = new ApiGatewayPacer();
-    expect(burst(pacer, 'GetResource', 30).every((wait) => wait === 0)).toBe(true);
+    const sent = simulate(new ApiGatewayPacer(), calls('GetResource', 30));
+    expect(sent).toEqual(Array(30).fill(0));
   });
 
   it('settles at 8 per second once the shared burst of 30 is spent', () => {
-    const pacer = new ApiGatewayPacer();
-    const waits = burst(pacer, 'GetResource', 33);
-    expect(waits.slice(0, 30).every((wait) => wait === 0)).toBe(true);
-    expect(waits.slice(30)).toEqual([125, 250, 375]);
+    const sent = simulate(new ApiGatewayPacer(), calls('GetResource', 33));
+    expect(sent.slice(0, 30)).toEqual(Array(30).fill(0));
+    expect(sent.slice(30)).toEqual([125, 250, 375]);
   });
 
   it('refills the shared bucket while idle, up to its capacity', () => {
     const pacer = new ApiGatewayPacer();
-    burst(pacer, 'GetResource', 30);
-    expect(pacer.reserve('GetResource', 10_000)).toBe(0);
+    simulate(pacer, calls('GetResource', 30));
+    expect(simulate(pacer, calls('GetResource', 1, 10_000))).toEqual([10_000]);
     // Idle for good: back to the full 30, not more.
-    const waits = burst(pacer, 'GetResource', 32, 100_000);
-    expect(waits.slice(0, 30).every((wait) => wait === 0)).toBe(true);
-    expect(waits[30]).toBeGreaterThan(0);
+    const sent = simulate(pacer, calls('GetResource', 32, 100_000));
+    expect(sent.slice(0, 30)).toEqual(Array(30).fill(100_000));
+    expect(sent[30]).toBe(100_125);
   });
 
   it('lets a few CreateResource calls through, then spaces them at 4 per second', () => {
-    const pacer = new ApiGatewayPacer();
-    expect(burst(pacer, 'CreateResource', 8)).toEqual([0, 0, 0, 0, 0, 250, 500, 750]);
+    const sent = simulate(new ApiGatewayPacer(), calls('CreateResource', 8));
+    expect(sent).toEqual([0, 0, 0, 0, 0, 250, 500, 750]);
   });
 
   it.each(['CreateResource', 'DeleteResource'])('spaces %s at 4 per second after its burst', (operation) => {
-    const pacer = new ApiGatewayPacer();
-    expect(burst(pacer, operation, 7)).toEqual([0, 0, 0, 0, 0, 250, 500]);
+    const sent = simulate(new ApiGatewayPacer(), calls(operation, 7));
+    expect(sent).toEqual([0, 0, 0, 0, 0, 250, 500]);
   });
 
   it('keeps CreateResource and DeleteResource in buckets of their own', () => {
-    const pacer = new ApiGatewayPacer();
-    burst(pacer, 'CreateResource', 5);
-    expect(pacer.reserve('DeleteResource', 0)).toBe(0);
+    const sent = simulate(new ApiGatewayPacer(), [
+      ...calls('CreateResource', 5),
+      ...calls('DeleteResource', 1),
+    ]);
+    expect(sent).toEqual([0, 0, 0, 0, 0, 0]);
   });
 
-  it('does not pace an operation with no limit of its own beyond the shared one', () => {
+  it('does not make an operation with no limit of its own wait for its own bucket', () => {
     const pacer = new ApiGatewayPacer();
-    burst(pacer, 'CreateResource', 5);
-    expect(pacer.reserve('PutMethod', 0)).toBe(0);
+    expect(pacer.reserveOperation('PutMethod', 0)).toBe(0);
   });
 
-  it('never sends more than 10 calls in any second, CreateResource and others mixed', () => {
-    const pacer = new ApiGatewayPacer();
-    // 10 CreateResource and 10 GetResource at the same moment, past the burst.
-    burst(pacer, 'GetResource', 30);
-    const sends = [
-      ...burst(pacer, 'CreateResource', 10),
-      ...burst(pacer, 'GetResource', 10),
-    ].sort((a, b) => a - b);
-    for (let i = 0; i < sends.length; i++) {
-      const inSecond = sends.filter((at) => at >= sends[i]! && at < sends[i]! + 1_000).length;
-      expect(inSecond).toBeLessThanOrEqual(10);
-    }
+  it('lets other operations go out beside a CreateResource queue, not behind it', () => {
+    // 100 CreateResource queue on their own bucket (until ~23.75 s); a
+    // GetResource arriving at 100 ms is not part of that queue.
+    const sent = simulate(new ApiGatewayPacer(), [
+      ...calls('CreateResource', 100),
+      { operation: 'GetResource', at: 100 },
+    ]);
+    expect(sent[100]).toBe(100);
+    expect(sent[99]).toBe(23_750);
   });
 
-  it('does not let a later call overtake one that waits for its own bucket', () => {
-    const pacer = new ApiGatewayPacer();
-    burst(pacer, 'GetResource', 30);
-    const creates = burst(pacer, 'CreateResource', 6);
-    const next = pacer.reserve('GetResource', 0);
-    // The delayed CreateResource takes its shared token at ITS send time, so a
-    // call of any other kind queues behind it instead of going out beside it.
-    expect(next).toBeGreaterThanOrEqual(Math.max(...creates));
+  it('interleaves 10 CreateResource with 10 GetResource sent together', () => {
+    const sent = simulate(new ApiGatewayPacer(), [
+      ...calls('CreateResource', 10),
+      ...calls('GetResource', 10),
+    ]);
+    expect(sent.slice(0, 10)).toEqual([0, 0, 0, 0, 0, 250, 500, 750, 1_000, 1_250]);
+    expect(sent.slice(10)).toEqual(Array(10).fill(0));
+  });
+
+  it('still keeps the shared limit: past the burst, no more than 8 per second', () => {
+    const sent = simulate(new ApiGatewayPacer(), [
+      ...calls('GetResource', 30),
+      ...calls('CreateResource', 10),
+      ...calls('GetResource', 10),
+    ]).sort((x, y) => x - y);
+    // The n-th call (from 1) cannot go before the 30 burst tokens and the
+    // refill have covered it.
+    sent.forEach((at, index) => {
+      expect(at).toBeGreaterThanOrEqual(Math.max(0, (index + 1 - 30) * 125) - 1);
+    });
+    expect(sent.at(-1)).toBeGreaterThanOrEqual((50 - 30) * 125 - 1);
   });
 
   it('shares one pacer per Region and keeps Regions apart', () => {
@@ -99,9 +131,23 @@ describe('ApiGatewayPacer', () => {
   });
 
   it('does not make one Region wait for another', () => {
-    const [west, east] = [apiGatewayPacerFor('eu-west-1'), apiGatewayPacerFor('us-east-1')];
-    burst(west, 'CreateResource', 6);
-    expect(east.reserve('CreateResource', 0)).toBe(0);
+    const west = simulate(apiGatewayPacerFor('eu-west-1'), calls('CreateResource', 6));
+    const east = simulate(apiGatewayPacerFor('us-east-1'), calls('CreateResource', 1));
+    expect(west[5]).toBe(250);
+    expect(east).toEqual([0]);
+  });
+
+  it('counts time on a monotonic clock by default', () => {
+    const wall = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const pacer = new ApiGatewayPacer();
+      for (let i = 0; i < 30; i++) expect(pacer.takeShared()).toBe(0);
+      // The wall clock steps back an hour: nothing waits for it.
+      wall.mockReturnValue(1_000_000 - 3_600_000);
+      expect(pacer.takeShared()).toBeLessThanOrEqual(125);
+    } finally {
+      wall.mockRestore();
+    }
   });
 });
 
@@ -163,7 +209,7 @@ describe('withApiGatewayPacing against a real SDK client', () => {
   it('paces the retried attempt of a throttled call like a first one', async () => {
     const { client, sentAt } = makeClient([throttle]);
     withApiGatewayPacing(client);
-    const reserve = vi.spyOn(apiGatewayPacerFor('eu-west-1'), 'reserve');
+    const reserve = vi.spyOn(apiGatewayPacerFor('eu-west-1'), 'reserveOperation');
 
     const send = client.send(new GetRestApiCommand({ restApiId: 'a' }));
     for (let i = 0; i < 120; i++) await vi.advanceTimersByTimeAsync(250);
