@@ -19,6 +19,7 @@ import { BedrockAgentCoreControlClient } from '@aws-sdk/client-bedrock-agentcore
 import { RedshiftClient } from '@aws-sdk/client-redshift';
 import { ElastiCacheClient } from '@aws-sdk/client-elasticache';
 import { ACMClient } from '@aws-sdk/client-acm';
+import { Route53Client } from '@aws-sdk/client-route-53';
 import { LambdaMicrovmsClient } from '@aws-sdk/client-lambda-microvms';
 import { LambdaWebClient } from '@aws-sdk/client-lambda-web';
 import { LambdaCoreClient } from '@aws-sdk/client-lambda-core';
@@ -94,6 +95,7 @@ export class AwsClients {
   private redshiftClient?: RedshiftClient;
   private elastiCacheClient?: ElastiCacheClient;
   private acmClient?: ACMClient;
+  private route53Client?: Route53Client;
   private lambdaMicrovmsClient?: LambdaMicrovmsClient;
   private lambdaWebClient?: LambdaWebClient;
   private lambdaCoreClient?: LambdaCoreClient;
@@ -581,6 +583,29 @@ export class AwsClients {
   }
 
   /**
+   * Get Route 53 client
+   *
+   * Route 53 is a global service; the client uses the configured region and
+   * credentials like every other client here. Used by the ACM provider to write
+   * the DNS validation record a certificate's `HostedZoneId` asks for.
+   */
+  getRoute53Client(): Route53Client {
+    if (!this.route53Client) {
+      this.route53Client = new Route53Client({
+        ...this.clientOptions,
+      });
+    }
+    return this.route53Client;
+  }
+
+  /**
+   * Convenience getter for Route 53 client
+   */
+  get route53(): Route53Client {
+    return this.getRoute53Client();
+  }
+
+  /**
    * Get Lambda MicroVMs client.
    *
    * Backs `AWS::Lambda::MicrovmImage` (`LambdaMicrovmImageProvider`). This is
@@ -772,6 +797,7 @@ export class AwsClients {
     this.redshiftClient?.destroy();
     this.elastiCacheClient?.destroy();
     this.acmClient?.destroy();
+    this.route53Client?.destroy();
     this.lambdaMicrovmsClient?.destroy();
     this.lambdaWebClient?.destroy();
     this.lambdaCoreClient?.destroy();

@@ -12,7 +12,9 @@ import {
   type RequestCertificateRequest,
   type CertificateOptions,
 } from '@aws-sdk/client-acm';
+import { ChangeResourceRecordSetsCommand } from '@aws-sdk/client-route-53';
 import { getLogger } from '../../utils/logger.js';
+import { displayIdent, safeMsg } from '../../utils/display-safe.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
@@ -135,6 +137,29 @@ function isCertificateInUseError(error: unknown): boolean {
  * ARN); `getAttribute('Arn')` / `getAttribute('CertificateArn')` also
  * return the ARN for any defensive call site.
  */
+/** TTL CloudFormation gives the DNS validation record it writes. */
+const VALIDATION_RECORD_TTL = 300;
+
+/**
+ * The hosted zone to write each domain's DNS validation record into, from the
+ * template's `DomainValidationOptions[].HostedZoneId`. Only for DNS validation
+ * (CloudFormation allows `HostedZoneId` with no other method); a domain without
+ * a zone is left to the user, who is shown the record to add.
+ */
+function dnsValidationZones(properties: Record<string, unknown>): Map<string, string> {
+  const zones = new Map<string, string>();
+  const options = properties['DomainValidationOptions'];
+  if (properties['ValidationMethod'] !== 'DNS' || !Array.isArray(options)) return zones;
+  for (const option of options as Array<Record<string, unknown>>) {
+    const domain = option['DomainName'];
+    const zone = option['HostedZoneId'];
+    if (typeof domain === 'string' && domain && typeof zone === 'string' && zone) {
+      zones.set(domain, zone);
+    }
+  }
+  return zones;
+}
+
 export class ACMCertificateProvider implements ResourceProvider {
   private acmClient: ACMClient;
   private logger = getLogger().child('ACMCertificateProvider');
@@ -351,7 +376,12 @@ export class ACMCertificateProvider implements ResourceProvider {
 
       const noWait = process.env['CDKD_NO_WAIT'] === 'true';
       if (!noWait) {
-        await this.waitForCertificateIssued(certificateArn, logicalId, resourceType);
+        await this.waitForCertificateIssued(
+          certificateArn,
+          logicalId,
+          resourceType,
+          dnsValidationZones(properties)
+        );
       } else {
         this.logger.warn(
           `Skipping wait for ACM certificate ${logicalId} (CDKD_NO_WAIT=true). ` +
@@ -980,9 +1010,12 @@ export class ACMCertificateProvider implements ResourceProvider {
   private async waitForCertificateIssued(
     certificateArn: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    zones: ReadonlyMap<string, string> = new Map()
   ): Promise<void> {
     this.logger.debug(`Waiting for ACM certificate ${certificateArn} to reach ISSUED status...`);
+    /** Validation records already written, so a later poll does not write one twice. */
+    const written = new Map<string, Set<string>>();
     let interrupted = false;
     /** The last validation-record block printed, so we re-print only on a CHANGE. */
     let lastValidationOptions: string | undefined;
@@ -1056,7 +1089,19 @@ export class ACMCertificateProvider implements ResourceProvider {
         // `ResourceRecord`, there is no copy at all, which is why the message
         // below tells them to re-run rather than to look further up.
         if (status === 'PENDING_VALIDATION') {
-          const rendered = this.renderValidationOptions(validations);
+          // A record whose domain has a `HostedZoneId` is written here, on the poll
+          // that first carries it; only the rest is left for the user to add.
+          await this.writeValidationRecords(
+            validations,
+            zones,
+            written,
+            certificateArn,
+            logicalId,
+            resourceType
+          );
+          const rendered = this.renderValidationOptions(
+            validations.filter((v) => !(v.DomainName && zones.has(v.DomainName)))
+          );
           if (rendered !== undefined && rendered !== lastValidationOptions) {
             this.logger.info(rendered);
             lastValidationOptions = rendered;
@@ -1101,6 +1146,70 @@ export class ACMCertificateProvider implements ResourceProvider {
       );
     } finally {
       process.removeListener('SIGINT', sigintHandler);
+    }
+  }
+
+  /**
+   * Write the DNS validation CNAME of every domain that names a hosted zone, as
+   * CloudFormation does for `DomainValidationOptions[].HostedZoneId`. An UPSERT:
+   * the record is derived from the domain and the account, so a certificate
+   * that is replaced finds it already there with the same value.
+   *
+   * The record is NOT removed when the certificate is deleted. It is shared by
+   * every certificate for the domain, and CloudFormation leaves it too.
+   *
+   * @throws ProvisioningError (carrying the certificate ARN) when the write fails,
+   *   so the caller retires the certificate it requested.
+   */
+  private async writeValidationRecords(
+    validations: DomainValidation[],
+    zones: ReadonlyMap<string, string>,
+    written: Map<string, Set<string>>,
+    certificateArn: string,
+    logicalId: string,
+    resourceType: string
+  ): Promise<void> {
+    for (const validation of validations) {
+      const zone = validation.DomainName ? zones.get(validation.DomainName) : undefined;
+      const record = validation.ResourceRecord;
+      if (!zone || !record?.Name || !record.Value) {
+        continue;
+      }
+      if (written.get(zone)?.has(record.Name)) continue;
+      try {
+        await getAwsClients().route53.send(
+          new ChangeResourceRecordSetsCommand({
+            HostedZoneId: zone,
+            ChangeBatch: {
+              Changes: [
+                {
+                  Action: 'UPSERT',
+                  ResourceRecordSet: {
+                    Name: record.Name,
+                    Type: 'CNAME',
+                    TTL: VALIDATION_RECORD_TTL,
+                    ResourceRecords: [{ Value: record.Value }],
+                  },
+                },
+              ],
+            },
+          })
+        );
+      } catch (error) {
+        throw new ProvisioningError(
+          safeMsg`ACM certificate ${displayIdent(logicalId)} could not get its DNS validation record ${displayIdent(record.Name)} written to hosted zone ${displayIdent(zone)}: ${describeAwsFailure(error).summary}. The caller needs route53:ChangeResourceRecordSets on that zone.`,
+          resourceType,
+          logicalId,
+          certificateArn,
+          error instanceof Error ? error : undefined
+        );
+      }
+      const inZone = written.get(zone) ?? new Set<string>();
+      inZone.add(record.Name);
+      written.set(zone, inZone);
+      this.logger.info(
+        safeMsg`Wrote DNS validation record ${displayIdent(record.Name)} to hosted zone ${displayIdent(zone)} for ${displayIdent(validation.DomainName)}`
+      );
     }
   }
 

@@ -11,10 +11,12 @@ import {
 } from '@aws-sdk/client-acm';
 
 const mockSend = vi.fn();
+const mockRoute53Send = vi.fn();
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     acm: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
+    route53: { send: mockRoute53Send },
   }),
 }));
 
@@ -83,6 +85,7 @@ describe('ACMCertificateProvider', () => {
 
   beforeEach(() => {
     mockSend.mockReset();
+    mockRoute53Send.mockReset();
     originalNoWait = process.env['CDKD_NO_WAIT'];
     originalPollAttempts = process.env['CDKD_ACM_POLL_ATTEMPTS'];
     originalPollInterval = process.env['CDKD_ACM_POLL_INTERVAL_MS'];
@@ -250,6 +253,160 @@ describe('ACMCertificateProvider', () => {
       expect(result.physicalId).toBe(ARN);
       const describes = callsOfType(DescribeCertificateCommand);
       expect(describes).toHaveLength(2);
+    });
+
+    describe('DNS validation record for a HostedZoneId (as CloudFormation writes it)', () => {
+      const ZONE = 'Z0123456789ABC';
+      const record = (domain: string) => ({
+        DomainName: domain,
+        ValidationMethod: 'DNS',
+        ResourceRecord: {
+          Name: `_x.${domain}.`,
+          Type: 'CNAME',
+          Value: `_y.${domain}.acm-validations.aws.`,
+        },
+      });
+      const pending = (...options: unknown[]) => ({
+        Certificate: { Status: 'PENDING_VALIDATION', DomainValidationOptions: options },
+      });
+      /** ACM answers: RequestCertificate, each describe in turn (the last repeats), Delete. */
+      const wireAcm = (...describes: unknown[]) => {
+        let i = 0;
+        mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+          const name = cmd.constructor.name;
+          if (name === 'RequestCertificateCommand') return Promise.resolve({ CertificateArn: ARN });
+          if (name === 'DescribeCertificateCommand') {
+            return Promise.resolve(describes[Math.min(i++, describes.length - 1)]);
+          }
+          return Promise.resolve({});
+        });
+        mockRoute53Send.mockResolvedValue({});
+      };
+      const props = (extra: Record<string, unknown> = {}) => ({
+        DomainName: 'example.com',
+        ValidationMethod: 'DNS',
+        DomainValidationOptions: [{ DomainName: 'example.com', HostedZoneId: ZONE }],
+        ...extra,
+      });
+      const printed = () => loggerSpy.info.mock.calls.map((call) => String(call[0])).join('\n');
+
+      beforeEach(() => {
+        process.env['CDKD_NO_WAIT'] = '';
+      });
+
+      it('UPSERTs the CNAME ACM returns into the zone, once, and does not ask the user to add it', async () => {
+        wireAcm(pending(record('example.com')), pending(record('example.com')), {
+          Certificate: { Status: 'ISSUED' },
+        });
+
+        await provider.create('MyCert', 'AWS::CertificateManager::Certificate', props());
+
+        expect(mockRoute53Send).toHaveBeenCalledTimes(1);
+        const input = mockRoute53Send.mock.calls[0][0].input;
+        expect(input.HostedZoneId).toBe(ZONE);
+        expect(input.ChangeBatch.Changes).toEqual([
+          {
+            Action: 'UPSERT',
+            ResourceRecordSet: {
+              Name: '_x.example.com.',
+              Type: 'CNAME',
+              TTL: 300,
+              ResourceRecords: [{ Value: '_y.example.com.acm-validations.aws.' }],
+            },
+          },
+        ]);
+        expect(printed()).toContain('Wrote DNS validation record _x.example.com.');
+        expect(printed()).not.toContain('Add the following DNS records');
+      });
+
+      it('waits for the poll that carries the record before writing', async () => {
+        wireAcm(pending({ DomainName: 'example.com', ValidationMethod: 'DNS' }), pending(record('example.com')), {
+          Certificate: { Status: 'ISSUED' },
+        });
+
+        await provider.create('MyCert', 'AWS::CertificateManager::Certificate', props());
+
+        expect(mockRoute53Send).toHaveBeenCalledTimes(1);
+      });
+
+      it('writes one record per domain that names a zone and shows the rest to the user', async () => {
+        wireAcm(
+          pending(record('example.com'), record('www.example.com')),
+          { Certificate: { Status: 'ISSUED' } }
+        );
+
+        await provider.create(
+          'MyCert',
+          'AWS::CertificateManager::Certificate',
+          props({
+            SubjectAlternativeNames: ['www.example.com'],
+            DomainValidationOptions: [{ DomainName: 'example.com', HostedZoneId: ZONE }],
+          })
+        );
+
+        expect(mockRoute53Send).toHaveBeenCalledTimes(1);
+        expect(printed()).toContain('_x.www.example.com.');
+        expect(printed()).not.toContain('_x.example.com. with value');
+      });
+
+      it('makes no Route 53 call when no entry has a HostedZoneId, and still prints the record', async () => {
+        wireAcm(pending(record('example.com')), { Certificate: { Status: 'ISSUED' } });
+
+        await provider.create(
+          'MyCert',
+          'AWS::CertificateManager::Certificate',
+          props({ DomainValidationOptions: undefined })
+        );
+
+        expect(mockRoute53Send).not.toHaveBeenCalled();
+        expect(printed()).toContain('Add the following DNS records');
+      });
+
+      it('makes no Route 53 call when the validation method is not DNS', async () => {
+        wireAcm(pending(record('example.com')), { Certificate: { Status: 'ISSUED' } });
+
+        await provider.create(
+          'MyCert',
+          'AWS::CertificateManager::Certificate',
+          props({ ValidationMethod: 'EMAIL' })
+        );
+
+        expect(mockRoute53Send).not.toHaveBeenCalled();
+      });
+
+      it('makes no Route 53 call under --no-wait', async () => {
+        process.env['CDKD_NO_WAIT'] = 'true';
+        wireAcm(pending(record('example.com')));
+
+        await provider.create('MyCert', 'AWS::CertificateManager::Certificate', props());
+
+        expect(mockRoute53Send).not.toHaveBeenCalled();
+      });
+
+      it('fails the create, names the permission, and retires the certificate when the write is refused', async () => {
+        wireAcm(pending(record('example.com')));
+        mockRoute53Send.mockRejectedValue(
+          Object.assign(new Error('User is not authorized to perform route53:ChangeResourceRecordSets'), {
+            name: 'AccessDenied',
+          })
+        );
+
+        const error = await provider
+          .create('MyCert', 'AWS::CertificateManager::Certificate', props())
+          .catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(ProvisioningError);
+        expect((error as Error).message).toContain('route53:ChangeResourceRecordSets');
+        expect(callsOfType(DeleteCertificateCommand)).toHaveLength(1);
+        expect(mockRoute53Send).toHaveBeenCalledTimes(1);
+      });
+
+      it('leaves the record in place when the certificate is deleted', async () => {
+        mockSend.mockResolvedValue({});
+        await provider.delete('MyCert', ARN, 'AWS::CertificateManager::Certificate', props());
+
+        expect(mockRoute53Send).not.toHaveBeenCalled();
+      });
     });
 
     it('throws on terminal validation failure (VALIDATION_TIMED_OUT)', async () => {
