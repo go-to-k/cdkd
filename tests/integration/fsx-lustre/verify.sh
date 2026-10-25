@@ -21,7 +21,10 @@
 #      Assert the deploy succeeds, warns naming the removed sub-property and
 #      saying CloudFormation keeps it too, the live compression stays LZ4 (cdkd
 #      sends no reset, as CloudFormation leaves it), and the companion
-#      maintenance window landed.
+#      maintenance window landed. The same deploy drops four persistent-only
+#      sub-properties from PersistentFs (PERSISTENT_2 SSD); assert each value
+#      stays on the same file system and the warning names all four, saying
+#      CloudFormation keeps them too.
 #   2c. Fix-forward of a failed CREATE (issue #4606): a `--no-rollback`
 #      deploy adding OrphanFs (INJECT_FS_ORPHAN=true) runs under a role this
 #      script creates, denied fsx:DescribeFileSystems and fsx:DeleteFileSystem:
@@ -97,6 +100,20 @@ REMOVAL_SENTINEL="UpdateFileSystem keeps a setting it is not sent"
 # holds MAINT_TARGET, so the companion assertion can never pass vacuously.
 MAINT_TARGET="7:03:30"
 MAINT_ALT_TARGET="1:04:45"
+# Phase 2b's PersistentFs arm (issue #1160): the warning line's prefix and its
+# CloudFormation claim, the four names it must carry, and the live settings
+# (DailyAutomaticBackupStartTime, AutomaticBackupRetentionDays,
+# PerUnitStorageThroughput, MetadataConfiguration Mode / Iops) as the template
+# declares them before the removal.
+PFS_WARN_PREFIX="PersistentFs (AWS::FSx::FileSystem): properties "
+PFS_CLAIM="are no longer declared and keep their current AWS value, as CloudFormation leaves them"
+PFS_REMOVED_NAMES=(
+  LustreConfiguration.DailyAutomaticBackupStartTime
+  LustreConfiguration.AutomaticBackupRetentionDays
+  LustreConfiguration.PerUnitStorageThroughput
+  LustreConfiguration.MetadataConfiguration
+)
+PFS_EXPECTED_SETTINGS="05:00 3 125 USER_PROVISIONED 3000"
 # Deploy logs, streamed through `tee` and read back for the greps; removed by
 # cleanup on every exit path.
 PHASE2_LOG=""
@@ -266,12 +283,20 @@ state_json() {
     --stack-region "${REGION}" --json 2>/dev/null
 }
 
+# PersistentFs's settings Phase 2b removes from the template, space-separated in
+# PFS_EXPECTED_SETTINGS's order.
+pfs_settings() { # usage: pfs_settings <file-system-id>
+  aws fsx describe-file-systems --file-system-ids "$1" --region "${REGION}" \
+    --query 'FileSystems[0].LustreConfiguration.[DailyAutomaticBackupStartTime,AutomaticBackupRetentionDays,PerUnitStorageThroughput,MetadataConfiguration.Mode,MetadataConfiguration.Iops]' \
+    --output text | tr '\t' ' '
+}
+
 output_value() {
   state_json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);process.stdout.write((j.state.outputs&&j.state.outputs[process.argv[1]])||"")})' "$1"
 }
 
 # --- Phase 1: deploy baseline ------------------------------------------
-echo "==> Phase 1: deploy Lustre SCRATCH_2 file system (this takes ~5-10 min)"
+echo "==> Phase 1: deploy Lustre SCRATCH_2 + PERSISTENT_2 file systems (this takes ~10-20 min)"
 env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL -u CDKD_TEST_MAINT_ALT node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
@@ -325,6 +350,27 @@ if [ "${ENV_TAG_P1}" != "test" ] || [ "${DROPME_P1}" != "yes" ]; then
   exit 1
 fi
 echo "    baseline tags reached AWS (env=test, dropme=yes)"
+
+# Issue #1160: PersistentFs carries the persistent-only settings Phase 2b drops.
+PFS_ID_P1="$(output_value PersistentFileSystemId)"
+if [ -z "${PFS_ID_P1}" ]; then
+  echo "FAIL: PersistentFileSystemId output missing from cdkd state after Phase 1" >&2
+  exit 1
+fi
+read -r PFS_LIFECYCLE_P1 PFS_DEPLOY_TYPE_P1 <<EOF
+$(aws fsx describe-file-systems --file-system-ids "${PFS_ID_P1}" --region "${REGION}" \
+  --query 'FileSystems[0].[Lifecycle,LustreConfiguration.DeploymentType]' --output text)
+EOF
+if [ "${PFS_LIFECYCLE_P1}" != "AVAILABLE" ] || [ "${PFS_DEPLOY_TYPE_P1}" != "PERSISTENT_2" ]; then
+  echo "FAIL: Phase 1 expected PersistentFs AVAILABLE/PERSISTENT_2, got '${PFS_LIFECYCLE_P1}'/'${PFS_DEPLOY_TYPE_P1}'" >&2
+  exit 1
+fi
+PFS_SETTINGS_P1="$(pfs_settings "${PFS_ID_P1}")"
+if [ "${PFS_SETTINGS_P1}" != "${PFS_EXPECTED_SETTINGS}" ]; then
+  echo "FAIL: Phase 1 expected PersistentFs settings '${PFS_EXPECTED_SETTINGS}', got '${PFS_SETTINGS_P1}'" >&2
+  exit 1
+fi
+echo "    PersistentFs ${PFS_ID_P1} is AVAILABLE (PERSISTENT_2, settings ${PFS_SETTINGS_P1})"
 
 # The file system must route via the SDK provider (catch a routing flip).
 PROVISIONED_BY="$(state_json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const r=j.state.resources;const k=Object.keys(r).find(x=>r[x].resourceType==="AWS::FSx::FileSystem");process.stdout.write((r[k]&&r[k].provisionedBy)||"sdk")})')"
@@ -414,7 +460,10 @@ PHASE2B_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${PHASE2B_LOG}")"
 # sentinel without the needle means the wording drifted, not that the
 # warning did not fire.
 if ! grep -qF "${REMOVAL_NEEDLE}" <<<"${PHASE2B_PLAIN}"; then
-  if grep -qF "${REMOVAL_SENTINEL}" <<<"${PHASE2B_PLAIN}"; then
+  # Only Fs's own lines: PersistentFs's warning in this deploy carries the
+  # sentinel too, and its name ends in "Fs".
+  FS_LINES_P2B="$(grep -E '(^|[^A-Za-z])Fs \(AWS::FSx::FileSystem\)' <<<"${PHASE2B_PLAIN}" || true)"
+  if grep -qF "${REMOVAL_SENTINEL}" <<<"${FS_LINES_P2B}"; then
     echo "FAIL [phase 2b]: a removal warning fired but no longer reads '${REMOVAL_NEEDLE}' -- the wording drifted; update this fixture" >&2
   else
     echo "FAIL [phase 2b]: removing DataCompressionType produced no warning (issue #1160: the removal was dropped silently)" >&2
@@ -442,6 +491,47 @@ if [ "${MAINT_P2B}" != "${MAINT_TARGET}" ]; then
   exit 1
 fi
 echo "    removal left in place (compression LZ4) beside an applied change (maintenance ${MAINT_P2B})"
+
+# PersistentFs (issue #1160): the four persistent-only removals in the same
+# deploy. CloudFormation keeps each (CFn A/B on issue #1160, 2026-10-25), so
+# the file system and every value must stay, and its ONE warning line must
+# name all four and say CloudFormation keeps them. The names are checked one
+# by one: their order follows the template's key order, not this fixture's.
+PFS_LINE="$(grep -F "${PFS_WARN_PREFIX}" <<<"${PHASE2B_PLAIN}" || true)"
+if [ -z "${PFS_LINE}" ]; then
+  if grep -qF "PersistentFs (AWS::FSx::FileSystem): property" <<<"${PHASE2B_PLAIN}"; then
+    echo "FAIL [phase 2b]: a PersistentFs removal warning fired but no longer reads '${PFS_WARN_PREFIX}' -- the wording drifted; update this fixture" >&2
+  else
+    echo "FAIL [phase 2b]: removing PersistentFs's persistent-only sub-properties produced no warning (issue #1160)" >&2
+  fi
+  exit 1
+fi
+if [ "$(grep -cF "${PFS_WARN_PREFIX}" <<<"${PFS_LINE}")" -ne 1 ]; then
+  echo "FAIL [phase 2b]: expected ONE PersistentFs removal warning, got: ${PFS_LINE}" >&2
+  exit 1
+fi
+for name in "${PFS_REMOVED_NAMES[@]}"; do
+  if ! grep -qF "${name}" <<<"${PFS_LINE}"; then
+    echo "FAIL [phase 2b]: the PersistentFs removal warning does not name ${name}: ${PFS_LINE}" >&2
+    exit 1
+  fi
+done
+if ! grep -qF "${PFS_CLAIM}" <<<"${PFS_LINE}"; then
+  echo "FAIL [phase 2b]: the PersistentFs removal warning does not say CloudFormation keeps the values ('${PFS_CLAIM}'): ${PFS_LINE}" >&2
+  exit 1
+fi
+echo "    deploy warned that PersistentFs's four persistent-only removals stay, as CloudFormation leaves them"
+PFS_ID_P2B="$(output_value PersistentFileSystemId)"
+if [ "${PFS_ID_P1}" != "${PFS_ID_P2B}" ]; then
+  echo "FAIL [phase 2b]: PersistentFs was REPLACED (${PFS_ID_P1} -> ${PFS_ID_P2B})" >&2
+  exit 1
+fi
+PFS_SETTINGS_P2B="$(pfs_settings "${PFS_ID_P2B}")"
+if [ "${PFS_SETTINGS_P2B}" != "${PFS_EXPECTED_SETTINGS}" ]; then
+  echo "FAIL [phase 2b]: expected PersistentFs to keep '${PFS_EXPECTED_SETTINGS}' (cdkd sends no reset), got '${PFS_SETTINGS_P2B}'" >&2
+  exit 1
+fi
+echo "    PersistentFs removals left in place (${PFS_SETTINGS_P2B})"
 
 # --- Phase 2c: the fix-forward of a failed CREATE (go-to-k/cdkd#4606) -------
 # A `--no-rollback` deploy whose CREATE fails after FSx made the file system,
@@ -676,6 +766,7 @@ echo "==> Phase 3: destroy (FSx deletion takes a few minutes)"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 assert_gone "FSx file system ${FS_ID_P2} still exists after destroy" aws fsx describe-file-systems --file-system-ids "${FS_ID_P2}" --region "${REGION}"
+assert_gone "FSx file system ${PFS_ID_P1} (PersistentFs) still exists after destroy" aws fsx describe-file-systems --file-system-ids "${PFS_ID_P1}" --region "${REGION}"
 echo "    file system deleted (by id)"
 
 LEFTOVERS="$(tagged_fs_ids)"
