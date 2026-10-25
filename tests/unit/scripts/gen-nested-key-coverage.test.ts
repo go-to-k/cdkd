@@ -6033,7 +6033,8 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     // Measured on `codebuild-provider.ts`: these CFn spellings appear ONLY in
     // `readCurrentState`, so before the exclusion each was "provider names this
     // key" evidence produced entirely by the read path.
-    for (const key of ['BucketOwnerAccess', 'ResourceAccessRole', 'Value']) {
+    // (`ResourceAccessRole` left the list once go-to-k/cdkd#2762 wired it.)
+    for (const key of ['BucketOwnerAccess', 'Value']) {
       expect(withdrawn, key).toContain(key);
     }
   });

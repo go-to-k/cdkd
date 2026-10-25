@@ -34,6 +34,7 @@ import { AppSyncClient } from '@aws-sdk/client-appsync';
 import { AutoScalingClient } from '@aws-sdk/client-auto-scaling';
 import { CloudTrailClient } from '@aws-sdk/client-cloudtrail';
 import { CloudWatchLogsClient } from '@aws-sdk/client-cloudwatch-logs';
+import { CodeBuildClient } from '@aws-sdk/client-codebuild';
 import { CodeCommitClient } from '@aws-sdk/client-codecommit';
 import { CognitoIdentityProviderClient } from '@aws-sdk/client-cognito-identity-provider';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -66,6 +67,7 @@ import { ApiGatewayProvider } from '../../../src/provisioning/providers/apigatew
 import { AppSyncProvider } from '../../../src/provisioning/providers/appsync-provider.js';
 import { ASGProvider } from '../../../src/provisioning/providers/asg-provider.js';
 import { CloudTrailProvider } from '../../../src/provisioning/providers/cloudtrail-provider.js';
+import { CodeBuildProvider } from '../../../src/provisioning/providers/codebuild-provider.js';
 import { CodeCommitRepositoryProvider } from '../../../src/provisioning/providers/codecommit-repository-provider.js';
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
 import { CustomResourceProvider } from '../../../src/provisioning/providers/custom-resource-provider.js';
@@ -263,6 +265,32 @@ const CASES: Case[] = [
     mainAwsError: { name: 'TrailAlreadyExistsException', message: 'Trail trail already exists for customer: 123456789012' },
     aux: 'StartLoggingCommand',
     responses: { CreateTrailCommand: { TrailARN: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/trail' } },
+  },
+  {
+    // go-to-k/cdkd#2762: Visibility rides UpdateProjectVisibility after CreateProject.
+    name: 'codebuild AWS::CodeBuild::Project',
+    provider: () => new CodeBuildProvider(),
+    resourceType: 'AWS::CodeBuild::Project',
+    properties: {
+      Name: 'proj',
+      Source: { Type: 'NO_SOURCE', BuildSpec: 'version: 0.2' },
+      Artifacts: { Type: 'NO_ARTIFACTS' },
+      Environment: { Type: 'LINUX_CONTAINER', ComputeType: 'BUILD_GENERAL1_SMALL', Image: 'img' },
+      ServiceRole: 'arn:aws:iam::123456789012:role/svc',
+      Visibility: 'PUBLIC_READ',
+    },
+    clients: [CodeBuildClient],
+    main: 'CreateProjectCommand',
+    mainAwsError: {
+      name: 'ResourceAlreadyExistsException',
+      message: 'Project already exists: proj',
+    },
+    aux: 'UpdateProjectVisibilityCommand',
+    responses: {
+      CreateProjectCommand: {
+        project: { name: 'proj', arn: 'arn:aws:codebuild:us-east-1:123456789012:project/proj' },
+      },
+    },
   },
   {
     name: 'codecommit-repository AWS::CodeCommit::Repository',

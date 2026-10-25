@@ -1303,7 +1303,7 @@ export class KinesisStreamProvider implements ResourceProvider {
       target = DEFAULT_RECORD_DISTRIBUTION_STRATEGY;
     }
     this.logger.debug(
-      `Updating record distribution strategy for ${physicalId}: from ${recorded ?? 'no value'} to ${target}`
+      safeMsg`Updating record distribution strategy for ${physicalId}: from ${recorded ?? 'no value'} to ${target}`
     );
     await this.getClient().send(
       new UpdateStreamRecordDistributionStrategyCommand({
