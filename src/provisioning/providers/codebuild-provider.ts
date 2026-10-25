@@ -85,7 +85,11 @@ function readVisibility(properties: Record<string, unknown>, mask: MaskerFn): Vi
   if (visibility != null && (typeof visibility !== 'string' || visibility.trim() === '')) {
     return refuse('Visibility', visibility);
   }
-  if (role != null && typeof role !== 'string') return refuse('ResourceAccessRole', role);
+  // `''` is the readback's "no role" placeholder; whitespace names no role and
+  // would only be refused by AWS after `CreateProject`.
+  if (role != null && (typeof role !== 'string' || (role !== '' && role.trim() === ''))) {
+    return refuse('ResourceAccessRole', role);
+  }
   return {
     kind: 'usable',
     visibility: ((visibility as string | undefined) ??
@@ -704,17 +708,19 @@ export class CodeBuildProvider implements ResourceProvider {
       // An unusable desired value is warned about and the live pair left
       // alone: this path is state-replay reachable, so it cannot refuse.
       const desiredVisibility = readVisibility(properties, mask);
+      const recorded = readVisibility(previousProperties, mask);
       if (desiredVisibility.kind === 'unusable') {
+        // Name what stays live: a project recorded PUBLIC_READ stays public.
+        const kept = recorded.kind === 'usable' ? ` (recorded ${recorded.visibility})` : '';
         this.logger.warn(
           mask(
             `${desiredVisibility.reason}. Leaving the visibility of CodeBuild Project ` +
-              `${physicalId} unchanged; the same value is REFUSED on a template-path create`
+              `${physicalId} unchanged${kept}; the same value is REFUSED on a template-path create`
           )
         );
       } else {
         // The record is read leniently (it is state, not the template): an
-        // unreadable one reads as the default, so the desired pair is sent.
-        const recorded = readVisibility(previousProperties, mask);
+        // unreadable one counts as changed, so the desired pair is sent.
         const changed =
           recorded.kind !== 'usable' ||
           recorded.visibility !== desiredVisibility.visibility ||

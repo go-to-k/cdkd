@@ -120,6 +120,13 @@ describe('CodeBuildProvider Visibility / ResourceAccessRole (go-to-k/cdkd#2762)'
     expect(mockSend).not.toHaveBeenCalled();
   });
 
+  it('refuses a whitespace-only ResourceAccessRole before CreateProject', async () => {
+    await expect(provider.create('L', TYPE, { ...BASE, ResourceAccessRole: '  ' })).rejects.toThrow(
+      /ResourceAccessRole must be a non-empty string/
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   it('refuses an unusable ResourceAccessRole before CreateProject', async () => {
     await expect(
       provider.create('L', TYPE, { ...BASE, ResourceAccessRole: ['x'] })
@@ -238,8 +245,26 @@ describe('CodeBuildProvider Visibility / ResourceAccessRole (go-to-k/cdkd#2762)'
     );
     expect(sent(UpdateProjectVisibilityCommand)).toHaveLength(0);
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('Leaving the visibility of CodeBuild Project proj unchanged')
+      expect.stringContaining(
+        'Leaving the visibility of CodeBuild Project proj unchanged (recorded PUBLIC_READ)'
+      )
     );
+  });
+
+  it('re-sends the pair when the RECORDED visibility is unreadable', async () => {
+    await provider.update('L', 'proj', TYPE, { ...BASE }, { ...BASE, Visibility: 42 });
+    expect(sent(UpdateProjectVisibilityCommand)[0]?.input).toEqual({
+      projectArn: ARN,
+      projectVisibility: 'PRIVATE',
+    });
+  });
+
+  it('fails the update, sending no visibility call, when UpdateProject returns no ARN', async () => {
+    mockSend.mockResolvedValue({});
+    await expect(
+      provider.update('L', 'proj', TYPE, { ...BASE, Visibility: 'PUBLIC_READ' }, { ...BASE })
+    ).rejects.toThrow(/Failed to update CodeBuild Project L/);
+    expect(sent(UpdateProjectVisibilityCommand)).toHaveLength(0);
   });
 
   it('reads Visibility back from BatchGetProjects', async () => {

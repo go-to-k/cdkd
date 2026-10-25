@@ -225,8 +225,9 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
       },
       // go-to-k/cdkd#2762: Tags on CreateConnection, then diffed by
       // TagResource / UntagResource on update (one changed, one dropped, one
-      // added), asserted with the other #4073 tag sets.
-      tags: isUpdate ? UPDATED_TAG_MAP : BASE_TAG_MAP,
+      // added), asserted with the other #4073 tag sets. 16. CDKD_TEST_REMOVAL
+      // drops them all, which must untag every key.
+      ...(!isRemoval && { tags: isUpdate ? UPDATED_TAG_MAP : BASE_TAG_MAP }),
     });
 
     // CloudWatch Logs log group whose `Tags` list changes on update (issue

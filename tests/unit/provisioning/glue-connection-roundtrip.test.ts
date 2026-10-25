@@ -399,6 +399,12 @@ describe('GlueConnectionProvider Tags (go-to-k/cdkd#2762)', () => {
     expect(tag!.input).toEqual({ ResourceArn: arn, TagsToAdd: { env: 'updated', owner: 'cdkd' } });
     const [untag] = sent(UntagResourceCommand);
     expect(untag!.input).toEqual({ ResourceArn: arn, TagsToRemove: ['team'] });
+    // The tags follow the definition update, never precede it.
+    const order = mockSend.mock.calls.map((c) => c[0].constructor.name);
+    expect(order.indexOf('UpdateConnectionCommand')).toBeLessThan(
+      order.indexOf('TagResourceCommand')
+    );
+    expect(order.indexOf('UpdateConnectionCommand')).toBeGreaterThanOrEqual(0);
   });
 
   it('untags every key when the template removes Tags', async () => {

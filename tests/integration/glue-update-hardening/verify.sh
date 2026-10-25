@@ -339,15 +339,16 @@ assert_tag_set() { # usage: assert_tag_set <label> <want tag map JSON> aws <serv
   fi
   echo "    OK: ${label}: AWS holds exactly ${got}"
 }
-assert_all_tag_sets() { # usage: assert_all_tag_sets <want tag map JSON> <phase label>
+assert_all_tag_sets() { # usage: assert_all_tag_sets <want tag map JSON> <phase label> [<Connection want>]
   local want="$1" phase="$2"
   assert_tag_set "${phase}: Workflow" "${want}" aws glue get-tags --resource-arn "${WF_ARN}" \
     --region "${REGION}" --query 'Tags' --output json
   assert_tag_set "${phase}: Job" "${want}" aws glue get-tags --resource-arn "${JOB_ARN}" \
     --region "${REGION}" --query 'Tags' --output json
   # go-to-k/cdkd#2762: the Connection's Tags (create on CreateConnection,
-  # update through TagResource / UntagResource).
-  assert_tag_set "${phase}: Connection" "${want}" aws glue get-tags \
+  # update through TagResource / UntagResource). Its third argument, when
+  # given, overrides the expected set (the removal phase drops its Tags).
+  assert_tag_set "${phase}: Connection" "${3:-${want}}" aws glue get-tags \
     --resource-arn "${CONNECTION_ARN}" --region "${REGION}" --query 'Tags' --output json
   assert_tag_set "${phase}: log group" "${want}" aws logs list-tags-for-resource \
     --resource-arn "${TAGGED_LG_ARN}" --region "${REGION}" --query 'tags' --output json
@@ -1062,7 +1063,9 @@ if [ -z "${WF_CREATED}" ] || [ "${RM_WF_CREATED}" != "${WF_CREATED}" ]; then
   exit 1
 fi
 # The Workflow's tags are not part of the removal: the updated set stays.
-assert_all_tag_sets "${UPDATED_TAGS}" 'removal'
+# go-to-k/cdkd#2762: CDKD_TEST_REMOVAL drops the Connection's whole Tags, so
+# every key is untagged; the other three keep theirs (the retained siblings).
+assert_all_tag_sets "${UPDATED_TAGS}" 'removal' '{}'
 echo "    OK: removed Workflow / Trigger properties cleared in place, tags and actions kept, removed crawler properties kept and named (issue #1160)"
 
 # --- Phase 3: destroy -------------------------------------------------
