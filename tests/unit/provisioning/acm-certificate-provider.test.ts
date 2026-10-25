@@ -170,6 +170,53 @@ describe('ACMCertificateProvider', () => {
       ]);
     });
 
+    it('sends no DomainValidationOptions for DNS validation by hosted zone (no ValidationDomain)', async () => {
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+
+      // The shape the CDK writes for `CertificateValidation.fromDns(hostedZone)`.
+      await provider.create('MyCert', 'AWS::CertificateManager::Certificate', {
+        DomainName: 'example.com',
+        ValidationMethod: 'DNS',
+        DomainValidationOptions: [{ DomainName: 'example.com', HostedZoneId: 'Z123' }],
+      });
+
+      const req = callsOfType(RequestCertificateCommand)[0].input;
+      expect(req.ValidationMethod).toBe('DNS');
+      expect(req).not.toHaveProperty('DomainValidationOptions');
+    });
+
+    it('keeps only the entries that carry a ValidationDomain', async () => {
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+
+      await provider.create('MyCert', 'AWS::CertificateManager::Certificate', {
+        DomainName: 'example.com',
+        SubjectAlternativeNames: ['www.example.com'],
+        ValidationMethod: 'EMAIL',
+        DomainValidationOptions: [
+          { DomainName: 'example.com', ValidationDomain: 'example.com' },
+          { DomainName: 'www.example.com', HostedZoneId: 'Z123' },
+        ],
+      });
+
+      const req = callsOfType(RequestCertificateCommand)[0].input;
+      expect(req.DomainValidationOptions).toEqual([
+        { DomainName: 'example.com', ValidationDomain: 'example.com' },
+      ]);
+    });
+
+    it('sends no DomainValidationOptions when the list is empty', async () => {
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+
+      await provider.create('MyCert', 'AWS::CertificateManager::Certificate', {
+        DomainName: 'example.com',
+        DomainValidationOptions: [],
+      });
+
+      expect(callsOfType(RequestCertificateCommand)[0].input).not.toHaveProperty(
+        'DomainValidationOptions'
+      );
+    });
+
     it('throws when DomainName is missing', async () => {
       await expect(
         provider.create('MyCert', 'AWS::CertificateManager::Certificate', {})

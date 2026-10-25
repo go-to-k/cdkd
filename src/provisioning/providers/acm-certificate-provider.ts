@@ -260,18 +260,20 @@ export class ACMCertificateProvider implements ResourceProvider {
       input['SubjectAlternativeNames'] = properties['SubjectAlternativeNames'];
     }
     if (Array.isArray(properties['DomainValidationOptions'])) {
-      // CFn shape is `{DomainName, HostedZoneId?, ValidationDomain?}`. ACM
-      // SDK accepts only `{DomainName, ValidationDomain}` — drop HostedZoneId
-      // (a CDK auto-validation custom-resource concept, not an ACM input).
-      input['DomainValidationOptions'] = (
-        properties['DomainValidationOptions'] as Array<Record<string, unknown>>
-      )
-        .map((opt) => {
-          const cleaned: Record<string, unknown> = { DomainName: opt['DomainName'] };
-          if (opt['ValidationDomain']) cleaned['ValidationDomain'] = opt['ValidationDomain'];
-          return cleaned;
-        })
-        .filter((opt) => opt['DomainName']);
+      // CFn shape is `{DomainName, HostedZoneId?, ValidationDomain?}`. The ACM
+      // API's `DomainValidationOption` is `{DomainName, ValidationDomain}` with
+      // BOTH required, so an entry without a `ValidationDomain` cannot be sent:
+      // the SDK serializes the missing member as null and ACM answers
+      // "Member must not be null". Such an entry carries nothing ACM needs (the
+      // CDK writes `{DomainName, HostedZoneId}` for DNS validation by hosted
+      // zone), so it is left out and ACM applies its own default. `HostedZoneId` is a CDK auto-validation concept, not an ACM input.
+      const options = (properties['DomainValidationOptions'] as Array<Record<string, unknown>>)
+        .filter((opt) => opt['DomainName'] && opt['ValidationDomain'])
+        .map((opt) => ({
+          DomainName: opt['DomainName'],
+          ValidationDomain: opt['ValidationDomain'],
+        }));
+      if (options.length > 0) input['DomainValidationOptions'] = options;
     }
     if (properties['CertificateAuthorityArn']) {
       input['CertificateAuthorityArn'] = properties['CertificateAuthorityArn'];
