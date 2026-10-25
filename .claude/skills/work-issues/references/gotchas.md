@@ -14,11 +14,8 @@
   the claim (go-to-k/cdkd#1791).
 - **A cross-repo framing spends the deferral budget up front**: inside a
   "do this across the repos in one session" scope, `next` is off the menu.
-- **One lane per cross-cutting file** — §2 holds the list.
 - **Never merge a PR whose destroy path is unverified, and never bypass
   `/run-integ`** (§8-c owns what COUNTS as one).
-- **Stale-base phantom diff** (§7) — rebase; never "restore" peer lines a stale
-  `git diff main` shows removed.
 - **A Bash cwd silently drifts back to the main tree between calls**: prefix every
   verification command with `cd <worktree> &&` and use `git -C <lane tree>`
   (addressing rules: `references/launch-mode.md`).

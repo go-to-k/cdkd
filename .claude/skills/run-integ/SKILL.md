@@ -121,7 +121,10 @@ verify, clean up.
    **Never run it unwatched, and do not reach for `timeout`** — it is not in
    stock macOS (its absence is exit 127 in 0s, which reads as instant
    completion). Shell watchdog, firing made visible. A SET runs this whole block
-   per fixture, in a background subshell `cd`'d into it with its own `T`, stdout
+   per fixture, with the `AWS_REGION` / `STATE_BUCKET` above (go-to-k/cdkd#5265),
+   the driver inside `bash -c` (zsh does not word-split an unquoted `$row`, so a
+   `"<name> 1500"` row runs a fixture named `<name> 1500`: #5268, #5271),
+   in a background subshell `cd`'d into it with its own `T`, stdout
    to a per-fixture file that gets `echo "$T $VPID $LOG"` right after the spawn;
    stop one with `kill -TERM -- -<its VPID>` so its trap cleans up, `-9` only
    once it ignores TERM (the gate refuses `pkill -f`); a set halting on a FAIL

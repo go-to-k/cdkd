@@ -20,18 +20,20 @@ lanes' integs or merges at once, nor a merge during another lane's integ: it
 can move `main` under that batch (#4864). A turn blocked on a fixture fix
 yields to the next merge-ready lane. ANY turn holding HOURS tells the user
 unasked its ETA and queue. A subagent running a turn's integs, marker and
-ledger hands back INTERIM reports whatever its brief says. Its brief (the
-runner never reads this file) makes marker and ledger due once the last PID
+ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
+it (#5245), so the `.live` Monitor below is the only progress signal. Its brief
+(the runner never reads this file) makes marker and ledger due once the last PID
 exits, bans attribution lines in the ledger commit (#5104), and STOPs on an
 unreadable state record, never purging (`/run-integ` step 7). A FAIL names
 the file EMITTING its message (`grep -rlF` a `${}`-free fragment over `src/`
 and the fixture): the PR is blamed when that file is in its diff, cleared when
 the grep hits only outside it, else UNATTRIBUTED (#4981). Size it for ONE
 context (§8-d probe alone, then fixture batches), each run's fixture,
-`pid=<N>`, log, state prefix appended as a line to `<scratch>/integ-<PR>.live` at
-launch. BEFORE dispatching, the PARENT runs `/run-integ` step 4's live-lock
-check and lists open PRs touching each fixture: a held one gets a lock watcher,
-not a runner (#5190). The PARENT Monitors those PIDs (`timeout_ms` 1800000,
+`pid=<N>` (bare digits: `pid=VPID=…` blinded the Monitor, #5248), log, state
+prefix appended as a line to `<scratch>/integ-<PR>.live` at launch. BEFORE
+dispatching, the PARENT runs `/run-integ` step 4's live-lock check and lists
+open PRs touching each fixture: a held one gets a lock watcher, not a runner
+(#5190). The PARENT Monitors those PIDs (`timeout_ms` 1800000,
 re-armed on expiry; in `bash -c`: zsh won't split `$pids`),
 read only from each line's `pid=` field (`grep -oE 'pid=[0-9]+'`; a bare digit
 grep matches a `mktemp` path's zeroes, and `kill -0 0000` always succeeds),
@@ -41,7 +43,8 @@ A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
 
 - The `integ-destroy` marker is read from the tree the command runs in, so a
   merge from the main tree consults the WRONG store (#2363); read
-  it by hand with `mise exec -- markgate`, as PATH's may predate `hash: diff`. Its
+  it by hand with `mise exec -- markgate`, as PATH's may predate `hash: diff`
+  (a sibling `mise trust`s first: an untrusted `.mise.toml` fails it). Its
   `hash: diff` covers this branch's delta against `origin/main`, so run the
   integ AFTER the flatten/rebase below (`verify.md` §8-b says which
   rebases stale it). While a scoped file this branch changes is busy on `main`
