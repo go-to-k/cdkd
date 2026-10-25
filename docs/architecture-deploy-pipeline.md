@@ -265,7 +265,10 @@ The graph also has two kinds of edge that the template does not state:
 
 - An IAM policy attached to a custom resource's handler role gets an edge to
   the custom resource. Without it, the handler could be invoked before the
-  policy exists.
+  policy exists. The edge is left out when the custom resource already comes
+  before that policy, as with several `AwsCustomResource`s that share one handler
+  and run in a chain: each waits for its own policy and the earlier ones, never
+  for a later one.
 - A Lambda function in a VPC gets edges from its subnets and security groups.
   On delete the function then goes first, and its network interfaces have time
   to detach.
