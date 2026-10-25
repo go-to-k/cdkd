@@ -724,13 +724,27 @@ echo "    OK: after VpcSecurityGroupIds removal, the SecurityCluster moved to th
 # MonitoringInterval + MonitoringRoleArn, and ManageMasterUserPassword +
 # MasterUserSecret (adding a MasterUserPassword). CloudFormation resets Port to
 # the engine default, keeps both monitoring values, and turns the managed
-# password off. A pre-fix cdkd keeps Port 5433, sends MonitoringInterval 0, and
-# never sends ManageMasterUserPassword false, so each check below fails there.
-# Re-read: the security-group swap above can re-settle the cluster.
-AFTER=$(aws rds describe-db-clusters \
-  --db-cluster-identifier "${DB_CLUSTER_ID}" \
-  --region "${REGION}" \
-  --query 'DBClusters[0]' --output json)
+# password off. A pre-fix cdkd keeps Port 5433 and sends MonitoringInterval 0,
+# which fail the checks below. It also never sends ManageMasterUserPassword
+# false while sending the new MasterUserPassword, which RDS is expected to
+# refuse: that half goes red at the phase-2 deploy itself, above.
+# Polled: turning the managed password off and the port change settle
+# asynchronously, and the `available` read above can predate them.
+AFTER=""
+for i in $(seq 1 30); do
+  AFTER=$(aws rds describe-db-clusters \
+    --db-cluster-identifier "${DB_CLUSTER_ID}" \
+    --region "${REGION}" \
+    --query 'DBClusters[0]' --output json)
+  if [ "$(echo "${AFTER}" | jq -r '.Status // "null"')" = "available" ] \
+    && [ "$(echo "${AFTER}" | jq -r '.Port // "null"')" = "5432" ] \
+    && [ "$(echo "${AFTER}" | jq -r '.MasterUserSecret.SecretArn // "null"')" = "null" ]; then
+    break
+  fi
+  if [ "${i}" -lt 30 ]; then
+    sleep 10
+  fi
+done
 AFTER_PORT=$(echo "${AFTER}" | jq -r '.Port // "null"')
 if [ "${AFTER_PORT}" != "5432" ]; then
   echo "FAIL: #1160: after Port was removed, the SecurityCluster's Port is '${AFTER_PORT}', want 5432 (CloudFormation resets it to the engine default; 5433 means the removal sent nothing)" >&2
@@ -1053,7 +1067,8 @@ echo "    OK: no manual snapshot of ${AURORA_CLUSTER_ID} since ${RUN_START}Z (#3
 
 # --- State-version sweep, on the success path ------------------------------
 # The bucket is VERSIONED: `aws s3 rm` and destroy leave every prior state
-# version readable, phase 2's resolved master password included. Run cleanup
+# version readable. State records the `{{resolve:...}}` expression, not the
+# phase-2 master password; the sweep is defense in depth. Run cleanup
 # (it deletes this run's final snapshot) with the trap disarmed, then sweep.
 trap - EXIT INT TERM
 cleanup

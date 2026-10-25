@@ -372,6 +372,26 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       expect(input.MasterUserPassword).toBe('new-password-1');
     });
 
+    it('sends false for a removed string "true" on the deploy path, where changedProperties decides the password', async () => {
+      mockInstanceUpdate();
+
+      await provider.update(
+        'MyInstance',
+        'my-instance',
+        'AWS::RDS::DBInstance',
+        { Engine: 'mysql', MasterUserPassword: 'new-password-1' },
+        { Engine: 'mysql', ManageMasterUserPassword: 'true' },
+        {
+          changedProperties: new Set(['ManageMasterUserPassword', 'MasterUserPassword']),
+          removedProperties: new Set(['ManageMasterUserPassword']),
+        }
+      );
+
+      const input = mockSend.mock.calls[0][0].input;
+      expect(input.ManageMasterUserPassword).toBe(false);
+      expect(input.MasterUserPassword).toBe('new-password-1');
+    });
+
     it('passes kept/changed fields through unchanged while removed ones are left unchanged', async () => {
       mockInstanceUpdate();
 
