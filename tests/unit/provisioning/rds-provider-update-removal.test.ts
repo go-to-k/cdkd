@@ -1,8 +1,8 @@
-// issue #1160: absent-field removal reset to CFn defaults.
+// issue #1160: absent-field removal, matched to CloudFormation per property.
 // ModifyDBCluster / ModifyDBInstance use merge semantics, so a field DROPPED
-// from the template must be sent as its explicit CFn-default reset value
-// (doc basis: ModifyDBClusterMessage / ModifyDBInstanceMessage in
-// @aws-sdk/client-rds), else the old live value silently persists.
+// from the template is sent as its reset value only where a real CFn A/B
+// showed CloudFormation resets it (#5004, #1160 comment 6401151077); every
+// other removal sends nothing, which keeps the live value as CFn does.
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockSend = vi.fn();
@@ -51,7 +51,7 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       mockSend.mockResolvedValueOnce({ DBClusters: [{}] });
     };
 
-    it('resets BackupRetentionPeriod / MonitoringInterval and keeps DeletionProtection / EnableIAMDatabaseAuthentication on removal (#5004)', async () => {
+    it('resets BackupRetentionPeriod and keeps DeletionProtection / EnableIAMDatabaseAuthentication / MonitoringInterval on removal (#5004, #1160 A/B)', async () => {
       mockClusterUpdate();
 
       await provider.update(
@@ -67,7 +67,7 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
           BackupRetentionPeriod: 7,
           MonitoringInterval: 30,
           EnableIAMDatabaseAuthentication: true,
-          // Deliberately NOT reset on removal — must stay absent.
+          // Every one of these is removed; see the assertions for which reset.
           EngineVersion: '15.4',
           ManageMasterUserPassword: true,
           MasterUserSecret: { KmsKeyId: 'arn:aws:kms:us-east-1:123:key/k1' },
@@ -75,31 +75,120 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
           ServerlessV2ScalingConfiguration: { MinCapacity: 0.5, MaxCapacity: 2 },
           // A removed VpcSecurityGroupIds IS reset (to the VPC's default
           // security group): db-cluster-sg-removal-1160.test.ts.
-          Port: 5432,
+          Port: 5433,
         }
       );
 
       const modifyCall = mockSend.mock.calls[0][0];
       expect(modifyCall.constructor.name).toBe('ModifyDBClusterCommand');
-      // #5004 A/B: CFn RESETS BackupRetentionPeriod (to 1); MonitoringInterval
-      // is unmeasured for clusters, so the existing reset stays.
+      // #5004 A/B: CFn RESETS BackupRetentionPeriod (to 1).
       expect(modifyCall.input.BackupRetentionPeriod).toBe(1);
-      expect(modifyCall.input.MonitoringInterval).toBe(0);
-      // #5004 A/B: CFn KEEPS these on removal -> no value sent (unchanged).
+      // #1160 A/B: CFn resets a removed Aurora Port to the engine default and
+      // sends ManageMasterUserPassword false.
+      expect(modifyCall.input.Port).toBe(5432);
+      expect(modifyCall.input.ManageMasterUserPassword).toBe(false);
+      // CFn KEEPS these on removal -> no value sent (unchanged).
       expect(modifyCall.input.DeletionProtection).toBeUndefined();
       expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBeUndefined();
-      // Deliberate non-resets: removal of these must NOT synthesize any
-      // value — each stays absent (no change). Pins the per-field rationale
-      // comment in updateDBCluster.
+      expect(modifyCall.input.MonitoringInterval).toBeUndefined();
       expect(modifyCall.input.EngineVersion).toBeUndefined();
-      expect(modifyCall.input.ManageMasterUserPassword).toBeUndefined();
-      expect(modifyCall.input.MasterUserSecretKmsKeyId).toBeUndefined();
       expect(modifyCall.input.MonitoringRoleArn).toBeUndefined();
       expect(modifyCall.input.ServerlessV2ScalingConfiguration).toBeUndefined();
-      expect(modifyCall.input.Port).toBeUndefined();
+      // Unmeasured alone: a removed KMS key sends nothing.
+      expect(modifyCall.input.MasterUserSecretKmsKeyId).toBeUndefined();
     });
 
-    it('sends the CFn-parity request when the role is kept but the interval is removed', async () => {
+    it.each([
+      ['aurora-postgresql', 5432],
+      ['aurora-mysql', 3306],
+      ['Aurora-MySQL', 3306],
+    ])('resets a removed Port on %s to %i, as CFn does (#1160 A/B)', async (engine, port) => {
+      mockClusterUpdate();
+
+      await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::RDS::DBCluster',
+        { Engine: engine },
+        { Engine: engine, Port: '3307' }
+      );
+
+      expect(mockSend.mock.calls[0][0].input.Port).toBe(port);
+    });
+
+    it('sends no Port when a Multi-AZ DB cluster engine drops it (unmeasured)', async () => {
+      mockClusterUpdate();
+
+      await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::RDS::DBCluster',
+        { Engine: 'postgres' },
+        { Engine: 'postgres', Port: 5433 }
+      );
+
+      expect(mockSend.mock.calls[0][0].input.Port).toBeUndefined();
+    });
+
+    it('keeps a declared Port and sends none when Port was never declared', async () => {
+      mockClusterUpdate();
+      mockClusterUpdate();
+
+      await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::RDS::DBCluster',
+        { Engine: 'aurora-postgresql', Port: '5433' },
+        { Engine: 'aurora-postgresql', Port: 5434 }
+      );
+      await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::RDS::DBCluster',
+        { Engine: 'aurora-postgresql' },
+        { Engine: 'aurora-postgresql' }
+      );
+
+      expect(mockSend.mock.calls[0][0].input.Port).toBe(5433);
+      expect(mockSend.mock.calls[2][0].input.Port).toBeUndefined();
+    });
+
+    it('turns the managed password off when ManageMasterUserPassword is removed with a new MasterUserPassword (#1160 A/B)', async () => {
+      mockClusterUpdate();
+
+      await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::RDS::DBCluster',
+        { Engine: 'aurora-postgresql', MasterUserPassword: 'new-password-1' },
+        {
+          Engine: 'aurora-postgresql',
+          ManageMasterUserPassword: 'true',
+          MasterUserSecret: { KmsKeyId: 'alias/aws/secretsmanager' },
+        }
+      );
+
+      const input = mockSend.mock.calls[0][0].input;
+      expect(input.ManageMasterUserPassword).toBe(false);
+      expect(input.MasterUserPassword).toBe('new-password-1');
+      expect(input.MasterUserSecretKmsKeyId).toBeUndefined();
+    });
+
+    it('sends no ManageMasterUserPassword when a declared false is removed (unmeasured)', async () => {
+      mockClusterUpdate();
+
+      await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::RDS::DBCluster',
+        { Engine: 'aurora-postgresql' },
+        { Engine: 'aurora-postgresql', ManageMasterUserPassword: false }
+      );
+
+      expect(mockSend.mock.calls[0][0].input.ManageMasterUserPassword).toBeUndefined();
+    });
+
+    it('keeps the live interval when the role is kept but the interval is removed (#1160 A/B)', async () => {
       mockClusterUpdate();
 
       await provider.update(
@@ -117,14 +206,10 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
         }
       );
 
-      // The request carries the kept role + the interval reset to 0 — the
-      // same combination CloudFormation would submit for this template. AWS
-      // rejects it loudly (a non-zero interval is required alongside a
-      // role), which is the intended CFn-parity behavior; the old interval
-      // is never silently kept.
+      // CFn keeps the live interval, so only the kept role goes out.
       const modifyCall = mockSend.mock.calls[0][0];
       expect(modifyCall.input.MonitoringRoleArn).toBe('arn:aws:iam::123:role/monitoring');
-      expect(modifyCall.input.MonitoringInterval).toBe(0);
+      expect(modifyCall.input.MonitoringInterval).toBeUndefined();
     });
 
     it('leaves a never-present field absent (no spurious reset value)', async () => {
@@ -143,6 +228,8 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       expect(modifyCall.input.BackupRetentionPeriod).toBeUndefined();
       expect(modifyCall.input.MonitoringInterval).toBeUndefined();
       expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBeUndefined();
+      expect(modifyCall.input.Port).toBeUndefined();
+      expect(modifyCall.input.ManageMasterUserPassword).toBeUndefined();
     });
 
     it('passes kept/changed fields through unchanged while removed ones reset', async () => {
@@ -182,7 +269,7 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       mockSend.mockResolvedValueOnce({ DBInstances: [{}] });
     };
 
-    it('keeps DeletionProtection / MonitoringInterval / EnableIAMDatabaseAuthentication on removal (#5004)', async () => {
+    it('keeps every removed value except ManageMasterUserPassword, as CFn does (#5004, #1160 A/B)', async () => {
       mockInstanceUpdate();
 
       await provider.update(
@@ -197,7 +284,7 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
           DeletionProtection: true,
           MonitoringInterval: 60,
           EnableIAMDatabaseAuthentication: true,
-          // Deliberately NOT reset on removal — must stay absent.
+          // Every one of these is removed; see the assertions for which reset.
           EngineVersion: '17.6',
           AllocatedStorage: '20',
           Port: 5433,
@@ -211,17 +298,16 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
 
       const modifyCall = mockSend.mock.calls[0][0];
       expect(modifyCall.constructor.name).toBe('ModifyDBInstanceCommand');
-      // #5004 A/B: CFn KEEPS all three on removal -> no value sent (unchanged).
+      // #1160 A/B: CFn sends ManageMasterUserPassword false on removal.
+      expect(modifyCall.input.ManageMasterUserPassword).toBe(false);
+      // CFn KEEPS these on removal -> no value sent (unchanged).
       expect(modifyCall.input.DeletionProtection).toBeUndefined();
       expect(modifyCall.input.MonitoringInterval).toBeUndefined();
       expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBeUndefined();
-      // Deliberate non-resets: removal of these must NOT synthesize any
-      // value — each stays absent (no change). Pins the per-field rationale
-      // comment in updateDBInstance.
       expect(modifyCall.input.EngineVersion).toBeUndefined();
       expect(modifyCall.input.AllocatedStorage).toBeUndefined();
       expect(modifyCall.input.DBPortNumber).toBeUndefined();
-      expect(modifyCall.input.ManageMasterUserPassword).toBeUndefined();
+      // Unmeasured alone / UNCERTAIN in the audit: nothing sent.
       expect(modifyCall.input.MasterUserSecretKmsKeyId).toBeUndefined();
       expect(modifyCall.input.MonitoringRoleArn).toBeUndefined();
       expect(modifyCall.input.PubliclyAccessible).toBeUndefined();
@@ -267,6 +353,23 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       expect(modifyCall.input.DeletionProtection).toBeUndefined();
       expect(modifyCall.input.MonitoringInterval).toBeUndefined();
       expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBeUndefined();
+      expect(modifyCall.input.ManageMasterUserPassword).toBeUndefined();
+    });
+
+    it('turns the managed password off when ManageMasterUserPassword is removed with a new MasterUserPassword (#1160 A/B)', async () => {
+      mockInstanceUpdate();
+
+      await provider.update(
+        'MyInstance',
+        'my-instance',
+        'AWS::RDS::DBInstance',
+        { Engine: 'mysql', MasterUserPassword: 'new-password-1' },
+        { Engine: 'mysql', ManageMasterUserPassword: true }
+      );
+
+      const input = mockSend.mock.calls[0][0].input;
+      expect(input.ManageMasterUserPassword).toBe(false);
+      expect(input.MasterUserPassword).toBe('new-password-1');
     });
 
     it('passes kept/changed fields through unchanged while removed ones are left unchanged', async () => {

@@ -174,6 +174,48 @@ function masterCredentialSettingsChanged(
 }
 
 /**
+ * Issue #1160: whether a removed `ManageMasterUserPassword` goes out as
+ * `false`. The previous template declared `true` and the desired one declares
+ * nothing. A real CloudFormation A/B (#1160 comment 6401151077) showed
+ * CloudFormation sends `false` there on both DBCluster and DBInstance: with a
+ * `MasterUserPassword` added in the same update the managed password is turned
+ * off, and without one RDS refuses the update. Leaving it unsent instead kept
+ * the managed password on without a word.
+ */
+function managedPasswordOnRemoval(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): boolean {
+  const previous = previousProperties['ManageMasterUserPassword'];
+  return (
+    properties['ManageMasterUserPassword'] === undefined &&
+    (previous === true || previous === 'true')
+  );
+}
+
+/**
+ * Issue #1160: the port CloudFormation resets a removed DBCluster `Port` to,
+ * per engine. Measured on Aurora only (#1160 comment 6401151077); a Multi-AZ
+ * DB cluster engine (`mysql` / `postgres`) is absent, so its removal sends
+ * nothing.
+ */
+const AURORA_DEFAULT_PORT: ReadonlyMap<string, number> = new Map([
+  ['aurora-postgresql', 5432],
+  ['aurora-mysql', 3306],
+]);
+
+/** The ModifyDBCluster `Port`: the declared one, or the engine default on removal. */
+function clusterPortToSend(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): number | undefined {
+  if (properties['Port'] != null) return Number(properties['Port']);
+  if (previousProperties['Port'] == null) return undefined;
+  const engine = properties['Engine'] ?? previousProperties['Engine'];
+  return typeof engine === 'string' ? AURORA_DEFAULT_PORT.get(engine.toLowerCase()) : undefined;
+}
+
+/**
  * How long a cluster or instance delete waits for the resource to be gone:
  * the Cloud Control route's own DELETE floor for these types, which a Cloud
  * Control-routed delete now reaches through this provider (issue #3993).
@@ -281,11 +323,12 @@ export class RDSProvider implements ResourceProvider {
    * Issue #1160: the CFn default a property REMOVED from the template is
    * reset to — the Modify/Update API keeps an absent field's live value.
    *
-   * Empty for RDS: a real CloudFormation A/B (issue #5004) showed CFn KEEPS
-   * the live value of DBCluster DeletionProtection / EnableIAMDatabaseAuthentication
-   * and DBInstance DeletionProtection / EnableIAMDatabaseAuthentication /
-   * MonitoringInterval when they are removed, so cdkd sends no reset for them
-   * (omission is "unchanged" on ModifyDBCluster / ModifyDBInstance).
+   * Empty for RDS: real CloudFormation A/Bs (issue #5004, #1160 comment
+   * 6401151077) showed CFn KEEPS most removed DBCluster / DBInstance values,
+   * so cdkd sends nothing for them (omission is "unchanged" on
+   * ModifyDBCluster / ModifyDBInstance). The resets it does make are coerced,
+   * engine-dependent or conditional, so they stay in `updateDBCluster` /
+   * `updateDBInstance`.
    */
   removalDefaults = new Map<string, ReadonlyMap<string, unknown>>();
 
@@ -1049,26 +1092,21 @@ export class RDSProvider implements ResourceProvider {
         context
       );
 
-      // #1160 reset-on-removal — ModifyDBCluster has merge semantics (an
-      // absent input field means "no change"), so a property REMOVED from
-      // the template must be sent as its explicit CFn-default reset value
-      // via a local `clearOnUpdateRemoval`. Per the #5004 CloudFormation A/B,
-      // CFn KEEPS the live value on removal for DeletionProtection and
-      // EnableIAMDatabaseAuthentication (and, on DBInstance, MonitoringInterval),
-      // so those are NOT reset (omitted = unchanged). Deliberately NOT reset here:
-      //   * EngineVersion — removal would imply moving to the engine's
-      //     default version, a risky (possibly major) version change cdkd
-      //     must not synthesize; leave unchanged.
-      //   * ManageMasterUserPassword + MasterUserSecret — flipping
-      //     ManageMasterUserPassword off requires supplying a
-      //     MasterUserPassword, which cannot be synthesized from a removal.
-      //   * MonitoringRoleArn — no documented clear value.
-      //   * ServerlessV2ScalingConfiguration — cannot be removed via Modify
-      //     without engine-mode implications (the Class-2 guard above also
-      //     skips empty shapes).
-      //   * Port — default is engine-dependent; no single safe reset value.
-      // A removed VpcSecurityGroupIds IS reset, to the VPC's default security
-      // group (`dbClusterSecurityGroupsToSend`).
+      // #1160 removal — ModifyDBCluster has merge semantics (an absent input
+      // field means "no change"), so a property REMOVED from the template is
+      // sent as its CFn reset value only where CloudFormation resets it, per
+      // real A/Bs (#5004, #1160 comment 6401151077):
+      //   * RESET: BackupRetentionPeriod (to 1), Port (to the engine default
+      //     on Aurora, `AURORA_DEFAULT_PORT`), ManageMasterUserPassword (to
+      //     false, `managedPasswordOnRemoval`), VpcSecurityGroupIds (to the
+      //     VPC's default security group, `dbClusterSecurityGroupsToSend`).
+      //   * KEPT (omitted = unchanged): DeletionProtection,
+      //     EnableIAMDatabaseAuthentication, EngineVersion, MonitoringInterval,
+      //     MonitoringRoleArn, ServerlessV2ScalingConfiguration.
+      // MasterUserSecret removed while the managed password stays on, and Port
+      // on a Multi-AZ DB cluster (`mysql` / `postgres`), are unmeasured and
+      // send nothing.
+      const manageMasterUserPasswordOff = managedPasswordOnRemoval(properties, previousProperties);
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
@@ -1088,12 +1126,13 @@ export class RDSProvider implements ResourceProvider {
           ...(vpcSgIds !== undefined && { VpcSecurityGroupIds: vpcSgIds }),
           // #5153: only a changed password; any supplied one resets credentials.
           MasterUserPassword: masterUserPasswordToSend(properties, previousProperties, context),
-          Port: properties['Port'] != null ? Number(properties['Port']) : undefined,
+          Port: clusterPortToSend(properties, previousProperties),
           // #609 security-cluster backfill — all mutable via ModifyDBCluster.
           ...(sendCredentialSettings &&
             properties['ManageMasterUserPassword'] !== undefined && {
               ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
             }),
+          ...(manageMasterUserPasswordOff && { ManageMasterUserPassword: false }),
           ...(sendCredentialSettings &&
             masterUserSecret?.KmsKeyId !== undefined && {
               MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
@@ -1101,22 +1140,11 @@ export class RDSProvider implements ResourceProvider {
           ...(properties['MonitoringRoleArn'] !== undefined && {
             MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
           }),
-          // Removal resets to 0 (Enhanced Monitoring off). UNMEASURED against
-          // CloudFormation (#5004: Multi-AZ DB cluster classes only). NOTE: the AWS API docs
-          // require a non-zero MonitoringInterval whenever MonitoringRoleArn
-          // is present in the request, so a template that KEEPS the role but
-          // DROPS the interval gets a loud InvalidParameterCombination — the
-          // same request CloudFormation would submit for that template
-          // (CFn-parity failure, never a silent keep of the old interval).
-          MonitoringInterval: clearOnUpdateRemoval(
-            properties['MonitoringInterval'] != null
-              ? Number(properties['MonitoringInterval'])
-              : undefined,
-            previousProperties['MonitoringInterval'] != null
-              ? Number(previousProperties['MonitoringInterval'])
-              : undefined,
-            0
-          ),
+          // Removal keeps the live interval, as CFn does, with or without the
+          // role removed alongside (#1160 comment 6401151077).
+          ...(properties['MonitoringInterval'] != null && {
+            MonitoringInterval: Number(properties['MonitoringInterval']),
+          }),
           // Removal keeps the live value, as CFn does (#5004 A/B).
           EnableIAMDatabaseAuthentication: properties['EnableIAMDatabaseAuthentication'] as
             | boolean
@@ -1610,30 +1638,18 @@ export class RDSProvider implements ResourceProvider {
         context
       );
       const instancePassword = masterUserPasswordToSend(properties, previousProperties, context);
-      // #1160 reset-on-removal — ModifyDBInstance has merge semantics (an
-      // absent input field means "no change"), so a property REMOVED from
-      // the template must be sent as its explicit CFn-default reset value
-      // via a local `clearOnUpdateRemoval`. Per the #5004 CloudFormation A/B,
-      // CFn KEEPS the live value on removal for DeletionProtection and
-      // EnableIAMDatabaseAuthentication (and, on DBInstance, MonitoringInterval),
-      // so those are NOT reset (omitted = unchanged). Deliberately NOT reset here:
-      //   * EngineVersion — removal would imply moving to the engine's
-      //     default version, a risky (possibly major) version change cdkd
-      //     must not synthesize; leave unchanged.
-      //   * ManageMasterUserPassword + MasterUserSecret — flipping
-      //     ManageMasterUserPassword off requires supplying a
-      //     MasterUserPassword, which cannot be synthesized from a removal.
-      //   * MonitoringRoleArn — no documented clear value.
-      //   * PubliclyAccessible — CFn documents the default as
-      //     context-dependent (varies by subnet / DNS configuration); no
-      //     single safe reset value.
-      //   * VPCSecurityGroups — classified UNCERTAIN in the #1160 audit
-      //     (readCurrentState placeholder concern on the cluster twin), out
-      //     of this batch's scope.
-      //   * AllocatedStorage — storage cannot shrink; removal is not
-      //     resettable.
-      //   * Port / DBPortNumber — default is engine-dependent; no single
-      //     safe reset value.
+      // #1160 removal — ModifyDBInstance has merge semantics (an absent input
+      // field means "no change"), so a property REMOVED from the template is
+      // sent as its CFn reset value only where CloudFormation resets it, per
+      // real A/Bs (#5004, #1160 comment 6401151077):
+      //   * RESET: ManageMasterUserPassword (to false, `managedPasswordOnRemoval`).
+      //   * KEPT (omitted = unchanged): DeletionProtection,
+      //     EnableIAMDatabaseAuthentication, MonitoringInterval, EngineVersion,
+      //     Port, PubliclyAccessible, AllocatedStorage, MonitoringRoleArn.
+      // MasterUserSecret removed while the managed password stays on is
+      // unmeasured and sends nothing. VPCSecurityGroups is classified
+      // UNCERTAIN in the #1160 audit and sends nothing.
+      const manageMasterUserPasswordOff = managedPasswordOnRemoval(properties, previousProperties);
       // #5194: a cluster change in the same deploy can leave this member not
       // `available` for a moment; only that refusal is waited out and resent.
       await modifyDbInstanceWhenAvailable({
@@ -1677,6 +1693,7 @@ export class RDSProvider implements ResourceProvider {
                 properties['ManageMasterUserPassword'] !== undefined && {
                   ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
                 }),
+              ...(manageMasterUserPasswordOff && { ManageMasterUserPassword: false }),
               ...(properties['MonitoringRoleArn'] !== undefined && {
                 MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
               }),

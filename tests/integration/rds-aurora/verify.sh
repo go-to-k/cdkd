@@ -27,6 +27,10 @@
 # #1160 (VpcSecurityGroupIds removal): phase 2 also drops the SecurityCluster's
 # VpcSecurityGroupIds. A real CloudFormation A/B showed CloudFormation moves
 # the cluster to the VPC's `default` security group, so phase 2 asserts that.
+# #1160 (Port / monitoring / managed-password removal): phase 2 also drops
+# Port (reset to 5432), MonitoringInterval + MonitoringRoleArn (kept), and
+# ManageMasterUserPassword + MasterUserSecret with a MasterUserPassword added
+# (managed password turned off), each as CloudFormation does (A/B on #1160).
 #
 # #1160 (DBProxy removal kept + warned): the proxy sets DebugLogging=true in
 # phase 1 and DROPS it in phase 2. ModifyDBProxy keeps an omitted setting and
@@ -475,6 +479,15 @@ if [ "${ACTUAL_SECRET}" = "null" ] || [ -z "${ACTUAL_SECRET}" ]; then
 fi
 echo "    OK: DBCluster MasterUserSecret populated (${ACTUAL_SECRET}); ManageMasterUserPassword + MasterUserSecret CLOSED by #609"
 
+# #1160 Port removal premise: phase 1 declares Port 5433 (the engine default
+# is 5432), so phase 2's reset to the default is observable.
+ACTUAL_PORT=$(echo "${CLUSTER}" | jq -r '.Port // "null"')
+if [ "${ACTUAL_PORT}" != "5433" ]; then
+  echo "FAIL: #1160 premise: base SecurityCluster Port is '${ACTUAL_PORT}', expected 5433" >&2
+  exit 1
+fi
+echo "    OK: base SecurityCluster Port == 5433 (#1160 phase-2 reset premise)"
+
 # --- Phase 1b: Tags on the DBProxyTargetGroup (issue #4087) -----------
 TG_ARN=$(tg_field .physicalId)
 TG_LOGICAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg t "${TG_TYPE}" '[.resources | to_entries[] | select(.value.resourceType == $t) | .key] | first // ""')
@@ -610,7 +623,7 @@ fi
 echo "    OK: #1160 DBProxy premise: ${PROXY_LOGICAL} (sdk) records and holds DebugLogging=true"
 
 # --- Phase 2: UPDATE pass (#5004 removal keeps) --------------------
-echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication, both must be KEPT; drop proxy DebugLogging; set proxy MaxConnectionsPercent=90)"
+echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication + MonitoringInterval + MonitoringRoleArn, all KEPT; DROP Port, reset to 5432; DROP the managed password for a MasterUserPassword; drop proxy DebugLogging; set proxy MaxConnectionsPercent=90)"
 DEPLOY_2_LOG="$(mktemp)"
 if ! CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -693,6 +706,37 @@ if [ "${AFTER_SGS}" != "${DEFAULT_SG_ID}:active" ]; then
   exit 1
 fi
 echo "    OK: after VpcSecurityGroupIds removal, the SecurityCluster moved to the VPC default ${DEFAULT_SG_ID} (#1160, matches CloudFormation)"
+
+# #1160 (comment 6401151077, CloudFormation A/B): phase 2 dropped Port,
+# MonitoringInterval + MonitoringRoleArn, and ManageMasterUserPassword +
+# MasterUserSecret (adding a MasterUserPassword). CloudFormation resets Port to
+# the engine default, keeps both monitoring values, and turns the managed
+# password off. A pre-fix cdkd keeps Port 5433, sends MonitoringInterval 0, and
+# never sends ManageMasterUserPassword false, so each check below fails there.
+# Re-read: the security-group swap above can re-settle the cluster.
+AFTER=$(aws rds describe-db-clusters \
+  --db-cluster-identifier "${DB_CLUSTER_ID}" \
+  --region "${REGION}" \
+  --query 'DBClusters[0]' --output json)
+AFTER_PORT=$(echo "${AFTER}" | jq -r '.Port // "null"')
+if [ "${AFTER_PORT}" != "5432" ]; then
+  echo "FAIL: #1160: after Port was removed, the SecurityCluster's Port is '${AFTER_PORT}', want 5432 (CloudFormation resets it to the engine default; 5433 means the removal sent nothing)" >&2
+  exit 1
+fi
+echo "    OK: after Port removal, the SecurityCluster is on 5432 (#1160, matches CloudFormation)"
+AFTER_INTERVAL=$(echo "${AFTER}" | jq -r '.MonitoringInterval // "null"')
+AFTER_ROLE=$(echo "${AFTER}" | jq -r '.MonitoringRoleArn // "null"')
+if [ "${AFTER_INTERVAL}" != "${EXPECTED_MONITORING_INTERVAL}" ] || [ "${AFTER_ROLE}" != "${ACTUAL_ROLE}" ]; then
+  echo "FAIL: #1160: after MonitoringInterval + MonitoringRoleArn were removed, the SecurityCluster has interval '${AFTER_INTERVAL}' and role '${AFTER_ROLE}', want '${EXPECTED_MONITORING_INTERVAL}' and '${ACTUAL_ROLE}' (CloudFormation keeps both; interval 0 means cdkd sent a reset)" >&2
+  exit 1
+fi
+echo "    OK: after MonitoringInterval + MonitoringRoleArn removal, AWS kept ${AFTER_INTERVAL} and the role (#1160, matches CloudFormation)"
+AFTER_SECRET=$(echo "${AFTER}" | jq -r '.MasterUserSecret.SecretArn // "null"')
+if [ "${AFTER_SECRET}" != "null" ]; then
+  echo "FAIL: #1160: after ManageMasterUserPassword was removed with a MasterUserPassword added, the SecurityCluster still has the managed secret '${AFTER_SECRET}' (CloudFormation sends ManageMasterUserPassword false, which turns it off)" >&2
+  exit 1
+fi
+echo "    OK: after ManageMasterUserPassword removal, the managed master password is off (#1160, matches CloudFormation)"
 
 # Phase 2 sets no CDKD_TEST_TG_TAGS, so the template dropped Tags (#4087).
 TAGS=$(tg_tags "${TG_ARN}")

@@ -194,11 +194,29 @@ export class RdsAuroraStack extends cdk.Stack {
     // and ModifyDBCluster treats an absent field as "no change", so verify.sh
     // asserts both are still true after phase 2. Protection stays on, so its
     // destroys pass --remove-protection.
+    // #1160 (comment 6401151077, real CloudFormation A/B): phase 2 also DROPS
+    //   * ManageMasterUserPassword + MasterUserSecret, adding a MasterUserPassword
+    //     (reused from the L2 cluster's generated secret, so no new resource).
+    //     CloudFormation sends ManageMasterUserPassword false, which turns the
+    //     managed password off: verify.sh asserts MasterUserSecret is gone.
+    //   * Port (5433 in phase 1). CloudFormation resets it to the engine
+    //     default: verify.sh asserts 5432.
+    //   * MonitoringInterval + MonitoringRoleArn. CloudFormation KEEPS both:
+    //     verify.sh asserts the interval is still 60 and the role still set.
     const securityCluster = new rds.CfnDBCluster(this, 'SecurityCluster', {
       engine: 'aurora-postgresql',
       masterUsername: 'postgres',
-      manageMasterUserPassword: true,
-      masterUserSecret: { kmsKeyId: 'alias/aws/secretsmanager' },
+      ...(isUpdate
+        ? {
+            masterUserPassword: cluster
+              .secret!.secretValueFromJson('password')
+              .unsafeUnwrap(),
+          }
+        : {
+            manageMasterUserPassword: true,
+            masterUserSecret: { kmsKeyId: 'alias/aws/secretsmanager' },
+            port: 5433,
+          }),
       ...(isUpdate
         ? {}
         : { deletionProtection: true, enableIamDatabaseAuthentication: true }),
@@ -207,8 +225,7 @@ export class RdsAuroraStack extends cdk.Stack {
       // reset proves ModifyDBCluster fired in the removal deploy, so the KEEP
       // assertions for the two fields above cannot pass vacuously.
       ...(isUpdate ? {} : { backupRetentionPeriod: 7 }),
-      monitoringInterval: 60,
-      monitoringRoleArn: monitoringRole.roleArn,
+      ...(isUpdate ? {} : { monitoringInterval: 60, monitoringRoleArn: monitoringRole.roleArn }),
       dbSubnetGroupName: securitySubnetGroup.subnetGroupName,
       // Issue #1160: DROPPED in phase 2. CloudFormation moves the cluster to
       // the VPC's `default` security group on removal (real A/B), so verify.sh

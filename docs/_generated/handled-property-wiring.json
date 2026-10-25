@@ -16638,7 +16638,9 @@
           "seededBy": [
             "create",
             "createDBCluster",
-            "createDBInstance"
+            "createDBInstance",
+            "update",
+            "updateDBCluster"
           ]
         },
         {
