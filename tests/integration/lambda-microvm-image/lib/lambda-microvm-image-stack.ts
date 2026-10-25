@@ -11,9 +11,10 @@ import { Construct } from 'constructs';
  * MicroVM image build is asynchronous: cdkd's provider polls until the image
  * reaches CREATED.
  *
- * `AWS::Lambda::MicrovmImage` has no L1 `CfnMicrovmImage` in the installed
- * aws-cdk-lib, so the resource is declared via the `CfnResource` escape hatch
- * (the same shape a real user writes until CDK ships the L1).
+ * The resource is declared via the `CfnResource` escape hatch so the fixture
+ * synthesizes on its `aws-cdk-lib` floor (^2.260.0), which predates the L1
+ * `CfnMicrovmImage` that later aws-cdk-lib releases ship. Both produce the
+ * same template shape.
  */
 export class LambdaMicrovmImageStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
