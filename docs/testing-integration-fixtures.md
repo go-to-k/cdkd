@@ -165,7 +165,7 @@ whenever you add or change a fixture.
 | [Integration test coverage](integ-coverage.md) | Each registered SDK provider type and the fixtures that deploy it | `vp run integ-coverage` |
 | [CLI flag coverage](cli-flag-coverage.md) | Each CLI flag and the fixtures whose `verify.sh` passes it | `vp run cli-flag-coverage` |
 | [Scenario coverage](scenario-coverage.md) | Each named regression scenario and the fixtures tagged with it | `vp run scenario-coverage` |
-| [Integ-run ledger](_generated/integ-last-run.tsv) | When each fixture last ran, and the result | `vp run integ-ledger-normalize` |
+| [Integ-run ledger](https://github.com/go-to-k/cdkd/blob/main/docs/_generated/integ-last-run.tsv) | When each fixture last ran, and the result | `vp run integ-ledger-normalize` |
 
 `vp run gen:all-matrices` runs all four tasks.
 
