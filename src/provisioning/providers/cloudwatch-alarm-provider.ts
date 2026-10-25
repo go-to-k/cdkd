@@ -576,6 +576,10 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
         if (m['Label'] !== undefined) entry['Label'] = m['Label'];
         if (m['ReturnData'] !== undefined) entry['ReturnData'] = m['ReturnData'];
         if (m['Period'] !== undefined) entry['Period'] = m['Period'];
+        // A cross-account metric: CDK emits `AccountId` when the metric's
+        // account differs from the stack's. Omitted, the alarm watches the
+        // same-named metric in the alarm's own account (go-to-k/cdkd#3723).
+        if (m['AccountId'] !== undefined) entry['AccountId'] = m['AccountId'];
         if (m['MetricStat'] !== undefined) {
           const stat = m['MetricStat'] as Record<string, unknown>;
           const metric = stat['Metric'] as Record<string, unknown>;

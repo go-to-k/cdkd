@@ -33,6 +33,7 @@ pass.
 |------|----------|------|---------|-------------------------------------------|
 | A | `ChainTopic` | `AWS::SNS::Topic` | **SDK** | `TopicArn` (= physical id) |
 | B | `ChainAlarm` | `AWS::CloudWatch::Alarm` | **SDK** | `Arn`, `Ref` (name) |
+| B2 | `ChainMathAlarm` | `AWS::CloudWatch::Alarm` | **SDK** | none (consumes `A.TopicName`; carries `Metrics[].AccountId`) |
 | C | `ChainComposite` | `AWS::CloudWatch::CompositeAlarm` | **CC-API** (no SDK provider registered) | `Arn` (stored by CC-API; no `constructAttribute` synthesis case) |
 | D | `ChainParam` | `AWS::SSM::Parameter` | **SDK** | `Ref` (name) |
 | E | `ChainFn` | `AWS::Lambda::Function` | **SDK** | terminal consumer |
@@ -63,8 +64,9 @@ from AWS and asserts the downstream consumer resolved to exactly that value:
 
 1. **Link A->B** — alarm `B`'s `AlarmActions[0]` on AWS equals topic `A`'s real `TopicArn`.
 2. **Link B->C** — composite `C`'s `AlarmRule` on AWS references alarm `B`'s real name.
-3. **Link C->D** — SSM param `D`'s `Value` on AWS equals `composite=<C.Arn>;alarm=<B.Arn>` built from the REAL ARNs read back from AWS (the CC-API attribute -> SDK-resource-property hop).
-4. **Link {A,C,D}->E** — Lambda `E`'s environment on AWS resolves `UPSTREAM_TOPIC_ARN` / `UPSTREAM_COMPOSITE_ARN` / `UPSTREAM_PARAM_NAME` / `UPSTREAM_JOINED` to the real upstream attributes (terminal multi-attribute `Fn::Sub`).
+3. **Alarm B2** — the metric-math alarm's `MetricStat` entry on AWS carries `AccountId` equal to this account ([#3723](https://github.com/go-to-k/cdkd/issues/3723): a dropped `Metrics[].AccountId` reads back empty).
+4. **Link C->D** — SSM param `D`'s `Value` on AWS equals `composite=<C.Arn>;alarm=<B.Arn>` built from the REAL ARNs read back from AWS (the CC-API attribute -> SDK-resource-property hop).
+5. **Link {A,C,D}->E** — Lambda `E`'s environment on AWS resolves `UPSTREAM_TOPIC_ARN` / `UPSTREAM_COMPOSITE_ARN` / `UPSTREAM_PARAM_NAME` / `UPSTREAM_JOINED` to the real upstream attributes (terminal multi-attribute `Fn::Sub`).
 
 A mismatch fails with a message naming the broken link. If `cdkd deploy`
 itself fails, `verify.sh` prints the failing resource + error for triage.
