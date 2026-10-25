@@ -29,11 +29,13 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
+const mockLoggerWarn = vi.hoisted(() => vi.fn());
+
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: mockLoggerWarn,
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -53,10 +55,7 @@ import {
   inlineCodeFileNameForRuntime,
 } from '../../../src/provisioning/providers/lambda-function-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
-import {
-  clearResolvedResourceTimeouts,
-  setResolvedResourceTimeouts,
-} from '../../../src/provisioning/resource-timeout-registry.js';
+import { withResourceDeadline } from '../../../src/deployment/resource-deadline.js';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 import * as zlib from 'node:zlib';
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
@@ -1877,57 +1876,90 @@ describe('LambdaFunctionProvider', () => {
           throw new Error('InvalidParameterValue: in-use');
         });
 
-      const startDelete = () => {
+      const MIN = 60 * 1000;
+      const runDelete = () => {
         mockLambdaSend
           .mockResolvedValueOnce({})
           .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
           .mockResolvedValueOnce({});
+        return provider.delete('Fn', 'fn-vpc', 'AWS::Lambda::Function', {
+          VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
+        });
+      };
+      // `beforeDelete` stands for engine time spent inside the same deadline
+      // before delete() runs (a create-first replacement's create, a retry).
+      const startDelete = (timeoutMs?: number, beforeDeleteMs = 0) => {
         let settled = false;
-        const promise = provider
-          .delete('Fn', 'fn-vpc', 'AWS::Lambda::Function', {
-            VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
-          })
-          .finally(() => {
-            settled = true;
-          });
+        const operation = async () => {
+          if (beforeDeleteMs > 0) await new Promise((r) => setTimeout(r, beforeDeleteMs));
+          return runDelete();
+        };
+        const promise = (
+          timeoutMs === undefined
+            ? operation()
+            : withResourceDeadline(operation, {
+                warnAfterMs: 1000,
+                timeoutMs,
+                onTimeout: () => new Error('engine deadline fired'),
+              })
+        ).finally(() => {
+          settled = true;
+        });
         return { promise, isSettled: () => settled };
       };
 
-      afterEach(() => {
-        clearResolvedResourceTimeouts();
-      });
-
       it('at the default 30m deadline, gives up 2m before it rather than at the 30m budget', async () => {
         stuckEni();
-        const { promise, isSettled } = startDelete();
+        const { promise, isSettled } = startDelete(30 * MIN);
 
-        await vi.advanceTimersByTimeAsync(27 * 60 * 1000);
+        await vi.advanceTimersByTimeAsync(27 * MIN);
         expect(isSettled()).toBe(false);
-        await vi.advanceTimersByTimeAsync(60 * 1000);
+        await vi.advanceTimersByTimeAsync(MIN);
+        expect(isSettled()).toBe(true);
+        await expect(promise).resolves.toBeUndefined();
+        expect(mockLoggerWarn).toHaveBeenCalledWith(expect.stringContaining('Gave up deleting ENI'));
+      });
+
+      it('follows a shorter --resource-timeout', async () => {
+        stuckEni();
+        const { promise, isSettled } = startDelete(10 * MIN);
+
+        await vi.advanceTimersByTimeAsync(7 * MIN);
+        expect(isSettled()).toBe(false);
+        await vi.advanceTimersByTimeAsync(MIN);
         expect(isSettled()).toBe(true);
         await expect(promise).resolves.toBeUndefined();
       });
 
-      it('follows an explicit --resource-timeout for the type', async () => {
-        setResolvedResourceTimeouts({ perTypeMs: { 'AWS::Lambda::Function': 10 * 60 * 1000 } });
+      it('counts deadline time spent before delete() ran', async () => {
         stuckEni();
-        const { promise, isSettled } = startDelete();
+        const { promise, isSettled } = startDelete(30 * MIN, 10 * MIN);
 
-        await vi.advanceTimersByTimeAsync(7 * 60 * 1000);
+        await vi.advanceTimersByTimeAsync(27 * MIN);
         expect(isSettled()).toBe(false);
-        await vi.advanceTimersByTimeAsync(60 * 1000);
+        await vi.advanceTimersByTimeAsync(MIN);
         expect(isSettled()).toBe(true);
         await expect(promise).resolves.toBeUndefined();
       });
 
-      it('keeps the 30m budget when the deadline is longer', async () => {
-        setResolvedResourceTimeouts({ globalMs: 60 * 60 * 1000 });
+      it('keeps the 30m per-ENI budget when the deadline is longer', async () => {
+        stuckEni();
+        const { promise, isSettled } = startDelete(60 * MIN);
+
+        await vi.advanceTimersByTimeAsync(29 * MIN);
+        expect(isSettled()).toBe(false);
+        await vi.advanceTimersByTimeAsync(2 * MIN);
+        expect(isSettled()).toBe(true);
+        await expect(promise).resolves.toBeUndefined();
+      });
+
+      it('keeps the 30m per-ENI budget outside any deadline (rollback replay)', async () => {
         stuckEni();
         const { promise, isSettled } = startDelete();
 
-        await vi.advanceTimersByTimeAsync(29 * 60 * 1000);
+        await vi.advanceTimersByTimeAsync(29 * MIN);
         expect(isSettled()).toBe(false);
-        await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+        await vi.advanceTimersByTimeAsync(2 * MIN);
         expect(isSettled()).toBe(true);
         await expect(promise).resolves.toBeUndefined();
       });

@@ -64,8 +64,7 @@ import {
   relayedNameCollision,
 } from '../../deployment/retryable-errors.js';
 import { markNotGone } from '../not-gone.js';
-import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
-import { DEFAULT_RESOURCE_TIMEOUT_MS } from '../../deployment/deploy-engine/options.js';
+import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
 import { generatedNameFor } from '../resource-name.js';
 import {
   isAuxiliaryFailure,
@@ -1648,12 +1647,6 @@ export class LambdaFunctionProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Lambda function ${logicalId}: ${physicalId}`);
-    // Measured from here, a little after the engine's own clock started, so
-    // the margin also absorbs that gap.
-    const eniPhaseDeadline =
-      Date.now() +
-      (resolvedResourceTimeoutMs(resourceType) ?? DEFAULT_RESOURCE_TIMEOUT_MS) -
-      this.eniDeadlineMarginMs;
 
     const hasVpcConfig = this.hasVpcConfig(properties?.['VpcConfig']);
     // go-to-k/cdkd#4946: set once the VPC detach may have landed, so a refused
@@ -1751,7 +1744,14 @@ export class LambdaFunctionProvider implements ResourceProvider {
     }
 
     if (hasVpcConfig) {
-      await this.cleanupLambdaEnis(physicalId, eniPhaseDeadline);
+      // The engine's own clock, read here rather than recomputed: it started
+      // before this delete (a create-first replacement's create, an earlier
+      // retry of this delete) and pauses for prompts. Infinity outside any
+      // deadline (a rollback replay), leaving the per-ENI budget alone.
+      await this.cleanupLambdaEnis(
+        physicalId,
+        Date.now() + enclosingDeadlineRemainingMs() - this.eniDeadlineMarginMs
+      );
     }
   }
 
