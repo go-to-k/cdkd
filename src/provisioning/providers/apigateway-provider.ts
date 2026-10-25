@@ -90,6 +90,7 @@ import {
 import { safeMsg } from '../../utils/display-safe.js';
 import { withRemovalDefaults } from '../update-removal.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { API_GATEWAY_MAX_ATTEMPTS, withApiGatewayPacing } from '../../utils/apigateway-pacing.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import { collectOrphanIds, reportPossibleOrphans } from './orphan-report.js';
 import {
@@ -300,7 +301,15 @@ export class ApiGatewayProvider implements ResourceProvider {
   private getCreateClient(): Promise<APIGatewayClient> {
     this.createClient ??= this.apiGatewayClient.config.region().then(
       (region) =>
-        withoutServerErrorRetries(new APIGatewayClient({ ...ambientClientDefaults(), region })),
+        withoutServerErrorRetries(
+          withApiGatewayPacing(
+            new APIGatewayClient({
+              ...ambientClientDefaults(),
+              region,
+              maxAttempts: API_GATEWAY_MAX_ATTEMPTS,
+            })
+          )
+        ),
       (error: unknown) => {
         this.createClient = undefined;
         throw error;

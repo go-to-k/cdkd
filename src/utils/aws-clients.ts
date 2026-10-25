@@ -25,6 +25,7 @@ import { LambdaCoreClient } from '@aws-sdk/client-lambda-core';
 import { awsClientDefaults, type AwsClientDefaults } from './aws-client-defaults.ts';
 import { currentStackAwsScope, runInStackAwsScope } from './stack-aws-scope.ts';
 import { quietS3Logger } from './sdk-call-log.ts';
+import { API_GATEWAY_MAX_ATTEMPTS, withApiGatewayPacing } from './apigateway-pacing.ts';
 
 /**
  * AWS client configuration
@@ -467,9 +468,14 @@ export class AwsClients {
    */
   getAPIGatewayClient(): APIGatewayClient {
     if (!this.apiGatewayClient) {
-      this.apiGatewayClient = new APIGatewayClient({
-        ...this.clientOptions,
-      });
+      // Paced and given more attempts than the SDK default: the control plane
+      // allows 10 calls per second per account (apigateway-pacing.ts).
+      this.apiGatewayClient = withApiGatewayPacing(
+        new APIGatewayClient({
+          ...this.clientOptions,
+          maxAttempts: API_GATEWAY_MAX_ATTEMPTS,
+        })
+      );
     }
     return this.apiGatewayClient;
   }
