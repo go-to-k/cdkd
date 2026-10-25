@@ -348,8 +348,9 @@ assert_all_tag_sets() { # usage: assert_all_tag_sets <want tag map JSON> <phase 
   # go-to-k/cdkd#2762: the Connection's Tags (create on CreateConnection,
   # update through TagResource / UntagResource). Its third argument, when
   # given, overrides the expected set (the removal phase drops its Tags).
+  # `|| {}`: an untagged resource may come back without a `Tags` member at all.
   assert_tag_set "${phase}: Connection" "${3:-${want}}" aws glue get-tags \
-    --resource-arn "${CONNECTION_ARN}" --region "${REGION}" --query 'Tags' --output json
+    --resource-arn "${CONNECTION_ARN}" --region "${REGION}" --query 'Tags || `{}`' --output json
   assert_tag_set "${phase}: log group" "${want}" aws logs list-tags-for-resource \
     --resource-arn "${TAGGED_LG_ARN}" --region "${REGION}" --query 'tags' --output json
 }
