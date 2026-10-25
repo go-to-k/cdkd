@@ -293,13 +293,18 @@ export function replacementDeleteContext(
  *     ElastiCache ReplicationGroup) → creates the snapshot and waits for
  *     it here, then returns undefined (the subsequent delete is plain).
  *   - anything else Snapshot-tagged → refuses.
+ *
+ * `mask` is the caller's secret masker, when it holds one: the snapshot
+ * helper's info and debug lines (a withheld AWS failure's text among them,
+ * go-to-k/cdkd#2319) go through it, as `rollback-executor/names.ts` does.
  */
 export async function prepareFinalSnapshotForDelete(
   deps: ReplacementDeps,
   logicalId: string,
   resourceType: string,
   currentResource: { physicalId: string; provisionedBy?: 'sdk' | 'cc-api' | undefined },
-  policy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined
+  policy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined,
+  mask?: (text: string) => string
 ): Promise<string | undefined> {
   if (policy !== 'Snapshot' || deps.options.skipFinalSnapshot === true) return undefined;
   if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType) && currentResource.provisionedBy !== 'cc-api') {
@@ -320,7 +325,12 @@ export async function prepareFinalSnapshotForDelete(
       currentResource.physicalId,
       logicalId,
       deps.options.finalSnapshotClients ?? getAwsClients(),
-      deps.logger
+      mask === undefined
+        ? deps.logger
+        : {
+            info: (message) => deps.logger.info(mask(message)),
+            debug: (message) => deps.logger.debug(mask(message)),
+          }
     );
     return undefined;
   }
@@ -372,6 +382,13 @@ export async function replaceDeleteFirstAndRecreate(
   noEchoDeleteValues?: NoEchoDeleteValues
 ): Promise<Awaited<ReturnType<ResourceProvider['create']>>> {
   const createContext: CreateContext = { maskSecrets: createSecretMasker(secrets) };
+  // go-to-k/cdkd#2007: the bag this deploy resolved plus the name bag, which
+  // covers a physical id derived from a secret: the old resource's delete and
+  // its final snapshot's lines log under it.
+  const deleteMask = createUnionSecretMasker([
+    secrets,
+    secretNameBagFor(deps.secretsRun(), logicalId),
+  ]);
   // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the OLD
   // resource before the replacement delete, exactly like the destroy
   // paths honor `DeletionPolicy: Snapshot`. Deliberately OUTSIDE the
@@ -383,7 +400,8 @@ export async function replaceDeleteFirstAndRecreate(
     logicalId,
     oldResourceType,
     currentResource,
-    updateReplacePolicy
+    updateReplacePolicy,
+    deleteMask
   );
   let deleteResult: void | ResourceDeleteResult;
   try {
@@ -407,10 +425,7 @@ export async function replaceDeleteFirstAndRecreate(
           ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
           // go-to-k/cdkd#2007: the bag this deploy resolved, which the call
           // also logs under; the physical id can be a name it derives.
-          maskSecrets: createUnionSecretMasker([
-            secrets,
-            secretNameBagFor(deps.secretsRun(), logicalId),
-          ]),
+          maskSecrets: deleteMask,
         }
       )
     );
@@ -939,7 +954,11 @@ export async function createFirstThenDeleteOld(
         logicalId,
         input.oldResourceType,
         currentResource,
-        input.snapshotPolicy
+        input.snapshotPolicy,
+        // A superset of the delete's masker below (`createSecretMasker(secrets)`):
+        // the resolved bag plus the #2007 name bag. No PRE_DELETE_SNAPSHOT type
+        // reaches this method today, so no snapshot line is logged here yet.
+        createUnionSecretMasker([secrets, secretNameBagFor(deps.secretsRun(), logicalId)])
       );
   deps.logger.info(
     retainOld

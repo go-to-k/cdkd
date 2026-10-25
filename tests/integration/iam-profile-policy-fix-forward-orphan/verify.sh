@@ -519,6 +519,37 @@ for lid in PolicyA PolicyC; do
     exit 1
   fi
 done
+# go-to-k/cdkd#2319: each refused cleanup line names the AWS failure by its
+# class plus the --verbose pointer, right after its head. AWS's text for the
+# explicit deny names this account, the deny role and `not authorized`; this
+# assertion's own FAIL prints only the line's head (to its first colon) and
+# its length.
+assert_cleanup_line_redacted() { # usage: assert_cleanup_line_redacted <cleanup head up to the logical id>
+  local line rest head
+  line="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/inject.log" | awk -v n="$1" 'index($0, n) { l = $0 } END { print l }')"
+  head="${line%%:*}"
+  [ "${head}" = "${line}" ] && head='<no colon in the line>'
+  # Past the head's `(<name or ARN>): `.
+  rest="${line#*"$1"*"): "}"
+  if [ -z "${line}" ] || [ "${rest}" = "${line}" ]; then
+    echo "[verify] FAIL: no refused cleanup line '$1 (...): ...' in the step-2 output (#2319)" >&2
+    exit 1
+  fi
+  if ! printf '%s' "${rest}" | grep -qE "^[A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
+    echo "[verify] FAIL: the refused cleanup line '$1' does not name the AWS failure by its class (#2319); head: ${head} (${#line} chars)" >&2
+    exit 1
+  fi
+  if printf '%s' "${line}" | grep -qiF "not authorized" || printf '%s' "${line}" | grep -qF "${DENY_ROLE}"; then
+    echo "[verify] FAIL: the refused cleanup line '$1' quotes AWS's text (deny role or 'not authorized') (#2319); head: ${head} (${#line} chars)" >&2
+    exit 1
+  fi
+}
+for lid in ProfileA ProfileC; do
+  assert_cleanup_line_redacted "Failed to clean up partially-created IAM instance profile ${lid}"
+done
+for lid in PolicyA PolicyC; do
+  assert_cleanup_line_redacted "Failed to clean up partially-created managed policy ${lid}"
+done
 STATE_2="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
 for lid in ProfileA ProfileC PolicyA PolicyC; do
   if [ "$(printf '%s' "${STATE_2}" | jq --arg l "${lid}" '.resources | has($l)')" != "false" ]; then

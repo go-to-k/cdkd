@@ -22,11 +22,20 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
-import { markRedactedCause, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { markDeleteStarted } from '../delete-started.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { markNotGone } from '../not-gone.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -193,7 +202,7 @@ export class EventBridgeBusProvider implements ResourceProvider {
   }
 
   /**
-   * Wrap what create / update caught into the error it throws, keeping the
+   * Wrap what create / update / delete caught into the error it throws, keeping the
    * caller's identity out of the thrown message (go-to-k/cdkd#2319, the Glue
    * provider's `wrapGlueError` shape). A thrown message is persisted to
    * `deployments/{runId}.jsonl`, and an `AccessDeniedException` from
@@ -205,7 +214,9 @@ export class EventBridgeBusProvider implements ResourceProvider {
    * conversion `describeAwsFailure` makes, which never throws. `build` must
    * thread `error` as `cause`, so the retry classifiers still read the withheld
    * text through the redacted-cause stamp; it runs twice, so it must stay a
-   * side-effect-free constructor call.
+   * side-effect-free constructor call. An "already exists" (a taken bus name)
+   * is restated ({@link relayedNameCollision}), except from a post-create step
+   * (`markAuxiliaryFailure`), where "it" would read as the bus just created.
    */
   private wrapMaskedError(
     mask: MaskerFn,
@@ -216,7 +227,8 @@ export class EventBridgeBusProvider implements ResourceProvider {
     if (!(error instanceof Error)) return build(mask(failure.detail));
     if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
     this.logger.debug(mask(build(failure.detail).message));
-    return markRedactedCause(build(mask(failure.summary)));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    return markRedactedCause(build(`${mask(failure.summary)}${relay}`));
   }
 
   async create(
@@ -538,12 +550,9 @@ export class EventBridgeBusProvider implements ResourceProvider {
         return;
       }
       // `.detail`, never `.summary`: the substring test below is what keeps this
-      // degradation alive, and it matches AWS's OWN wording. Byte-identical to
-      // the ternary it replaced, minus that ternary's throw.
-      // It ALSO reaches a thrown `ProvisioningError` further down, which
-      // `extractDeploymentEventError` persists -- one of the ten such sites in
-      // this sweep. The disclosure question for all of them is
-      // go-to-k/cdkd#2319's.
+      // degradation alive, and it matches AWS's OWN wording. The thrown wrap
+      // further down names an AWS failure by its class instead
+      // (go-to-k/cdkd#2319).
       const msg = describeAwsFailure(error).detail;
       if (msg.includes('does not exist')) {
         const clientRegion = await this.eventBridgeClient.config.region();
@@ -558,14 +567,24 @@ export class EventBridgeBusProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        `Failed to delete EventBus ${logicalId}: ${msg}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const failure = this.wrapMaskedError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete EventBus ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
-      throw stripped ? markDeleteStarted(failure) : failure;
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this bus is gone (go-to-k/cdkd#2319).
+      const marked =
+        error instanceof Error && error.name.includes('NotFound') ? markNotGone(failure) : failure;
+      throw stripped ? markDeleteStarted(marked) : marked;
     }
   }
 

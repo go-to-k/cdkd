@@ -35,7 +35,7 @@ import {
   resolveSecretDerivedPrincipals,
 } from '../secret-principal-resolution.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, VERBOSE_POINTER } from '../../utils/aws-failure-text.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import type {
@@ -519,6 +519,7 @@ export class IAMPolicyProvider implements ResourceProvider {
       })),
     ];
     const failed: string[] = [];
+    let withheld = false;
     for (const step of steps) {
       try {
         await step.send();
@@ -527,16 +528,33 @@ export class IAMPolicyProvider implements ResourceProvider {
         );
       } catch (error) {
         if (error instanceof NoSuchEntityException) continue;
-        failed.push(
-          `${step.what} (${log.mask(describeAwsFailure(error).detail)}): ${step.command}`
-        );
+        // An AWS-authored failure is named by its class at warn, and AWS's
+        // text (a denied detach names the caller) goes to `debug`
+        // (go-to-k/cdkd#2319).
+        const failure = describeAwsFailure(error);
+        if (failure.redacted) {
+          log.debug(
+            `Failed to detach the partially-created IAM policy ${logicalId} (${v(policyName)}) from ${step.what}: ${failure.detail}`
+          );
+        }
+        // The class alone per step; the --verbose pointer once, after the list.
+        withheld ||= failure.redacted;
+        const tail = ` ${VERBOSE_POINTER}`;
+        const reason = !failure.redacted
+          ? failure.detail
+          : failure.summary.endsWith(tail)
+            ? failure.summary.slice(0, -tail.length).replace(/\.$/, '')
+            : failure.summary;
+        failed.push(`${step.what} (${log.mask(reason)}): ${step.command}`);
       }
     }
     if (failed.length > 0) {
       log.warn(
         `Failed to detach the partially-created IAM policy ${logicalId} (${v(policyName)}) after ` +
           `its create failed; cdkd has no record of it, so it stays attached and granting until ` +
-          `it is removed by hand: ${failed.join('; ')}`
+          // The pointer comes before the list: after it, a period would join
+          // the last pasteable command.
+          `it is removed by hand${withheld ? ` (${VERBOSE_POINTER.replace(/\.$/, '')})` : ''}: ${failed.join('; ')}`
       );
     }
   }

@@ -528,7 +528,10 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
       expect(warned).toContain(
         `Failed to clean up partially-created ECS service Svc (${ARN_PREFIX}:service/${SECRET_MASK}/${SECRET_MASK}):`
       );
-      expect(warned).toContain(MASKED_ECHO);
+      // go-to-k/cdkd#2319: the class at warn, AWS's text at debug, masked there.
+      expect(warned).toContain(`InvalidParameterException. ${VERBOSE_POINTER}`);
+      expect(warned).not.toContain('Invalid value');
+      expect(debugSpy.mock.calls.map((args) => String(args[0])).join('\n')).toContain(MASKED_ECHO);
       expect(warned).toContain(WITHHELD_AWS_COMMAND);
       expect(message).toContain('did not reach steady state under --full-wait');
       expect(message).toContain(WITHHELD_AWS_COMMAND);

@@ -550,6 +550,21 @@ export interface DestroyRunnerResult {
 const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
 
 /**
+ * The pre-delete final snapshot's logger, with every line routed through the
+ * delete's masker (go-to-k/cdkd#2319): its debug line quotes a withheld AWS
+ * failure's text. The `rollback-executor/names.ts` shape.
+ */
+function maskedSnapshotLogger(
+  logger: { info(message: string): void; debug(message: string): void },
+  mask: (text: string) => string
+): { info(message: string): void; debug(message: string): void } {
+  return {
+    info: (message) => logger.info(mask(message)),
+    debug: (message) => logger.debug(mask(message)),
+  };
+}
+
+/**
  * Record one destroy event with its human-authored text masked by the
  * printing bags bound where it is recorded (go-to-k/cdkd#3869,
  * {@link maskEventTextWithBoundBags}): a delete's own bag, or a
@@ -2373,7 +2388,10 @@ async function destroyStackInRegion(
                   resource.physicalId,
                   logicalId,
                   destroyAwsClients ?? ctx.baseAwsClients,
-                  logger
+                  // The delete's own masker, as its DeleteContext carries: the
+                  // snapshot helper's debug line quotes a withheld AWS failure's
+                  // text (go-to-k/cdkd#2319).
+                  maskedSnapshotLogger(logger, createUnionSecretMasker([printingBagOf(logicalId)]))
                 );
               } else {
                 throw unsupportedFinalSnapshotError(
