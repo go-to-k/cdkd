@@ -73,8 +73,8 @@
  * (two arguments). Neither is a live hole; both are unenforced going forward.
  * (An earlier revision listed a bare `` `${err}` `` interpolation here as
  * "occurring once, at the EXEMPT site". Measured: it occurs ZERO times under
- * `src/provisioning/**` and zero across `src/`, and the EXEMPT site uses the
- * ternary. The claim came from a review note that was taken on trust instead
+ * `src/provisioning/**` and zero across `src/`, and the then-EXEMPT site used
+ * the ternary. The claim came from a review note that was taken on trust instead
  * of re-measured -- which is the same mistake, one layer out, as the
  * classifiers above.)
  *
@@ -83,7 +83,8 @@
  * is per OCCURRENCE, not per handler, because one handler can compute a
  * message on a degrading path and another on a throwing one. That is a dated
  * figure, not an invariant -- what this file ENFORCES is that the can-degrade
- * bucket holds nothing but `EXEMPT`, which stays true however the tree grows.
+ * bucket holds nothing outside `EXEMPT` (now empty), which stays true however
+ * the tree grows.
  *
  * **One caveat on the OTHER bucket, so nobody reads more into it than the
  * predicate supports.** "Cannot degrade" means control leaves this handler by
@@ -391,47 +392,27 @@ function collect(file: string, population: 'swallowing' | 'rethrowing' = 'swallo
 }
 
 /**
- * The ONE swallowing site that KEEPS the bare form, with its reason.
+ * Swallowing sites that KEEP the bare form, each with its reason. EMPTY.
  *
- * The reason is UNREACHABILITY, and only that. Every throw into
- * `cleanupFailedCreateRemnant`'s catch comes from `this.delete(...)`, which
- * wraps into a `ProvisioningError`; the three awaits OUTSIDE that try are gated
- * on `context?.removeProtection === true` and this call passes no context. So
- * the bare arm cannot run, and there is nothing for a guard to guard.
+ * It held one, `cloud-control-provider.ts` `cleanupFailedCreateRemnant`'s
+ * `catch (cleanupError)`, exempt on UNREACHABILITY: every throw into it comes
+ * from `this.delete(...)`, which wraps into a `ProvisioningError`, and the
+ * awaits outside that try that can let a non-`Error` escape are gated on
+ * `context?.removeProtection === true`, which that call never passes.
+ * go-to-k/cdkd#5254 converted it to `describeAwsFailure(cleanupError).detail`
+ * as defence in depth: `.detail` is `x.message` verbatim and reduces nothing,
+ * so the `isNotFoundMessage` prose matcher it feeds sees the same text. That is
+ * not `describePollFailure(...).display`, whose reduction the comment at the
+ * site still declines.
  *
- * **An earlier revision of this comment also claimed the site must keep the
- * bare form because `message` feeds `isNotFoundMessage`, a PROSE matcher a
- * "wire-name reduction" would blind. That is not a reason to exempt it from
- * THIS sweep** -- the substitution this fence drives is
- * `describeAwsFailure(x).detail`, which is `x.message` verbatim and reduces
- * nothing. It is restated here only because that version is the one
- * go-to-k/cdkd#3325 and two earlier revisions of this file published, so a
- * reader meeting it elsewhere needs to know it does not bear on `.detail`.
- *
- * It is NOT dismissed wholesale, and the scoping matters: the comment at
- * `cloud-control-provider.ts:917-929` keeps that risk as real but LATENT, and
- * it is about a DIFFERENT substitution -- `describePollFailure(...).display`,
- * whose `display` IS the summary, so there the reduction is genuine. Do not
- * read this entry as retiring that one.
- *
- * Converting it would therefore be harmless rather than wrong -- and is
- * deliberately NOT done, because go-to-k/cdkd#3325's fence pins the carve-out
- * from the other side and a lane does not silently reverse a sibling PR's
- * recorded decision. A mechanical sweep converted it anyway and that fence
- * caught it, which is why this entry is keyed on the enclosing SCOPE as well,
- * and asserted to match EXACTLY one site.
+ * An entry is keyed on file, enclosing SCOPE and binding, and must match
+ * EXACTLY one site.
  */
 const EXEMPT: readonly {
   readonly file: string;
   readonly scope: string;
   readonly binding: string;
-}[] = [
-  {
-    file: 'cloud-control-provider.ts',
-    scope: 'cleanupFailedCreateRemnant',
-    binding: 'cleanupError',
-  },
-];
+}[] = [];
 
 const files = sourceFiles(ROOT);
 const all = files.flatMap((f) => collect(f));
