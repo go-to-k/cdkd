@@ -400,6 +400,8 @@ describe('CustomResourceProvider waits for a referenced Pending Lambda function'
 
     expect(namesCalled('GetFunctionConfigurationCommand')).toEqual([]);
     expect(activeWaitTargets()).not.toContain(DEST_ARN);
+    // The delete really ran, so this cannot pass through an early `skipped`.
+    expect(namesCalled('InvokeCommand')).toHaveLength(1);
   });
 
   it('scans once per call, not once per retried attempt', async () => {
@@ -434,11 +436,164 @@ describe('CustomResourceProvider waits for a referenced Pending Lambda function'
     expect(activeWaitTargets().filter((fn) => fn === DEST_ARN)).toHaveLength(1);
   });
 
+  it('on update reads an ARN that is new even when 16 older ARNs precede it', async () => {
+    const older = Array.from(
+      { length: 16 },
+      (_, i) => `arn:aws:lambda:eu-west-1:123456789012:function:Old${i}`
+    );
+    wire({ [DEST_ARN]: 'Pending' });
+    await makeProvider().update(
+      'Notifications',
+      'phys-1',
+      TYPE,
+      propsFor(...older, DEST_ARN),
+      propsFor(...older)
+    );
+
+    expect(namesCalled('GetFunctionConfigurationCommand')).toEqual([
+      `GetFunctionConfigurationCommand:${DEST_ARN}`,
+    ]);
+    expect(activeWaitTargets()).toContain(DEST_ARN);
+    const logged = debugSpy.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(logged).not.toContain('are waited for');
+  });
+
+  it('stays silent about the cap for exactly 16 new ARNs and reads all of them', async () => {
+    const sixteen = Array.from(
+      { length: 16 },
+      (_, i) => `arn:aws:lambda:eu-west-1:123456789012:function:Fn${i}`
+    );
+    wire();
+    await makeProvider().create('Notifications', TYPE, propsFor(...sixteen));
+
+    expect(namesCalled('GetFunctionConfigurationCommand')).toHaveLength(16);
+    const logged = debugSpy.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(logged).not.toContain('are waited for');
+  });
+
+  it('hands the read an abort signal too', async () => {
+    wire();
+    await makeProvider().create('Notifications', TYPE, propsFor(DEST_ARN));
+
+    const read = mockLambdaSend.mock.calls.find(
+      (call) => (call[0] as { constructor: { name: string } }).constructor.name === 'GetFunctionConfigurationCommand'
+    );
+    expect((read?.[1] as { abortSignal?: AbortSignal } | undefined)?.abortSignal).toBeInstanceOf(
+      AbortSignal
+    );
+  });
+
+  it('does not start a waiter when exactly one second of the budget is left', async () => {
+    wire({ [DEST_ARN]: 'Pending', [OTHER_ARN]: 'Pending' });
+    let now = 1_000_000_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    mockWaitActive.mockImplementation((_config: unknown, input: { FunctionName: string }) => {
+      order.push(`wait:${input.FunctionName}`);
+      // 599s spent of 600: `waitUntil*` would reject a 1s `maxWaitTime` outright.
+      if (input.FunctionName === DEST_ARN) now += 599_000;
+      return Promise.resolve({});
+    });
+    try {
+      await makeProvider().create('Notifications', TYPE, propsFor(DEST_ARN, OTHER_ARN));
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    expect(activeWaitTargets()).toContain(DEST_ARN);
+    expect(activeWaitTargets()).not.toContain(OTHER_ARN);
+    const logged = debugSpy.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(logged).toContain('wait budget');
+    expect(namesCalled('InvokeCommand')).toHaveLength(1);
+  });
+
+  it('masks the ARN in every debug line it writes', async () => {
+    wire({
+      [DEST_ARN]: new Error(`cannot read ${DEST_ARN}`),
+      [OTHER_ARN]: 'Pending',
+    });
+    mockWaitActive.mockImplementation((_config: unknown, input: { FunctionName: string }) =>
+      input.FunctionName === OTHER_ARN
+        ? Promise.reject(new Error(`gave up on ${OTHER_ARN}`))
+        : Promise.resolve({})
+    );
+    const maskSecrets = (text: string): string => text.split(DEST_ARN).join('***').split(OTHER_ARN).join('***');
+    await makeProvider().create('Notifications', TYPE, propsFor(DEST_ARN, OTHER_ARN), { maskSecrets });
+
+    const lines = debugSpy.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => /referenced/i.test(line));
+    expect(lines.length).toBeGreaterThanOrEqual(3);
+    for (const line of lines) {
+      expect(line).not.toContain(DEST_ARN);
+      expect(line).not.toContain(OTHER_ARN);
+    }
+    expect(lines.join('\n')).toContain('***');
+  });
+
   describe('interrupt during the wait', () => {
     afterEach(() => {
       vi.useRealTimers();
       disarmInterruptWatchForTests();
       interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+    });
+
+    /** Fires the SIGINT listeners the provider armed, as Ctrl-C would. */
+    function pressCtrlC(baseline: ReturnType<typeof process.listeners>): void {
+      for (const l of process.listeners('SIGINT').filter((x) => !baseline.includes(x))) {
+        (l as unknown as () => void)();
+      }
+    }
+
+    for (const outcome of ['answers Active', 'rejects'] as const) {
+      it(`throws the interrupt when it lands during the first read, which ${outcome}`, async () => {
+        disarmInterruptWatchForTests();
+        interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+        const baseline = process.listeners('SIGINT');
+        wire();
+        const wired = mockLambdaSend.getMockImplementation();
+        mockLambdaSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+          if (cmd.constructor.name === 'GetFunctionConfigurationCommand') {
+            order.push('GetFunctionConfigurationCommand:first');
+            pressCtrlC(baseline);
+            return outcome === 'rejects'
+              ? Promise.reject(new Error('aborted'))
+              : Promise.resolve({ State: 'Active' });
+          }
+          return wired?.(cmd);
+        });
+
+        const err = await makeProvider()
+          .create('Notifications', TYPE, propsFor(DEST_ARN, OTHER_ARN))
+          .catch((e: unknown) => e);
+
+        expect(isInterruptedWaitError(err)).toBe(true);
+        expect(namesCalled('GetFunctionConfigurationCommand')).toHaveLength(1);
+        expect(namesCalled('InvokeCommand')).toEqual([]);
+        expect(mockWaitActive).not.toHaveBeenCalled();
+      });
+    }
+
+    it('throws the interrupt when it lands during a read that found the function Pending', async () => {
+      disarmInterruptWatchForTests();
+      interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+      const baseline = process.listeners('SIGINT');
+      wire();
+      const wired = mockLambdaSend.getMockImplementation();
+      mockLambdaSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+        if (cmd.constructor.name === 'GetFunctionConfigurationCommand') {
+          pressCtrlC(baseline);
+          return Promise.resolve({ State: 'Pending' });
+        }
+        return wired?.(cmd);
+      });
+
+      const err = await makeProvider()
+        .create('Notifications', TYPE, propsFor(DEST_ARN))
+        .catch((e: unknown) => e);
+
+      expect(isInterruptedWaitError(err)).toBe(true);
+      expect(mockWaitActive).not.toHaveBeenCalled();
+      expect(namesCalled('InvokeCommand')).toEqual([]);
     });
 
     it('aborts the waiter, throws the interrupt (not swallowed), never invokes, leaves no timer', async () => {

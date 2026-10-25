@@ -1054,14 +1054,20 @@ const REFERENCED_LAMBDA_MAX_WAIT_SECONDS = 600;
  * handler passes it to `PutBucketNotificationConfiguration` as a destination)
  * is a consumer that AWS rejects while the function is still `Pending`, exactly
  * as an ELBv2 Lambda target is (go-to-k/cdkd#5002).
+ *
+ * `maxArns` bounds the scan (default {@link REFERENCED_LAMBDA_MAX_ARNS}). A caller
+ * that filters the result afterwards passes `Infinity` and caps the FILTERED list
+ * itself, so a function that is new on update is not hidden behind ARNs that
+ * were already there.
  */
 export function collectReferencedLambdaFunctionArns(
   properties: unknown,
-  excludeArn: string
+  excludeArn: string,
+  maxArns: number = REFERENCED_LAMBDA_MAX_ARNS
 ): string[] {
   const found = new Set<string>();
   const walk = (value: unknown, depth: number): void => {
-    if (found.size >= REFERENCED_LAMBDA_MAX_ARNS || depth > REFERENCED_LAMBDA_MAX_DEPTH) return;
+    if (found.size >= maxArns || depth > REFERENCED_LAMBDA_MAX_DEPTH) return;
     if (typeof value === 'string') {
       if (value !== excludeArn && LAMBDA_FUNCTION_ARN.test(value)) found.add(value);
       return;
@@ -2647,7 +2653,8 @@ export class CustomResourceProvider implements ResourceProvider {
           serviceToken,
           referenced.properties,
           referenced.previousProperties,
-          watch
+          watch,
+          mask
         );
       }
       // Two budgets, counted SEPARATELY (issue #2033). Sharing the loop counter
@@ -3306,63 +3313,75 @@ export class CustomResourceProvider implements ResourceProvider {
     serviceToken: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown> | undefined,
-    watch: InterruptWatch
+    watch: InterruptWatch,
+    mask: MaskerFn | undefined
   ): Promise<void> {
+    // An ARN can come from an SSM or NoEcho value, and an AWS failure summary can echo
+    // it, so every line is masked as a whole.
+    const debug = (line: string): void => this.logger.debug(maskerOrIdentity(mask)(line));
+    // Neither scan is capped: the cap applies to what is left AFTER the filter, so
+    // an ARN that is new on update is read even when 16 older ones precede it.
     const already = new Set(
       previousProperties === undefined
         ? []
-        : collectReferencedLambdaFunctionArns(previousProperties, serviceToken)
+        : collectReferencedLambdaFunctionArns(previousProperties, serviceToken, Infinity)
     );
-    const arns = collectReferencedLambdaFunctionArns(properties, serviceToken).filter(
+    const fresh = collectReferencedLambdaFunctionArns(properties, serviceToken, Infinity).filter(
       (arn) => !already.has(arn)
     );
-    if (arns.length >= REFERENCED_LAMBDA_MAX_ARNS) {
-      this.logger.debug(
-        safeMsg`${logicalId} references at least ${REFERENCED_LAMBDA_MAX_ARNS} Lambda functions; only the first ${REFERENCED_LAMBDA_MAX_ARNS} are waited for`
+    if (fresh.length > REFERENCED_LAMBDA_MAX_ARNS) {
+      debug(
+        safeMsg`${logicalId} references ${fresh.length} Lambda functions; only the first ${REFERENCED_LAMBDA_MAX_ARNS} are waited for`
       );
     }
+    const arns = fresh.slice(0, REFERENCED_LAMBDA_MAX_ARNS);
     const deadline = Date.now() + REFERENCED_LAMBDA_MAX_WAIT_SECONDS * 1000;
-    for (const arn of arns) {
-      if (watch.isInterrupted()) throw watch.onInterrupted();
-      let state: string | undefined;
-      try {
-        const config = await this.lambdaClient.send(
-          new GetFunctionConfigurationCommand({ FunctionName: arn })
-        );
-        state = config.State;
-      } catch (error) {
-        // The read is not abortable, so a Ctrl-C that landed during it is seen here.
+    // One controller for the reads and the waiters: a Ctrl-C aborts whichever is running.
+    const abort = new AbortController();
+    const poll = setInterval(() => {
+      if (watch.isInterrupted()) abort.abort();
+    }, 1000);
+    try {
+      for (const arn of arns) {
         if (watch.isInterrupted()) throw watch.onInterrupted();
-        this.logger.debug(
-          safeMsg`Not waiting for ${arn} referenced by ${logicalId}: ${describeAwsFailure(error).summary}`
-        );
-        continue;
-      }
-      if (watch.isInterrupted()) throw watch.onInterrupted();
-      if (state !== 'Pending') continue;
+        let state: string | undefined;
+        try {
+          const config = await this.lambdaClient.send(
+            new GetFunctionConfigurationCommand({ FunctionName: arn }),
+            { abortSignal: abort.signal }
+          );
+          state = config.State;
+        } catch (error) {
+          // A Ctrl-C that landed during the read aborts it and is seen here.
+          if (watch.isInterrupted()) throw watch.onInterrupted();
+          debug(
+            safeMsg`Not waiting for ${arn} referenced by ${logicalId}: ${describeAwsFailure(error).summary}`
+          );
+          continue;
+        }
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        if (state !== 'Pending') continue;
 
-      const remainingSeconds = Math.floor((deadline - Date.now()) / 1000);
-      if (remainingSeconds < 1) {
-        this.logger.debug(
-          safeMsg`The wait budget for the functions referenced by ${logicalId} is spent; leaving ${arn} to the handler`
-        );
-        break;
+        // `waitUntil*` rejects a `maxWaitTime` that is not above its 1s minimum delay.
+        const remainingSeconds = Math.floor((deadline - Date.now()) / 1000);
+        if (remainingSeconds <= 1) {
+          debug(
+            safeMsg`The wait budget for the functions referenced by ${logicalId} is spent; leaving ${arn} to the handler`
+          );
+          break;
+        }
+        debug(safeMsg`Waiting for ${arn} referenced by ${logicalId} to become Active`);
+        try {
+          await waitForLambdaFunctionActive(this.lambdaClient, arn, abort.signal, remainingSeconds);
+        } catch (error) {
+          if (watch.isInterrupted()) throw watch.onInterrupted();
+          debug(
+            safeMsg`Referenced function ${arn} of ${logicalId} did not become Active; leaving it to the handler: ${describeAwsFailure(error).summary}`
+          );
+        }
       }
-      this.logger.debug(safeMsg`Waiting for ${arn} referenced by ${logicalId} to become Active`);
-      const abort = new AbortController();
-      const poll = setInterval(() => {
-        if (watch.isInterrupted()) abort.abort();
-      }, 1000);
-      try {
-        await waitForLambdaFunctionActive(this.lambdaClient, arn, abort.signal, remainingSeconds);
-      } catch (error) {
-        if (watch.isInterrupted()) throw watch.onInterrupted();
-        this.logger.debug(
-          safeMsg`Referenced function ${arn} of ${logicalId} did not become Active; leaving it to the handler: ${describeAwsFailure(error).summary}`
-        );
-      } finally {
-        clearInterval(poll);
-      }
+    } finally {
+      clearInterval(poll);
     }
   }
 
