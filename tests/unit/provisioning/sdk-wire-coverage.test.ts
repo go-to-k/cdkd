@@ -567,6 +567,7 @@ const CASES: TypeCase[] = [
         expectedSilent: {
           'update-add:EventSourceName': EVENT_SOURCE_PINNED_BY_NAME,
           'update-remove:EventSourceName': EVENT_SOURCE_PINNED_BY_NAME,
+          'update-vary:EventSourceName': EVENT_SOURCE_PINNED_BY_NAME,
         },
         expectedRemovalThrows: { 'create:Name': BUS_NAME_REQUIRED },
       },

@@ -389,11 +389,21 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
           await record(update(reduced, reduced))
         ) || updateThrew;
     }
-    if (!createThrew && !updateThrew) continue;
+    const isLeaf = paths(parentOf(c.bag, [...path, ''])).length === 0;
+    const leaf = parentOf(c.bag, path)[path[path.length - 1]!];
+    // Every updatable scalar leaf is also varied on update, whether or not its
+    // removal threw: a provider that skips its setter while next equals prev
+    // makes the removal comparisons call-versus-no-call, which any call passes
+    // whatever it carries. Varying the value with `prev` fixed observes WHAT
+    // the call sends (an empty container has no value to vary).
+    const varyOnUpdate =
+      updateThrew ||
+      (isLeaf && leaf !== null && typeof leaf !== 'object' && !c.createOnly.has(String(path[0])));
+    if (!createThrew && !varyOnUpdate) continue;
     // A container whose removal throws (a required list or document) cannot be
     // varied, but each path beneath it is probed on its own: those probes are
     // its delivery evidence. An EMPTY one has none, so it stays silent below.
-    if (paths(parentOf(c.bag, [...path, ''])).length > 0) continue;
+    if (!isLeaf) continue;
     const alt = varied(
       c.bag,
       path,
@@ -405,7 +415,7 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
         silent.push(`create-vary:${label}`);
       }
     }
-    if (updateThrew) {
+    if (varyOnUpdate) {
       const base = without(c.bag, path.length > 1 ? path.slice(0, -1) : path);
       const before = await record(update(c.bag, base));
       const after = alt === undefined ? undefined : await record(update(alt, base));

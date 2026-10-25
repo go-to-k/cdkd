@@ -232,10 +232,14 @@ export const CASES_2: TypeCase[] = [
             { Key: 'k2', Value: 'v2' },
           ],
         },
-        expectedSilent: {
-          'create:LifecyclePolicy.RegistryId':
-            "the only registry PutLifecyclePolicy can address here is the caller's own, its default when omitted",
-        },
+        // Not sent on create or update: the repository is the one cdkd created
+        // in the caller's own registry, which is PutLifecyclePolicy's default.
+        expectedSilent: Object.fromEntries(
+          ['create', 'update-vary'].map((d) => [
+            `${d}:LifecyclePolicy.RegistryId`,
+            "the only registry holding this repository is the caller's own, PutLifecyclePolicy's default",
+          ])
+        ),
         expectedRemovalThrows: TAG_THROWS(['create', 'update-add', 'update-remove'], 2),
       },
       {
@@ -280,7 +284,7 @@ export const CASES_2: TypeCase[] = [
     provider: () => new CloudFrontOAIProvider(),
     physicalId: 'E1OAI',
     createOnly: createOnlyOf('AWS::CloudFront::CloudFrontOriginAccessIdentity'),
-    // A removed Comment (or config) is sent as '', the cleared value.
+    // A removed Comment is sent as '', the cleared value.
     wholeFromNext: { keys: () => true, reason: WHOLE_FROM_NEXT },
     exempt: {},
     targets: [],
