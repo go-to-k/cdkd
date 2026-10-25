@@ -33,6 +33,8 @@ import {
   UntagUserCommand,
   PutUserPermissionsBoundaryCommand,
   DeleteUserPermissionsBoundaryCommand,
+  UpdateUserCommand,
+  UpdateGroupCommand,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
@@ -292,6 +294,14 @@ const DEPLOY_SKIP_CAVEAT =
  */
 const USER_NAME_MAX_LENGTH = 64;
 const GROUP_NAME_MAX_LENGTH = 128;
+
+/**
+ * The IAM path a user or group bag declares, read as `createUser` /
+ * `createGroup` send it: an unset or empty `Path` is IAM's default `/`.
+ */
+function iamPathOf(value: unknown): string {
+  return (value as string | undefined) || '/';
+}
 
 /**
  * `[template value, physical name derived from it]` for the types whose name
@@ -803,6 +813,16 @@ export class IAMUserGroupProvider implements ResourceProvider {
     }
 
     try {
+      // `Path` is mutable in place, as CloudFormation applies it (#3723); an
+      // absent one is IAM's default `/`, so a removed Path moves the user back.
+      const newPath = iamPathOf(properties['Path']);
+      if (newPath !== iamPathOf(previousProperties['Path'])) {
+        await this.iamClient.send(
+          new UpdateUserCommand({ UserName: physicalId, NewPath: newPath })
+        );
+        log.debug(`Moved user ${v(physicalId)} to path ${v(newPath)}`);
+      }
+
       // Apply tag diff. IAM User uses TagUser/UntagUser keyed by UserName.
       await this.applyUserTagDiff(
         physicalId,
@@ -1532,6 +1552,15 @@ export class IAMUserGroupProvider implements ResourceProvider {
     log.debug(`Updating IAM group ${logicalId}: ${v(physicalId)}`);
 
     try {
+      // `Path` in place, as for a user (#3723).
+      const newPath = iamPathOf(properties['Path']);
+      if (newPath !== iamPathOf(previousProperties['Path'])) {
+        await this.iamClient.send(
+          new UpdateGroupCommand({ GroupName: physicalId, NewPath: newPath })
+        );
+        log.debug(`Moved group ${v(physicalId)} to path ${v(newPath)}`);
+      }
+
       // Update managed policies
       await this.updateGroupManagedPolicies(
         physicalId,
