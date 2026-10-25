@@ -82,7 +82,7 @@ custom-resource-resolved-secret	2026-10-20T06:06:02Z	PASS	401	verify.sh	deploy+d
 custom-resource-service-token-change	2026-10-11T18:48:18Z	PASS	144	verify.sh	PR #4796, rc ok, orph clean
 data-analytics	2026-10-11T09:33:22Z	PASS	121	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
-deep-getatt-chains	2026-10-18T05:53:52Z	PASS	61	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
+deep-getatt-chains	2026-10-25T15:51:57Z	PASS	81	verify.sh	rc ok, orph clean; AccountId-revert probe FAILed at B2
 deletion-ordering-complex	2026-10-11T09:33:22Z	PASS	205	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 deletion-policy-retain	2026-10-17T07:24:50Z	PASS	40	verify.sh	rc ok, orph clean (resolver-context refactor #5025)
 deletion-policy-snapshot	2026-10-25T00:07:44Z	PASS	245	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
