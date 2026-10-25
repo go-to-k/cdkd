@@ -28,6 +28,9 @@ CDKD="node ../../../dist/cli.js"
 STACK="CdkdLocalStartWebFunctionFixture"
 BASE_IMAGE="public.ecr.aws/lambda/nodejs:24"
 PORT=18470
+# cdk-local names a container `cdkd-local-webfn-<pid of the cdkd process>-<rand>`.
+# Every container check is scoped to the pid of the serve THIS script started,
+# so a peer run in a parallel wave is neither reported nor touched.
 CONTAINER_PREFIX="cdkd-local-webfn-"
 
 # The cloud runtime is arm64-only and the command defaults to linux/arm64. On
@@ -38,6 +41,8 @@ case "$(uname -m)" in
 esac
 
 CDKD_PID=""
+# The pid of the most recent serve, kept after stop_server clears CDKD_PID.
+LAST_PID=""
 OUT_FILE=$(mktemp)
 
 stop_server() {
@@ -75,6 +80,7 @@ boot_serve() {
   : > "${OUT_FILE}"
   ${CDKD} local start-web-function "$@" ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} > "${OUT_FILE}" 2>&1 &
   CDKD_PID=$!
+  LAST_PID="${CDKD_PID}"
   for _ in $(seq 1 480); do
     if grep -q 'Server listening on http://' "${OUT_FILE}"; then return 0; fi
     kill -0 "${CDKD_PID}" 2>/dev/null || fail "start-web-function exited before it was ready"
@@ -86,7 +92,8 @@ boot_serve() {
 assert_no_orphans() {
   sleep 1
   local orphans
-  orphans="$(docker ps -a --filter "name=${CONTAINER_PREFIX}" --format '{{.Names}}')" \
+  [[ -n "${LAST_PID}" ]] || fail "assert_no_orphans called before any serve was started"
+  orphans="$(docker ps -a --filter "name=${CONTAINER_PREFIX}${LAST_PID}-" --format '{{.Names}}')" \
     || fail "docker ps failed while checking for leftover containers after $1"
   [[ -z "${orphans}" ]] || fail "leftover web function container(s) after $1: ${orphans}"
 }
@@ -99,7 +106,6 @@ fi
 echo "==> Docker available + base image present (${PLATFORM})"
 docker version --format '{{.Server.Version}}' >/dev/null
 docker pull --platform "${PLATFORM}" "${BASE_IMAGE}" >/dev/null
-assert_no_orphans "pre-flight"
 
 echo "==> Arm 1: endpoint target serves the higher-weight revision (RevV2)"
 boot_serve "${STACK}/Endpoint" --port "${PORT}" --no-pull

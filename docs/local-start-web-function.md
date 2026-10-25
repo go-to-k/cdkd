@@ -116,10 +116,11 @@ Whatever you target, one revision is served, chosen in this order:
 
 | Order | Revision served |
 | --- | --- |
-| 1 | The target itself, when it is a `WebFunctionRevision` |
-| 2 | The revision named by `--revision` |
-| 3 | The highest-weight revision of the targeted endpoint, or of the function's only endpoint |
+| 1 | The revision named by `--revision`, which must belong to the target's function |
+| 2 | The target itself, when it is a `WebFunctionRevision` |
+| 3 | The highest-weight revision of the targeted `WebFunctionEndpoint` |
 | 4 | The function's only revision |
+| 5 | For a function with two or more revisions, the highest-weight revision of its only endpoint |
 
 When none applies, for example a function with two revisions and no single
 endpoint, the command stops and lists the revisions to pass to `--revision`.
@@ -159,7 +160,9 @@ output.
 
 ## What is not emulated
 
-cdkd warns at startup about each of these that your app uses:
+cdkd warns at startup about each of these that your app uses. The endpoint
+rows apply only when an endpoint was resolved: the target is one, or rule 5
+above picked the function's only endpoint.
 
 | Feature | Locally |
 | --- | --- |
@@ -174,9 +177,11 @@ cdkd warns at startup about each of these that your app uses:
 `--from-state` reads cdkd's S3 state for the stack and replaces the `Ref`,
 `Fn::GetAtt`, `Fn::Sub`, `Fn::ImportValue` and `Fn::GetStackOutput`
 references in the revision's environment with the deployed values.
-`--from-cfn-stack` does the same for a stack deployed with the AWS CDK CLI.
-The two are mutually exclusive. [Local Execution](local-emulation.md)
-explains both.
+`--from-cfn-stack`, for a stack deployed with the AWS CDK CLI, resolves only
+`Ref` and `Fn::ImportValue` there: an `Fn::GetAtt` is not resolved. The two
+flags are mutually exclusive.
+[What each flag can resolve](local-emulation-value-resolution.md#what-each-flag-can-resolve)
+compares them.
 
 By default the container gets your own credentials. `--assume-role` runs it
 under a role instead:

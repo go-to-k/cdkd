@@ -11,7 +11,7 @@
 # Shell credentials answer with another ARN and FAIL the arm.
 #
 # Flow:
-#   1. Pre-flight sweep; a versioned code bucket this script owns.
+#   1. A versioned code bucket this script owns, named with the run token.
 #   2. Synth (to read the asset's `<hash>.zip` key), upload web/ zipped under
 #      that key, deploy with the object's version id.
 #   3. Wait until the role is assumable by the caller.
@@ -76,10 +76,15 @@ FN_NAME="${PREFIX}-fn"
 ROLE_NAME="${PREFIX}-${REGION}"
 BASE_IMAGE="public.ecr.aws/lambda/nodejs:24"
 PORT=18480
+# cdk-local names a container `cdkd-local-webfn-<pid of the cdkd process>-<rand>`.
+# Every container check and removal is scoped to the pid of the serve THIS
+# script started, so a peer run in a parallel wave is neither reported nor killed.
 CONTAINER_PREFIX="cdkd-local-webfn-"
 OUT_FILE="$(mktemp)"
 WORK=""
 CDKD_PID=""
+# The pid of the serve, kept after stop_server clears CDKD_PID.
+SERVE_PID=""
 DEPLOYED=0
 CLEANED_UP=0
 
@@ -99,7 +104,7 @@ if [ ! -f "${LOCAL_DIST}" ]; then
   exit 1
 fi
 ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
-CODE_BUCKET="${NAME_PREFIX}-code-${ACCOUNT}-${REGION}"
+CODE_BUCKET="${NAME_PREFIX}-${RUN_TOKEN}-code-${ACCOUNT}-${REGION}"
 export CDKD_WEBFN_RUN="${RUN_TOKEN}" CODE_BUCKET
 # A placeholder until the upload returns the real version id (synth only).
 export CODE_VERSION="pending"
@@ -188,8 +193,10 @@ cleanup() {
   echo "==> Cleanup: stopping the server, dropping leftover AWS resources"
   set +eu
   stop_server
-  docker ps -a --filter "name=${CONTAINER_PREFIX}" --format '{{.ID}}' \
-    | xargs -r docker rm -f >/dev/null 2>&1
+  if [ -n "${SERVE_PID}" ]; then
+    docker ps -a --filter "name=${CONTAINER_PREFIX}${SERVE_PID}-" --format '{{.ID}}' \
+      | xargs -r docker rm -f >/dev/null 2>&1
+  fi
   if [ "${DEPLOYED}" = "1" ]; then
     ${CDKD} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force >/dev/null 2>&1 \
       || echo "WARN: destroy in trap failed; sweeping the run's resources directly" >&2
@@ -296,6 +303,7 @@ ${CDKD} local start-web-function "${STACK}/Endpoint" --from-state --assume-role 
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --port "${PORT}" --no-pull \
   ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} > "${OUT_FILE}" 2>&1 &
 CDKD_PID=$!
+SERVE_PID="${CDKD_PID}"
 booted=0
 for _ in $(seq 1 480); do
   if grep -q 'Server listening on http://' "${OUT_FILE}"; then booted=1; break; fi
@@ -320,7 +328,7 @@ echo "${BODY}" | grep -q "\"roleName\":\"${ROLE_NAME}\"" \
 echo "==> SIGTERM removes the container"
 stop_server
 sleep 1
-orphans="$(docker ps -a --filter "name=${CONTAINER_PREFIX}" --format '{{.Names}}')" \
+orphans="$(docker ps -a --filter "name=${CONTAINER_PREFIX}${SERVE_PID}-" --format '{{.Names}}')" \
   || fail "docker ps failed while checking for leftover containers"
 [ -z "${orphans}" ] || fail "leftover web function container(s): ${orphans}"
 

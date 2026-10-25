@@ -256,7 +256,9 @@ container, sidecar, Docker network and temporary file the command created.
 
 If Docker itself hangs during that cleanup, press {kbd:ctrl+c} a second time.
 cdkd exits immediately and skips the cleanup, so containers can be left
-behind. Find and remove them yourself:
+behind. `local start-web-function` is the exception: a second signal exits at
+once only while its `docker run` is still in flight; otherwise it prints that
+it is still removing the container and waits for that to finish. Find and remove them yourself:
 
 ```bash
 docker ps --filter name=cdkd-local-
