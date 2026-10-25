@@ -4959,7 +4959,22 @@ export class CloudControlProvider implements ResourceProvider {
       if (typeof raw !== 'string' || raw.length === 0) {
         return undefined;
       }
-      const parsed = JSON.parse(raw) as unknown;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw) as unknown;
+      } catch (parseError) {
+        // V8 TRUNCATES its echo of the model, so while the call withholds its
+        // id (go-to-k/cdkd#3869) the first characters of a longer
+        // secret-derived name can print and no needle matches a prefix: the
+        // gate `parseResourceModel` applies. The snippet-free rendering keeps
+        // the line diagnosable then.
+        const detail =
+          log.withheld === true
+            ? describeJsonParseFailure(parseError, utf8ByteLength(raw))
+            : displaySafe(describeAwsFailure(parseError).detail);
+        log.debug(`Failed to read CC model for ${resourceType} ${physicalId}: ${detail}`);
+        return undefined;
+      }
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         return undefined;
       }
