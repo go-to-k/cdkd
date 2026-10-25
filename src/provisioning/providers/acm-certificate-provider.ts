@@ -97,6 +97,29 @@ function isCertificateInUseError(error: unknown): boolean {
   return /ResourceInUseException|in use/i.test(message);
 }
 
+/** TTL CloudFormation gives the DNS validation record it writes. */
+const VALIDATION_RECORD_TTL = 300;
+
+/**
+ * The hosted zone to write each domain's DNS validation record into, from the
+ * template's `DomainValidationOptions[].HostedZoneId`. Only for DNS validation
+ * (CloudFormation allows `HostedZoneId` with no other method); a domain without
+ * a zone is left to the user, who is shown the record to add.
+ */
+function dnsValidationZones(properties: Record<string, unknown>): Map<string, string> {
+  const zones = new Map<string, string>();
+  const options = properties['DomainValidationOptions'];
+  if (properties['ValidationMethod'] !== 'DNS' || !Array.isArray(options)) return zones;
+  for (const option of options as Array<Record<string, unknown>>) {
+    const domain = option['DomainName'];
+    const zone = option['HostedZoneId'];
+    if (typeof domain === 'string' && domain && typeof zone === 'string' && zone) {
+      zones.set(domain, zone);
+    }
+  }
+  return zones;
+}
+
 /**
  * AWS ACM Certificate Provider
  *
@@ -137,29 +160,6 @@ function isCertificateInUseError(error: unknown): boolean {
  * ARN); `getAttribute('Arn')` / `getAttribute('CertificateArn')` also
  * return the ARN for any defensive call site.
  */
-/** TTL CloudFormation gives the DNS validation record it writes. */
-const VALIDATION_RECORD_TTL = 300;
-
-/**
- * The hosted zone to write each domain's DNS validation record into, from the
- * template's `DomainValidationOptions[].HostedZoneId`. Only for DNS validation
- * (CloudFormation allows `HostedZoneId` with no other method); a domain without
- * a zone is left to the user, who is shown the record to add.
- */
-function dnsValidationZones(properties: Record<string, unknown>): Map<string, string> {
-  const zones = new Map<string, string>();
-  const options = properties['DomainValidationOptions'];
-  if (properties['ValidationMethod'] !== 'DNS' || !Array.isArray(options)) return zones;
-  for (const option of options as Array<Record<string, unknown>>) {
-    const domain = option['DomainName'];
-    const zone = option['HostedZoneId'];
-    if (typeof domain === 'string' && domain && typeof zone === 'string' && zone) {
-      zones.set(domain, zone);
-    }
-  }
-  return zones;
-}
-
 export class ACMCertificateProvider implements ResourceProvider {
   private acmClient: ACMClient;
   private logger = getLogger().child('ACMCertificateProvider');
@@ -291,7 +291,8 @@ export class ACMCertificateProvider implements ResourceProvider {
       // the SDK serializes the missing member as null and ACM answers
       // "Member must not be null". Such an entry carries nothing ACM needs (the
       // CDK writes `{DomainName, HostedZoneId}` for DNS validation by hosted
-      // zone), so it is left out and ACM applies its own default. `HostedZoneId` is a CDK auto-validation concept, not an ACM input.
+      // zone), so it is left out and ACM applies its own default. `HostedZoneId`
+      // is not an ACM input; it is used for the Route 53 write below.
       const options = (properties['DomainValidationOptions'] as Array<Record<string, unknown>>)
         .filter((opt) => opt['DomainName'] && opt['ValidationDomain'])
         .map((opt) => ({

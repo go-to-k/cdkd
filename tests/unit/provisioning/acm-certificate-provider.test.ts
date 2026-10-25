@@ -345,8 +345,36 @@ describe('ACMCertificateProvider', () => {
         );
 
         expect(mockRoute53Send).toHaveBeenCalledTimes(1);
+        const written = mockRoute53Send.mock.calls[0][0].input;
+        expect(written.HostedZoneId).toBe(ZONE);
+        expect(written.ChangeBatch.Changes[0].ResourceRecordSet.Name).toBe('_x.example.com.');
         expect(printed()).toContain('_x.www.example.com.');
         expect(printed()).not.toContain('_x.example.com. with value');
+      });
+
+      it('writes a record name shared by two zoned domains once (apex and wildcard)', async () => {
+        const shared = (domain: string) => ({
+          DomainName: domain,
+          ValidationMethod: 'DNS',
+          ResourceRecord: { Name: '_x.example.com.', Type: 'CNAME', Value: '_y.acm-validations.aws.' },
+        });
+        wireAcm(pending(shared('example.com'), shared('*.example.com')), {
+          Certificate: { Status: 'ISSUED' },
+        });
+
+        await provider.create(
+          'MyCert',
+          'AWS::CertificateManager::Certificate',
+          props({
+            SubjectAlternativeNames: ['*.example.com'],
+            DomainValidationOptions: [
+              { DomainName: 'example.com', HostedZoneId: ZONE },
+              { DomainName: '*.example.com', HostedZoneId: ZONE },
+            ],
+          })
+        );
+
+        expect(mockRoute53Send).toHaveBeenCalledTimes(1);
       });
 
       it('makes no Route 53 call when no entry has a HostedZoneId, and still prints the record', async () => {
@@ -386,8 +414,13 @@ describe('ACMCertificateProvider', () => {
       it('fails the create, names the permission, and retires the certificate when the write is refused', async () => {
         wireAcm(pending(record('example.com')));
         mockRoute53Send.mockRejectedValue(
-          Object.assign(new Error('User is not authorized to perform route53:ChangeResourceRecordSets'), {
+          // Shaped like an SDK error, whose summary is reduced to the code: the
+          // message does not name the permission, so only the provider's own
+          // suffix can.
+          Object.assign(new Error('Access denied'), {
             name: 'AccessDenied',
+            $fault: 'client',
+            $metadata: { httpStatusCode: 403 },
           })
         );
 
@@ -396,7 +429,9 @@ describe('ACMCertificateProvider', () => {
           .catch((e: unknown) => e);
 
         expect(error).toBeInstanceOf(ProvisioningError);
-        expect((error as Error).message).toContain('route53:ChangeResourceRecordSets');
+        expect((error as Error).message).toContain(
+          'The caller needs route53:ChangeResourceRecordSets on that zone.'
+        );
         expect(callsOfType(DeleteCertificateCommand)).toHaveLength(1);
         expect(mockRoute53Send).toHaveBeenCalledTimes(1);
       });
