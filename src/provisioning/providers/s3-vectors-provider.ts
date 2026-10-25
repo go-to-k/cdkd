@@ -39,6 +39,7 @@ import {
   maskerOrIdentity,
 } from '../masked-retry-logger.js';
 import { markNotGone } from '../not-gone.js';
+import { generatedNameFor } from '../resource-name.js';
 import {
   wrapMaskedAwsError,
   markRedactedCause,
@@ -358,14 +359,11 @@ export class S3VectorsProvider implements ResourceProvider {
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
-    const vectorBucketName = properties['VectorBucketName'] as string | undefined;
-    if (!vectorBucketName) {
-      throw new ProvisioningError(
-        `VectorBucketName is required for S3 VectorBucket ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
+    // go-to-k/cdkd#5309: the name is optional, as in CloudFormation, which
+    // generates one; so does cdkd, through the shared rule.
+    const vectorBucketName =
+      (properties['VectorBucketName'] as string | undefined) ||
+      generatedNameFor('AWS::S3Vectors::VectorBucket', logicalId);
 
     // CFn spells the two sub-keys `SseType` / `KmsKeyArn` (verified against the
     // live `AWS::S3Vectors::VectorBucket` registry schema and CDK's
