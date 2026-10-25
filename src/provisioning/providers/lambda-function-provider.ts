@@ -2072,9 +2072,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
     // Per-ENI parallel delete with retry. An in-use ENI cannot be deleted
     // until AWS finishes the asynchronous detach triggered by the prior
     // UpdateFunctionConfiguration; budget gives that detach time to land.
-    await Promise.all(
-      enis.map((eni) => this.deleteEniWithRetry(eni.id, functionName, deadline))
-    );
+    await Promise.all(enis.map((eni) => this.deleteEniWithRetry(eni.id, functionName, deadline)));
   }
 
   private async deleteEniWithRetry(
