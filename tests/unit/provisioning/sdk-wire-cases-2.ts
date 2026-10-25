@@ -333,6 +333,9 @@ export const CASES_2: TypeCase[] = [
     physicalId: `${STREAM_ARN}/consumer/c:1`,
     createOnly: createOnlyOf('AWS::Kinesis::StreamConsumer'),
     arm: armActiveConsumer,
+    // Every top-level (Tags too) is create-only in the schema fixture, so no
+    // update probe runs: the provider's in-place tag diff (applyTagDiff, used
+    // by update()) is not observed by this case.
     exempt: {},
     targets: [],
     bags: [

@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'node:fs';
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { SNSClient } from '@aws-sdk/client-sns';
 import { SQSClient } from '@aws-sdk/client-sqs';
@@ -782,10 +783,26 @@ const NOT_YET_COVERED = new Set([
 ]);
 const MAX_UNCOVERED = 73;
 
-// Every case, in this file or another one the suite runs.
-const ALL_CASES: TypeCase[] = [...CASES, ...CASES_2];
+/**
+ * Every case list, with the test file that runs it and the list's name there.
+ * A list counts as covered only while that file exists beside this one, is a
+ * `*.test.ts` the suite collects, and still hands the list to
+ * `describeWireCases`.
+ */
+const CASE_LISTS: { cases: TypeCase[]; name: string; file: string }[] = [
+  { cases: CASES, name: 'CASES', file: 'sdk-wire-coverage.test.ts' },
+  { cases: CASES_2, name: 'CASES_2', file: 'sdk-wire-coverage-2.test.ts' },
+];
+const ALL_CASES: TypeCase[] = CASE_LISTS.flatMap((l) => l.cases);
 
 describe('SDK wire coverage ledger', () => {
+  it.each(CASE_LISTS)('$name is run by $file', ({ name, file }) => {
+    expect(file).toMatch(/\.test\.ts$/);
+    const url = new URL(`./${file}`, import.meta.url);
+    expect(existsSync(url), file).toBe(true);
+    expect(readFileSync(url, 'utf8')).toContain(`describeWireCases(${name});`);
+  });
+
   it('names every registered provider class exactly once: covered by a case, or not yet', async () => {
     // Every class `registerAllProviders` destructures comes from this module.
     const classes = Object.entries(
