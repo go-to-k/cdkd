@@ -523,6 +523,10 @@ describe('provisioning swallowing-handler out-throw (#3309 follow-up)', () => {
   });
 
   it('refuses a STALE or AMBIGUOUS exemption', () => {
+    // EMPTY since go-to-k/cdkd#5254, so the loop below runs zero times; this
+    // pin says so rather than leaving a silently vacuous case. Adding an
+    // entry means updating this pin in the same change.
+    expect(EXEMPT).toHaveLength(0);
     for (const entry of EXEMPT) {
       const matched = all.filter(
         (s) => s.file === entry.file && s.scope === entry.scope && s.binding === entry.binding

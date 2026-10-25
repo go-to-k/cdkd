@@ -5141,7 +5141,8 @@ export class CloudControlProvider implements ResourceProvider {
         // plaintext property value, and the raw error reached `cdkd drift`'s
         // and `cdkd state refresh-observed`'s warn lines (issue #5254). So
         // V8's text goes to `debug` only, and what is thrown names the type,
-        // the failure's offset and the model's size, with no cause. It stays
+        // the failure's offset when V8 reports one, and the model's size, with
+        // no cause. It stays
         // a `SyntaxError`: `refresh-observed` routes that class to a
         // class-only line.
         this.logger.debug(
