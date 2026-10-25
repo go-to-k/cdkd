@@ -158,18 +158,31 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "${branch}"
           git add docs/_generated/ src/provisioning/unsupported-types.generated.ts
-          git commit -m "fix(coverage): refresh the Provider Coverage Report from live AWS (${cycle})"
+          # The title follows what changed, as the repository's title check
+          # requires: a Tier 3 move changes the pre-flight refusal list in
+          # src/ and is a user-visible fix that needs a changelog entry; a
+          # change to the generated reports alone is docs.
+          if git diff --cached --quiet -- src/; then
+            prefix="docs(coverage)"
+            changelog_note="- Only the generated reports changed, so no changelog entry is needed. A type you add to \`STATEFUL_TYPES\` changes \`src/\`: then retitle this PR \`fix(coverage): ...\` and add one."
+          else
+            prefix="fix(coverage)"
+            changelog_note="- The Tier 3 refusal list changed: add a changelog entry under \`changelog.d/entries/\` naming the user-visible tier moves before merging."
+          fi
+          title="${prefix}: refresh the Provider Coverage Report from live AWS (${cycle})"
+          git commit -m "${title}"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${branch}"
           summary=$(jq -r '.summary | "Tier 1 \(.tier1Count), Tier 2 \(.tier2Count), Tier 3 \(.tier3Count), \(.totalCount) types"' docs/_generated/provider-coverage.json)
           body=$(cat <<EOF
           The daily coverage refresh found a change (go-to-k/cdkd#5214): ${summary}.
 
+          - CI does not start on a PR this workflow opens (GITHUB_TOKEN): close and reopen it to run CI.
           - A type entering Tier 3 is refused at pre-flight from this release on; one leaving it now routes through Cloud Control.
           - If \`audit:stateful-candidates:check\` is red, a new Tier-2 type looks data-bearing: add it to \`STATEFUL_TYPES\` (and \`docs/cli-deploy-safety.md\`) or to \`NOT_GUARDED\` with its reason, on this branch.
           - Also review types that LEFT Tier 3 for data they hold: the candidate scan does not propose every one.
-          - Add a changelog entry under \`changelog.d/entries/\` naming the user-visible tier moves before merging.
+          ${changelog_note}
           EOF
           )
           gh pr create --base main --head "${branch}" \
-            --title "fix(coverage): refresh the Provider Coverage Report from live AWS (${cycle})" \
+            --title "${title}" \
             --body "${body}"
