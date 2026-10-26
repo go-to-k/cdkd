@@ -7,7 +7,7 @@
     "wired": 87,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 38
+    "classesWithBlindSpots": 39
   },
   "classes": [
     {
@@ -19550,7 +19550,9 @@
           ],
           "seededBy": [
             "buildDefinitionString",
+            "canonicalizeDriftProperties",
             "create",
+            "getDriftSecretPathAliases",
             "update"
           ]
         },
@@ -19582,7 +19584,9 @@
           ],
           "seededBy": [
             "buildDefinitionString",
+            "canonicalizeDriftProperties",
             "create",
+            "getDriftSecretPathAliases",
             "update"
           ]
         },
@@ -19598,7 +19602,9 @@
           ],
           "seededBy": [
             "buildDefinitionString",
+            "canonicalizeDriftProperties",
             "create",
+            "getDriftSecretPathAliases",
             "update"
           ]
         },
@@ -19702,7 +19708,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "object spread in canonicalizeDriftProperties()"
+      ]
     },
     {
       "file": "wafv2-provider.ts",

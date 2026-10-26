@@ -37,6 +37,7 @@ import {
 import {
   priorAttemptLookup,
   priorAttemptsInJournal,
+  provenOrphanIdsInJournal,
   withPriorAttempts,
 } from '../prior-attempt-scope.js';
 import { withStackRecords } from '../stack-records-scope.js';
@@ -575,12 +576,11 @@ export async function provisionResourceBody(
   // go-to-k/cdkd#4355: what this stack's rollback journal recorded for the
   // resource, for a provider that cannot otherwise tell its own leftover from
   // another owner's identical resource. Read only when a provider asks.
-  const priorAttempts = priorAttemptLookup(logicalId, async () =>
-    priorAttemptsInJournal(
-      await engine.stateBackend.loadRollbackJournal(stackName, engine.stackRegion),
-      logicalId,
-      change.resourceType
-    )
+  const loadJournal = () => engine.stateBackend.loadRollbackJournal(stackName, engine.stackRegion);
+  const priorAttempts = priorAttemptLookup(
+    logicalId,
+    async () => priorAttemptsInJournal(await loadJournal(), logicalId, change.resourceType),
+    async () => provenOrphanIdsInJournal(await loadJournal(), logicalId, change.resourceType)
   );
   // go-to-k/cdkd#4492: bound for every change type — a DELETE asks which other
   // records of the stack still hold its resource.

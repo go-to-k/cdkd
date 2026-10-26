@@ -102,6 +102,7 @@ import {
   type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
 import { replacedDeleteFailureVerdict } from '../../deployment/rollback-executor/replaced-survivor.js';
+import { getPriorAttempts } from '../../deployment/prior-attempt-scope.js';
 
 /**
  * Retry-safety state for the two API Gateway creates that mint their id and
@@ -2285,21 +2286,48 @@ export class ApiGatewayProvider implements ResourceProvider {
     let methodLeftBehind = false;
 
     try {
-      await this.apiGatewayClient.send(
-        new PutMethodCommand({
-          restApiId,
-          resourceId,
-          httpMethod,
-          authorizationType,
-          authorizerId,
-          apiKeyRequired,
-          operationName,
-          requestParameters: methodRequestParameters,
-          requestModels,
-          requestValidatorId,
-          authorizationScopes,
-        })
-      );
+      const putMethod = () =>
+        this.apiGatewayClient.send(
+          new PutMethodCommand({
+            restApiId,
+            resourceId,
+            httpMethod,
+            authorizationType,
+            authorizerId,
+            apiKeyRequired,
+            operationName,
+            requestParameters: methodRequestParameters,
+            requestModels,
+            requestValidatorId,
+            authorizationScopes,
+          })
+        );
+      try {
+        await putMethod();
+      } catch (putError) {
+        // go-to-k/cdkd#5294: the method may be what an earlier attempt of THIS
+        // resource left behind when its wiring cleanup also failed (below).
+        // Replaced only on the stack's own evidence; anything else keeps
+        // AWS's refusal.
+        if (
+          !isMethodAlreadyExists(putError) ||
+          !(await this.priorAttemptLeftMethod(logicalId, physicalId, log))
+        ) {
+          throw putError;
+        }
+        log.warn(
+          `Replacing API Gateway Method ${logicalId} (${methodPath}), which an earlier failed attempt of it left behind`
+        );
+        try {
+          await this.apiGatewayClient.send(
+            new DeleteMethodCommand({ restApiId, resourceId, httpMethod })
+          );
+        } catch (deleteError) {
+          // Gone in the meantime: the slot is free, which is what the delete was for.
+          if (!(deleteError instanceof NotFoundException)) throw deleteError;
+        }
+        await putMethod();
+      }
 
       // PutMethodCommand has succeeded — AWS has now committed the
       // Method resource. Every subsequent call wires sub-resources onto
@@ -2379,6 +2407,9 @@ export class ApiGatewayProvider implements ResourceProvider {
           );
         } catch (cleanupError) {
           methodLeftBehind = true;
+          // The engine's retry of this dispatch meets the method before any
+          // journal names it (go-to-k/cdkd#5294).
+          getPriorAttempts(logicalId)?.notePossiblyLanded();
           // All three ids are TEMPLATE values (resolved `Ref`s and the
           // method), so the command renders through `pasteableAwsCommand`
           // (issue #3136): quoted, or withheld when one cannot be printed
@@ -2419,6 +2450,48 @@ export class ApiGatewayProvider implements ResourceProvider {
       );
       if (methodLeftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, physicalId);
       throw thrown;
+    }
+  }
+
+  /**
+   * Whether an earlier attempt of `logicalId` left THIS method (`physicalId`,
+   * its `restApiId|resourceId|httpMethod`) behind: its wiring failed and so
+   * did its cleanup delete (go-to-k/cdkd#5294). Two sources, both the stack's
+   * own proof:
+   *
+   * - an earlier deploy's failed CREATE journaled with that id as one its
+   *   provider proved it made (`markCreatedBeforeFailure` below), via
+   *   `provenOrphanIds`;
+   * - an earlier attempt of THIS dispatch (the engine's retry), noted with
+   *   `notePossiblyLanded` where the cleanup failed. Nothing else notes it
+   *   for a Method.
+   *
+   * Never the bare attempted bags: a create AWS refused because another
+   * owner's method held the keys, or one whose cleanup succeeded, also leaves
+   * one, and replacing on it would delete a method this stack never made. An
+   * unreadable journal or a caller that bound none is no evidence.
+   *
+   * Residual: a cleanup delete that failed ambiguously yet applied, followed
+   * by another owner putting a method on the same keys before the re-run.
+   * Those keys are this stack's own `RestApiId` / `ResourceId`, so the other
+   * owner would be writing into this stack's REST API resource.
+   */
+  private async priorAttemptLeftMethod(
+    logicalId: string,
+    physicalId: string,
+    log: MaskedLogSinks
+  ): Promise<boolean> {
+    const lookup = getPriorAttempts(logicalId);
+    if (lookup === undefined) return false;
+    if (lookup.possiblyLanded()) return true;
+    if (lookup.provenOrphanIds === undefined) return false;
+    try {
+      return (await lookup.provenOrphanIds()).includes(physicalId);
+    } catch (error) {
+      log.debug(
+        `API Gateway Method ${logicalId}: rollback journal read failed: ${describeAwsFailure(error).detail}`
+      );
+      return false;
     }
   }
 
@@ -3090,6 +3163,18 @@ interface CfnStageCanarySetting {
   DeploymentId?: string;
   StageVariableOverrides?: Record<string, string>;
   UseStageCache?: boolean;
+}
+
+/**
+ * `PutMethod` refused because the method exists. API Gateway also answers
+ * `ConflictException` for a concurrent modification, so the message decides.
+ */
+function isMethodAlreadyExists(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.name === 'ConflictException' &&
+    /already exists/i.test(error.message)
+  );
 }
 
 /**

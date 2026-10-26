@@ -4,7 +4,6 @@ import { STSClient } from '@aws-sdk/client-sts';
 import { S3Client } from '@aws-sdk/client-s3';
 import { IAMClient } from '@aws-sdk/client-iam';
 import { describeWireCases, record, setOutputOverrides } from './sdk-wire-harness.js';
-import { LogsLogGroupProvider } from '../../../src/provisioning/providers/logs-loggroup-provider.js';
 import { S3DirectoryBucketProvider } from '../../../src/provisioning/providers/s3-directory-bucket-provider.js';
 
 // The client classes the fourth batch reaches (`sdk-wire-cases-4.ts`), wrapped
@@ -37,29 +36,9 @@ describe('SDK wire coverage (batch 4)', () => {
   describeWireCases(CASES_4);
 });
 
-// The removal probes cannot see a log group class's VALUE: it is never varied
-// on create (removing it does not throw) and every update varying it refuses,
-// so a create that sent a fixed class would pass them. Each class is read here.
-describe('AWS::Logs::LogGroup LogGroupClass on create', () => {
-  it.each(['STANDARD', 'INFREQUENT_ACCESS', 'DELIVERY'])('sends %s', async (logGroupClass) => {
-    setOutputOverrides(undefined);
-    const outcome = await record(() =>
-      new LogsLogGroupProvider().create('L', 'AWS::Logs::LogGroup', {
-        LogGroupName: 'lg',
-        LogGroupClass: logGroupClass,
-      })
-    );
-    expect(outcome).toMatchObject({ threw: false });
-    const create = (outcome as { wire: string }).wire
-      .split('\n')
-      .find((line) => line.startsWith('["CreateLogGroupCommand"'));
-    expect(create).toContain(`\\"logGroupClass\\":\\"${logGroupClass}\\"`);
-  });
-});
-
-// Both values are read here: DataRedundancy is create-only and its removal
-// shows on the wire only through the location type derived from it, which no
-// bag path names. A Local Zone bucket must say `LocalZone`, a zonal one
+// The location type DERIVED from DataRedundancy is read here: no bag path
+// names it, and the `create-vary` probe varies DataRedundancy to a value no
+// zone type maps from. A Local Zone bucket must say `LocalZone`, a zonal one
 // `AvailabilityZone` (go-to-k/cdkd#5317).
 describe('AWS::S3Express::DirectoryBucket DataRedundancy and Location.Type on create', () => {
   it.each([
