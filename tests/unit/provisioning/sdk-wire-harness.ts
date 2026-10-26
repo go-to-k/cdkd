@@ -155,13 +155,14 @@ function fakeOutput(context: SmithyContext, input: Record<string, unknown>): unk
 // --- Capture -----------------------------------------------------------------
 
 /**
- * An idempotency token the SDK fills in (`ClientToken`, `ClientRequestToken`)
- * is a fresh UUID per call: left in, every two requests differ and no probe
- * could ever be silent. Only those members are normalized, so a declared value
- * that happens to be a UUID still reaches the comparison.
+ * An idempotency token the SDK fills in (`ClientToken`, `ClientRequestToken`,
+ * Cloud Map's `CreatorRequestId` / `UpdaterRequestId`) is a fresh UUID per
+ * call: left in, every two requests differ and no probe could ever be silent.
+ * Only those members are normalized, so a declared value that happens to be a
+ * UUID still reaches the comparison.
  */
 const SDK_TOKEN =
-  /("(?:ClientToken|ClientRequestToken)"\s*:\s*")[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/gi;
+  /("(?:ClientToken|ClientRequestToken|CreatorRequestId|UpdaterRequestId)"\s*:\s*")[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/gi;
 
 /** The request body as text, the SDK-filled tokens in it normalized. */
 function bodyText(body: unknown): string {

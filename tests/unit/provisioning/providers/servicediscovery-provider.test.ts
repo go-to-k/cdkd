@@ -14,6 +14,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import {
+  CreateServiceCommand,
   GetNamespaceCommand,
   GetOperationCommand,
   GetServiceCommand,
@@ -24,6 +25,7 @@ import {
 } from '@aws-sdk/client-servicediscovery';
 import { ServiceDiscoveryProvider } from '../../../../src/provisioning/providers/servicediscovery-provider.js';
 import { ProvisioningError } from '../../../../src/utils/error-handler.js';
+import { generatedNameFor, withStackScope } from '../../../../src/provisioning/resource-name.js';
 
 describe('ServiceDiscoveryProvider — import', () => {
   let provider: ServiceDiscoveryProvider;
@@ -441,5 +443,77 @@ describe('ServiceDiscoveryProvider — Service property removal follows CloudFor
     const declared = provider.removalHandledInUpdate.get(TYPE)!;
     expect([...handled].filter((k) => !declared.has(k))).toEqual([]);
     expect(provider.removalDefaults.has(TYPE)).toBe(false);
+  });
+});
+
+// go-to-k/cdkd#5348: CloudFormation generates a name the template omits; the
+// provider used to refuse the create before any call.
+describe('ServiceDiscoveryProvider — Service without a Name (#5348)', () => {
+  const TYPE = 'AWS::ServiceDiscovery::Service';
+  const ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+  let provider: ServiceDiscoveryProvider;
+  const createdName = (): unknown =>
+    (
+      mockSend.mock.calls.find(([c]) => c instanceof CreateServiceCommand)?.[0] as
+        | CreateServiceCommand
+        | undefined
+    )?.input.Name;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new ServiceDiscoveryProvider();
+    mockSend.mockResolvedValue({
+      Service: { Id: 'srv-1', Arn: 'arn:aws:servicediscovery:us-east-1:0:service/srv-1' },
+    });
+  });
+
+  it.each([
+    ['no Name', {}],
+    ['an empty Name', { Name: '' }],
+  ])('%s: sends the generated name and records it', async (_label, extra) => {
+    const result = await withStackScope(
+      { stackName: 'MyStack', stackInstanceId: ID, nameGenerations: new Map() },
+      () => provider.create('MyService', TYPE, { NamespaceId: 'ns-1', ...extra })
+    );
+
+    const sent = createdName();
+    expect(sent).toMatch(/^MyStack-MyService-[0-9a-f]{12}$/);
+    expect(sent).toBe(
+      withStackScope(
+        { stackName: 'MyStack', stackInstanceId: ID, nameGenerations: new Map() },
+        () => generatedNameFor(TYPE, 'MyService')
+      )
+    );
+    expect(result.physicalId).toBe('srv-1');
+    expect(result.attributes?.['Name']).toBe(sent);
+  });
+
+  it('on a legacy stack (no instance id): the stack-prefixed name', async () => {
+    await withStackScope(
+      { stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: undefined },
+      () => provider.create('MyService', TYPE, { NamespaceId: 'ns-1' })
+    );
+
+    expect(createdName()).toBe('MyStack-MyService');
+  });
+
+  it('a long stack name still yields one DNS label of at most 63 characters', async () => {
+    await withStackScope(
+      { stackName: `S${'x'.repeat(120)}`, stackInstanceId: ID, nameGenerations: new Map() },
+      () => provider.create('MyService', TYPE, { NamespaceId: 'ns-1' })
+    );
+
+    const sent = createdName() as string;
+    expect(sent.length).toBeLessThanOrEqual(63);
+    expect(sent).toMatch(/^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,61}[a-zA-Z0-9_]$/);
+  });
+
+  it('a declared name is sent as is', async () => {
+    await withStackScope(
+      { stackName: 'MyStack', stackInstanceId: ID, nameGenerations: new Map() },
+      () => provider.create('MyService', TYPE, { Name: 'declared', NamespaceId: 'ns-1' })
+    );
+
+    expect(createdName()).toBe('declared');
   });
 });

@@ -25,6 +25,7 @@ import { CASES_3 } from './sdk-wire-cases-3.js';
 import { CASES_4 } from './sdk-wire-cases-4.js';
 import { CASES_5 } from './sdk-wire-cases-5.js';
 import { CASES_6 } from './sdk-wire-cases-6.js';
+import { CASES_CLOUDMAP } from './sdk-wire-cases-cloudmap.js';
 import { CASES_NO_PROPERTIES } from './sdk-wire-cases-no-properties.js';
 
 // Every client class a covered provider reaches, wrapped so each instance
@@ -762,9 +763,8 @@ const NOT_YET_COVERED = new Set([
   'Route53Provider',
   'S3BucketProvider',
   'S3TablesProvider',
-  'ServiceDiscoveryProvider',
 ]);
-const MAX_UNCOVERED = 49;
+const MAX_UNCOVERED = 48;
 
 /**
  * Every case list, with the test file that runs it and the list's name there.
@@ -784,6 +784,11 @@ const CASE_LISTS: { cases: TypeCase[]; name: string; file: string }[] = [
   { cases: CASES_4, name: 'CASES_4', file: 'sdk-wire-coverage-4.test.ts' },
   { cases: CASES_5, name: 'CASES_5', file: 'sdk-wire-coverage-5.test.ts' },
   { cases: CASES_6, name: 'CASES_6', file: 'sdk-wire-coverage-6.test.ts' },
+  {
+    cases: CASES_CLOUDMAP,
+    name: 'CASES_CLOUDMAP',
+    file: 'sdk-wire-coverage-cloudmap.test.ts',
+  },
   {
     cases: CASES_NO_PROPERTIES,
     name: 'CASES_NO_PROPERTIES',

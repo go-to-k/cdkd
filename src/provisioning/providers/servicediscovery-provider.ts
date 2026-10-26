@@ -46,6 +46,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { markNotGone } from '../not-gone.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { withRemovalDefaults } from '../update-removal.js';
@@ -1208,7 +1209,11 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     const tags: Tag[] = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     const client = this.getClient();
 
-    const name = properties['Name'] as string;
+    // go-to-k/cdkd#5348: the name is optional, as in CloudFormation, which
+    // generates one; so does cdkd, through the shared rule.
+    const name =
+      (properties['Name'] as string | undefined) ||
+      generatedNameFor('AWS::ServiceDiscovery::Service', logicalId);
     const namespaceId = properties['NamespaceId'] as string | undefined;
     const description = properties['Description'] as string | undefined;
     const dnsConfig = properties['DnsConfig'] as DnsConfig | undefined;
@@ -1217,14 +1222,6 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       | undefined;
     const healthCheckConfig = properties['HealthCheckConfig'] as HealthCheckConfig | undefined;
     const type = properties['Type'] as ServiceTypeOption | undefined;
-
-    if (!name) {
-      throw new ProvisioningError(
-        `Name is required for ServiceDiscovery Service ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
 
     let leftBehindServiceId: string | undefined;
     try {

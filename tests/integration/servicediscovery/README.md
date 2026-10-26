@@ -14,6 +14,10 @@ and `cdkd-svcdisc-hc` and `cdkd-svcdisc-hc-kept` (with a `healthCheckConfig`)
 in an `AWS::ServiceDiscovery::PublicDnsNamespace`, since a Route 53 health
 check is only accepted there.
 
+A `NamelessService` declares no `name` (go-to-k/cdkd#5348): the deploy must
+create it under the generated `ServiceDiscoveryStack-NamelessService-<12 hex>`,
+and every later phase must keep that name and service.
+
 `verify.sh` deploys, asserts the attributes reached AWS via
 `get-service-attributes`, then runs three cumulative issue #1160 removal
 phases (`CDKD_TEST_REMOVAL=kept`, `combined`, `refused`) that follow the

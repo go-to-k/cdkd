@@ -189,13 +189,19 @@ const LEGACY_DIVERGENT: Record<string, { sdk: string; cc: string | undefined }> 
   'AWS::KinesisFirehose::DeliveryStream': { sdk: 'Resource', cc: undefined },
   // go-to-k/cdkd#5309: the SDK provider refused it; the handler named it.
   'AWS::S3Vectors::VectorBucket': { sdk: 'mystack-resource', cc: undefined },
+  // go-to-k/cdkd#5348: the same, for a Cloud Map service.
+  'AWS::ServiceDiscovery::Service': { sdk: 'MyStack-Resource', cc: undefined },
 };
 
 /**
  * Types whose SDK provider refused a missing name before it generated one, so
- * no old SDK name exists to keep: an S3 vector bucket (go-to-k/cdkd#5309).
+ * no old SDK name exists to keep: an S3 vector bucket (go-to-k/cdkd#5309) and
+ * a Cloud Map service (go-to-k/cdkd#5348).
  */
-const SDK_NAMED_SINCE: readonly string[] = ['AWS::S3Vectors::VectorBucket'];
+const SDK_NAMED_SINCE: readonly string[] = [
+  'AWS::S3Vectors::VectorBucket',
+  'AWS::ServiceDiscovery::Service',
+];
 
 const sdkGeneratedTypes = [...Object.keys(OLD_SDK), ...SDK_NAMED_SINCE];
 
@@ -364,6 +370,7 @@ describe("a legacy stack's names do not move (#5095)", () => {
       'AWS::Glue::Trigger',
       'AWS::KinesisFirehose::DeliveryStream',
       'AWS::S3Vectors::VectorBucket',
+      'AWS::ServiceDiscovery::Service',
     ]) {
       expect(fallbackNamePathFor(type), type).toBeDefined();
       expect(explicitNamePropertyFor(type), type).toBeUndefined();
