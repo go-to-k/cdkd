@@ -105,7 +105,7 @@
     "agent-base": "^9.0.0",
     "archiver": "^8.0.0",
     "cdk-local": "^0.156.0",
-    "chokidar": "^5.0.0",
+    "chokidar": "^6.0.0",
     "commander": "^14.0.3",
     "graphlib": "^2.1.8",
     "graphql": "^17.0.2",
