@@ -1272,14 +1272,12 @@ export class KinesisStreamProvider implements ResourceProvider {
    * The previous side is a state record, read leniently: an unusable one
    * counts as "not recorded".
    *
-   * UNMEASURED (the A/B on go-to-k/cdkd#2762 covers an ON_DEMAND removal only):
-   * - ON_DEMAND + `AUTO` -> PROVISIONED while the template also drops the
-   *   property sends nothing, so state then records no strategy. If AWS keeps
-   *   `AUTO` across the switch, a later switch back to ON_DEMAND stays `AUTO`
-   *   with nothing reporting it.
-   * - AWS may refuse `UpdateStreamMode` to PROVISIONED while `AUTO` is set;
-   *   the mode switch runs before this reconcile, so that refusal would fail
-   *   the update first.
+   * ON_DEMAND + `AUTO` -> PROVISIONED is refused by AWS whatever the template
+   * says about the strategy: `UpdateStreamMode` refuses while `AUTO` is set,
+   * and the strategy can only be set on ON_DEMAND. The mode switch runs before
+   * this reconcile, so that update fails, as it does under CloudFormation,
+   * which needs `USER_PARTITION_KEY` deployed first (CFn A/B on
+   * go-to-k/cdkd#2762).
    */
   private async reconcileDistributionStrategy(
     physicalId: string,
