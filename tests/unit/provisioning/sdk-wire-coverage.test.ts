@@ -14,6 +14,7 @@ import {
   describeWireCases,
   paths,
   setOutputOverrides,
+  touchesCreateOnly,
   type Bag,
   type Throw,
   type TypeCase,
@@ -833,4 +834,27 @@ describe('SDK wire coverage ledger', () => {
 
 describe('SDK wire coverage', () => {
   describeWireCases(CASES);
+});
+
+// A case's expectations are derived through its create-only set (a skipped
+// probe expects nothing), so a widened set leaves every case green while its
+// update probes go unrun. The precision is pinned here instead.
+describe('the wire harness create-only paths', () => {
+  it('keeps a nested create-only path nested', () => {
+    expect(createOnlyOf('AWS::Budgets::Budget')).toEqual(
+      new Set(['Budget.BudgetName', 'NotificationsWithSubscribers'])
+    );
+  });
+
+  it.each([
+    [['Budget', 'BudgetName'], true],
+    [['Budget'], true],
+    [['NotificationsWithSubscribers', 0, 'Notification', 'Threshold'], true],
+    [['Budget', 'BudgetType'], false],
+    [['Budget', 'BudgetLimit', 'Amount'], false],
+    [['Budget', 'BudgetNameSuffix'], false],
+    [['ResourceTags', 0, 'Key'], false],
+  ] as const)('%j touches one: %s', (path, touches) => {
+    expect(touchesCreateOnly(createOnlyOf('AWS::Budgets::Budget'), [...path])).toBe(touches);
+  });
 });
