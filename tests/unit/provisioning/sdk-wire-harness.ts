@@ -266,12 +266,24 @@ export function without(bag: Bag, path: Path): Bag {
  * (removing a parent removes its create-only member) or above it. Array
  * indices are dropped, as the schema's paths spell none. Path-precise, as the
  * engine's replacement check is: a nested create-only member leaves its
- * siblings updatable.
+ * siblings updatable, unless the engine cannot walk to it (a list on the way,
+ * or a `*`).
  */
 export function touchesCreateOnly(createOnly: ReadonlySet<string>, path: Path): boolean {
   const dotted = path.filter((seg) => typeof seg === 'string').join('.');
   for (const c of createOnly) {
     if (c === dotted || dotted.startsWith(`${c}.`) || c.startsWith(`${dotted}.`)) return true;
+    // The engine cannot resolve a nested path through a list or a `*`, so it
+    // replaces on ANY change under that top-level
+    // (`createOnlyChangeRequiresReplacement`); so does this.
+    const segs = c.split('.');
+    if (
+      segs.length > 1 &&
+      segs[0] === path[0] &&
+      (segs.includes('*') || path.slice(1, segs.length).some((seg) => typeof seg === 'number'))
+    ) {
+      return true;
+    }
   }
   return false;
 }
@@ -313,7 +325,8 @@ export interface ProbeCase {
   physicalId: string;
   /**
    * Dotted create-only paths (`createOnlyOf`): the engine replaces when the
-   * value AT one changes, so an update probe touching one is skipped.
+   * value AT one changes, so an update probe whose change touches one (at it,
+   * beneath it or above it; `touchesCreateOnly`) is skipped.
    */
   createOnly: ReadonlySet<string>;
   bag: Bag;
@@ -451,7 +464,9 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
     // removal threw: a provider that skips its setter while next equals prev
     // makes the removal comparisons call-versus-no-call, which any call passes
     // whatever it carries. Varying the value with `prev` fixed observes WHAT
-    // the call sends (an empty container has no value to vary).
+    // the call sends (an empty container has no value to vary). Every scalar
+    // leaf, create-only ones included, is varied on create for the same
+    // reason (`create-vary`, above `probe`).
     const scalar = isLeaf && leaf !== null && typeof leaf !== 'object';
     const varyOnUpdate = updateThrew || (scalar && !replaces);
     const varyOnCreate = createThrew || scalar;
@@ -544,9 +559,15 @@ export interface TypeCase {
    * A type whose `handledProperties` is EMPTY (every schema property is
    * read-only), so there is no bag to probe: `bags`, `exempt` and `targets`
    * stay empty, and `create({})` / `update({}, {})` must succeed sending
-   * exactly `calls` (`<Command> <path>`, reads included, in order).
+   * exactly `calls` (`<Command> <path>`, reads included, in order). The
+   * create must return `createdId` (exactly, or matching a pattern; the
+   * type's `arm` answers the reads); the update must keep `physicalId`, unreplaced.
    */
-  noProperties?: { reason: string; calls: { create: string[]; update: string[] } };
+  noProperties?: {
+    reason: string;
+    calls: { create: string[]; update: string[] };
+    createdId: string | RegExp;
+  };
 }
 
 interface SchemaFixture {
@@ -654,16 +675,26 @@ export function describeWireCases(cases: TypeCase[]): void {
       const expected = t.noProperties.calls;
       it('creates and updates with no properties, sending only the declared calls', async () => {
         const p = t.provider();
+        // `record` keeps the wire, not the result, so each run hands it out.
+        let createdResult: unknown;
         armFor(t, {});
-        const created = await record(() => p.create('L', t.resourceType, {}));
+        const created = await record(async () => {
+          createdResult = await p.create('L', t.resourceType, {});
+        });
         expect(created).toMatchObject({ threw: false });
         expect([...calls], 'create').toEqual(expected.create);
+        const createdId = (createdResult as { physicalId: string }).physicalId;
+        const want = t.noProperties!.createdId;
+        if (typeof want === 'string') expect(createdId).toBe(want);
+        else expect(createdId).toMatch(want);
+        let updatedResult: unknown;
         armFor(t, {});
-        const updated = await record(() =>
-          p.update('L', t.physicalId, t.resourceType, {}, {}, t.updateContext)
-        );
+        const updated = await record(async () => {
+          updatedResult = await p.update('L', t.physicalId, t.resourceType, {}, {}, t.updateContext);
+        });
         expect(updated).toMatchObject({ threw: false });
         expect([...calls], 'update').toEqual(expected.update);
+        expect(updatedResult).toMatchObject({ physicalId: t.physicalId, wasReplaced: false });
       });
       return;
     }

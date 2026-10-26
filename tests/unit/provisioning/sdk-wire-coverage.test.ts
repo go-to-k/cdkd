@@ -857,4 +857,17 @@ describe('the wire harness create-only paths', () => {
   ] as const)('%j touches one: %s', (path, touches) => {
     expect(touchesCreateOnly(createOnlyOf('AWS::Budgets::Budget'), [...path])).toBe(touches);
   });
+
+  // The engine cannot walk a nested path through a list or a `*`, so it
+  // replaces on any change under that top-level; the harness skips the same.
+  it.each([
+    [['Foo', 0, 'Other'], true],
+    [['Foo', 0], true],
+    [['Bar', 'Other'], true],
+    [['Baz', 'Other'], false],
+  ] as const)('through a list or a wildcard, %j touches one: %s', (path, touches) => {
+    expect(touchesCreateOnly(new Set(['Foo.Name', 'Bar.*.Name', 'Baz.Name']), [...path])).toBe(
+      touches
+    );
+  });
 });

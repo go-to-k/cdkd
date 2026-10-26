@@ -1,4 +1,4 @@
-import { REGION, type TypeCase } from './sdk-wire-harness.js';
+import { REGION, setOutputOverrides, type TypeCase } from './sdk-wire-harness.js';
 import { WaitConditionHandleProvider } from '../../../src/provisioning/providers/wait-condition-handle-provider.js';
 import { AgentCoreBrowserProvider } from '../../../src/provisioning/providers/agentcore-browser-provider.js';
 import { AgentCoreCodeInterpreterProvider } from '../../../src/provisioning/providers/agentcore-code-interpreter-provider.js';
@@ -10,6 +10,9 @@ import { AgentCoreCodeInterpreterProvider } from '../../../src/provisioning/prov
  * (`TypeCase.noProperties`). Run by `sdk-wire-coverage-no-properties.test.ts`;
  * the ledger in `sdk-wire-coverage.test.ts` counts them as covered.
  */
+
+const BROWSER_ARN = `arn:aws:bedrock-agentcore:${REGION}:aws:browser/aws.browser.v1`;
+const CODE_INTERPRETER_ARN = `arn:aws:bedrock-agentcore:${REGION}:aws:code-interpreter/aws.codeinterpreter.v1`;
 
 const NOTHING_TO_PROBE = { bags: [], exempt: {}, targets: [] };
 
@@ -23,24 +26,32 @@ export const CASES_NO_PROPERTIES: TypeCase[] = [
     noProperties: {
       reason: 'the only schema property, Id, is read-only; the handle is a local placeholder',
       calls: { create: [], update: [] },
+      createdId: /^cdkd-wait-condition-handle-L-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
     },
   },
   {
     resourceType: 'AWS::BedrockAgentCore::Browser',
     provider: () => new AgentCoreBrowserProvider(),
-    physicalId: `arn:aws:bedrock-agentcore:${REGION}:aws:browser/aws.browser.v1`,
+    physicalId: BROWSER_ARN,
     createOnly: new Set(),
+    // The default browser answers with its ARN, which create records.
+    arm: () => setOutputOverrides({ GetBrowserCommand: () => ({ browserArn: BROWSER_ARN }) }),
     ...NOTHING_TO_PROBE,
     noProperties: {
       reason: 'every schema property is read-only: create adopts the AWS-managed default browser',
       calls: { create: ['GetBrowserCommand /browsers/aws.browser.v1'], update: [] },
+      createdId: BROWSER_ARN,
     },
   },
   {
     resourceType: 'AWS::BedrockAgentCore::CodeInterpreter',
     provider: () => new AgentCoreCodeInterpreterProvider(),
-    physicalId: `arn:aws:bedrock-agentcore:${REGION}:aws:code-interpreter/aws.codeinterpreter.v1`,
+    physicalId: CODE_INTERPRETER_ARN,
     createOnly: new Set(),
+    arm: () =>
+      setOutputOverrides({
+        GetCodeInterpreterCommand: () => ({ codeInterpreterArn: CODE_INTERPRETER_ARN }),
+      }),
     ...NOTHING_TO_PROBE,
     noProperties: {
       reason:
@@ -49,6 +60,7 @@ export const CASES_NO_PROPERTIES: TypeCase[] = [
         create: ['GetCodeInterpreterCommand /code-interpreters/aws.codeinterpreter.v1'],
         update: [],
       },
+      createdId: CODE_INTERPRETER_ARN,
     },
   },
 ];
