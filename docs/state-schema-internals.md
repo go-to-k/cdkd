@@ -2406,16 +2406,21 @@ anything; the table is here because the difference is visible when you compare
 | `AWS::EC2::EIP` | the public IP (the segment before the first `\|`) |
 | `AWS::Glue::Table` | the table name — everything after the recorded `DatabaseName` and its `\|`, so a table named `a\|b` resolves to `a\|b` |
 | `AWS::Route53::RecordSet` | the record **name**. A three-part id returns its middle segment without reading state. When the name itself contains `\|` (a longer id), it is everything between the first and the last `\|`, only when that matches the recorded `Name` and the last segment the recorded `Type`; an id that does not match passes through raw |
-| `AWS::S3Tables::Namespace` / `::Table` | the namespace / table name (the segment after the last `\|`) |
+| `AWS::S3Tables::Namespace` | the namespace name (the segment after the last `\|`) |
+| `AWS::S3Tables::Table` | the table **ARN**, from the recorded `TableARN` attribute; a Cloud-Control-routed table's physical id is already the ARN |
 
-The three `AWS::AppSync::*` children are the case where the `Ref` value is not
-a segment at all: cdkd recovers the ARN from the attribute the provider records.
+The three `AWS::AppSync::*` children and an SDK-routed `AWS::S3Tables::Table`
+are the cases where the `Ref` value is not a segment at all: cdkd recovers the
+ARN from the attribute the provider records.
 `cdkd import` records the same attribute a fresh deploy does — it reconstructs
 the ARN from the composite id you supply — so an adopted child's `Ref` and
 `Fn::GetAtt` resolve immediately.
 
 Some records can still lack the attribute. `Ref` on such a record falls back to
-the raw composite id. For `Fn::GetAtt` on the ARN attribute, `cdkd deploy`
+the raw composite id, except for an `AWS::S3Tables::Table` (one created by a
+cdkd older than v0.201.0): its `Ref` is read like `Fn::GetAtt TableARN`, so the
+re-read below applies to it too, and a `Ref` the re-read cannot answer is
+refused rather than served the composite id. For `Fn::GetAtt` on the ARN attribute, `cdkd deploy`
 re-reads the resource from AWS once and records the real ARN; when that read
 cannot supply one it FAILS rather than serving a value CloudFormation would not
 return. The records are:

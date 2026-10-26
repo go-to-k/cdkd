@@ -65,9 +65,11 @@ export class S3TablesStack extends cdk.Stack {
     table.addDependency(namespace);
     table.addDependency(namespace2);
 
-    // Issue #5313: a reader of the SDK-routed Table's `Ref`. Phase 1c renames
-    // the table in place; verify.sh asserts this parameter follows the Ref
-    // (equals the `TableRef` output) rather than keeping the old value.
+    // A reader of the SDK-routed Table's `Ref`, which is the TableARN as in
+    // CloudFormation (issue #5316). Phase 1c renames the table in place
+    // (issue #5313) and verify.sh asserts the reader still holds the ARN;
+    // Phase 1d seeds the old cdkd value (the table name) into its record and
+    // asserts the next deploy rewrites it to the ARN.
     const tableRefReader = new ssm.CfnParameter(this, 'TableRefParam', {
       name: `/${this.stackName}/table-ref`,
       type: 'String',
@@ -82,17 +84,16 @@ export class S3TablesStack extends cdk.Stack {
     cdk.Tags.of(table).add('env', 'cdkd-integ');
     cdk.Tags.of(table).add('team', teamTag);
 
-    // --- CC-routed Table + Ref-to-table-name assertion (issue #974) ------
+    // --- CC-routed Table + Ref-to-TableARN assertion (issues #974 / #5316) --
     // A schema-bearing Table (IcebergMetadata set) is NOT in the SDK
     // provider's `handledProperties` for AWS::S3Tables::Table, so cdkd's
     // #614 silent-drop routing sends it entirely through Cloud Control.
     // The CC primaryIdentifier for a Table is the bare single-segment
     // TableARN (describe-type-verified in PR #972), so the CC path stores a
-    // pipe-free ARN (ending in a UUID) as the physical id — and CFn's `Ref`
-    // for a Table returns the table NAME, not the ARN. Before the #974 fix
-    // cdkd's Ref leaked the ARN; the fix recovers the name from the stored
-    // TableName property. This Table proves the CC-routed Ref resolves to
-    // the table name against real AWS.
+    // pipe-free ARN as the physical id. CloudFormation's `Ref` for a Table
+    // returns that TableARN (measured with a CloudFormation stack, issue
+    // #5316); issue #974 had made cdkd return the table name instead. This
+    // Table proves the CC-routed Ref resolves to the TableARN against real AWS.
     const ICEBERG_TABLE_NAME = 'cdkd_integ_cc_tbl';
     const icebergTable = new s3tables.CfnTable(this, 'IcebergTable', {
       tableBucketArn: tableBucket.attrTableBucketArn,
@@ -114,12 +115,10 @@ export class S3TablesStack extends cdk.Stack {
     icebergTable.addDependency(namespace);
 
     // A consuming resource whose property value is `{ Ref: IcebergTable }`.
-    // If the Ref leaked the bare TableARN (the pre-#974 bug), this SSM
-    // parameter's Value on AWS would be the ARN; the fix makes it the table
-    // name. verify.sh reads the parameter back via `ssm get-parameter` and
-    // asserts the value equals the table name — a real consuming resource,
-    // not just a CfnOutput (which cdkd resolves through the same code path
-    // but never round-trips through an AWS write).
+    // verify.sh reads the parameter back via `ssm get-parameter` and asserts
+    // the value equals the TableARN (`Fn::GetAtt TableARN`) — a real consuming
+    // resource, not just a CfnOutput (which cdkd resolves through the same
+    // code path but never round-trips through an AWS write).
     const refConsumer = new ssm.CfnParameter(this, 'IcebergTableRefParam', {
       name: `/${this.stackName}/iceberg-table-ref`,
       type: 'String',
@@ -133,22 +132,25 @@ export class S3TablesStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, 'TableRef', {
       value: table.ref,
-      description: 'Ref of the SDK-routed table (the TableRefParam reader must equal it)',
+      description: 'Ref of the SDK-routed table (expect the TableArn output)',
     });
     new cdk.CfnOutput(this, 'TableArn', {
       value: table.attrTableArn,
       description: 'S3 Table ARN',
     });
-    // The CC-routed Table's `Ref` — must resolve to the table NAME (issue
-    // #974), not the bare TableARN. verify.sh asserts this output equals
-    // ICEBERG_TABLE_NAME.
+    // The CC-routed Table's `Ref` — must resolve to its TableARN (issue
+    // #5316), the `IcebergTableArn` output below, and not to the table name.
     new cdk.CfnOutput(this, 'IcebergTableRef', {
       value: icebergTable.ref,
-      description: 'Ref of the CC-routed IcebergMetadata table (expect table name)',
+      description: 'Ref of the CC-routed IcebergMetadata table (expect the TableARN)',
+    });
+    new cdk.CfnOutput(this, 'IcebergTableArn', {
+      value: icebergTable.attrTableArn,
+      description: 'The TableARN the Ref should resolve to',
     });
     new cdk.CfnOutput(this, 'IcebergTableName', {
       value: ICEBERG_TABLE_NAME,
-      description: 'The expected table name the Ref should resolve to',
+      description: 'The table name the Ref must NOT resolve to',
     });
     new cdk.CfnOutput(this, 'IcebergTableRefParamName', {
       value: refConsumer.name!,

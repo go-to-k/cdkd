@@ -64,9 +64,8 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 const TABLE_TYPE = 'AWS::S3Tables::Table';
-/** Pipe-free, UUID-tailed — the CC-routed shape that needs the state key. */
-const TABLE_ARN =
-  'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/6f1f5a90-2847-4b1a-9d6f-cccc';
+/** The SDK-routed composite, whose `Ref` (the TableARN) needs the state key. */
+const TABLE_COMPOSITE = 'arn:aws:s3tables:us-east-1:123456789012:bucket/b|ns|cccc';
 
 const remedyFor = (
   reads: readonly RedactedAttributeRead[],
@@ -99,9 +98,10 @@ describe('the masked Ref state-key read couples its producer to its consumer (#2
       template,
       resources: {
         [logicalId]: {
-          physicalId: TABLE_ARN,
+          physicalId: TABLE_COMPOSITE,
           resourceType: TABLE_TYPE,
-          properties: { TableName: SECRET_MASK },
+          properties: {},
+          attributes: { TableARN: SECRET_MASK },
           dependencies: [],
         },
       },

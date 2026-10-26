@@ -2,6 +2,7 @@ import {
   carriesDynamicReference,
   cfnRefValueFromPhysicalId,
   isImpossibleEmptyStoredAttribute,
+  lacksRecordedTableArn,
   isStalePlaceholderArnAttribute,
   refStateLookupFromResource,
 } from '../deployment/intrinsic-function-resolver.js';
@@ -373,6 +374,18 @@ class AttributeFetcher {
     // Before any read of it, and whatever `--force` says: see the constant.
     if (!isResolvableOrphanRecord(o)) {
       return { ok: false, reason: UNREADABLE_ORPHAN_RECORD_REASON };
+    }
+    // go-to-k/cdkd#5316: a table created before cdkd recorded its `TableARN`
+    // (go-to-k/cdkd#739) has no value CloudFormation's `Ref` returns in state,
+    // and the composite id is not one. Refused rather than spliced; the deploy
+    // re-reads such a record from AWS, this command does not.
+    if (lacksRecordedTableArn(o)) {
+      return {
+        ok: false,
+        reason:
+          "state records no usable 'TableARN' for this S3 Tables table, the value CloudFormation's Ref " +
+          'returns, and the physical id is NOT that value',
+      };
     }
     let maskedKey: string | undefined;
     const value = cfnRefValueFromPhysicalId(

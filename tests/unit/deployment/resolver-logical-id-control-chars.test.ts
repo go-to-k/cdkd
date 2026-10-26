@@ -921,8 +921,8 @@ describe('the two redacted-read DISPLAY builders sanitize their logical id (#343
   // structure away from the renders above, which is why they get their own
   // cases rather than riding on those.
   const TABLE_TYPE = 'AWS::S3Tables::Table';
-  const TABLE_ARN =
-    'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/6f1f5a90-2847-4b1a-9d6f-zz2847zz';
+  // The SDK-routed composite, whose `Ref` reads the `TableARN` state key.
+  const TABLE_COMPOSITE = 'arn:aws:s3tables:us-east-1:123456789012:bucket/b|ns|zz2847zz';
 
   it('sanitizes noteRefStateMask\'s `Ref <id> (state key <Key>)` display', async () => {
     const redactedAttributeReads: RedactedAttributeRead[] = [];
@@ -937,9 +937,10 @@ describe('the two redacted-read DISPLAY builders sanitize their logical id (#343
         template,
         {
           [EVIL]: {
-            physicalId: TABLE_ARN,
+            physicalId: TABLE_COMPOSITE,
             resourceType: TABLE_TYPE,
-            properties: { TableName: SECRET_MASK },
+            properties: {},
+            attributes: { TableARN: SECRET_MASK },
             dependencies: [],
           },
         },
@@ -953,7 +954,7 @@ describe('the two redacted-read DISPLAY builders sanitize their logical id (#343
     // The SENTENCE `DeployEngine`'s `hasRefStateRead` arm points the reader at
     // must survive the sanitization, or that advice stops matching anything.
     expect(read.display.startsWith('Ref ')).toBe(true);
-    expect(read.display).toContain('(state key TableName)');
+    expect(read.display).toContain('(state key TableARN)');
     // The FIELD stays raw: it is the routing key `maskedRecordRemedyFor`
     // partitions on and the id its `--resource <id>=` command interpolates, so
     // a sanitized copy there would name a resource that does not exist.
