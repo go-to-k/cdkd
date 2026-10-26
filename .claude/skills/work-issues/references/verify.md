@@ -12,8 +12,8 @@
 
 ### 8-b. Integ ordering vs review rounds and rebases
 
-**Run the integ LAST — after the final edit to any `integ-destroy`-scoped
-file.** A lane cannot touch AWS, so only the parent finds an AWS-side rejection:
+**Run the integ LAST — after every reviewer RETURNS and the final edit to any
+`integ-destroy`-scoped file.** A lane cannot touch AWS, so only the parent finds an AWS-side rejection:
 run a NEW arm once EARLY too, as soon as the lane has written it, between review
 rounds (never during a `src` fix round); that run sets no marker and is no §8-d
 proof — a new arm's first AWS contact can reject its shape (#4618). Sequence:
@@ -68,9 +68,8 @@ tests passing is necessary but NOT sufficient:
   (`.ts` / `.mjs` helpers read output; a top-level helper's hit means every
   fixture sourcing it); dropped AWS text (an id an SDK error echoes) has no
   literal, so grep its error code and API call, in fixtures the PR never edits
-  too (#5268 lost a 5236s run to one). Run each fixture named before
-  merge, whatever the change's own tier: no vitest run executes them, so one
-  stays red on `main` (#4394, #5046).
+  too (#5268). Run each fixture named before merge, whatever the change's own
+  tier: no vitest run executes them, so one stays red on `main` (#4394, #5046).
 - **Any diff with no `src/**` change** (docs, toolchain, CI, hooks, skills,
   tests, config) → exempt from the tiers above, never from `/verify-pr` step 9;
   never conclude a CI job cannot fail on your diff from its NAME. Both arms

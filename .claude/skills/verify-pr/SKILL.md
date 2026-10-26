@@ -48,7 +48,7 @@ Run each check and report pass/fail:
      `mergeable=CONFLICTING state=DIRTY` the CI workflow NEVER fires, however
      long you wait, and neither close+reopen nor a force-push of unchanged
      content re-triggers it. Resolution:
-     `git fetch origin main && git rebase origin/main`, resolve, force-push.
+     `git fetch origin main && git merge origin/main`, resolve, push (no force).
    - Only once the state is `CLEAN` / `UNSTABLE` / `BLOCKED` / `BEHIND`:
      `gh pr checks <PR>` — all pass; if pending, wait and recheck.
 
@@ -155,7 +155,7 @@ After all checks pass, land the work:
 ```bash
 git add -A
 git diff --cached --quiet || git commit -m "..."
-git push        # after a rebase: --force-with-lease
+git push        # never --force: merge, not rebase
 ```
 
 No marker is recorded — nothing mechanical consults this run, which makes the
