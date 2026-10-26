@@ -435,7 +435,7 @@ describe('CognitoUserPoolProvider', () => {
       ).rejects.toThrow(/Schema attribute with no Name/);
     });
 
-    it('should not pass PoolName in update params (PoolName is immutable)', async () => {
+    it('should send a renamed UserPoolName as PoolName (issue #5358)', async () => {
       // UpdateUserPool
       mockSend.mockResolvedValueOnce({});
       // DescribeUserPool
@@ -460,8 +460,8 @@ describe('CognitoUserPoolProvider', () => {
       );
 
       const updateCall = mockSend.mock.calls[0][0];
-      // PoolName should NOT be in the update params since it's immutable
-      expect(updateCall.input.PoolName).toBeUndefined();
+      // UpdateUserPool renames in place (CloudFormation does the same).
+      expect(updateCall.input.PoolName).toBe('new-pool-name');
     });
   });
 
