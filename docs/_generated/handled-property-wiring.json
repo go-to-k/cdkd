@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 89,
-    "declaredProperties": 1175,
-    "wiredProperties": 1173,
+    "declaredProperties": 1179,
+    "wiredProperties": 1177,
     "wired": 87,
     "gap": 0,
     "allowListed": 2,
@@ -4285,7 +4285,7 @@
       "file": "codebuild-provider.ts",
       "className": "CodeBuildProvider",
       "bucket": "wired",
-      "declaredCount": 22,
+      "declaredCount": 24,
       "properties": [
         {
           "name": "Artifacts",
@@ -4496,6 +4496,21 @@
           ]
         },
         {
+          "name": "ResourceAccessRole",
+          "status": "wired",
+          "types": [
+            "AWS::CodeBuild::Project"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
           "name": "SecondaryArtifacts",
           "status": "wired",
           "types": [
@@ -4620,6 +4635,21 @@
           "seededBy": [
             "create",
             "mapProperties",
+            "update"
+          ]
+        },
+        {
+          "name": "Visibility",
+          "status": "wired",
+          "types": [
+            "AWS::CodeBuild::Project"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
             "update"
           ]
         },
@@ -11435,7 +11465,7 @@
       "file": "glue-provider.ts",
       "className": "GlueConnectionProvider",
       "bucket": "wired",
-      "declaredCount": 2,
+      "declaredCount": 3,
       "properties": [
         {
           "name": "CatalogId",
@@ -11456,6 +11486,20 @@
         },
         {
           "name": "ConnectionInput",
+          "status": "wired",
+          "types": [
+            "AWS::Glue::Connection"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
+          "name": "Tags",
           "status": "wired",
           "types": [
             "AWS::Glue::Connection"
@@ -13118,7 +13162,7 @@
       "file": "kinesis-provider.ts",
       "className": "KinesisStreamProvider",
       "bucket": "wired",
-      "declaredCount": 8,
+      "declaredCount": 9,
       "properties": [
         {
           "name": "DesiredShardLevelMetrics",
@@ -13162,6 +13206,22 @@
           ],
           "seededBy": [
             "create"
+          ]
+        },
+        {
+          "name": "RecordDistributionStrategy",
+          "status": "wired",
+          "types": [
+            "AWS::Kinesis::Stream"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "reconcileDistributionStrategy",
+            "update"
           ]
         },
         {

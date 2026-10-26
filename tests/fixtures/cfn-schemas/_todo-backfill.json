@@ -46,9 +46,7 @@
       "WarmUpConfiguration"
     ],
     "AWS::CodeBuild::Project": [
-      "ResourceAccessRole",
-      "Triggers",
-      "Visibility"
+      "Triggers"
     ],
     "AWS::Cognito::UserPool": [
       "IssuerConfiguration",
@@ -145,13 +143,6 @@
     ],
     "AWS::ElastiCache::CacheCluster": [
       "SnapshotArns"
-    ],
-    "AWS::Glue::Connection": [
-      "Tags"
-    ],
-    "AWS::Kinesis::Stream": [
-      "RecordDistributionStrategy",
-      "WarmThroughputMiBps"
     ],
     "AWS::KinesisFirehose::DeliveryStream": [
       "DatabaseSourceConfiguration",

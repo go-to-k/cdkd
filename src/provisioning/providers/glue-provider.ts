@@ -4349,7 +4349,10 @@ async function fetchGlueTags(
     const resp = await client.send(new GetTagsCommand({ ResourceArn: arn }));
     return normalizeAwsTagsToCfn(resp.Tags);
   } catch (err) {
-    logger.debug(`GetTags failed for ${resource}/${name}: ${describeAwsFailure(err).detail}`);
+    // Neither the NAME nor AWS's own text: a Connection's name can be
+    // secret-derived (go-to-k/cdkd#2007), and an AccessDenied message quotes
+    // the resource ARN, which carries it. The summary is the error code.
+    logger.debug(`GetTags failed for a Glue ${resource}: ${describeAwsFailure(err).summary}`);
     return [];
   }
 }
@@ -5731,6 +5734,7 @@ function toCfnCrawlerTargets(targets: Record<string, unknown>): Record<string, u
 export class GlueConnectionProvider implements ResourceProvider {
   private client: GlueClient | undefined;
   private createClient: GlueClient | undefined;
+  private stsClient: STSClient | undefined;
   private readonly providerRegion = ambientRegion();
   private readonly callerAccountId = makeCallerAccountResolver(this.providerRegion);
   private logger = getLogger().child('GlueConnectionProvider');
@@ -5745,8 +5749,37 @@ export class GlueConnectionProvider implements ResourceProvider {
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
-    ['AWS::Glue::Connection', new Set(['ConnectionInput', 'CatalogId'])],
+    // `Tags` (go-to-k/cdkd#2762): sent on `CreateConnection` itself, as
+    // CloudFormation does, and diffed by `TagResource` / `UntagResource` on
+    // update, removal included, exactly as the Job / Crawler / Trigger do.
+    ['AWS::Glue::Connection', new Set(['ConnectionInput', 'CatalogId', 'Tags'])],
   ]);
+
+  private getStsClient(): STSClient {
+    if (!this.stsClient) {
+      this.stsClient = new STSClient({
+        ...ambientClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
+    }
+    return this.stsClient;
+  }
+
+  /**
+   * The connection ARN `TagResource` / `UntagResource` / `GetTags` address. A
+   * connection lives in a Data Catalog, and the ARN's account is the catalog's
+   * owner, so a usable `CatalogId` names it; otherwise the caller's account
+   * (the catalog `CatalogId` omitted means) is resolved through STS.
+   */
+  private resourceArn(name: string, catalogIdValue: unknown): Promise<string> {
+    return buildGlueResourceArn(
+      this.getClient(),
+      this.getStsClient(),
+      'connection',
+      name,
+      catalogIdForApi(catalogIdValue)
+    );
+  }
 
   private getClient(): GlueClient {
     if (!this.client) {
@@ -5785,6 +5818,8 @@ export class GlueConnectionProvider implements ResourceProvider {
         logicalId
       );
     }
+    // go-to-k/cdkd#4073: a malformed Tags is refused before any call.
+    const tags = desiredGlueTags(properties['Tags'], resourceType, logicalId);
     // go-to-k/cdkd#5095, as the Glue job's create.
     const name =
       (connectionInput['Name'] as string | undefined) ??
@@ -5795,6 +5830,7 @@ export class GlueConnectionProvider implements ResourceProvider {
         new CreateConnectionCommand({
           ...(catalogId && { CatalogId: catalogId }),
           ConnectionInput: buildConnectionInput(connectionInput, name),
+          ...(tags && { Tags: tags }),
         })
       );
       log.debug(`Successfully created Glue Connection ${logicalId}: ${v(name)}`);
@@ -5869,6 +5905,9 @@ export class GlueConnectionProvider implements ResourceProvider {
       debug: log.debug,
       mask: log.mask,
     });
+    // go-to-k/cdkd#4073: a malformed desired Tags is refused before any call,
+    // so a half-applied update never untags on the strength of it.
+    desiredGlueTags(properties['Tags'], resourceType, logicalId, physicalId);
     const catalogId = updateCatalogId(properties['CatalogId']);
     try {
       await this.getClient().send(
@@ -5880,6 +5919,16 @@ export class GlueConnectionProvider implements ResourceProvider {
           Name: physicalId,
           ConnectionInput: buildConnectionInput(connectionInput, physicalId),
         })
+      );
+      // `UpdateConnection` carries no tags (go-to-k/cdkd#2762).
+      await applyGlueTagDiff(
+        this.getClient(),
+        () => this.resourceArn(physicalId, properties['CatalogId']),
+        previousProperties?.['Tags'],
+        properties['Tags'],
+        resourceType,
+        logicalId,
+        log.warn
       );
       return { physicalId, wasReplaced: false };
     } catch (error) {
@@ -6033,7 +6082,21 @@ export class GlueConnectionProvider implements ResourceProvider {
         ? pickDefined(conn.PhysicalConnectionRequirements as Record<string, unknown>)
         : {},
     };
-    return withRecordedCatalogId({ ConnectionInput: ci }, properties);
+    const name = conn.Name ?? physicalId;
+    return withRecordedCatalogId(
+      {
+        ConnectionInput: ci,
+        Tags: await fetchGlueTags(
+          this.getClient(),
+          this.getStsClient(),
+          'connection',
+          name,
+          catalogId,
+          this.logger
+        ),
+      },
+      properties
+    );
   }
 
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

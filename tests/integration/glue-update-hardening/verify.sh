@@ -324,12 +324,17 @@ echo "    OK: Workflow MAP-shape tags reached AWS (env=integ, team=data-platform
 BASE_TAGS='{"env":"integ","team":"data-platform"}'
 UPDATED_TAGS='{"env":"integ-updated","owner":"cdkd"}'
 JOB_ARN="arn:aws:glue:${REGION}:${ACCOUNT_ID}:job/${JOB_NAME}"
+CONNECTION_ARN="arn:aws:glue:${REGION}:${ACCOUNT_ID}:connection/${CONNECTION_NAME}"
 TAGGED_LG_ARN="arn:aws:logs:${REGION}:${ACCOUNT_ID}:log-group:${TAGGED_LG_NAME}"
 assert_tag_set() { # usage: assert_tag_set <label> <want tag map JSON> aws <service> <read-verb> [args...]
   local label="$1" want="$2" raw got
   shift 2
   # A failed probe (throttle, auth) must not read as the #4073 regression.
   raw="$("$@")" || { echo "FAIL: ${label}: the tag readback failed: $*" >&2; exit 1; }
+  # The AWS CLI prints NOTHING for an empty object under `--output json`
+  # (measured: `--query '\`{}\`'` prints no bytes), so a successful empty read
+  # is the empty tag set, not a lost one.
+  [ -n "${raw}" ] || raw='{}'
   got=$(printf '%s' "${raw}" | jq -cS '.')
   want=$(printf '%s' "${want}" | jq -cS '.')
   if [ "${got}" != "${want}" ]; then
@@ -338,16 +343,31 @@ assert_tag_set() { # usage: assert_tag_set <label> <want tag map JSON> aws <serv
   fi
   echo "    OK: ${label}: AWS holds exactly ${got}"
 }
-assert_all_tag_sets() { # usage: assert_all_tag_sets <want tag map JSON> <phase label>
+assert_all_tag_sets() { # usage: assert_all_tag_sets <want tag map JSON> <phase label> [<Connection want>]
   local want="$1" phase="$2"
   assert_tag_set "${phase}: Workflow" "${want}" aws glue get-tags --resource-arn "${WF_ARN}" \
     --region "${REGION}" --query 'Tags' --output json
   assert_tag_set "${phase}: Job" "${want}" aws glue get-tags --resource-arn "${JOB_ARN}" \
     --region "${REGION}" --query 'Tags' --output json
+  # go-to-k/cdkd#2762: the Connection's Tags (create on CreateConnection,
+  # update through TagResource / UntagResource). Its third argument, when
+  # given, overrides the expected set (the removal phase drops its Tags).
+  # `|| {}`: an untagged resource may come back without a `Tags` member at all.
+  assert_tag_set "${phase}: Connection" "${3:-${want}}" aws glue get-tags \
+    --resource-arn "${CONNECTION_ARN}" --region "${REGION}" --query 'Tags || `{}`' --output json
   assert_tag_set "${phase}: log group" "${want}" aws logs list-tags-for-resource \
     --resource-arn "${TAGGED_LG_ARN}" --region "${REGION}" --query 'tags' --output json
 }
 assert_all_tag_sets "${BASE_TAGS}" 'create'
+# go-to-k/cdkd#2762 routing guard: a Connection declaring Tags used to
+# auto-route to Cloud Control, which would satisfy the tag read too.
+CONNECTION_ROUTE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --quiet | jq -r \
+  '[.resources[] | select(.resourceType == "AWS::Glue::Connection") | .provisionedBy // "sdk"] | join(" ")')
+if [ "${CONNECTION_ROUTE}" != "sdk" ]; then
+  echo "FAIL: the Glue Connection's routing layer is '${CONNECTION_ROUTE}', expected 'sdk'" >&2
+  exit 1
+fi
+echo "    OK: the Glue Connection is provisioned by the SDK provider"
 
 # --- Assertion 3: Crawler DynamoDB scan tuning reached AWS (#1391) -----
 # The SDK `DynamoDBTarget` spells the scan tuning `scanAll` / `scanRate`
@@ -1048,7 +1068,9 @@ if [ -z "${WF_CREATED}" ] || [ "${RM_WF_CREATED}" != "${WF_CREATED}" ]; then
   exit 1
 fi
 # The Workflow's tags are not part of the removal: the updated set stays.
-assert_all_tag_sets "${UPDATED_TAGS}" 'removal'
+# go-to-k/cdkd#2762: CDKD_TEST_REMOVAL drops the Connection's whole Tags, so
+# every key is untagged; the other three keep theirs (the retained siblings).
+assert_all_tag_sets "${UPDATED_TAGS}" 'removal' '{}'
 echo "    OK: removed Workflow / Trigger properties cleared in place, tags and actions kept, removed crawler properties kept and named (issue #1160)"
 
 # --- Phase 3: destroy -------------------------------------------------
