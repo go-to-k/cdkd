@@ -4,8 +4,10 @@
 
 The PARENT's serialization point: run your own review round on a merge-ready
 lane (`verify.md` §8-i — before EVERY merge, even when the lane's
-reviewers passed; #3906), grant it its turn only once that round is
-CLEAN (one lane at a time), then run `/run-integ` and
+reviewers passed; #3906), grant it its turn only once that round AND its
+delta reviews are CLEAN — an integ started beside the round is voided by
+every fix round it produces (#5337) — one lane
+at a time, then run `/run-integ` and
 `gh pr merge` yourself FROM THAT LANE'S WORKTREE — never the lane agent. The
 auto-mode classifier can refuse the PARENT's calls too: any refused call goes
 to `AskUserQuestion`, never a reworded retry (#4059); only
@@ -94,8 +96,10 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
 
 - **A GENERATED file is REGENERATED, never hand-merged nor trusted when git
   merged it CLEANLY** (`handled-property-wiring.json` came out inconsistent):
-  take upstream's copy whole, re-run the generator, commit ITS output before
-  the push (#4460).
+  stage it as-is, finish the rebase, then re-run the generator, which rewrites
+  the whole file from source, and commit ITS output before the push (#4460).
+  Never `checkout origin/main -- <file>` mid-rebase: the staged copy reads as
+  uncommitted work and `dirty-path-restore-gate` refuses it.
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. GitHub ignores its `merge=union`, so
   each `main` ledger row re-CONFLICTS the PR: rebase locally, normalize (Merge).
