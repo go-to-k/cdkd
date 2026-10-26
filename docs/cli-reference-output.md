@@ -41,7 +41,7 @@ see there is unchanged. To merge the streams in a script, use `2>&1`.
 | --- | --- |
 | `cdkd synth`, `cdkd list`, `cdkd state list`, `cdkd local invoke`, `cdkd local invoke-agentcore` | Always |
 | `cdkd state resources`, `cdkd state show`, `cdkd state info`, `cdkd drift`, `cdkd events` | Under `--json` only |
-| `cdkd deploy`, and the `cdkd local` servers (`start-api`, `run-task`, `start-service`, `start-agentcore`, `start-alb`, `start-cloudfront`, `start-web-function`) | Never |
+| `cdkd deploy`, and the `cdkd local` servers (`start-api`, `run-task`, `start-service`, `start-agentcore`, `start-alb`, `start-cloudfront`, `start-web-function`, `start-microvm`) | Never |
 
 Without `--json`, the commands in the second row print a formatted view for a
 person, and their progress lines stay on stdout with that view.

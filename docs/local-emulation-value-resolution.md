@@ -58,6 +58,7 @@ What you write as the top-level key depends on the command:
 | `local run-task`, `local start-service`, `local start-alb` | The container name, `ContainerDefinitions[].Name` |
 | `local invoke-agentcore`, `local start-agentcore` | The runtime's logical ID, or its CDK display path |
 | `local start-web-function` | The revision's logical ID |
+| `local start-microvm` | The MicroVM image's logical ID, or its CDK display path |
 
 For a Lambda, one file can use both key forms. When both set the same
 variable, the entry that comes later in the file wins.

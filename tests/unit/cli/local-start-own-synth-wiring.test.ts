@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
 /**
- * The five `cdkd local` commands that embed a cdk-local serve hand it cdkd's
+ * The six `cdkd local` commands that embed a cdk-local serve hand it cdkd's
  * synthesizer, so no `cdkd local` command synthesizes through cdk-local's
  * toolkit-lib one.
  */
@@ -27,6 +27,10 @@ vi.mock('cdk-local', async (importOriginal) => {
       seen.factoryOptions.push(opts);
       return actual.createLocalStartWebFunctionCommand(opts);
     },
+    createLocalStartMicrovmCommand: (opts: Record<string, unknown>) => {
+      seen.factoryOptions.push(opts);
+      return actual.createLocalStartMicrovmCommand(opts);
+    },
   };
 });
 vi.mock('../../../src/cli/commands/ecs-service-emulator.js', async (importOriginal) => ({
@@ -51,6 +55,9 @@ const { createLocalStartCloudFrontCommand } = await import(
 );
 const { createLocalStartWebFunctionCommand } = await import(
   '../../../src/cli/commands/local-start-web-function.js'
+);
+const { createLocalStartMicrovmCommand } = await import(
+  '../../../src/cli/commands/local-start-microvm.js'
 );
 const { createLocalStartServiceCommand } = await import(
   '../../../src/cli/commands/local-start-service.js'
@@ -94,6 +101,7 @@ describe.each([
   ['start-agentcore', createLocalStartAgentCoreCommand],
   ['start-cloudfront', createLocalStartCloudFrontCommand],
   ['start-web-function', createLocalStartWebFunctionCommand],
+  ['start-microvm', createLocalStartMicrovmCommand],
 ])('%s', (_name, create) => {
   it("publishes the command's --role-arn to cdkd's clients", async () => {
     const cmd = create();

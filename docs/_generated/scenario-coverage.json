@@ -1813,6 +1813,11 @@
       "scenarios": []
     },
     {
+      "name": "local-start-microvm",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "local-start-service",
       "annotated": true,
       "scenarios": [
@@ -3550,6 +3555,7 @@
     "local-start-alb-from-state",
     "local-start-cloudfront",
     "local-start-cloudfront-from-state",
+    "local-start-microvm",
     "local-start-service-watch-fast",
     "local-start-web-function",
     "local-start-web-function-from-state",

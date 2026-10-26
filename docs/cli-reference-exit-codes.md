@@ -134,8 +134,8 @@ stack.
 A `cdkd local` command exits `130` when you interrupt it with {kbd:ctrl+c}.
 
 - On SIGTERM, `local start-service` and `local start-alb` also exit `130`.
-  `local start-api`, `local start-cloudfront`, `local start-agentcore` and
-  `local start-web-function` exit `0`.
+  `local start-api`, `local start-cloudfront`, `local start-agentcore`,
+  `local start-web-function` and `local start-microvm` exit `0`.
 - `cdkd local run-task` exits with the exit code of its essential container.
   A container that exits `70` therefore yields `70`, without the
   internal-error message.
