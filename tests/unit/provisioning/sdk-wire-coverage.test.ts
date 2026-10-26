@@ -21,6 +21,7 @@ import {
 import { CASES_2 } from './sdk-wire-cases-2.js';
 import { CASES_IAM_SECRETS } from './sdk-wire-cases-iam-secrets.js';
 import { CASES_3 } from './sdk-wire-cases-3.js';
+import { CASES_4 } from './sdk-wire-cases-4.js';
 
 // Every client class a covered provider reaches, wrapped so each instance
 // (shared or provider-built) is captured. A `vi.mock` factory is hoisted, so
@@ -745,7 +746,6 @@ const NOT_YET_COVERED = new Set([
   'GlueSecurityConfigurationProvider',
   'GlueTriggerProvider',
   'GlueWorkflowProvider',
-  'IAMRoleProvider',
   'KMSProvider',
   'KinesisStreamProvider',
   'LambdaEventSourceMappingProvider',
@@ -755,7 +755,6 @@ const NOT_YET_COVERED = new Set([
   'LambdaNetworkConnectorProvider',
   'LambdaWebFunctionEndpointProvider',
   'LambdaWebFunctionRevisionProvider',
-  'LogsLogGroupProvider',
   'NeptuneProvider',
   'NestedStackProvider',
   'PipesPipeProvider',
@@ -765,7 +764,6 @@ const NOT_YET_COVERED = new Set([
   'RDSProvider',
   'Route53Provider',
   'S3BucketProvider',
-  'S3DirectoryBucketProvider',
   'S3TablesProvider',
   'S3VectorsProvider',
   'ServiceDiscoveryProvider',
@@ -773,7 +771,7 @@ const NOT_YET_COVERED = new Set([
   'WAFv2WebACLProvider',
   'WaitConditionHandleProvider',
 ]);
-const MAX_UNCOVERED = 63;
+const MAX_UNCOVERED = 60;
 
 /**
  * Every case list, with the test file that runs it and the list's name there.
@@ -790,6 +788,7 @@ const CASE_LISTS: { cases: TypeCase[]; name: string; file: string }[] = [
     file: 'sdk-wire-coverage-iam-secrets.test.ts',
   },
   { cases: CASES_3, name: 'CASES_3', file: 'sdk-wire-coverage-3.test.ts' },
+  { cases: CASES_4, name: 'CASES_4', file: 'sdk-wire-coverage-4.test.ts' },
 ];
 const ALL_CASES: TypeCase[] = CASE_LISTS.flatMap((l) => l.cases);
 
