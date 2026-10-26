@@ -816,6 +816,26 @@ describe('FirehoseProvider.readCurrentState (DeliveryStreamEncryptionConfigurati
     });
   });
 
+  it.each(['DISABLED', 'ENABLING_FAILED', 'DISABLING'])(
+    'emits {} when AWS reports %s beside a KeyType (#5357: no encryption in effect)',
+    async (Status) => {
+      mockSend
+        .mockResolvedValueOnce({
+          DeliveryStreamDescription: {
+            DeliveryStreamName: 'mystream',
+            DeliveryStreamEncryptionConfiguration: { KeyType: 'AWS_OWNED_CMK', Status },
+          },
+        })
+        .mockResolvedValueOnce({ Tags: [] });
+      const result = (await provider.readCurrentState(
+        'mystream',
+        'L',
+        'AWS::KinesisFirehose::DeliveryStream'
+      )) as Record<string, unknown> | undefined;
+      expect(result?.['DeliveryStreamEncryptionConfigurationInput']).toEqual({});
+    }
+  );
+
   it('emits {} placeholder when stream has no encryption configured', async () => {
     mockSend
       .mockResolvedValueOnce({

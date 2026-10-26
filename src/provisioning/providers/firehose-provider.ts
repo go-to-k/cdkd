@@ -6,9 +6,12 @@ import {
   ListTagsForDeliveryStreamCommand,
   ResourceNotFoundException,
   UpdateDestinationCommand,
+  StartDeliveryStreamEncryptionCommand,
+  StopDeliveryStreamEncryptionCommand,
   TagDeliveryStreamCommand,
   UntagDeliveryStreamCommand,
   type CreateDeliveryStreamCommandInput,
+  type DeliveryStreamEncryptionConfiguration,
   type S3DestinationConfiguration,
   type ExtendedS3DestinationConfiguration,
   type ExtendedS3DestinationUpdate,
@@ -65,6 +68,97 @@ import {
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { generatedNameFor } from '../resource-name.js';
+import { startInterruptWatch } from '../interrupt-watch.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import {
+  enclosingDeadlineExpired,
+  enclosingDeadlineRemainingMs,
+} from '../../deployment/resource-deadline.js';
+
+const ENCRYPTION_KEY = 'DeliveryStreamEncryptionConfigurationInput';
+
+/** One read of a declared `DeliveryStreamEncryptionConfigurationInput`. */
+type EncryptionInputRead =
+  /** Not declared (`undefined` / `null`). On an UPDATE this is a REMOVAL. */
+  | { kind: 'absent' }
+  | { kind: 'usable'; keyType: string; keyArn?: string }
+  /** Declared but not an object with a string `KeyType` (and a string `KeyARN`, if any). */
+  | { kind: 'unusable' };
+
+/**
+ * Read a `DeliveryStreamEncryptionConfigurationInput` block, accepting the
+ * `KeyArn` spelling the create path also reads.
+ *
+ * `readCurrentState` spells "not encrypted" as an EMPTY `{}` placeholder, so
+ * with `emptyIsAbsent` that reads as absent: set for a recorded previous side
+ * (`cdkd drift --accept` can write the readback into a record) and for a
+ * desired bag that is a readback (`desiredFromAwsReadback`). A TEMPLATE `{}`
+ * stays unusable (the CFn schema requires `KeyType`), and so does a replayed
+ * state record's: `replayingState` never licenses removing live config.
+ */
+function readEncryptionInput(value: unknown, emptyIsAbsent: boolean): EncryptionInputRead {
+  if (value === undefined || value === null) return { kind: 'absent' };
+  if (typeof value !== 'object' || Array.isArray(value)) return { kind: 'unusable' };
+  const block = value as Record<string, unknown>;
+  if (emptyIsAbsent && Object.keys(block).length === 0) return { kind: 'absent' };
+  const keyType = block['KeyType'];
+  const keyArn = block['KeyArn'] || block['KeyARN'];
+  if (typeof keyType !== 'string' || keyType.length === 0) return { kind: 'unusable' };
+  if (keyArn !== undefined && keyArn !== null && keyArn !== '' && typeof keyArn !== 'string') {
+    return { kind: 'unusable' };
+  }
+  return typeof keyArn === 'string' && keyArn.length > 0
+    ? { kind: 'usable', keyType, keyArn }
+    : { kind: 'usable', keyType };
+}
+
+/** `true` when the desired and the recorded block ask AWS for the same thing. */
+function sameEncryptionInput(next: unknown, nextRead: EncryptionInputRead, prev: unknown): boolean {
+  const b = readEncryptionInput(prev, true);
+  if (nextRead.kind === 'unusable' || b.kind === 'unusable') {
+    return JSON.stringify(next) === JSON.stringify(prev);
+  }
+  if (nextRead.kind === 'absent' || b.kind === 'absent') return nextRead.kind === b.kind;
+  return nextRead.keyType === b.keyType && nextRead.keyArn === b.keyArn;
+}
+
+/**
+ * `true` when the stream's reported encryption is ENABLED with the requested
+ * key. A KeyARN is compared only for a customer-managed key: AWS reports none
+ * for `AWS_OWNED_CMK`.
+ */
+function encryptionMatches(
+  live: DeliveryStreamEncryptionConfiguration | undefined,
+  desired: { keyType: string; keyArn?: string }
+): boolean {
+  if (live?.Status !== 'ENABLED' || live.KeyType !== desired.keyType) return false;
+  return desired.keyType !== 'CUSTOMER_MANAGED_CMK' || live.KeyARN === desired.keyArn;
+}
+
+/**
+ * The CFn input shape of the stream's reported encryption, as
+ * `readCurrentState` emits it: `{KeyARN?, KeyType}` while the stream is
+ * encrypted or becoming so (ENABLED, ENABLING, DISABLING_FAILED), else the
+ * `{}` placeholder. A KeyType AWS still reports beside DISABLED or
+ * ENABLING_FAILED is not encryption in effect.
+ */
+function liveEncryptionAsCfn(
+  live: DeliveryStreamEncryptionConfiguration | undefined
+): Record<string, unknown> {
+  const status = live?.Status;
+  if (status !== 'ENABLED' && status !== 'ENABLING' && status !== 'DISABLING_FAILED') return {};
+  return {
+    ...(live?.KeyARN !== undefined && { KeyARN: live.KeyARN }),
+    ...(live?.KeyType !== undefined && { KeyType: live.KeyType }),
+  };
+}
+
+/** Polling cadence and cap for an encryption transition (measured at ~80-95 s). */
+const ENCRYPTION_POLL_INTERVAL_MS = 5000;
+const ENCRYPTION_POLL_MAX_ATTEMPTS = 120;
+
+/** Errors for an `ENABLING_FAILED` / `DISABLING_FAILED` report: AWS ended the transition. */
+const terminalEncryptionFailures = new WeakSet<object>();
 
 /**
  * `true` for `undefined` / `null` (ABSENT, the empty list) or a list of tag
@@ -694,6 +788,11 @@ export class FirehoseProvider implements ResourceProvider {
    *     `S3BackupMode`, `S3Configuration` → `S3Update`,
    *     `SecretsManagerConfiguration`, `BufferingHints`).
    *
+   *   - **`DeliveryStreamEncryptionConfigurationInput`** (#5357) —
+   *     `StartDeliveryStreamEncryption` / `StopDeliveryStreamEncryption`,
+   *     waiting for the asynchronous transition; see
+   *     {@link applyEncryptionUpdate}. Runs after the destination update.
+   *
    * The legacy `S3DestinationConfiguration` (deprecated by AWS in
    * favor of `ExtendedS3DestinationConfiguration`) stays rejected
    * with a tightened error — CDK constructs always emit Extended.
@@ -731,7 +830,8 @@ export class FirehoseProvider implements ResourceProvider {
         physicalId,
         resourceType,
         properties,
-        previousProperties
+        previousProperties,
+        context
       );
     } catch (error) {
       // Pass through every cdkd-typed error untouched: the destination-switch
@@ -760,9 +860,41 @@ export class FirehoseProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Firehose delivery stream ${logicalId}: ${physicalId}`);
+
+    // Like the destination checks below, refused before any mutating call.
+    const desiredEncryption = readEncryptionInput(
+      properties[ENCRYPTION_KEY],
+      context?.desiredFromAwsReadback === true
+    );
+    const encryptionChanged = !sameEncryptionInput(
+      properties[ENCRYPTION_KEY],
+      desiredEncryption,
+      previousProperties[ENCRYPTION_KEY]
+    );
+    let encryptionSkipped = false;
+    if (encryptionChanged && desiredEncryption.kind === 'unusable') {
+      const message =
+        `${ENCRYPTION_KEY} of Firehose delivery stream ${logicalId} is not an object with a ` +
+        `string KeyType (and a string KeyARN, if any)`;
+      // A state record has no template-side remedy: leave the stream's
+      // encryption as it is and record the previous block (issue #3141).
+      if (context?.replayingState !== true) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            `${message} — nothing was updated`,
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+      }
+      this.logger.warn(safeMsg`${message}; its encryption is left unchanged`);
+      encryptionSkipped = true;
+    }
 
     // Validate destination shape BEFORE issuing any mutating call so a
     // Tags+rejected-destination combined diff does not write Tags then
@@ -905,6 +1037,16 @@ export class FirehoseProvider implements ResourceProvider {
       }
     }
 
+    if (encryptionChanged && desiredEncryption.kind !== 'unusable') {
+      await this.applyEncryptionUpdate(
+        logicalId,
+        physicalId,
+        resourceType,
+        desiredEncryption,
+        maskerOrIdentity(context?.maskSecrets)
+      );
+    }
+
     // Pull current AWS state for the result envelope.
     const description = await this.getClient().send(
       new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
@@ -916,7 +1058,31 @@ export class FirehoseProvider implements ResourceProvider {
       attributes: {
         ...(desc?.DeliveryStreamARN !== undefined && { Arn: desc.DeliveryStreamARN }),
       },
+      ...(encryptionSkipped && {
+        effectiveProperties: this.withRecordedEncryption(
+          properties,
+          previousProperties[ENCRYPTION_KEY],
+          desc?.DeliveryStreamEncryptionConfiguration
+        ),
+      }),
     };
+  }
+
+  /**
+   * The desired bag with the encryption block an update SKIPPED replaced by
+   * what the stream holds: an absent previous drops the key, and a present one
+   * records the live reading, in the shape `readCurrentState` emits. The
+   * recorded previous is never trusted as-is: on a rollback it can be a block a
+   * failed update never applied.
+   */
+  private withRecordedEncryption(
+    properties: Record<string, unknown>,
+    previous: unknown,
+    live: DeliveryStreamEncryptionConfiguration | undefined
+  ): Record<string, unknown> {
+    const { [ENCRYPTION_KEY]: _skipped, ...rest } = properties;
+    if (previous === undefined || previous === null) return rest;
+    return { ...rest, [ENCRYPTION_KEY]: liveEncryptionAsCfn(live) };
   }
 
   /**
@@ -1010,6 +1176,223 @@ export class FirehoseProvider implements ResourceProvider {
           })),
         })
       );
+    }
+  }
+
+  /**
+   * Apply a changed `DeliveryStreamEncryptionConfigurationInput` (issue
+   * #5357): `StartDeliveryStreamEncryption` for a new or changed block,
+   * `StopDeliveryStreamEncryption` for a removed one, as CloudFormation does
+   * (both measured on a CFn stack, a removal alone and beside a Tags change).
+   *
+   * Both calls only START an asynchronous transition (ENABLING / DISABLING,
+   * measured at 80-95 s), so the update waits for its end state. An earlier
+   * transition is waited out first, and the call is skipped when the stream
+   * already holds the requested state, since AWS answers
+   * `InvalidArgumentException` to a Start with the customer-managed key already
+   * in use and to a Stop on a stream that is not encrypted. That includes
+   * `ENABLING_FAILED` after a rejected Start: measured, it reports no KeyType
+   * and a Stop there is refused as "already disabled".
+   */
+  private async applyEncryptionUpdate(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    desired: { kind: 'absent' } | { kind: 'usable'; keyType: string; keyArn?: string },
+    mask: MaskerFn
+  ): Promise<void> {
+    const settled = await this.waitForEncryption(logicalId, physicalId, resourceType, mask, {
+      what: 'settle',
+      done: (enc) => enc?.Status !== 'ENABLING' && enc?.Status !== 'DISABLING',
+    });
+    if (desired.kind === 'absent') {
+      if (settled?.Status !== 'ENABLED' && settled?.Status !== 'DISABLING_FAILED') return;
+      this.refuseToStartTransition(logicalId, physicalId, resourceType, 'disable');
+      await this.getClient().send(
+        new StopDeliveryStreamEncryptionCommand({ DeliveryStreamName: physicalId })
+      );
+      await this.warnIfUnfinished(logicalId, 'StopDeliveryStreamEncryption', () =>
+        this.waitForEncryption(logicalId, physicalId, resourceType, mask, {
+          what: 'disable',
+          done: (enc) => enc === undefined || enc.Status === 'DISABLED',
+          inProgress: 'DISABLING',
+          failed: 'DISABLING_FAILED',
+          staleFailure: settled.Status === 'DISABLING_FAILED',
+        })
+      );
+      return;
+    }
+    if (encryptionMatches(settled, desired)) return;
+    this.refuseToStartTransition(logicalId, physicalId, resourceType, 'enable');
+    await this.getClient().send(
+      new StartDeliveryStreamEncryptionCommand({
+        DeliveryStreamName: physicalId,
+        DeliveryStreamEncryptionConfigurationInput: {
+          KeyType: desired.keyType as DeliveryStreamEncryptionConfigurationInput['KeyType'],
+          ...(desired.keyArn !== undefined && { KeyARN: desired.keyArn }),
+        },
+      })
+    );
+    await this.warnIfUnfinished(logicalId, 'StartDeliveryStreamEncryption', () =>
+      this.waitForEncryption(logicalId, physicalId, resourceType, mask, {
+        what: 'enable',
+        done: (enc) => encryptionMatches(enc, desired),
+        inProgress: 'ENABLING',
+        failed: 'ENABLING_FAILED',
+        staleFailure: settled?.Status === 'ENABLING_FAILED',
+      })
+    );
+  }
+
+  /**
+   * Run the wait that follows an accepted Start / Stop, and when it fails
+   * (a `*_FAILED` report, a timeout, the resource deadline, Ctrl-C) warn before
+   * rethrowing. A throwing `update()` leaves the PREVIOUS block in state (no
+   * engine channel records a value from a failed update), while the stream can
+   * still finish the transition, or after a `*_FAILED` hold neither setting: a
+   * later deploy of the previous template then diffs empty and sends nothing.
+   * `cdkd drift` compares against AWS and shows it.
+   */
+  private async warnIfUnfinished<T>(
+    logicalId: string,
+    call: 'StartDeliveryStreamEncryption' | 'StopDeliveryStreamEncryption',
+    wait: () => Promise<T>
+  ): Promise<T> {
+    try {
+      return await wait();
+    } catch (error) {
+      const outcome =
+        typeof error === 'object' && error !== null && terminalEncryptionFailures.has(error)
+          ? 'AWS reported the change failed, so the stream may no longer match'
+          : 'the stream may still finish the change, so it may no longer match';
+      this.logger.warn(
+        safeMsg`Firehose delivery stream ${logicalId}: ${call} was sent but the encryption change did not finish; ${outcome} the previous setting cdkd keeps recorded. Run 'cdkd drift' to compare, then 'cdkd drift --revert' to apply the recorded setting or 'cdkd drift --accept' to record the stream's.`
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Refuse to START an encryption transition once the engine's per-resource
+   * deadline has run out, or after Ctrl-C. The deadline does not cancel this
+   * update: the engine has already failed the resource and moved on, so a
+   * Start / Stop sent now would change the stream with nobody waiting on it.
+   * A signal that landed during the settle wait's last read is caught here:
+   * that wait returns on a settled report before it re-checks, and the latch
+   * is sticky, so a fresh watch reads it.
+   */
+  private refuseToStartTransition(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    what: 'enable' | 'disable'
+  ): void {
+    const watch = startInterruptWatch(`Firehose ${logicalId} encryption ${what}`);
+    try {
+      if (watch.isInterrupted()) throw watch.onInterrupted();
+    } finally {
+      watch.dispose();
+    }
+    // `remainingMs` reads the clock, so it can reach 0 before the timer that
+    // sets `expired` has run.
+    if (!enclosingDeadlineExpired() && enclosingDeadlineRemainingMs() > 0) return;
+    throw markNonRetryable(
+      new ProvisioningError(
+        `The resource timeout expired before encryption could be ${what}d on Firehose ` +
+          `delivery stream ${logicalId}; no encryption call was sent`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+
+  /**
+   * Poll `DescribeDeliveryStream` until `done` accepts the reported
+   * encryption, and return it. A `failed` report is terminal and names AWS's
+   * failure description, masked, and non-retryable: a retry would only issue
+   * the same call against the same key. When the stream already reported
+   * `failed` before the call (`staleFailure`), that report counts only after
+   * the `inProgress` status has been seen, so an earlier failure is never
+   * blamed on this call. Ctrl-C stops the wait with an `InterruptedWaitError`.
+   * Either way the update is not recorded, so a redeploy of the same template
+   * re-reads the stream and issues only what is still missing.
+   */
+  private async waitForEncryption(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    mask: MaskerFn,
+    opts: {
+      what: 'settle' | 'enable' | 'disable';
+      done: (enc: DeliveryStreamEncryptionConfiguration | undefined) => boolean;
+      inProgress?: 'ENABLING' | 'DISABLING';
+      failed?: 'ENABLING_FAILED' | 'DISABLING_FAILED';
+      staleFailure?: boolean;
+    }
+  ): Promise<DeliveryStreamEncryptionConfiguration | undefined> {
+    const { what, done, inProgress, failed } = opts;
+    const watch = startInterruptWatch(`Firehose ${logicalId} encryption ${what}`);
+    try {
+      let last: string | undefined;
+      let sawInProgress = false;
+      for (let attempt = 1; attempt <= ENCRYPTION_POLL_MAX_ATTEMPTS; attempt++) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        // The engine's deadline does not cancel this update, so a wait that
+        // outlived it would keep polling with nobody waiting on it. Checked
+        // before the read, so the wait ends as the deadline does.
+        if (enclosingDeadlineRemainingMs() <= 0) {
+          throw markNonRetryable(
+            new ProvisioningError(
+              `The resource timeout expired while waiting to ${what} encryption on Firehose ` +
+                `delivery stream ${logicalId} (last status: ${last ?? 'none reported'})`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+        const resp = await this.getClient().send(
+          new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+        );
+        const enc = resp.DeliveryStreamDescription?.DeliveryStreamEncryptionConfiguration;
+        if (done(enc)) return enc;
+        last = enc?.Status;
+        if (last !== undefined && last === inProgress) sawInProgress = true;
+        if (failed !== undefined && last === failed && (sawInProgress || !opts.staleFailure)) {
+          const failure = enc?.FailureDescription;
+          const terminal = markNonRetryable(
+            new ProvisioningError(
+              `Failed to ${what} encryption on Firehose delivery stream ${logicalId}: AWS reports ` +
+                `${failed}` +
+                (failure ? ` (${mask(`${failure.Type ?? ''}: ${failure.Details ?? ''}`)})` : ''),
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+          terminalEncryptionFailures.add(terminal);
+          throw terminal;
+        }
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        await new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.max(0, Math.min(ENCRYPTION_POLL_INTERVAL_MS, enclosingDeadlineRemainingMs()))
+          )
+        );
+      }
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Timed out waiting to ${what} encryption on Firehose delivery stream ${logicalId} ` +
+            `(last status: ${last ?? 'none reported'})`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    } finally {
+      watch.dispose();
     }
   }
 
@@ -2244,9 +2627,10 @@ export class FirehoseProvider implements ResourceProvider {
    * `DeliveryStreamEncryptionConfigurationInput` is also surfaced. AWS
    * returns the read-side shape `DeliveryStreamEncryptionConfiguration`
    * (with extra `Status` / `FailureDescription` fields); we reverse-map
-   * to the CFn input shape (`KeyARN` + `KeyType`) and always emit a
-   * `{}` placeholder so the v3 baseline catches console-side encryption
-   * enables on a previously-default stream.
+   * to the CFn input shape (`KeyARN` + `KeyType`) while the stream is
+   * encrypted or becoming so, and otherwise emit a `{}` placeholder so the
+   * v3 baseline catches console-side encryption enables on a
+   * previously-default stream (`liveEncryptionAsCfn`).
    *
    * Tags are surfaced via a follow-up `ListTagsForDeliveryStream` call
    * with `aws:*` filtered out and always emitted as `[]` placeholder when
@@ -2336,11 +2720,10 @@ export class FirehoseProvider implements ResourceProvider {
     // Surface those when AWS reports them; emit `{}` placeholder always so
     // the v3 baseline catches a console-side enable on a previously-default
     // stream (PR #145 always-emit pattern).
-    const enc = desc.DeliveryStreamEncryptionConfiguration;
-    const encOut: Record<string, unknown> = {};
-    if (enc?.KeyARN !== undefined) encOut['KeyARN'] = enc.KeyARN;
-    if (enc?.KeyType !== undefined) encOut['KeyType'] = enc.KeyType;
-    result['DeliveryStreamEncryptionConfigurationInput'] = encOut;
+    // Only while encryption is in effect or being enabled (issue #5357).
+    result['DeliveryStreamEncryptionConfigurationInput'] = liveEncryptionAsCfn(
+      desc.DeliveryStreamEncryptionConfiguration
+    );
 
     // Tags via ListTagsForDeliveryStream.
     // Always emit `Tags` (even as `[]`) per docs/provider-rules.md#readcurrentstate-for-drift-detection
