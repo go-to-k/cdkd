@@ -981,6 +981,9 @@ export function alignedSecretLeaf(root: unknown, leaf: SecretLeaf): { value: unk
       if (!isPlainObject(cursor)) return undefined;
       // The same NUMBER of keys, and every key the body spells as a literal.
       // A key a secret lands in is a wildcard here: the key rule decides it.
+      // The presence half is DEFENSIVE and unpinned: a splice that keeps the
+      // count but renames a key introduces a key the record does not spell,
+      // which the key rule has already masked whole before this runs.
       const own = new Set(Object.keys(cursor));
       if (own.size !== shape.size) return undefined;
       for (const k of shape) {
