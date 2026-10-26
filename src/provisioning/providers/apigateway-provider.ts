@@ -102,6 +102,7 @@ import {
   type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
 import { replacedDeleteFailureVerdict } from '../../deployment/rollback-executor/replaced-survivor.js';
+import { getPriorAttempts } from '../../deployment/prior-attempt-scope.js';
 
 /**
  * Retry-safety state for the two API Gateway creates that mint their id and
@@ -2285,21 +2286,43 @@ export class ApiGatewayProvider implements ResourceProvider {
     let methodLeftBehind = false;
 
     try {
-      await this.apiGatewayClient.send(
-        new PutMethodCommand({
-          restApiId,
-          resourceId,
-          httpMethod,
-          authorizationType,
-          authorizerId,
-          apiKeyRequired,
-          operationName,
-          requestParameters: methodRequestParameters,
-          requestModels,
-          requestValidatorId,
-          authorizationScopes,
-        })
-      );
+      const putMethod = () =>
+        this.apiGatewayClient.send(
+          new PutMethodCommand({
+            restApiId,
+            resourceId,
+            httpMethod,
+            authorizationType,
+            authorizerId,
+            apiKeyRequired,
+            operationName,
+            requestParameters: methodRequestParameters,
+            requestModels,
+            requestValidatorId,
+            authorizationScopes,
+          })
+        );
+      try {
+        await putMethod();
+      } catch (putError) {
+        // go-to-k/cdkd#5294: the method may be what an earlier attempt of THIS
+        // resource left behind when its wiring cleanup also failed (below).
+        // Replaced only on the stack's own evidence; anything else keeps
+        // AWS's refusal.
+        if (
+          !isMethodAlreadyExists(putError) ||
+          !(await this.priorAttemptMadeMethod(logicalId, restApiId, resourceId, httpMethod, log))
+        ) {
+          throw putError;
+        }
+        log.warn(
+          `Replacing API Gateway Method ${logicalId} (${methodPath}), which an earlier failed deploy of it left behind`
+        );
+        await this.apiGatewayClient.send(
+          new DeleteMethodCommand({ restApiId, resourceId, httpMethod })
+        );
+        await putMethod();
+      }
 
       // PutMethodCommand has succeeded — AWS has now committed the
       // Method resource. Every subsequent call wires sub-resources onto
@@ -2419,6 +2442,42 @@ export class ApiGatewayProvider implements ResourceProvider {
       );
       if (methodLeftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, physicalId);
       throw thrown;
+    }
+  }
+
+  /**
+   * Whether this stack's rollback journal shows an earlier, failed attempt of
+   * `logicalId` that put this same method (go-to-k/cdkd#5294). That attempt's
+   * wiring failed and so did its cleanup, so the method exists with no state
+   * record and the attempt is journaled as made (`markCreatedBeforeFailure`).
+   *
+   * The method is keyed by (RestApiId, ResourceId, HttpMethod) alone, so a
+   * method on the same keys is another owner's unless the journal names it
+   * (`prior-attempt-scope.ts`, the `SecurityGroupIngress` duplicate arm's
+   * rule). An unreadable journal or a caller that bound none is no evidence.
+   */
+  private async priorAttemptMadeMethod(
+    logicalId: string,
+    restApiId: string,
+    resourceId: string,
+    httpMethod: string,
+    log: MaskedLogSinks
+  ): Promise<boolean> {
+    const lookup = getPriorAttempts(logicalId);
+    if (lookup === undefined) return false;
+    try {
+      const attempts = await lookup.attempts();
+      return attempts.some(
+        (bag) =>
+          bag['RestApiId'] === restApiId &&
+          bag['ResourceId'] === resourceId &&
+          bag['HttpMethod'] === httpMethod
+      );
+    } catch (error) {
+      log.debug(
+        `API Gateway Method ${logicalId}: rollback journal read failed: ${describeAwsFailure(error).detail}`
+      );
+      return false;
     }
   }
 
@@ -3098,6 +3157,18 @@ interface CfnStageCanarySetting {
  * to `undefined` (#1471/#1493 class). Create refuses such a block; update
  * warns and skips the property.
  */
+/**
+ * `PutMethod` refused because the method exists. API Gateway also answers
+ * `ConflictException` for a concurrent modification, so the message decides.
+ */
+function isMethodAlreadyExists(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.name === 'ConflictException' &&
+    /already exists/i.test(error.message)
+  );
+}
+
 function isPlainObjectBlock(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
