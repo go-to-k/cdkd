@@ -114,9 +114,19 @@ ISSUED status within 600s.
 ```
 
 A DNS-validated certificate reaches `ISSUED` only once its validation records
-exist in your DNS zone. On a first deploy they usually do not exist yet, so
-cdkd's 10-minute wait runs out. While it waits, cdkd prints the records the
-certificate needs. Before it reports the error, cdkd deletes the certificate
+exist in your DNS zone.
+
+With `CertificateValidation.fromDns(hostedZone)` (a `HostedZoneId` on the
+domain's `DomainValidationOptions` entry), cdkd writes the record into that
+Route 53 zone itself, as CloudFormation does, so a first deploy needs nothing
+from you. The caller needs `route53:ChangeResourceRecordSets` on the zone. The
+record is left in place when the certificate is deleted: it is shared by every
+certificate for the domain, and CloudFormation leaves it too.
+
+For a domain without a `HostedZoneId` (a zone outside Route 53 or outside the
+account, or `fromDns()` without a zone), the records usually do not exist on a
+first deploy, so cdkd's 10-minute wait runs out. While it waits, cdkd prints the
+records the certificate needs. Before it reports the error, cdkd deletes the certificate
 it requested, so a failed attempt leaves nothing behind.
 
 Add the printed CNAME records to your DNS zone, then re-run:
