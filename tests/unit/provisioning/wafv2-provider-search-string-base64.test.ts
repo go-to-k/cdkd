@@ -293,7 +293,7 @@ describe('WAFv2WebACLProvider ByteMatchStatement.SearchStringBase64 (issue #1389
     const monetizeRule = {
       Name: 'monetize-bots',
       Priority: 0,
-      Action: { Monetize: { PriceMultiplier: 2 } },
+      Action: { Monetize: { PriceMultiplier: '2' } },
       Statement: {
         ByteMatchStatement: {
           SearchString: 'BadBot',
@@ -311,7 +311,7 @@ describe('WAFv2WebACLProvider ByteMatchStatement.SearchStringBase64 (issue #1389
       const rules = await createdRules(provider, [monetizeRule]);
 
       expect(mockWarn).not.toHaveBeenCalled();
-      expect(rules[0]['Action']).toEqual({ Monetize: { PriceMultiplier: 2 } });
+      expect(rules[0]['Action']).toEqual({ Monetize: { PriceMultiplier: '2' } });
       const byteMatch = (rules[0]['Statement'] as Record<string, Record<string, unknown>>)[
         'ByteMatchStatement'
       ];
@@ -332,7 +332,7 @@ describe('WAFv2WebACLProvider ByteMatchStatement.SearchStringBase64 (issue #1389
 
       expect(mockWarn).not.toHaveBeenCalled();
       const updateCall = mockSend.mock.calls[1][0];
-      expect(updateCall.input.Rules[0].Action).toEqual({ Monetize: { PriceMultiplier: 2 } });
+      expect(updateCall.input.Rules[0].Action).toEqual({ Monetize: { PriceMultiplier: '2' } });
     });
 
     it('the installed SDK serializer puts the three members on the wire', async () => {
@@ -365,7 +365,7 @@ describe('WAFv2WebACLProvider ByteMatchStatement.SearchStringBase64 (issue #1389
         )
       ).rejects.toThrow('captured');
       const wire = JSON.parse(body);
-      expect(wire.Rules[0].Action.Monetize).toEqual({ PriceMultiplier: 2 });
+      expect(wire.Rules[0].Action.Monetize).toEqual({ PriceMultiplier: '2' });
       expect(wire.Rules[0].Statement.ByteMatchStatement.PreParseTextTransformations).toEqual([
         { Priority: 0, Type: 'NONE' },
       ]);
