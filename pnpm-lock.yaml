@@ -341,7 +341,7 @@ importers:
         specifier: ^3.1016.0
         version: 3.1152.0
       '@aws-sdk/client-wafv2':
-        specifier: ^3.1017.0
+        specifier: ^3.1152.0
         version: 3.1152.0
       '@aws-sdk/credential-provider-node':
         specifier: ^3.972.81
