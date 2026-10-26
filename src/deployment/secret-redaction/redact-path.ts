@@ -722,7 +722,10 @@ export function pathCrossesDottedKey(bag: unknown, path: string): boolean {
 const DEFINITION_SOURCE_KEYS = ['DefinitionSubstitutions', 'DefinitionString', 'Definition'];
 
 /** The readback keys that carry the RENDERED body (`readCurrentState` emits `Definition`). */
-export const RENDERED_DEFINITION_KEYS: ReadonlySet<string> = new Set(['Definition', 'DefinitionString']);
+export const RENDERED_DEFINITION_KEYS: ReadonlySet<string> = new Set([
+  'Definition',
+  'DefinitionString',
+]);
 
 /**
  * Does a key the definition is built from carry a secret: a dynamic reference,

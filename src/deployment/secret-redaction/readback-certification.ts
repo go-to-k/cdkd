@@ -41,8 +41,12 @@ import { identityKeyFor } from './identity-keys.js';
  * same holds for the `DefinitionS3Location` shape, whose body the record does
  * not hold.
  */
-function renderedDefinitionLiterals(source: Record<string, unknown>): Set<string> {
+function renderedDefinitionLiterals(source: Record<string, unknown>): {
+  strings: Set<string>;
+  scalars: Set<unknown>;
+} {
   const keep = new Set<string>();
+  const scalarKeep = new Set<unknown>();
   const subs = source['DefinitionSubstitutions'];
   const scalars: Array<[string, string]> = [];
   if (isPlainObject(subs)) {
@@ -50,6 +54,7 @@ function renderedDefinitionLiterals(source: Record<string, unknown>): Set<string
       if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
         scalars.push([name, String(value)]);
         if (typeof value === 'string') keep.add(value);
+        addScalarSpelling(scalarKeep, value);
       }
     }
   }
@@ -69,13 +74,46 @@ function renderedDefinitionLiterals(source: Record<string, unknown>): Set<string
     for (const text of rendered === body ? [body] : [body, rendered]) {
       keep.add(text);
       try {
-        for (const leaf of wholeStringLeavesOf(JSON.parse(text) as unknown)) keep.add(leaf);
+        const parsed = JSON.parse(text) as unknown;
+        for (const leaf of wholeStringLeavesOf(parsed)) keep.add(leaf);
+        collectScalarLeaves(parsed, scalarKeep);
       } catch {
         // Not JSON: the text above is all it spells.
       }
     }
   }
-  return keep;
+  return { strings: keep, scalars: scalarKeep };
+}
+
+/**
+ * A substitution value's NUMBER / BOOLEAN spelling, as AWS reads it back when
+ * the body places it outside quotes (`"Seconds": ${wait}`). A reference or a
+ * `***` never parses to one, so only a non-secret value lands here.
+ */
+function addScalarSpelling(into: Set<unknown>, value: string | number | boolean): void {
+  if (typeof value !== 'string') {
+    into.add(value);
+    return;
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (typeof parsed === 'number' || typeof parsed === 'boolean') into.add(parsed);
+  } catch {
+    // Not a JSON scalar: it can only be read back as a string.
+  }
+}
+
+/** Every number / boolean leaf of a parsed body (plain containers only). */
+function collectScalarLeaves(value: unknown, into: Set<unknown>): void {
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    into.add(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectScalarLeaves(item, into);
+  } else if (isPlainObject(value)) {
+    for (const item of Object.values(value)) collectScalarLeaves(item, into);
+  }
 }
 
 /**
@@ -163,8 +201,20 @@ function refuseUncertifiedSubtree(
   value: unknown,
   sourceLiterals: ReadonlySet<string>,
   mark: boolean | undefined,
+  // NUMBER / BOOLEAN leaves the source spells, or `undefined` to keep every one
+  // (the default, argued under "WHY STRINGS ONLY"). Only the rendered-definition
+  // arm passes a set (issue #5315): there a `${name}` placed OUTSIDE quotes
+  // reads back as a JSON number, so a secret of digits is not a string leaf.
+  scalarLiterals?: ReadonlySet<unknown>,
   seen: Map<object, unknown> = new Map()
 ): unknown {
+  if (
+    scalarLiterals !== undefined &&
+    (typeof value === 'number' || typeof value === 'boolean') &&
+    !scalarLiterals.has(value)
+  ) {
+    return mark ? POSITION_UNCERTIFIED : SECRET_MASK;
+  }
   if (typeof value === 'string') {
     // A WHOLE token, not a string that merely CONTAINS one. The substring test
     // this arm shipped with spared `postgres://admin:<plaintext>@{{resolve:...}}`
@@ -222,14 +272,15 @@ function refuseUncertifiedSubtree(
   if (Array.isArray(value)) {
     const out: unknown[] = [];
     seen.set(value, out);
-    for (const item of value) out.push(refuseUncertifiedSubtree(item, sourceLiterals, mark, seen));
+    for (const item of value)
+      out.push(refuseUncertifiedSubtree(item, sourceLiterals, mark, scalarLiterals, seen));
     return out;
   }
   if (isPlainObject(value) && hasPlainPrototype(value)) {
     const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     seen.set(value, out);
     for (const [k, v] of Object.entries(value)) {
-      out[k] = refuseUncertifiedSubtree(v, sourceLiterals, mark, seen);
+      out[k] = refuseUncertifiedSubtree(v, sourceLiterals, mark, scalarLiterals, seen);
     }
     return out;
   }
@@ -567,10 +618,13 @@ export function refuseUncertifiedReadbackPositions(
   // (`DefinitionS3Location`): every leaf but a whole token, a mixed
   // `Bearer {{resolve:...}}` the scan wrote included, is masked there.
   //
-  // Residuals, module-wide rather than this arm's: a secret substituted into a
-  // JSON KEY (a state name) is a key, which no walk here masks, and one
-  // substituted at a NUMERIC position reads back as a number, which no resolved
-  // secret's `string` type admits as a leaf.
+  // NUMBER and BOOLEAN leaves are refused here too, against the scalars the
+  // record spells: a `${name}` OUTSIDE quotes reads back as a JSON number, so a
+  // secret of digits is not a string leaf. (Such a body parses in neither
+  // spelling, so every number of that readback is masked.) The residual is a
+  // secret substituted into a JSON KEY (a state name): no walk here masks a key,
+  // and what a masked key should look like is open in
+  // go-to-k/cdkd#5333.
   if (
     failClosed === true &&
     isPlainObject(bag) &&
@@ -605,7 +659,7 @@ export function refuseUncertifiedReadbackPositions(
       // {@link preferPositionDecisions} as an undecided position, which hands
       // it the RAW bag's value wherever a derived needle rewrote nothing — the
       // plaintext of every substituted secret the needles do not name.
-      out[k] = refuseUncertifiedSubtree(walked, keep, mark);
+      out[k] = refuseUncertifiedSubtree(walked, keep.strings, mark, keep.scalars);
     }
     return out;
   }

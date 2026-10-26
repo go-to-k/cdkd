@@ -294,6 +294,64 @@ describe('secret-redaction - a substituted Definition on the empty-map readback 
       expect(JSON.stringify(persisted)).not.toContain(PLAIN);
     });
 
+    it('a secret substituted at a NUMERIC position is masked; spelled numbers and booleans are kept', () => {
+      // An L1 `definitionString` placing `${pin}` outside quotes: AWS reads the
+      // digits back as a JSON number.
+      const PIN = 987654321;
+      const props = {
+        DefinitionString:
+          '{"StartAt":"W","States":{"W":{"Type":"Wait","Seconds":${pin},"Next":"P"},' +
+          '"P":{"Type":"Pass","Result":{"retries":3,"wait":${wait},"on":true},"End":true}}}',
+        DefinitionSubstitutions: { pin: EXPR, wait: '45' },
+      };
+      const bag = {
+        Definition: {
+          StartAt: 'W',
+          States: {
+            W: { Type: 'Wait', Seconds: PIN, Next: 'P' },
+            P: { Type: 'Pass', Result: { retries: 3, wait: 45, on: true }, End: true },
+          },
+        },
+      };
+      const persisted = persist(props, bag);
+      expect(JSON.stringify(persisted)).not.toContain(String(PIN));
+      const def = (persisted['observedProperties'] as Record<string, unknown>)[
+        'Definition'
+      ] as Record<string, Record<string, Record<string, unknown>>>;
+      expect(def['States']!['W']!['Seconds']).toBe(SECRET_MASK);
+      // The body does not parse in either spelling (`${pin}` sits outside
+      // quotes), so the record spells no number: the over-mask stated in the
+      // arm. A whole NON-secret substitution value is still kept by its own
+      // spelling, and a boolean the record cannot vouch for is masked too.
+      expect(def['States']!['P']!['Result']).toMatchObject({ wait: 45 });
+    });
+
+    it('keeps the numbers and booleans a PARSEABLE body spells', () => {
+      const props = {
+        DefinitionString: JSON.stringify({
+          StartAt: 'W',
+          States: { W: { Type: 'Wait', Seconds: 10, Result: '${apiKey}', End: true } },
+        }),
+        DefinitionSubstitutions: { apiKey: EXPR },
+      };
+      const bag = {
+        Definition: {
+          StartAt: 'W',
+          States: { W: { Type: 'Wait', Seconds: 10, Result: PLAIN, End: true } },
+        },
+      };
+      const persisted = persist(props, bag);
+      expect(JSON.stringify(persisted)).not.toContain(PLAIN);
+      const w = (
+        (persisted['observedProperties'] as Record<string, Record<string, Record<string, unknown>>>)[
+          'Definition'
+        ]!['States'] as Record<string, Record<string, unknown>>
+      )['W']!;
+      expect(w['Seconds']).toBe(10);
+      expect(w['End']).toBe(true);
+      expect(w['Result']).toBe(SECRET_MASK);
+    });
+
     it('is IDEMPOTENT over its own output', () => {
       const props = properties({ DefinitionString: JSON.stringify(templateDefinition) });
       const once = persist(props, observed());

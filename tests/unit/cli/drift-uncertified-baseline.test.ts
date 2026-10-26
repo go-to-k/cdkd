@@ -1008,10 +1008,14 @@ describe('cdkd drift — an uncertified-position baseline mask (issue #3595)', (
 });
 
 describe('equalModuloMask / isUncertifiedBaselineMaskPosition (issue #3595)', () => {
-  it('lets a mask match only a STRING, positionally', async () => {
+  it('lets a mask match only a SCALAR, positionally', async () => {
     const { equalModuloMask } = await import('../../../src/analyzer/drift-calculator.js');
     expect(equalModuloMask(['a', SECRET_MASK], ['a', 'live'], SECRET_MASK)).toBe(true);
-    expect(equalModuloMask({ K: SECRET_MASK }, { K: 42 }, SECRET_MASK)).toBe(false);
+    // A number or boolean too: the rendered-definition arm masks those leaves (#5315).
+    expect(equalModuloMask({ K: SECRET_MASK }, { K: 42 }, SECRET_MASK)).toBe(true);
+    expect(equalModuloMask({ K: SECRET_MASK }, { K: false }, SECRET_MASK)).toBe(true);
+    expect(equalModuloMask({ K: SECRET_MASK }, { K: null }, SECRET_MASK)).toBe(false);
+    expect(equalModuloMask({ K: SECRET_MASK }, { K: [] }, SECRET_MASK)).toBe(false);
     expect(equalModuloMask({ K: SECRET_MASK }, { K: { nested: 'x' } }, SECRET_MASK)).toBe(false);
     expect(equalModuloMask({ K: SECRET_MASK }, {}, SECRET_MASK)).toBe(false);
     expect(equalModuloMask([SECRET_MASK, 'a'], ['a', 'live'], SECRET_MASK)).toBe(false);
@@ -1104,6 +1108,36 @@ describe('cdkd drift — a rendered Step Functions Definition mask (issue #5315)
     const { output } = await runDrift(['TestStack', '--json']);
 
     assertNoPlaintext(output);
+    const payload = JSON.parse(output) as DriftJson[];
+    expect(payload[0]!.drifted).toEqual([]);
+    expect(payload[0]!.notCompared).toEqual([
+      { logicalId: 'M', type: SFN_TYPE, cause: 'uncertifiedBaseline', referencesUnresolved: true },
+    ]);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('a mask over a NUMERIC substituted secret is notCompared too, exit 2', async () => {
+    const record: ResourceState = {
+      physicalId: 'arn:aws:states:us-east-1:123456789012:stateMachine:m',
+      resourceType: SFN_TYPE,
+      properties: {
+        DefinitionString: '{"StartAt":"W","States":{"W":{"Type":"Wait","Seconds":${pin},"End":true}}}',
+        DefinitionSubstitutions: { pin: ALPHA_EXPR },
+      },
+      observedProperties: {
+        Definition: {
+          StartAt: 'W',
+          States: { W: { Type: 'Wait', Seconds: SECRET_MASK, End: SECRET_MASK } },
+        },
+      },
+    };
+    mockGetState.mockResolvedValueOnce(makeState({ M: record }));
+    readsBack({
+      Definition: { StartAt: 'W', States: { W: { Type: 'Wait', Seconds: 901, End: true } } },
+    });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
     const payload = JSON.parse(output) as DriftJson[];
     expect(payload[0]!.drifted).toEqual([]);
     expect(payload[0]!.notCompared).toEqual([
