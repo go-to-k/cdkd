@@ -5,6 +5,7 @@ import { S3Client } from '@aws-sdk/client-s3';
 import { IAMClient } from '@aws-sdk/client-iam';
 import { describeWireCases, record, setOutputOverrides } from './sdk-wire-harness.js';
 import { LogsLogGroupProvider } from '../../../src/provisioning/providers/logs-loggroup-provider.js';
+import { S3DirectoryBucketProvider } from '../../../src/provisioning/providers/s3-directory-bucket-provider.js';
 
 // The client classes the fourth batch reaches (`sdk-wire-cases-4.ts`), wrapped
 // as in `sdk-wire-coverage.test.ts`: every instance, shared or provider-built
@@ -53,5 +54,29 @@ describe('AWS::Logs::LogGroup LogGroupClass on create', () => {
       .split('\n')
       .find((line) => line.startsWith('["CreateLogGroupCommand"'));
     expect(create).toContain(`\\"logGroupClass\\":\\"${logGroupClass}\\"`);
+  });
+});
+
+// The location type rides beside DataRedundancy, and no bag path names it:
+// a Local Zone bucket must say `LocalZone`, a zonal one `AvailabilityZone`
+// (go-to-k/cdkd#5317).
+describe('AWS::S3Express::DirectoryBucket Location.Type on create', () => {
+  it.each([
+    ['SingleAvailabilityZone', 'use1-az4', 'AvailabilityZone'],
+    ['SingleLocalZone', 'use1-mia2-az1', 'LocalZone'],
+  ])('%s in %s sends Location.Type %s', async (dataRedundancy, zone, locationType) => {
+    setOutputOverrides(undefined);
+    const outcome = await record(() =>
+      new S3DirectoryBucketProvider().create('L', 'AWS::S3Express::DirectoryBucket', {
+        BucketName: `b--${zone}--x-s3`,
+        LocationName: zone,
+        DataRedundancy: dataRedundancy,
+      })
+    );
+    expect(outcome).toMatchObject({ threw: false });
+    const create = (outcome as { wire: string }).wire
+      .split('\n')
+      .find((line) => line.startsWith('["CreateBucketCommand"'));
+    expect(create).toContain(`<Type>${locationType}</Type>`);
   });
 });

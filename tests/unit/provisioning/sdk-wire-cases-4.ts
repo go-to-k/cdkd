@@ -114,8 +114,8 @@ export const CASES_4: TypeCase[] = [
         expectedRemovalThrows: TAG_THROWS(ALL_DIRECTIONS, 2),
       },
       {
-        // Observes DataRedundancy's delivery only; the Location.Type sent
-        // beside it is not asserted, pending go-to-k/cdkd#5317.
+        // Observes DataRedundancy's delivery; the Location.Type sent beside
+        // it is read by `sdk-wire-coverage-4.test.ts`.
         name: 'a local zone',
         bag: {
           BucketName: 'b--use1-mia2-az1--x-s3',
