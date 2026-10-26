@@ -21,7 +21,9 @@ import { identityKeyFor } from './identity-keys.js';
  * The record keys a Step Functions definition is BUILT from: the body (inline
  * as a string or an object) and the `${name}` substitution map applied to it
  * (issue [#5315](https://github.com/go-to-k/cdkd/issues/5315)).
- * `DefinitionSubstitutions` exists on no other CloudFormation type.
+ * Among the schemas cdkd carries, `DefinitionSubstitutions` exists only on
+ * `AWS::StepFunctions::StateMachine`; the arm keys on these NAMES, so another
+ * type spelling them the same way is covered too.
  */
 const DEFINITION_SOURCE_KEYS = ['DefinitionSubstitutions', 'DefinitionString', 'Definition'];
 
@@ -32,6 +34,12 @@ const RENDERED_DEFINITION_KEYS: ReadonlySet<string> = new Set(['Definition', 'De
  * Does a key the definition is built from carry a secret: a dynamic reference,
  * or a {@link SECRET_MASK} a `NoEcho` value left (a substitution value, or a
  * body the containment arm flattened whole)?
+ *
+ * A PUBLIC `{{resolve:ssm:...}}` counts too. Only a legacy record holds one
+ * unresolved (a deploy persists a public parameter's value), and nothing on an
+ * empty map can tell it from a `SecureString`, so its substituted leaves are
+ * masked: phantom drift, not a disclosure — the module's "PUBLIC ssm MIXED leaf,
+ * EMPTY map, no proof" row, one key over.
  */
 function definitionSourceCarriesSecret(source: Record<string, unknown>): boolean {
   return DEFINITION_SOURCE_KEYS.some(
@@ -58,8 +66,10 @@ function definitionSourceCarriesSecret(source: Record<string, unknown>): boolean
  * order). A renderer that differs from AWS's can only fail to MATCH, which
  * masks a leaf the record spells: over-masking, never a disclosure. A body that
  * does not parse (a `***` body, a substituted quote) contributes its rendered
- * text alone, so its readback is masked wholesale, as is the
- * `DefinitionS3Location` shape, whose body the record does not hold.
+ * text alone, so every string leaf of its readback is masked except one equal
+ * to a substitution value, an empty string or a whole resolvable token. The
+ * same holds for the `DefinitionS3Location` shape, whose body the record does
+ * not hold.
  */
 function renderedDefinitionLiterals(source: Record<string, unknown>): Set<string> {
   const keep = new Set<string>();
@@ -579,7 +589,12 @@ export function refuseUncertifiedReadbackPositions(
   // FAIL CLOSED at the rendered keys: the ordinary walk still runs first, so a
   // position it certifies keeps its expression, and every string leaf it left
   // that the record does not spell ({@link renderedDefinitionLiterals}) is
-  // masked. Only on a fail-closed destination, as everywhere in this module.
+  // masked. Only on a fail-closed destination, as everywhere in this module —
+  // which includes the POPULATED-map baseline writers (`cdkd drift --accept` /
+  // `--revert`): there the value scan has already rewritten a substituted
+  // secret onto its expression, which the literal set spells, so what the arm
+  // costs them is over-masking where the record holds no body
+  // (`DefinitionS3Location`), never a redacted leaf.
   //
   // Residuals, module-wide rather than this arm's: a secret substituted into a
   // JSON KEY (a state name) is a key, which no walk here masks, and one
@@ -614,6 +629,11 @@ export function refuseUncertifiedReadbackPositions(
         ? refuseUncertifiedReadbackPositions(v, source[k], secrets, failClosed, learn, mark)
         : v;
       // A POSITION mark is a symbol, which the refusal returns untouched.
+      // `mark` is LOAD-BEARING: in mark mode a refused leaf must come back as
+      // {@link POSITION_UNCERTIFIED}. A literal `***` there reads to
+      // {@link preferPositionDecisions} as an undecided position, which hands
+      // it the RAW bag's value wherever a derived needle rewrote nothing — the
+      // plaintext of every substituted secret the needles do not name.
       out[k] = refuseUncertifiedSubtree(walked, keep, mark);
     }
     return out;

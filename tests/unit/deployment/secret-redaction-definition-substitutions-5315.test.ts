@@ -257,6 +257,25 @@ describe('secret-redaction - a substituted Definition on the empty-map readback 
       );
     });
 
+    it('a DERIVED needle elsewhere in the record does not un-mask the substituted secret', () => {
+      // A whole-token leaf certifies P1 -> EXPR, so the derived scan runs and the
+      // MARK tree decides which positions it may fill: the substituted second
+      // secret must read back as refused there, not as undecided.
+      const P2 = 'plain-two-value-abc';
+      const OTHER = '{{resolve:secretsmanager:app/other:SecretString:key}}';
+      const props = {
+        Definition: { StartAt: 'A', States: { A: { Type: 'Pass', Result: { x: EXPR, y: '${s}', z: 'pre-${s}' } } } },
+        DefinitionSubstitutions: { s: OTHER },
+      };
+      const bag = {
+        Definition: { StartAt: 'A', States: { A: { Type: 'Pass', Result: { x: PLAIN, y: P2, z: `pre-${P2}` } } } },
+      };
+      const persisted = persist(props, bag);
+      const text = JSON.stringify(persisted);
+      expect(text).not.toContain(P2);
+      expect(text).not.toContain(PLAIN);
+    });
+
     it('a NoEcho substitution value persisted as *** (no reference anywhere in the record)', () => {
       const props = {
         DefinitionString: JSON.stringify(templateDefinition),
