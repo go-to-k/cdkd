@@ -5,6 +5,7 @@ import {
   HeadBucketCommand,
   ListObjectsV2Command,
   DeleteObjectsCommand,
+  type DataRedundancy,
   type Tag,
 } from '@aws-sdk/client-s3';
 import {
@@ -412,11 +413,14 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
           CreateBucketConfiguration: {
             Bucket: {
               Type: 'Directory',
-              DataRedundancy: dataRedundancy as 'SingleAvailabilityZone',
+              DataRedundancy: dataRedundancy as DataRedundancy,
             },
             Location: {
               Name: azId,
-              Type: 'AvailabilityZone',
+              // A Local Zone bucket names its zone with `Type: 'LocalZone'`
+              // (go-to-k/cdkd#5317); the zone id flows through `getAzId`
+              // unchanged (its lookup fails soft to the given name).
+              Type: dataRedundancy === 'SingleLocalZone' ? 'LocalZone' : 'AvailabilityZone',
             },
             ...(includeTags ? { Tags: tags } : {}),
           },
