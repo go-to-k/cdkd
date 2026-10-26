@@ -2470,6 +2470,11 @@ export class ApiGatewayProvider implements ResourceProvider {
    * owner's method held the keys, or one whose cleanup succeeded, also leaves
    * one, and replacing on it would delete a method this stack never made. An
    * unreadable journal or a caller that bound none is no evidence.
+   *
+   * Residual: a cleanup delete that failed ambiguously yet applied, followed
+   * by another owner putting a method on the same keys before the re-run.
+   * Those keys are this stack's own `RestApiId` / `ResourceId`, so the other
+   * owner would be writing into this stack's REST API resource.
    */
   private async priorAttemptLeftMethod(
     logicalId: string,
