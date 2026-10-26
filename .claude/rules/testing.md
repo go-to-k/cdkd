@@ -153,7 +153,7 @@ Each is the shape a fixture must take; the named test blocks a wrong change.
 - **The `/new-integ` scaffold's `aws-cdk-lib` floor >= the LOWEST floor in the
   corpus**, not "all floors equal": dependabot bumps one fixture at a time, so
   the subject is the GENERATOR, and every unreadable input is a REFUSAL rather
-  than a skip. (`integ-cdk-lib-floor.test.ts`, which IS the CI enforcement.)
+  than a skip. (`integ-cdk-lib-floor.test.ts`.)
 - **A mode-gated resource DISAPPEARS in every later step that omits its token** —
   phases run under `CDKD_TEST_UPDATE=<modes>`, so the resource leaves the
   template at any later deploy whose mode list lacks it and cdkd correctly issues
@@ -188,10 +188,6 @@ Each is the shape a fixture must take; the named test blocks a wrong change.
   `--output text`** applies `--query` PER PAGE, so a >1000-entry listing prints
   one number per page — count ROWS of a projection instead, for ANY filtered
   count.
-- **When auditing a fixture by hand, read the stack name from `verify.sh`'s
-  `STACK=` line, never from the directory name** — `cognito-resource-server`'s
-  stack is `CognitoResourceServerStack`, and probing the convention-derived name
-  returns a clean-looking `0` for a key that does not exist.
 
 ### Conventions no lint can enforce
 
@@ -210,6 +206,10 @@ Each is the shape a fixture must take; the named test blocks a wrong change.
   has plus `?*`, since a guard that never matches leaks silently. **The refusal
   warns on stderr with the words `teardown sweep refused`**
   ([#2690](https://github.com/go-to-k/cdkd/issues/2690) keys on that phrase).
+- **An assertion reads ONLY its subject**: a state record by logical id, never
+  `| first` over a type that may gain a second; cdkd's own lines, never all of
+  `cdkd diff` (it carries aws-cdk-lib `WARNING <Prop>:` lines); a read's rc, not
+  its bytes (`--output json` may print nothing, #5303).
 - **A fixture that greps cdkd's OWN output must fail loudly when the wording
   drifts** — a zero match is otherwise indistinguishable from "the condition did
   not occur". Carry a sentinel: a second, independent marker on the same line,
