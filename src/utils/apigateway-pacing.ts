@@ -141,19 +141,21 @@ export function resetApiGatewayPacersForTests(): void {
 }
 
 interface MiddlewareStack {
-  add(
+  addRelativeTo(
     middleware: (
       next: (args: unknown) => Promise<unknown>,
       context: { commandName?: string }
     ) => (args: unknown) => Promise<unknown>,
-    options: { step: string; name: string; relation: string; toMiddleware: string }
+    options: { name: string; relation: 'after'; toMiddleware: string }
   ): void;
 }
 
 /**
  * Makes every attempt of every call on `client` wait for its tokens. Installed
  * AFTER the SDK's retry middleware, so a retried attempt is paced like a first
- * one. Returns `client` for chaining.
+ * one: relative to it by name (`addRelativeTo`), which `add` would ignore,
+ * leaving the order to the step and priority of each. Returns `client` for
+ * chaining.
  */
 export function withApiGatewayPacing<
   T extends {
@@ -164,8 +166,8 @@ export function withApiGatewayPacing<
   const stack = client.middlewareStack as MiddlewareStack | undefined;
   // Left as it is rather than half-wrapped: a client without a middleware
   // stack is never the pinned SDK's, only a test double.
-  if (typeof stack?.add !== 'function') return client;
-  stack.add(
+  if (typeof stack?.addRelativeTo !== 'function') return client;
+  stack.addRelativeTo(
     (next, context) => async (args) => {
       const region = await client.config.region();
       // The SDK names the command `CreateResourceCommand`; the limits name the
@@ -180,7 +182,6 @@ export function withApiGatewayPacing<
       return next(args);
     },
     {
-      step: 'finalizeRequest',
       name: 'cdkdApiGatewayPacing',
       relation: 'after',
       toMiddleware: 'retryMiddleware',

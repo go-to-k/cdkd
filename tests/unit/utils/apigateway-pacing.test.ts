@@ -267,6 +267,18 @@ describe('withApiGatewayPacing against a real SDK client', () => {
     ]);
   });
 
+  it('registers the pacing relative to the SDK retry middleware, after it', () => {
+    const { client } = makeClient([]);
+    withApiGatewayPacing(client);
+    const order = client.middlewareStack.identify();
+    const retry = order.indexOf('retryMiddleware - finalizeRequest');
+    // A relative entry is named by its anchor, not by a step and priority that
+    // place it after retry only while the SDK keeps retry at `high`.
+    const pacing = order.indexOf('cdkdApiGatewayPacing - after retryMiddleware');
+    expect(retry).toBeGreaterThanOrEqual(0);
+    expect(pacing).toBeGreaterThan(retry);
+  });
+
   it('leaves a client without a middleware stack as it is', () => {
     const double = { config: { region: async () => 'eu-west-1' } };
     expect(withApiGatewayPacing(double as never)).toBe(double);
