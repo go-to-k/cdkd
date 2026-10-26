@@ -1008,10 +1008,14 @@ describe('cdkd drift — an uncertified-position baseline mask (issue #3595)', (
 });
 
 describe('equalModuloMask / isUncertifiedBaselineMaskPosition (issue #3595)', () => {
-  it('lets a mask match only a STRING, positionally', async () => {
+  it('lets a mask match only a SCALAR, positionally', async () => {
     const { equalModuloMask } = await import('../../../src/analyzer/drift-calculator.js');
     expect(equalModuloMask(['a', SECRET_MASK], ['a', 'live'], SECRET_MASK)).toBe(true);
-    expect(equalModuloMask({ K: SECRET_MASK }, { K: 42 }, SECRET_MASK)).toBe(false);
+    // A number or boolean too: the rendered-definition arm masks those leaves (#5315).
+    expect(equalModuloMask({ K: SECRET_MASK }, { K: 42 }, SECRET_MASK)).toBe(true);
+    expect(equalModuloMask({ K: SECRET_MASK }, { K: false }, SECRET_MASK)).toBe(true);
+    expect(equalModuloMask({ K: SECRET_MASK }, { K: null }, SECRET_MASK)).toBe(false);
+    expect(equalModuloMask({ K: SECRET_MASK }, { K: [] }, SECRET_MASK)).toBe(false);
     expect(equalModuloMask({ K: SECRET_MASK }, { K: { nested: 'x' } }, SECRET_MASK)).toBe(false);
     expect(equalModuloMask({ K: SECRET_MASK }, {}, SECRET_MASK)).toBe(false);
     expect(equalModuloMask([SECRET_MASK, 'a'], ['a', 'live'], SECRET_MASK)).toBe(false);
@@ -1050,5 +1054,140 @@ describe('equalModuloMask / isUncertifiedBaselineMaskPosition (issue #3595)', ()
     expect(
       isUncertifiedBaselineMaskPosition({ X: { k: ALPHA_EXPR, 'z.q': 'v' } }, 'X.k')
     ).toBe(true);
+  });
+});
+
+describe('cdkd drift — a rendered Step Functions Definition mask (issue #5315)', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  const SFN_TYPE = 'AWS::StepFunctions::StateMachine';
+  const body = (key: string, startAt = 'Wait'): Record<string, unknown> => ({
+    StartAt: startAt,
+    States: { Wait: { Type: 'Pass', Result: { key, region: 'us-east-1' }, End: true } },
+  });
+
+  beforeEach(() => {
+    mockGetState.mockReset();
+    mockListStacks.mockReset().mockResolvedValue([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
+    mockRegistryGetProvider.mockReset();
+    mockSecretsManagerSend.mockReset().mockImplementation(async () => ({
+      SecretString: JSON.stringify({ alpha: ALPHA_PLAINTEXT, bravo: BRAVO_PLAINTEXT }),
+    }));
+    warnSpy.mockReset();
+    resetAccountInfoCache();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('__exit__');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
+  /** The record #5315's fail-closed arm writes: the substituted leaf masked. */
+  function machine(substitutions: Record<string, unknown>): ResourceState {
+    return {
+      physicalId: 'arn:aws:states:us-east-1:123456789012:stateMachine:m',
+      resourceType: SFN_TYPE,
+      properties: {
+        DefinitionString: JSON.stringify(body('${apiKey}')),
+        DefinitionSubstitutions: substitutions,
+      },
+      observedProperties: { Definition: body(SECRET_MASK) },
+    };
+  }
+
+  function readsBack(live: Record<string, unknown>): void {
+    mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => live });
+  }
+
+  it('reports a substituted-secret mask as notCompared/uncertifiedBaseline, exit 2', async () => {
+    mockGetState.mockResolvedValueOnce(makeState({ M: machine({ apiKey: ALPHA_EXPR }) }));
+    readsBack({ Definition: body(ALPHA_PLAINTEXT) });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    assertNoPlaintext(output);
+    const payload = JSON.parse(output) as DriftJson[];
+    expect(payload[0]!.drifted).toEqual([]);
+    expect(payload[0]!.notCompared).toEqual([
+      { logicalId: 'M', type: SFN_TYPE, cause: 'uncertifiedBaseline', referencesUnresolved: true },
+    ]);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('a mask over a NUMERIC substituted secret is notCompared too, exit 2', async () => {
+    const record: ResourceState = {
+      physicalId: 'arn:aws:states:us-east-1:123456789012:stateMachine:m',
+      resourceType: SFN_TYPE,
+      properties: {
+        DefinitionString: '{"StartAt":"W","States":{"W":{"Type":"Wait","Seconds":${pin},"End":true}}}',
+        DefinitionSubstitutions: { pin: ALPHA_EXPR },
+      },
+      observedProperties: {
+        Definition: {
+          StartAt: 'W',
+          States: { W: { Type: 'Wait', Seconds: SECRET_MASK, End: SECRET_MASK } },
+        },
+      },
+    };
+    mockGetState.mockResolvedValueOnce(makeState({ M: record }));
+    readsBack({
+      Definition: { StartAt: 'W', States: { W: { Type: 'Wait', Seconds: 901, End: true } } },
+    });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    const payload = JSON.parse(output) as DriftJson[];
+    expect(payload[0]!.drifted).toEqual([]);
+    expect(payload[0]!.notCompared).toEqual([
+      { logicalId: 'M', type: SFN_TYPE, cause: 'uncertifiedBaseline', referencesUnresolved: true },
+    ]);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('keeps a real edit beside the mask as drift, exit 1', async () => {
+    mockGetState.mockResolvedValueOnce(makeState({ M: machine({ apiKey: ALPHA_EXPR }) }));
+    readsBack({ Definition: body(ALPHA_PLAINTEXT, 'Edited') });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    assertNoPlaintext(output);
+    const payload = JSON.parse(output) as DriftJson[];
+    expect(payload[0]!.drifted).toHaveLength(1);
+    expect(payload[0]!.drifted[0]!.changes.map((c) => c.path)).toEqual(['Definition.StartAt']);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it('does not classify a Definition mask whose record carries no secret', async () => {
+    const { isUncertifiedBaselineMaskPosition } = await import(
+      '../../../src/deployment/secret-redaction.js'
+    );
+    expect(
+      isUncertifiedBaselineMaskPosition(
+        { DefinitionString: '{}', DefinitionSubstitutions: { apiKey: 'plain' } },
+        'Definition.States.Wait.Result.key'
+      )
+    ).toBe(false);
+    expect(
+      isUncertifiedBaselineMaskPosition(
+        { DefinitionString: '{}', DefinitionSubstitutions: { apiKey: ALPHA_EXPR } },
+        'Definition.States.Wait.Result.key'
+      )
+    ).toBe(true);
+    // A NoEcho value persisted as `***` in the record is the trigger too.
+    expect(
+      isUncertifiedBaselineMaskPosition(
+        { DefinitionString: '{}', DefinitionSubstitutions: { apiKey: SECRET_MASK } },
+        'Definition.States.Wait.Result.key'
+      )
+    ).toBe(true);
+    // ...but only under the rendered keys.
+    expect(
+      isUncertifiedBaselineMaskPosition(
+        { DefinitionString: '{}', DefinitionSubstitutions: { apiKey: ALPHA_EXPR } },
+        'RoleArn'
+      )
+    ).toBe(false);
   });
 });

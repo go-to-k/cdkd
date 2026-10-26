@@ -626,6 +626,26 @@ export function redactByPath(
       out[k] = Object.hasOwn(source, k)
         ? redactByPath(v, source[k], secrets, rules, secretExpressions, bagIsSameGeneration)
         : redactForState(v, { provenance: 'value-scan', secrets });
+      // A rendered Step Functions definition (issue #5315): a `${name}`
+      // substituted OUTSIDE quotes reads back as a JSON NUMBER, which neither
+      // the path pass nor the value scan (both string-only) ever names, so a
+      // populated map — the deploy's own persist of the resource that resolved
+      // the secret — wrote the digits verbatim. Scoped to these keys and to a
+      // record whose definition carries a secret: everywhere else a number is
+      // a value the template spells as one, and rewriting a `Port` that merely
+      // EQUALS a secret would turn a number into a string in `properties`
+      // (measured), which the diff reports against the template on every deploy.
+      // The same cost remains INSIDE a definition: a secret equal to a number or
+      // boolean the definition itself spells (`true`, `3`) rewrites that
+      // literal too, in `properties` when the record holds `Definition` as an
+      // object. That needs a secret equal to a literal already in the record.
+      if (
+        secrets.size > 0 &&
+        RENDERED_DEFINITION_KEYS.has(k) &&
+        definitionSourceCarriesSecret(source)
+      ) {
+        out[k] = nameScalarSecrets(out[k], secrets);
+      }
     }
     return out;
   }
@@ -712,6 +732,82 @@ export function pathCrossesDottedKey(bag: unknown, path: string): boolean {
 }
 
 /**
+ * The record keys a Step Functions definition is BUILT from: the body (inline
+ * as a string or an object) and the `${name}` substitution map applied to it
+ * (issue [#5315](https://github.com/go-to-k/cdkd/issues/5315)).
+ * Among the schemas cdkd carries, `DefinitionSubstitutions` exists only on
+ * `AWS::StepFunctions::StateMachine`; the arm keys on these NAMES, so another
+ * type spelling them the same way is covered too.
+ */
+const DEFINITION_SOURCE_KEYS = ['DefinitionSubstitutions', 'DefinitionString', 'Definition'];
+
+/** The readback keys that carry the RENDERED body (`readCurrentState` emits `Definition`). */
+export const RENDERED_DEFINITION_KEYS: ReadonlySet<string> = new Set([
+  'Definition',
+  'DefinitionString',
+]);
+
+/**
+ * Does a key the definition is built from carry a secret: a dynamic reference,
+ * or a {@link SECRET_MASK} a `NoEcho` value left (a substitution value, or a
+ * body the containment arm flattened whole)?
+ *
+ * A PUBLIC `{{resolve:ssm:...}}` counts too. Only a legacy record holds one
+ * unresolved (a deploy persists a public parameter's value), and nothing on an
+ * empty map can tell it from a `SecureString`, so its substituted leaves are
+ * masked: phantom drift, not a disclosure — the module's "PUBLIC ssm MIXED leaf,
+ * EMPTY map, no proof" row, one key over.
+ */
+export function definitionSourceCarriesSecret(source: Record<string, unknown>): boolean {
+  return DEFINITION_SOURCE_KEYS.some(
+    (k) =>
+      Object.hasOwn(source, k) &&
+      (subtreeHasDynamicReference(source[k]) || carriesSecretMask(source[k]))
+  );
+}
+
+/**
+ * Every NUMBER / BOOLEAN leaf whose spelling (`String(leaf)`) IS a recorded
+ * plaintext, replaced by that plaintext's expression — or `***` for the
+ * mask-only class (issue #5315). WHOLE value only, like the string arm's
+ * first test, matched by spelling and by JSON value (so `1.50` read back as
+ * `1.5` is named). A plain container is rebuilt null-prototype; anything else is
+ * returned by identity. A record with no JSON-scalar plaintext returns the
+ * value untouched.
+ */
+function nameScalarSecrets(value: unknown, secrets: RecordedSecretValues): unknown {
+  // Each plaintext's JSON-SCALAR form too, compared by value: a body that
+  // places `1.50` or `1e3` outside quotes reads back as `1.5` / `1000`, whose
+  // `String()` is not the plaintext.
+  const byValue = new Map<unknown, string>();
+  for (const [plaintext, expression] of secrets) {
+    try {
+      const parsed = JSON.parse(plaintext) as unknown;
+      if ((typeof parsed === 'number' && Number.isFinite(parsed)) || typeof parsed === 'boolean') {
+        if (!byValue.has(parsed)) byValue.set(parsed, expression);
+      }
+    } catch {
+      // Not a JSON scalar: no number or boolean can spell it.
+    }
+  }
+  if (byValue.size === 0) return value;
+  const walk = (node: unknown): unknown => {
+    if (typeof node === 'number' || typeof node === 'boolean') {
+      if (typeof node === 'number' && !Number.isFinite(node)) return node;
+      return secrets.get(String(node)) ?? byValue.get(node) ?? node;
+    }
+    if (Array.isArray(node)) return node.map(walk);
+    if (isPlainObject(node) && hasPlainPrototype(node)) {
+      const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+      for (const [k, v] of Object.entries(node)) out[k] = walk(v);
+      return out;
+    }
+    return node;
+  };
+  return walk(value);
+}
+
+/**
  * Could a {@link SECRET_MASK} in an `observedProperties` baseline at the dotted
  * `path` be an UNCERTIFIED-POSITION mask (issue
  * [#2852](https://github.com/go-to-k/cdkd/issues/2852)'s fail-closed refusal)
@@ -752,6 +848,20 @@ export function isUncertifiedBaselineMaskPosition(
   // node carries. Fail closed: an ambiguous position keeps the `NoEcho`
   // disposition.
   if (pathCrossesDottedKey(properties, path)) return false;
+  // A RENDERED Step Functions definition (issue #5315): the readback's
+  // `Definition` is the body with `DefinitionSubstitutions` applied, which
+  // `properties` holds under OTHER keys (a `DefinitionString` record has no
+  // `Definition` node at all, and an object one holds `${name}` there, no
+  // reference), so the walk below can never find the reference the mask stands
+  // for. The class is answered from the keys the definition is built from,
+  // with the same predicate the writer's arm fires on, so the two cannot
+  // disagree about which records it covers. A `***` there is a `NoEcho` VALUE
+  // the record substitutes, not a `NoEcho` mask at this position: the mask in
+  // the baseline is the writer's fail-closed one either way.
+  const [head] = path.split('.');
+  if (head !== undefined && RENDERED_DEFINITION_KEYS.has(head)) {
+    return definitionSourceCarriesSecret(properties);
+  }
   let cursor: unknown = properties;
   for (const segment of path.split('.')) {
     if (typeof cursor === 'string') break;
