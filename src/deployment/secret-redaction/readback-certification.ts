@@ -594,7 +594,8 @@ export function refuseUncertifiedReadbackPositions(
   // `--revert`): there the value scan has already rewritten a substituted
   // secret onto its expression, which the literal set spells, so what the arm
   // costs them is over-masking where the record holds no body
-  // (`DefinitionS3Location`), never a redacted leaf.
+  // (`DefinitionS3Location`): every leaf but a whole token, a mixed
+  // `Bearer {{resolve:...}}` the scan wrote included, is masked there.
   //
   // Residuals, module-wide rather than this arm's: a secret substituted into a
   // JSON KEY (a state name) is a key, which no walk here masks, and one
