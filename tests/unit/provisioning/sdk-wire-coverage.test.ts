@@ -873,6 +873,8 @@ describe('the wire harness create-only paths', () => {
     // An absent container walks (to `undefined`), as a Pipe's unused source
     // parameters do.
     [['Pipe', 'Other'], false],
+    // Removing the parent of an ABSENT create-only member leaves it absent.
+    [['Pipe'], false],
   ] as const)('through a list or a wildcard, %j touches one: %s', (path, touches) => {
     const createOnly = new Set([
       'Foo.Name',

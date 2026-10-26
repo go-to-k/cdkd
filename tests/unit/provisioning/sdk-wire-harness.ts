@@ -266,7 +266,9 @@ export function without(bag: Bag, path: Path): Bag {
  * (removing a parent removes its create-only member) or above it. Array
  * indices are dropped, as the schema's paths spell none. Path-precise, as the
  * engine's replacement check is: a nested create-only member leaves its
- * siblings updatable, unless the engine cannot walk `bag` to it.
+ * siblings updatable, unless the engine cannot walk `bag` to it. Above it,
+ * only when `bag` holds a value there: removing a parent whose create-only
+ * member is absent leaves that path `undefined` on both sides.
  */
 export function touchesCreateOnly(
   createOnly: ReadonlySet<string>,
@@ -275,28 +277,32 @@ export function touchesCreateOnly(
 ): boolean {
   const dotted = path.filter((seg) => typeof seg === 'string').join('.');
   for (const c of createOnly) {
-    if (c === dotted || dotted.startsWith(`${c}.`) || c.startsWith(`${dotted}.`)) return true;
+    if (c === dotted || dotted.startsWith(`${c}.`)) return true;
     const [top, ...rest] = c.split('.');
-    if (rest.length > 0 && top === path[0] && !walkable(bag[top!], rest)) return true;
+    if (rest.length === 0 || top !== path[0]) continue;
+    const at = valueAt(bag[top!], rest);
+    if (!at.resolved) return true;
+    if (c.startsWith(`${dotted}.`) && at.value !== undefined) return true;
   }
   return false;
 }
 
 /**
- * Whether the engine can walk `value` along `segments` of object keys
- * (`createOnlyChangeRequiresReplacement`'s `valueAtPath`): a `*`, or a list or
- * scalar where an object is expected, cannot be walked, and the engine then
- * replaces on ANY change under that top-level. An absent container walks.
+ * `value` walked along `segments` of object keys, as the engine's
+ * `valueAtPath` (`createOnlyChangeRequiresReplacement`) walks it: a `*`, or a
+ * list or scalar where an object is expected, is unresolved, and the engine
+ * then replaces on ANY change under that top-level. An absent container
+ * resolves to `undefined`.
  */
-function walkable(value: unknown, segments: string[]): boolean {
+function valueAt(value: unknown, segments: string[]): { resolved: boolean; value?: unknown } {
   let current = value;
   for (const segment of segments) {
-    if (segment === '*') return false;
-    if (current === undefined || current === null) return true;
-    if (typeof current !== 'object' || Array.isArray(current)) return false;
+    if (segment === '*') return { resolved: false };
+    if (current === undefined || current === null) return { resolved: true, value: undefined };
+    if (typeof current !== 'object' || Array.isArray(current)) return { resolved: false };
     current = (current as Record<string, unknown>)[segment];
   }
-  return true;
+  return { resolved: true, value: current };
 }
 
 /**
