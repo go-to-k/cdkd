@@ -1,0 +1,6 @@
+# The integ runner installs deps fresh via `vp install`, so the lockfile
+# is a build artifact, not a committed source (matches local-start-agentcore).
+pnpm-lock.yaml
+
+# Override the parent integ .gitignore so the MicroVM app is tracked.
+!app/*.js

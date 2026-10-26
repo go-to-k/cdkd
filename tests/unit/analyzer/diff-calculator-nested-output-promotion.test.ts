@@ -534,6 +534,62 @@ describe('DiffCalculator - readers of a nested stack output (issue #3631)', () =
     expect(changes.get('Reader')?.changeType).toBe('NO_CHANGE');
   });
 
+  it('promotes a Ref / ${X} reader of an S3 Tables Table renamed in place, only on a rename (go-to-k/cdkd#5313)', async () => {
+    // cdkd's `Ref` of a Table is the table name, and a TableName change is an
+    // in-place rename, so a reader resolved against the record holds the old
+    // name. A Namespace-only or Tags-only change keeps the name.
+    const bucket = 'arn:aws:s3tables:us-east-1:123456789012:bucket/b';
+    const tableResource = (
+      name: string,
+      ns: string,
+      tags?: unknown
+    ): CloudFormationTemplate['Resources'][string] => ({
+      Type: 'AWS::S3Tables::Table',
+      Properties: {
+        TableBucketARN: bucket,
+        Namespace: ns,
+        TableName: name,
+        OpenTableFormat: 'ICEBERG',
+        ...(tags !== undefined && { Tags: tags }),
+      },
+    });
+    const run = async (desired: CloudFormationTemplate['Resources'][string]) => {
+      const state = baseState();
+      state.resources['Tbl'] = {
+        physicalId: `${bucket}|ns_a|t_a`,
+        resourceType: 'AWS::S3Tables::Table',
+        properties: { TableBucketARN: bucket, Namespace: 'ns_a', TableName: 't_a', OpenTableFormat: 'ICEBERG' },
+        attributes: { TableARN: `${bucket}/table/id-1` },
+      };
+      state.resources['RefReader'] = readerRow(`${bucket}|ns_a|t_a`);
+      // The test resolver leaves a dot-less `${X}` as written.
+      state.resources['SubReader'] = { ...readerRow('name=${Tbl}'), physicalId: '/app/sub' };
+      const template: CloudFormationTemplate = {
+        Resources: {
+          Tbl: desired,
+          RefReader: readerResource({ Ref: 'Tbl' }),
+          SubReader: readerResource({ 'Fn::Sub': ['name=${Tbl}', {}] }),
+        },
+      };
+      return new DiffCalculator().calculateDiff(state, template, makeResolver(state));
+    };
+
+    const renamed = await run(tableResource('t_b', 'ns_a'));
+    expect(renamed.get('Tbl')?.changeType).toBe('UPDATE');
+    expect(renamed.get('RefReader')?.changeType).toBe('UPDATE');
+    expect(renamed.get('SubReader')?.changeType).toBe('UPDATE');
+
+    for (const desired of [
+      tableResource('t_a', 'ns_b'),
+      tableResource('t_a', 'ns_a', [{ Key: 'k', Value: 'v' }]),
+    ]) {
+      const changes = await run(desired);
+      expect(changes.get('Tbl')?.changeType).toBe('UPDATE');
+      expect(changes.get('RefReader')?.changeType).toBe('NO_CHANGE');
+      expect(changes.get('SubReader')?.changeType).toBe('NO_CHANGE');
+    }
+  });
+
   it('promotes a Ref / ${Param} reader of a FRESH NoEcho parameter, and only that (go-to-k/cdkd#3717)', async () => {
     // A nested child's parameter carrying a `NoEcho` value the parent supplied
     // in this deploy resolves to `***` on the diff side, as its record does;

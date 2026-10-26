@@ -37,6 +37,8 @@ Pick the command by the resource you want to run.
 | A CloudFront distribution | [`cdkd local start-cloudfront`](local-start-cloudfront.md) | Until {kbd:ctrl+c} |
 | A Bedrock AgentCore Runtime, one request | [`cdkd local invoke-agentcore`](local-invoke-agentcore.md) | Once, then exits |
 | A Bedrock AgentCore Runtime, many requests | [`cdkd local start-agentcore`](local-start-agentcore.md) | Until {kbd:ctrl+c} |
+| A Lambda Web Function | [`cdkd local start-web-function`](local-start-web-function.md) | Until {kbd:ctrl+c} |
+| A Lambda MicroVM image | [`cdkd local start-microvm`](local-start-microvm.md) | Until {kbd:ctrl+c} |
 
 `start-alb` starts the ECS services and Lambda functions behind the load
 balancer itself, so you do not run `start-service` next to it.
@@ -50,6 +52,10 @@ Docker must be running, because every command runs your code in a container:
 - An ECS container runs from its own image, next to the ECS metadata sidecar
   that AWS publishes.
 - An AgentCore agent runs in the agent's image.
+- A Lambda Web Function runs its code bundle in the AWS Lambda base image
+  for its runtime, with its own HTTP server in place of the RIE.
+- A Lambda MicroVM image is built from its own `Dockerfile` and runs as one
+  container per MicroVM.
 
 `local start-cloudfront` is the one command that can run without Docker. It
 serves a distribution made of S3 origins and CloudFront Functions inside the
@@ -87,8 +93,8 @@ A stack inside a CDK `Stage` is addressed by its full display path, for example
 
 `invoke` and `run-task` require a target. On the other commands it is
 optional. Without one, `start-api` serves every API it finds, and
-`start-service`, `start-alb`, `start-cloudfront` and the two AgentCore
-commands open a picker when you run them in an interactive terminal.
+`start-service`, `start-alb`, `start-cloudfront`, `start-web-function`,
+`start-microvm` and the two AgentCore commands open a picker when you run them in an interactive terminal.
 
 ## Where values come from
 
@@ -171,6 +177,8 @@ IAM errors locally, run the code under the deployed role:
 | `local start-service`, `local start-alb` | `--assume-role [arn]` (`--assume-task-role` also works) |
 | `local start-cloudfront` | `--assume-role [arn]`, for Lambda origins |
 | `local invoke-agentcore`, `local start-agentcore` | `--assume-role [arn]` |
+| `local start-web-function` | `--assume-role [arn]`, the revision's `ExecutionRoleArn` |
+| `local start-microvm` | `--assume-role <arn>`; the role is not in the template, so the ARN is required |
 
 `--role-arn` is a different flag. It names the role cdkd assumes for its own
 AWS calls.
@@ -212,6 +220,9 @@ Every command except `local start-cloudfront` also accepts:
 | `--env-vars <file>` | — | JSON environment-variable overrides. |
 | `--container-host <ip>` | `127.0.0.1` | IP that published container ports bind to. Must be numeric, because Docker rejects a hostname here. |
 
+`local start-web-function` and `local start-microvm` take `--host <ip>` in
+place of `--container-host`: it sets where their own local URLs listen.
+
 ### Which region is used
 
 The region for AWS calls comes from `AWS_REGION`, then `AWS_DEFAULT_REGION`,
@@ -249,7 +260,10 @@ container, sidecar, Docker network and temporary file the command created.
 
 If Docker itself hangs during that cleanup, press {kbd:ctrl+c} a second time.
 cdkd exits immediately and skips the cleanup, so containers can be left
-behind. Find and remove them yourself:
+behind. `local start-web-function` and `local start-microvm` are the
+exceptions: a second signal exits at once only while a `docker run` is still
+in flight; otherwise they print that they are still removing the containers
+and wait for that to finish. Find and remove them yourself:
 
 ```bash
 docker ps --filter name=cdkd-local-

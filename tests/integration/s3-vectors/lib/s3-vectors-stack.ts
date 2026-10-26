@@ -62,6 +62,17 @@ export class S3VectorsStack extends cdk.Stack {
       description: 'S3 Vector Bucket name',
     });
 
+    // Issue #5309: no `vectorBucketName`. The CFn schema leaves it optional
+    // (CloudFormation generates one); the provider used to refuse the create.
+    // No tags or encryption, so the update phase leaves it untouched: its
+    // generated name must survive that redeploy.
+    const namelessBucket = new s3vectors.CfnVectorBucket(this, 'NamelessVectorBucket', {});
+
+    new cdk.CfnOutput(this, 'NamelessVectorBucketName', {
+      value: namelessBucket.ref,
+      description: 'Generated name of the nameless S3 Vector Bucket',
+    });
+
     new cdk.CfnOutput(this, 'VectorBucketKeyArn', {
       value: key.keyArn,
       description: 'CMK the vector bucket must be encrypted with',

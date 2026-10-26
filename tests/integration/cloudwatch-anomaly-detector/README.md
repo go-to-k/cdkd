@@ -21,7 +21,10 @@ the descriptor.
    CFn property is `MetricTimeZone` (capital Z) but the SDK / wire field is
    `MetricTimezone` (lowercase z) — the provider re-keys it, and passing the
    CFn key through verbatim is a client-side silent drop (found live
-   2026-07-31 when the first integ run's readback came back empty).
+   2026-07-31 when the first integ run's readback came back empty). This
+   deploy runs under `TZ=Asia/Tokyo` with an offset-less range
+   (`2026-01-01T00:00:00`, CFn's documented format) and asserts the exact UTC
+   instants read back, so a host-local parse fails it (go-to-k/cdkd#5311).
 3. **Destroy**: detector gone, queue gone, state file gone.
 
 ## Run

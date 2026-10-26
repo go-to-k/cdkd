@@ -296,6 +296,8 @@ const navigation: ScopedNavigationGroup[] = [
       { title: 'local start-cloudfront', path: '/local-start-cloudfront' },
       { title: 'local invoke-agentcore', path: '/local-invoke-agentcore' },
       { title: 'local start-agentcore', path: '/local-start-agentcore' },
+      { title: 'local start-web-function', path: '/local-start-web-function' },
+      { title: 'local start-microvm', path: '/local-start-microvm' },
     ],
   },
   {

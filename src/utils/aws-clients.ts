@@ -19,12 +19,14 @@ import { BedrockAgentCoreControlClient } from '@aws-sdk/client-bedrock-agentcore
 import { RedshiftClient } from '@aws-sdk/client-redshift';
 import { ElastiCacheClient } from '@aws-sdk/client-elasticache';
 import { ACMClient } from '@aws-sdk/client-acm';
+import { Route53Client } from '@aws-sdk/client-route-53';
 import { LambdaMicrovmsClient } from '@aws-sdk/client-lambda-microvms';
 import { LambdaWebClient } from '@aws-sdk/client-lambda-web';
 import { LambdaCoreClient } from '@aws-sdk/client-lambda-core';
 import { awsClientDefaults, type AwsClientDefaults } from './aws-client-defaults.ts';
 import { currentStackAwsScope, runInStackAwsScope } from './stack-aws-scope.ts';
 import { quietS3Logger } from './sdk-call-log.ts';
+import { API_GATEWAY_MAX_ATTEMPTS, withApiGatewayPacing } from './apigateway-pacing.ts';
 
 /**
  * AWS client configuration
@@ -94,6 +96,7 @@ export class AwsClients {
   private redshiftClient?: RedshiftClient;
   private elastiCacheClient?: ElastiCacheClient;
   private acmClient?: ACMClient;
+  private route53Client?: Route53Client;
   private lambdaMicrovmsClient?: LambdaMicrovmsClient;
   private lambdaWebClient?: LambdaWebClient;
   private lambdaCoreClient?: LambdaCoreClient;
@@ -467,9 +470,14 @@ export class AwsClients {
    */
   getAPIGatewayClient(): APIGatewayClient {
     if (!this.apiGatewayClient) {
-      this.apiGatewayClient = new APIGatewayClient({
-        ...this.clientOptions,
-      });
+      // Paced and given more attempts than the SDK default: the control plane
+      // allows 10 calls per second per account (apigateway-pacing.ts).
+      this.apiGatewayClient = withApiGatewayPacing(
+        new APIGatewayClient({
+          ...this.clientOptions,
+          maxAttempts: API_GATEWAY_MAX_ATTEMPTS,
+        })
+      );
     }
     return this.apiGatewayClient;
   }
@@ -578,6 +586,29 @@ export class AwsClients {
    */
   get acm(): ACMClient {
     return this.getACMClient();
+  }
+
+  /**
+   * Get Route 53 client
+   *
+   * Route 53 is a global service; the client uses the configured region and
+   * credentials like every other client here. Used by the ACM provider to write
+   * the DNS validation record a certificate's `HostedZoneId` asks for.
+   */
+  getRoute53Client(): Route53Client {
+    if (!this.route53Client) {
+      this.route53Client = new Route53Client({
+        ...this.clientOptions,
+      });
+    }
+    return this.route53Client;
+  }
+
+  /**
+   * Convenience getter for Route 53 client
+   */
+  get route53(): Route53Client {
+    return this.getRoute53Client();
   }
 
   /**
@@ -772,6 +803,7 @@ export class AwsClients {
     this.redshiftClient?.destroy();
     this.elastiCacheClient?.destroy();
     this.acmClient?.destroy();
+    this.route53Client?.destroy();
     this.lambdaMicrovmsClient?.destroy();
     this.lambdaWebClient?.destroy();
     this.lambdaCoreClient?.destroy();

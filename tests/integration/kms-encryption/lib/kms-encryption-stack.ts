@@ -14,6 +14,8 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  * - CfnOutputs for key ARN, alias name, bucket name
  * - Removal of KeyPolicy / RotationPeriodInDays / Enabled
  *   (CDKD_TEST_REMOVAL, issue #1160)
+ * - A refused KeyUsage change (CDKD_TEST_IMMUTABLE) and a key policy put
+ *   with BypassPolicyLockoutSafetyCheck (CDKD_TEST_BYPASS), issue #5299
  */
 export class KmsEncryptionStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -56,6 +58,61 @@ export class KmsEncryptionStack extends cdk.Stack {
       enableKeyRotation: true,
       pendingWindowInDays: 7,
       ...(isRemoval ? {} : { enabled: false, rotationPeriodInDays: 90 }),
+    }).applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    // Issue #5299: KeyUsage cannot change on an existing key. CloudFormation
+    // fails the update; cdkd used to report success while the key kept
+    // ENCRYPT_DECRYPT and the beside-it Description change. The IMMUTABLE
+    // phase changes both and must fail with nothing applied.
+    const isImmutable = process.env.CDKD_TEST_IMMUTABLE === 'true';
+    new kms.CfnKey(this, 'SpecKey', {
+      description: isImmutable ? 'cdkd test spec key (changed)' : 'cdkd test spec key',
+      keySpec: 'RSA_2048',
+      keyUsage: isImmutable ? 'SIGN_VERIFY' : 'ENCRYPT_DECRYPT',
+      pendingWindowInDays: 7,
+    }).applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    // Issue #5299: the BYPASS phase puts a policy granting the account no
+    // kms:PutKeyPolicy. KMS refuses it unless BypassPolicyLockoutSafetyCheck
+    // is sent, which cdkd's update used to drop. The policy keeps
+    // kms:ScheduleKeyDeletion, so destroy still removes the key.
+    const isBypass = process.env.CDKD_TEST_BYPASS === 'true';
+    const root = `arn:${cdk.Aws.PARTITION}:iam::${cdk.Aws.ACCOUNT_ID}:root`;
+    new kms.CfnKey(this, 'LockKey', {
+      description: 'cdkd test lockout bypass key',
+      pendingWindowInDays: 7,
+      keyPolicy: {
+        Version: '2012-10-17',
+        Statement: [
+          isBypass
+            ? {
+                Sid: 'Cdkd5299NoPutKeyPolicy',
+                Effect: 'Allow',
+                Principal: { AWS: root },
+                Action: [
+                  'kms:Describe*',
+                  'kms:Get*',
+                  'kms:List*',
+                  'kms:ScheduleKeyDeletion',
+                  'kms:CancelKeyDeletion',
+                  'kms:Enable*',
+                  'kms:Disable*',
+                  'kms:TagResource',
+                  'kms:UntagResource',
+                  'kms:UpdateKeyDescription',
+                ],
+                Resource: '*',
+              }
+            : {
+                Sid: 'Cdkd5299Full',
+                Effect: 'Allow',
+                Principal: { AWS: root },
+                Action: 'kms:*',
+                Resource: '*',
+              },
+        ],
+      },
+      ...(isBypass ? { bypassPolicyLockoutSafetyCheck: true } : {}),
     }).applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     // KMS Alias

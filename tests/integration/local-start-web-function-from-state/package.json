@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-local-start-web-function-from-state",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Integration test fixture for cdkd local start-web-function --from-state --assume-role",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.274.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

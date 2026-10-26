@@ -266,13 +266,15 @@ See the [CI per-PR guide](https://cdkd.dev/ci-per-pr/) for a complete GitHub Act
 
 ## Run workloads locally
 
-`cdkd local *` runs Lambda functions, API Gateway APIs, ECS tasks and services, ALBs, CloudFront distributions, and Bedrock AgentCore runtimes on the developer's machine via Docker — no AWS deploy involved, so the deployment-boundary steps above do not apply to these commands:
+`cdkd local *` runs Lambda functions, API Gateway APIs, ECS tasks and services, ALBs, CloudFront distributions, Bedrock AgentCore runtimes, Lambda Web Functions, and Lambda MicroVM images on the developer's machine via Docker — no AWS deploy involved, so the deployment-boundary steps above do not apply to these commands:
 
 ```bash
 cdkd local invoke '<function>'        # one-shot Lambda invoke
 cdkd local start-api                  # long-running local API Gateway
 cdkd local run-task '<task>'          # one-shot ECS task
 cdkd local start-service '<service>'  # long-running ECS service emulator
+cdkd local start-web-function '<endpoint|function>'  # long-running Lambda Web Function server
+cdkd local start-microvm '<image>'    # long-running Lambda MicroVM(s) from a MicrovmImage
 ```
 
 The most important choice is the environment source: `--from-state` or `--from-cfn-stack`. A workload whose environment variables reference other resources (`Ref` / `Fn::GetAtt` table names, queue URLs — the common case) runs with those variables dropped unless one of the two fills them with the REAL values of the already-deployed resources — the physical IDs and attributes of the tables, queues, and buckets actually running in the AWS account:
@@ -286,7 +288,7 @@ cdkd local invoke '<function>' --from-cfn-stack  # env vars <- the deployed reso
 
 With the environment source resolved, a local run is a hybrid: the handler executes on the developer's machine (edit and re-invoke — no deploy round-trip), while talking to the real deployed dev resources. That removes the usual local-testing overhead — no hand-maintained `.env` files mirroring resource names, and no local emulators to install and seed with test data, because the code reads and writes the actual dev-environment tables, queues, and buckets.
 
-Most `cdkd local` commands require Docker, and the first run pulls base images (up to ~600 MB). See the [local execution guide](https://cdkd.dev/local-emulation/) for the full subcommand list (ALB, CloudFront, AgentCore) and flags.
+Most `cdkd local` commands require Docker, and the first run pulls base images (up to ~600 MB). See the [local execution guide](https://cdkd.dev/local-emulation/) for the full subcommand list (ALB, CloudFront, AgentCore, Web Functions, MicroVMs) and flags.
 
 ## Command reference
 

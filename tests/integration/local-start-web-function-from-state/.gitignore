@@ -1,0 +1,7 @@
+# The integ runner installs deps fresh via `vp install`, so the lockfile
+# is a build artifact, not a committed source (matches local-start-agentcore).
+pnpm-lock.yaml
+
+# Override the parent integ .gitignore so the web function's server source
+# (the s3assets.Asset directory the revision runs) is tracked.
+!web/*.js

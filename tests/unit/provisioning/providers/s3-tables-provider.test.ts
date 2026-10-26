@@ -39,9 +39,12 @@ import {
   DeleteNamespaceCommand,
   CreateTableCommand,
   DeleteTableCommand,
+  GetTableCommand,
   ListNamespacesCommand,
   ListTablesCommand,
   NotFoundException,
+  RenameTableCommand,
+  TagResourceCommand,
 } from '@aws-sdk/client-s3tables';
 import { S3TablesProvider } from '../../../../src/provisioning/providers/s3-tables-provider.js';
 
@@ -233,6 +236,301 @@ describe('S3TablesProvider', () => {
 
       expect(result).toEqual({ physicalId, wasReplaced: false });
       expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── Table rename (go-to-k/cdkd#5313) ─────────────────────────────
+  // CloudFormation updates a Table's TableName / Namespace in place
+  // (`Replacement: False`, same TableARN; measured 2026-10-26) through
+  // RenameTable. Before the fix update() sent nothing and kept the old id.
+  describe('Table rename (issue #5313)', () => {
+    const BUCKET = 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-bucket';
+    const OLD_ID = `${BUCKET}|ns_a|tbl_a`;
+    const TABLE_ARN = `${BUCKET}/table/0b2c1f6e-0000-4000-8000-000000000000`;
+    const base = { TableBucketARN: BUCKET, OpenTableFormat: 'ICEBERG' };
+
+    // clearAllMocks keeps a mockImplementation; reset so none leaks between cases.
+    beforeEach(() => mockSend.mockReset());
+
+    const renameInputs = () =>
+      mockSend.mock.calls
+        .map(([command]) => command)
+        .filter((command) => command instanceof RenameTableCommand)
+        .map((command) => (command as RenameTableCommand).input);
+
+    it('renames the table and records the new composite id on a TableName change', async () => {
+      mockSend.mockResolvedValueOnce({});
+      const result = await provider.update(
+        'MyTbl',
+        OLD_ID,
+        'AWS::S3Tables::Table',
+        { ...base, Namespace: 'ns_a', TableName: 'tbl_b' },
+        { ...base, Namespace: 'ns_a', TableName: 'tbl_a' }
+      );
+
+      expect(renameInputs()).toEqual([
+        { tableBucketARN: BUCKET, namespace: 'ns_a', name: 'tbl_a', newName: 'tbl_b' },
+      ]);
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ physicalId: `${BUCKET}|ns_a|tbl_b`, wasReplaced: false });
+    });
+
+    it('moves the table on a Namespace change, sending only newNamespaceName', async () => {
+      mockSend.mockResolvedValueOnce({});
+      const result = await provider.update(
+        'MyTbl',
+        OLD_ID,
+        'AWS::S3Tables::Table',
+        { ...base, Namespace: 'ns_b', TableName: 'tbl_a' },
+        { ...base, Namespace: 'ns_a', TableName: 'tbl_a' }
+      );
+
+      expect(renameInputs()).toEqual([
+        { tableBucketARN: BUCKET, namespace: 'ns_a', name: 'tbl_a', newNamespaceName: 'ns_b' },
+      ]);
+      expect(result).toEqual({ physicalId: `${BUCKET}|ns_b|tbl_a`, wasReplaced: false });
+    });
+
+    it('sends both in ONE RenameTable when name and namespace change together', async () => {
+      mockSend.mockResolvedValueOnce({});
+      const result = await provider.update(
+        'MyTbl',
+        OLD_ID,
+        'AWS::S3Tables::Table',
+        { ...base, Namespace: 'ns_b', TableName: 'tbl_b' },
+        { ...base, Namespace: 'ns_a', TableName: 'tbl_a' }
+      );
+
+      expect(renameInputs()).toEqual([
+        {
+          tableBucketARN: BUCKET,
+          namespace: 'ns_a',
+          name: 'tbl_a',
+          newNamespaceName: 'ns_b',
+          newName: 'tbl_b',
+        },
+      ]);
+      expect(result).toEqual({ physicalId: `${BUCKET}|ns_b|tbl_b`, wasReplaced: false });
+    });
+
+    it('reads the legacy `Name` alias when TableName is absent', async () => {
+      mockSend.mockResolvedValueOnce({});
+      const result = await provider.update(
+        'MyTbl',
+        OLD_ID,
+        'AWS::S3Tables::Table',
+        { ...base, Namespace: 'ns_a', Name: 'tbl_b' },
+        { ...base, Namespace: 'ns_a', Name: 'tbl_a' }
+      );
+
+      expect(renameInputs()).toEqual([
+        { tableBucketARN: BUCKET, namespace: 'ns_a', name: 'tbl_a', newName: 'tbl_b' },
+      ]);
+      expect(result.physicalId).toBe(`${BUCKET}|ns_a|tbl_b`);
+    });
+
+    it('sends nothing when the name and namespace match the recorded id', async () => {
+      const result = await provider.update(
+        'MyTbl',
+        OLD_ID,
+        'AWS::S3Tables::Table',
+        { ...base, Namespace: 'ns_a', TableName: 'tbl_a' },
+        { ...base, Namespace: 'ns_a', TableName: 'tbl_a' }
+      );
+
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(result).toEqual({ physicalId: OLD_ID, wasReplaced: false });
+    });
+
+    it('compares with the physical id, not the previous properties', async () => {
+      // A record an older cdkd wrote after the silently dropped rename: its
+      // properties already say tbl_b, its id (and AWS) still tbl_a.
+      mockSend.mockResolvedValueOnce({});
+      const result = await provider.update(
+        'MyTbl',
+        OLD_ID,
+        'AWS::S3Tables::Table',
+        { ...base, Namespace: 'ns_a', TableName: 'tbl_b' },
+        { ...base, Namespace: 'ns_a', TableName: 'tbl_b' }
+      );
+
+      expect(renameInputs()).toEqual([
+        { tableBucketARN: BUCKET, namespace: 'ns_a', name: 'tbl_a', newName: 'tbl_b' },
+      ]);
+      expect(result.physicalId).toBe(`${BUCKET}|ns_a|tbl_b`);
+    });
+
+    it('applies tags against the OLD name first and renames last', async () => {
+      mockSend.mockImplementation(async (command: unknown) => {
+        if (command instanceof GetTableCommand) return { tableARN: TABLE_ARN };
+        return {};
+      });
+      const result = await provider.update(
+        'MyTbl',
+        OLD_ID,
+        'AWS::S3Tables::Table',
+        { ...base, Namespace: 'ns_a', TableName: 'tbl_b', Tags: [{ Key: 'team', Value: 'x' }] },
+        { ...base, Namespace: 'ns_a', TableName: 'tbl_a' }
+      );
+
+      const commands = mockSend.mock.calls.map(([command]) => command);
+      expect(commands.map((c) => c.constructor)).toEqual([
+        GetTableCommand,
+        TagResourceCommand,
+        RenameTableCommand,
+      ]);
+      expect((commands[0] as GetTableCommand).input).toEqual({
+        tableBucketARN: BUCKET,
+        namespace: 'ns_a',
+        name: 'tbl_a',
+      });
+      expect(result.physicalId).toBe(`${BUCKET}|ns_a|tbl_b`);
+    });
+
+    it('keeps a bare table ARN id as it is, resolving the current name through GetTable', async () => {
+      mockSend.mockImplementation(async (command: unknown) => {
+        if (command instanceof GetTableCommand) {
+          return { tableARN: TABLE_ARN, namespace: ['ns_a'], name: 'tbl_a' };
+        }
+        return {};
+      });
+      const result = await provider.update(
+        'MyTbl',
+        TABLE_ARN,
+        'AWS::S3Tables::Table',
+        { ...base, Namespace: 'ns_a', TableName: 'tbl_b' },
+        { ...base, Namespace: 'ns_a', TableName: 'tbl_a' }
+      );
+
+      expect(renameInputs()).toEqual([
+        { tableBucketARN: BUCKET, namespace: 'ns_a', name: 'tbl_a', newName: 'tbl_b' },
+      ]);
+      expect(result).toEqual({ physicalId: TABLE_ARN, wasReplaced: false });
+    });
+
+    it('refuses a bare table ARN whose table is gone, sending no rename', async () => {
+      mockSend.mockRejectedValueOnce(
+        new NotFoundException({ message: 'gone', $metadata: {} } as never)
+      );
+      await expect(
+        provider.update(
+          'MyTbl',
+          TABLE_ARN,
+          'AWS::S3Tables::Table',
+          { ...base, Namespace: 'ns_a', TableName: 'tbl_b' },
+          { ...base, Namespace: 'ns_a', TableName: 'tbl_a' }
+        )
+      ).rejects.toThrow(/no longer exists/);
+      expect(renameInputs()).toEqual([]);
+    });
+
+    it.each([
+      ['TableName', { Namespace: 'ns_a', TableName: ['tbl_b'] }],
+      ['TableName', { Namespace: 'ns_a', TableName: '' }],
+      ['Namespace', { Namespace: ['ns_b'], TableName: 'tbl_a' }],
+    ])('refuses a non-string %s before any call', async (key, props) => {
+      await expect(
+        provider.update(
+          'MyTbl',
+          OLD_ID,
+          'AWS::S3Tables::Table',
+          { ...base, ...props, Tags: [{ Key: 'k', Value: 'v' }] },
+          { ...base, Namespace: 'ns_a', TableName: 'tbl_a' }
+        )
+      ).rejects.toThrow(`${key} for S3 Tables Table MyTbl must be a non-empty string`);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('refuses a new name carrying the id separator before any call', async () => {
+      await expect(
+        provider.update(
+          'MyTbl',
+          OLD_ID,
+          'AWS::S3Tables::Table',
+          { ...base, Namespace: 'ns_a', TableName: 'tbl|b' },
+          { ...base, Namespace: 'ns_a', TableName: 'tbl_a' }
+        )
+      ).rejects.toThrow(/\|/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('treats a NotFound rename as applied only when the target holds the recorded TableARN', async () => {
+      // A replayed RenameTable whose first answer was lost finds the old name
+      // gone; the table now at the target name is this one only if its ARN is
+      // the one the record holds.
+      const notFound = () => new NotFoundException({ message: 'gone', $metadata: {} } as never);
+      const desired = { ...base, Namespace: 'ns_a', TableName: 'tbl_b' };
+      const previous = { ...base, Namespace: 'ns_a', TableName: 'tbl_a' };
+
+      mockSend.mockImplementation(async (command: unknown) => {
+        if (command instanceof RenameTableCommand) throw notFound();
+        if (command instanceof GetTableCommand) return { tableARN: TABLE_ARN };
+        return {};
+      });
+      const ok = await provider.update('MyTbl', OLD_ID, 'AWS::S3Tables::Table', desired, previous, {
+        recordedAttributes: { TableARN: TABLE_ARN },
+      });
+      expect(ok).toEqual({ physicalId: `${BUCKET}|ns_a|tbl_b`, wasReplaced: false });
+      const lookup = mockSend.mock.calls
+        .map(([command]) => command)
+        .find((command) => command instanceof GetTableCommand) as GetTableCommand;
+      expect(lookup.input).toEqual({ tableBucketARN: BUCKET, namespace: 'ns_a', name: 'tbl_b' });
+
+      // Another table at the target name: not attributed.
+      await expect(
+        provider.update('MyTbl', OLD_ID, 'AWS::S3Tables::Table', desired, previous, {
+          recordedAttributes: { TableARN: `${BUCKET}/table/another-table-id` },
+        })
+      ).rejects.toThrow(/Failed to update S3 Tables resource MyTbl/);
+
+      // No recorded TableARN: nothing to attribute with, so no lookup either.
+      mockSend.mockClear();
+      await expect(
+        provider.update('MyTbl', OLD_ID, 'AWS::S3Tables::Table', desired, previous, {})
+      ).rejects.toThrow(/Failed to update S3 Tables resource MyTbl/);
+      expect(mockSend.mock.calls.map(([command]) => command.constructor)).toEqual([
+        RenameTableCommand,
+      ]);
+    });
+
+    it('rethrows the ORIGINAL NotFound when the attribution lookup itself fails', async () => {
+      const original = new NotFoundException({ message: 'old name gone', $metadata: {} } as never);
+      mockSend.mockImplementation(async (command: unknown) => {
+        if (command instanceof RenameTableCommand) throw original;
+        if (command instanceof GetTableCommand) {
+          throw Object.assign(new Error('lookup denied'), { name: 'AccessDeniedException' });
+        }
+        return {};
+      });
+      const err = await provider
+        .update(
+          'MyTbl',
+          OLD_ID,
+          'AWS::S3Tables::Table',
+          { ...base, Namespace: 'ns_a', TableName: 'tbl_b' },
+          { ...base, Namespace: 'ns_a', TableName: 'tbl_a' },
+          { recordedAttributes: { TableARN: TABLE_ARN } }
+        )
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).cause).toBe(original);
+    });
+
+    it('surfaces a RenameTable failure instead of recording the new id', async () => {
+      mockSend.mockRejectedValueOnce(new Error('rename boom'));
+      await expect(
+        provider.update(
+          'MyTbl',
+          OLD_ID,
+          'AWS::S3Tables::Table',
+          { ...base, Namespace: 'ns_a', TableName: 'tbl_b' },
+          { ...base, Namespace: 'ns_a', TableName: 'tbl_a' }
+        )
+      ).rejects.toThrow(/Failed to update S3 Tables resource MyTbl/);
+      expect(renameInputs()).toHaveLength(1);
     });
   });
 

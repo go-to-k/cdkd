@@ -382,6 +382,9 @@ describe('a secret-seeding integ fixture must sweep S3 object versions', () => {
       // Issue #2740: one `unsafePlainText` secret holding a `username` only; the
       // fixture sources the helper and asserts the sweep on its success path.
       'output-never-resolved-diff',
+      // Issue #1160: phase 2 resolves the L2 cluster's generated master
+      // password into an L1 cluster; the fixture sweeps the prefix.
+      'rds-aurora',
       // Issue #4606: a literal master password on an L1 cluster and instance,
       // which the failed CREATE's journal carries; the fixture sweeps the prefix.
       'rds-fix-forward-orphan',
@@ -944,6 +947,10 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       // `safeStringify` module (no module state), read by the rethrowing
       // catches so a thrown value with no string form cannot replace the failure.
       '../../utils/aws-failure-text.js',
+      // go-to-k/cdkd#5323: the `safeMsg` formatter (imports only `node:crypto`;
+      // constants only), building the replica-removal debug line from region
+      // names and the secret's ARN, never a value.
+      '../../utils/display-safe.js',
       '../../utils/error-handler.js',
       '../../utils/logger.js',
       '../config-shape.js',

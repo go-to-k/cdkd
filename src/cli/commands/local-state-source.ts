@@ -151,9 +151,9 @@ const fromStateFactory: LocalStateProviderFactory = (options) => {
     // Issue #1836: fold `--stack-region` at THIS boundary as well as at each
     // command's handler entry. The four `cdkd local` commands that declare the
     // flag themselves (`invoke` / `start-api` / `run-task` / `invoke-agentcore`)
-    // fold it on entry, and since issue #2522 the ECS / CloudFront / AgentCore
-    // ENGINE commands (`start-service` / `start-alb` / `start-cloudfront` /
-    // `start-agentcore`) fold it in the `preAction` hook cdkd installs on top of
+    // fold it on entry, and since issue #2522 the six ENGINE commands
+    // (`start-service` / `start-alb` / `start-cloudfront` / `start-agentcore` /
+    // `start-web-function` / `start-microvm`) fold it in the `preAction` hook cdkd installs on top of
     // cdk-local's handler — so this boundary is now a second, idempotent fold
     // rather than the only cdkd-owned point. Downstream it is compared
     // against a state record's region and used to build the state key, both

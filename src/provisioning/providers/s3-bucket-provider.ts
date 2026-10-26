@@ -121,6 +121,7 @@ import {
   type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
 import { clientDefaultsFor, type CredentialConfig } from '../../utils/ambient-client-defaults.js';
+import { parseCfnTimestamp } from '../../utils/cfn-timestamp.js';
 import {
   planTagDiff,
   readTagList,
@@ -979,23 +980,23 @@ function deepSameValue(a: unknown, b: unknown): boolean {
 
 /**
  * The ISO string `readLifecycle` emits for a date the applier sends as
- * `new Date(value)`.
+ * `parseCfnTimestamp(value)` (a string) or `new Date(value)` (a number).
  *
  * DETERMINISM IS A PRECONDITION, not a nicety (PR review). `new Date(str)`
- * resolves an offset-less string in the HOST's local zone — `new Date('0')` is
- * `1999-12-31T15:00:00Z` under JST and `2000-01-01T00:00:00Z` under UTC, and
- * `'2030-01-01T00:00:00'` (ISO, no offset) is local by spec. The APPLIER shares
- * that dependence, so the wire and the readback still agree on any one machine —
- * but this feeds `canonicalizeDesiredProperties`, a DIFF-side pure function that
- * runs wherever the CLI runs. A CI runner in UTC and a laptop in JST would
+ * resolves some strings in the HOST's local zone — `new Date('0')` is
+ * `1999-12-31T15:00:00Z` under JST and `2000-01-01T00:00:00Z` under UTC. This
+ * feeds `canonicalizeDesiredProperties`, a DIFF-side pure function that runs
+ * wherever the CLI runs: a CI runner in UTC and a laptop in JST would
  * canonicalize the SAME template to different ISO strings and manufacture a diff
  * neither machine can clear, which is strictly worse than the phantom drift the
- * fold exists to remove. So only the forms whose meaning is fixed by the ISO
- * 8601 spec are folded: a bare `YYYY-MM-DD` (spec-UTC), a date-time carrying
- * `Z` or a `±HH:MM` offset, and an epoch NUMBER. Everything else — `'Jan 1
- * 2030'`, `'0'`, an offset-less date-time — is left ALONE, which keeps the
- * record machine-independent at the cost of not normalizing a shape almost no
- * template uses.
+ * fold exists to remove. So only the forms with ONE meaning on every host are
+ * folded: a bare `YYYY-MM-DD` (spec-UTC), a date-time carrying `Z` or a
+ * `±HH:MM` offset, an offset-less `YYYY-MM-DDTHH:mm[:ss[.sss]]` (which
+ * `parseCfnTimestamp` reads as UTC, as CFn does — issue #5311; the `t` / space
+ * separators it also takes are folded alike), and an epoch
+ * NUMBER. Everything else — `'Jan 1 2030'`, `'0'` — is left ALONE, which keeps
+ * the record machine-independent at the cost of not normalizing a shape almost
+ * no template uses.
  *
  * @returns `undefined` for a value that cannot become a valid `Date`, or whose
  *   `Date` would depend on the host timezone — in both cases there is no
@@ -1003,12 +1004,18 @@ function deepSameValue(a: unknown, b: unknown): boolean {
  *   alone.
  */
 const TIMEZONE_INDEPENDENT_DATE =
-  /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$/;
+  /^\d{4}-\d{2}-\d{2}([Tt ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/;
 
 function cfnDateToIso(value: unknown): string | undefined {
-  if (typeof value === 'string' && !TIMEZONE_INDEPENDENT_DATE.test(value)) return undefined;
-  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
-  const parsed = new Date(value);
+  let parsed: Date;
+  if (typeof value === 'string') {
+    if (!TIMEZONE_INDEPENDENT_DATE.test(value)) return undefined;
+    parsed = parseCfnTimestamp(value);
+  } else if (typeof value === 'number') {
+    parsed = new Date(value);
+  } else {
+    return undefined;
+  }
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
 
@@ -1088,7 +1095,7 @@ function foldLegacySingularTransitions(rule: Record<string, unknown>): Record<st
  * (PR review of issues #1754 / #1755).
  *
  * The alias fold above only RENAMES `Date` -> `TransitionDate`, but the applier
- * sends `new Date(t['TransitionDate'] ?? t['Date'])` and `readLifecycle` emits
+ * sends `parseCfnTimestamp(t['TransitionDate'] ?? t['Date'])` and `readLifecycle` emits
  * `t.Date.toISOString()` — so a hand-written / imported `TransitionDate:
  * '2030-01-01'` recorded a value the readback can never match, with no warning
  * and nothing malformed. Exactly the class {@link foldLifecycleExpiration}
@@ -1106,8 +1113,8 @@ function foldTransitionDate(item: Record<string, unknown>): Record<string, unkno
   const declared = item[TRANSITION_DATE_KEY];
   // TRUTHINESS, not presence — the same defect this fold's own commit fixed one
   // member over for the nested `Expiration.Date`, and missed on the member it
-  // was adding. The applier reads `(t['TransitionDate'] ?? t['Date']) ? new
-  // Date(...) : undefined`, so a declared `0` sends NO date at all while
+  // was adding. The applier reads `(t['TransitionDate'] ?? t['Date']) ?
+  // parseCfnTimestamp(...) : undefined`, so a declared `0` sends NO date at all while
   // `cfnDateToIso(0)` happily answers `1970-01-01T00:00:00.000Z` — recording it
   // would MANUFACTURE the permanent phantom drift this fold exists to remove.
   if (!declared) return item;
@@ -1200,7 +1207,7 @@ function foldLifecycleExpiration(rule: Record<string, unknown>): Record<string, 
     date = iso;
   } else if (isPlainObject(expiration)) {
     if (expiration['Days'] !== undefined) days = expiration['Days'];
-    // TRUTHINESS, not presence: the applier reads `exp['Date'] ? new Date(...) :
+    // TRUTHINESS, not presence: the applier reads `exp['Date'] ? parseCfnTimestamp(...) :
     // undefined`, so a falsy `Date` (`0`, `false`, `''`) sends NO date at all
     // and recording one would describe a value AWS does not hold (PR review).
     if (expiration['Date']) {
@@ -2950,12 +2957,12 @@ export class S3BucketProvider implements ResourceProvider {
       if (typeof expiration === 'number') {
         sdkRule.Expiration = { Days: expiration };
       } else if (typeof expiration === 'string') {
-        sdkRule.Expiration = { Date: new Date(expiration) };
+        sdkRule.Expiration = { Date: parseCfnTimestamp(expiration) };
       } else if (expiration && typeof expiration === 'object') {
         const exp = expiration as Record<string, unknown>;
         sdkRule.Expiration = {
           Days: exp['Days'] as number | undefined,
-          Date: exp['Date'] ? new Date(exp['Date'] as string) : undefined,
+          Date: exp['Date'] ? parseCfnTimestamp(exp['Date'] as string) : undefined,
           ExpiredObjectDeleteMarker: exp['ExpiredObjectDeleteMarker'] as boolean | undefined,
         };
       }
@@ -3050,7 +3057,7 @@ export class S3BucketProvider implements ResourceProvider {
         Days: (t['TransitionInDays'] ?? t['Days']) as number | undefined,
         Date:
           (t['TransitionDate'] ?? t['Date'])
-            ? new Date((t['TransitionDate'] ?? t['Date']) as string)
+            ? parseCfnTimestamp((t['TransitionDate'] ?? t['Date']) as string)
             : undefined,
         StorageClass: t['StorageClass'] as string | undefined,
       });

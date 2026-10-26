@@ -105,6 +105,8 @@ import { createLocalInvokeAgentCoreCommand } from './local-invoke-agentcore.js';
 import { createLocalStartAgentCoreCommand } from './local-start-agentcore.js';
 import { createLocalStartAlbCommand } from './local-start-alb.js';
 import { createLocalStartCloudFrontCommand } from './local-start-cloudfront.js';
+import { createLocalStartWebFunctionCommand } from './local-start-web-function.js';
+import { createLocalStartMicrovmCommand } from './local-start-microvm.js';
 import { setEmbedConfig, type EmbedHostLogger } from 'cdk-local';
 import {
   type DynamicReferenceResolver,
@@ -2331,5 +2333,7 @@ export function createLocalCommand(): Command {
   local.addCommand(createLocalStartAgentCoreCommand());
   local.addCommand(createLocalStartAlbCommand());
   local.addCommand(createLocalStartCloudFrontCommand());
+  local.addCommand(createLocalStartWebFunctionCommand());
+  local.addCommand(createLocalStartMicrovmCommand());
   return local;
 }

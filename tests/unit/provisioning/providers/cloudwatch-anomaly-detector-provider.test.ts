@@ -194,6 +194,42 @@ describe('CloudWatchAnomalyDetectorProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    it('reads an offset-less ExcludedTimeRanges time as UTC under a non-UTC TZ, as CFn does (#5311)', async () => {
+      // CFn documents `yyyy-MM-dd'T'HH:mm:ss` (no offset) and stores
+      // 2026-01-01T00:00:00Z for `2026-01-01T00:00:00` (measured, with and
+      // without `MetricTimeZone`). `new Date()` would read it in the HOST's zone.
+      const original = process.env.TZ;
+      try {
+        process.env.TZ = 'Asia/Tokyo';
+        mockSend.mockResolvedValueOnce({});
+        await provider.create('Detector', TYPE, {
+          Namespace: 'NS',
+          MetricName: 'M',
+          Stat: 'Sum',
+          Configuration: {
+            MetricTimeZone: 'Asia/Tokyo',
+            ExcludedTimeRanges: [
+              { StartTime: '2026-01-01T00:00:00', EndTime: '2026-01-02T00:00:00' },
+              // An explicit offset and an epoch number still mean what they say.
+              { StartTime: '2026-03-01T09:00:00+09:00', EndTime: Date.UTC(2026, 2, 2) },
+            ],
+          },
+        });
+        const ranges = (
+          putInput()['Configuration'] as {
+            ExcludedTimeRanges: Array<{ StartTime: Date; EndTime: Date }>;
+          }
+        ).ExcludedTimeRanges;
+        expect(ranges.map((r) => [r.StartTime.toISOString(), r.EndTime.toISOString()])).toEqual([
+          ['2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z'],
+          ['2026-03-01T00:00:00.000Z', '2026-03-02T00:00:00.000Z'],
+        ]);
+      } finally {
+        if (original === undefined) delete process.env.TZ;
+        else process.env.TZ = original;
+      }
+    });
+
     it('derives a stable hash id for metric-math detectors', async () => {
       mockSend.mockResolvedValue({});
 

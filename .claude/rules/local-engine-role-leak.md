@@ -18,8 +18,9 @@ credentials, ECS task secrets, `{{resolve:...}}` lookups, `${AWS::AccountId}`,
 as the CALLER, never the role.
 
 - **cdk-local does it.** `CDKD_EMBED_CONFIG` (`local-invoke.ts`) sets
-  `workloadIdentity: 'caller'`. On the four ENGINE commands (`start-service` /
-  `start-alb` / `start-cloudfront` / `start-agentcore`) cdk-local runs its own
+  `workloadIdentity: 'caller'`. On the six ENGINE commands (`start-service` /
+  `start-alb` / `start-cloudfront` / `start-agentcore` / `start-web-function` /
+  `start-microvm`) cdk-local runs its own
   `applyRoleArnIfSet`, records the assume (`recordAssumedRole`, write-once per
   process) and builds every workload client as the caller. `--profile` picks
   which caller.

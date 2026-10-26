@@ -235,6 +235,31 @@ describe('LambdaNetworkConnectorProvider', () => {
     ]);
   });
 
+  it('a Key-only tag is accepted on create and update and sent with an empty Value; a Key-less tag is refused', async () => {
+    respond(
+      new Map<string, unknown[]>([
+        ['CreateNetworkConnectorCommand', [{ Arn: ARN, State: 'PENDING' }]],
+        ['GetNetworkConnectorCommand', [active]],
+        ['TagResourceCommand', [{}]],
+        ['UntagResourceCommand', [{}]],
+      ])
+    );
+    await provider.create('Nc', TYPE, { ...props, Tags: [{ Key: 'flag' }] });
+    expect(callsOf(CreateNetworkConnectorCommand)[0]!.input['Tags']).toEqual({ flag: '' });
+    await provider.update('Nc', ARN, TYPE, { ...props, Tags: [{ Key: 'flag' }] }, props);
+    expect(callsOf(UntagResourceCommand)[0]!.input).toEqual({ Resource: ARN, TagKeys: ['team'] });
+    expect(callsOf(TagResourceCommand)[0]!.input).toEqual({ Resource: ARN, Tags: { flag: '' } });
+
+    mockSend.mockClear();
+    sentBy.length = 0;
+    const bad = { ...props, Tags: [{ Value: 'x' }] };
+    await expect(provider.create('Nc', TYPE, bad)).rejects.toThrow(/Tags of .* is not a list of tags/);
+    await expect(provider.update('Nc', ARN, TYPE, bad, props)).rejects.toThrow(
+      /desired Tags of .* is not a list of tags/
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   it('update fails when the connector update ends Failed', async () => {
     respond(
       new Map<string, unknown[]>([

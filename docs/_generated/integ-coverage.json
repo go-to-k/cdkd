@@ -4402,6 +4402,7 @@
     {
       "resourceType": "AWS::IAM::Group",
       "integs": [
+        "iam-access-key",
         "iam-managed-policy",
         "iam-profile-policy-fix-forward-orphan",
         "iam-recreate-reattach",
@@ -4411,6 +4412,9 @@
         "infra-security"
       ],
       "signals": {
+        "iam-access-key": [
+          "l2"
+        ],
         "iam-managed-policy": [
           "l2"
         ],
@@ -4665,6 +4669,10 @@
         "local-run-task-from-state",
         "local-start-alb-from-state",
         "local-start-api-websocket",
+        "local-start-microvm",
+        "local-start-microvm-from-state",
+        "local-start-web-function",
+        "local-start-web-function-from-state",
         "log-pipeline",
         "macro-expansion",
         "migrate-from-cfn",
@@ -4921,6 +4929,20 @@
           "literal"
         ],
         "local-start-api-websocket": [
+          "literal"
+        ],
+        "local-start-microvm": [
+          "l2"
+        ],
+        "local-start-microvm-from-state": [
+          "l2",
+          "literal"
+        ],
+        "local-start-web-function": [
+          "l2"
+        ],
+        "local-start-web-function-from-state": [
+          "l2",
           "literal"
         ],
         "log-pipeline": [
@@ -5913,10 +5935,14 @@
     {
       "resourceType": "AWS::Lambda::MicrovmImage",
       "integs": [
-        "lambda-microvm-image"
+        "lambda-microvm-image",
+        "local-start-microvm-from-state"
       ],
       "signals": {
         "lambda-microvm-image": [
+          "literal"
+        ],
+        "local-start-microvm-from-state": [
           "literal"
         ]
       }
@@ -6023,10 +6049,15 @@
       "resourceType": "AWS::Lambda::WebFunctionEndpoint",
       "integs": [
         "lambda-web-function-revision-replace",
+        "local-start-web-function-from-state",
         "wide-web-functions"
       ],
       "signals": {
         "lambda-web-function-revision-replace": [
+          "l1",
+          "literal"
+        ],
+        "local-start-web-function-from-state": [
           "l1",
           "literal"
         ],
@@ -6040,10 +6071,15 @@
       "resourceType": "AWS::Lambda::WebFunctionRevision",
       "integs": [
         "lambda-web-function-revision-replace",
+        "local-start-web-function-from-state",
         "wide-web-functions"
       ],
       "signals": {
         "lambda-web-function-revision-replace": [
+          "l1",
+          "literal"
+        ],
+        "local-start-web-function-from-state": [
           "l1",
           "literal"
         ],
@@ -6464,6 +6500,7 @@
         "local-invoke-from-state",
         "local-start-cloudfront",
         "local-start-cloudfront-from-state",
+        "local-start-microvm-from-state",
         "log-pipeline",
         "lost-child-after-failed-deploy",
         "migrate-from-cfn",
@@ -6591,6 +6628,10 @@
           "l2"
         ],
         "local-start-cloudfront-from-state": [
+          "l2",
+          "literal"
+        ],
+        "local-start-microvm-from-state": [
           "l2",
           "literal"
         ],
@@ -7530,6 +7571,7 @@
         "list-parameters",
         "local-engine-role-identity",
         "local-invoke-from-cfn-stack-multi-stack",
+        "local-start-microvm-from-state",
         "lost-child-after-failed-deploy",
         "microservices",
         "multi-region-same-stack",
@@ -7777,6 +7819,10 @@
         ],
         "local-invoke-from-cfn-stack-multi-stack": [
           "l2"
+        ],
+        "local-start-microvm-from-state": [
+          "l2",
+          "literal"
         ],
         "lost-child-after-failed-deploy": [
           "l1",
@@ -8027,6 +8073,7 @@
         "secrets-array-nested",
         "secrets-dynamic-ref",
         "secrets-rotation-schedule",
+        "secretsmanager-replica-rekey",
         "secretsmanager-update-value-source",
         "servicediscovery"
       ],
@@ -8082,6 +8129,10 @@
         ],
         "secrets-rotation-schedule": [
           "l2",
+          "literal"
+        ],
+        "secretsmanager-replica-rekey": [
+          "l1",
           "literal"
         ],
         "secretsmanager-update-value-source": [

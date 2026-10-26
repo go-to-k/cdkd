@@ -20,9 +20,12 @@ provider's `update()` must omit attributes so the cached value survives.
 2. **update** (`CDKD_TEST_UPDATE=true`) — flip `Status` to `Inactive` (the
    only in-place-mutable property; `UserName` / `Serial` are createOnly).
    Assert the flip landed, the physical id survived, and BOTH the Secrets
-   Manager value and the state-cached `SecretAccessKey` are unchanged.
-3. **destroy** — assert the user (with its key), the secret, and the state
-   file are gone.
+   Manager value and the state-cached `SecretAccessKey` are unchanged. The
+   same update moves the user and a group from `/` to `/cdkd-moved/` (#3723:
+   `Path` is mutable in place, and cdkd used to drop it); assert IAM holds the
+   new path and state records the moved principals' ARNs.
+3. **destroy** — assert the user (with its key), the group, the secret, and
+   the state file are gone.
 
 ## Run
 

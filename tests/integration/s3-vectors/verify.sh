@@ -67,6 +67,7 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  [ -n "${DEPLOY_LOG:-}" ] && rm -f "${DEPLOY_LOG}"
   set -eu
 }
 
@@ -94,10 +95,23 @@ cleanup
 
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
+DEPLOY_LOG="$(mktemp -t cdkd-s3-vectors-deploy.XXXXXX)"
+# Issue #5309: the fixture's NamelessVectorBucket declares no name. Before the
+# fix the provider refused its create, failing this deploy; name that refusal
+# instead of leaving only the deploy's exit code.
+deploy_rc=0
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --yes
+  --yes 2>&1 | tee "${DEPLOY_LOG}" || deploy_rc=$?
+if [ "${deploy_rc}" != "0" ]; then
+  if grep -qF 'VectorBucketName is required' "${DEPLOY_LOG}"; then
+    echo "FAIL: the nameless VectorBucket's create was refused (issue #5309 NOT closed)" >&2
+  else
+    echo "FAIL: Phase 1 deploy exited ${deploy_rc}" >&2
+  fi
+  exit 1
+fi
 
 STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 BUCKET_NAME=$(echo "${STATE}" | jq -r '.outputs.VectorBucketName // empty')
@@ -163,6 +177,30 @@ if [ "${TEAM_TAG}" != "platform" ]; then
 fi
 echo "    OK: VectorBucket tags { env=cdkd-integ, team=platform } reached AWS (Tags backfill CLOSED)"
 
+# --- Assertion: a nameless VectorBucket gets a generated name (#5309) ---
+# cdkd generates `{stack}-{logicalId}-{suffix}`, lowercased: vector bucket
+# names are 3-63 characters of lowercase letters, digits and hyphens. A fresh
+# stack always carries an instance id, so the 12-hex suffix is required (a
+# suffix-less legacy name here would be a regression).
+NAMELESS_NAME=$(echo "${STATE}" | jq -r '.outputs.NamelessVectorBucketName // empty')
+if [ -z "${NAMELESS_NAME}" ]; then
+  echo "FAIL: state.outputs.NamelessVectorBucketName missing after deploy (issue #5309)" >&2
+  echo "${STATE}" | jq '.outputs'
+  exit 1
+fi
+if ! printf '%s' "${NAMELESS_NAME}" | grep -qE '^s3vectorsstack-namelessvectorbucket-[0-9a-f]{12}$'; then
+  echo "FAIL: nameless VectorBucket is named '${NAMELESS_NAME}', expected the generated s3vectorsstack-namelessvectorbucket-<12 hex> (issue #5309)" >&2
+  exit 1
+fi
+NAMELESS_ARN=$(aws s3vectors get-vector-bucket \
+  --vector-bucket-name "${NAMELESS_NAME}" --region "${REGION}" \
+  --query 'vectorBucket.vectorBucketArn' --output text)
+if [ -z "${NAMELESS_ARN}" ] || [ "${NAMELESS_ARN}" = "None" ]; then
+  echo "FAIL: GetVectorBucket(${NAMELESS_NAME}) returned no ARN (issue #5309)" >&2
+  exit 1
+fi
+echo "    OK: nameless VectorBucket created as '${NAMELESS_NAME}' (issue #5309)"
+
 # --- Phase 1.5: in-place Tags UPDATE ---------------------------------
 # Re-deploy with CDKD_TEST_UPDATE=true so the fixture changes the tag set
 # (env value changed, owner added, team removed). This exercises the
@@ -198,6 +236,16 @@ if [ "${UPD_TEAM}" != "ABSENT" ]; then
 fi
 echo "    OK: tags updated on AWS { env=cdkd-integ-updated, owner=cdkd, team removed } (update() path works)"
 
+# Issue #5309: the redeploy must keep the nameless bucket's generated name (no
+# replacement, no second bucket).
+UPD_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+UPD_NAMELESS_NAME=$(echo "${UPD_STATE}" | jq -r '.outputs.NamelessVectorBucketName // empty')
+if [ "${UPD_NAMELESS_NAME}" != "${NAMELESS_NAME}" ]; then
+  echo "FAIL: after update, the nameless VectorBucket is '${UPD_NAMELESS_NAME}', expected '${NAMELESS_NAME}' (issue #5309)" >&2
+  exit 1
+fi
+echo "    OK: nameless VectorBucket kept its generated name across the update"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -207,6 +255,8 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 
 assert_gone "VectorBucket '${BUCKET_NAME}' still exists after destroy" aws s3vectors get-vector-bucket --vector-bucket-name "${BUCKET_NAME}" --region "${REGION}"
 echo "    OK: VectorBucket is gone"
+assert_gone "VectorBucket '${NAMELESS_NAME}' still exists after destroy" aws s3vectors get-vector-bucket --vector-bucket-name "${NAMELESS_NAME}" --region "${REGION}"
+echo "    OK: nameless VectorBucket is gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
@@ -227,4 +277,4 @@ fi
 echo "    OK: CMK scheduled for deletion (PendingDeletion)"
 
 echo ""
-echo "==> s3-vectors test passed (Tags backfill + #1385 CMK encryption + clean destroy)"
+echo "==> s3-vectors test passed (Tags backfill + #1385 CMK encryption + #5309 generated name + clean destroy)"

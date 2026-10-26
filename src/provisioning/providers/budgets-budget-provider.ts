@@ -54,6 +54,7 @@ import {
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { parseCfnTimestamp } from '../../utils/cfn-timestamp.js';
 
 // ─── List reads (go-to-k/cdkd#3989) ─────────────────────────────────
 //
@@ -209,7 +210,7 @@ function isoDate(value: unknown): string | undefined {
   else if (typeof value === 'string' && /^\d+$/.test(value)) {
     const n = Number(value);
     date = new Date(n < 1e12 ? n * 1000 : n);
-  } else if (typeof value === 'string') date = new Date(value);
+  } else if (typeof value === 'string') date = parseCfnTimestamp(value);
   else if (value instanceof Date) date = value;
   else return undefined;
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
@@ -560,7 +561,8 @@ export class BudgetsBudgetProvider implements ResourceProvider {
   /**
    * Convert a CFn `TimePeriod` `Start` / `End` value to a `Date`. CFn accepts
    * a UTC date string (`2026-07-01T00:00:00Z`) or an epoch timestamp in
-   * seconds (possibly as a numeric string).
+   * seconds (possibly as a numeric string). A date string with no offset is
+   * read as UTC, never the deployer's local zone (issue #5311).
    */
   private toSdkDate(
     raw: unknown,
@@ -578,7 +580,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       const num = Number(raw);
       date = new Date(num < 1e12 ? num * 1000 : num);
     } else if (typeof raw === 'string') {
-      date = new Date(raw);
+      date = parseCfnTimestamp(raw);
     } else {
       throw new ProvisioningError(
         `Invalid TimePeriod.${field} for budget ${logicalId}: expected a date string or epoch ` +

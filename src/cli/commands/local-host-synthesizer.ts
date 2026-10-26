@@ -8,7 +8,8 @@ import { getLogger } from '../../utils/logger.js';
 
 /**
  * The synthesizer cdkd hands to the cdk-local commands it embeds
- * (`start-agentcore`, `start-cloudfront`, `start-service`, `start-alb`), so
+ * (`start-agentcore`, `start-cloudfront`, `start-web-function`, `start-microvm`,
+ * `start-service`, `start-alb`), so
  * they synthesize the CDK app with cdkd's own synthesizer, as every other
  * `cdkd local` command does, rather than cdk-local's toolkit-lib one.
  *

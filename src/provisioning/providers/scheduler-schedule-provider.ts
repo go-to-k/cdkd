@@ -59,6 +59,7 @@ import {
   redactedDeleteAddressSkip,
 } from '../redacted-delete-address.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { parseCfnTimestamp } from '../../utils/cfn-timestamp.js';
 
 /**
  * SDK Provider for AWS::Scheduler::Schedule.
@@ -283,9 +284,9 @@ export class SchedulerScheduleProvider implements ResourceProvider {
   /**
    * Map the CFn property shape to the Scheduler SDK input shape. The two
    * are PascalCase-identical except `StartDate` / `EndDate` (CFn carries
-   * ISO strings, the SDK types `Date`) and the Target's ECS sub-shapes
-   * (camelCase islands in the SDK model — see {@link toSdkTarget},
-   * issue #1382).
+   * ISO strings, read as UTC when offset-less as CFn does, issue #5311; the
+   * SDK types `Date`) and the Target's ECS sub-shapes (camelCase islands in
+   * the SDK model — see {@link toSdkTarget}, issue #1382).
    */
   private toSdkFields(
     properties: Record<string, unknown>
@@ -301,10 +302,10 @@ export class SchedulerScheduleProvider implements ResourceProvider {
         ScheduleExpressionTimezone: properties['ScheduleExpressionTimezone'] as string,
       }),
       ...(properties['StartDate'] !== undefined && {
-        StartDate: new Date(properties['StartDate'] as string),
+        StartDate: parseCfnTimestamp(properties['StartDate'] as string),
       }),
       ...(properties['EndDate'] !== undefined && {
-        EndDate: new Date(properties['EndDate'] as string),
+        EndDate: parseCfnTimestamp(properties['EndDate'] as string),
       }),
       ...(properties['State'] !== undefined && {
         State: properties['State'] as CreateScheduleCommandInput['State'],

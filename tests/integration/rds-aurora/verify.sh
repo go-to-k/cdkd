@@ -27,6 +27,10 @@
 # #1160 (VpcSecurityGroupIds removal): phase 2 also drops the SecurityCluster's
 # VpcSecurityGroupIds. A real CloudFormation A/B showed CloudFormation moves
 # the cluster to the VPC's `default` security group, so phase 2 asserts that.
+# #1160 (Port / monitoring / managed-password removal): phase 2 also drops
+# Port (reset to 5432), MonitoringInterval + MonitoringRoleArn (kept), and
+# ManageMasterUserPassword + MasterUserSecret with a MasterUserPassword added
+# (managed password turned off), each as CloudFormation does (A/B on #1160).
 #
 # #1160 (DBProxy removal kept + warned): the proxy sets DebugLogging=true in
 # phase 1 and DROPS it in phase 2. ModifyDBProxy keeps an omitted setting and
@@ -106,11 +110,20 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 }
 # ---------------------------------------------------------------------------
 
+# Phase 2 resolves the L2 cluster's generated master password into the
+# SecurityCluster through a dynamic reference (issue #1160), so state versions
+# are swept like every secret-consuming fixture (issue #2096). Sourced by
+# absolute path before the `cd` below, so the helper exists before the first
+# `cleanup` can fire.
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+. "${REPO_ROOT}/tests/integration/s3-versions.sh"
+
 cd "$(dirname "$0")"
 
 STACK="RdsAuroraStack"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 
 EXPECTED_MONITORING_INTERVAL=60
 EXPECTED_IAM_AUTH="true"
@@ -273,6 +286,10 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  # NONCURRENT only, per ../s3-versions.sh: this also runs from the failure
+  # and signal traps, where a live state.json may be the only record of a
+  # standing resource. The success path does the full sweep.
+  s3_purge_prefix_versions "${STATE_BUCKET:-}" "${STATE_PREFIX:-}" noncurrent || true
   set -eu
 }
 
@@ -475,6 +492,15 @@ if [ "${ACTUAL_SECRET}" = "null" ] || [ -z "${ACTUAL_SECRET}" ]; then
 fi
 echo "    OK: DBCluster MasterUserSecret populated (${ACTUAL_SECRET}); ManageMasterUserPassword + MasterUserSecret CLOSED by #609"
 
+# #1160 Port removal premise: phase 1 declares Port 5433 (the engine default
+# is 5432), so phase 2's reset to the default is observable.
+ACTUAL_PORT=$(echo "${CLUSTER}" | jq -r '.Port // "null"')
+if [ "${ACTUAL_PORT}" != "5433" ]; then
+  echo "FAIL: #1160 premise: base SecurityCluster Port is '${ACTUAL_PORT}', expected 5433" >&2
+  exit 1
+fi
+echo "    OK: base SecurityCluster Port == 5433 (#1160 phase-2 reset premise)"
+
 # --- Phase 1b: Tags on the DBProxyTargetGroup (issue #4087) -----------
 TG_ARN=$(tg_field .physicalId)
 TG_LOGICAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg t "${TG_TYPE}" '[.resources | to_entries[] | select(.value.resourceType == $t) | .key] | first // ""')
@@ -610,7 +636,7 @@ fi
 echo "    OK: #1160 DBProxy premise: ${PROXY_LOGICAL} (sdk) records and holds DebugLogging=true"
 
 # --- Phase 2: UPDATE pass (#5004 removal keeps) --------------------
-echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication, both must be KEPT; drop proxy DebugLogging; set proxy MaxConnectionsPercent=90)"
+echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication + MonitoringInterval + MonitoringRoleArn, all KEPT; DROP Port, reset to 5432; DROP the managed password for a MasterUserPassword; drop proxy DebugLogging; set proxy MaxConnectionsPercent=90)"
 DEPLOY_2_LOG="$(mktemp)"
 if ! CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -693,6 +719,51 @@ if [ "${AFTER_SGS}" != "${DEFAULT_SG_ID}:active" ]; then
   exit 1
 fi
 echo "    OK: after VpcSecurityGroupIds removal, the SecurityCluster moved to the VPC default ${DEFAULT_SG_ID} (#1160, matches CloudFormation)"
+
+# #1160 (comment 6401151077, CloudFormation A/B): phase 2 dropped Port,
+# MonitoringInterval + MonitoringRoleArn, and ManageMasterUserPassword +
+# MasterUserSecret (adding a MasterUserPassword). CloudFormation resets Port to
+# the engine default, keeps both monitoring values, and turns the managed
+# password off. A pre-fix cdkd keeps Port 5433 and sends MonitoringInterval 0,
+# which fail the checks below. It also never sends ManageMasterUserPassword
+# false while sending the new MasterUserPassword, which RDS is expected to
+# refuse: that half goes red at the phase-2 deploy itself, above.
+# Polled: turning the managed password off and the port change settle
+# asynchronously, and the `available` read above can predate them.
+AFTER=""
+for i in $(seq 1 30); do
+  AFTER=$(aws rds describe-db-clusters \
+    --db-cluster-identifier "${DB_CLUSTER_ID}" \
+    --region "${REGION}" \
+    --query 'DBClusters[0]' --output json)
+  if [ "$(echo "${AFTER}" | jq -r '.Status // "null"')" = "available" ] \
+    && [ "$(echo "${AFTER}" | jq -r '.Port // "null"')" = "5432" ] \
+    && [ "$(echo "${AFTER}" | jq -r '.MasterUserSecret.SecretArn // "null"')" = "null" ]; then
+    break
+  fi
+  if [ "${i}" -lt 30 ]; then
+    sleep 10
+  fi
+done
+AFTER_PORT=$(echo "${AFTER}" | jq -r '.Port // "null"')
+if [ "${AFTER_PORT}" != "5432" ]; then
+  echo "FAIL: #1160: after Port was removed, the SecurityCluster's Port is '${AFTER_PORT}', want 5432 (CloudFormation resets it to the engine default; 5433 means the removal sent nothing)" >&2
+  exit 1
+fi
+echo "    OK: after Port removal, the SecurityCluster is on 5432 (#1160, matches CloudFormation)"
+AFTER_INTERVAL=$(echo "${AFTER}" | jq -r '.MonitoringInterval // "null"')
+AFTER_ROLE=$(echo "${AFTER}" | jq -r '.MonitoringRoleArn // "null"')
+if [ "${AFTER_INTERVAL}" != "${EXPECTED_MONITORING_INTERVAL}" ] || [ "${AFTER_ROLE}" != "${ACTUAL_ROLE}" ]; then
+  echo "FAIL: #1160: after MonitoringInterval + MonitoringRoleArn were removed, the SecurityCluster has interval '${AFTER_INTERVAL}' and role '${AFTER_ROLE}', want '${EXPECTED_MONITORING_INTERVAL}' and '${ACTUAL_ROLE}' (CloudFormation keeps both; interval 0 means cdkd sent a reset)" >&2
+  exit 1
+fi
+echo "    OK: after MonitoringInterval + MonitoringRoleArn removal, AWS kept ${AFTER_INTERVAL} and the role (#1160, matches CloudFormation)"
+AFTER_SECRET=$(echo "${AFTER}" | jq -r '.MasterUserSecret.SecretArn // "null"')
+if [ "${AFTER_SECRET}" != "null" ]; then
+  echo "FAIL: #1160: after ManageMasterUserPassword was removed with a MasterUserPassword added, the SecurityCluster still has the managed secret '${AFTER_SECRET}' (CloudFormation sends ManageMasterUserPassword false, which turns it off)" >&2
+  exit 1
+fi
+echo "    OK: after ManageMasterUserPassword removal, the managed master password is off (#1160, matches CloudFormation)"
 
 # Phase 2 sets no CDKD_TEST_TG_TAGS, so the template dropped Tags (#4087).
 TAGS=$(tg_tags "${TG_ARN}")
@@ -993,6 +1064,16 @@ if [ -n "${LEAKED_SNAPSHOTS}" ]; then
   exit 1
 fi
 echo "    OK: no manual snapshot of ${AURORA_CLUSTER_ID} since ${RUN_START}Z (#3993)"
+
+# --- State-version sweep, on the success path ------------------------------
+# The bucket is VERSIONED: `aws s3 rm` and destroy leave every prior state
+# version readable. State records the `{{resolve:...}}` expression, not the
+# phase-2 master password; the sweep is defense in depth. Run cleanup
+# (it deletes this run's final snapshot) with the trap disarmed, then sweep.
+trap - EXIT INT TERM
+cleanup
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "rds-aurora state teardown"
 
 echo ""
 echo "=== PASS: RDS Aurora integ + #609 DBCluster security backfill + #5004 removal keeps ==="

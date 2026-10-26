@@ -37,9 +37,17 @@ export class CloudWatchAnomalyDetectorStack extends cdk.Stack {
               // re-keys it; verify.sh asserts the value reads back.
               metricTimeZone: 'UTC',
               excludedTimeRanges: [
+                // go-to-k/cdkd#5311: CFn's documented format has NO offset and
+                // CFn reads it as UTC. verify.sh deploys this phase under
+                // TZ=Asia/Tokyo and asserts the exact instants read back.
                 {
-                  startTime: '2026-01-01T00:00:00Z',
-                  endTime: '2026-01-02T00:00:00Z',
+                  startTime: '2026-01-01T00:00:00',
+                  endTime: '2026-01-02T00:00:00',
+                },
+                // An explicit offset keeps meaning what it says.
+                {
+                  startTime: '2026-03-01T09:00:00+09:00',
+                  endTime: '2026-03-02T00:00:00Z',
                 },
               ],
             },

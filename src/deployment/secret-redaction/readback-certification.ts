@@ -13,9 +13,114 @@ import {
   hasPlainPrototype,
   subtreeHasDynamicReference,
   mixedLeafMayCarryPublicReference,
+  RENDERED_DEFINITION_KEYS,
+  definitionSourceCarriesSecret,
 } from './redact-path.js';
 import { wholeStringLeavesOf } from './mask-only.js';
 import { identityKeyFor } from './identity-keys.js';
+
+/**
+ * The leaves a RENDERED definition may keep (issue #5315). `strings` is the whole
+ * string leaves of the record's own body, as written and with EVERY scalar
+ * substitution applied VERBATIM — a reference as its expression, a `NoEcho`
+ * value as `***` — plus the substitution values themselves.
+ *
+ * Nothing here is a resolved secret: the record holds expressions and masks,
+ * never the plaintext, so a readback leaf carrying a substituted secret can
+ * never equal one of these and is masked, while every leaf the record spells
+ * (a state name, a `Type`, a non-secret substituted value) is kept. A leaf a
+ * populated-map pass already rewrote to `Bearer {{resolve:...}}` is spelled
+ * here too, so it survives as the expression rather than a mask.
+ *
+ * Applied the way the provider applies them on `main` (split / join in entry
+ * order). A renderer that differs from AWS's can only fail to MATCH, which
+ * masks a leaf the record spells: over-masking, never a disclosure. A body that
+ * does not parse (a `***` body, a substituted quote) contributes its rendered
+ * text alone, so every string leaf of its readback is masked except one equal
+ * to a substitution value, an empty string or a whole resolvable token. The
+ * same holds for the `DefinitionS3Location` shape, whose body the record does
+ * not hold.
+ *
+ * `scalars` is the same set for NUMBER / BOOLEAN leaves: those of each body
+ * that parses, plus each substitution value's JSON-scalar spelling. A body that
+ * parses in neither spelling (a `${name}` outside quotes) contributes none, so
+ * every number and boolean of its readback is masked, a whole non-secret
+ * substitution value excepted.
+ */
+function renderedDefinitionLiterals(source: Record<string, unknown>): {
+  strings: Set<string>;
+  scalars: Set<unknown>;
+} {
+  const keep = new Set<string>();
+  const scalarKeep = new Set<unknown>();
+  const subs = source['DefinitionSubstitutions'];
+  const scalars: Array<[string, string]> = [];
+  if (isPlainObject(subs)) {
+    for (const [name, value] of Object.entries(subs)) {
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        scalars.push([name, String(value)]);
+        if (typeof value === 'string') keep.add(value);
+        addScalarSpelling(scalarKeep, value);
+      }
+    }
+  }
+  const bodies: string[] = [];
+  for (const key of ['DefinitionString', 'Definition']) {
+    if (!Object.hasOwn(source, key)) continue;
+    const body = source[key];
+    if (typeof body === 'string') bodies.push(body);
+    else if (isPlainObject(body)) bodies.push(JSON.stringify(body));
+  }
+  for (const body of bodies) {
+    let rendered = body;
+    for (const [name, value] of scalars) rendered = rendered.split(`\${${name}}`).join(value);
+    // The UNRENDERED body too: a readback AWS stored without substituting
+    // (inline definitions before go-to-k/cdkd#5298) still spells `${name}`,
+    // which is a placeholder and no secret.
+    for (const text of rendered === body ? [body] : [body, rendered]) {
+      keep.add(text);
+      try {
+        const parsed = JSON.parse(text) as unknown;
+        for (const leaf of wholeStringLeavesOf(parsed)) keep.add(leaf);
+        collectScalarLeaves(parsed, scalarKeep);
+      } catch {
+        // Not JSON: the text above is all it spells.
+      }
+    }
+  }
+  return { strings: keep, scalars: scalarKeep };
+}
+
+/**
+ * A substitution value's NUMBER / BOOLEAN spelling, as AWS reads it back when
+ * the body places it outside quotes (`"Seconds": ${wait}`). A reference or a
+ * `***` never parses to one, so only a non-secret value lands here.
+ */
+function addScalarSpelling(into: Set<unknown>, value: string | number | boolean): void {
+  if (typeof value !== 'string') {
+    into.add(value);
+    return;
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (typeof parsed === 'number' || typeof parsed === 'boolean') into.add(parsed);
+  } catch {
+    // Not a JSON scalar: it can only be read back as a string.
+  }
+}
+
+/** Every number / boolean leaf of a parsed body (plain containers only). */
+function collectScalarLeaves(value: unknown, into: Set<unknown>): void {
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    into.add(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectScalarLeaves(item, into);
+  } else if (isPlainObject(value)) {
+    for (const item of Object.values(value)) collectScalarLeaves(item, into);
+  }
+}
 
 /**
  * FAIL CLOSED over one readback subtree the position walk could not certify
@@ -54,7 +159,10 @@ import { identityKeyFor } from './identity-keys.js';
  * `rollback-executor/replay-props.ts`'s `refuseMaskedReplayBaseline`), because the
  * mask-only channel (issue #2274) already puts one there.
  *
- * WHY STRINGS ONLY. A recorded secret is a `string` by the type of
+ * WHY STRINGS ONLY — unless the caller passes `scalarLiterals`, which only the
+ * rendered-definition arm does (issue #5315): there a NUMBER or BOOLEAN leaf
+ * not in that set is masked too, since a `${name}` outside quotes reads a
+ * string secret back as a JSON number. Otherwise: a recorded secret is a `string` by the type of
  * {@link RecordedSecretValues}, so a number, a boolean or `null` cannot BE a
  * resolved secret and masking one would only cost drift a comparison. A
  * NON-PLAIN object (a `Date` an AWS SDK readback carries, a `Buffer`) is
@@ -102,8 +210,20 @@ function refuseUncertifiedSubtree(
   value: unknown,
   sourceLiterals: ReadonlySet<string>,
   mark: boolean | undefined,
+  // NUMBER / BOOLEAN leaves the source spells, or `undefined` to keep every one
+  // (the default, argued under "WHY STRINGS ONLY"). Only the rendered-definition
+  // arm passes a set (issue #5315): there a `${name}` placed OUTSIDE quotes
+  // reads back as a JSON number, so a secret of digits is not a string leaf.
+  scalarLiterals?: ReadonlySet<unknown>,
   seen: Map<object, unknown> = new Map()
 ): unknown {
+  if (
+    scalarLiterals !== undefined &&
+    (typeof value === 'number' || typeof value === 'boolean') &&
+    !scalarLiterals.has(value)
+  ) {
+    return mark ? POSITION_UNCERTIFIED : SECRET_MASK;
+  }
   if (typeof value === 'string') {
     // A WHOLE token, not a string that merely CONTAINS one. The substring test
     // this arm shipped with spared `postgres://admin:<plaintext>@{{resolve:...}}`
@@ -161,14 +281,15 @@ function refuseUncertifiedSubtree(
   if (Array.isArray(value)) {
     const out: unknown[] = [];
     seen.set(value, out);
-    for (const item of value) out.push(refuseUncertifiedSubtree(item, sourceLiterals, mark, seen));
+    for (const item of value)
+      out.push(refuseUncertifiedSubtree(item, sourceLiterals, mark, scalarLiterals, seen));
     return out;
   }
   if (isPlainObject(value) && hasPlainPrototype(value)) {
     const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     seen.set(value, out);
     for (const [k, v] of Object.entries(value)) {
-      out[k] = refuseUncertifiedSubtree(v, sourceLiterals, mark, seen);
+      out[k] = refuseUncertifiedSubtree(v, sourceLiterals, mark, scalarLiterals, seen);
     }
     return out;
   }
@@ -482,6 +603,78 @@ export function refuseUncertifiedReadbackPositions(
     }
     if (learn) learnMixedLeafNeedle(learn, bag, source);
     return mark ? POSITION_DECIDED : source;
+  }
+  // A RENDERED Step Functions definition (issue
+  // [#5315](https://github.com/go-to-k/cdkd/issues/5315)). `readCurrentState`
+  // returns `Definition` with the `DefinitionSubstitutions` APPLIED, while the
+  // record holds the body with `${name}` placeholders plus the map. Nothing
+  // pairs the two: `Definition` is an extra key (or a source subtree holding a
+  // placeholder, not a reference), the readback carries no map, so no position
+  // is certified and no derived needle is learned — and on an EMPTY map the
+  // resolved secret was persisted verbatim. The same holds for a reference
+  // spelled INSIDE the body (`Fn::Join` around a secret value) and for a
+  // `NoEcho` value persisted as `***`, which is why this runs BEFORE the
+  // reference-only early return below: a `***` source carries no reference.
+  //
+  // FAIL CLOSED at the rendered keys: the ordinary walk still runs first, so a
+  // position it certifies keeps its expression, and every string leaf it left
+  // that the record does not spell ({@link renderedDefinitionLiterals}) is
+  // masked. Only on a fail-closed destination, as everywhere in this module —
+  // which includes the POPULATED-map baseline writers (`cdkd drift --accept` /
+  // `--revert`): there the value scan has already rewritten a substituted
+  // secret onto its expression, which the literal set spells, so what the arm
+  // costs them is over-masking where the record holds no body
+  // (`DefinitionS3Location`): every leaf but a whole token, a mixed
+  // `Bearer {{resolve:...}}` the scan wrote included, is masked there.
+  //
+  // NUMBER and BOOLEAN leaves are refused here too, against the scalars the
+  // record spells: a `${name}` OUTSIDE quotes reads back as a JSON number, so a
+  // secret of digits is not a string leaf. (Such a body parses in neither
+  // spelling, so every number of that readback is masked.) Like the string
+  // set, the scalar set is the whole definition's, not this position's: a
+  // numeric secret EQUAL to a number the record spells elsewhere (`3`), or a
+  // boolean one (two values), is kept, as the plaintext already sits in the
+  // record. The residual is a
+  // secret substituted into a JSON KEY (a state name): no walk here masks a key,
+  // and what a masked key should look like is open in
+  // go-to-k/cdkd#5333.
+  if (
+    failClosed === true &&
+    isPlainObject(bag) &&
+    hasPlainPrototype(bag) &&
+    isPlainObject(source) &&
+    Object.keys(bag).some((k) => RENDERED_DEFINITION_KEYS.has(k)) &&
+    definitionSourceCarriesSecret(source)
+  ) {
+    const keep = renderedDefinitionLiterals(source);
+    const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    const rest: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(bag)) if (!RENDERED_DEFINITION_KEYS.has(k)) rest[k] = v;
+    const walkedRest = refuseUncertifiedReadbackPositions(
+      rest,
+      source,
+      secrets,
+      failClosed,
+      learn,
+      mark
+    ) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(bag)) {
+      if (!RENDERED_DEFINITION_KEYS.has(k)) {
+        out[k] = walkedRest[k];
+        continue;
+      }
+      const walked = Object.hasOwn(source, k)
+        ? refuseUncertifiedReadbackPositions(v, source[k], secrets, failClosed, learn, mark)
+        : v;
+      // A POSITION mark is a symbol, which the refusal returns untouched.
+      // `mark` is LOAD-BEARING: in mark mode a refused leaf must come back as
+      // {@link POSITION_UNCERTIFIED}. A literal `***` there reads to
+      // {@link preferPositionDecisions} as an undecided position, which hands
+      // it the RAW bag's value wherever a derived needle rewrote nothing — the
+      // plaintext of every substituted secret the needles do not name.
+      out[k] = refuseUncertifiedSubtree(walked, keep.strings, mark, keep.scalars);
+    }
+    return out;
   }
   // Nothing to protect in this subtree — return the bag by identity, which is
   // what keeps an ordinary readback (and any AWS-added element in it) intact.

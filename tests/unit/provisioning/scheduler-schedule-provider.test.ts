@@ -202,6 +202,28 @@ describe('SchedulerScheduleProvider', () => {
       expect(input.StartDate.toISOString()).toBe('2026-08-01T00:00:00.000Z');
       expect(input.EndDate).toBeInstanceOf(Date);
     });
+
+    it('reads an offset-less StartDate/EndDate as UTC under a non-UTC TZ (#5311)', async () => {
+      // The CFn schema: "The date, in UTC, ...". `new Date()` would read an
+      // offset-less string in the HOST's zone. An explicit offset is honoured.
+      const original = process.env.TZ;
+      try {
+        process.env.TZ = 'Asia/Tokyo';
+        mockSend.mockResolvedValueOnce({ ScheduleArn: SCHED_ARN });
+        await provider.create('Sched', TYPE, {
+          ...BASE_PROPS,
+          ScheduleExpressionTimezone: 'Asia/Tokyo',
+          StartDate: '2026-08-01T00:00:00',
+          EndDate: '2026-09-01T09:00:00+09:00',
+        });
+        const input = sentInput(CreateScheduleCommand) as { StartDate: Date; EndDate: Date };
+        expect(input.StartDate.toISOString()).toBe('2026-08-01T00:00:00.000Z');
+        expect(input.EndDate.toISOString()).toBe('2026-09-01T00:00:00.000Z');
+      } finally {
+        if (original === undefined) delete process.env.TZ;
+        else process.env.TZ = original;
+      }
+    });
   });
 
   describe('update', () => {

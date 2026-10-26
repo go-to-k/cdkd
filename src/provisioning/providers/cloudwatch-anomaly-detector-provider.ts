@@ -34,6 +34,7 @@ import {
   redactedDeleteAddressSkip,
 } from '../redacted-delete-address.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { parseCfnTimestamp } from '../../utils/cfn-timestamp.js';
 import {
   markRedactedCause,
   relayedNameCollision,
@@ -470,12 +471,20 @@ function buildDeleteParams(properties: Record<string, unknown>): DeleteAnomalyDe
   return params;
 }
 
-/** CFn carries Range times as ISO-8601 strings; the SDK models them as Date. */
+/**
+ * CFn carries Range times as ISO-8601 strings; the SDK models them as Date.
+ * The documented `yyyy-MM-dd'T'HH:mm:ss` has no offset, which CFn reads as
+ * UTC (issue #5311), not the deployer's local zone.
+ */
 function toDate(value: unknown, mask: MaskerFn): Date | undefined {
   if (value === undefined) return undefined;
   if (value instanceof Date) return value;
   const parsed =
-    typeof value === 'string' || typeof value === 'number' ? new Date(value) : new Date(NaN);
+    typeof value === 'string'
+      ? parseCfnTimestamp(value)
+      : typeof value === 'number'
+        ? new Date(value)
+        : new Date(NaN);
   if (Number.isNaN(parsed.getTime())) {
     // Fail here with the offending value — letting the serializer throw a
     // bare `RangeError: Invalid time value` later names no property.

@@ -19,6 +19,9 @@ import {
   type TypeCase,
 } from './sdk-wire-harness.js';
 import { CASES_2 } from './sdk-wire-cases-2.js';
+import { CASES_IAM_SECRETS } from './sdk-wire-cases-iam-secrets.js';
+import { CASES_3 } from './sdk-wire-cases-3.js';
+import { CASES_4 } from './sdk-wire-cases-4.js';
 
 // Every client class a covered provider reaches, wrapped so each instance
 // (shared or provider-built) is captured. A `vi.mock` factory is hoisted, so
@@ -701,10 +704,10 @@ const CASES: TypeCase[] = [
 
 /**
  * Registered SDK provider classes no case covers yet (#3723), here or in
- * `sdk-wire-cases-2.ts` (run by `sdk-wire-coverage-2.test.ts`). It only
- * SHRINKS: a class leaves it in the PR that adds its case, and a NEW provider
- * class lands with a case, never a row here. `MAX_UNCOVERED` is its exact
- * size, lowered by hand with each removal.
+ * `sdk-wire-cases-<n>.ts` (each run by its `sdk-wire-coverage-<n>.test.ts`,
+ * listed in `CASE_LISTS` below). It only SHRINKS: a class leaves it in the PR
+ * that adds its case, and a NEW provider class lands with a case, never a row
+ * here. `MAX_UNCOVERED` is its exact size, lowered by hand with each removal.
  */
 const NOT_YET_COVERED = new Set([
   'ACMCertificateProvider',
@@ -716,14 +719,11 @@ const NOT_YET_COVERED = new Set([
   'ApiGatewayProvider',
   'ApiGatewayV2Provider',
   'AppSyncProvider',
-  'BudgetsBudgetProvider',
   'CloudFrontDistributionProvider',
   'CloudTrailProvider',
   'CloudWatchAnomalyDetectorProvider',
   'CodeBuildProvider',
-  'CodeCommitRepositoryProvider',
   'CognitoUserPoolProvider',
-  'DLMLifecyclePolicyProvider',
   'DocDBProvider',
   'DocDBSubnetGroupProvider',
   'DynamoDBGlobalTableProvider',
@@ -746,12 +746,6 @@ const NOT_YET_COVERED = new Set([
   'GlueSecurityConfigurationProvider',
   'GlueTriggerProvider',
   'GlueWorkflowProvider',
-  'IAMAccessKeyProvider',
-  'IAMInstanceProfileProvider',
-  'IAMManagedPolicyProvider',
-  'IAMPolicyProvider',
-  'IAMRoleProvider',
-  'IAMUserGroupProvider',
   'KMSProvider',
   'KinesisStreamProvider',
   'LambdaEventSourceMappingProvider',
@@ -761,7 +755,6 @@ const NOT_YET_COVERED = new Set([
   'LambdaNetworkConnectorProvider',
   'LambdaWebFunctionEndpointProvider',
   'LambdaWebFunctionRevisionProvider',
-  'LogsLogGroupProvider',
   'NeptuneProvider',
   'NestedStackProvider',
   'PipesPipeProvider',
@@ -771,17 +764,14 @@ const NOT_YET_COVERED = new Set([
   'RDSProvider',
   'Route53Provider',
   'S3BucketProvider',
-  'S3DirectoryBucketProvider',
   'S3TablesProvider',
   'S3VectorsProvider',
-  'SchedulerScheduleProvider',
-  'SecretsManagerSecretProvider',
   'ServiceDiscoveryProvider',
   'StepFunctionsProvider',
   'WAFv2WebACLProvider',
   'WaitConditionHandleProvider',
 ]);
-const MAX_UNCOVERED = 73;
+const MAX_UNCOVERED = 60;
 
 /**
  * Every case list, with the test file that runs it and the list's name there.
@@ -792,6 +782,13 @@ const MAX_UNCOVERED = 73;
 const CASE_LISTS: { cases: TypeCase[]; name: string; file: string }[] = [
   { cases: CASES, name: 'CASES', file: 'sdk-wire-coverage.test.ts' },
   { cases: CASES_2, name: 'CASES_2', file: 'sdk-wire-coverage-2.test.ts' },
+  {
+    cases: CASES_IAM_SECRETS,
+    name: 'CASES_IAM_SECRETS',
+    file: 'sdk-wire-coverage-iam-secrets.test.ts',
+  },
+  { cases: CASES_3, name: 'CASES_3', file: 'sdk-wire-coverage-3.test.ts' },
+  { cases: CASES_4, name: 'CASES_4', file: 'sdk-wire-coverage-4.test.ts' },
 ];
 const ALL_CASES: TypeCase[] = CASE_LISTS.flatMap((l) => l.cases);
 

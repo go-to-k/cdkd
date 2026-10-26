@@ -36,6 +36,7 @@ import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { parseCfnTimestamp } from '../../utils/cfn-timestamp.js';
 import { definedAttributes } from '../attribute-map.js';
 import { startInterruptWatch } from '../interrupt-watch.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
@@ -306,7 +307,7 @@ function toSdkTargetParameters(value: unknown): PipeTargetParameters | undefined
 /**
  * CFn `SourceParameters` -> the CreatePipe shape. The only divergence is
  * Kinesis `StartingPositionTimestamp`: CFn carries an ISO string, the SDK
- * types a `Date`.
+ * types a `Date`; an offset-less string is read as UTC (issue #5311).
  */
 function toSdkSourceParameters(value: unknown): PipeSourceParameters | undefined {
   const source = asRecord(value);
@@ -319,7 +320,7 @@ function toSdkSourceParameters(value: unknown): PipeSourceParameters | undefined
     ...source,
     KinesisStreamParameters: {
       ...kinesis,
-      StartingPositionTimestamp: new Date(kinesis['StartingPositionTimestamp']),
+      StartingPositionTimestamp: parseCfnTimestamp(kinesis['StartingPositionTimestamp']),
     },
   } as PipeSourceParameters;
 }

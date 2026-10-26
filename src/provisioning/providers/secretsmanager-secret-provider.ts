@@ -14,6 +14,7 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-secrets-manager';
 import { getLogger } from '../../utils/logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import {
   coerceCfnBoolean,
   coerceCfnInteger,
@@ -610,17 +611,38 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
             );
           }
         }
-        // Add new replica regions
+        // Add new replica regions, and re-send every kept region whose
+        // KmsKeyId changed (added, removed or swapped): ReplicateSecretToRegions
+        // on a region the secret already replicates to re-keys that replica in
+        // place, which is what CloudFormation does (#5302).
         if (newReplicas && newReplicas.length > 0) {
-          const oldRegionSet = new Set((oldReplicas || []).map((r) => r['Region'] as string));
-          const regionsToAdd = newReplicas.filter((r) => !oldRegionSet.has(r['Region'] as string));
+          // No key, '' and the AWS managed key's alias are one key: readCurrentState
+          // (a `drift --revert` base) spells a default-key replica with the alias,
+          // a template leaves it out.
+          const AWS_MANAGED_SECRETS_KEY = 'alias/aws/secretsmanager';
+          const replicaKey = (k: unknown): string =>
+            k === undefined || k === '' || k === AWS_MANAGED_SECRETS_KEY
+              ? AWS_MANAGED_SECRETS_KEY
+              : JSON.stringify(k);
+          const oldKeyByRegion = new Map(
+            (oldReplicas || []).map((r) => [r['Region'] as string, replicaKey(r['KmsKeyId'])])
+          );
+          const regionsToAdd = newReplicas.filter((r) => {
+            const region = r['Region'] as string;
+            return (
+              !oldKeyByRegion.has(region) ||
+              oldKeyByRegion.get(region) !== replicaKey(r['KmsKeyId'])
+            );
+          });
           if (regionsToAdd.length > 0) {
             await this.smClient.send(
               new ReplicateSecretToRegionsCommand({
                 SecretId: physicalId,
                 AddReplicaRegions: regionsToAdd.map((r) => ({
                   Region: r['Region'] as string,
-                  KmsKeyId: r['KmsKeyId'] as string | undefined,
+                  // '' is the readCurrentState placeholder for no key: AWS
+                  // rejects it as a key id, so send no key (the AWS managed one).
+                  KmsKeyId: (r['KmsKeyId'] as string | undefined) || undefined,
                 })),
               })
             );
@@ -787,6 +809,40 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
   }
 
   /**
+   * Secrets Manager refuses `DeleteSecret` on a primary that still has replica
+   * regions (`InvalidParameterException`). CloudFormation removes them first
+   * (`RemoveRegionsFromReplication` deletes each replica), so on that refusal
+   * read the secret's `ReplicationStatus` and return the regions `delete()`
+   * removes before it retries (#5323). Only the refusal path pays the extra
+   * calls; an ordinary delete makes none. Returns undefined for any other
+   * error, when the read fails, or when the secret has no replica to remove.
+   */
+  private async replicaRegionsBlockingDelete(
+    error: unknown,
+    physicalId: string
+  ): Promise<string[] | undefined> {
+    // AWS's text: "You can't delete secret <arn> that still has replica regions [...]".
+    // The class alone is not enough: another InvalidParameterException must not
+    // cost the secret its replicas.
+    const refusal = error as { name?: unknown; message?: unknown } | null;
+    if (
+      refusal?.name !== 'InvalidParameterException' ||
+      typeof refusal.message !== 'string' ||
+      !/replica/i.test(refusal.message)
+    ) {
+      return undefined;
+    }
+    // A failed read leaves the delete's own refusal as the reported cause.
+    const resp = await this.smClient
+      .send(new DescribeSecretCommand({ SecretId: physicalId }))
+      .catch(() => undefined);
+    const regions = (resp?.ReplicationStatus ?? [])
+      .map((r) => r.Region)
+      .filter((r): r is string => typeof r === 'string' && r.length > 0);
+    return regions.length > 0 ? regions : undefined;
+  }
+
+  /**
    * Delete a Secrets Manager secret
    */
   async delete(
@@ -798,13 +854,38 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting secret ${logicalId}: ${physicalId}`);
 
-    try {
-      await this.smClient.send(
+    const deleteSecret = (): Promise<unknown> =>
+      this.smClient.send(
         new DeleteSecretCommand({
           SecretId: physicalId,
           ForceDeleteWithoutRecovery: true,
         })
       );
+    // Set only when RemoveRegionsFromReplication itself failed, so the wrap
+    // below names that step and how to finish it by hand.
+    let unremovedReplicaRegions: string[] | undefined;
+    try {
+      try {
+        await deleteSecret();
+      } catch (error) {
+        const regions = await this.replicaRegionsBlockingDelete(error, physicalId);
+        if (!regions) throw error;
+        try {
+          await this.smClient.send(
+            new RemoveRegionsFromReplicationCommand({
+              SecretId: physicalId,
+              RemoveReplicaRegions: regions,
+            })
+          );
+        } catch (removeError) {
+          unremovedReplicaRegions = regions;
+          throw removeError;
+        }
+        this.logger.debug(
+          safeMsg`Removed replica regions ${regions.join(', ')} from secret ${physicalId} before deleting it`
+        );
+        await deleteSecret();
+      }
       this.logger.debug(`Successfully deleted secret ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
@@ -820,12 +901,19 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
+      const mask = maskerOrIdentity(context?.maskSecrets);
+      const regions = unremovedReplicaRegions?.join(' ');
+      const step = regions
+        ? ` (removing its replica regions ${regions} first, which DeleteSecret requires).` +
+          ` Remove them, then re-run destroy: aws secretsmanager remove-regions-from-replication` +
+          ` --secret-id ${mask(physicalId)} --remove-replica-regions ${regions}`
+        : '';
       const thrown = this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
+        mask,
         error,
         (text) =>
           new ProvisioningError(
-            `Failed to delete secret ${logicalId}: ${text}`,
+            `Failed to delete secret ${logicalId}: ${text}${step}`,
             resourceType,
             logicalId,
             physicalId,

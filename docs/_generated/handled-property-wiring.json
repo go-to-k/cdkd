@@ -13055,7 +13055,10 @@
           "seededBy": [
             "create",
             "createGroup",
-            "createUser"
+            "createUser",
+            "update",
+            "updateGroup",
+            "updateUser"
           ]
         },
         {
@@ -13389,7 +13392,9 @@
           ],
           "seededBy": [
             "create",
-            "createKey"
+            "createKey",
+            "update",
+            "updateKey"
           ]
         },
         {
@@ -13472,7 +13477,10 @@
           ],
           "seededBy": [
             "create",
-            "createKey"
+            "createKey",
+            "liveKeyMatches",
+            "update",
+            "updateKey"
           ]
         },
         {
@@ -13487,7 +13495,10 @@
           ],
           "seededBy": [
             "create",
-            "createKey"
+            "createKey",
+            "liveKeyMatches",
+            "update",
+            "updateKey"
           ]
         },
         {
@@ -13502,7 +13513,10 @@
           ],
           "seededBy": [
             "create",
-            "createKey"
+            "createKey",
+            "liveKeyMatches",
+            "update",
+            "updateKey"
           ]
         },
         {
@@ -13517,7 +13531,10 @@
           ],
           "seededBy": [
             "create",
-            "createKey"
+            "createKey",
+            "liveKeyMatches",
+            "update",
+            "updateKey"
           ]
         },
         {
@@ -16698,7 +16715,9 @@
           "seededBy": [
             "create",
             "createDBCluster",
-            "createDBInstance"
+            "createDBInstance",
+            "update",
+            "updateDBCluster"
           ]
         },
         {
@@ -17948,8 +17967,11 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createTable"
+            "createTable",
+            "planTableRename",
+            "update"
           ]
         },
         {
@@ -17964,9 +17986,12 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
             "createNamespace",
-            "createTable"
+            "createTable",
+            "planTableRename",
+            "update"
           ]
         },
         {
@@ -18027,8 +18052,11 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createTable"
+            "createTable",
+            "planTableRename",
+            "update"
           ]
         },
         {
