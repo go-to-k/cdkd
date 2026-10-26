@@ -259,8 +259,16 @@ if ! printf '%s' "${DIFF_OUT}" | grep -q "No changes detected"; then
   echo "FAIL: cdkd diff did not report 'No changes detected' for ${STACK} — the cleanliness check below would pass vacuously" >&2
   exit 1
 fi
+# Only cdkd's own diff body: synth runs first and aws-cdk-lib's template
+# validation prints a `WARNING RecordDistributionStrategy: ...` line of its own,
+# which names the property without any change behind it.
+DIFF_BODY="$(printf '%s\n' "${DIFF_OUT}" | sed -n '/Calculating diff for stack:/,$p')"
+if [ -z "${DIFF_BODY}" ]; then
+  echo "FAIL: cdkd diff printed no 'Calculating diff for stack:' line — the property checks below would read nothing" >&2
+  exit 1
+fi
 for PROP in DesiredShardLevelMetrics MaxRecordSizeInKiB RecordDistributionStrategy; do
-  if printf '%s' "${DIFF_OUT}" | grep -q "${PROP}"; then
+  if printf '%s' "${DIFF_BODY}" | grep -q "${PROP}"; then
     echo "FAIL: cdkd diff reports a ${PROP} change on an untouched stream — the desired and wire-path narrowing disagree" >&2
     exit 1
   fi
