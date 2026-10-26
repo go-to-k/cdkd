@@ -414,13 +414,34 @@ describe('secret-redaction - a substituted Definition on the empty-map readback 
     );
     expect(JSON.stringify(persisted)).not.toContain(PIN);
     const w = (
-      (persisted.observedProperties as Record<string, Record<string, Record<string, unknown>>>)[
+      (persisted.observedProperties as unknown as Record<string, Record<string, Record<string, unknown>>>)[
         'Definition'
       ]!['States'] as Record<string, Record<string, unknown>>
     )['W']!;
     expect(w['Seconds']).toBe(EXPR);
     // The other polarity: a number and a boolean no needle names are kept.
     expect(w['End']).toBe(true);
+  });
+
+  it('names a numeric secret AWS re-spells (1.50 read back as 1.5) on the deploy persist', () => {
+    const template = {
+      DefinitionString: '{"StartAt":"W","States":{"W":{"Type":"Wait","Seconds":${s},"End":true}}}',
+      DefinitionSubstitutions: { s: EXPR },
+    };
+    const persisted = scrubResourceRecord(
+      {
+        properties: { ...template, DefinitionSubstitutions: { s: '1.50' } },
+        observedProperties: {
+          Definition: { StartAt: 'W', States: { W: { Type: 'Wait', Seconds: 1.5, End: true } } },
+        },
+      },
+      new Map<string, string>([['1.50', EXPR]]),
+      template,
+      undefined,
+      { properties: 'same-generation', observed: 'same-generation' }
+    );
+    expect(JSON.stringify(persisted.observedProperties)).not.toContain('1.5');
+    expect(JSON.stringify(persisted.observedProperties)).toContain(EXPR);
   });
 
   it('names no number OUTSIDE a rendered definition, even one equal to a secret', () => {

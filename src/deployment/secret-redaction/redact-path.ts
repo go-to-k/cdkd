@@ -635,6 +635,10 @@ export function redactByPath(
       // a value the template spells as one, and rewriting a `Port` that merely
       // EQUALS a secret would turn a number into a string in `properties`
       // (measured), which the diff reports against the template on every deploy.
+      // The same cost remains INSIDE a definition: a secret equal to a number or
+      // boolean the definition itself spells (`true`, `3`) rewrites that
+      // literal too, in `properties` when the record holds `Definition` as an
+      // object. That needs a secret equal to a literal already in the record.
       if (
         secrets.size > 0 &&
         RENDERED_DEFINITION_KEYS.has(k) &&
@@ -766,23 +770,41 @@ export function definitionSourceCarriesSecret(source: Record<string, unknown>): 
  * Every NUMBER / BOOLEAN leaf whose spelling (`String(leaf)`) IS a recorded
  * plaintext, replaced by that plaintext's expression — or `***` for the
  * mask-only class (issue #5315). WHOLE value only, like the string arm's
- * first test: a plaintext AWS re-spells as a number (`1.50` read back as
- * `1.5`) is not named here, and the fail-closed rendered-definition arm masks
- * it on the next empty-map refresh. A plain container is rebuilt
- * null-prototype; anything else is returned by identity.
+ * first test, matched by spelling and by JSON value (so `1.50` read back as
+ * `1.5` is named). A plain container is rebuilt null-prototype; anything else is
+ * returned by identity. A record with no JSON-scalar plaintext returns the
+ * value untouched.
  */
 function nameScalarSecrets(value: unknown, secrets: RecordedSecretValues): unknown {
-  if (typeof value === 'number' || typeof value === 'boolean') {
-    if (typeof value === 'number' && !Number.isFinite(value)) return value;
-    return secrets.get(String(value)) ?? value;
+  // Each plaintext's JSON-SCALAR form too, compared by value: a body that
+  // places `1.50` or `1e3` outside quotes reads back as `1.5` / `1000`, whose
+  // `String()` is not the plaintext.
+  const byValue = new Map<unknown, string>();
+  for (const [plaintext, expression] of secrets) {
+    try {
+      const parsed = JSON.parse(plaintext) as unknown;
+      if ((typeof parsed === 'number' && Number.isFinite(parsed)) || typeof parsed === 'boolean') {
+        if (!byValue.has(parsed)) byValue.set(parsed, expression);
+      }
+    } catch {
+      // Not a JSON scalar: no number or boolean can spell it.
+    }
   }
-  if (Array.isArray(value)) return value.map((item) => nameScalarSecrets(item, secrets));
-  if (isPlainObject(value) && hasPlainPrototype(value)) {
-    const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-    for (const [k, v] of Object.entries(value)) out[k] = nameScalarSecrets(v, secrets);
-    return out;
-  }
-  return value;
+  if (byValue.size === 0) return value;
+  const walk = (node: unknown): unknown => {
+    if (typeof node === 'number' || typeof node === 'boolean') {
+      if (typeof node === 'number' && !Number.isFinite(node)) return node;
+      return secrets.get(String(node)) ?? byValue.get(node) ?? node;
+    }
+    if (Array.isArray(node)) return node.map(walk);
+    if (isPlainObject(node) && hasPlainPrototype(node)) {
+      const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+      for (const [k, v] of Object.entries(node)) out[k] = walk(v);
+      return out;
+    }
+    return node;
+  };
+  return walk(value);
 }
 
 /**
