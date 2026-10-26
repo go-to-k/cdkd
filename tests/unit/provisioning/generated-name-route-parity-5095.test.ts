@@ -187,9 +187,17 @@ const LEGACY_DIVERGENT: Record<string, { sdk: string; cc: string | undefined }> 
   'AWS::Glue::Connection': { sdk: 'Resource', cc: undefined },
   'AWS::Glue::Trigger': { sdk: 'Resource', cc: undefined },
   'AWS::KinesisFirehose::DeliveryStream': { sdk: 'Resource', cc: undefined },
+  // go-to-k/cdkd#5309: the SDK provider refused it; the handler named it.
+  'AWS::S3Vectors::VectorBucket': { sdk: 'mystack-resource', cc: undefined },
 };
 
-const sdkGeneratedTypes = Object.keys(OLD_SDK);
+/**
+ * Types whose SDK provider refused a missing name before it generated one, so
+ * no old SDK name exists to keep: an S3 vector bucket (go-to-k/cdkd#5309).
+ */
+const SDK_NAMED_SINCE: readonly string[] = ['AWS::S3Vectors::VectorBucket'];
+
+const sdkGeneratedTypes = [...Object.keys(OLD_SDK), ...SDK_NAMED_SINCE];
 
 /**
  * The rows whose limit go-to-k/cdkd#5064 lowered to the service's own: a long
@@ -265,7 +273,7 @@ describe('the SDK and Cloud Control routes generate the same name (#5095)', () =
 });
 
 describe("a legacy stack's names do not move (#5095)", () => {
-  it.each(sdkGeneratedTypes)('the SDK provider: %s', (type) => {
+  it.each(Object.keys(OLD_SDK))('the SDK provider: %s', (type) => {
     // The SDK provider's own pattern kept `_`, `.` and `/`: not CloudFormation
     // logical ids, but byte-identical anyway.
     for (const id of [...idsBelow(SDK_LOWERED, type), 'Lg_A.b/C']) {
@@ -355,6 +363,7 @@ describe("a legacy stack's names do not move (#5095)", () => {
       'AWS::Glue::Connection',
       'AWS::Glue::Trigger',
       'AWS::KinesisFirehose::DeliveryStream',
+      'AWS::S3Vectors::VectorBucket',
     ]) {
       expect(fallbackNamePathFor(type), type).toBeDefined();
       expect(explicitNamePropertyFor(type), type).toBeUndefined();
