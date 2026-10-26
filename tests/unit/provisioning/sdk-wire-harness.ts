@@ -148,6 +148,27 @@ function fakeOutput(context: SmithyContext, input: Record<string, unknown>): unk
 
 // --- Capture -----------------------------------------------------------------
 
+/**
+ * An idempotency token the SDK fills in (`ClientToken`, `ClientRequestToken`)
+ * is a fresh UUID per call: left in, every two requests differ and no probe
+ * could ever be silent. Only those members are normalized, so a declared value
+ * that happens to be a UUID still reaches the comparison.
+ */
+const SDK_TOKEN =
+  /("(?:ClientToken|ClientRequestToken)"\s*:\s*")[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/gi;
+
+/** The request body as text, the SDK-filled tokens in it normalized. */
+function bodyText(body: unknown): string {
+  // The JSON protocols hand the body over as bytes.
+  const text =
+    typeof body === 'string'
+      ? body
+      : body instanceof Uint8Array
+        ? new TextDecoder().decode(body)
+        : JSON.stringify(body ?? null);
+  return text.replace(SDK_TOKEN, '$1<token>"');
+}
+
 interface Capturable {
   middlewareStack: { add(middleware: never, options: never): void };
 }
@@ -173,12 +194,7 @@ function capturing<T extends Capturable>(client: T): T {
           req.path,
           req.query,
           req.headers['x-amz-target'],
-          // The JSON protocols hand the body over as bytes.
-          typeof req.body === 'string'
-            ? req.body
-            : req.body instanceof Uint8Array
-              ? new TextDecoder().decode(req.body)
-              : JSON.stringify(req.body ?? null),
+          bodyText(req.body),
         ])
       );
       return { output, response: {} };
@@ -353,6 +369,11 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
   // make them vacuous; `settled` guards that a no-op update succeeds at all.
   expect(full).toMatchObject({ threw: false });
   expect(settled).toMatchObject({ threw: false });
+  // The same call must send the same requests: a value drawn afresh per call
+  // (a token, a timestamp, a random draw) differs on every comparison, which
+  // would make every probe below pass whatever reaches the wire.
+  expect(await record(create(c.bag)), 'create is not deterministic').toEqual(full);
+  expect(await record(update(c.bag, c.bag)), 'update is not deterministic').toEqual(settled);
   const fullWire = (full as { wire: string }).wire;
 
   const silent: string[] = [];

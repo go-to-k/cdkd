@@ -14,7 +14,9 @@
 #   Phase 2 (update, CDKD_TEST_UPDATE=true): flip Status to Inactive — the
 #     only in-place-mutable property; assert the flip landed, the physical id
 #     survived, AND the secret value survived (the provider must not wipe the
-#     create-time attributes on update).
+#     create-time attributes on update). The same update moves the user and a
+#     group from `/` to `/cdkd-moved/` (#3723): IAM must hold the new path and
+#     state the ARN read after the move.
 #   Phase 3 (destroy): tear down; assert the key, user, secret, and state
 #     file are gone.
 #
@@ -74,6 +76,8 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 
 USER_NAME="cdkd-iam-access-key-user"
+GROUP_NAME="cdkd-iam-access-key-group"
+MOVED_PATH="/cdkd-moved/"
 SECRET_NAME="cdkd-iam-access-key-secret"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
@@ -114,6 +118,7 @@ cleanup() {
     aws iam delete-access-key --user-name "${USER_NAME}" --access-key-id "${kid}" >/dev/null 2>&1
   done
   aws iam delete-user --user-name "${USER_NAME}" >/dev/null 2>&1
+  aws iam delete-group --group-name "${GROUP_NAME}" >/dev/null 2>&1
   aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
     --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1
   set -eu
@@ -220,6 +225,24 @@ if [ "${CACHED_SECRET}" != "${SECRET_VALUE_1}" ]; then
 fi
 echo "    OK: create-time SecretAccessKey survived the update (secret + state attributes)"
 
+# #3723: Path is mutable in place, and cdkd used to send nothing for it on
+# update. The deploy succeeded either way, so only IAM's own Path tells.
+USER_PATH=$(aws iam get-user --user-name "${USER_NAME}" --query 'User.Path' --output text)
+GROUP_PATH=$(aws iam get-group --group-name "${GROUP_NAME}" --query 'Group.Path' --output text)
+if [ "${USER_PATH}" != "${MOVED_PATH}" ] || [ "${GROUP_PATH}" != "${MOVED_PATH}" ]; then
+  echo "FAIL: the Path update did not reach IAM (user: ${USER_PATH}, group: ${GROUP_PATH}; want ${MOVED_PATH})" >&2
+  exit 1
+fi
+# The ARN embeds the path, so the recorded one must be the moved principal's.
+STATE_ARNS=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | python3 -c "import json,sys; s=json.load(sys.stdin); [print(r.get('attributes',{}).get('Arn','')) for r in s['resources'].values() if r['resourceType'] in ('AWS::IAM::User','AWS::IAM::Group')]")
+for want in "user${MOVED_PATH}${USER_NAME}" "group${MOVED_PATH}${GROUP_NAME}"; do
+  if ! printf '%s\n' "${STATE_ARNS}" | grep -qF ":${want}"; then
+    echo "FAIL: state records no ARN ending in ${want} after the Path update (got: ${STATE_ARNS})" >&2
+    exit 1
+  fi
+done
+echo "    OK: user and group moved to ${MOVED_PATH} in place, and state records their new ARNs"
+
 # --- Phase 3: destroy ------------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -230,6 +253,9 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 assert_gone "user ${USER_NAME} still exists after destroy (key deletion must precede user deletion)" \
   aws iam get-user --user-name "${USER_NAME}"
 echo "    OK: user (and its access key) are gone"
+assert_gone "group ${GROUP_NAME} still exists after destroy" \
+  aws iam get-group --group-name "${GROUP_NAME}"
+echo "    OK: group is gone"
 
 # DeleteSecret with ForceDeleteWithoutRecovery is ASYNC: DescribeSecret can
 # still return the record (with DeletionDate) for a short window after the
@@ -269,4 +295,4 @@ s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "iam-access-key state teardown"
 
 echo ""
-echo "==> iam-access-key test passed (create + in-place Status update + secret preservation + clean destroy + zero surviving state versions)"
+echo "==> iam-access-key test passed (create + in-place Status and Path update + secret preservation + clean destroy + zero surviving state versions)"

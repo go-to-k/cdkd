@@ -4402,6 +4402,7 @@
     {
       "resourceType": "AWS::IAM::Group",
       "integs": [
+        "iam-access-key",
         "iam-managed-policy",
         "iam-profile-policy-fix-forward-orphan",
         "iam-recreate-reattach",
@@ -4411,6 +4412,9 @@
         "infra-security"
       ],
       "signals": {
+        "iam-access-key": [
+          "l2"
+        ],
         "iam-managed-policy": [
           "l2"
         ],

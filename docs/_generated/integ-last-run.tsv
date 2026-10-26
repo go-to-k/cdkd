@@ -159,7 +159,7 @@ glue-securityconfig-replace	2026-10-17T17:11:05Z	PASS	65	verify.sh	rc ok, orph c
 glue-update-hardening	2026-10-24T14:12:33Z	PASS	260	verify.sh	rc ok, orph clean
 guardduty-detector-update	2026-10-15T04:32:09Z	PASS	210	verify.sh	PR #4935 (#4921) maintainer run on f7e8e94cd; own state bucket; all 6 phases incl. Phase 3b reverts; 3 destroys 0 err, no detector left, orph clean
 healthimaging-stateful-update-fallback	2026-10-12T05:13:18Z	PASS	320	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08: DescribeType-denied CC create/update path (fail-open narrowing); rc ok, destroy 0 errors, orph clean
-iam-access-key	2026-10-25T00:07:44Z	PASS	60	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
+iam-access-key	2026-10-25T19:19:53Z	PASS	70	verify.sh	rc ok, orph clean; Path-revert probe FAILed at path check
 iam-managed-policy	2026-10-22T21:41:33Z	PASS	75	verify.sh	PR #5187; parallel batch of 4, shared state bucket; rc ok, destroy clean 0 errors, 0 orphans
 iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean
 iam-profile-policy-fix-forward-orphan	2026-10-25T00:07:44Z	PASS	131	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
