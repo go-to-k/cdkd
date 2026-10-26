@@ -3,7 +3,7 @@
 // from the template is sent as its reset value only where a real CFn A/B
 // showed CloudFormation resets it (#5004, #1160 comment 6401151077); every
 // other removal sends nothing, which keeps the live value as CFn does.
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockSend = vi.fn();
 
@@ -45,6 +45,14 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
   });
 
   describe('DBCluster update (ModifyDBCluster)', () => {
+    // The port-apply wait has its own cases below; the rest skip it.
+    beforeEach(() => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+    });
+    afterEach(() => {
+      delete process.env['CDKD_NO_WAIT'];
+    });
+
     const mockClusterUpdate = () => {
       // updateDBCluster does 2 sends: ModifyDBCluster + final describe.
       mockSend.mockResolvedValueOnce({});
@@ -114,6 +122,62 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       );
 
       expect(mockSend.mock.calls[0][0].input.Port).toBe(port);
+    });
+
+    it('sends no Port when the removed value already is the engine default', async () => {
+      mockClusterUpdate();
+
+      await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::RDS::DBCluster',
+        { Engine: 'aurora-postgresql' },
+        { Engine: 'aurora-postgresql', Port: '5432' }
+      );
+
+      expect(mockSend.mock.calls[0][0].input.Port).toBeUndefined();
+    });
+
+    it('waits for a changed Port to apply before reading the attributes', async () => {
+      delete process.env['CDKD_NO_WAIT'];
+      const sleep = vi
+        .spyOn(provider as unknown as { sleep: (ms: number) => Promise<void> }, 'sleep')
+        .mockResolvedValue(undefined);
+      mockSend.mockResolvedValueOnce({}); // ModifyDBCluster
+      mockSend.mockResolvedValueOnce({ DBClusters: [{ Status: 'modifying', Port: 5433 }] });
+      mockSend.mockResolvedValueOnce({ DBClusters: [{ Status: 'available', Port: 5432 }] });
+      mockSend.mockResolvedValueOnce({
+        DBClusters: [{ Status: 'available', Port: 5432, Endpoint: 'c.example' }],
+      });
+
+      const result = await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::RDS::DBCluster',
+        { Engine: 'aurora-postgresql' },
+        { Engine: 'aurora-postgresql', Port: 5433 }
+      );
+
+      expect(mockSend.mock.calls[0][0].input.Port).toBe(5432);
+      expect(sleep).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalledTimes(4);
+      expect(result.attributes?.['Endpoint.Port']).toBe('5432');
+    });
+
+    it('adds no wait when the declared Port is unchanged', async () => {
+      delete process.env['CDKD_NO_WAIT'];
+      mockClusterUpdate();
+
+      await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::RDS::DBCluster',
+        { Engine: 'aurora-postgresql', Port: 5433 },
+        { Engine: 'aurora-postgresql', Port: '5433' }
+      );
+
+      expect(mockSend.mock.calls[0][0].input.Port).toBe(5433);
+      expect(mockSend).toHaveBeenCalledTimes(2);
     });
 
     it('sends no Port when a Multi-AZ DB cluster engine drops it (unmeasured)', async () => {
