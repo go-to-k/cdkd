@@ -13,41 +13,11 @@ import {
   hasPlainPrototype,
   subtreeHasDynamicReference,
   mixedLeafMayCarryPublicReference,
+  RENDERED_DEFINITION_KEYS,
+  definitionSourceCarriesSecret,
 } from './redact-path.js';
-import { wholeStringLeavesOf, carriesSecretMask } from './mask-only.js';
+import { wholeStringLeavesOf } from './mask-only.js';
 import { identityKeyFor } from './identity-keys.js';
-
-/**
- * The record keys a Step Functions definition is BUILT from: the body (inline
- * as a string or an object) and the `${name}` substitution map applied to it
- * (issue [#5315](https://github.com/go-to-k/cdkd/issues/5315)).
- * Among the schemas cdkd carries, `DefinitionSubstitutions` exists only on
- * `AWS::StepFunctions::StateMachine`; the arm keys on these NAMES, so another
- * type spelling them the same way is covered too.
- */
-const DEFINITION_SOURCE_KEYS = ['DefinitionSubstitutions', 'DefinitionString', 'Definition'];
-
-/** The readback keys that carry the RENDERED body (`readCurrentState` emits `Definition`). */
-const RENDERED_DEFINITION_KEYS: ReadonlySet<string> = new Set(['Definition', 'DefinitionString']);
-
-/**
- * Does a key the definition is built from carry a secret: a dynamic reference,
- * or a {@link SECRET_MASK} a `NoEcho` value left (a substitution value, or a
- * body the containment arm flattened whole)?
- *
- * A PUBLIC `{{resolve:ssm:...}}` counts too. Only a legacy record holds one
- * unresolved (a deploy persists a public parameter's value), and nothing on an
- * empty map can tell it from a `SecureString`, so its substituted leaves are
- * masked: phantom drift, not a disclosure — the module's "PUBLIC ssm MIXED leaf,
- * EMPTY map, no proof" row, one key over.
- */
-function definitionSourceCarriesSecret(source: Record<string, unknown>): boolean {
-  return DEFINITION_SOURCE_KEYS.some(
-    (k) =>
-      Object.hasOwn(source, k) &&
-      (subtreeHasDynamicReference(source[k]) || carriesSecretMask(source[k]))
-  );
-}
 
 /**
  * The string leaves a RENDERED definition may keep (issue #5315): the whole

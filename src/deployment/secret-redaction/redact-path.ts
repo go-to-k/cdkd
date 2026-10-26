@@ -712,6 +712,38 @@ export function pathCrossesDottedKey(bag: unknown, path: string): boolean {
 }
 
 /**
+ * The record keys a Step Functions definition is BUILT from: the body (inline
+ * as a string or an object) and the `${name}` substitution map applied to it
+ * (issue [#5315](https://github.com/go-to-k/cdkd/issues/5315)).
+ * Among the schemas cdkd carries, `DefinitionSubstitutions` exists only on
+ * `AWS::StepFunctions::StateMachine`; the arm keys on these NAMES, so another
+ * type spelling them the same way is covered too.
+ */
+const DEFINITION_SOURCE_KEYS = ['DefinitionSubstitutions', 'DefinitionString', 'Definition'];
+
+/** The readback keys that carry the RENDERED body (`readCurrentState` emits `Definition`). */
+export const RENDERED_DEFINITION_KEYS: ReadonlySet<string> = new Set(['Definition', 'DefinitionString']);
+
+/**
+ * Does a key the definition is built from carry a secret: a dynamic reference,
+ * or a {@link SECRET_MASK} a `NoEcho` value left (a substitution value, or a
+ * body the containment arm flattened whole)?
+ *
+ * A PUBLIC `{{resolve:ssm:...}}` counts too. Only a legacy record holds one
+ * unresolved (a deploy persists a public parameter's value), and nothing on an
+ * empty map can tell it from a `SecureString`, so its substituted leaves are
+ * masked: phantom drift, not a disclosure — the module's "PUBLIC ssm MIXED leaf,
+ * EMPTY map, no proof" row, one key over.
+ */
+export function definitionSourceCarriesSecret(source: Record<string, unknown>): boolean {
+  return DEFINITION_SOURCE_KEYS.some(
+    (k) =>
+      Object.hasOwn(source, k) &&
+      (subtreeHasDynamicReference(source[k]) || carriesSecretMask(source[k]))
+  );
+}
+
+/**
  * Could a {@link SECRET_MASK} in an `observedProperties` baseline at the dotted
  * `path` be an UNCERTIFIED-POSITION mask (issue
  * [#2852](https://github.com/go-to-k/cdkd/issues/2852)'s fail-closed refusal)
@@ -752,6 +784,20 @@ export function isUncertifiedBaselineMaskPosition(
   // node carries. Fail closed: an ambiguous position keeps the `NoEcho`
   // disposition.
   if (pathCrossesDottedKey(properties, path)) return false;
+  // A RENDERED Step Functions definition (issue #5315): the readback's
+  // `Definition` is the body with `DefinitionSubstitutions` applied, which
+  // `properties` holds under OTHER keys (a `DefinitionString` record has no
+  // `Definition` node at all, and an object one holds `${name}` there, no
+  // reference), so the walk below can never find the reference the mask stands
+  // for. The class is answered from the keys the definition is built from,
+  // with the same predicate the writer's arm fires on, so the two cannot
+  // disagree about which records it covers. A `***` there is a `NoEcho` VALUE
+  // the record substitutes, not a `NoEcho` mask at this position: the mask in
+  // the baseline is the writer's fail-closed one either way.
+  const [head] = path.split('.');
+  if (head !== undefined && RENDERED_DEFINITION_KEYS.has(head)) {
+    return definitionSourceCarriesSecret(properties);
+  }
   let cursor: unknown = properties;
   for (const segment of path.split('.')) {
     if (typeof cursor === 'string') break;
