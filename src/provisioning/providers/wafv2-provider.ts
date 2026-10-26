@@ -76,29 +76,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * CFn `Rules` members that have NO counterpart in the installed
- * `@aws-sdk/client-wafv2` model (verified: zero hits in
- * `dist-types/models/models_0.d.ts`).
- *
- * The AWS SDK v3 serializer drops unknown members, so these silently do
- * not reach AWS no matter what cdkd forwards. There is no mapping cdkd
- * can invent — the fix is an SDK bump, after which the spellings already
- * match and no code here has to change. Until then the drop is made LOUD
- * (`warnOnSdkUnsupportedRuleKeys`) instead of silent.
- *
- * They cannot be declared in `unhandledByDesign` either: that map is
- * TOP-LEVEL CFn property granularity, and all three are nested inside
- * `Rules`, which the provider genuinely handles.
- */
-const SDK_UNSUPPORTED_RULE_KEYS: readonly string[] = [
-  // TextTransformation.PreParseTextTransformations
-  'PreParseTextTransformations',
-  // Rule action Monetize / its PriceMultiplier
-  'Monetize',
-  'PriceMultiplier',
-];
-
-/**
  * Convert a CFn `ByteMatchStatement` into the SDK shape.
  *
  * `SearchStringBase64` exists ONLY in CloudFormation — the SDK models
@@ -440,22 +417,6 @@ function toCfnRules(rules: unknown, baselineRules: unknown): unknown[] {
 }
 
 /**
- * Collect every {@link SDK_UNSUPPORTED_RULE_KEYS} member present anywhere
- * in the CFn `Rules` blob, so the caller can report the silent drop.
- */
-function collectSdkUnsupportedRuleKeys(value: unknown, found: Set<string>): void {
-  if (Array.isArray(value)) {
-    for (const item of value) collectSdkUnsupportedRuleKeys(item, found);
-    return;
-  }
-  if (!isPlainObject(value)) return;
-  for (const [key, nested] of Object.entries(value)) {
-    if (SDK_UNSUPPORTED_RULE_KEYS.includes(key)) found.add(key);
-    collectSdkUnsupportedRuleKeys(nested, found);
-  }
-}
-
-/**
  * AWS WAFv2 WebACL Provider
  *
  * Implements resource provisioning for AWS::WAFv2::WebACL using the WAFv2 SDK.
@@ -552,8 +513,6 @@ export class WAFv2WebACLProvider implements ResourceProvider {
       'AWS::WAFv2::WebACL Scope',
       replayWarn(this.logger, context)
     ) as Scope;
-
-    this.warnOnSdkUnsupportedRuleKeys(logicalId, properties['Rules']);
 
     try {
       // Build tags
@@ -661,8 +620,6 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     );
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-
-    this.warnOnSdkUnsupportedRuleKeys(logicalId, properties['Rules']);
 
     try {
       const { id, name, scope } = parseWebACLArn(physicalId);
@@ -861,26 +818,6 @@ export class WAFv2WebACLProvider implements ResourceProvider {
         ? markNotGone(thrown)
         : thrown;
     }
-  }
-
-  /**
-   * Report every CFn `Rules` member the installed `@aws-sdk/client-wafv2`
-   * model has no counterpart for, so the drop is visible instead of
-   * silent. See {@link SDK_UNSUPPORTED_RULE_KEYS} for why cdkd cannot map
-   * them and what makes them work (an SDK bump).
-   */
-  private warnOnSdkUnsupportedRuleKeys(logicalId: string, rules: unknown): void {
-    const found = new Set<string>();
-    collectSdkUnsupportedRuleKeys(rules, found);
-    if (found.size === 0) return;
-
-    const sorted = [...found].sort();
-    const names = sorted.join(', ');
-    const subject = sorted.length === 1 ? 'property' : 'properties';
-    const verb = sorted.length === 1 ? 'has' : 'have';
-    this.logger.warn(
-      `WAFv2 WebACL ${logicalId}: rule ${subject} ${names} ${verb} no member in the installed AWS SDK WAFv2 model and will NOT be sent to AWS. Upgrade cdkd once its @aws-sdk/client-wafv2 dependency carries the ${subject}.`
-    );
   }
 
   /**

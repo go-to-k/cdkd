@@ -286,44 +286,39 @@ describe('WAFv2WebACLProvider ByteMatchStatement.SearchStringBase64 (issue #1389
     });
   });
 
-  describe('SDK-unsupported rule properties', () => {
-    it('warns loudly on create when a rule carries a property the SDK model lacks', async () => {
-      mockSend.mockResolvedValueOnce({ Summary: { ARN: TEST_ARN, Id: TEST_ID } });
-      await provider.create(
-        'MyWebACL',
-        RESOURCE_TYPE,
-        baseProperties([
-          {
-            Name: 'monetize-bots',
-            Priority: 0,
-            Action: { Monetize: { PriceMultiplier: 2 } },
-            Statement: {
-              ByteMatchStatement: {
-                SearchString: 'BadBot',
-                FieldToMatch: { SingleHeader: { Name: 'user-agent' } },
-                PositionalConstraint: 'CONTAINS',
-                TextTransformations: [
-                  { Priority: 0, Type: 'NONE', PreParseTextTransformations: [{ Type: 'JSON' }] },
-                ],
-              },
-            },
-            VisibilityConfig: VISIBILITY_CONFIG,
-          },
-        ])
-      );
+  // go-to-k/cdkd#5360: PreParseTextTransformations / Monetize / PriceMultiplier
+  // used to draw a "will NOT be sent" warning. The pinned SDK carries all three,
+  // so the warning was false.
+  describe('PreParseTextTransformations / Monetize / PriceMultiplier', () => {
+    const monetizeRule = {
+      Name: 'monetize-bots',
+      Priority: 0,
+      Action: { Monetize: { PriceMultiplier: 2 } },
+      Statement: {
+        ByteMatchStatement: {
+          SearchString: 'BadBot',
+          FieldToMatch: { SingleHeader: { Name: 'user-agent' } },
+          PositionalConstraint: 'CONTAINS',
+          TextTransformations: [{ Priority: 0, Type: 'NONE' }],
+          // A sibling of TextTransformations on the statement, not a member of it.
+          PreParseTextTransformations: [{ Priority: 0, Type: 'NONE' }],
+        },
+      },
+      VisibilityConfig: VISIBILITY_CONFIG,
+    };
 
-      expect(mockWarn).toHaveBeenCalledTimes(1);
-      const message = mockWarn.mock.calls[0][0] as string;
-      expect(message).toContain('MyWebACL');
-      expect(message).toContain('Monetize');
-      expect(message).toContain('PreParseTextTransformations');
-      expect(message).toContain('PriceMultiplier');
-      // Three names -> the plural branch of the message must be selected.
-      expect(message).toContain('rule properties');
-      expect(message).toContain('have no member');
+    it('does not warn on create and forwards the three members to the command input', async () => {
+      const rules = await createdRules(provider, [monetizeRule]);
+
+      expect(mockWarn).not.toHaveBeenCalled();
+      expect(rules[0]['Action']).toEqual({ Monetize: { PriceMultiplier: 2 } });
+      const byteMatch = (rules[0]['Statement'] as Record<string, Record<string, unknown>>)[
+        'ByteMatchStatement'
+      ];
+      expect(byteMatch['PreParseTextTransformations']).toEqual([{ Priority: 0, Type: 'NONE' }]);
     });
 
-    it('warns on the update path too', async () => {
+    it('does not warn on update and forwards the members', async () => {
       mockSend.mockResolvedValueOnce({ LockToken: 'lock-token-123', WebACL: {} });
       mockSend.mockResolvedValueOnce({});
 
@@ -331,29 +326,49 @@ describe('WAFv2WebACLProvider ByteMatchStatement.SearchStringBase64 (issue #1389
         'MyWebACL',
         TEST_ARN,
         RESOURCE_TYPE,
-        baseProperties([
-          {
-            Name: 'monetize-bots',
-            Priority: 0,
-            Action: { Monetize: {} },
-            Statement: byteMatchStatement('SearchString', 'BadBot'),
-            VisibilityConfig: VISIBILITY_CONFIG,
-          },
-        ]),
+        baseProperties([monetizeRule]),
         baseProperties([])
       );
 
-      expect(mockWarn).toHaveBeenCalledTimes(1);
-      const updateMessage = mockWarn.mock.calls[0][0] as string;
-      expect(updateMessage).toContain('Monetize');
-      // One name -> the singular branch. Pinning both branches keeps the
-      // grammar swap from silently regressing.
-      expect(updateMessage).toContain('rule property Monetize has no member');
+      expect(mockWarn).not.toHaveBeenCalled();
+      const updateCall = mockSend.mock.calls[1][0];
+      expect(updateCall.input.Rules[0].Action).toEqual({ Monetize: { PriceMultiplier: 2 } });
     });
 
-    it('stays quiet for rules that use only SDK-supported properties', async () => {
-      await createdRules(provider, [rule(byteMatchStatement('SearchStringBase64', BAD_BOT_BASE64))]);
-      expect(mockWarn).not.toHaveBeenCalled();
+    it('the installed SDK serializer puts the three members on the wire', async () => {
+      const sdk = await vi.importActual<typeof import('@aws-sdk/client-wafv2')>(
+        '@aws-sdk/client-wafv2'
+      );
+      let body = '';
+      const client = new sdk.WAFV2Client({
+        region: 'us-east-1',
+        credentials: { accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'example' },
+        requestHandler: {
+          handle: async (request: { body?: unknown }) => {
+            body = String(request.body);
+            throw new Error('captured');
+          },
+          // eslint-disable-next-line @typescript-eslint/no-empty-function
+          destroy: () => {},
+        },
+        maxAttempts: 1,
+      });
+      await expect(
+        client.send(
+          new sdk.CreateWebACLCommand({
+            Name: 'x',
+            Scope: 'REGIONAL',
+            DefaultAction: { Allow: {} },
+            VisibilityConfig: VISIBILITY_CONFIG,
+            Rules: [monetizeRule] as never,
+          })
+        )
+      ).rejects.toThrow('captured');
+      const wire = JSON.parse(body);
+      expect(wire.Rules[0].Action.Monetize).toEqual({ PriceMultiplier: 2 });
+      expect(wire.Rules[0].Statement.ByteMatchStatement.PreParseTextTransformations).toEqual([
+        { Priority: 0, Type: 'NONE' },
+      ]);
     });
   });
 
