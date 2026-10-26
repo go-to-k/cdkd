@@ -167,6 +167,10 @@ happens in these situations:
 - AWS restructures or reorders the property.
 - AWS changes the case of a name, such as `db` returned as `DB`.
 - A `cdkd import` recorded a raw `Fn::Join` object.
+- A Step Functions definition read back with a key the stored definition does
+  not spell, such as a state named by a `DefinitionSubstitutions` secret. The
+  whole `Definition` is masked, and stays masked after a deploy, so it remains
+  not compared.
 
 ### What drift reports
 

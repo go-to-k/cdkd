@@ -473,6 +473,62 @@ describe('cdkd drift — an uncertified-position baseline mask (issue #3595)', (
     expect(context?.maskSecrets?.(`bad value ${ALPHA_PLAINTEXT}`)).not.toContain(ALPHA_PLAINTEXT);
   });
 
+  it('--revert registers the strings AND keys of a CONTAINER at a masked position (#5333, #5342)', async () => {
+    // Since #5333 a mask matches a live container, so the position is aligned;
+    // what the container holds must still reach the provider's log masker, its
+    // object KEYS included (a state name a validation error echoes).
+    const ROTATED_VALUE = 'cdkd-rotated-inner-value-904';
+    const ROTATED_KEY = 'cdkd-rotated-inner-key-905';
+    const update = vi.fn(async () => ({}));
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Task: {
+          physicalId: 'x',
+          resourceType: ECS_TYPE,
+          properties: { Cfg: { Mode: 'a', Doc: ALPHA_EXPR } },
+          observedProperties: { Cfg: { Mode: 'a', Doc: SECRET_MASK } },
+        },
+      })
+    );
+    readsBack(
+      { Cfg: { Mode: 'edited', Doc: { inner: ROTATED_VALUE, [ROTATED_KEY]: 'x' } } },
+      update
+    );
+
+    const { output } = await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(output).not.toContain(ROTATED_VALUE);
+    expect(output).not.toContain(ROTATED_KEY);
+    expect(update).toHaveBeenCalledTimes(1);
+    const context = (update.mock.calls[0] as unknown[])[5] as
+      | { maskSecrets?: (t: string) => string }
+      | undefined;
+    expect(context?.maskSecrets).toBeTypeOf('function');
+    expect(context!.maskSecrets!(`bad value ${ROTATED_VALUE}`)).not.toContain(ROTATED_VALUE);
+    expect(context!.maskSecrets!(`at /States/${ROTATED_KEY}`)).not.toContain(ROTATED_KEY);
+  });
+
+  it('registers the KEYS of a live value at a position it could not align (#5342)', async () => {
+    const { overlayLiveAtUncertifiedPaths } = await import('../../../src/cli/commands/drift.js');
+    const ROTATED_KEY = 'cdkd-unaligned-key-906';
+    const ROTATED_VALUE = 'cdkd-unaligned-value-907';
+    const secrets = new Map<string, string>();
+    overlayLiveAtUncertifiedPaths(
+      {},
+      ['X'],
+      { X: ['-p', { [ROTATED_KEY]: ROTATED_VALUE, States: 'z' }, '-q'] },
+      { X: ['-p', SECRET_MASK] },
+      secrets,
+      new Set(),
+      new Set(['States'])
+    );
+    expect(secrets.get(ROTATED_KEY)).toBe(SECRET_MASK);
+    expect(secrets.get(ROTATED_VALUE)).toBe(SECRET_MASK);
+    // A key the record spells is no secret: registering it would mask that
+    // word wherever a persisted value equals it.
+    expect(secrets.has('States')).toBe(false);
+  });
+
   it('--revert registers a live value at a masked position that is NOT today\'s secret', async () => {
     // A rotated-away (or edited) value sits where the baseline holds the mask:
     // equality modulo the mask still holds, so nothing is reverted there, but
@@ -1008,15 +1064,16 @@ describe('cdkd drift — an uncertified-position baseline mask (issue #3595)', (
 });
 
 describe('equalModuloMask / isUncertifiedBaselineMaskPosition (issue #3595)', () => {
-  it('lets a mask match only a SCALAR, positionally', async () => {
+  it('lets a mask match any present non-null value, positionally', async () => {
     const { equalModuloMask } = await import('../../../src/analyzer/drift-calculator.js');
     expect(equalModuloMask(['a', SECRET_MASK], ['a', 'live'], SECRET_MASK)).toBe(true);
     // A number or boolean too: the rendered-definition arm masks those leaves (#5315).
     expect(equalModuloMask({ K: SECRET_MASK }, { K: 42 }, SECRET_MASK)).toBe(true);
     expect(equalModuloMask({ K: SECRET_MASK }, { K: false }, SECRET_MASK)).toBe(true);
     expect(equalModuloMask({ K: SECRET_MASK }, { K: null }, SECRET_MASK)).toBe(false);
-    expect(equalModuloMask({ K: SECRET_MASK }, { K: [] }, SECRET_MASK)).toBe(false);
-    expect(equalModuloMask({ K: SECRET_MASK }, { K: { nested: 'x' } }, SECRET_MASK)).toBe(false);
+    // ...and a container: a definition whose KEY holds a secret is masked whole (#5333).
+    expect(equalModuloMask({ K: SECRET_MASK }, { K: [] }, SECRET_MASK)).toBe(true);
+    expect(equalModuloMask({ K: SECRET_MASK }, { K: { nested: 'x' } }, SECRET_MASK)).toBe(true);
     expect(equalModuloMask({ K: SECRET_MASK }, {}, SECRET_MASK)).toBe(false);
     expect(equalModuloMask([SECRET_MASK, 'a'], ['a', 'live'], SECRET_MASK)).toBe(false);
     expect(equalModuloMask({ A: 1, B: SECRET_MASK }, { A: 1, B: 'x', C: 2 }, SECRET_MASK)).toBe(
@@ -1144,6 +1201,163 @@ describe('cdkd drift — a rendered Step Functions Definition mask (issue #5315)
       { logicalId: 'M', type: SFN_TYPE, cause: 'uncertifiedBaseline', referencesUnresolved: true },
     ]);
     expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('a WHOLE-Definition mask (a key secret, #5333) is notCompared, exit 2', async () => {
+    const record: ResourceState = {
+      physicalId: 'arn:aws:states:us-east-1:123456789012:stateMachine:m',
+      resourceType: SFN_TYPE,
+      properties: {
+        DefinitionString: '{"StartAt":"${k}","States":{"${k}":{"Type":"Pass","End":true}}}',
+        DefinitionSubstitutions: { k: ALPHA_EXPR },
+      },
+      observedProperties: { Definition: SECRET_MASK },
+    };
+    mockGetState.mockResolvedValueOnce(makeState({ M: record }));
+    readsBack({
+      Definition: {
+        StartAt: ALPHA_PLAINTEXT,
+        States: { [ALPHA_PLAINTEXT]: { Type: 'Pass', End: true } },
+      },
+    });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    assertNoPlaintext(output);
+    const payload = JSON.parse(output) as DriftJson[];
+    expect(payload[0]!.drifted).toEqual([]);
+    expect(payload[0]!.notCompared).toEqual([
+      { logicalId: 'M', type: SFN_TYPE, cause: 'uncertifiedBaseline', referencesUnresolved: true },
+    ]);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('--revert beside a WHOLE-Definition mask sends the live Definition, never ***', async () => {
+    const update = vi.fn(async () => ({}));
+    const liveDefinition = {
+      StartAt: ALPHA_PLAINTEXT,
+      States: { [ALPHA_PLAINTEXT]: { Type: 'Pass', End: true } },
+    };
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        M: {
+          physicalId: 'arn:aws:states:us-east-1:123456789012:stateMachine:m',
+          resourceType: SFN_TYPE,
+          properties: {
+            RoleArn: 'arn:aws:iam::123456789012:role/a',
+            DefinitionString: '{"StartAt":"${k}","States":{"${k}":{"Type":"Pass","End":true}}}',
+            DefinitionSubstitutions: { k: ALPHA_EXPR },
+          },
+          observedProperties: { RoleArn: 'arn:aws:iam::123456789012:role/a', Definition: SECRET_MASK },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        RoleArn: 'arn:aws:iam::123456789012:role/edited',
+        Definition: liveDefinition,
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = (update.mock.calls[0] as unknown[])[3] as Record<string, unknown>;
+    expect(sent['RoleArn']).toBe('arn:aws:iam::123456789012:role/a');
+    expect(JSON.stringify(sent)).not.toContain(SECRET_MASK);
+  });
+
+  it('--revert beside a NUMERIC position mask sends the live number, never *** or a string', async () => {
+    const update = vi.fn(async () => ({}));
+    const liveDefinition = {
+      StartAt: 'W',
+      States: { W: { Type: 'Wait', Seconds: 9001, End: true } },
+    };
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        M: {
+          physicalId: 'arn:aws:states:us-east-1:123456789012:stateMachine:m',
+          resourceType: SFN_TYPE,
+          properties: {
+            RoleArn: 'arn:aws:iam::123456789012:role/a',
+            DefinitionString: '{"StartAt":"W","States":{"W":{"Type":"Wait","Seconds":${pin},"End":true}}}',
+            DefinitionSubstitutions: { pin: ALPHA_EXPR },
+          },
+          observedProperties: {
+            RoleArn: 'arn:aws:iam::123456789012:role/a',
+            Definition: { StartAt: 'W', States: { W: { Type: 'Wait', Seconds: SECRET_MASK, End: true } } },
+          },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        RoleArn: 'arn:aws:iam::123456789012:role/edited',
+        Definition: liveDefinition,
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = (update.mock.calls[0] as unknown[])[3] as Record<string, unknown>;
+    expect(sent['RoleArn']).toBe('arn:aws:iam::123456789012:role/a');
+    expect(JSON.stringify(sent)).not.toContain(SECRET_MASK);
+    expect(sent['Definition']).toEqual(liveDefinition);
+    const context = (update.mock.calls[0] as unknown[])[5] as
+      | { maskSecrets?: (t: string) => string }
+      | undefined;
+    // The number at the mask is registered by its spelling (#5342).
+    expect(context!.maskSecrets!('Seconds 9001 rejected')).not.toContain('9001');
+  });
+
+  it('a mask over a JSON-STRING secret outside quotes is notCompared, and --revert sends the live string', async () => {
+    const update = vi.fn(async () => ({}));
+    const liveDefinition = {
+      StartAt: 'P',
+      States: { P: { Type: 'Pass', Result: ALPHA_PLAINTEXT, End: true } },
+    };
+    const record = (): ResourceState => ({
+      physicalId: 'arn:aws:states:us-east-1:123456789012:stateMachine:m',
+      resourceType: SFN_TYPE,
+      properties: {
+        RoleArn: 'arn:aws:iam::123456789012:role/a',
+        DefinitionString: '{"StartAt":"P","States":{"P":{"Type":"Pass","Result":${s},"End":true}}}',
+        DefinitionSubstitutions: { s: ALPHA_EXPR },
+      },
+      observedProperties: {
+        RoleArn: 'arn:aws:iam::123456789012:role/a',
+        Definition: { StartAt: 'P', States: { P: { Type: 'Pass', Result: SECRET_MASK, End: true } } },
+      },
+    });
+    mockGetState.mockResolvedValueOnce(makeState({ M: record() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        RoleArn: 'arn:aws:iam::123456789012:role/a',
+        Definition: liveDefinition,
+      }),
+    });
+    const { output } = await runDrift(['TestStack', '--json']);
+    assertNoPlaintext(output);
+    const payload = JSON.parse(output) as DriftJson[];
+    expect(payload[0]!.drifted).toEqual([]);
+    expect(payload[0]!.notCompared.map((n) => n.cause)).toEqual(['uncertifiedBaseline']);
+
+    mockGetState.mockResolvedValueOnce(makeState({ M: record() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        RoleArn: 'arn:aws:iam::123456789012:role/edited',
+        Definition: liveDefinition,
+      }),
+      update,
+    });
+    await runDrift(['TestStack', '--revert', '--yes']);
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = (update.mock.calls[0] as unknown[])[3] as Record<string, unknown>;
+    expect(sent['RoleArn']).toBe('arn:aws:iam::123456789012:role/a');
+    expect(sent['Definition']).toEqual(liveDefinition);
   });
 
   it('keeps a real edit beside the mask as drift, exit 1', async () => {
