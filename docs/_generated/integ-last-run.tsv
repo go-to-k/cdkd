@@ -52,7 +52,7 @@ cloudfront-function-url	2026-10-23T23:55:45Z	PASS	225	verify.sh	rc ok, orph clea
 cloudtrail-trail	2026-10-21T13:56:47Z	PASS	200	verify.sh	rc ok, reset/retain split verified, orph clean (1 lambda log group routinely swept)
 cloudwatch	2026-10-20T05:58:30Z	PASS	65	standard	deploy+destroy clean, 0 orphans
 cloudwatch-anomaly-detector	2026-10-26T05:42:10Z	PASS	61	verify.sh	rc ok, orph clean; TZ=Asia/Tokyo offset-less range read as UTC (5311)
-codebuild-project	2026-10-20T05:59:05Z	PASS	100	verify.sh	deploy+destroy clean, 0 orphans
+codebuild-project	2026-10-26T07:36:54Z	PASS	135	verify.sh	rc ok, orph clean
 codecommit	2026-10-25T00:07:44Z	PASS	125	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
 cognito	2026-10-24T19:26:15Z	PASS	214	verify.sh	rc ok, orph clean, #5266 tail-c
@@ -156,7 +156,7 @@ getatt-fallback-guard	2026-10-18T04:25:39Z	PASS	172	verify.sh	PR #5049 (#1940 Re
 getstackoutput-crossregion	2026-10-18T00:55:44Z	PASS	456	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
 globaltable-fix-forward-orphan	2026-10-24T22:46:19Z	PASS	165	verify.sh	PR #5268 at 947d06203 (rebased onto #5266); us-east-1; own state bucket; rc=0, destroy 0 errors, 0 orphans
 glue-securityconfig-replace	2026-10-17T17:11:05Z	PASS	65	verify.sh	rc ok, orph clean (#5032)
-glue-update-hardening	2026-10-24T14:12:33Z	PASS	260	verify.sh	rc ok, orph clean
+glue-update-hardening	2026-10-26T07:36:54Z	FAIL	366	verify.sh	removal: Connection tags not reset to {} (#4073); cleanup clean, 0 orph
 guardduty-detector-update	2026-10-15T04:32:09Z	PASS	210	verify.sh	PR #4935 (#4921) maintainer run on f7e8e94cd; own state bucket; all 6 phases incl. Phase 3b reverts; 3 destroys 0 err, no detector left, orph clean
 healthimaging-stateful-update-fallback	2026-10-12T05:13:18Z	PASS	320	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08: DescribeType-denied CC create/update path (fail-open narrowing); rc ok, destroy 0 errors, orph clean
 iam-access-key	2026-10-25T19:19:53Z	PASS	70	verify.sh	rc ok, orph clean; Path-revert probe FAILed at path check
@@ -193,7 +193,7 @@ intrinsic-functions	2026-08-15T00:12:35Z	PASS	20	standard	0 err / 0 orph; resolv
 intrinsics-torture	2026-10-24T03:05:49Z	PASS	50	verify.sh	PR 5234 rc0, destroy 0 errors, orph clean (2457d0149)
 intrinsics-torture-2	2026-10-11T09:33:22Z	PASS	65	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 kinesis-esm-filter	2026-10-16T08:48:48Z	PASS	70	verify.sh	rc ok, orph clean (#3341 slice 4996)
-kinesis-stream-mode-switch	2026-10-20T06:08:39Z	PASS	105	verify.sh	deploy+destroy clean, 0 orphans
+kinesis-stream-mode-switch	2026-10-26T07:36:54Z	FAIL	126	verify.sh	Phase 2 state-recorded DesiredShardLevelMetrics empty (effectiveProperties); AWS ok; cleanup clean, 0 orph
 kms-encryption	2026-10-26T05:02:44Z	PASS	87	verify.sh	destroy 0 errors, orph clean; #5299 KeyUsage refusal + lockout bypass OK; pre-fix probe red at Phase 2b (PR 5304)
 lambda	2026-10-24T14:12:33Z	PASS	101	verify.sh	rc ok, orph clean
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
