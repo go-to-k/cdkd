@@ -235,7 +235,7 @@ export const CASES_2: TypeCase[] = [
         // Not sent on create or update: the repository is the one cdkd created
         // in the caller's own registry, which is PutLifecyclePolicy's default.
         expectedSilent: Object.fromEntries(
-          ['create', 'update-vary'].map((d) => [
+          ['create', 'create-vary', 'update-vary'].map((d) => [
             `${d}:LifecyclePolicy.RegistryId`,
             "the only registry holding this repository is the caller's own, PutLifecyclePolicy's default",
           ])

@@ -14,6 +14,7 @@ import {
   describeWireCases,
   paths,
   setOutputOverrides,
+  touchesCreateOnly,
   type Bag,
   type Throw,
   type TypeCase,
@@ -22,6 +23,7 @@ import { CASES_2 } from './sdk-wire-cases-2.js';
 import { CASES_IAM_SECRETS } from './sdk-wire-cases-iam-secrets.js';
 import { CASES_3 } from './sdk-wire-cases-3.js';
 import { CASES_4 } from './sdk-wire-cases-4.js';
+import { CASES_NO_PROPERTIES } from './sdk-wire-cases-no-properties.js';
 
 // Every client class a covered provider reaches, wrapped so each instance
 // (shared or provider-built) is captured. A `vi.mock` factory is hoisted, so
@@ -712,8 +714,6 @@ const CASES: TypeCase[] = [
 const NOT_YET_COVERED = new Set([
   'ACMCertificateProvider',
   'ASGProvider',
-  'AgentCoreBrowserProvider',
-  'AgentCoreCodeInterpreterProvider',
   'AgentCoreEvaluatorProvider',
   'AgentCoreRuntimeProvider',
   'ApiGatewayProvider',
@@ -769,9 +769,8 @@ const NOT_YET_COVERED = new Set([
   'ServiceDiscoveryProvider',
   'StepFunctionsProvider',
   'WAFv2WebACLProvider',
-  'WaitConditionHandleProvider',
 ]);
-const MAX_UNCOVERED = 60;
+const MAX_UNCOVERED = 57;
 
 /**
  * Every case list, with the test file that runs it and the list's name there.
@@ -789,6 +788,11 @@ const CASE_LISTS: { cases: TypeCase[]; name: string; file: string }[] = [
   },
   { cases: CASES_3, name: 'CASES_3', file: 'sdk-wire-coverage-3.test.ts' },
   { cases: CASES_4, name: 'CASES_4', file: 'sdk-wire-coverage-4.test.ts' },
+  {
+    cases: CASES_NO_PROPERTIES,
+    name: 'CASES_NO_PROPERTIES',
+    file: 'sdk-wire-coverage-no-properties.test.ts',
+  },
 ];
 const ALL_CASES: TypeCase[] = CASE_LISTS.flatMap((l) => l.cases);
 
@@ -830,4 +834,62 @@ describe('SDK wire coverage ledger', () => {
 
 describe('SDK wire coverage', () => {
   describeWireCases(CASES);
+});
+
+// A case's expectations are derived through its create-only set (a skipped
+// probe expects nothing), so a widened set leaves every case green while its
+// update probes go unrun. The precision is pinned here instead.
+describe('the wire harness create-only paths', () => {
+  it('keeps a nested create-only path nested', () => {
+    expect(createOnlyOf('AWS::Budgets::Budget')).toEqual(
+      new Set(['Budget.BudgetName', 'NotificationsWithSubscribers'])
+    );
+  });
+
+  it.each([
+    [['Budget', 'BudgetName'], true],
+    [['Budget'], true],
+    [['NotificationsWithSubscribers', 0, 'Notification', 'Threshold'], true],
+    [['Budget', 'BudgetType'], false],
+    [['Budget', 'BudgetLimit', 'Amount'], false],
+    [['Budget', 'BudgetNameSuffix'], false],
+    [['ResourceTags', 0, 'Key'], false],
+  ] as const)('%j touches one: %s', (path, touches) => {
+    const bag = { Budget: { BudgetName: 'b' }, NotificationsWithSubscribers: [{}] };
+    expect(touchesCreateOnly(createOnlyOf('AWS::Budgets::Budget'), [...path], bag)).toBe(touches);
+  });
+
+  // The engine cannot walk a nested path through a list or a `*`, so it
+  // replaces on any change under that top-level; the harness skips the same.
+  // A list on ANOTHER branch does not stop the walk.
+  it.each([
+    [['Foo', 0, 'Other'], true],
+    [['Foo', 1], true],
+    [['Bar', 'Other'], true],
+    [['Baz', 'Other'], false],
+    [['Qux', 'List', 0], false],
+    [['Qux', 'List'], false],
+    [['Qux', 'Inner', 'Name'], true],
+    // An absent container walks (to `undefined`), as a Pipe's unused source
+    // parameters do.
+    [['Pipe', 'Other'], false],
+    // Removing the parent of an ABSENT create-only member leaves it absent.
+    [['Pipe'], false],
+  ] as const)('through a list or a wildcard, %j touches one: %s', (path, touches) => {
+    const createOnly = new Set([
+      'Foo.Name',
+      'Bar.*.Name',
+      'Baz.Name',
+      'Qux.Inner.Name',
+      'Pipe.Source.Name',
+    ]);
+    const bag = {
+      Foo: [{ Name: 'n' }, { Other: 'o' }],
+      Bar: { Other: 'o' },
+      Baz: { Name: 'n', Other: 'o' },
+      Qux: { Inner: { Name: 'n' }, List: ['x'] },
+      Pipe: { Other: 'o' },
+    };
+    expect(touchesCreateOnly(createOnly, [...path], bag)).toBe(touches);
+  });
 });

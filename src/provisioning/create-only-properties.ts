@@ -11,12 +11,13 @@
  * rejected it with a typed error — at best — or silently dropped it).
  *
  * This module resolves each resource type's `createOnlyProperties` from the
- * CloudFormation registry schema via `cloudformation:DescribeType`, reduced to
- * the TOP-LEVEL containing property names (a nested path like
- * `/properties/Foo/Bar` strips to `Foo`) so the diff's top-level property keys
- * match. The diff calculator consults it as a fallback for any property the
- * registry does not explicitly classify, so a createOnly change on ANY type now
- * correctly drives a replacement.
+ * CloudFormation registry schema via `cloudformation:DescribeType` as full
+ * PATHS (`/properties/Foo/Bar` is `['Foo', 'Bar']`), never reduced to the
+ * top-level: `createOnlyChangeRequiresReplacement` compares the value AT each
+ * path, so a nested entry leaves its siblings updatable. The diff calculator
+ * consults it as a fallback for any property the registry does not explicitly
+ * classify, so a createOnly change on ANY type now correctly drives a
+ * replacement.
  *
  * Caching semantics match {@link ./write-only-properties.ts} (the sibling
  * DescribeType-backed resolver): only SUCCESSFUL lookups are cached per
