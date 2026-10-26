@@ -852,6 +852,8 @@ export interface SecretLeaf {
   readonly shapes: ReadonlyArray<number | ReadonlySet<string>>;
   /** The substitution placed OUTSIDE quotes, or `undefined` for one inside a string. */
   readonly outOfStringName: string | undefined;
+  /** An in-string leaf as WRITTEN (`Bearer ${k}`), which an unsubstituted readback still holds. */
+  readonly asWritten: string | undefined;
 }
 
 export function sentinelDefinitionOf(
@@ -872,7 +874,14 @@ export function sentinelDefinitionOf(
     const body =
       typeof raw === 'string' ? raw : isPlainObject(raw) ? JSON.stringify(raw) : undefined;
     if (body === undefined) continue;
-    if (body.includes(SENTINEL_IN_STRING) || body.includes(SENTINEL_OUT_OF_STRING)) continue;
+    // ...spelled raw, or as a JSON escape that `JSON.parse` would decode into one.
+    if (
+      body.includes(SENTINEL_IN_STRING) ||
+      body.includes(SENTINEL_OUT_OF_STRING) ||
+      /\\u[eE]00[01]/.test(body)
+    ) {
+      continue;
+    }
     const names: string[] = [];
     let text = '';
     let inString = false;
@@ -921,6 +930,8 @@ export function sentinelDefinitionOf(
       t.includes(SENTINEL_IN_STRING) || t.includes(SENTINEL_OUT_OF_STRING);
     const outOfString = new RegExp(`^${SENTINEL_OUT_OF_STRING}(\\d+)${SENTINEL_OUT_OF_STRING}$`);
     const inStringMarkers = new RegExp(`${SENTINEL_IN_STRING}(\\d+)${SENTINEL_IN_STRING}`, 'g');
+    const written = (t: string): string =>
+      t.replace(inStringMarkers, (_m, i: string) => `\${${names[Number(i)]}}`);
     const walk = (
       node: unknown,
       path: Array<string | number>,
@@ -929,9 +940,19 @@ export function sentinelDefinitionOf(
       if (typeof node === 'string') {
         const m = outOfString.exec(node);
         if (m !== null) {
-          secretLeaves.push({ path, shapes, outOfStringName: names[Number(m[1])] });
+          secretLeaves.push({
+            path,
+            shapes,
+            outOfStringName: names[Number(m[1])],
+            asWritten: undefined,
+          });
         } else if (marked(node)) {
-          secretLeaves.push({ path, shapes, outOfStringName: undefined });
+          secretLeaves.push({
+            path,
+            shapes,
+            outOfStringName: undefined,
+            asWritten: written(node),
+          });
         } else {
           strings.add(node);
         }
@@ -950,12 +971,10 @@ export function sentinelDefinitionOf(
         // (`${name}`): the only readback that can still hold the key there is
         // an unsubstituted one, since a substituted key holds the plaintext,
         // which the key rule masks whole before any position is read.
-        const asWritten = (k: string): string =>
-          k.replace(inStringMarkers, (_m, i: string) => `\${${names[Number(i)]}}`);
-        const own = new Set(Object.keys(node).map(asWritten));
+        const own = new Set(Object.keys(node).map(written));
         for (const [k, v] of Object.entries(node)) {
           if (!marked(k)) keys.add(k);
-          walk(v, [...path, asWritten(k)], [...shapes, own]);
+          walk(v, [...path, written(k)], [...shapes, own]);
         }
       }
     };

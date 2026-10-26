@@ -445,4 +445,55 @@ describe('secret-redaction - a substitution secret in a definition KEY (issue #5
       );
     }
   });
+
+  it('a body spelling a marker as a JSON ESCAPE also reads as unknown', () => {
+    // `` decodes to the marker character only inside `JSON.parse`.
+    const escaped = '\\uE0010\\uE001';
+    const decoded = '' + '0' + '';
+    const body =
+      '{"StartAt":"W","States":{"W":{"Type":"Wait","Comment":"' +
+      escaped +
+      '","Seconds":${pin},"End":true}}}';
+    const template = { DefinitionString: body, DefinitionSubstitutions: { pin: EXPR } };
+    const out = deployPersist(
+      template,
+      { DefinitionString: body, DefinitionSubstitutions: { pin: '987654321' } },
+      {
+        Definition: {
+          StartAt: 'W',
+          States: { W: { Type: 'Wait', Comment: decoded, Seconds: 987654321, End: true } },
+        },
+      },
+      new Map([['987654321', EXPR]])
+    );
+    expect(out['Definition']).toEqual({
+      StartAt: 'W',
+      States: { W: { Type: 'Wait', Comment: decoded, Seconds: EXPR, End: true } },
+    });
+  });
+
+  it('keeps an unsubstituted in-string placeholder even when the raw body does not parse', () => {
+    // The out-of-quotes `${pin}` stops the body as written from parsing, so
+    // `Bearer ${k}` is only known from the sentinel reading's written form.
+    const body =
+      '{"StartAt":"W","States":{"W":{"Type":"Wait","Seconds":${pin},"Next":"P"},' +
+      '"P":{"Type":"Pass","Result":"Bearer ${k}","End":true}}}';
+    const props = { DefinitionString: body, DefinitionSubstitutions: { pin: EXPR, k: EXPR } };
+    const out = refreshObserved(props, {
+      Definition: {
+        StartAt: 'W',
+        States: {
+          W: { Type: 'Wait', Seconds: 987654321, Next: 'P' },
+          P: { Type: 'Pass', Result: 'Bearer ${k}', End: true },
+        },
+      },
+    });
+    expect(out['Definition']).toEqual({
+      StartAt: 'W',
+      States: {
+        W: { Type: 'Wait', Seconds: SECRET_MASK, Next: 'P' },
+        P: { Type: 'Pass', Result: 'Bearer ${k}', End: true },
+      },
+    });
+  });
 });

@@ -123,9 +123,14 @@ function renderedDefinitionLiterals(source: Record<string, unknown>): {
  * spells. A bare readback value there is the secret, whatever literal it
  * happens to equal.
  */
-function certifiedAtSecretPosition(value: unknown, rendered: ReadonlySet<string>): boolean {
+function certifiedAtSecretPosition(
+  value: unknown,
+  rendered: ReadonlySet<string>,
+  asWritten: string | undefined
+): boolean {
   if (typeof value === 'symbol') return true;
   if (typeof value !== 'string') return false;
+  if (value === asWritten) return true;
   if (isSingleDynamicReferenceToken(value) && spanNamesResolvableService(value)) return true;
   // ...or the placeholder itself, unsubstituted (inline definitions before
   // go-to-k/cdkd#5298): the body as written spells it, and it is no secret.
@@ -730,7 +735,7 @@ export function refuseUncertifiedReadbackPositions(
           misaligned = true;
           break;
         }
-        if (!certifiedAtSecretPosition(at.value, keep.strings)) {
+        if (!certifiedAtSecretPosition(at.value, keep.strings, leaf.asWritten)) {
           positioned = replaceAtPath(
             positioned,
             leaf.path,
