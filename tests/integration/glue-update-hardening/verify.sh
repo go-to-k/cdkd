@@ -331,6 +331,10 @@ assert_tag_set() { # usage: assert_tag_set <label> <want tag map JSON> aws <serv
   shift 2
   # A failed probe (throttle, auth) must not read as the #4073 regression.
   raw="$("$@")" || { echo "FAIL: ${label}: the tag readback failed: $*" >&2; exit 1; }
+  # The AWS CLI prints NOTHING for an empty object under `--output json`
+  # (measured: `--query '\`{}\`'` prints no bytes), so a successful empty read
+  # is the empty tag set, not a lost one.
+  [ -n "${raw}" ] || raw='{}'
   got=$(printf '%s' "${raw}" | jq -cS '.')
   want=$(printf '%s' "${want}" | jq -cS '.')
   if [ "${got}" != "${want}" ]; then

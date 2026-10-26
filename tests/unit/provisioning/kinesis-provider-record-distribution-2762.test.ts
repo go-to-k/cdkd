@@ -159,6 +159,42 @@ describe('KinesisStreamProvider RecordDistributionStrategy (go-to-k/cdkd#2762)',
     ]);
   });
 
+  it('still records the EXPANDED metric list when the strategy update rides the same mode switch', async () => {
+    // The kinesis-stream-mode-switch Phase 2 update: PROVISIONED -> ON_DEMAND,
+    // `ALL` metrics and AUTO together. The strategy reconcile sits between the
+    // mode switch and the metrics step, and must not cost the metrics their
+    // `effectiveProperties`.
+    const result = await provider.update(
+      'L',
+      'mystream',
+      'AWS::Kinesis::Stream',
+      {
+        Name: 'mystream',
+        StreamModeDetails: ON_DEMAND,
+        DesiredShardLevelMetrics: ['ALL'],
+        RecordDistributionStrategy: 'AUTO',
+      },
+      {
+        Name: 'mystream',
+        StreamModeDetails: { StreamMode: 'PROVISIONED' },
+        ShardCount: 1,
+        DesiredShardLevelMetrics: ['IncomingBytes', 'OutgoingBytes'],
+      }
+    );
+    expect(commandsOfType(UpdateStreamRecordDistributionStrategyCommand)).toHaveLength(1);
+    const recorded = result.effectiveProperties?.['DesiredShardLevelMetrics'] as string[];
+    expect([...recorded].sort()).toEqual([
+      'IncomingBytes',
+      'IncomingRecords',
+      'IteratorAgeMilliseconds',
+      'OutgoingBytes',
+      'OutgoingRecords',
+      'ReadProvisionedThroughputExceeded',
+      'WriteProvisionedThroughputExceeded',
+    ]);
+    expect(result.effectiveProperties?.['RecordDistributionStrategy']).toBe('AUTO');
+  });
+
   it('makes no call when the strategy is unchanged', async () => {
     await provider.update(
       'L',

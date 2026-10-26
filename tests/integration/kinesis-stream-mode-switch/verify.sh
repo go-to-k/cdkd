@@ -217,9 +217,11 @@ assert_eq "RecordDistributionStrategy after Phase 2 (update path)" "AUTO" "${RDS
 # `ALL` the template declared — a state record AWS's readback can never match
 # is exactly the permanent phantom drift this mechanism exists to prevent.
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+# Selected by physical id: the stack holds a second stream (go-to-k/cdkd#2762)
+# that declares no metrics, and `first` over both read whichever came first.
 RECORDED_METRICS="$(printf '%s' "${STATE_JSON}" \
-  | jq -r '[.resources[] | select(.resourceType == "AWS::Kinesis::Stream")
-            | .properties.DesiredShardLevelMetrics // []] | first | sort | join(" ")')"
+  | jq -r --arg n "${STREAM_NAME}" '[.resources[] | select(.resourceType == "AWS::Kinesis::Stream" and .physicalId == $n)
+            | .properties.DesiredShardLevelMetrics // []] | if length == 1 then first | sort | join(" ") else "NO-UNIQUE-RECORD-FOR-\($n)" end')"
 echo "    cdkd state DesiredShardLevelMetrics: ${RECORDED_METRICS}"
 if printf '%s' "${RECORDED_METRICS}" | grep -qw "ALL"; then
   echo "FAIL: cdkd state recorded the literal 'ALL' — AWS stores the expanded seven, so this is permanent phantom drift (effectiveProperties not applied?)" >&2
