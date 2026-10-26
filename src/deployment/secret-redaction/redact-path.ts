@@ -626,6 +626,22 @@ export function redactByPath(
       out[k] = Object.hasOwn(source, k)
         ? redactByPath(v, source[k], secrets, rules, secretExpressions, bagIsSameGeneration)
         : redactForState(v, { provenance: 'value-scan', secrets });
+      // A rendered Step Functions definition (issue #5315): a `${name}`
+      // substituted OUTSIDE quotes reads back as a JSON NUMBER, which neither
+      // the path pass nor the value scan (both string-only) ever names, so a
+      // populated map — the deploy's own persist of the resource that resolved
+      // the secret — wrote the digits verbatim. Scoped to these keys and to a
+      // record whose definition carries a secret: everywhere else a number is
+      // a value the template spells as one, and rewriting a `Port` that merely
+      // EQUALS a secret would turn a number into a string in `properties`
+      // (measured), which the diff reports against the template on every deploy.
+      if (
+        secrets.size > 0 &&
+        RENDERED_DEFINITION_KEYS.has(k) &&
+        definitionSourceCarriesSecret(source)
+      ) {
+        out[k] = nameScalarSecrets(out[k], secrets);
+      }
     }
     return out;
   }
@@ -744,6 +760,29 @@ export function definitionSourceCarriesSecret(source: Record<string, unknown>): 
       Object.hasOwn(source, k) &&
       (subtreeHasDynamicReference(source[k]) || carriesSecretMask(source[k]))
   );
+}
+
+/**
+ * Every NUMBER / BOOLEAN leaf whose spelling (`String(leaf)`) IS a recorded
+ * plaintext, replaced by that plaintext's expression — or `***` for the
+ * mask-only class (issue #5315). WHOLE value only, like the string arm's
+ * first test: a plaintext AWS re-spells as a number (`1.50` read back as
+ * `1.5`) is not named here, and the fail-closed rendered-definition arm masks
+ * it on the next empty-map refresh. A plain container is rebuilt
+ * null-prototype; anything else is returned by identity.
+ */
+function nameScalarSecrets(value: unknown, secrets: RecordedSecretValues): unknown {
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    if (typeof value === 'number' && !Number.isFinite(value)) return value;
+    return secrets.get(String(value)) ?? value;
+  }
+  if (Array.isArray(value)) return value.map((item) => nameScalarSecrets(item, secrets));
+  if (isPlainObject(value) && hasPlainPrototype(value)) {
+    const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(value)) out[k] = nameScalarSecrets(v, secrets);
+    return out;
+  }
+  return value;
 }
 
 /**

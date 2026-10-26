@@ -333,7 +333,9 @@ function deepEqual(a: unknown, b: unknown): boolean {
  * leaves, and the rendered Step Functions definition arm (issue
  * [#5315](https://github.com/go-to-k/cdkd/issues/5315)) number and boolean
  * leaves as well, since a `${name}` placed outside quotes reads back as a JSON
- * number. A container never matches one.
+ * number. A container never matches one. The cost, for every mask and not
+ * only that arm's: a live value at a masked position that changed TYPE (a
+ * string become a number) is no longer seen as a difference there.
  */
 export function equalModuloMask(state: unknown, aws: unknown, mask: string): boolean {
   const a = jsonForm(state);

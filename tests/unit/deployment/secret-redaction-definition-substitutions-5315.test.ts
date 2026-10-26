@@ -323,7 +323,7 @@ describe('secret-redaction - a substituted Definition on the empty-map readback 
       // quotes), so the record spells no number: the over-mask stated in the
       // arm. A whole NON-secret substitution value is still kept by its own
       // spelling, and a boolean the record cannot vouch for is masked too.
-      expect(def['States']!['P']!['Result']).toMatchObject({ wait: 45 });
+      expect(def['States']!['P']!['Result']).toEqual({ retries: SECRET_MASK, wait: 45, on: SECRET_MASK });
     });
 
     it('keeps the numbers and booleans a PARSEABLE body spells', () => {
@@ -389,5 +389,58 @@ describe('secret-redaction - a substituted Definition on the empty-map readback 
     );
     expect(resultOf(persisted as Record<string, unknown>)['region']).toBe(REGION);
     expect(resultOf(persisted as Record<string, unknown>)['key']).not.toBe(SECRET_MASK);
+  });
+
+  it('the DEPLOY persist with a POPULATED map rewrites a numeric substituted secret too', () => {
+    // `deploy-engine.ts`'s persist call for the resource that resolved the
+    // secret this deploy: its own map, the template bag, both claims. That
+    // path is not fail-closed, so the value scan alone must name the number.
+    const PIN = '987654321';
+    const template = {
+      DefinitionString: '{"StartAt":"W","States":{"W":{"Type":"Wait","Seconds":${pin},"End":true}}}',
+      DefinitionSubstitutions: { pin: EXPR },
+    };
+    const persisted = scrubResourceRecord(
+      {
+        properties: { ...template, DefinitionSubstitutions: { pin: PIN } },
+        observedProperties: {
+          Definition: { StartAt: 'W', States: { W: { Type: 'Wait', Seconds: Number(PIN), End: true } } },
+        },
+      },
+      new Map<string, string>([[PIN, EXPR]]),
+      template,
+      undefined,
+      { properties: 'same-generation', observed: 'same-generation' }
+    );
+    expect(JSON.stringify(persisted)).not.toContain(PIN);
+    const w = (
+      (persisted.observedProperties as Record<string, Record<string, Record<string, unknown>>>)[
+        'Definition'
+      ]!['States'] as Record<string, Record<string, unknown>>
+    )['W']!;
+    expect(w['Seconds']).toBe(EXPR);
+    // The other polarity: a number and a boolean no needle names are kept.
+    expect(w['End']).toBe(true);
+  });
+
+  it('names no number OUTSIDE a rendered definition, even one equal to a secret', () => {
+    // `Port: 5432` is a value the template spells as a number; rewriting it to
+    // the expression would put a string in `properties` the diff then reports.
+    const template = { Port: 5432, Password: EXPR, DefinitionSubstitutions: { pw: EXPR } };
+    const persisted = scrubResourceRecord(
+      {
+        properties: { Port: 5432, Password: '5432', DefinitionSubstitutions: { pw: '5432' } },
+        observedProperties: { Port: 5432, Definition: { Seconds: 5432 } },
+      },
+      new Map<string, string>([['5432', EXPR]]),
+      template,
+      undefined,
+      { properties: 'same-generation', observed: 'same-generation' }
+    );
+    expect(persisted.properties['Port']).toBe(5432);
+    expect((persisted.observedProperties as Record<string, unknown>)['Port']).toBe(5432);
+    expect((persisted.observedProperties as Record<string, unknown>)['Definition']).toEqual({
+      Seconds: EXPR,
+    });
   });
 });

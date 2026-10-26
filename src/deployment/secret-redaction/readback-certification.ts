@@ -20,7 +20,7 @@ import { wholeStringLeavesOf } from './mask-only.js';
 import { identityKeyFor } from './identity-keys.js';
 
 /**
- * The string leaves a RENDERED definition may keep (issue #5315): the whole
+ * The leaves a RENDERED definition may keep (issue #5315). `strings` is the whole
  * string leaves of the record's own body, as written and with EVERY scalar
  * substitution applied VERBATIM — a reference as its expression, a `NoEcho`
  * value as `***` — plus the substitution values themselves.
@@ -40,6 +40,12 @@ import { identityKeyFor } from './identity-keys.js';
  * to a substitution value, an empty string or a whole resolvable token. The
  * same holds for the `DefinitionS3Location` shape, whose body the record does
  * not hold.
+ *
+ * `scalars` is the same set for NUMBER / BOOLEAN leaves: those of each body
+ * that parses, plus each substitution value's JSON-scalar spelling. A body that
+ * parses in neither spelling (a `${name}` outside quotes) contributes none, so
+ * every number and boolean of its readback is masked, a whole non-secret
+ * substitution value excepted.
  */
 function renderedDefinitionLiterals(source: Record<string, unknown>): {
   strings: Set<string>;
@@ -153,7 +159,10 @@ function collectScalarLeaves(value: unknown, into: Set<unknown>): void {
  * `rollback-executor/replay-props.ts`'s `refuseMaskedReplayBaseline`), because the
  * mask-only channel (issue #2274) already puts one there.
  *
- * WHY STRINGS ONLY. A recorded secret is a `string` by the type of
+ * WHY STRINGS ONLY — unless the caller passes `scalarLiterals`, which only the
+ * rendered-definition arm does (issue #5315): there a NUMBER or BOOLEAN leaf
+ * not in that set is masked too, since a `${name}` outside quotes reads a
+ * string secret back as a JSON number. Otherwise: a recorded secret is a `string` by the type of
  * {@link RecordedSecretValues}, so a number, a boolean or `null` cannot BE a
  * resolved secret and masking one would only cost drift a comparison. A
  * NON-PLAIN object (a `Date` an AWS SDK readback carries, a `Buffer`) is
@@ -621,7 +630,11 @@ export function refuseUncertifiedReadbackPositions(
   // NUMBER and BOOLEAN leaves are refused here too, against the scalars the
   // record spells: a `${name}` OUTSIDE quotes reads back as a JSON number, so a
   // secret of digits is not a string leaf. (Such a body parses in neither
-  // spelling, so every number of that readback is masked.) The residual is a
+  // spelling, so every number of that readback is masked.) Like the string
+  // set, the scalar set is the whole definition's, not this position's: a
+  // numeric secret EQUAL to a number the record spells elsewhere (`3`), or a
+  // boolean one (two values), is kept, as the plaintext already sits in the
+  // record. The residual is a
   // secret substituted into a JSON KEY (a state name): no walk here masks a key,
   // and what a masked key should look like is open in
   // go-to-k/cdkd#5333.
