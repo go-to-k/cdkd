@@ -342,7 +342,7 @@ s3-object-lock	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53
 s3-replication-and-filter	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-retry-own-bucket	2026-10-24T14:12:33Z	PASS	70	verify.sh	rc ok, orph clean
 s3-subconfig-removal	2026-10-11T09:33:22Z	PASS	105	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-s3-tables	2026-10-24T14:12:33Z	PASS	61	verify.sh	rc ok, orph clean
+s3-tables	2026-10-26T06:27:45Z	PASS	85	verify.sh	rc ok, orph clean; Phase 1c rename (#5313) green, pre-fix red there
 s3-vectors	2026-10-26T02:21:56Z	PASS	55	verify.sh	rc ok, orph clean; #5309 pre-fix RED at nameless-create check
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 scheduler-custom-group	2026-10-24T03:41:38Z	PASS	105	verify.sh	rc ok, orph clean; #5228 not-gone mark
