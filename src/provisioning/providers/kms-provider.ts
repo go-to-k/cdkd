@@ -354,11 +354,11 @@ export class KMSProvider implements ResourceProvider {
     const keySpec = properties['KeySpec'] as string | undefined;
     const keyUsage = properties['KeyUsage'] as string | undefined;
     const enableKeyRotation = templateBool(properties['EnableKeyRotation']);
-    const multiRegion = properties['MultiRegion'] as boolean | undefined;
+    const multiRegion = templateBool(properties['MultiRegion']);
     const origin = properties['Origin'] as string | undefined;
-    const bypassPolicyLockoutSafetyCheck = properties['BypassPolicyLockoutSafetyCheck'] as
-      | boolean
-      | undefined;
+    const bypassPolicyLockoutSafetyCheck = templateBool(
+      properties['BypassPolicyLockoutSafetyCheck']
+    );
 
     const input: CreateKeyCommandInput = {
       Description: description,

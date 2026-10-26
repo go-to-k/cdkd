@@ -92,6 +92,43 @@ describe('KMSProvider', () => {
         expect(mockSend.mock.calls[1][0].input).toEqual({ KeyId: 'key-123' });
       });
 
+      // go-to-k/cdkd#5349: a String parameter's Ref arrives as 'true' / 'false'.
+      it.each([
+        [true, true],
+        [false, false],
+        ['true', true],
+        ['false', false],
+        ['TRUE', true],
+      ])(
+        'sends MultiRegion / BypassPolicyLockoutSafetyCheck %j to CreateKey as boolean %j',
+        async (given, expected) => {
+          mockSend.mockResolvedValue({
+            KeyMetadata: { KeyId: 'key-123', Arn: 'arn:aws:kms:us-east-1:123456789012:key/key-123' },
+          });
+
+          await provider.create('MyKey', 'AWS::KMS::Key', {
+            MultiRegion: given,
+            BypassPolicyLockoutSafetyCheck: given,
+          });
+
+          const input = mockSend.mock.calls[0][0].input;
+          expect(input.MultiRegion).toBe(expected);
+          expect(input.BypassPolicyLockoutSafetyCheck).toBe(expected);
+        }
+      );
+
+      it('leaves MultiRegion / BypassPolicyLockoutSafetyCheck absent when the template omits them', async () => {
+        mockSend.mockResolvedValue({
+          KeyMetadata: { KeyId: 'key-123', Arn: 'arn:aws:kms:us-east-1:123456789012:key/key-123' },
+        });
+
+        await provider.create('MyKey', 'AWS::KMS::Key', { Description: 'Test key' });
+
+        const input = mockSend.mock.calls[0][0].input;
+        expect(input.MultiRegion).toBeUndefined();
+        expect(input.BypassPolicyLockoutSafetyCheck).toBeUndefined();
+      });
+
       it('should JSON.stringify KeyPolicy when it is an object', async () => {
         mockSend.mockResolvedValue({
           KeyMetadata: { KeyId: 'key-123', Arn: 'arn:aws:kms:us-east-1:123456789012:key/key-123' },
