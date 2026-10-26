@@ -121,7 +121,7 @@ Hooks are the `POST`s to `/aws/lambda-microvms/runtime/v1/<hook>` on
 | Step | What happens |
 | --- | --- |
 | 1 | The container starts. |
-| 2 | `/ready` is polled. `503`, or a refused connection while the app starts, is retried until `ReadyTimeoutInSeconds`; any other status than `200` / `503` fails. |
+| 2 | `/ready` is polled. `503`, or a refused connection while the app starts, is retried until `ReadyTimeoutInSeconds`; any other status than `200` / `503` fails, and a request held open without an answer fails at the deadline, with no retry. |
 | 3 | `/validate` is polled the same way. |
 | 4 | `/run` is posted once with `{"microvmId":"mvm-<uuid>","runHookPayload":"..."}` and must answer `200` within `RunTimeoutInSeconds`. |
 | 5 | The MicroVM's local URL opens. |
@@ -147,8 +147,10 @@ order:
 
 Before the app sees the request, every `X-aws-proxy-*` header and the MicroVM
 subprotocols (`lambda-microvms`, `lambda-microvms.authentication.*`,
-`lambda-microvms.port.*`) are removed. A WebSocket client that offered only
-MicroVM subprotocols gets `lambda-microvms` selected in the `101` response.
+`lambda-microvms.port.*`) are removed. When a WebSocket client offered only
+MicroVM subprotocols, the `101` response selects `lambda-microvms` if the
+client offered that base protocol, and no protocol if it offered only, say,
+`lambda-microvms.port.9000`.
 
 Reachable ports are 8080, `Hooks.Port`, every port the image `EXPOSE`s, and
 every `--proxy-port`. Errors match the cloud endpoint's:
@@ -242,7 +244,10 @@ takes the role's ARN explicitly; there is no form that reads it from state.
 
 {kbd:ctrl+c} or `SIGTERM` calls `/terminate` on every running MicroVM, then
 removes the containers. A second signal while the containers are being
-removed is ignored. A container that exits on its own ends the command with
+removed is ignored, except while a container's `docker run` is still in
+flight: then cdkd exits at once, with `130` for {kbd:ctrl+c} and `143` for
+`SIGTERM`, and prints the `docker rm -f` command for the container it may
+leave behind. A container that exits on its own ends the command with
 an error quoting its last output.
 
 ## Exit codes
@@ -252,6 +257,7 @@ an error quoting its last output.
 | `0` | Stopped by `SIGTERM`, or every MicroVM was terminated through the control endpoint. |
 | `1` | An error. |
 | `130` | Stopped by {kbd:ctrl+c}, or the picker was cancelled. |
+| `143` | A second `SIGTERM` while a `docker run` was still in flight. |
 
 An error here is a target that does not exist, a synthesis failure, code that
 is not a staged asset, a build failure, a hook that failed or timed out, or a

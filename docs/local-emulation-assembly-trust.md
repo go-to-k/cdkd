@@ -28,14 +28,17 @@ paths:
 | The module path in a Lambda's `Handler`, for inline `Code.ZipFile` | Wherever inline code is run |
 | A Docker asset's `source.directory` | Every command that builds an image, on each build and each `--watch` rebuild |
 | The directory a `--watch` reload copies into a running container | `start-service`, `start-alb`, `invoke-agentcore`, `start-agentcore` |
-| A code asset's `source.path` | `invoke-agentcore`, `start-agentcore` |
+| A code asset's `source.path` | `invoke-agentcore`, `start-agentcore`, `start-web-function`, `start-microvm` |
 | A relative `BucketDeployment` source served as an S3 origin | `start-cloudfront` |
 | A stack name that would place `<stack>.assets.json` outside the assembly | Wherever a command reads it |
 
 Four details about those rows:
 
-- An absolute `source.directory` or `source.path` is placed under the
-  manifest's directory, so it cannot leave that directory.
+- An absolute Docker asset `source.directory`, and the AgentCore commands'
+  absolute code-asset `source.path`, are placed under the manifest's
+  directory, so they cannot leave that directory. `start-web-function` and
+  `start-microvm` do not fold an absolute code-asset `source.path`: they
+  accept it with a warning, as the next section describes.
 - When a `--watch` copy is refused, cdkd either rebuilds the image in full or
   skips the reload. It never copies the directory.
 - `--no-build` reuses a cached image and opens no directory.
@@ -62,7 +65,7 @@ The deploy path follows the same rule; see
 
 ## Paths that are accepted with a warning
 
-Three kinds of path are used even though they lead outside the output
+Four kinds of path are used even though they lead outside the output
 directory. cdkd prints a warning for each.
 
 | Path in the assembly | Why it is accepted |
@@ -70,9 +73,15 @@ directory. cdkd prints a warning for each.
 | An absolute `Metadata['aws:asset:path']` outside the output directory | `cdk synth --no-staging` writes the asset's absolute source directory there. |
 | A Docker asset's `source.executable` | It is the build command the manifest chose. cdkd runs it on your machine to produce the image. |
 | An absolute `BucketDeployment` source outside the output directory | `cdk synth --no-staging` also writes this one. |
+| An absolute code-asset `source.path` outside the output directory, on `start-web-function` and `start-microvm` | `cdk synth --no-staging` writes the asset's source directory there too. |
 
-`start-cloudfront` serves an absolute `BucketDeployment` source only when it
-is a folder inside your project; see
+The last two are accepted only as a folder inside your project: the git work
+tree holding the output directory, or the current directory when it contains
+the output directory or is a git work-tree root. A path is refused when it is
+the filesystem root, your home directory or a directory containing it, a
+directory containing the output directory, the project root itself, or a path
+through a credential or version-control directory such as `.git` or `.aws`.
+For the `BucketDeployment` source, see
 [`cdkd local start-cloudfront`](local-start-cloudfront.md#absolute-bucketdeployment-sources).
 
 > [!WARNING]

@@ -249,6 +249,17 @@ set +e
 ${CDKD} local start-microvm "${STACK}/NeverReadyImage" --platform "${PLATFORM}" > "${OUT_FILE}" 2>&1 &
 NR_PID=$!
 RUN_PIDS="${RUN_PIDS} ${NR_PID}"
+# Bounded: the 3 s /ready timeout plus teardown should end it well within 120 s,
+# so a hung teardown fails the arm instead of stalling the run.
+for _ in $(seq 1 480); do
+  if ! kill -0 "${NR_PID}" 2>/dev/null; then break; fi
+  sleep 0.25
+done
+if kill -0 "${NR_PID}" 2>/dev/null; then
+  kill -KILL "${NR_PID}" 2>/dev/null || true
+  set -e
+  fail "start-microvm did not exit within 120s of a never-ready boot"
+fi
 wait "${NR_PID}"
 NR_RC=$?
 set -e
