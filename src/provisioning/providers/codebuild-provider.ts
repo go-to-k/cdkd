@@ -709,8 +709,8 @@ export class CodeBuildProvider implements ResourceProvider {
       // alone: this path is state-replay reachable, so it cannot refuse.
       //
       // Removing `ResourceAccessRole` while `PUBLIC_READ` stays sends
-      // `PUBLIC_READ` with no role. CloudFormation clears the role there too
-      // and keeps the public alias (CFn A/B on go-to-k/cdkd#2762).
+      // `PUBLIC_READ` with no role; CloudFormation clears the role in this
+      // case and keeps the public alias (CFn A/B on go-to-k/cdkd#2762).
       const desiredVisibility = readVisibility(properties, mask);
       const recorded = readVisibility(previousProperties, mask);
       if (desiredVisibility.kind === 'unusable') {
