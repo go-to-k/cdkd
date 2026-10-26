@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-local-start-microvm-from-state",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Integration test fixture for cdkd local start-microvm --from-state against a deployed MicroVM image",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.274.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

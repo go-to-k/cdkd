@@ -4670,6 +4670,7 @@
         "local-start-alb-from-state",
         "local-start-api-websocket",
         "local-start-microvm",
+        "local-start-microvm-from-state",
         "local-start-web-function",
         "local-start-web-function-from-state",
         "log-pipeline",
@@ -4932,6 +4933,10 @@
         ],
         "local-start-microvm": [
           "l2"
+        ],
+        "local-start-microvm-from-state": [
+          "l2",
+          "literal"
         ],
         "local-start-web-function": [
           "l2"
@@ -5930,10 +5935,14 @@
     {
       "resourceType": "AWS::Lambda::MicrovmImage",
       "integs": [
-        "lambda-microvm-image"
+        "lambda-microvm-image",
+        "local-start-microvm-from-state"
       ],
       "signals": {
         "lambda-microvm-image": [
+          "literal"
+        ],
+        "local-start-microvm-from-state": [
           "literal"
         ]
       }
@@ -6491,6 +6500,7 @@
         "local-invoke-from-state",
         "local-start-cloudfront",
         "local-start-cloudfront-from-state",
+        "local-start-microvm-from-state",
         "log-pipeline",
         "lost-child-after-failed-deploy",
         "migrate-from-cfn",
@@ -6618,6 +6628,10 @@
           "l2"
         ],
         "local-start-cloudfront-from-state": [
+          "l2",
+          "literal"
+        ],
+        "local-start-microvm-from-state": [
           "l2",
           "literal"
         ],
@@ -7557,6 +7571,7 @@
         "list-parameters",
         "local-engine-role-identity",
         "local-invoke-from-cfn-stack-multi-stack",
+        "local-start-microvm-from-state",
         "lost-child-after-failed-deploy",
         "microservices",
         "multi-region-same-stack",
@@ -7804,6 +7819,10 @@
         ],
         "local-invoke-from-cfn-stack-multi-stack": [
           "l2"
+        ],
+        "local-start-microvm-from-state": [
+          "l2",
+          "literal"
         ],
         "lost-child-after-failed-deploy": [
           "l1",
