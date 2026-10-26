@@ -26,6 +26,11 @@
 #      CustomTimeZone removed from the template (issue #1160): the change
 #      applies in place, and the removed sub-fields stay live, as a measured
 #      CloudFormation update leaves them.
+#   3d. Redeploy adding DeliveryStreamEncryptionConfigurationInput (AWS-owned
+#      key): encryption must read ENABLED the moment deploy returns (issue
+#      #5357: update() never applied it, and the transition is asynchronous).
+#   3e. Redeploy with the block removed: encryption must read DISABLED, as a
+#      measured CloudFormation update leaves it.
 #   4. Destroy, assert both streams, both buckets, the role and the cdkd state
 #      file are gone -- immediately, with no polling.
 #
@@ -267,6 +272,35 @@ assert_eq "Firehose CustomTimeZone after Phase 3c (removed from the template; Cl
 P3C_CREATED="$(firehose_created)"
 assert_eq "Firehose CreateTimestamp after Phase 3c (the destination change must update the stream in place)" "${PRE_CREATED}" "${P3C_CREATED}"
 echo "    FileExtension updated in place; the removed sub-fields stayed live (issue #1160)"
+
+# --- Phase 3d / 3e: server-side encryption on, then off (issue #5357) -----
+# Read once per phase, right after deploy returns and with no polling: update()
+# waits for the asynchronous ENABLING / DISABLING transition to end.
+firehose_enc() { # usage: firehose_enc <DeliveryStreamEncryptionConfiguration field>
+  aws firehose describe-delivery-stream --delivery-stream-name "${NAME}" --region "${REGION}" \
+    --query "DeliveryStreamDescription.DeliveryStreamEncryptionConfiguration.$1" --output text
+}
+P3D_PRE="$(firehose_enc Status)"
+assert_eq "Firehose encryption before Phase 3d" "DISABLED" "${P3D_PRE}"
+echo "==> Phase 3d: redeploy adding DeliveryStreamEncryptionConfigurationInput (AWS_OWNED_CMK)"
+CDKD_SRD_PHASE=b CDKD_SRD_TAG=updated CDKD_SRD_FILE_EXT=.ndjson CDKD_SRD_TRIM=1 CDKD_SRD_ENC=1 \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+P3D_STATUS="$(firehose_enc Status)"
+assert_eq "Firehose encryption status after Phase 3d (issue #5357: update() never applied DeliveryStreamEncryptionConfigurationInput, or returned before ENABLED)" "ENABLED" "${P3D_STATUS}"
+P3D_TYPE="$(firehose_enc KeyType)"
+assert_eq "Firehose encryption KeyType after Phase 3d" "AWS_OWNED_CMK" "${P3D_TYPE}"
+P3D_CREATED="$(firehose_created)"
+assert_eq "Firehose CreateTimestamp after Phase 3d (encryption must be applied in place)" "${PRE_CREATED}" "${P3D_CREATED}"
+echo "    encryption enabled in place (issue #5357)"
+
+echo "==> Phase 3e: redeploy with DeliveryStreamEncryptionConfigurationInput removed"
+CDKD_SRD_PHASE=b CDKD_SRD_TAG=updated CDKD_SRD_FILE_EXT=.ndjson CDKD_SRD_TRIM=1 \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+P3E_STATUS="$(firehose_enc Status)"
+assert_eq "Firehose encryption status after Phase 3e (issue #5357: removing the block must stop encryption, as CloudFormation does)" "DISABLED" "${P3E_STATUS}"
+P3E_CREATED="$(firehose_created)"
+assert_eq "Firehose CreateTimestamp after Phase 3e (encryption must be removed in place)" "${PRE_CREATED}" "${P3E_CREATED}"
+echo "    encryption disabled in place (issue #5357)"
 
 # --- Phase 4: destroy, everything gone at once ---------------------------
 STREAM_ARN="$(stream_arn)"

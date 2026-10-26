@@ -34,6 +34,10 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  * `FileExtension` and `CustomTimeZone` (issue #1160). `CDKD_SRD_FILE_EXT` sets
  * the extension; `CDKD_SRD_TRIM=1` removes `Prefix`, `ErrorOutputPrefix` and
  * `CustomTimeZone` from the template, which CloudFormation leaves live.
+ *
+ * `CDKD_SRD_ENC=1` adds `DeliveryStreamEncryptionConfigurationInput` with an
+ * AWS-owned key; dropping it again is a removal, which CloudFormation answers
+ * with `StopDeliveryStreamEncryption` (issue #5357).
  */
 export class StreamDeleteRedeployStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -44,6 +48,7 @@ export class StreamDeleteRedeployStack extends cdk.Stack {
     const tagValue = process.env.CDKD_SRD_TAG ?? 'base';
     const fileExtension = process.env.CDKD_SRD_FILE_EXT ?? '.json';
     const trim = process.env.CDKD_SRD_TRIM === '1';
+    const encrypt = process.env.CDKD_SRD_ENC === '1';
 
     const stream = new kinesis.Stream(this, 'Stream', {
       streamName: `cdkd-stream-redeploy-${runId}`,
@@ -79,6 +84,7 @@ export class StreamDeleteRedeployStack extends cdk.Stack {
           : { prefix: 'data/', errorOutputPrefix: 'errors/', customTimeZone: 'Asia/Tokyo' }),
       },
       tags: [{ key: 'cdkd-srd', value: tagValue }],
+      ...(encrypt && { deliveryStreamEncryptionConfigurationInput: { keyType: 'AWS_OWNED_CMK' } }),
     });
     // The role's grant policy must exist before Firehose validates the role.
     deliveryStream.node.addDependency(role);

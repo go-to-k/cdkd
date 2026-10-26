@@ -11303,7 +11303,8 @@
       ],
       "gaps": [],
       "blindSpots": [
-        "computed key in applyUpdate()"
+        "computed key in applyUpdate()",
+        "rest-destructure in withRecordedEncryption()"
       ]
     },
     {
