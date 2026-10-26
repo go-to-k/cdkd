@@ -14,7 +14,11 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
-import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
+import {
+  CdkdError,
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+} from '../../utils/error-handler.js';
 import {
   markRedactedCause,
   relayedNameCollision,
@@ -34,7 +38,13 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { lambdaFunctionNameForMask } from '../../utils/lambda-function-name.js';
-import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
+import {
+  planTagDiff,
+  tagPlanWarning,
+  refuseMalformedDesiredTags,
+  DBPROXY_TAG_OPTIONS,
+  DBPROXY_TAGS_WHAT,
+} from '../tag-list.js';
 import {
   createMaskedLogSinks,
   withDerivedNameMasks,
@@ -438,11 +448,11 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         'Tags',
         // #609 backfill — 4 mutable (KMSKeyArn / LoggingConfig /
         // MetricsConfig / ProvisionedPollerConfig ride both Create
-        // and Update) + 3 create-only (Queues / Topics /
-        // StartingPositionTimestamp absent from UpdateInput so
-        // update() ignores them; AWS rejects mutation, CFn replaces
-        // the resource on a template change to these — matched by
-        // cdkd's existing diff layer which schedules a replace).
+        // and Update) + 3 the Update API does not take.
+        // StartingPositionTimestamp is create-only in the CFn schema, so
+        // the diff layer replaces the mapping on a change. Queues / Topics
+        // are NOT create-only in the schema, yet CFn refuses a change
+        // (issue #5356), so update() refuses it too.
         'KmsKeyArn',
         'LoggingConfig',
         'MetricsConfig',
@@ -556,8 +566,21 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     // set.
     const log = this.operationSinks(context?.maskSecrets, properties);
     log.debug(`Creating event source mapping ${logicalId}`);
-    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
-    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
+    // go-to-k/cdkd#3994: a malformed Tags is refused before any call. The CFn
+    // schema makes a tag's Value optional (nestedRequired.Tags is ["Key"]);
+    // an omitted Value is sent as '' like the RDS DBProxy and Lambda
+    // NetworkConnector providers (issue #5356). CloudFormation accepts the
+    // entry too, but was measured leaving it off the CreateEventSourceMapping
+    // request; cdkd applies the declared key instead of dropping it.
+    const desiredTags = refuseMalformedDesiredTags(
+      properties['Tags'],
+      resourceType,
+      logicalId,
+      undefined,
+      'Tags',
+      DBPROXY_TAGS_WHAT,
+      DBPROXY_TAG_OPTIONS
+    );
 
     const functionName = properties['FunctionName'] as string;
     if (!functionName) {
@@ -589,7 +612,10 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       if (properties['StartingPosition'])
         params.StartingPosition = properties['StartingPosition'] as EventSourcePosition;
       if (properties['Enabled'] !== undefined) params.Enabled = properties['Enabled'] as boolean;
-      if (properties['MaximumBatchingWindowInSeconds'])
+      // `!== undefined`: a declared `0` is sent, as CloudFormation sends it
+      // (issue #5356); omitting it leaves a Kafka / MQ / DocumentDB mapping on
+      // AWS's 500 ms default.
+      if (properties['MaximumBatchingWindowInSeconds'] !== undefined)
         params.MaximumBatchingWindowInSeconds = properties[
           'MaximumBatchingWindowInSeconds'
         ] as number;
@@ -648,10 +674,10 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       // Use `!== undefined` for the 4 mutable props to mirror update()'s
       // gating, so an explicit `''` (the AWS-documented `KMSKeyArn`
       // clear-back-to-AWS-owned-key sentinel) and explicit empty objects
-      // / arrays all reach AWS. Queues / Topics use truthy because they
-      // are create-only — an empty array at create is a degenerate "no
-      // self-managed targets" case that has no AWS meaning and would
-      // generate a no-op call.
+      // / arrays all reach AWS. Queues / Topics use truthy: the Update API
+      // does not take them (update() refuses a change, issue #5356), and
+      // the schema requires at least one item, so there is no clear
+      // sentinel to mirror.
       if (properties['KmsKeyArn'] !== undefined)
         params.KMSKeyArn = properties['KmsKeyArn'] as string;
       if (properties['LoggingConfig'] !== undefined)
@@ -666,17 +692,17 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         params.ProvisionedPollerConfig = properties[
           'ProvisionedPollerConfig'
         ] as import('@aws-sdk/client-lambda').ProvisionedPollerConfig;
-      // Queues / Topics: self-managed source target lists; create-only
-      // (absent from UpdateEventSourceMappingRequest).
+      // Queues / Topics: the MQ queue / Kafka topic to consume. Absent from
+      // UpdateEventSourceMappingRequest, so update() refuses a change.
       if (properties['Queues']) params.Queues = properties['Queues'] as string[];
       if (properties['Topics']) params.Topics = properties['Topics'] as string[];
       // StartingPositionTimestamp: SDK expects `Date`; CFn template
       // supplies a number (epoch seconds, per the AWS::Lambda::EventSourceMapping
       // schema) or — defensively — an ISO-8601 string (offset-less read as
       // UTC, issue #5311). Coerce both.
-      // Also create-only (absent from UpdateEventSourceMappingRequest);
-      // a template change forces a CFn-side replace, which cdkd's diff
-      // layer schedules independently of this provider.
+      // Create-only in the CFn schema (and absent from
+      // UpdateEventSourceMappingRequest), so cdkd's diff layer replaces the
+      // mapping on a change before update() is reached.
       if (properties['StartingPositionTimestamp'] !== undefined) {
         const raw = properties['StartingPositionTimestamp'];
         params.StartingPositionTimestamp =
@@ -839,8 +865,42 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     // Issue #2177: every update() line and failure goes through this one sink
     // set.
     const log = this.operationSinks(context?.maskSecrets, properties, previousProperties);
-    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
-    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call;
+    // a Value-less entry is accepted, as in create().
+    refuseMalformedDesiredTags(
+      properties['Tags'],
+      resourceType,
+      logicalId,
+      physicalId,
+      'Tags',
+      DBPROXY_TAGS_WHAT,
+      DBPROXY_TAG_OPTIONS
+    );
+    // Issue #5356: UpdateEventSourceMapping takes no Queues / Topics, and
+    // CloudFormation refuses a change to either ("Parameter 'Topics' can not
+    // be updated", measured on a self-managed Kafka mapping) rather than
+    // replacing the mapping, since the schema does not mark them create-only.
+    // Refused before the first AWS call on the template path, so the change is
+    // not silently dropped; `--replace` opts into a delete + create. Warned on
+    // a state replay or a drift revert, which restore a recorded or read-back
+    // configuration this update cannot carry either way.
+    const restoring = context?.replayingState === true || context?.desiredFromAwsReadback === true;
+    for (const key of ['Queues', 'Topics'] as const) {
+      if (JSON.stringify(properties[key]) === JSON.stringify(previousProperties[key])) continue;
+      const reason =
+        `${key} cannot be changed on an existing event source mapping ` +
+        `(UpdateEventSourceMapping does not take it, and CloudFormation refuses the change too)`;
+      if (!restoring) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `${reason}; deploy with --replace to delete and recreate the mapping`
+        );
+      }
+      log.warn(
+        safeMsg`AWS::Lambda::EventSourceMapping ${logicalId}: ${reason}. Proceeding without it: this update restores a recorded or read-back configuration.`
+      );
+    }
     // update() never names ConsumptionMode (kafkaConfigForUpdate), so only a
     // CHANGED value is lost; an unchanged one (a record an older cdkd wrote)
     // sends nothing either way. Refused before the first AWS call on the
@@ -851,7 +911,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       JSON.stringify(desiredMode) !== JSON.stringify(declaredConsumptionMode(previousProperties))
     ) {
       const message = consumptionModeRefusalMessage(logicalId, 'update');
-      if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+      if (!restoring) {
         throw new ProvisioningError(message, resourceType, logicalId, physicalId);
       }
       log.warn(
@@ -866,7 +926,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         properties,
         previousProperties,
         log,
-        context
+        restoring
       );
     } catch (error) {
       // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
@@ -896,7 +956,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
     log: MaskedLogSinks,
-    context?: UpdateContext
+    restoring: boolean
   ): Promise<ResourceUpdateResult> {
     log.debug(`Updating event source mapping ${logicalId}: ${physicalId}`);
 
@@ -957,14 +1017,14 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       'AmazonManagedKafkaEventSourceConfig',
     ] as const) {
       const block = kafkaConfigForUpdate(properties[key], previousProperties[key], {
-        restoring: context?.replayingState === true || context?.desiredFromAwsReadback === true,
+        restoring,
       });
       if (block !== undefined) updateParams[key] = block;
     }
-    // #609 backfill — the 4 mutable props (Queues / Topics /
-    // StartingPositionTimestamp are create-only and intentionally NOT
-    // forwarded here; AWS would reject the field and a template change
-    // forces a CFn-side replace, scheduled by cdkd's diff layer).
+    // #609 backfill — the 4 mutable props. Queues / Topics /
+    // StartingPositionTimestamp are not forwarded: the Update API does not
+    // take them. A Queues / Topics change was refused in update(); a
+    // StartingPositionTimestamp change is a replacement (create-only).
     // CFn `KmsKeyArn` → SDK `KMSKeyArn` casing flip mirrors create().
     // Use `!== undefined` so an explicit `''` / `null` reaches AWS as
     // the documented clear-sentinel (Lambda treats empty KMSKeyArn as
@@ -1132,7 +1192,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     newTagsRaw: unknown,
     log: MaskedLogSinks
   ): Promise<void> {
-    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
+    const plan = planTagDiff(oldTagsRaw, newTagsRaw, DBPROXY_TAG_OPTIONS);
     const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
     if (tagWarning !== undefined) {
       log.warn(tagWarning);

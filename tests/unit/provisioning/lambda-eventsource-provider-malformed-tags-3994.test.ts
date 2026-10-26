@@ -48,6 +48,18 @@ import {
   TAG_FIXTURE,
 } from './tag-list-fixtures.js';
 
+// CFn declares this type's tag `Value` optional (issue #5356), so an omitted
+// Value is well-formed here (read as ''); a null Value stands in as the
+// malformed row.
+const NULL_VALUE: [string, unknown] = ['an entry with a null Value', [{ Key: 'env', Value: null }]];
+const MALFORMED_DESIRED = [
+  ...PROVIDER_MALFORMED_DESIRED.filter(([label]) => label !== 'an entry with no Value'),
+  NULL_VALUE,
+];
+const MALFORMED_RECORDED = [
+  ...PROVIDER_MALFORMED_RECORDED.filter(([label]) => label !== 'an entry with no Value'),
+  NULL_VALUE,
+];
 const TYPE = 'AWS::Lambda::EventSourceMapping';
 const NAME = 'abcdef12-3456-7890-abcd-ef1234567890';
 const ARN = `arn:aws:lambda:us-east-1:123456789012:event-source-mapping:${NAME}`;
@@ -95,7 +107,7 @@ describe('LambdaEventSourceMappingProvider Tags (go-to-k/cdkd#3994)', () => {
     provider = new LambdaEventSourceMappingProvider();
   });
 
-  it.each(PROVIDER_MALFORMED_DESIRED)(
+  it.each(MALFORMED_DESIRED)(
     'refuses a desired %s on update before any call',
     async (_label, tags) => {
       const err = await refusal(() =>
@@ -106,7 +118,7 @@ describe('LambdaEventSourceMappingProvider Tags (go-to-k/cdkd#3994)', () => {
     }
   );
 
-  it.each(PROVIDER_MALFORMED_DESIRED)(
+  it.each(MALFORMED_DESIRED)(
     'refuses a desired %s on create before any call',
     async (_label, tags) => {
       const err = await refusal(() => provider.create('Esm', TYPE, { ...BASE, Tags: tags }));
@@ -115,7 +127,7 @@ describe('LambdaEventSourceMappingProvider Tags (go-to-k/cdkd#3994)', () => {
     }
   );
 
-  it.each(PROVIDER_MALFORMED_RECORDED)(
+  it.each(MALFORMED_RECORDED)(
     'applies a recorded %s ADD-only: tags every desired key, untags nothing',
     async (_label, recorded) => {
       await provider.update('Esm', NAME, TYPE, { ...BASE, Tags: DESIRED }, { ...BASE, Tags: recorded });
@@ -180,6 +192,31 @@ describe('LambdaEventSourceMappingProvider Tags (go-to-k/cdkd#3994)', () => {
       (c) => c instanceof CreateEventSourceMappingCommand
     ) as CreateEventSourceMappingCommand;
     expect(create.input.Tags).toEqual({ keep: 'same', add: '' });
+  });
+
+  it('accepts a Key-only tag on create and update and sends it with an empty Value (issue #5356)', async () => {
+    await provider.create('Esm', TYPE, { ...BASE, Tags: [{ Key: 'flag' }] });
+    const create = commands().find(
+      (c) => c instanceof CreateEventSourceMappingCommand
+    ) as CreateEventSourceMappingCommand;
+    expect(create.input.Tags).toEqual({ flag: '' });
+
+    mockSend.mockClear();
+    await provider.update(
+      'Esm',
+      NAME,
+      TYPE,
+      { ...BASE, Tags: [{ Key: 'flag' }, { Key: 'keep', Value: 'same' }] },
+      { ...BASE, Tags: [{ Key: 'gone' }, { Key: 'keep', Value: 'same' }] }
+    );
+    const tagCalls = commands().filter(
+      (c) => c instanceof TagResourceCommand || c instanceof UntagResourceCommand
+    ) as Array<TagResourceCommand | UntagResourceCommand>;
+    expect(tagCalls.map((c) => [c.constructor.name, c.input])).toEqual([
+      ['UntagResourceCommand', { Resource: ARN, TagKeys: ['gone'] }],
+      ['TagResourceCommand', { Resource: ARN, Tags: { flag: '' } }],
+    ]);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('creates with no Tags member when the template has none', async () => {
