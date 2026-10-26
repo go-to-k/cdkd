@@ -203,6 +203,21 @@ export function glueTableNameChanged(oldValue: unknown, newValue: unknown): bool
 }
 
 /**
+ * Whether an `AWS::EC2::NatGateway` change ADDS `AvailabilityZoneAddresses` to
+ * a gateway recorded without it — a regional gateway in automatic mode, which
+ * CloudFormation replaces for that change (go-to-k/cdkd#2762). The predicate
+ * sees one property, not the mode, so it also answers `true` for a ZONAL
+ * gateway gaining the property; that case is unmeasured, and the replacement's
+ * create is left for AWS to refuse.
+ */
+export function natZoneAddressesAddedToAutomaticGateway(
+  oldValue: unknown,
+  newValue: unknown
+): boolean {
+  return oldValue == null && newValue != null;
+}
+
+/**
  * Replacement rules registry
  *
  * Maps resource types to their replacement rules
@@ -827,6 +842,21 @@ export class ReplacementRulesRegistry {
         // no ENI-modification path -- an in-place classification would leave
         // state recording the new value while AWS keeps the old one.
         'NetworkInterfaces',
+      ]),
+    });
+
+    // EC2 NatGateway (go-to-k/cdkd#2762) — the registry schema leaves
+    // `AvailabilityZoneAddresses` mutable, and on a gateway created with it
+    // CloudFormation associates / releases zone addresses in place. ADDING it
+    // to a regional gateway created without it (automatic zone expansion)
+    // makes CloudFormation create a new gateway instead (real CloudFormation
+    // A/B on #2762): no API switches a gateway out of automatic mode.
+    // Removing it is left in place, where `EC2Provider` refuses it as
+    // CloudFormation fails it.
+    this.rules.set('AWS::EC2::NatGateway', {
+      replacementProperties: new Set(),
+      conditionalReplacements: new Map([
+        ['AvailabilityZoneAddresses', natZoneAddressesAddedToAutomaticGateway],
       ]),
     });
 

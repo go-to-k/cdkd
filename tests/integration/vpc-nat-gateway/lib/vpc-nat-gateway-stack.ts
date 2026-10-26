@@ -90,6 +90,58 @@ export class VpcNatGatewayStack extends cdk.Stack {
       tags: [{ key: 'Name', value: 'cdkd-vpc-nat-gateway-drain' }],
     });
 
+    // go-to-k/cdkd#2762: a REGIONAL NAT gateway (`AvailabilityMode: regional`,
+    // `VpcId`, no `SubnetId`) with explicit `AvailabilityZoneAddresses`, which
+    // the SDK provider now creates itself instead of auto-routing it through
+    // Cloud Control. `REGIONAL_NAT_SECOND_ZONE=true` (Phases 1g / 1h) adds a
+    // second zone and changes the `Name` tag: both update IN PLACE, as in
+    // CloudFormation, and dropping the variable again releases the zone.
+    // Not wired into any route table: the arm is about provisioning, and the
+    // L2 gateway above already carries the subnets' default routes.
+    const secondZone = process.env.REGIONAL_NAT_SECOND_ZONE === 'true';
+    // `REGIONAL_NAT_SWAP=true` (Phase 1i) declares ONLY the second zone: one
+    // deploy swaps the gateway's only address, which AWS accepts only once the
+    // added address has associated, so the provider waits for it.
+    const swap = process.env.REGIONAL_NAT_SWAP === 'true';
+    const regionalEip1 = new ec2.CfnEIP(this, 'RegionalNatEip1', { domain: 'vpc' });
+    const regionalEip2 = new ec2.CfnEIP(this, 'RegionalNatEip2', { domain: 'vpc' });
+    const regionalNat = new ec2.CfnNatGateway(this, 'RegionalNatGateway', {
+      availabilityMode: 'regional',
+      vpcId: vpc.vpcId,
+      connectivityType: 'public',
+      availabilityZoneAddresses: [
+        ...(swap
+          ? []
+          : [
+              {
+                availabilityZone: vpc.availabilityZones[0]!,
+                allocationIds: [regionalEip1.attrAllocationId],
+              },
+            ]),
+        ...(secondZone || swap
+          ? [
+              {
+                availabilityZone: vpc.availabilityZones[1]!,
+                allocationIds: [regionalEip2.attrAllocationId],
+              },
+            ]
+          : []),
+      ],
+      tags: [
+        {
+          key: 'Name',
+          value: secondZone ? 'cdkd-vpc-nat-gateway-regional-2' : 'cdkd-vpc-nat-gateway-regional',
+        },
+      ],
+    });
+    // A public regional NAT gateway needs the VPC's internet gateway ATTACHED:
+    // `internetConnectivityEstablished` names only the gateway itself.
+    const igwAttachment = vpc.node.tryFindChild('VPCGW');
+    if (!(igwAttachment instanceof ec2.CfnVPCGatewayAttachment)) {
+      throw new Error("the VPC's CfnVPCGatewayAttachment (VPCGW) was not found");
+    }
+    regionalNat.addDependency(igwAttachment);
+
     // Issue #4447: an UNASSOCIATED Elastic IP for the drift arm in `verify.sh`,
     // which releases it out of band and expects `cdkd drift` to report it
     // `deleted`. The NAT's own EIP cannot serve: AWS refuses to release an
@@ -149,6 +201,16 @@ export class VpcNatGatewayStack extends cdk.Stack {
       value: drainNat.ref,
       description:
         'NAT Gateway ID of the MaxDrainDurationSeconds gateway (issue #1411 — must be provisioned via Cloud Control API)',
+    });
+
+    new cdk.CfnOutput(this, 'RegionalNatGatewayId', {
+      value: regionalNat.ref,
+      description: 'NAT Gateway ID of the regional gateway (go-to-k/cdkd#2762 — SDK provider)',
+    });
+
+    new cdk.CfnOutput(this, 'RegionalNatRouteTableId', {
+      value: regionalNat.attrRouteTableId,
+      description: 'The route table AWS created for the regional gateway (Fn::GetAtt RouteTableId)',
     });
   }
 }

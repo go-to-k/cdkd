@@ -110,10 +110,6 @@
       "Tenancy",
       "Volumes"
     ],
-    "AWS::EC2::NatGateway": [
-      "AvailabilityMode",
-      "AvailabilityZoneAddresses"
-    ],
     "AWS::EC2::Route": [
       "OdbNetworkArn"
     ],

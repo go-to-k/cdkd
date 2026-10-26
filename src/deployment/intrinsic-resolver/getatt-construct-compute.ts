@@ -18,9 +18,11 @@ import { GetDistributionCommand } from '@aws-sdk/client-cloudfront';
 import {
   DescribeInstancesCommand,
   DescribeLaunchTemplatesCommand,
+  DescribeNatGatewaysCommand,
   DescribeSecurityGroupsCommand,
 } from '@aws-sdk/client-ec2';
 import { NOT_CONSTRUCTED } from './getatt-construct-core.js';
+import { startInterruptWatch } from '../../provisioning/interrupt-watch.js';
 import {
   describeFailureObserved,
   guardedPhysicalIdFallback,
@@ -389,6 +391,134 @@ export async function constructAttributeForComputeTypes(
     }
   }
 
+  // EC2 NatGateway (go-to-k/cdkd#2762) — `RouteTableId`, `EniId` and the two
+  // automatic-mode flags appear only once the gateway is AVAILABLE, so a
+  // `--no-wait` create records none but the flags. The gateway id is the
+  // wrong value for every one of these, so the arm reads the gateway live
+  // and, while it is still `pending`, WAITS for it on demand (bounded,
+  // Ctrl-C aware): only a REFERENCED attribute pays for the wait, so
+  // `--no-wait` still skips it for every unreferenced gateway, and a
+  // same-deploy reference keeps working as it did on the Cloud Control route,
+  // whose create waited. Anything else that leaves no value — a gateway that
+  // stays pending past the bound, is failed / deleted, or is available but
+  // reports none (a regional gateway's `EniId`) — is REFUSED with that cause.
+  if (resourceType === 'AWS::EC2::NatGateway') {
+    if (attributeName === 'NatGatewayId') return physicalId;
+    if (
+      attributeName === 'RouteTableId' ||
+      attributeName === 'EniId' ||
+      attributeName === 'AutoProvisionZones' ||
+      attributeName === 'AutoScalingIps'
+    ) {
+      const read = async (): Promise<{
+        state: string | undefined;
+        regional: boolean;
+        value: string | undefined;
+      }> => {
+        try {
+          const clients = resolver.clients.clientsForRegion(resolver.explicitRegion);
+          const response = await clients.ec2.send(
+            new DescribeNatGatewaysCommand({ NatGatewayIds: [physicalId] })
+          );
+          const gateway = response.NatGateways?.find((g) => g.NatGatewayId === physicalId);
+          const addresses = gateway?.NatGatewayAddresses ?? [];
+          const primary = addresses.find((a) => a.IsPrimary === true) ?? addresses[0];
+          const value =
+            attributeName === 'RouteTableId'
+              ? gateway?.RouteTableId
+              : attributeName === 'AutoProvisionZones'
+                ? gateway?.AutoProvisionZones
+                : attributeName === 'AutoScalingIps'
+                  ? gateway?.AutoScalingIps
+                  : gateway?.AvailabilityMode === 'regional'
+                    ? undefined
+                    : primary?.NetworkInterfaceId;
+          return {
+            state: gateway?.State,
+            regional: gateway?.AvailabilityMode === 'regional',
+            value: typeof value === 'string' && value !== '' ? value : undefined,
+          };
+        } catch (err) {
+          return refuseUnservedAttribute(resolver, {
+            logicalId,
+            attributeName,
+            resourceType,
+            physicalId,
+            context,
+            observed: describeFailureObserved(resolver, 'DescribeNatGateways', err, context),
+            remedy:
+              'Fix the read (the ec2:DescribeNatGateways permission, or the region) and deploy again.',
+          });
+        }
+      };
+      let observedRead = await read();
+      // Bounded by its own cap: a referencing resource's property resolution
+      // runs inside its --resource-timeout deadline, but that deadline races
+      // rather than aborts (resource-deadline.ts), so there is no signal to
+      // observe here and a shorter deadline leaves this wait polling to the cap.
+      if (observedRead.value === undefined && observedRead.state === 'pending') {
+        const watch = startInterruptWatch(`NAT gateway ${logicalId} attribute wait`);
+        try {
+          for (
+            let poll = 0;
+            poll < natGatewayAttributeWait.polls && observedRead.state === 'pending';
+            poll++
+          ) {
+            if (watch.isInterrupted()) throw watch.onInterrupted();
+            await natGatewayAttributeWait.sleep(natGatewayAttributeWait.delayMs);
+            observedRead = await read();
+          }
+        } finally {
+          watch.dispose();
+        }
+      }
+      if (observedRead.value !== undefined) return observedRead.value;
+      if (observedRead.state === 'pending') {
+        return refuseUnservedAttribute(resolver, {
+          logicalId,
+          attributeName,
+          resourceType,
+          physicalId,
+          context,
+          observed: 'the NAT gateway was still pending when the attribute wait ran out',
+          remedy:
+            'Check the gateway with `aws ec2 describe-nat-gateways`, then deploy again once it is available.',
+        });
+      }
+      // The cause rides on the remedy, chosen among literals by the gateway's
+      // state (an EC2 enum value, never a resolved template value).
+      const remedy =
+        observedRead.state === 'available'
+          ? attributeName === 'EniId' && observedRead.regional
+            ? 'The gateway is available and has no such value: a regional NAT gateway reports no single EniId. Reference another attribute.'
+            : attributeName !== 'EniId' && !observedRead.regional
+              ? 'The gateway is available, and AWS reports no such value for this zonal gateway; the attribute is set on regional NAT gateways. Reference another attribute.'
+              : 'The gateway is available and AWS reports no such value for it; check it with `aws ec2 describe-nat-gateways`.'
+          : observedRead.state === 'failed'
+            ? 'The gateway is failed and has no such attribute to serve; fix the gateway and deploy again.'
+            : observedRead.state === undefined
+              ? 'DescribeNatGateways no longer returns the gateway; check it in the console.'
+              : 'The gateway is deleted or being deleted and has no such attribute to serve.';
+      return refuseUnservedAttribute(resolver, {
+        logicalId,
+        attributeName,
+        resourceType,
+        physicalId,
+        context,
+        observed: `DescribeNatGateways reports no ${displayMasked(resolver, attributeName, context)}`,
+        remedy,
+      });
+    }
+    return guardedPhysicalIdFallback(
+      resolver,
+      logicalId,
+      attributeName,
+      resourceType,
+      physicalId,
+      context
+    );
+  }
+
   // EC2 LaunchTemplate — `LatestVersionNumber` / `DefaultVersionNumber`
   // are AWS-derived integers that cdkd does not capture in state.
   // Resolve via `DescribeLaunchTemplates`. Return as a string so
@@ -559,3 +689,15 @@ export async function constructAttributeForComputeTypes(
   }
   return NOT_CONSTRUCTED;
 }
+
+/**
+ * How long `Fn::GetAtt` on a still-`pending` NAT gateway waits for it
+ * (go-to-k/cdkd#2762): 10 minutes in 10 s polls, the provider's own create
+ * wait cadence, well inside the default 30-minute --resource-timeout of the
+ * resource that references it. A mutable seam so tests do not sleep.
+ */
+export const natGatewayAttributeWait = {
+  polls: 60,
+  delayMs: 10_000,
+  sleep: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
+};

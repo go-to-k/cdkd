@@ -1191,6 +1191,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     {
       handled: new Set<string>([
         'AllocationId',
+        'AvailabilityMode',
+        'AvailabilityZoneAddresses',
         'ConnectivityType',
         'PrivateIpAddress',
         'SecondaryAllocationIds',
@@ -1198,20 +1200,15 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SecondaryPrivateIpAddresses',
         'SubnetId',
         'Tags',
+        'VpcId',
       ]),
       silentDrop: new Map<string, string>([
-        ['AvailabilityMode', 'not yet implemented by cdkd'],
-        ['AvailabilityZoneAddresses', 'not yet implemented by cdkd'],
         [
           'MaxDrainDurationSeconds',
-          'write-only address-drain timeout with no CreateNatGateway member and no NAT gateway modify API; only ec2:DisassociateNatGatewayAddress / UnassignPrivateNatGatewayAddress accept it, and cdkd rejects NatGateway updates outright — routed via Cloud Control instead',
-        ],
-        [
-          'VpcId',
-          'AWS derives the VPC from SubnetId; the ec2:CreateNatGateway API has no VpcId parameter',
+          'write-only address-drain timeout with no CreateNatGateway member and no NAT gateway modify API; only ec2:DisassociateNatGatewayAddress / UnassignPrivateNatGatewayAddress accept it, and the cdkd NatGateway update releases only the AvailabilityZoneAddresses of a regional gateway, never the secondary addresses of a zonal one — routed via Cloud Control instead',
         ],
       ]),
-      createOnlyDrops: new Set<string>(['AvailabilityMode', 'VpcId']),
+      createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>([
         'AutoProvisionZones',
         'AutoScalingIps',

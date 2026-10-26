@@ -1604,6 +1604,11 @@ Checklist when writing or reviewing an `update()`:
   sends `PUBLIC_READ` with no role. ON_DEMAND + `AUTO` -> PROVISIONED fails
   under CloudFormation (with or without an explicit `USER_PARTITION_KEY` in
   the same update) and under cdkd alike.
+  `AWS::EC2::NatGateway` `AvailabilityZoneAddresses` (real CloudFormation A/B,
+  go-to-k/cdkd#2762): on a gateway created with it, a change updates in place
+  and REMOVING it FAILS, so `EC2Provider` refuses the removal; ADDING it to an
+  automatic-mode regional gateway REPLACES the gateway, a conditional rule in
+  `replacement-rules.ts`.
 - Sub-structures can carry the same hazard one level down: an object that is
   present but missing its inner key (e.g. `Environment: {}` without
   `Variables`) may also read as "no change" — normalize it to the explicit

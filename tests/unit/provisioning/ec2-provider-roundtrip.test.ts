@@ -311,7 +311,9 @@ describe('EC2Provider read-update round-trip', () => {
       ['AWS::EC2::InternetGateway', 'igw-1'],
       // AWS::EC2::VPCGatewayAttachment left this list in go-to-k/cdkd#5216: it
       // swaps the gateway in place (ec2-vpc-gateway-attachment-vpn.test.ts).
-      ['AWS::EC2::NatGateway', 'nat-1'],
+      // AWS::EC2::NatGateway left this list in go-to-k/cdkd#2762: it updates
+      // Tags and AvailabilityZoneAddresses in place
+      // (ec2-natgateway-regional-2762.test.ts).
       ['AWS::EC2::RouteTable', 'rtb-1'],
       ['AWS::EC2::SubnetRouteTableAssociation', 'rtbassoc-1'],
       ['AWS::EC2::NetworkAcl', 'acl-1'],

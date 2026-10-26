@@ -194,6 +194,15 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
   rejects a web function revision that uses a connector still in `PENDING`, so
   an early return would only move the wait into a failure. See
   [cdkd deploy: wait mode details](cli-deploy-waits.md#aws-lambda-networkconnector).
+- **A regional NAT gateway's `AvailabilityZoneAddresses` update does not wait
+  for its addresses to settle, in any mode.** CloudFormation waits about five
+  minutes per zone. cdkd waits only where AWS would refuse the next call, and
+  then in every mode, `--no-wait` included, up to 15 minutes in all:
+  - re-adding an address that AWS is still releasing waits for the release;
+  - releasing an address that is still being associated, such as a rollback
+    right after the deploy that added it, waits for the association;
+  - releasing the gateway's last associated address waits until another
+    address the template keeps has associated.
 - **CloudFront and `AWS::Lambda::MicrovmImage` through Cloud Control.** cdkd
   provisions common resource types by calling the service's own API, and the
   rest through the AWS Cloud Control API. The early return in the table
