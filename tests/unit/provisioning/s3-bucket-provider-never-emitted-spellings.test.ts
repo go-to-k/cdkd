@@ -1732,10 +1732,13 @@ describe('second-round review: falsy dates, timezone determinism, marker arms', 
     ['a bare YYYY-MM-DD (spec-UTC)', '2030-01-01', '2030-01-01T00:00:00.000Z'],
     ['a Z-suffixed date-time', '2030-01-01T00:00:00.000Z', '2030-01-01T00:00:00.000Z'],
     ['an offset-bearing date-time', '2030-01-01T09:00:00+09:00', '2030-01-01T00:00:00.000Z'],
+    // Issue #5311: read as UTC, as CFn does, on the wire AND here.
+    ['an offset-LESS ISO date-time', '2030-01-01T00:00:00', '2030-01-01T00:00:00.000Z'],
+    ['an offset-less date-time with a space separator', '2030-01-01 00:00:00', '2030-01-01T00:00:00.000Z'],
+    ['an offset-less date-time with a lowercase t', '2030-01-01t00:00', '2030-01-01T00:00:00.000Z'],
   ] as const;
   const TZ_LEFT_ALONE = [
     ['a non-ISO human date', 'Jan 1 2030'],
-    ['an offset-LESS ISO date-time (local by spec)', '2030-01-01T00:00:00'],
     ['a bare numeric string', '0'],
   ] as const;
 
@@ -1769,7 +1772,10 @@ describe('second-round review: falsy dates, timezone determinism, marker arms', 
         Rules: [
           rule({
             ExpirationDate: '2030-01-01',
-            Transitions: [{ TransitionDate: '2030-01-01T09:00:00+09:00', StorageClass: 'G' }],
+            Transitions: [
+              { TransitionDate: '2030-01-01T09:00:00+09:00', StorageClass: 'G' },
+              { TransitionDate: '2030-06-01T00:00:00', StorageClass: 'D' },
+            ],
           }),
         ],
       },
@@ -1781,6 +1787,33 @@ describe('second-round review: falsy dates, timezone determinism, marker arms', 
       process.env.TZ = 'Asia/Tokyo';
       const jst = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, template);
       expect(JSON.stringify(jst)).toBe(JSON.stringify(utc));
+      expect(JSON.stringify(jst)).toContain('"2030-06-01T00:00:00.000Z"');
+    } finally {
+      if (original === undefined) delete process.env.TZ;
+      else process.env.TZ = original;
+    }
+  });
+
+  it('SENDS an offset-less date-time as UTC under a non-UTC TZ, and records what it sent (#5311)', async () => {
+    // `new Date('2030-01-01T00:00:00')` is host-local: under JST it is
+    // 2029-12-31T15:00Z, which S3 refuses (lifecycle dates must be midnight UTC)
+    // and CFn never sends. The wire and the record must both read UTC.
+    const original = process.env.TZ;
+    try {
+      process.env.TZ = 'Asia/Tokyo';
+      const { recorded, readback } = await lifecycleRoundTrip([
+        {
+          Id: 'r1',
+          Status: 'Enabled',
+          Prefix: 'tz/',
+          ExpirationDate: '2030-01-01T00:00:00',
+          Transitions: [{ TransitionDate: '2029-06-01T00:00:00', StorageClass: 'GLACIER' }],
+        },
+      ]);
+      const sent = at(readback, 'Rules', 0) as Record<string, unknown>;
+      expect(sent['ExpirationDate']).toBe('2030-01-01T00:00:00.000Z');
+      expect(at(sent, 'Transitions', 0, 'TransitionDate')).toBe('2029-06-01T00:00:00.000Z');
+      expect(at(recorded, 'Rules', 0)).toEqual(sent);
     } finally {
       if (original === undefined) delete process.env.TZ;
       else process.env.TZ = original;

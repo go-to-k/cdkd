@@ -56,6 +56,7 @@ import {
   reportPossibleOrphans,
 } from './orphan-report.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { parseCfnTimestamp } from '../../utils/cfn-timestamp.js';
 
 /**
  * Retry-safety state for `CreateEventSourceMapping`, which mints the mapping's
@@ -671,7 +672,8 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       if (properties['Topics']) params.Topics = properties['Topics'] as string[];
       // StartingPositionTimestamp: SDK expects `Date`; CFn template
       // supplies a number (epoch seconds, per the AWS::Lambda::EventSourceMapping
-      // schema) or — defensively — an ISO-8601 string. Coerce both.
+      // schema) or — defensively — an ISO-8601 string (offset-less read as
+      // UTC, issue #5311). Coerce both.
       // Also create-only (absent from UpdateEventSourceMappingRequest);
       // a template change forces a CFn-side replace, which cdkd's diff
       // layer schedules independently of this provider.
@@ -682,7 +684,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
             ? new Date(raw * 1000)
             : raw instanceof Date
               ? raw
-              : new Date(raw as string);
+              : parseCfnTimestamp(raw as string);
       }
 
       // Issue #2080: after an earlier ambiguous attempt, name the mapping it

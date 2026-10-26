@@ -201,6 +201,34 @@ describe('BudgetsBudgetProvider', () => {
       expect(period.End).toEqual(new Date(1783036800 * 1000));
     });
 
+    it('reads an offset-less TimePeriod date-time as UTC under a non-UTC TZ, on the wire and in the diff form (#5311)', async () => {
+      const original = process.env.TZ;
+      try {
+        process.env.TZ = 'Asia/Tokyo';
+        const budget = {
+          BudgetName: 'tp',
+          BudgetType: 'COST',
+          TimeUnit: 'MONTHLY',
+          TimePeriod: { Start: '2026-07-01T00:00:00', End: '2026-08-01T09:00:00+09:00' },
+        };
+        await provider.create('MyBudget', TYPE, { Budget: budget });
+        const [input] = callsOf(CreateBudgetCommand) as [Record<string, unknown>];
+        const period = (input['Budget'] as Record<string, unknown>)['TimePeriod'] as {
+          Start: Date;
+          End: Date;
+        };
+        expect(period.Start.toISOString()).toBe('2026-07-01T00:00:00.000Z');
+        expect(period.End.toISOString()).toBe('2026-08-01T00:00:00.000Z');
+        // The drift-side canonical form names the same instant the wire sent.
+        const canonical = JSON.stringify(provider.canonicalizeDriftProperties(TYPE, { Budget: budget }));
+        expect(canonical).toContain('"2026-07-01T00:00:00.000Z"');
+        expect(canonical).not.toContain('2026-06-30T15:00:00');
+      } finally {
+        if (original === undefined) delete process.env.TZ;
+        else process.env.TZ = original;
+      }
+    });
+
     it('rejects an unparseable TimePeriod date with a clear error', async () => {
       await expect(
         provider.create('MyBudget', TYPE, {
