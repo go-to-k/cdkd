@@ -1,5 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { RollbackJournal } from '../types/rollback-journal.js';
+import type { RollbackJournal, RollbackJournalSegment } from '../types/rollback-journal.js';
+
+type FailedOperation = NonNullable<RollbackJournalSegment['failedOperations']>[number];
 
 /**
  * Evidence that THIS stack attempted a resource before the current operation
@@ -7,11 +9,14 @@ import type { RollbackJournal } from '../types/rollback-journal.js';
  * logical id, from a deploy that failed or was interrupted.
  *
  * Read by a provider whose create API cannot tell "already exists" from "is
- * yours" — today only `AWS::EC2::SecurityGroupIngress`, whose
+ * yours". `AWS::EC2::SecurityGroupIngress`, whose
  * `InvalidPermission.Duplicate` says the same thing for a rule an interrupted
  * run of this stack left behind and for an identical rule another owner added.
  * Adopting the second records it as this stack's, and `cdkd destroy` then
  * revokes it. The provider adopts only a rule matching one of these bags.
+ * `AWS::ApiGateway::Method` (go-to-k/cdkd#5294) DELETES the method it meets,
+ * so it reads the narrower `provenOrphanIds` instead: a bag is also left by a
+ * create another owner's method refused.
  *
  * WHY AN ASYNC-LOCAL STORE rather than a `CreateContext` field: one provider
  * reads it, and only on its duplicate arm, so the journal is read lazily there
@@ -32,6 +37,12 @@ export interface PriorAttemptLookup {
    * reader must treat that as "no evidence", never as "attempted".
    */
   readonly attempts: () => Promise<ReadonlyArray<Record<string, unknown>>>;
+  /**
+   * The physical ids an earlier failed CREATE of this resource PROVED it left
+   * behind ({@link provenOrphanIdsInJournal}), read when called; throws like
+   * {@link attempts}. Absent where the binder supplies none: no evidence.
+   */
+  readonly provenOrphanIds?: () => Promise<readonly string[]>;
   /**
    * Record that an attempt of this resource's write, in THIS dispatch, may
    * have reached AWS (an ambiguous failure the engine's retry then repeats).
@@ -56,12 +67,14 @@ export function withPriorAttempts<T>(lookup: PriorAttemptLookup, fn: () => T): T
  */
 export function priorAttemptLookup(
   logicalId: string,
-  attempts: () => Promise<ReadonlyArray<Record<string, unknown>>>
+  attempts: () => Promise<ReadonlyArray<Record<string, unknown>>>,
+  provenOrphanIds?: () => Promise<readonly string[]>
 ): PriorAttemptLookup {
   let landed = false;
   return {
     logicalId,
     attempts,
+    ...(provenOrphanIds !== undefined && { provenOrphanIds }),
     notePossiblyLanded: () => {
       landed = true;
     },
@@ -110,25 +123,61 @@ export function priorAttemptsInJournal(
   logicalId: string,
   resourceType: string
 ): Array<Record<string, unknown>> {
-  let bags: Array<Record<string, unknown>> = [];
+  const bags: Array<Record<string, unknown>> = [];
+  for (const op of unsupersededFailedOps(journal, logicalId, resourceType)) {
+    if (op.changeType === 'DELETE' || !isBag(op.attemptedProperties)) continue;
+    // go-to-k/cdkd#4690: a replacement UPDATE whose new resource was made is
+    // journaled beside that orphan, which carries the same bag as its own
+    // evidence; `cdkd rollback` keeps this UPDATE after settling the orphan
+    // (for its delete-first guard), and its bag must not outlive the orphan.
+    if (op.changeType === 'UPDATE' && op.replacementOrphaned !== undefined) continue;
+    if (recordedAsNewResource(op)) continue;
+    bags.push(op.attemptedProperties);
+  }
+  return bags;
+}
+
+/**
+ * The physical ids of failed CREATE ops of `logicalId` as `resourceType` whose
+ * provider PROVED its create call made the resource before the failure
+ * (`physicalIdRecoveredFromError`, go-to-k/cdkd#1710), with the same supersede
+ * walk as {@link priorAttemptsInJournal} (go-to-k/cdkd#5294).
+ *
+ * Narrower than the bags: a bag is any unrefused failed attempt, which can be
+ * a create AWS refused because another owner's resource already held the
+ * name, or one whose own cleanup deleted what it made. Only these ids say the
+ * resource was left behind by this stack.
+ */
+export function provenOrphanIdsInJournal(
+  journal: RollbackJournal | null,
+  logicalId: string,
+  resourceType: string
+): string[] {
+  const ids: string[] = [];
+  for (const op of unsupersededFailedOps(journal, logicalId, resourceType)) {
+    if (op.changeType !== 'CREATE' || op.physicalIdRecoveredFromError !== true) continue;
+    if (typeof op.physicalId === 'string' && op.physicalId !== '') ids.push(op.physicalId);
+  }
+  return ids;
+}
+
+/** The failed ops of the id and type that no later completed op superseded. */
+function unsupersededFailedOps(
+  journal: RollbackJournal | null,
+  logicalId: string,
+  resourceType: string
+): FailedOperation[] {
+  let ops: FailedOperation[] = [];
   for (const segment of journal?.segments ?? []) {
-    if (segment.operations.some((op) => op.logicalId === logicalId)) bags = [];
+    if (segment.operations.some((op) => op.logicalId === logicalId)) ops = [];
     for (const op of segment.failedOperations ?? []) {
-      if (op.logicalId !== logicalId || op.resourceType !== resourceType) continue;
-      if (op.changeType === 'DELETE' || !isBag(op.attemptedProperties)) continue;
-      // go-to-k/cdkd#4690: a replacement UPDATE whose new resource was made is
-      // journaled beside that orphan, which carries the same bag as its own
-      // evidence; `cdkd rollback` keeps this UPDATE after settling the orphan
-      // (for its delete-first guard), and its bag must not outlive the orphan.
-      if (op.changeType === 'UPDATE' && op.replacementOrphaned !== undefined) continue;
-      if (recordedAsNewResource(op)) continue;
-      bags.push(op.attemptedProperties);
+      if (op.logicalId === logicalId && op.resourceType === resourceType) ops.push(op);
     }
     // A newer segment that superseded these attempts was removed after its
     // revert; the backend left its ids here (`supersededLogicalIds`).
-    if (segment.supersededLogicalIds?.includes(logicalId)) bags = [];
+    if (segment.supersededLogicalIds?.includes(logicalId)) ops = [];
   }
-  return bags;
+  return ops;
 }
 
 /**

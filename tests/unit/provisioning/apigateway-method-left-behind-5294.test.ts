@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 // go-to-k/cdkd#5294: a Method an earlier attempt of the same resource left
-// behind (its wiring failed and so did the cleanup delete) is replaced on the
-// next deploy, but only when this stack's rollback journal names it.
+// behind (its wiring failed and so did the cleanup delete) is replaced, but
+// only on the stack's own proof that it left THAT method: a proven-orphan id
+// in the rollback journal, or an earlier attempt of the same dispatch. A bare
+// attempted bag is not enough.
 
 const mockSend = vi.hoisted(() => vi.fn());
 const mockWarn = vi.hoisted(() => vi.fn());
@@ -37,6 +39,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   return { getLogger: () => childLogger };
 });
 
+import { NotFoundException } from '@aws-sdk/client-api-gateway';
 import { ApiGatewayProvider } from '../../../src/provisioning/providers/apigateway-provider.js';
 import {
   priorAttemptLookup,
@@ -60,11 +63,20 @@ const alreadyExists = () =>
 const commandNames = () =>
   mockSend.mock.calls.map((call) => (call[0] as object).constructor.name);
 
-function createWith(attempts: () => Promise<ReadonlyArray<Record<string, unknown>>>) {
+const OWN_ID = 'api-id|resource-id|POST';
+
+type Evidence = {
+  bags?: () => Promise<ReadonlyArray<Record<string, unknown>>>;
+  orphans?: () => Promise<readonly string[]>;
+};
+
+function lookup({ bags = () => Promise.resolve([]), orphans }: Evidence) {
+  return priorAttemptLookup('MyMethod', bags, orphans);
+}
+
+function createWith(evidence: Evidence) {
   const provider = new ApiGatewayProvider();
-  return withPriorAttempts(priorAttemptLookup('MyMethod', attempts), () =>
-    provider.create('MyMethod', METHOD, props)
-  );
+  return withPriorAttempts(lookup(evidence), () => provider.create('MyMethod', METHOD, props));
 }
 
 describe('ApiGatewayProvider Method left behind by an earlier attempt (go-to-k/cdkd#5294)', () => {
@@ -73,14 +85,14 @@ describe('ApiGatewayProvider Method left behind by an earlier attempt (go-to-k/c
     mockWarn.mockReset();
   });
 
-  it('replaces a method the journal shows an earlier attempt of this resource made', async () => {
+  it('replaces a method the journal proves an earlier attempt of this resource left behind', async () => {
     mockSend
       .mockRejectedValueOnce(alreadyExists()) // PutMethod
       .mockResolvedValueOnce({}) // DeleteMethod
       .mockResolvedValue({}); // PutMethod again, PutIntegration
-    const result = await createWith(() => Promise.resolve([{ ...props }]));
+    const result = await createWith({ orphans: () => Promise.resolve([OWN_ID]) });
 
-    expect(result.physicalId).toBe('api-id|resource-id|POST');
+    expect(result.physicalId).toBe(OWN_ID);
     expect(commandNames()).toEqual([
       'PutMethodCommand',
       'DeleteMethodCommand',
@@ -93,8 +105,19 @@ describe('ApiGatewayProvider Method left behind by an earlier attempt (go-to-k/c
       httpMethod: 'POST',
     });
     expect(mockWarn).toHaveBeenCalledWith(
-      expect.stringContaining('which an earlier failed deploy of it left behind')
+      expect.stringContaining('which an earlier failed attempt of it left behind')
     );
+  });
+
+  // Both reviewers' repro: deploy 1 is refused by ANOTHER owner's method on
+  // the same keys (or its cleanup succeeded), so it journals a matching bag
+  // but no proven-orphan id. Deploy 2 must not delete that method.
+  it('keeps the refusal when the journal holds a matching bag but proves no orphan', async () => {
+    mockSend.mockRejectedValueOnce(alreadyExists());
+    await expect(
+      createWith({ bags: () => Promise.resolve([{ ...props }]), orphans: () => Promise.resolve([]) })
+    ).rejects.toThrow('Method already exists for this resource');
+    expect(commandNames()).toEqual(['PutMethodCommand']);
   });
 
   it("keeps AWS's refusal when no evidence is bound", async () => {
@@ -106,13 +129,21 @@ describe('ApiGatewayProvider Method left behind by an earlier attempt (go-to-k/c
     expect(commandNames()).toEqual(['PutMethodCommand']);
   });
 
-  it.each([
-    ['another HTTP method', { HttpMethod: 'GET' }],
-    ['another resource', { ResourceId: 'other-resource' }],
-    ['another REST API', { RestApiId: 'other-api' }],
-  ])('keeps the refusal when the journal names %s', async (_label, override) => {
+  it('keeps the refusal when the binder supplies no proven-orphan source', async () => {
     mockSend.mockRejectedValueOnce(alreadyExists());
-    await expect(createWith(() => Promise.resolve([{ ...props, ...override }]))).rejects.toThrow(
+    await expect(createWith({ bags: () => Promise.resolve([{ ...props }]) })).rejects.toThrow(
+      'Method already exists for this resource'
+    );
+    expect(commandNames()).toEqual(['PutMethodCommand']);
+  });
+
+  it.each([
+    ['another HTTP method', 'api-id|resource-id|GET'],
+    ['another resource', 'api-id|other-resource|POST'],
+    ['another REST API', 'other-api|resource-id|POST'],
+  ])('keeps the refusal when the proven orphan is %s', async (_label, id) => {
+    mockSend.mockRejectedValueOnce(alreadyExists());
+    await expect(createWith({ orphans: () => Promise.resolve([id]) })).rejects.toThrow(
       'Method already exists for this resource'
     );
     expect(commandNames()).toEqual(['PutMethodCommand']);
@@ -120,9 +151,9 @@ describe('ApiGatewayProvider Method left behind by an earlier attempt (go-to-k/c
 
   it('keeps the refusal when the journal cannot be read', async () => {
     mockSend.mockRejectedValueOnce(alreadyExists());
-    await expect(createWith(() => Promise.reject(new Error('AccessDenied')))).rejects.toThrow(
-      'Method already exists for this resource'
-    );
+    await expect(
+      createWith({ orphans: () => Promise.reject(new Error('AccessDenied')) })
+    ).rejects.toThrow('Method already exists for this resource');
     expect(commandNames()).toEqual(['PutMethodCommand']);
   });
 
@@ -132,7 +163,7 @@ describe('ApiGatewayProvider Method left behind by an earlier attempt (go-to-k/c
         name: 'ConflictException',
       })
     );
-    await expect(createWith(() => Promise.resolve([{ ...props }]))).rejects.toThrow(
+    await expect(createWith({ orphans: () => Promise.resolve([OWN_ID]) })).rejects.toThrow(
       'concurrent modification'
     );
     expect(commandNames()).toEqual(['PutMethodCommand']);
@@ -142,9 +173,63 @@ describe('ApiGatewayProvider Method left behind by an earlier attempt (go-to-k/c
     mockSend
       .mockRejectedValueOnce(alreadyExists())
       .mockRejectedValueOnce(new Error('DeleteMethod boom'));
-    await expect(createWith(() => Promise.resolve([{ ...props }]))).rejects.toThrow(
+    await expect(createWith({ orphans: () => Promise.resolve([OWN_ID]) })).rejects.toThrow(
       'DeleteMethod boom'
     );
     expect(commandNames()).toEqual(['PutMethodCommand', 'DeleteMethodCommand']);
+  });
+
+  it('puts the method again when the leftover is already gone at the delete', async () => {
+    mockSend
+      .mockRejectedValueOnce(alreadyExists())
+      .mockRejectedValueOnce(new NotFoundException({ message: 'Invalid Method identifier', $metadata: {} }))
+      .mockResolvedValue({});
+    await expect(createWith({ orphans: () => Promise.resolve([OWN_ID]) })).resolves.toMatchObject({
+      physicalId: OWN_ID,
+    });
+    expect(commandNames()).toEqual([
+      'PutMethodCommand',
+      'DeleteMethodCommand',
+      'PutMethodCommand',
+      'PutIntegrationCommand',
+    ]);
+  });
+
+  it("replaces the method an earlier attempt of the SAME dispatch left behind (the engine's retry)", async () => {
+    const provider = new ApiGatewayProvider();
+    const bound = lookup({ orphans: () => Promise.resolve([]) });
+    mockSend
+      .mockResolvedValueOnce({}) // attempt 1: PutMethod
+      .mockRejectedValueOnce(new Error('PutIntegration boom'))
+      .mockRejectedValueOnce(new Error('DeleteMethod boom')) // cleanup fails: left behind
+      .mockRejectedValueOnce(alreadyExists()) // attempt 2: PutMethod
+      .mockResolvedValue({}); // DeleteMethod, PutMethod, PutIntegration
+    await withPriorAttempts(bound, async () => {
+      await expect(provider.create('MyMethod', METHOD, props)).rejects.toThrow('PutIntegration boom');
+      expect(bound.possiblyLanded()).toBe(true);
+      await expect(provider.create('MyMethod', METHOD, props)).resolves.toMatchObject({
+        physicalId: OWN_ID,
+      });
+    });
+    expect(commandNames().slice(3)).toEqual([
+      'PutMethodCommand',
+      'DeleteMethodCommand',
+      'PutMethodCommand',
+      'PutIntegrationCommand',
+    ]);
+  });
+
+  it('does not note a leftover when the cleanup delete succeeded', async () => {
+    const bound = lookup({});
+    mockSend
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new Error('PutIntegration boom'))
+      .mockResolvedValueOnce({});
+    await withPriorAttempts(bound, () =>
+      expect(new ApiGatewayProvider().create('MyMethod', METHOD, props)).rejects.toThrow(
+        'PutIntegration boom'
+      )
+    );
+    expect(bound.possiblyLanded()).toBe(false);
   });
 });

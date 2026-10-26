@@ -2311,16 +2311,21 @@ export class ApiGatewayProvider implements ResourceProvider {
         // AWS's refusal.
         if (
           !isMethodAlreadyExists(putError) ||
-          !(await this.priorAttemptMadeMethod(logicalId, restApiId, resourceId, httpMethod, log))
+          !(await this.priorAttemptLeftMethod(logicalId, physicalId, log))
         ) {
           throw putError;
         }
         log.warn(
-          `Replacing API Gateway Method ${logicalId} (${methodPath}), which an earlier failed deploy of it left behind`
+          `Replacing API Gateway Method ${logicalId} (${methodPath}), which an earlier failed attempt of it left behind`
         );
-        await this.apiGatewayClient.send(
-          new DeleteMethodCommand({ restApiId, resourceId, httpMethod })
-        );
+        try {
+          await this.apiGatewayClient.send(
+            new DeleteMethodCommand({ restApiId, resourceId, httpMethod })
+          );
+        } catch (deleteError) {
+          // Gone in the meantime: the slot is free, which is what the delete was for.
+          if (!(deleteError instanceof NotFoundException)) throw deleteError;
+        }
         await putMethod();
       }
 
@@ -2402,6 +2407,9 @@ export class ApiGatewayProvider implements ResourceProvider {
           );
         } catch (cleanupError) {
           methodLeftBehind = true;
+          // The engine's retry of this dispatch meets the method before any
+          // journal names it (go-to-k/cdkd#5294).
+          getPriorAttempts(logicalId)?.notePossiblyLanded();
           // All three ids are TEMPLATE values (resolved `Ref`s and the
           // method), so the command renders through `pasteableAwsCommand`
           // (issue #3136): quoted, or withheld when one cannot be printed
@@ -2446,33 +2454,34 @@ export class ApiGatewayProvider implements ResourceProvider {
   }
 
   /**
-   * Whether this stack's rollback journal shows an earlier, failed attempt of
-   * `logicalId` that put this same method (go-to-k/cdkd#5294). That attempt's
-   * wiring failed and so did its cleanup, so the method exists with no state
-   * record and the attempt is journaled as made (`markCreatedBeforeFailure`).
+   * Whether an earlier attempt of `logicalId` left THIS method (`physicalId`,
+   * its `restApiId|resourceId|httpMethod`) behind: its wiring failed and so
+   * did its cleanup delete (go-to-k/cdkd#5294). Two sources, both the stack's
+   * own proof:
    *
-   * The method is keyed by (RestApiId, ResourceId, HttpMethod) alone, so a
-   * method on the same keys is another owner's unless the journal names it
-   * (`prior-attempt-scope.ts`, the `SecurityGroupIngress` duplicate arm's
-   * rule). An unreadable journal or a caller that bound none is no evidence.
+   * - an earlier deploy's failed CREATE journaled with that id as one its
+   *   provider proved it made (`markCreatedBeforeFailure` below), via
+   *   `provenOrphanIds`;
+   * - an earlier attempt of THIS dispatch (the engine's retry), noted with
+   *   `notePossiblyLanded` where the cleanup failed. Nothing else notes it
+   *   for a Method.
+   *
+   * Never the bare attempted bags: a create AWS refused because another
+   * owner's method held the keys, or one whose cleanup succeeded, also leaves
+   * one, and replacing on it would delete a method this stack never made. An
+   * unreadable journal or a caller that bound none is no evidence.
    */
-  private async priorAttemptMadeMethod(
+  private async priorAttemptLeftMethod(
     logicalId: string,
-    restApiId: string,
-    resourceId: string,
-    httpMethod: string,
+    physicalId: string,
     log: MaskedLogSinks
   ): Promise<boolean> {
     const lookup = getPriorAttempts(logicalId);
     if (lookup === undefined) return false;
+    if (lookup.possiblyLanded()) return true;
+    if (lookup.provenOrphanIds === undefined) return false;
     try {
-      const attempts = await lookup.attempts();
-      return attempts.some(
-        (bag) =>
-          bag['RestApiId'] === restApiId &&
-          bag['ResourceId'] === resourceId &&
-          bag['HttpMethod'] === httpMethod
-      );
+      return (await lookup.provenOrphanIds()).includes(physicalId);
     } catch (error) {
       log.debug(
         `API Gateway Method ${logicalId}: rollback journal read failed: ${describeAwsFailure(error).detail}`
@@ -3152,12 +3161,6 @@ interface CfnStageCanarySetting {
 }
 
 /**
- * A nested CFn config block must be a plain object; a string, array, or
- * unresolved intrinsic that leaks through resolution indexes every sub-field
- * to `undefined` (#1471/#1493 class). Create refuses such a block; update
- * warns and skips the property.
- */
-/**
  * `PutMethod` refused because the method exists. API Gateway also answers
  * `ConflictException` for a concurrent modification, so the message decides.
  */
@@ -3169,6 +3172,12 @@ function isMethodAlreadyExists(error: unknown): boolean {
   );
 }
 
+/**
+ * A nested CFn config block must be a plain object; a string, array, or
+ * unresolved intrinsic that leaks through resolution indexes every sub-field
+ * to `undefined` (#1471/#1493 class). Create refuses such a block; update
+ * warns and skips the property.
+ */
 function isPlainObjectBlock(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
