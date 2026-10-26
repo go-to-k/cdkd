@@ -14,8 +14,89 @@ import {
   subtreeHasDynamicReference,
   mixedLeafMayCarryPublicReference,
 } from './redact-path.js';
-import { wholeStringLeavesOf } from './mask-only.js';
+import { wholeStringLeavesOf, carriesSecretMask } from './mask-only.js';
 import { identityKeyFor } from './identity-keys.js';
+
+/**
+ * The record keys a Step Functions definition is BUILT from: the body (inline
+ * as a string or an object) and the `${name}` substitution map applied to it
+ * (issue [#5315](https://github.com/go-to-k/cdkd/issues/5315)).
+ * `DefinitionSubstitutions` exists on no other CloudFormation type.
+ */
+const DEFINITION_SOURCE_KEYS = ['DefinitionSubstitutions', 'DefinitionString', 'Definition'];
+
+/** The readback keys that carry the RENDERED body (`readCurrentState` emits `Definition`). */
+const RENDERED_DEFINITION_KEYS: ReadonlySet<string> = new Set(['Definition', 'DefinitionString']);
+
+/**
+ * Does a key the definition is built from carry a secret: a dynamic reference,
+ * or a {@link SECRET_MASK} a `NoEcho` value left (a substitution value, or a
+ * body the containment arm flattened whole)?
+ */
+function definitionSourceCarriesSecret(source: Record<string, unknown>): boolean {
+  return DEFINITION_SOURCE_KEYS.some(
+    (k) =>
+      Object.hasOwn(source, k) &&
+      (subtreeHasDynamicReference(source[k]) || carriesSecretMask(source[k]))
+  );
+}
+
+/**
+ * The string leaves a RENDERED definition may keep (issue #5315): the whole
+ * string leaves of the record's own body, as written and with EVERY scalar
+ * substitution applied VERBATIM — a reference as its expression, a `NoEcho`
+ * value as `***` — plus the substitution values themselves.
+ *
+ * Nothing here is a resolved secret: the record holds expressions and masks,
+ * never the plaintext, so a readback leaf carrying a substituted secret can
+ * never equal one of these and is masked, while every leaf the record spells
+ * (a state name, a `Type`, a non-secret substituted value) is kept. A leaf a
+ * populated-map pass already rewrote to `Bearer {{resolve:...}}` is spelled
+ * here too, so it survives as the expression rather than a mask.
+ *
+ * Applied the way the provider applies them on `main` (split / join in entry
+ * order). A renderer that differs from AWS's can only fail to MATCH, which
+ * masks a leaf the record spells: over-masking, never a disclosure. A body that
+ * does not parse (a `***` body, a substituted quote) contributes its rendered
+ * text alone, so its readback is masked wholesale, as is the
+ * `DefinitionS3Location` shape, whose body the record does not hold.
+ */
+function renderedDefinitionLiterals(source: Record<string, unknown>): Set<string> {
+  const keep = new Set<string>();
+  const subs = source['DefinitionSubstitutions'];
+  const scalars: Array<[string, string]> = [];
+  if (isPlainObject(subs)) {
+    for (const [name, value] of Object.entries(subs)) {
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        scalars.push([name, String(value)]);
+        if (typeof value === 'string') keep.add(value);
+      }
+    }
+  }
+  const bodies: string[] = [];
+  for (const key of ['DefinitionString', 'Definition']) {
+    if (!Object.hasOwn(source, key)) continue;
+    const body = source[key];
+    if (typeof body === 'string') bodies.push(body);
+    else if (isPlainObject(body)) bodies.push(JSON.stringify(body));
+  }
+  for (const body of bodies) {
+    let rendered = body;
+    for (const [name, value] of scalars) rendered = rendered.split(`\${${name}}`).join(value);
+    // The UNRENDERED body too: a readback AWS stored without substituting
+    // (inline definitions before go-to-k/cdkd#5298) still spells `${name}`,
+    // which is a placeholder and no secret.
+    for (const text of rendered === body ? [body] : [body, rendered]) {
+      keep.add(text);
+      try {
+        for (const leaf of wholeStringLeavesOf(JSON.parse(text) as unknown)) keep.add(leaf);
+      } catch {
+        // Not JSON: the text above is all it spells.
+      }
+    }
+  }
+  return keep;
+}
 
 /**
  * FAIL CLOSED over one readback subtree the position walk could not certify
@@ -482,6 +563,60 @@ export function refuseUncertifiedReadbackPositions(
     }
     if (learn) learnMixedLeafNeedle(learn, bag, source);
     return mark ? POSITION_DECIDED : source;
+  }
+  // A RENDERED Step Functions definition (issue
+  // [#5315](https://github.com/go-to-k/cdkd/issues/5315)). `readCurrentState`
+  // returns `Definition` with the `DefinitionSubstitutions` APPLIED, while the
+  // record holds the body with `${name}` placeholders plus the map. Nothing
+  // pairs the two: `Definition` is an extra key (or a source subtree holding a
+  // placeholder, not a reference), the readback carries no map, so no position
+  // is certified and no derived needle is learned — and on an EMPTY map the
+  // resolved secret was persisted verbatim. The same holds for a reference
+  // spelled INSIDE the body (`Fn::Join` around a secret value) and for a
+  // `NoEcho` value persisted as `***`, which is why this runs BEFORE the
+  // reference-only early return below: a `***` source carries no reference.
+  //
+  // FAIL CLOSED at the rendered keys: the ordinary walk still runs first, so a
+  // position it certifies keeps its expression, and every string leaf it left
+  // that the record does not spell ({@link renderedDefinitionLiterals}) is
+  // masked. Only on a fail-closed destination, as everywhere in this module.
+  //
+  // Residuals, module-wide rather than this arm's: a secret substituted into a
+  // JSON KEY (a state name) is a key, which no walk here masks, and one
+  // substituted at a NUMERIC position reads back as a number, which no resolved
+  // secret's `string` type admits as a leaf.
+  if (
+    failClosed === true &&
+    isPlainObject(bag) &&
+    hasPlainPrototype(bag) &&
+    isPlainObject(source) &&
+    Object.keys(bag).some((k) => RENDERED_DEFINITION_KEYS.has(k)) &&
+    definitionSourceCarriesSecret(source)
+  ) {
+    const keep = renderedDefinitionLiterals(source);
+    const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    const rest: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(bag)) if (!RENDERED_DEFINITION_KEYS.has(k)) rest[k] = v;
+    const walkedRest = refuseUncertifiedReadbackPositions(
+      rest,
+      source,
+      secrets,
+      failClosed,
+      learn,
+      mark
+    ) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(bag)) {
+      if (!RENDERED_DEFINITION_KEYS.has(k)) {
+        out[k] = walkedRest[k];
+        continue;
+      }
+      const walked = Object.hasOwn(source, k)
+        ? refuseUncertifiedReadbackPositions(v, source[k], secrets, failClosed, learn, mark)
+        : v;
+      // A POSITION mark is a symbol, which the refusal returns untouched.
+      out[k] = refuseUncertifiedSubtree(walked, keep, mark);
+    }
+    return out;
   }
   // Nothing to protect in this subtree — return the bag by identity, which is
   // what keeps an ordinary readback (and any AWS-added element in it) intact.

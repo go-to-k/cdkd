@@ -206,11 +206,91 @@ describe('secret-redaction - a substituted Definition on the empty-map readback 
       );
     });
 
+    it('a reference INSIDE the DefinitionString body, with no substitution map', () => {
+      // CDK's `Fn::Join` around a secret value: the record's body embeds the
+      // expression, the readback embeds the plaintext.
+      const props = {
+        DefinitionString: JSON.stringify(templateDefinition)
+          .replaceAll('${apiKey}', EXPR)
+          .replaceAll('${region}', REGION),
+      };
+      const persisted = persist(props, observed());
+      expect(JSON.stringify(persisted)).not.toContain(PLAIN);
+      expect(resultOf(persisted)['region']).toBe(REGION);
+      expect(resultOf(persisted)['key']).toBe(SECRET_MASK);
+    });
+
+    it('a position the walk CERTIFIES keeps its expression rather than a mask', () => {
+      // An object-form body holding the reference as a WHOLE leaf pairs by
+      // position, so the arm must not take that certified row back.
+      const props = {
+        Definition: { StartAt: 'A', States: { A: { Type: 'Pass', Result: EXPR, End: true } } },
+        DefinitionSubstitutions: { region: REGION },
+      };
+      const bag = {
+        Definition: { StartAt: 'A', States: { A: { Type: 'Pass', Result: PLAIN, End: true } } },
+      };
+      const persisted = persist(props, bag);
+      expect(JSON.stringify(persisted)).not.toContain(PLAIN);
+      expect((persisted['observedProperties'] as Record<string, unknown>)['Definition']).toEqual(
+        props.Definition
+      );
+    });
+
+    it('a NoEcho substitution value persisted as *** (no reference anywhere in the record)', () => {
+      const props = {
+        DefinitionString: JSON.stringify(templateDefinition),
+        DefinitionSubstitutions: { apiKey: SECRET_MASK, region: REGION },
+      };
+      const persisted = persist(props, observed());
+      expect(JSON.stringify(persisted)).not.toContain(PLAIN);
+      expect(resultOf(persisted)['region']).toBe(REGION);
+    });
+
+    it('a NoEcho body flattened whole to ***', () => {
+      const persisted = persist(
+        { DefinitionString: SECRET_MASK, DefinitionSubstitutions: { region: REGION } },
+        observed()
+      );
+      expect(JSON.stringify(persisted)).not.toContain(PLAIN);
+    });
+
     it('is IDEMPOTENT over its own output', () => {
       const props = properties({ DefinitionString: JSON.stringify(templateDefinition) });
       const once = persist(props, observed());
       const twice = persist(props, once['observedProperties'] as Record<string, unknown>);
       expect(twice['observedProperties']).toEqual(once['observedProperties']);
     });
+  });
+
+  it('a POPULATED-map baseline keeps the expressions the value scan wrote, embedded ones too', () => {
+    // `cdkd drift`'s baseline writers and the masked-baseline re-capture declare
+    // `state-baseline` with a map: the scan has already rewritten the leaves, and
+    // the refusal must not mask a correctly redacted `Bearer {{resolve:...}}`.
+    const persisted = redactForState(observed(), {
+      provenance: 'state-baseline',
+      secrets: new Map<string, string>([[PLAIN, EXPR]]),
+      source: properties({ DefinitionString: JSON.stringify(templateDefinition) }),
+    }) as Record<string, unknown>;
+    const result = resultOf({ observedProperties: persisted });
+    expect(JSON.stringify(persisted)).not.toContain(PLAIN);
+    expect(result['key']).toBe(EXPR);
+    expect(result['auth']).toBe(`Bearer ${EXPR}`);
+    expect(result['region']).toBe(REGION);
+  });
+
+  it('a readback-rules caller that does not fail closed is unchanged by this arm', () => {
+    // An UNMARKED bag at the persist choke point is a previous generation being
+    // re-written (issue #2906): the arm must not reach it.
+    const bag = observed();
+    const persisted = scrubResourceRecord(
+      {
+        properties: properties({ DefinitionString: JSON.stringify(templateDefinition) }),
+        observedProperties: bag,
+      },
+      new Map<string, string>()
+    );
+    expect(resultOf(persisted as Record<string, unknown>)['region']).toBe(REGION);
+    expect(resultOf(persisted as Record<string, unknown>)['key']).not.toBe(SECRET_MASK);
   });
 });
