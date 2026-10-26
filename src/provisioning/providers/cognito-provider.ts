@@ -386,18 +386,113 @@ const STANDARD_USER_POOL_ATTRIBUTES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Which of `UsernameAttributes`, `AliasAttributes` and `UsernameConfiguration`
+ * the desired bag changes against the previous one (issue #5358).
+ * `UpdateUserPool` has no member for any of them, so a change to one can never
+ * be applied in place.
+ *
+ * The CloudFormation registry schema lists NO create-only paths for
+ * `AWS::Cognito::UserPool`, so a change to one of these is not routed to
+ * replacement; it reaches the update path. CloudFormation's own handler then
+ * REFUSES it — measured 2026-10-26 on throwaway stacks, each a change set
+ * `Modify` / `Replacement: False` ending in `UPDATE_FAILED` with
+ * "Invalid request provided: Updates are not allowed for property - <name>."
+ * for a changed `UsernameAttributes` (`[email]` -> `[phone_number]`), a
+ * changed `UsernameConfiguration.CaseSensitive`, a changed `AliasAttributes`,
+ * and the REMOVAL of `UsernameAttributes` or of `UsernameConfiguration`. cdkd
+ * refuses the same changes rather than leaving them out of the request, which
+ * deployed them "successfully" while AWS kept the create-time value.
+ */
+export function createTimeOnlyChanges(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): string[] {
+  // Literal keys, one per property, in the order the refusal names them.
+  const pairs: Array<[string, unknown, unknown, 'list' | 'object']> = [
+    [
+      'UsernameAttributes',
+      properties['UsernameAttributes'],
+      previousProperties['UsernameAttributes'],
+      'list',
+    ],
+    [
+      'AliasAttributes',
+      properties['AliasAttributes'],
+      previousProperties['AliasAttributes'],
+      'list',
+    ],
+    [
+      'UsernameConfiguration',
+      properties['UsernameConfiguration'],
+      previousProperties['UsernameConfiguration'],
+      'object',
+    ],
+  ];
+  return pairs
+    .filter(
+      ([, desired, previous, shape]) =>
+        canonicalCreateTimeOnlyValue(shape, desired) !==
+        canonicalCreateTimeOnlyValue(shape, previous)
+    )
+    .map(([name]) => name);
+}
+
+/**
+ * `bag` with each of `kept` put back to its PREVIOUS value — absent when the
+ * previous side has none — for the state-borne update arm that warns rather
+ * than refuses (issue #5358): nothing was sent for those properties, so the
+ * record must say what the pool still holds. Returns `bag` itself when
+ * nothing is kept, so `update()`'s identity check still omits
+ * `effectiveProperties` on an ordinary update.
+ */
+function withPreviousCreateTimeOnly(
+  bag: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  kept: readonly string[]
+): Record<string, unknown> {
+  if (kept.length === 0) return bag;
+  const out: Record<string, unknown> = { ...bag };
+  for (const key of kept) {
+    if (previousProperties[key] === undefined) delete out[key];
+    else out[key] = previousProperties[key];
+  }
+  return out;
+}
+
+/**
+ * Comparable form of one {@link createTimeOnlyChanges} value.
+ * Absent equals empty (`readCurrentState` emits `[]` / `{}` placeholders for
+ * an unset value, and a removal of an empty value changes nothing at AWS), the
+ * two attribute lists compare as sets, and `CaseSensitive` compares by its
+ * string spelling so a template boolean and its `"true"` / `"false"` string
+ * form are the same value.
+ */
+function canonicalCreateTimeOnlyValue(shape: 'list' | 'object', declared: unknown): string {
+  const value = declared ?? (shape === 'object' ? {} : []);
+  if (Array.isArray(value)) {
+    return JSON.stringify(value.map((v) => JSON.stringify(v)).sort());
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .map(([k, v]): [string, unknown] => [k, typeof v === 'boolean' ? String(v) : v])
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return JSON.stringify(entries);
+  }
+  return JSON.stringify(value);
+}
+
+/**
  * Class 2 sanitize: empty `{}` placeholders that `readCurrentState` emits
  * for sub-objects whose AWS schema requires a sub-field would be rejected
  * by `UpdateUserPool` if shipped as-is. The known-rejected shapes:
  *
  * - `SmsConfiguration: {}`         — `SnsCallerArn` is required
- * - `UsernameConfiguration: {}`    — `CaseSensitive` is required (also
- *                                    immutable on update; AWS rejects any
- *                                    UsernameConfiguration on UpdateUserPool
- *                                    that differs from create-time, but a
- *                                    no-drift round-trip should never reach
- *                                    here in the first place)
  * - `UserPoolAddOns: {}`           — `AdvancedSecurityMode` is required
+ *
+ * (`UsernameConfiguration` is not on this list because `UpdateUserPool` has
+ * no such member at all: a change to it is refused before any call — see
+ * {@link createTimeOnlyChanges}.)
  *
  * The other sub-objects emitted as `{}` placeholders (LambdaConfig,
  * AdminCreateUserConfig, AccountRecoverySetting, UserAttributeUpdateSettings,
@@ -2879,8 +2974,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   /**
    * Update a Cognito User Pool
    *
-   * Note: PoolName (UserPoolName) is immutable and cannot be changed after
-   * creation. The Schema (custom attributes) is partly mutable: AWS supports
+   * `UserPoolName` is renamed in place: `UpdateUserPool` carries `PoolName`
+   * and the pool keeps its id (issue #5358, measured against CloudFormation,
+   * which renames the same way). `UsernameAttributes`, `AliasAttributes` and
+   * `UsernameConfiguration` have no `UpdateUserPool` member, so a change to
+   * one is refused before any call — see {@link createTimeOnlyChanges}.
+   * The Schema (custom attributes) is partly mutable: AWS supports
    * ADDING new custom attributes in place via AddCustomAttributes, but cannot
    * modify or remove an existing attribute — those changes require replacement
    * and are rejected with ResourceUpdateNotSupportedError.
@@ -2947,6 +3046,47 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     }
     this.warnOnBlankMfaConfiguration(properties['MfaConfiguration']);
 
+    // The create-time-only properties (issue #5358): `UpdateUserPool` has no
+    // member for them, so leaving a change out of the request deployed it
+    // "successfully" while AWS kept the create-time value. CloudFormation
+    // refuses the same change ("Updates are not allowed for property"), so
+    // cdkd refuses it too, before any call, with the typed error the deploy
+    // engine's `--replace` fallback catches. Nothing has been applied yet, so
+    // the pool AWS holds still carries the RECORDED `DeletionProtection`.
+    //
+    // The two state-borne callers WARN instead, for the same reason the MFA
+    // guard above does: the rollback executor's revert arms and `cdkd drift
+    // --revert` hand over a bag the template cannot fix, and a refusal there
+    // leaves the pool un-rollbackable. Nothing is sent for these properties
+    // either way, so the pool keeps the value the PREVIOUS side describes (on
+    // `drift --revert` that side IS the live readback), and that value is what
+    // `effectiveProperties` records below — recording the desired one would
+    // make it the next deploy's previous side, a change AWS never applied.
+    const createTimeOnly = createTimeOnlyChanges(properties, previousProperties);
+    const keptCreateTimeOnly = stateBorneDesired ? createTimeOnly : [];
+    if (createTimeOnly.length > 0) {
+      const changed = createTimeOnly.join(', ');
+      if (stateBorneDesired) {
+        this.logger.warn(
+          safeMsg`Cognito User Pool ${logicalId} (${physicalId}): ${changed} cannot be changed in place ` +
+            safeMsg`(UpdateUserPool has no such member), so the pool keeps its current value and cdkd ` +
+            safeMsg`records that value.`
+        );
+      } else {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `${changed} cannot be changed on an existing user pool — UpdateUserPool has no such ` +
+            `member, and CloudFormation refuses the same change ("Updates are not allowed for ` +
+            `property"). Nothing was applied to user pool ${physicalId}. ` +
+            this.replacementRemedy(
+              physicalId,
+              previousProperties['DeletionProtection'] === 'ACTIVE'
+            )
+        );
+      }
+    }
+
     // The pre-flight (issues #1975 / #1977), and THIS is the path it exists
     // for. Placed ahead of `readLiveMfaConfiguration` below -- a READ, not a
     // mutation, but the requirement is "before the first API call", and a
@@ -3012,6 +3152,15 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       const updateParams: UpdateUserPoolCommandInput = {
         UserPoolId: physicalId,
       };
+
+      // Issue #5358: the rename was never sent, so a changed `UserPoolName`
+      // deployed "successfully" while AWS kept the old name. A template that
+      // DROPS the property sends nothing and the pool keeps its live name —
+      // what CloudFormation does on the same edit (measured 2026-10-26: the
+      // change set reads `Modify`, the update completes, the name stays).
+      if (typeof properties['UserPoolName'] === 'string' && properties['UserPoolName'] !== '') {
+        updateParams.PoolName = properties['UserPoolName'];
+      }
 
       if (properties['Policies']) {
         const sdkPolicies = this.toSdkUserPoolPolicies(
@@ -3212,7 +3361,11 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // `cdkd drift --revert` and the rollback executor's revert arms, so
       // without it a `--revert` re-issued the same substitution forever while
       // the record kept describing a value AWS does not hold.
-      const effectiveProperties = narrowMfaConfiguration(properties);
+      const effectiveProperties = withPreviousCreateTimeOnly(
+        narrowMfaConfiguration(properties),
+        previousProperties,
+        keptCreateTimeOnly
+      );
 
       return {
         physicalId,
@@ -3328,41 +3481,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       ...addedStandard.map((n) => `added standard attribute '${n}'`),
     ];
     if (immutableChanges.length > 0) {
-      const replaceFlags = 'cdkd deploy --replace --force-stateful-recreation';
-      const remedy = deletionProtected
-        ? protectedReplacementAdvice({
-            evidence: "cdkd's properties for this user pool carry DeletionProtection: ACTIVE",
-            replaceFlags,
-            disable: {
-              before: 'aws cognito-idp update-user-pool --user-pool-id',
-              identifier: physicalId,
-              after: '--deletion-protection INACTIVE',
-              // The one-liner above is not safe to paste unqualified, so the
-              // qualification rides `caveat`, which the builder renders OUTSIDE
-              // the backticks: prose inside a pasteable span is itself the
-              // defect this issue is about.
-              //
-              // What `readLiveMfaConfiguration`'s ledger supports, and no more:
-              // omission behaviour is per FIELD. `DeletionProtection` itself is
-              // measured NOT to reset (issue [#2675]), but the command below
-              // omits every other member, and `AutoVerifiedAttributes` is
-              // measured to RESET on omission -- which is why the advice to
-              // send the complete configuration stands.
-              // ONE literal, not a concatenation: `'a' + 'b'` widens to
-              // `string` in TypeScript, and `CdkdAuthoredLiteral` rejects the
-              // widened type by design. That is the cost of moving this fence
-              // from a grep to the compiler, and it is worth paying.
-              caveat:
-                'Note UpdateUserPool resets some members a call omits (self sign-up, Lambda triggers, advanced security and AutoVerifiedAttributes among them), so send your complete pool configuration alongside that flag rather than the flag alone.',
-            },
-          })
-        : `AWS::Cognito::UserPool is a stateful type, so re-run with ${replaceFlags} to recreate it (this deletes all users in the pool).`;
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
         `the Schema change (${immutableChanges.join('; ')}) is immutable on AWS — AWS can only ADD ` +
           `custom attributes in place, so removing or modifying an attribute requires recreating the ` +
-          `pool. ${remedy}`
+          `pool. ${this.replacementRemedy(physicalId, deletionProtected)}`
       );
     }
 
@@ -3381,6 +3505,44 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         CustomAttributes: addedCustom,
       })
     );
+  }
+
+  /**
+   * The "recreate the pool" remedy a refused in-place change carries: the
+   * replace flags, plus how to lift `DeletionProtection` first when the pool
+   * holds it ACTIVE (`deletionProtected`, decided by the caller from whichever
+   * bag describes the pool AWS holds at the moment of the refusal).
+   */
+  private replacementRemedy(physicalId: string, deletionProtected: boolean): string {
+    const replaceFlags = 'cdkd deploy --replace --force-stateful-recreation';
+    return deletionProtected
+      ? protectedReplacementAdvice({
+          evidence: "cdkd's properties for this user pool carry DeletionProtection: ACTIVE",
+          replaceFlags,
+          disable: {
+            before: 'aws cognito-idp update-user-pool --user-pool-id',
+            identifier: physicalId,
+            after: '--deletion-protection INACTIVE',
+            // The one-liner above is not safe to paste unqualified, so the
+            // qualification rides `caveat`, which the builder renders OUTSIDE
+            // the backticks: prose inside a pasteable span is itself the
+            // defect this issue is about.
+            //
+            // What `readLiveMfaConfiguration`'s ledger supports, and no more:
+            // omission behaviour is per FIELD. `DeletionProtection` itself is
+            // measured NOT to reset (issue [#2675]), but the command below
+            // omits every other member, and `AutoVerifiedAttributes` is
+            // measured to RESET on omission -- which is why the advice to
+            // send the complete configuration stands.
+            // ONE literal, not a concatenation: `'a' + 'b'` widens to
+            // `string` in TypeScript, and `CdkdAuthoredLiteral` rejects the
+            // widened type by design. That is the cost of moving this fence
+            // from a grep to the compiler, and it is worth paying.
+            caveat:
+              'Note UpdateUserPool resets some members a call omits (self sign-up, Lambda triggers, advanced security and AutoVerifiedAttributes among them), so send your complete pool configuration alongside that flag rather than the flag alone.',
+          },
+        })
+      : `AWS::Cognito::UserPool is a stateful type, so re-run with ${replaceFlags} to recreate it (this deletes all users in the pool).`;
   }
 
   /**
@@ -4027,9 +4189,10 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     const pool = resp.UserPool;
     if (!pool) return undefined;
 
-    // Cognito UserPool is mutated via UpdateUserPool which accepts every
-    // field below (except UserPoolName, Schema which are immutable on
-    // create). Always emit user-controllable top-level keys with
+    // Cognito UserPool is mutated via UpdateUserPool, which accepts most
+    // fields below; Schema only grows (AddCustomAttributes), and
+    // UsernameAttributes / AliasAttributes / UsernameConfiguration have no
+    // UpdateUserPool member (see `createTimeOnlyChanges`). Always emit user-controllable top-level keys with
     // placeholders so a console-side ADD on a property the pool wasn't
     // templated with at deploy time surfaces as drift.
     const result: Record<string, unknown> = {};

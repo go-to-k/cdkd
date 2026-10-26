@@ -4807,10 +4807,12 @@
             "AWS::Cognito::UserPool"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "update"
           ]
         },
         {
@@ -5079,10 +5081,12 @@
             "AWS::Cognito::UserPool"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "update"
           ]
         },
         {
@@ -5092,10 +5096,12 @@
             "AWS::Cognito::UserPool"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "update"
           ]
         },
         {
@@ -5122,7 +5128,8 @@
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "update"
           ]
         },
         {
