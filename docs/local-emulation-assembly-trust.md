@@ -34,7 +34,7 @@ paths:
 
 Four details about those rows:
 
-- An absolute Docker asset `source.directory`, and the AgentCore commands'
+- On an image build, an absolute Docker asset `source.directory`, and the AgentCore commands'
   absolute code-asset `source.path`, are placed under the manifest's
   directory, so they cannot leave that directory. `start-web-function` and
   `start-microvm` do not fold an absolute code-asset `source.path`: they
