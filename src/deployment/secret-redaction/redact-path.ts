@@ -774,12 +774,12 @@ function nameScalarSecrets(value: unknown, secrets: RecordedSecretValues): unkno
   // Each plaintext's JSON-SCALAR form too, compared by value: a body that
   // places `1.50` or `1e3` outside quotes reads back as `1.5` / `1000`, whose
   // `String()` is not the plaintext.
-  const byValue = new Map<unknown, string>();
-  for (const [plaintext, expression] of secrets) {
+  const byValue = new Set<unknown>();
+  for (const plaintext of secrets.keys()) {
     try {
       const parsed = JSON.parse(plaintext) as unknown;
       if ((typeof parsed === 'number' && Number.isFinite(parsed)) || typeof parsed === 'boolean') {
-        if (!byValue.has(parsed)) byValue.set(parsed, expression);
+        byValue.add(parsed);
       }
     } catch {
       // Not a JSON scalar: no number or boolean can spell it.
@@ -792,8 +792,7 @@ function nameScalarSecrets(value: unknown, secrets: RecordedSecretValues): unkno
       // `***`, not the expression: a STRING where AWS holds a number would be
       // drift on every run, and `--revert` would send it into the definition.
       // A mask is what the uncertified-baseline partition owns.
-      const named = secrets.get(String(node)) ?? byValue.get(node);
-      return named === undefined ? node : SECRET_MASK;
+      return secrets.has(String(node)) || byValue.has(node) ? SECRET_MASK : node;
     }
     if (Array.isArray(node)) return node.map(walk);
     if (isPlainObject(node) && hasPlainPrototype(node)) {
@@ -1031,6 +1030,21 @@ export function collectObjectKeys(value: unknown, into: Set<string>): void {
   }
 }
 
+/**
+ * Every object KEY a resource record spells: the keys of its `properties`, plus
+ * those of a Step Functions definition body read with and without its
+ * substitutions ({@link sentinelDefinitionOf}). A key the record spells is not
+ * a secret, so `cdkd drift --revert` registers only the OTHER keys of a live
+ * value with the log masker (go-to-k/cdkd#5342) — registering `Type` or
+ * `States` would mask those words wherever a persisted value equals them.
+ */
+export function spelledKeysOf(properties: Record<string, unknown>): Set<string> {
+  const keys = new Set<string>();
+  collectObjectKeys(properties, keys);
+  for (const key of sentinelDefinitionOf(properties)?.keys ?? []) keys.add(key);
+  return keys;
+}
+
 /** Does any object key anywhere in `value` fail `spelled`? */
 export function someKeyIsUnspelled(value: unknown, spelled: (key: string) => boolean): boolean {
   if (Array.isArray(value)) return value.some((item) => someKeyIsUnspelled(item, spelled));
@@ -1054,10 +1068,10 @@ export function someKeyIsUnspelled(value: unknown, spelled: (key: string) => boo
  *   shape ({@link alignedSecretLeaf}), else the whole value is `***`: a secret
  *   holding a `"` or a `,` can splice fragments the value scan has no needle
  *   for;
- * - at an OUT-OF-QUOTES position the read-back value becomes `***` (a number,
- *   a boolean, a JSON-document secret's container), or the substitution's
- *   expression where AWS holds a string there. Only THAT position: a literal
- *   `Seconds: 3` beside a secret `3` stays a number.
+ * - at an OUT-OF-QUOTES position the read-back value becomes `***`, whatever
+ *   it parsed to (a number, a boolean, a JSON-string or JSON-document secret).
+ *   Only THAT position: a literal `Seconds: 3` beside a secret `3` stays a
+ *   number.
  *
  * WITHOUT one (no body held, none parses) the record says nothing about
  * positions, so the map decides: a key holding a recorded plaintext (whole, or
@@ -1082,21 +1096,16 @@ function nameDefinitionSecrets(
   if (someKeyIsUnspelled(value, (key) => sentinel.keys.has(key))) {
     return SECRET_MASK;
   }
-  const subs = source['DefinitionSubstitutions'] as Record<string, unknown>;
   let out: unknown = value;
   for (const leaf of sentinel.secretLeaves) {
     if (alignedSecretLeaf(out, leaf) === undefined) return SECRET_MASK;
     if (leaf.outOfStringName !== undefined) {
-      // The expression only where AWS holds a STRING there (a JSON-string
-      // secret). A number, boolean or container becomes `***`: an expression
-      // string in its place is drift on every run and a typed value `--revert`
-      // would replace with a string.
-      const at = alignedSecretLeaf(out, leaf)!.value;
-      out = replaceAtPath(
-        out,
-        leaf.path,
-        typeof at === 'string' ? String(subs[leaf.outOfStringName]) : SECRET_MASK
-      );
+      // `***`, whatever AWS holds there. The expression re-resolves to the
+      // value's JSON TEXT (a number's digits, a JSON-string secret WITH its
+      // quotes), never what AWS decoded it into, so an expression here is drift
+      // on every run and a `--revert` would write the wrong value. A mask is
+      // what the uncertified-baseline partition owns.
+      out = replaceAtPath(out, leaf.path, SECRET_MASK);
     }
   }
   return out;

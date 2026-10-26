@@ -74,21 +74,29 @@ describe('preserveLiveValuesAtMaskedLeaves (issue #2274)', () => {
     );
   });
 
-  it('does NOT register a non-string live value, and still moves it', () => {
-    // Stated residual, mirroring the sibling: the redaction walk matches by
-    // string value, so there is nothing to key an object on — and sending the
-    // mask instead would be the corruption this helper exists to prevent.
+  it('registers a container\'s strings and the keys the record does not spell, and still moves it (#5342)', () => {
     const secrets: RecordedSecretValues = new Map();
-    const live = { Nested: 'x' };
+    const live = { Nested: 'live-nested-secret', Spelled: 'y' };
 
     const { properties } = preserveLiveValuesAtMaskedLeaves(
       { Value: SECRET_MASK },
       { Value: live },
-      secrets
+      secrets,
+      undefined,
+      new Set(['Spelled'])
     );
 
     expect(properties['Value']).toBe(live);
-    expect(secrets.size).toBe(0);
+    expect(secrets.get('live-nested-secret')).toBe(SECRET_MASK);
+    expect(secrets.get('Nested')).toBe(SECRET_MASK);
+    // A key the record spells is not a secret, and is not registered.
+    expect(secrets.has('Spelled')).toBe(false);
+  });
+
+  it('registers a NUMBER live value by its spelling (#5342)', () => {
+    const secrets: RecordedSecretValues = new Map();
+    preserveLiveValuesAtMaskedLeaves({ Value: SECRET_MASK }, { Value: 987654 }, secrets);
+    expect(secrets.get('987654')).toBe(SECRET_MASK);
   });
 
   it('descends ARRAYS positionally and preserves the element AWS holds', () => {

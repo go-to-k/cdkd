@@ -161,6 +161,7 @@ import {
   recordLogOnlyValue,
   recordMaskOnlyValue,
   recordMaskOnlyValuesIn,
+  spelledKeysOf,
   recordNoEchoAttributeValues,
   recordPhysicalNameCopy,
   redactForState,
@@ -6133,8 +6134,10 @@ function corroboratedLeafCount(
  * certified the alignment ({@link equalModuloMask} held on these very
  * positions), so the live subtree is copied in wholesale.
  *
- * Every live STRING standing where the baseline held the mask is registered as
- * a mask-only needle — at EVERY uncertified path, overlaid or not — as the mask
+ * Every live value standing where the baseline held the mask is registered as
+ * a mask-only needle ({@link recordMaskOnlyLiveSubtree}: its strings, its keys
+ * the record does not spell, a number or boolean by its spelling) — at EVERY
+ * uncertified path, overlaid or not — as the mask
  * walk does for the leaves it copies: the value cdkd could not name may be a
  * secret, and the send bag is what the provider's log lines see. Registration
  * is POSITIONAL where the two sides line up, and covers every live string under
@@ -6150,7 +6153,10 @@ export function overlayLiveAtUncertifiedPaths(
   awsProperties: Record<string, unknown>,
   baseline: Record<string, unknown>,
   secrets: RecordedSecretValues,
-  overlaidTopLevelKeys: ReadonlySet<string>
+  overlaidTopLevelKeys: ReadonlySet<string>,
+  // The keys the record spells ({@link spelledKeysOf}); a live KEY among them
+  // is not registered. Absent: every key is (over-masking fails safe).
+  spelledKeys?: ReadonlySet<string>
 ): Record<string, unknown> {
   if (uncertifiedPaths.length === 0) return send;
   let out = send;
@@ -6172,7 +6178,7 @@ export function overlayLiveAtUncertifiedPaths(
       // No alignment to register by position, so register every live string
       // under the path: over-masking fails safe, and for an overlaid key the
       // mask walk after this one still refuses rather than guesses.
-      if (live !== undefined) recordMaskOnlyLiveSubtree(live, secrets);
+      if (live !== undefined) recordMaskOnlyLiveSubtree(live, secrets, spelledKeys);
       continue;
     }
     const needles: string[] = [];
@@ -6182,7 +6188,7 @@ export function overlayLiveAtUncertifiedPaths(
         // whose KEY held a secret is masked whole), so a CONTAINER here is
         // aligned too: what it holds, keys included, must reach the masker.
         if (typeof l === 'string') needles.push(l);
-        else recordMaskOnlyLiveSubtree(l, secrets);
+        else recordMaskOnlyLiveSubtree(l, secrets, spelledKeys);
         return;
       }
       if (Array.isArray(b) && Array.isArray(l)) {
@@ -6209,12 +6215,25 @@ export function overlayLiveAtUncertifiedPaths(
 }
 
 /**
- * Register every string leaf AND every object KEY of a live value cdkd could not
- * name as a mask-only needle (go-to-k/cdkd#5342). `recordMaskOnlyValuesIn`
- * walks values only, and a Step Functions state NAMED by a secret is a key,
- * which a provider's validation error echoes (`at /States/<name>`).
+ * Register every string leaf, and every object KEY the record does not spell,
+ * of a live value cdkd could not name as a mask-only needle
+ * (go-to-k/cdkd#5342); a number or boolean live value by its spelling.
+ * `recordMaskOnlyValuesIn` walks values only, and a Step Functions state NAMED
+ * by a secret is a key, which a provider's validation error echoes
+ * (`at /States/<name>`).
  */
-function recordMaskOnlyLiveSubtree(live: unknown, secrets: RecordedSecretValues): void {
+function recordMaskOnlyLiveSubtree(
+  live: unknown,
+  secrets: RecordedSecretValues,
+  spelledKeys?: ReadonlySet<string>
+): void {
+  // A NUMBER / BOOLEAN standing where the mask was: a secret substituted
+  // outside quotes (go-to-k/cdkd#5315) reads back as one. Its spelling is the
+  // needle; the mask-only floor still applies.
+  if (typeof live === 'number' || typeof live === 'boolean') {
+    recordMaskOnlyValue(secrets, String(live));
+    return;
+  }
   recordMaskOnlyValuesIn(live, secrets);
   const seen = new Set<object>();
   const walk = (node: unknown): void => {
@@ -6225,7 +6244,7 @@ function recordMaskOnlyLiveSubtree(live: unknown, secrets: RecordedSecretValues)
       return;
     }
     for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
-      recordMaskOnlyValue(secrets, key);
+      if (spelledKeys?.has(key) !== true) recordMaskOnlyValue(secrets, key);
       walk(value);
     }
   };
@@ -6406,7 +6425,8 @@ export function preserveLiveValuesAtMaskedLeaves(
   send: Record<string, unknown>,
   awsProperties: Record<string, unknown>,
   secrets: RecordedSecretValues,
-  corroborationSource: Record<string, unknown> = send
+  corroborationSource: Record<string, unknown> = send,
+  spelledKeys?: ReadonlySet<string>
 ): { properties: Record<string, unknown>; unpreservablePaths: string[] } {
   if (!carriesSecretMask(send)) return { properties: send, unpreservablePaths: [] };
   const unpreservablePaths: string[] = [];
@@ -6418,12 +6438,11 @@ export function preserveLiveValuesAtMaskedLeaves(
         return value;
       }
       changed = true;
-      // REGISTER before returning — see the note above. A non-string live value
-      // is not registrable (the redaction walk matches by string value), and is
-      // the same stated residual the sibling carries: it is still copied,
-      // because sending the mask is worse, and it is unmaskable if a provider
-      // later echoes it back changed.
+      // REGISTER before returning — see the note above: a string by itself, a
+      // container by its strings and the keys the record does not spell, a
+      // number or boolean by its spelling (go-to-k/cdkd#5342).
       if (typeof live === 'string') recordMaskOnlyValue(secrets, live);
+      else recordMaskOnlyLiveSubtree(live, secrets, spelledKeys);
       return live;
     }
     if (Array.isArray(value)) {
@@ -7244,7 +7263,8 @@ async function runRevert(
                     outcome.awsProperties,
                     desiredProperties,
                     secrets,
-                    new Set(outcome.changes.map((change) => change.path.split('.', 1)[0] ?? ''))
+                    new Set(outcome.changes.map((change) => change.path.split('.', 1)[0] ?? '')),
+                    spelledKeysOf(stateResource.properties ?? {})
                   );
                   // Issue #1914: a token cdkd could not resolve must never be WRITTEN
                   // over whatever AWS holds — see the helper for why the "it is already
@@ -7281,7 +7301,8 @@ async function runRevert(
                     tokenPreserved,
                     outcome.awsProperties,
                     secrets,
-                    certifiedOverlay
+                    certifiedOverlay,
+                    spelledKeysOf(stateResource.properties ?? {})
                   );
                   if (maskPreserved.unpreservablePaths.length > 0) {
                     // REFUSE the resource rather than send the mask. `totalUnresolvable`

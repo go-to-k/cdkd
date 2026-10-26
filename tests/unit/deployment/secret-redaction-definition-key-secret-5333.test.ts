@@ -497,7 +497,7 @@ describe('secret-redaction - a substitution secret in a definition KEY (issue #5
     });
   });
 
-  it('a JSON-STRING secret outside quotes reads back as a string: its expression, type kept', () => {
+  it('a JSON-STRING secret outside quotes is masked too (its expression would re-resolve WITH quotes)', () => {
     const body = '{"StartAt":"P","States":{"P":{"Type":"Pass","Result":${s},"End":true}}}';
     const template = { DefinitionString: body, DefinitionSubstitutions: { s: EXPR } };
     const out = deployPersist(
@@ -514,7 +514,7 @@ describe('secret-redaction - a substitution secret in a definition KEY (issue #5
     expect(JSON.stringify(out)).not.toContain('abc-json-string-secret');
     expect(out['Definition']).toEqual({
       StartAt: 'P',
-      States: { P: { Type: 'Pass', Result: EXPR, End: true } },
+      States: { P: { Type: 'Pass', Result: SECRET_MASK, End: true } },
     });
   });
 });
