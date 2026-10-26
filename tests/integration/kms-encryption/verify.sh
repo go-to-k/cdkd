@@ -9,7 +9,12 @@
 #   - DisabledKey (Enabled false, rotation on, period 90) drops Enabled and
 #     RotationPeriodInDays together. CloudFormation enables the key, then
 #     resets the period to 365 (KMS refuses a rotation call on a disabled key).
-# Then destroys clean: both keys pending deletion, alias and bucket gone.
+#   - IMMUTABLE (issue #5299): SpecKey changes KeyUsage beside Description; the
+#     deploy must fail with the refusal and change nothing, as CloudFormation
+#     fails it.
+#   - BYPASS (issue #5299): LockKey gets a policy without kms:PutKeyPolicy
+#     and BypassPolicyLockoutSafetyCheck: true; the put must land.
+# Then destroys clean: every key pending deletion, alias and bucket gone.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -217,6 +222,76 @@ if [ "${P2_DIS}" != "True|True|365" ]; then
 fi
 echo "    OK: DisabledKey enabled, then its removed RotationPeriodInDays reset to 365 (issue #1160)"
 
+# Prints "<KeySpec>|<KeyUsage>|<Description>" for a key.
+key_shape() { # usage: key_shape <key-id>
+  aws kms describe-key --region "${REGION}" --key-id "$1" \
+    --query 'KeyMetadata.[KeySpec,KeyUsage,Description]' --output text | tr '\t' '|'
+}
+
+# --- Phase 2b: IMMUTABLE (issue #5299) --------------------------------
+# SpecKey changes KeyUsage ENCRYPT_DECRYPT -> SIGN_VERIFY beside a Description
+# change. CloudFormation fails this update (A/B, us-east-1): KMS has no call
+# that changes a key's usage. cdkd used to report success with neither applied.
+echo "==> Phase 2b: SpecKey KeyUsage change must be refused (issue #5299)"
+SPEC_KEY=$(physical_id SpecKey)
+LOCK_KEY=$(physical_id LockKey)
+if [ -z "${SPEC_KEY}" ] || [ -z "${LOCK_KEY}" ]; then
+  echo "FAIL: physical ids missing from state: SpecKey='${SPEC_KEY}' LockKey='${LOCK_KEY}'" >&2
+  exit 1
+fi
+IMM_LOG=$(mktemp)
+set +e
+CDKD_TEST_REMOVAL=true CDKD_TEST_IMMUTABLE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes >"${IMM_LOG}" 2>&1
+IMM_RC=$?
+set -e
+IMM_TAIL=$(tail -20 "${IMM_LOG}")
+IMM_HIT=0
+grep -qF 'SpecKey) cannot be updated in place: KeyUsage changed' "${IMM_LOG}" && IMM_HIT=1
+rm -f "${IMM_LOG}"
+if [ "${IMM_RC}" -eq 0 ]; then
+  printf '%s\n' "${IMM_TAIL}" >&2
+  echo "FAIL: a KeyUsage change deployed successfully (issue #5299); CloudFormation fails it, and KMS cannot apply it" >&2
+  exit 1
+fi
+if [ "${IMM_HIT}" -ne 1 ]; then
+  printf '%s\n' "${IMM_TAIL}" >&2
+  echo "FAIL: the IMMUTABLE deploy failed, but not with the KeyUsage refusal (issue #5299)" >&2
+  exit 1
+fi
+P2B_SHAPE=$(key_shape "${SPEC_KEY}")
+if [ "${P2B_SHAPE}" != "RSA_2048|ENCRYPT_DECRYPT|cdkd test spec key" ]; then
+  echo "FAIL: SpecKey changed by a refused update: '${P2B_SHAPE}' (expected RSA_2048|ENCRYPT_DECRYPT|cdkd test spec key -- the refusal comes before any call)" >&2
+  exit 1
+fi
+if [ "$(physical_id SpecKey)" != "${SPEC_KEY}" ]; then
+  echo "FAIL: SpecKey was replaced, not refused (issue #5299)" >&2
+  exit 1
+fi
+echo "    OK: SpecKey's KeyUsage change refused with nothing applied (issue #5299)"
+
+# --- Phase 2c: BYPASS (issue #5299) -----------------------------------
+# LockKey's new policy grants the account no kms:PutKeyPolicy, so KMS refuses
+# it unless the update sends BypassPolicyLockoutSafetyCheck, as CloudFormation
+# does (A/B, us-east-1).
+echo "==> Phase 2c: LockKey policy put with BypassPolicyLockoutSafetyCheck (issue #5299)"
+CDKD_TEST_REMOVAL=true CDKD_TEST_BYPASS=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+lock_sids() { # usage: lock_sids <key-id>
+  aws kms get-key-policy --region "${REGION}" --key-id "$1" --policy-name default \
+    --query Policy --output text | jq -r '[.Statement[] | .Sid // "<none>"] | join(",")'
+}
+P2C_SIDS=$(poll_until "Cdkd5299NoPutKeyPolicy" lock_sids "${LOCK_KEY}")
+if [ "${P2C_SIDS}" != "Cdkd5299NoPutKeyPolicy" ]; then
+  echo "FAIL: LockKey policy after the BYPASS deploy has statements '${P2C_SIDS}' (expected Cdkd5299NoPutKeyPolicy)" >&2
+  exit 1
+fi
+echo "    OK: LockKey's lockout policy put with the bypass (issue #5299)"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -224,7 +299,7 @@ env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" destroy "${STACK}" \
   --region "${REGION}" \
   --yes
 
-for k in "${ENC_KEY}" "${DIS_KEY}"; do
+for k in "${ENC_KEY}" "${DIS_KEY}" "${SPEC_KEY}" "${LOCK_KEY}"; do
   KSTATE=$(aws kms describe-key --region "${REGION}" --key-id "${k}" --query KeyMetadata.KeyState --output text) \
     || { echo "FAIL: describe-key '${k}' failed after destroy" >&2; exit 1; }
   if [ "${KSTATE}" != "PendingDeletion" ]; then
@@ -232,7 +307,7 @@ for k in "${ENC_KEY}" "${DIS_KEY}"; do
     exit 1
   fi
 done
-echo "    OK: both keys are pending deletion"
+echo "    OK: all four keys are pending deletion"
 
 assert_gone "alias '${ALIAS}' still exists after destroy" aws kms describe-key --region "${REGION}" --key-id "${ALIAS}"
 assert_gone "bucket '${BUCKET}' still exists after destroy" aws s3api head-bucket --bucket "${BUCKET}"
@@ -242,4 +317,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> kms-encryption test passed (removed RotationPeriodInDays / KeyPolicy / Enabled reset + clean destroy)"
+echo "==> kms-encryption test passed (removed RotationPeriodInDays / KeyPolicy / Enabled reset, refused KeyUsage change, lockout bypass + clean destroy)"

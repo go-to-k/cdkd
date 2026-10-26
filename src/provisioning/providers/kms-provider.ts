@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   KMSClient,
   CreateKeyCommand,
@@ -29,7 +30,11 @@ import {
   type OriginType,
 } from '@aws-sdk/client-kms';
 import { getLogger } from '../../utils/logger.js';
-import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
+import {
+  CdkdError,
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+} from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -761,6 +766,19 @@ export class KMSProvider implements ResourceProvider {
     );
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    // go-to-k/cdkd#5299: a key's spec, usage, region scope and origin are
+    // fixed at creation, and KMS has no call that changes them.
+    const immutableChanged = changedImmutableKeyProperties(properties, previousProperties);
+    if (
+      immutableChanged.length > 0 &&
+      !(await this.liveKeyMatches(physicalId, properties, immutableChanged, logicalId))
+    ) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        immutableKeySuggestion(immutableChanged)
+      );
+    }
 
     // Issue #1160, CloudFormation A/B (us-east-1, 2026-10-20), each removal
     // alone and beside another change: a removed Description is cleared, a
@@ -900,6 +918,12 @@ export class KMSProvider implements ResourceProvider {
             KeyId: physicalId,
             PolicyName: 'default',
             Policy: newPolicyStr,
+            // go-to-k/cdkd#5299: `createKey` sends the declared bypass, so
+            // the update does too; without it KMS refuses a policy the
+            // template already told it to accept.
+            ...(templateBool(properties['BypassPolicyLockoutSafetyCheck']) === true && {
+              BypassPolicyLockoutSafetyCheck: true,
+            }),
           })
         );
       } else if (policyRemoved && newKeyPolicy === undefined) {
@@ -934,6 +958,38 @@ export class KMSProvider implements ResourceProvider {
           )
       );
     }
+  }
+
+  /**
+   * go-to-k/cdkd#5299: whether the live key already holds the desired value of
+   * every property in `changed`. A cdkd before the fix recorded such a change
+   * as deployed while the key kept the old value, so a template put back to
+   * the live value differs from the record but not from the key: nothing to
+   * send, and the update records the template. A failed read is "no", so the
+   * refusal stands.
+   */
+  private async liveKeyMatches(
+    physicalId: string,
+    properties: Record<string, unknown>,
+    changed: readonly string[],
+    logicalId: string
+  ): Promise<boolean> {
+    let md: KeyMetadata | undefined;
+    try {
+      md = (await this.getClient().send(new DescribeKeyCommand({ KeyId: physicalId }))).KeyMetadata;
+    } catch {
+      return false;
+    }
+    if (!md) return false;
+    const live = immutableKeyShape(md as unknown as Record<string, unknown>);
+    const desired = immutableKeyShape(properties);
+    const matches = changed.every((name) => isDeepStrictEqual(desired[name], live[name]));
+    if (matches) {
+      this.logger.debug(
+        safeMsg`KMS Key ${logicalId}: the live key already holds the desired ${changed.join(', ')}; the record differed`
+      );
+    }
+    return matches;
   }
 
   /**
@@ -1468,6 +1524,49 @@ export class KMSProvider implements ResourceProvider {
     // reaching here needs an explicit `--resource` override.
     return null;
   }
+}
+
+/**
+ * The properties KMS fixes when a key is created, each with the value an
+ * absent one means. No KMS update call has a member for any of them.
+ */
+function immutableKeyShape(properties: Record<string, unknown>): Record<string, unknown> {
+  return {
+    KeySpec: properties['KeySpec'] ?? 'SYMMETRIC_DEFAULT',
+    KeyUsage: properties['KeyUsage'] ?? 'ENCRYPT_DECRYPT',
+    MultiRegion: templateBool(properties['MultiRegion']) === true,
+    Origin: properties['Origin'] ?? 'AWS_KMS',
+  };
+}
+
+/**
+ * go-to-k/cdkd#5299: the names among `KeySpec`, `KeyUsage`, `MultiRegion` and
+ * `Origin` whose desired value differs from the previous one. Each side is
+ * compared with its default filled in, so declaring or dropping a default
+ * value is no change (CFn A/B, us-east-1, 2026-10-26: both complete).
+ */
+function changedImmutableKeyProperties(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): string[] {
+  const desired = immutableKeyShape(properties);
+  const previous = immutableKeyShape(previousProperties);
+  return Object.keys(desired).filter((name) => !isDeepStrictEqual(desired[name], previous[name]));
+}
+
+/**
+ * go-to-k/cdkd#5299: the refusal's suggestion for a change to a property KMS
+ * fixes at creation. The schema lists no createOnly property, so the diff
+ * routes such a change to `update()`, which used to send nothing and report
+ * success while the live key kept the old value. CloudFormation fails the update instead of
+ * replacing the key, whatever `UpdateReplacePolicy` says (CFn A/B, us-east-1,
+ * 2026-10-26), so cdkd refuses too; `--replace` is the opt-in replacement, and
+ * `AWS::KMS::Key` being stateful, it also takes `--force-stateful-recreation`
+ * unless the old key is retained. Only property names are printed.
+ */
+function immutableKeySuggestion(changed: readonly string[]): string {
+  const one = changed.length === 1;
+  return `${changed.join(', ')} changed, and KMS fixes ${one ? 'it' : 'them'} when the key is created (CloudFormation fails this update too). To keep the key, restore the previous ${one ? 'value' : 'values'}. To replace it, re-deploy with --replace, plus --force-stateful-recreation unless the key's UpdateReplacePolicy is Retain; without Retain the old key is scheduled for deletion, and data encrypted under it cannot be decrypted once that deletion completes`;
 }
 
 /**

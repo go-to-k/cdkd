@@ -41,7 +41,13 @@ fields. Without the flag the provider rejects the update with
 `ResourceUpdateNotSupportedError` and the deploy fails.
 
 `--replace` turns that failure into a delete and a create, which is what
-CloudFormation does for the same change.
+CloudFormation does for the same change. One exception: a change to an
+`AWS::KMS::Key`'s `KeySpec`, `KeyUsage`, `MultiRegion` or `Origin` fails in
+CloudFormation too, which never replaces a key. cdkd refuses it the same way,
+and there `--replace` (with `--force-stateful-recreation` unless the key's
+`UpdateReplacePolicy` is `Retain`) is a choice CloudFormation does not offer:
+the old key is scheduled for deletion, and data encrypted under it cannot be
+decrypted once the deletion completes.
 
 ```bash
 # A Glue SecurityConfiguration's EncryptionConfiguration changed
