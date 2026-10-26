@@ -266,26 +266,37 @@ export function without(bag: Bag, path: Path): Bag {
  * (removing a parent removes its create-only member) or above it. Array
  * indices are dropped, as the schema's paths spell none. Path-precise, as the
  * engine's replacement check is: a nested create-only member leaves its
- * siblings updatable, unless the engine cannot walk to it (a list on the way,
- * or a `*`).
+ * siblings updatable, unless the engine cannot walk `bag` to it.
  */
-export function touchesCreateOnly(createOnly: ReadonlySet<string>, path: Path): boolean {
+export function touchesCreateOnly(
+  createOnly: ReadonlySet<string>,
+  path: Path,
+  bag: Bag
+): boolean {
   const dotted = path.filter((seg) => typeof seg === 'string').join('.');
   for (const c of createOnly) {
     if (c === dotted || dotted.startsWith(`${c}.`) || c.startsWith(`${dotted}.`)) return true;
-    // The engine cannot resolve a nested path through a list or a `*`, so it
-    // replaces on ANY change under that top-level
-    // (`createOnlyChangeRequiresReplacement`); so does this.
-    const segs = c.split('.');
-    if (
-      segs.length > 1 &&
-      segs[0] === path[0] &&
-      (segs.includes('*') || path.slice(1, segs.length).some((seg) => typeof seg === 'number'))
-    ) {
-      return true;
-    }
+    const [top, ...rest] = c.split('.');
+    if (rest.length > 0 && top === path[0] && !walkable(bag[top!], rest)) return true;
   }
   return false;
+}
+
+/**
+ * Whether the engine can walk `value` along `segments` of object keys
+ * (`createOnlyChangeRequiresReplacement`'s `valueAtPath`): a `*`, or a list or
+ * scalar where an object is expected, cannot be walked, and the engine then
+ * replaces on ANY change under that top-level. An absent container walks.
+ */
+function walkable(value: unknown, segments: string[]): boolean {
+  let current = value;
+  for (const segment of segments) {
+    if (segment === '*') return false;
+    if (current === undefined || current === null) return true;
+    if (typeof current !== 'object' || Array.isArray(current)) return false;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return true;
 }
 
 /**
@@ -440,7 +451,7 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
     const label = path.join('.');
     const reduced = without(c.bag, path);
     const createThrew = compare('create', label, await record(create(reduced)), full);
-    const replaces = touchesCreateOnly(c.createOnly, path);
+    const replaces = touchesCreateOnly(c.createOnly, path, c.bag);
     let updateThrew = false;
     if (!replaces) {
       updateThrew =
@@ -709,7 +720,7 @@ export function describeWireCases(cases: TypeCase[]): void {
       const byDesign = t.wholeFromNext;
       const wholeFromNext = byDesign
         ? paths(b.bag)
-            .filter((p) => byDesign.keys(String(p[0])) && !touchesCreateOnly(t.createOnly, p))
+            .filter((p) => byDesign.keys(String(p[0])) && !touchesCreateOnly(t.createOnly, p, b.bag))
             .map((p) => `update-remove:${p.join('.')}`)
             // A removal that throws is a removal throw, not a silent probe.
             .filter((label) => !(label in (b.expectedRemovalThrows ?? {})))

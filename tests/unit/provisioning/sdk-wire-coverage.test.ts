@@ -855,19 +855,29 @@ describe('the wire harness create-only paths', () => {
     [['Budget', 'BudgetNameSuffix'], false],
     [['ResourceTags', 0, 'Key'], false],
   ] as const)('%j touches one: %s', (path, touches) => {
-    expect(touchesCreateOnly(createOnlyOf('AWS::Budgets::Budget'), [...path])).toBe(touches);
+    const bag = { Budget: { BudgetName: 'b' }, NotificationsWithSubscribers: [{}] };
+    expect(touchesCreateOnly(createOnlyOf('AWS::Budgets::Budget'), [...path], bag)).toBe(touches);
   });
 
   // The engine cannot walk a nested path through a list or a `*`, so it
   // replaces on any change under that top-level; the harness skips the same.
+  // A list on ANOTHER branch does not stop the walk.
   it.each([
     [['Foo', 0, 'Other'], true],
-    [['Foo', 0], true],
+    [['Foo', 1], true],
     [['Bar', 'Other'], true],
     [['Baz', 'Other'], false],
+    [['Qux', 'List', 0], false],
+    [['Qux', 'List'], false],
+    [['Qux', 'Inner', 'Name'], true],
   ] as const)('through a list or a wildcard, %j touches one: %s', (path, touches) => {
-    expect(touchesCreateOnly(new Set(['Foo.Name', 'Bar.*.Name', 'Baz.Name']), [...path])).toBe(
-      touches
-    );
+    const createOnly = new Set(['Foo.Name', 'Bar.*.Name', 'Baz.Name', 'Qux.Inner.Name']);
+    const bag = {
+      Foo: [{ Name: 'n' }, { Other: 'o' }],
+      Bar: { Other: 'o' },
+      Baz: { Name: 'n', Other: 'o' },
+      Qux: { Inner: { Name: 'n' }, List: ['x'] },
+    };
+    expect(touchesCreateOnly(createOnly, [...path], bag)).toBe(touches);
   });
 });
