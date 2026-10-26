@@ -5,6 +5,7 @@ import {
   HeadBucketCommand,
   ListObjectsV2Command,
   DeleteObjectsCommand,
+  type DataRedundancy,
   type Tag,
 } from '@aws-sdk/client-s3';
 import {
@@ -412,11 +413,14 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
           CreateBucketConfiguration: {
             Bucket: {
               Type: 'Directory',
-              DataRedundancy: dataRedundancy as 'SingleAvailabilityZone',
+              DataRedundancy: dataRedundancy as DataRedundancy,
             },
             Location: {
               Name: azId,
-              Type: 'AvailabilityZone',
+              // A Local Zone bucket names its zone with `Type: 'LocalZone'`
+              // (go-to-k/cdkd#5317); the zone id flows through `getAzId`
+              // unchanged (its lookup fails soft to the given name).
+              Type: dataRedundancy === 'SingleLocalZone' ? 'LocalZone' : 'AvailabilityZone',
             },
             ...(includeTags ? { Tags: tags } : {}),
           },
@@ -736,11 +740,11 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
    *
    * Issues `HeadBucket` to verify existence and surfaces `BucketName`
    * (the physicalId) plus `Tags` (via S3 Control `ListTagsForResource`,
-   * the directory-bucket tag read). `DataRedundancy` and `LocationName`
-   * are not exposed by any cheap S3 Express API — the only way to inspect
-   * them is by parsing the bucket name's `--<az-id>--x-s3` suffix, which is
-   * best effort. We surface them when they are recoverable from the bucket
-   * name to give the comparator a chance to detect mismatches.
+   * the directory-bucket tag read). `DataRedundancy` comes from the
+   * `HeadBucket` response's `BucketLocationType`; `LocationName` is not
+   * exposed by any cheap S3 Express API — the only way to inspect it is by
+   * parsing the bucket name's `--<az-id>--x-s3` suffix, which is best
+   * effort.
    *
    * `--<az-id>--x-s3` suffix parsing: directory bucket names follow the
    * format `<base>--<az-id>--x-s3`, e.g.
@@ -760,8 +764,10 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     _logicalId: string,
     _resourceType: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    let locationType: string | undefined;
     try {
-      await this.s3Client.send(new HeadBucketCommand({ Bucket: physicalId }));
+      const head = await this.s3Client.send(new HeadBucketCommand({ Bucket: physicalId }));
+      locationType = head?.BucketLocationType;
     } catch (err) {
       const e = err as { name?: string };
       if (e.name === 'NotFound' || e.name === 'NoSuchBucket' || e.name === 'BucketNotFound') {
@@ -774,13 +780,13 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
       BucketName: physicalId,
     };
 
-    // Best-effort: directory bucket names always carry `--x-s3`. Default
-    // redundancy is `SingleAvailabilityZone` for every directory bucket
-    // today (it's the only DataRedundancy AWS supports for S3 Express),
-    // so surfacing it here ensures the comparator does not flag drift
-    // when state holds the same value.
+    // Best-effort: directory bucket names always carry `--x-s3`. HeadBucket's
+    // `BucketLocationType` tells a Local Zone bucket (`SingleLocalZone`) from
+    // an Availability Zone one (`SingleAvailabilityZone`, go-to-k/cdkd#5317),
+    // so the comparator does not flag drift when state holds the same value.
     if (physicalId.endsWith('--x-s3')) {
-      result['DataRedundancy'] = 'SingleAvailabilityZone';
+      result['DataRedundancy'] =
+        locationType === 'LocalZone' ? 'SingleLocalZone' : 'SingleAvailabilityZone';
     }
 
     // Tags via S3 Control ListTagsForResource (always-emit per

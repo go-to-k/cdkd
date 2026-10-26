@@ -295,6 +295,19 @@ describe('S3DirectoryBucketProvider Tags (issue #609)', () => {
       const listCmd = mockControlSend.mock.calls[0][0];
       expect(listCmd.input).toEqual({ AccountId: '123456789012', ResourceArn: ARN });
     });
+
+    it.each([
+      ['LocalZone', 'SingleLocalZone'],
+      ['AvailabilityZone', 'SingleAvailabilityZone'],
+      [undefined, 'SingleAvailabilityZone'],
+    ])('reads DataRedundancy from HeadBucket BucketLocationType %s (#5317)', async (type, want) => {
+      mockS3Send.mockResolvedValueOnce({ BucketLocationType: type }); // HeadBucket
+      mockControlSend.mockResolvedValueOnce({ Tags: [] });
+
+      const result = (await provider.readCurrentState(PHYSICAL_ID, 'Logical', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
+
+      expect(result?.['DataRedundancy']).toBe(want);
+    });
   });
 });
 
