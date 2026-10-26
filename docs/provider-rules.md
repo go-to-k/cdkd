@@ -1600,7 +1600,10 @@ Checklist when writing or reviewing an `update()`:
   stream), and on an `AWS::CodeBuild::Project` removing `Visibility` and
   `ResourceAccessRole` (or the role alone at `PRIVATE`) resets to `PRIVATE` /
   no role, so both providers send the reset. Removing the role while
-  `PUBLIC_READ` stays is unmeasured.
+  `PUBLIC_READ` stays clears the role and keeps the public alias, and cdkd
+  sends `PUBLIC_READ` with no role. ON_DEMAND + `AUTO` -> PROVISIONED fails
+  under CloudFormation (with or without an explicit `USER_PARTITION_KEY` in
+  the same update) and under cdkd alike.
 - Sub-structures can carry the same hazard one level down: an object that is
   present but missing its inner key (e.g. `Environment: {}` without
   `Variables`) may also read as "no change" — normalize it to the explicit

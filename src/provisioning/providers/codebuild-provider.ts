@@ -708,10 +708,9 @@ export class CodeBuildProvider implements ResourceProvider {
       // An unusable desired value is warned about and the live pair left
       // alone: this path is state-replay reachable, so it cannot refuse.
       //
-      // UNMEASURED (the A/B on go-to-k/cdkd#2762 removed the role only together
-      // with `Visibility`, or at `PRIVATE`): removing `ResourceAccessRole`
-      // while `PUBLIC_READ` stays sends `PUBLIC_READ` with no role, on the
-      // reading that an omitted `resourceAccessRole` clears it there too.
+      // Removing `ResourceAccessRole` while `PUBLIC_READ` stays sends
+      // `PUBLIC_READ` with no role; CloudFormation clears the role in this
+      // case and keeps the public alias (CFn A/B on go-to-k/cdkd#2762).
       const desiredVisibility = readVisibility(properties, mask);
       const recorded = readVisibility(previousProperties, mask);
       if (desiredVisibility.kind === 'unusable') {
