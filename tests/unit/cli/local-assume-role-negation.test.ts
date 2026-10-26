@@ -40,6 +40,10 @@ import {
  * forward ambient credentials). The defect being fixed is the help naming a
  * flag the parser rejects, so the population is the set that makes that claim.
  *
+ * `start-microvm`'s `--assume-role <arn>` takes a REQUIRED value and its help
+ * advertises no negation (the execution role is not in the template, so there
+ * is no state-resolved default to opt out of), so it is not in the population.
+ *
  * Deliberately NOT extended to `local start-api` / `start-service` /
  * `start-alb`: none of the three advertises the negation, and on each of them
  * `assumeRole === false` would reach code written for a different shape (a
@@ -146,17 +150,19 @@ describe('cdkd local *: --no-assume-role is registered where it is advertised (#
         'start-alb',
         'start-api',
         'start-cloudfront',
+        'start-microvm',
         'start-service',
         'start-web-function',
       ].sort()
     );
-    // The three that carry `--assume-role` but deliberately have NO negation.
+    // The four that carry `--assume-role` but deliberately have NO negation.
     // Asserted as the complement rather than left implicit, so DROPPING the
     // advertisement from one of the five (rather than adding it to one of the
-    // three) also reds — the parity fence above would go quiet either way.
+    // four) also reds — the parity fence above would go quiet either way.
     expect(withPositive.filter((name) => !NEGATABLE.includes(name as never))).toEqual([
       'start-alb',
       'start-api',
+      'start-microvm',
       'start-service',
     ]);
   });

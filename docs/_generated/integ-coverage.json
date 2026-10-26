@@ -4669,6 +4669,7 @@
         "local-run-task-from-state",
         "local-start-alb-from-state",
         "local-start-api-websocket",
+        "local-start-microvm",
         "local-start-web-function",
         "local-start-web-function-from-state",
         "log-pipeline",
@@ -4928,6 +4929,9 @@
         ],
         "local-start-api-websocket": [
           "literal"
+        ],
+        "local-start-microvm": [
+          "l2"
         ],
         "local-start-web-function": [
           "l2"

@@ -13,8 +13,8 @@
  * `${AWS::AccountId}` / account lookups resolve as the role, i.e. the DEPLOY
  * account (go-to-k/cdkd#5001, cdk-local 0.153.0+).
  *
- * The five engine commands (`start-service` / `start-alb` / `start-cloudfront`
- * / `start-agentcore` / `start-web-function`) do not come here: cdk-local's own `applyRoleArnIfSet`
+ * The six engine commands (`start-service` / `start-alb` / `start-cloudfront`
+ * / `start-agentcore` / `start-web-function` / `start-microvm`) do not come here: cdk-local's own `applyRoleArnIfSet`
  * runs inside them and records the assume itself. Kept out of
  * `src/utils/role-arn.ts` because of dependency direction: `src/utils` must not
  * depend on `cdk-local/internal`. (cdkd's own `--assume-role` hop already opts
