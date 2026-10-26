@@ -218,7 +218,7 @@ describe('withApiGatewayPacing against a real SDK client', () => {
     expect(sentAt).toHaveLength(8);
     // The burst of 5 goes out together, the rest at the steady rate.
     expect(sentAt[4]! - sentAt[0]!).toBe(0);
-    expect(gaps.every((gap) => gap >= 250)).toBe(true);
+    expect(gaps).toEqual([250, 250, 250]);
   });
 
   it('holds calls past the shared burst of 30 and sends them at 8 per second', async () => {
