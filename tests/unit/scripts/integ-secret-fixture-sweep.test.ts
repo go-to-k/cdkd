@@ -944,6 +944,10 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       // `safeStringify` module (no module state), read by the rethrowing
       // catches so a thrown value with no string form cannot replace the failure.
       '../../utils/aws-failure-text.js',
+      // go-to-k/cdkd#5323: the `safeMsg` formatter (imports only `node:crypto`;
+      // constants only), building the replica-removal debug line from region
+      // names and the secret's ARN, never a value.
+      '../../utils/display-safe.js',
       '../../utils/error-handler.js',
       '../../utils/logger.js',
       '../config-shape.js',

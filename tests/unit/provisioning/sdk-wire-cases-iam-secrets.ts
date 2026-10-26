@@ -73,8 +73,6 @@ const KEPT_ON_REMOVAL = Object.fromEntries(
 const VALUE_KEPT_ON_REMOVAL =
   'a removed value source keeps the live secret value (changedSecretValue sends a value only for a declared, changed source)';
 
-const REPLICA_KEY_GAP = 'go-to-k/cdkd#5302';
-
 export const CASES_IAM_SECRETS: TypeCase[] = [
   {
     resourceType: 'AWS::IAM::User',
@@ -212,12 +210,6 @@ export const CASES_IAM_SECRETS: TypeCase[] = [
           'create:GenerateSecretString.ExcludeUppercase': DECLARED_DEFAULT,
           ...KEPT_ON_REMOVAL,
           'update-remove:GenerateSecretString': VALUE_KEPT_ON_REMOVAL,
-          ...Object.fromEntries(
-            ['update-add', 'update-remove'].map((d) => [
-              `${d}:ReplicaRegions.0.KmsKeyId`,
-              `${REPLICA_KEY_GAP}: a changed key on a region already replicated is never sent`,
-            ])
-          ),
         },
         expectedRemovalThrows: {
           ...TAG_THROWS(['create', 'update-add', 'update-remove'], 2),

@@ -8050,6 +8050,7 @@
         "secrets-array-nested",
         "secrets-dynamic-ref",
         "secrets-rotation-schedule",
+        "secretsmanager-replica-rekey",
         "secretsmanager-update-value-source",
         "servicediscovery"
       ],
@@ -8105,6 +8106,10 @@
         ],
         "secrets-rotation-schedule": [
           "l2",
+          "literal"
+        ],
+        "secretsmanager-replica-rekey": [
+          "l1",
           "literal"
         ],
         "secretsmanager-update-value-source": [
