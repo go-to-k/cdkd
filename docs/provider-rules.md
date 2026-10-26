@@ -1595,9 +1595,10 @@ Checklist when writing or reviewing an `update()`:
   `removalDefaults`.
   Real CloudFormation A/B, go-to-k/cdkd#2762: a removed `AWS::Kinesis::Stream`
   `RecordDistributionStrategy` RESETS to `USER_PARTITION_KEY` (ON_DEMAND
-  stream), and a removed `AWS::CodeBuild::Project` `Visibility` RESETS to
-  `PRIVATE` with `ResourceAccessRole` CLEARED, so both providers send the
-  reset.
+  stream), and on an `AWS::CodeBuild::Project` removing `Visibility` and
+  `ResourceAccessRole` (or the role alone at `PRIVATE`) resets to `PRIVATE` /
+  no role, so both providers send the reset. Removing the role while
+  `PUBLIC_READ` stays is unmeasured.
 - Sub-structures can carry the same hazard one level down: an object that is
   present but missing its inner key (e.g. `Environment: {}` without
   `Variables`) may also read as "no change" — normalize it to the explicit

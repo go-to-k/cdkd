@@ -4349,8 +4349,10 @@ async function fetchGlueTags(
     const resp = await client.send(new GetTagsCommand({ ResourceArn: arn }));
     return normalizeAwsTagsToCfn(resp.Tags);
   } catch (err) {
-    // The NAME is left out: a Connection's can be secret-derived (go-to-k/cdkd#2007).
-    logger.debug(`GetTags failed for a Glue ${resource}: ${describeAwsFailure(err).detail}`);
+    // Neither the NAME nor AWS's own text: a Connection's name can be
+    // secret-derived (go-to-k/cdkd#2007), and an AccessDenied message quotes
+    // the resource ARN, which carries it. The summary is the error code.
+    logger.debug(`GetTags failed for a Glue ${resource}: ${describeAwsFailure(err).summary}`);
     return [];
   }
 }

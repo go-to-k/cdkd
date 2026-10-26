@@ -494,7 +494,16 @@ describe('GlueConnectionProvider Tags (go-to-k/cdkd#2762)', () => {
         return Promise.resolve({ Connection: { Name: 'secret-derived-conn-name' } });
       }
       if (cmd instanceof GetTagsCommand) {
-        return Promise.reject(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }));
+        // The feared shape: AWS's AccessDenied text quotes the connection ARN.
+        return Promise.reject(
+          Object.assign(
+            new Error(
+              'User: arn:aws:iam::111122223333:user/x is not authorized to perform: glue:GetTags ' +
+                'on resource: arn:aws:glue:us-east-1:111122223333:connection/secret-derived-conn-name'
+            ),
+            { name: 'AccessDeniedException', $metadata: { httpStatusCode: 400 } }
+          )
+        );
       }
       return Promise.resolve({});
     });
@@ -508,5 +517,6 @@ describe('GlueConnectionProvider Tags (go-to-k/cdkd#2762)', () => {
     const lines = debugSpy.mock.calls.map((c) => String(c[0]));
     expect(lines.some((l) => l.includes('GetTags failed for a Glue connection'))).toBe(true);
     expect(lines.some((l) => l.includes('secret-derived-conn-name'))).toBe(false);
+    expect(lines.some((l) => l.includes(':connection/'))).toBe(false);
   });
 });
