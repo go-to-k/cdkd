@@ -28,6 +28,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * - Resolver with S3-sourced mapping templates
  *   (Request/ResponseMappingTemplateS3Location via aws-s3-assets, #609)
  * - IAM Role for AppSync to access DynamoDB
+ * - In-place GraphQLApi rename and DataSource Type change, and the refused
+ *   GraphQLSchema ApiId move (#5359)
  * - CfnOutputs for API URL and API ID
  */
 export class AppSyncStack extends cdk.Stack {
@@ -53,6 +55,13 @@ export class AppSyncStack extends cdk.Stack {
     //     `--no-rollback` leaves a journal for verify.sh to doctor and replay.
     const envMalformed = updateMode && process.env['CDKD_TEST_ENV_MALFORMED'] === 'true';
     const envRevert = updateMode && process.env['CDKD_TEST_ENV_REVERT'] === 'true';
+    // Issue #5359, on top of the update template (verify.sh phase 2d): the
+    // schema's ApiId moves to another id with the definition UNCHANGED. Pre-fix
+    // the update returned success with no call, leaving the schema where it
+    // was; CloudFormation fails this update, so cdkd now refuses it. A literal
+    // id is enough: the refusal comes before any call, and a pre-fix run never
+    // calls AWS for it either.
+    const schemaMove = updateMode && process.env['CDKD_TEST_SCHEMA_MOVE'] === 'true';
 
     // An extra Cognito user pool + Lambda authorizer, so the two nested auth
     // blobs (CognitoUserPoolConfig / LambdaAuthorizerConfig) are exercised
@@ -92,7 +101,10 @@ export class AppSyncStack extends cdk.Stack {
 
     // GraphQL API
     const graphqlApi = new appsync.CfnGraphQLApi(this, 'GraphQLApi', {
-      name: 'cdkd-appsync-example',
+      // Issue #5359: a rename is an in-place UpdateGraphqlApi (the API id
+      // stays), as CloudFormation does it. The update phase renames it and the
+      // removal phase renames it back. Pre-fix both deploys were refused.
+      name: updateMode ? 'cdkd-appsync-example-renamed' : 'cdkd-appsync-example',
       authenticationType: 'API_KEY',
       // Create-only on AWS (no UpdateGraphqlApi member) — a change here is a
       // REPLACEMENT, so the fixture keeps both constant across all phases.
@@ -187,7 +199,7 @@ export class AppSyncStack extends cdk.Stack {
     // resolver added by the #609 Resolver/DataSource batch (present in ALL
     // phases so no phase ever deletes the resolver).
     const schema = new appsync.CfnGraphQLSchema(this, 'GraphQLSchema', {
-      apiId: graphqlApi.attrApiId,
+      apiId: schemaMove ? 'cdkdintegnosuchapi5359' : graphqlApi.attrApiId,
       definition: `
 type Item {
   id: ID!
@@ -413,6 +425,17 @@ schema {
               },
             }),
       },
+    });
+
+    // Issue #5359: `Type` changes in place through UpdateDataSource (the data
+    // source and its ARN stay), as CloudFormation does it. NONE in the baseline
+    // and removal phases, HTTP in the update phase; the removal phase's switch
+    // back also drops the HttpConfig. Pre-fix the change was refused.
+    new appsync.CfnDataSource(this, 'TypeSwitchDataSource', {
+      apiId: graphqlApi.attrApiId,
+      name: 'TypeSwitchDataSource',
+      type: updateMode ? 'HTTP' : 'NONE',
+      ...(updateMode ? { httpConfig: { endpoint: 'https://example.com' } } : {}),
     });
 
     // Outputs

@@ -68,12 +68,8 @@ vi.mock('../../../src/utils/logger.js', () => {
   return { getLogger: () => child };
 });
 
-import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
-import {
-  hasRedactedCause,
-  isRetryableTransientError,
-  retryClassificationText,
-} from '../../../src/deployment/retryable-errors.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { hasRedactedCause } from '../../../src/deployment/retryable-errors.js';
 import { AppSyncProvider } from '../../../src/provisioning/providers/appsync-provider.js';
 import { ASGProvider } from '../../../src/provisioning/providers/asg-provider.js';
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
@@ -136,17 +132,12 @@ interface Site {
   desiredRest: Record<string, unknown>;
   previousRest: Record<string, unknown>;
   refusal: string;
-  /** Does the physical id (or, for the GraphqlApi, AWS) carry the value? */
+  /** Does the physical id carry the value? */
   physicalCarriesName: boolean;
-  answers?: Record<string, (input: Record<string, unknown>) => unknown>;
 }
 
 const LB_ARN = `arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/${NAME}/50dc6c495c0c9188`;
 const LB_REFUSAL = 'ELBv2 LoadBalancer Name / Type / Scheme are immutable';
-/** The live GraphqlApi, answered with `name`. */
-const graphqlApiNamed = (name: string) => ({
-  GetGraphqlApiCommand: () => ({ graphqlApi: { apiId: 'api-id-1', name } }),
-});
 
 const SITES: Site[] = [
   {
@@ -183,16 +174,16 @@ const SITES: Site[] = [
     physicalCarriesName: false,
   },
   {
-    label: 'AppSync GraphQLApi Name (the live name decides)',
-    type: 'AWS::AppSync::GraphQLApi',
+    // go-to-k/cdkd#5359: the schema's physical id is the API id.
+    label: 'AppSync GraphQLSchema ApiId',
+    type: 'AWS::AppSync::GraphQLSchema',
     provider: () => new AppSyncProvider(),
-    key: 'Name',
-    physicalId: 'api-id-1',
-    desiredRest: { AuthenticationType: 'API_KEY', XrayEnabled: true },
-    previousRest: { AuthenticationType: 'API_KEY', XrayEnabled: false },
-    refusal: 'GraphqlApi.Name is immutable',
+    key: 'ApiId',
+    physicalId: NAME,
+    desiredRest: { Definition: 'type Query { a: String }' },
+    previousRest: { Definition: 'type Query { b: String }' },
+    refusal: 'GraphQLSchema.ApiId cannot move a schema to another API in place',
     physicalCarriesName: true,
-    answers: graphqlApiNamed(NAME),
   },
   {
     label: 'AppSync DataSource Name',
@@ -289,14 +280,12 @@ describe('a secret-derived immutable identity (go-to-k/cdkd#4275)', () => {
   for (const site of SITES) {
     describe(site.label, () => {
       it('UNCHANGED: a recorded reference resolving to the current value lets the update through', async () => {
-        fakeAws(site.answers);
         const result = await run(site, NAME, REF);
         expect(result).not.toContain(site.refusal);
         expect(result).toContain(SENTINEL);
       });
 
       it('RENAMED: a desired value naming another resource is still refused', async () => {
-        fakeAws(site.answers);
         const result = site.physicalCarriesName
           ? await run(site, OTHER, REF)
           : await run(site, 'a-literal-value', REF);
@@ -305,7 +294,6 @@ describe('a secret-derived immutable identity (go-to-k/cdkd#4275)', () => {
       });
 
       it('PLAIN: an ordinary recorded value that differs is still refused, with no lookup', async () => {
-        fakeAws(site.answers);
         const result = await run(site, NAME, 'recorded-plain-name');
         expect(result).toContain(site.refusal);
         expect(result).not.toContain(SENTINEL);
@@ -314,7 +302,6 @@ describe('a secret-derived immutable identity (go-to-k/cdkd#4275)', () => {
 
       if (site.physicalCarriesName) {
         it('a recorded *** is decided by the physical id', async () => {
-          fakeAws(site.answers);
           expect(await run(site, NAME, SECRET_MASK)).toContain(SENTINEL);
         });
       } else {
@@ -369,101 +356,84 @@ describe('ELBv2 LoadBalancer: only a create-only key takes the masker arm', () =
   });
 });
 
-describe('AppSync GraphQLApi Name: the lookup', () => {
-  const update = (desired: string, previous: string) =>
+describe('AppSync GraphQLApi Name: a secret-derived name is no refusal (go-to-k/cdkd#5359)', () => {
+  // CloudFormation renames an API in place, so the GraphqlApi Name is no
+  // immutable site. It re-resolves a secret only when the template's
+  // reference changes, so the deploy decides a rename from
+  // `changedProperties` (the templates as written), never from the recorded
+  // reference against the resolved value, which always differ.
+  const update = (desired: string, previous: string, ctx: UpdateContext = context) =>
     new AppSyncProvider().update(
       'Api',
       'api-id-1',
       'AWS::AppSync::GraphQLApi',
       { AuthenticationType: 'API_KEY', XrayEnabled: true, Name: desired },
       { AuthenticationType: 'API_KEY', XrayEnabled: false, Name: previous },
-      context
+      ctx
     );
-
-  it('asks AWS by the physical id, and writes the resolved name it confirmed', async () => {
-    fakeAws(graphqlApiNamed(NAME));
-    expect(await outcome(update(NAME, REF))).toContain(SENTINEL);
-    expect(sentCommands()).toEqual(['GetGraphqlApiCommand', 'UpdateGraphqlApiCommand']);
-    expect(mockSend.mock.calls[0][0].input).toEqual({ apiId: 'api-id-1' });
-    expect(mockSend.mock.calls[1][0].input).toMatchObject({ apiId: 'api-id-1', name: NAME });
+  const changed = (...keys: string[]): UpdateContext => ({
+    ...context,
+    changedProperties: new Set(keys),
+  });
+  const liveName = (name: string | undefined) => ({
+    GetGraphqlApiCommand: () => ({ graphqlApi: { apiId: 'api-id-1', name } }),
   });
 
-  it('a secret rotated under an unchanged reference (live name differs) is refused', async () => {
-    fakeAws(graphqlApiNamed(OTHER));
-    const result = await outcome(update(NAME, REF));
-    expect(result).toContain('GraphqlApi.Name is immutable');
-    expect(sentCommands()).toEqual(['GetGraphqlApiCommand']);
-  });
-
-  /** The error `update()` threw, or `undefined`. */
-  async function thrown(promise: Promise<unknown>): Promise<unknown> {
-    try {
-      await promise;
-    } catch (error) {
-      return error;
-    }
-    return undefined;
-  }
-
-  it('an answer with no name is no evidence: refused as a ProvisioningError, not a typed refusal', async () => {
-    fakeAws({ GetGraphqlApiCommand: () => ({ graphqlApi: { apiId: 'api-id-1' } }) });
-    const error = await thrown(update(NAME, REF));
-    expect(error).toBeInstanceOf(ProvisioningError);
-    expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
-    expect((error as Error).message).toContain('an answer with no name');
-    expect(sentCommands()).toEqual(['GetGraphqlApiCommand']);
-  });
-
-  it('a NotFound answer says the API is gone rather than asking for a re-run', async () => {
-    mockSend.mockRejectedValueOnce(
-      Object.assign(new Error('GraphQL API api-id-1 not found.'), { name: 'NotFoundException' })
-    );
-    const message = (await thrown(update(NAME, REF)) as Error).message;
-    expect(message).toContain('no longer exists');
-    expect(message).not.toContain('re-run once the lookup can succeed');
-  });
-
-  for (const [label, rejection] of [
-    ['a non-Error rejection', 'not an error object'],
-    ['an Error with an empty name', Object.assign(new Error('x'), { name: '' })],
+  for (const [label, desired] of [
+    ['the resolved name', NAME],
+    ['another name (a rotated secret)', OTHER],
   ] as const) {
-    it(`${label} is refused as an unreadable failure`, async () => {
-      mockSend.mockRejectedValueOnce(rejection);
-      const error = await thrown(update(NAME, REF));
-      expect(error).toBeInstanceOf(ProvisioningError);
-      expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
-      expect((error as Error).message).toContain('(an unreadable failure)');
-      expect((error as Error).message).toContain('re-run once the lookup can succeed');
+    it(`an unchanged reference with ${label}: the live name is kept, no rename`, async () => {
+      fakeAws(liveName(NAME));
+      expect(await outcome(update(desired, REF, changed('XrayEnabled')))).toContain(SENTINEL);
+      expect(sentCommands()).toEqual(['GetGraphqlApiCommand', 'UpdateGraphqlApiCommand']);
+      expect(mockSend.mock.calls[1][0].input).toMatchObject({ apiId: 'api-id-1', name: NAME });
     });
   }
 
-  it('a failure class carrying the secret is masked in the refusal', async () => {
-    mockSend.mockRejectedValueOnce(Object.assign(new Error('x'), { name: `Odd${NAME}Fault` }));
-    const message = (await thrown(update(NAME, REF)) as Error).message;
-    expect(message).toContain('could not be confirmed');
-    expect(message).not.toContain(NAME);
+  it('a changed reference: UpdateGraphqlApi renames to the resolved value, with no GetGraphqlApi', async () => {
+    fakeAws();
+    expect(await outcome(update(OTHER, REF, changed('Name')))).toContain(SENTINEL);
+    expect(sentCommands()).toEqual(['UpdateGraphqlApiCommand']);
+    expect(mockSend.mock.calls[0][0].input).toMatchObject({ apiId: 'api-id-1', name: OTHER });
   });
 
-  it('a lookup failure is a retryable ProvisioningError naming its class, not a typed refusal', async () => {
-    const throttle = Object.assign(new Error(`Rate exceeded for ${NAME}`), {
-      name: 'ThrottlingException',
-    });
-    mockSend.mockRejectedValueOnce(throttle);
-    let caught: unknown;
-    try {
-      await update(NAME, REF);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ProvisioningError);
-    expect(caught).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
-    const error = caught as ProvisioningError;
-    expect(error.message).toContain('ThrottlingException');
-    expect(error.message).not.toContain(NAME);
-    expect(error.cause).toBe(throttle);
-    expect(hasRedactedCause(error)).toBe(true);
-    expect(isRetryableTransientError(error, retryClassificationText(error))).toBe(true);
+  it('a literal name the template did not change: sent as recorded, with no GetGraphqlApi', async () => {
+    fakeAws();
+    expect(await outcome(update('literal-name', 'literal-name', changed('XrayEnabled')))).toContain(
+      SENTINEL
+    );
+    expect(sentCommands()).toEqual(['UpdateGraphqlApiCommand']);
+    expect(mockSend.mock.calls[0][0].input).toMatchObject({ name: 'literal-name' });
+  });
+
+  it('an unreadable live name refuses before UpdateGraphqlApi', async () => {
+    fakeAws(liveName(undefined));
+    const message = await outcome(update(OTHER, REF, changed('XrayEnabled')));
+    expect(message).toContain('Could not read the current name of AppSync GraphqlApi api-id-1');
     expect(sentCommands()).toEqual(['GetGraphqlApiCommand']);
+  });
+
+  it('a failed live-name read refuses before UpdateGraphqlApi, masked', async () => {
+    mockSend.mockRejectedValue(new Error(`Api named ${NAME} is throttled`));
+    const message = await outcome(update(OTHER, REF, changed('XrayEnabled')));
+    expect(message).toContain('Failed to update AppSync GraphqlApi');
+    expect(message).not.toContain(NAME);
+    expect(sentCommands()).toEqual(['GetGraphqlApiCommand']);
+  });
+
+  it('without changedProperties (a direct call) the two bags decide', async () => {
+    fakeAws();
+    expect(await outcome(update(OTHER, REF))).toContain(SENTINEL);
+    expect(sentCommands()).toEqual(['UpdateGraphqlApiCommand']);
+    expect(mockSend.mock.calls[0][0].input).toMatchObject({ apiId: 'api-id-1', name: OTHER });
+  });
+
+  it('an AWS failure quoting the resolved name is masked', async () => {
+    mockSend.mockRejectedValue(new Error(`Name ${NAME} is not allowed`));
+    const message = await outcome(update(NAME, REF, changed('Name')));
+    expect(message).toContain('Failed to update AppSync GraphqlApi');
+    expect(message).not.toContain(NAME);
   });
 });
 
@@ -651,7 +621,7 @@ describe('AppSync child updates with no mutable change: the ARN-rebuild warning 
       'api-id-1',
       'Name',
       { AuthenticationType: 'API_KEY', XrayEnabled: true },
-      graphqlApiNamed(NAME),
+      {},
     ],
     [
       'DataSource',

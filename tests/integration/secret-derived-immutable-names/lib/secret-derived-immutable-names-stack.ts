@@ -128,9 +128,11 @@ class PromoReaderChild extends cdk.NestedStack {
  *     policy on every update (a create under the same name and path, which
  *     IAM refuses). The policy ARN carries the path; the description takes
  *     the masker arm.
- *   - `SecretApi` (AWS::AppSync::GraphQLApi), `Name` from the secret: the
- *     physical id is the API id, so the provider asks AppSync for the live
- *     name. `SecretDataSource` (AWS::AppSync::DataSource, type NONE), `Name`
+ *   - `SecretApi` (AWS::AppSync::GraphQLApi), `Name` from the secret: a
+ *     rename is an in-place update (go-to-k/cdkd#5359), sent only when the
+ *     template's reference changes; otherwise the update carries the API's
+ *     live name, so the API keeps it. `SecretDataSource`
+ *     (AWS::AppSync::DataSource, type NONE), `Name`
  *     from the secret: the `<apiId>|<name>` physical id carries it.
  *   - `SecretQueue` (AWS::SQS::Queue), `QueueName` from the secret
  *     (go-to-k/cdkd#2177): the provider's own update debug lines print the
@@ -206,6 +208,12 @@ class PromoReaderChild extends cdk.NestedStack {
  *     Value`. SDIN_PJ_EDIT=true edits the producer's Description only.
  *   Each *_SETTLE flag edits its reader's Description, so the reader is
  *   written while its upstream is NO_CHANGE and records the version it read.
+ *
+ * SECRET API NAME (go-to-k/cdkd#5359, step 5l): SDIN_API_XRAY_OFF=true turns
+ * `SecretApi`'s XrayEnabled off, an `UpdateGraphqlApi` that must carry the
+ * API's live name although the secret behind its Name reference has rotated;
+ * SDIN_API_RENAME=true then moves the Name to the `api2` field, a changed
+ * reference that renames the API in place.
  *
  * UPDATE (CDKD_TEST_UPDATE=true) changes only the Stages' `Description`, the
  * Service's `EnableECSManagedTags` (it has no description), the Policy's
@@ -295,10 +303,13 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
       },
     });
 
+    // Step 5l (go-to-k/cdkd#5359): SDIN_API_XRAY_OFF=true turns XrayEnabled
+    // back off, an unrelated in-place change; SDIN_API_RENAME=true points the
+    // Name at the secret's `api2` field, a changed reference.
     const graphqlApi = new appsync.CfnGraphQLApi(this, 'SecretApi', {
-      name: fromSecret('api'),
+      name: fromSecret(process.env.SDIN_API_RENAME === 'true' ? 'api2' : 'api'),
       authenticationType: 'API_KEY',
-      xrayEnabled: update,
+      xrayEnabled: update && process.env.SDIN_API_XRAY_OFF !== 'true',
     });
     new appsync.CfnDataSource(this, 'SecretDataSource', {
       apiId: graphqlApi.attrApiId,

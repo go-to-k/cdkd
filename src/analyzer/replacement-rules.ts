@@ -755,9 +755,9 @@ export class ReplacementRulesRegistry {
     // create-only FALLBACK in `create-only-properties.ts` cannot cover this:
     // the registry schema for this type ships an EMPTY `createOnlyProperties`
     // list, so an unclassified change would be routed to an in-place UPDATE
-    // that silently drops the new value. `Name` keeps the provider's own
-    // `ResourceUpdateNotSupportedError` and is deliberately NOT listed —
-    // classifying it here would change existing behavior beyond this fix.
+    // that silently drops the new value. `Name` is deliberately left
+    // unclassified: it renames the API in place via `UpdateGraphqlApi`,
+    // keeping the API id, as CloudFormation does (go-to-k/cdkd#5359).
     this.rules.set('AWS::AppSync::GraphQLApi', {
       replacementProperties: new Set(['ApiType', 'Visibility']),
       updateableProperties: new Set([

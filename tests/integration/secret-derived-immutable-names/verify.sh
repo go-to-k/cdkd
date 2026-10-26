@@ -151,6 +151,14 @@
 #      intrinsic that survived, as in orphan-getatt-takeover): the audit and
 #      the live read's lines do not name the queue (go-to-k/cdkd#3869). The
 #      record is restored before any assertion.
+#   5l. LOAD-BEARING (go-to-k/cdkd#5359): rotate ONLY the secret's `api`
+#      field, then turn SecretApi's XrayEnabled off (SDIN_API_XRAY_OFF=true),
+#      an unrelated in-place change whose UpdateGraphqlApi call must carry a
+#      name. The Name's template reference is unchanged, so, as in
+#      CloudFormation, the API keeps its id AND its original name. Then
+#      SDIN_API_RENAME=true points the Name at the `api2` field, a changed
+#      reference: the API is renamed in place to that value, same id, and
+#      state records the `api2` reference.
 #   6. Destroy. Its --verbose log does not name SecretFilter's FilterName,
 #      SecretQueue's name or SecretPolicy's path (go-to-k/cdkd#3869):
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
@@ -179,7 +187,8 @@
 # naming "StageName is immutable"; revert src/provisioning/providers/ecs-provider.ts
 # ALONE and it fails naming "Cannot update ServiceName"; revert
 # src/provisioning/providers/appsync-provider.ts ALONE and it fails naming
-# "GraphqlApi.Name is immutable" or "DataSource.Name is immutable"; revert
+# "DataSource.Name is immutable" (the GraphqlApi Name is no immutable site
+# since go-to-k/cdkd#5359: a rename is an in-place update); revert
 # src/provisioning/providers/iam-managed-policy-provider.ts ALONE and the
 # policy is replaced: IAM refuses the create under the same name and path
 # (cdkd prints "A policy called ... already exists", not the
@@ -187,6 +196,13 @@
 # updates either way. Revert src/utils/logger.ts ALONE (go-to-k/cdkd#2177) and
 # step 4 fails "SecretQueue's 'Updating SQS queue' line carries no '***'
 # mask": that provider debug line prints the queue URL, name and all, raw.
+# Step 5l discriminates the go-to-k/cdkd#5359 rename path (reasoned from the
+# diff, not yet measured): with appsync-provider.ts as on main before #5359,
+# the Xray-toggle deploy exits non-zero (the provider refuses a resolved name
+# that is not the API's live one); with the PR's first round, which sent the
+# desired (resolved, rotated) Name on every UpdateGraphqlApi, it exits 0 and
+# the API then holds the rotated value, failing at "SecretApi holds the
+# rotated api value".
 # Revert the go-to-k/cdkd#4275 hunk of src/provisioning/cloud-control-provider.ts
 # (the `unchangedBehindSecretReference` loop in update()) ALONE and step 4 fails
 # "update deploy exited 1": Cloud Control refuses the patch op on the
@@ -336,6 +352,10 @@ POLICY_DESC="sdin-pdesc-${SUFFIX}"
 # AppSync names take no `-`: a data source name is `[_A-Za-z][_0-9A-Za-z]*`.
 GQL_API_NAME="sdin_gql_${SUFFIX//-/_}"
 DS_NAME="sdin_ds_${SUFFIX//-/_}"
+# Step 5l (go-to-k/cdkd#5359): the value the `api` field rotates to, which must
+# NOT reach the API, and the `api2` field the renamed reference points at.
+GQL_API_NAME_ROTATED="sdin_gqlr_${SUFFIX//-/_}"
+GQL_API_NAME_2="sdin_gql2_${SUFFIX//-/_}"
 QUEUE_NAME="sdin-q-${SUFFIX}"
 FILTER_NAME="sdin-mf-${SUFFIX}"
 FILTER_NAME_ROTATED="sdin-mfr-${SUFFIX}"
@@ -979,7 +999,7 @@ UPDATE_RC=$?
 set -e
 if [ "${UPDATE_RC}" -ne 0 ]; then
   for refusal in "StageName is immutable" "Cannot update ServiceName" \
-    "GraphqlApi.Name is immutable" "DataSource.Name is immutable" \
+    "DataSource.Name is immutable" \
     "A policy called" "createOnlyProperties [/properties/FilterName] cannot be updated" \
     "GroupName addresses the schedule" "GroupName of Schedule"; do
     if grep -qF "${refusal}" "${DEPLOY_LOG}"; then
@@ -1547,10 +1567,12 @@ PROMO_ENV=(SDIN_AQ_RESPELL=true SDIN_READER_EDIT=true SDIN_MOVE_FILTER=true CDKD
 PQ_CUR="${PQ_NAME}"
 NQ_CUR="${NQ_NAME}"
 PJ_CUR="${PJ_VALUE_1}"
-promo_put_secret() { # writes step 5g's values plus PQ_CUR / NQ_CUR / PJ_CUR: a new secret version
+# Step 5l's `api` field, rotated there (go-to-k/cdkd#5359).
+GQL_CUR="${GQL_API_NAME}"
+promo_put_secret() { # writes step 5g's values plus PQ_CUR / NQ_CUR / PJ_CUR / GQL_CUR and api2: a new secret version
   SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
-  printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s","stream":"%s","loggroup":"%s","aqueue":"%s","pqueue":"%s","nqueue":"%s","pjvalue":"%s"}' \
-    "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" "${STREAM_NAME}" "${LOG_GROUP_NAME}" "${AQ_QUEUE_NAME_2}" "${PQ_CUR}" "${NQ_CUR}" "${PJ_CUR}" \
+  printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","api2":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s","stream":"%s","loggroup":"%s","aqueue":"%s","pqueue":"%s","nqueue":"%s","pjvalue":"%s"}' \
+    "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_CUR}" "${GQL_API_NAME_2}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" "${STREAM_NAME}" "${LOG_GROUP_NAME}" "${AQ_QUEUE_NAME_2}" "${PQ_CUR}" "${NQ_CUR}" "${PJ_CUR}" \
     > "${SECRET_FILE}"
   aws secretsmanager put-secret-value --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \
     --secret-string "file://${SECRET_FILE}" >/dev/null
@@ -2098,6 +2120,75 @@ if grep -qF -- "${QUEUE_NAME}" "${DEPLOY_LOG}"; then
   exit 1
 fi
 echo "    OK: the orphan audit withholds the secret-named queue's URL and ARN"
+
+echo "==> Step 5l (LOAD-BEARING): a rotated secret under SecretApi's unchanged Name reference does not rename it (go-to-k/cdkd#5359)"
+# PREMISE: the API still has its seeded name, so the assertions below compare
+# against a known starting point. Compared, never printed: secret values.
+gql_which_name() { # usage: gql_which_name <name> -> which of the run's API names it is, by VARIABLE name
+  case "$1" in
+    "${GQL_API_NAME}") echo "the original name (\${GQL_API_NAME})" ;;
+    "${GQL_API_NAME_ROTATED}") echo "the rotated api value (\${GQL_API_NAME_ROTATED})" ;;
+    "${GQL_API_NAME_2}") echo "the api2 value (\${GQL_API_NAME_2})" ;;
+    *) echo "none of the run's API names" ;;
+  esac
+}
+promo_capture GQL_LIVE_NAME "SecretApi's live name" gql_field name
+if [ "${GQL_LIVE_NAME}" != "${GQL_API_NAME}" ]; then
+  echo "FAIL: premise: SecretApi holds $(gql_which_name "${GQL_LIVE_NAME}") before step 5l, not the original name" >&2
+  exit 1
+fi
+# Rotate ONLY the `api` field (a new secret version, every other field kept),
+# then turn XrayEnabled off: the template's Name reference is unchanged, so the
+# UpdateGraphqlApi the Xray change issues must carry the API's live name. The
+# pre-fix round sent the resolved, ROTATED value on that call and renamed the
+# API; before #5359 the provider refused the update outright.
+GQL_CUR="${GQL_API_NAME_ROTATED}"
+promo_put_secret
+PROMO_ENV+=(SDIN_API_XRAY_OFF=true)
+promo_deploy
+promo_expect_deployed "step 5l Xray toggle (after the api rotation)"
+promo_assert_none_sent "step 5l Xray toggle (after the api rotation)"
+if ! promo_log_has "SecretApi" "(AWS::AppSync::GraphQLApi)" "updated"; then
+  echo "FAIL: premise: the step 5l Xray-toggle deploy has no 'SecretApi (AWS::AppSync::GraphQLApi) updated' line (update() did not run, so the name it sends was not exercised)" >&2
+  log_tail
+  exit 1
+fi
+promo_capture GQL_LIVE_XRAY "SecretApi's live XrayEnabled" gql_field xrayEnabled
+expect_eq "SecretApi's XrayEnabled after the step 5l toggle (the UpdateGraphqlApi call landed)" "False" "${GQL_LIVE_XRAY}"
+promo_capture GQL_STATE_ID "SecretApi's recorded physical id" state_physical_id SecretApi
+expect_eq "SecretApi's id after the step 5l toggle (not replaced)" "${GQL_API_ID}" "${GQL_STATE_ID}"
+# LOAD-BEARING (the red line): compared, never printed.
+promo_capture GQL_LIVE_NAME "SecretApi's live name" gql_field name
+if [ "${GQL_LIVE_NAME}" != "${GQL_API_NAME}" ]; then
+  echo "FAIL: SecretApi holds $(gql_which_name "${GQL_LIVE_NAME}") after an Xray-only update, not the original name: a secret rotated under an unchanged Name reference renamed the API (go-to-k/cdkd#5359; CloudFormation re-resolves only when the reference changes)" >&2
+  log_tail
+  exit 1
+fi
+# GQL_API_NAME too: the update reads it live and sends it, and it is no longer
+# in the secret's current version, so only the absence of a log line keeps it out.
+promo_assert_masked "step 5l Xray-toggle deploy" GQL_API_NAME GQL_API_NAME_ROTATED GQL_API_NAME_2
+echo "    OK: SecretApi kept its id and its original name through an unrelated update after the rotation"
+# The positive control: the Name now references the `api2` field, a CHANGED
+# reference, so the API is renamed in place to that field's value, same id.
+PROMO_ENV+=(SDIN_API_RENAME=true)
+promo_deploy
+promo_expect_deployed "step 5l rename (the Name reference moved to api2)"
+promo_capture GQL_STATE_ID "SecretApi's recorded physical id" state_physical_id SecretApi
+expect_eq "SecretApi's id after the step 5l rename (renamed in place, not replaced)" "${GQL_API_ID}" "${GQL_STATE_ID}"
+promo_capture GQL_LIVE_NAME "SecretApi's live name" gql_field name
+if [ "${GQL_LIVE_NAME}" != "${GQL_API_NAME_2}" ]; then
+  echo "FAIL: SecretApi holds $(gql_which_name "${GQL_LIVE_NAME}") after its Name reference moved to the api2 field, not the api2 value: the changed reference did not rename the API in place (go-to-k/cdkd#5359)" >&2
+  log_tail
+  exit 1
+fi
+API2_TOKEN="$(promo_token api2)"
+promo_capture GQL_STATE_NAME "SecretApi's recorded Name" state_property SecretApi Name
+if [ "${GQL_STATE_NAME}" != "${API2_TOKEN}" ]; then
+  echo "FAIL: SecretApi's recorded Name is not the api2 reference after the rename (state must record the reference, never the resolved name)" >&2
+  exit 1
+fi
+promo_assert_masked "step 5l rename deploy" GQL_API_NAME_ROTATED GQL_API_NAME_2
+echo "    OK: the changed Name reference renamed SecretApi in place"
 
 echo "==> Step 6: destroy"
 set +e
