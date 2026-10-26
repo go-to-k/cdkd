@@ -108,6 +108,11 @@ function renderedDefinitionLiterals(source: Record<string, unknown>): {
   const sentinel = sentinelDefinitionOf(source);
   if (sentinel !== undefined) {
     for (const leaf of sentinel.strings) keep.add(leaf);
+    // ...and each secret leaf AS WRITTEN (`Bearer ${k}`): a placeholder, no
+    // secret, which an unsubstituted readback holds even where the body as
+    // written does not parse.
+    for (const leaf of sentinel.secretLeaves)
+      if (leaf.asWritten !== undefined) keep.add(leaf.asWritten);
     for (const leaf of sentinel.scalars) scalarKeep.add(leaf);
     for (const key of sentinel.keys) keyKeep.add(key);
   }
