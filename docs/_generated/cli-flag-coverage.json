@@ -2567,6 +2567,7 @@
     "--subnet-ids",
     "--subnets",
     "--subscription-arn",
+    "--table-arn",
     "--table-bucket-arn",
     "--table-input",
     "--table-name",

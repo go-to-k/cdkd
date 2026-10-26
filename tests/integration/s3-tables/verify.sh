@@ -14,6 +14,9 @@
 #   3. (issue #2613) Phase 1b redeploys with changed tag values: the
 #      TableBucket and the SDK-routed Table update in place, through the
 #      provider's update() and its recorded-region guard.
+#   4. (issue #5313) Phase 1c redeploys with a new TableName and Namespace:
+#      the SDK-routed Table is renamed in place on AWS (same TableARN, as
+#      CloudFormation does) and the state records the new composite id.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -95,6 +98,7 @@ cleanup() {
   # The consuming SSM parameter (issue #974) has a deterministic name, so a
   # partial-failure that left it behind is swept here directly.
   aws ssm delete-parameter --region "${REGION}" --name "/${STACK}/iceberg-table-ref" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --region "${REGION}" --name "/${STACK}/table-ref" >/dev/null 2>&1 || true
   set -eu
 }
 
@@ -122,8 +126,9 @@ cleanup
 
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
-# CDKD_S3T_TEAM unset: Phase 1 asserts the base `platform` tag value.
-env -u CDKD_S3T_TEAM node "${LOCAL_DIST}" deploy "${STACK}" \
+# CDKD_S3T_* unset: Phase 1 asserts the base `platform` tag value and the
+# base table name / namespace.
+env -u CDKD_S3T_TEAM -u CDKD_S3T_TABLE_NAME -u CDKD_S3T_TABLE_NS node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -328,7 +333,8 @@ PRE_TABLE_ID="$(state_physical_id Table)"
 require_value "Table physicalId before Phase 1b" "${PRE_TABLE_ID}"
 
 echo "==> Phase 1b: redeploy with changed bucket-team / team tag values"
-CDKD_S3T_TEAM="${UPDATED_TEAM_TAG}" node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_S3T_TABLE_NAME -u CDKD_S3T_TABLE_NS CDKD_S3T_TEAM="${UPDATED_TEAM_TAG}" \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -352,6 +358,62 @@ if [ "${POST_TABLE_TEAM}" != "${UPDATED_TEAM_TAG}" ]; then
   exit 1
 fi
 echo "    OK: TableBucket and Table tags updated in place (issue #2613)"
+
+# --- Phase 1c: in-place rename (issue #5313) -------------------------
+# Only the Table's TableName and Namespace change (the tag values stay at
+# Phase 1b's), so the redeploy reaches the provider's update() with a rename
+# alone. CloudFormation renames in place through RenameTable and keeps the
+# TableARN; before the fix cdkd sent nothing, so AWS kept the old name while
+# the state recorded the new one.
+RENAMED_TABLE="cdkd_integ_tbl_renamed"
+RENAMED_NS="cdkd_integ_ns2"
+echo "==> Phase 1c: redeploy renaming the Table and moving it to ${RENAMED_NS}"
+CDKD_S3T_TEAM="${UPDATED_TEAM_TAG}" CDKD_S3T_TABLE_NAME="${RENAMED_TABLE}" \
+  CDKD_S3T_TABLE_NS="${RENAMED_NS}" node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+LIVE_TABLE_JSON="$(aws s3tables get-table --region "${REGION}" --table-arn "${TABLE_ARN}" --output json)"
+LIVE_NAME="$(printf '%s' "${LIVE_TABLE_JSON}" | jq -r '.name // ""')"
+LIVE_NS="$(printf '%s' "${LIVE_TABLE_JSON}" | jq -r '.namespace[0] // ""')"
+if [ "${LIVE_NAME}" != "${RENAMED_TABLE}" ] || [ "${LIVE_NS}" != "${RENAMED_NS}" ]; then
+  echo "FAIL: table ${TABLE_ARN} is '${LIVE_NS}.${LIVE_NAME}' on AWS after Phase 1c, expected '${RENAMED_NS}.${RENAMED_TABLE}' (issue #5313: the rename did not reach AWS)" >&2
+  exit 1
+fi
+echo "    OK: table renamed on AWS to ${RENAMED_NS}.${RENAMED_TABLE} under the same TableARN"
+
+RENAMED_TABLE_ID="$(state_physical_id Table)"
+EXPECTED_RENAMED_ID="${TABLE_BUCKET_ARN}|${RENAMED_NS}|${RENAMED_TABLE}"
+if [ "${RENAMED_TABLE_ID}" != "${EXPECTED_RENAMED_ID}" ]; then
+  echo "FAIL: Table physicalId is '${RENAMED_TABLE_ID}' after Phase 1c, expected '${EXPECTED_RENAMED_ID}' (issue #5313)" >&2
+  exit 1
+fi
+RENAMED_TABLE_ARN="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.outputs.TableArn // ""')"
+if [ "${RENAMED_TABLE_ARN}" != "${TABLE_ARN}" ]; then
+  echo "FAIL: TableArn output is '${RENAMED_TABLE_ARN}' after Phase 1c, expected the unchanged '${TABLE_ARN}' (a rename is in place, not a replacement)" >&2
+  exit 1
+fi
+RENAMED_TEAM="$(tag_value "${TABLE_ARN}" team)"
+if [ "${RENAMED_TEAM}" != "${UPDATED_TEAM_TAG}" ]; then
+  echo "FAIL: team tag is '${RENAMED_TEAM}' after Phase 1c, expected '${UPDATED_TEAM_TAG}'" >&2
+  exit 1
+fi
+assert_gone "a table still answers to the old name cdkd_integ_ns.cdkd_integ_tbl after Phase 1c" \
+  aws s3tables get-table --region "${REGION}" --table-bucket-arn "${TABLE_BUCKET_ARN}" \
+  --namespace cdkd_integ_ns --name cdkd_integ_tbl
+echo "    OK: state records ${EXPECTED_RENAMED_ID}; TableArn and tags unchanged; old name gone (issue #5313)"
+
+# A reader of the Table's `Ref` must follow it: cdkd's Ref of an SDK-routed
+# Table moves with the rename, and the diff promotes its readers.
+RENAMED_TABLE_REF="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.outputs.TableRef // ""')"
+require_value "TableRef output after Phase 1c" "${RENAMED_TABLE_REF}"
+TABLE_REF_PARAM="$(aws ssm get-parameter --region "${REGION}" --name "/${STACK}/table-ref" --query 'Parameter.Value' --output text)"
+if [ "${TABLE_REF_PARAM}" != "${RENAMED_TABLE_REF}" ] || [ "${TABLE_REF_PARAM}" = "cdkd_integ_tbl" ]; then
+  echo "FAIL: SSM parameter /${STACK}/table-ref is '${TABLE_REF_PARAM}' after Phase 1c, expected the Table's Ref '${RENAMED_TABLE_REF}', not the old name (issue #5313: a Ref reader was not re-provisioned after the rename)" >&2
+  exit 1
+fi
+echo "    OK: the Table's Ref reader follows the rename (${RENAMED_TABLE_REF})"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
