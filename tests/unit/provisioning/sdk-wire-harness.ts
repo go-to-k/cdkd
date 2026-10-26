@@ -28,6 +28,12 @@ const CREDENTIALS = { accessKeyId: 'AKIDFAKE', secretAccessKey: 'fake' };
 export const wire: string[] = [];
 
 /**
+ * Every request of the run in progress, reads included, as `<Command> <path>`:
+ * what a case with no properties pins (`TypeCase.noProperties`).
+ */
+export const calls: string[] = [];
+
+/**
  * Command name (`CreateTopicCommand`) -> what it answers, merged over the
  * schema-generated output. Set per probe: a read listing what the bag under
  * probe declares, or a status a wait loop polls for.
@@ -179,7 +185,6 @@ function capturing<T extends Capturable>(client: T): T {
     async (args: { request: unknown; input: Record<string, unknown> }) => {
       const command = context.commandName ?? '';
       const output = fakeOutput(context, args.input);
-      if (READ_COMMAND.test(command)) return { output, response: {} };
       const req = args.request as {
         method: string;
         path: string;
@@ -187,6 +192,8 @@ function capturing<T extends Capturable>(client: T): T {
         headers: Record<string, string>;
         body?: unknown;
       };
+      calls.push(`${command} ${req.path}`);
+      if (READ_COMMAND.test(command)) return { output, response: {} };
       wire.push(
         JSON.stringify([
           command,
@@ -255,6 +262,21 @@ export function without(bag: Bag, path: Path): Bag {
 }
 
 /**
+ * Whether changing `path` changes a create-only path: one at it, beneath it
+ * (removing a parent removes its create-only member) or above it. Array
+ * indices are dropped, as the schema's paths spell none. Path-precise, as the
+ * engine's replacement check is: a nested create-only member leaves its
+ * siblings updatable.
+ */
+export function touchesCreateOnly(createOnly: ReadonlySet<string>, path: Path): boolean {
+  const dotted = path.filter((seg) => typeof seg === 'string').join('.');
+  for (const c of createOnly) {
+    if (c === dotted || dotted.startsWith(`${c}.`) || c.startsWith(`${dotted}.`)) return true;
+  }
+  return false;
+}
+
+/**
  * The bag with the leaf at `path` changed: to `variant` when given (an enum
  * member needs a valid alternative), else to another value of its type.
  * Undefined for a non-leaf.
@@ -276,6 +298,7 @@ export type Outcome = { threw: false; wire: string } | { threw: true; message: s
 
 export async function record(run: () => Promise<unknown>): Promise<Outcome> {
   wire.length = 0;
+  calls.length = 0;
   try {
     await run();
   } catch (error) {
@@ -288,7 +311,10 @@ export interface ProbeCase {
   resourceType: string;
   provider: () => ResourceProvider;
   physicalId: string;
-  /** Top-levels the engine replaces on instead of updating; skipped on update. */
+  /**
+   * Dotted create-only paths (`createOnlyOf`): the engine replaces when the
+   * value AT one changes, so an update probe touching one is skipped.
+   */
   createOnly: ReadonlySet<string>;
   bag: Bag;
   /** Path label -> the value a removal-throwing leaf is varied to. */
@@ -329,11 +355,19 @@ export interface ProbeResult {
  *   (only `prev` varies, so the removal-reset path is what is observed)
  *
  * A reduced side that THROWS is not delivery: it lands in `removalThrows`, and
- * that path is probed instead by changing its value, in each direction that
- * threw: on create, `create(full)` vs `create(alt)`; on update,
+ * that path is probed instead by changing its value: on update,
  * `update(next=full, prev=base)` vs `update(next=alt, prev=base)`, where `base`
  * lacks the leaf's parent so both sides make the same call and only the value
  * differs.
+ *
+ * Removal sees only THAT a member is sent, not WHAT: a create sending a fixed
+ * value whenever the member is present passes it. So every scalar leaf is also
+ * varied on create, `create(full)` vs `create(alt)` (`create-vary`), whether or
+ * not its removal threw: the only probe that reads the VALUE of a create-only
+ * leaf, which no update observes.
+ *
+ * An update probe whose change touches a create-only path (at, under or above
+ * it) is skipped: the engine replaces instead of calling `update()`.
  */
 /** Arm the fake reads for `bag`: the case's own `arm`, else no overrides. */
 export function armFor(c: Pick<ProbeCase, 'arm' | 'physicalId'>, bag: Bag): void {
@@ -393,8 +427,9 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
     const label = path.join('.');
     const reduced = without(c.bag, path);
     const createThrew = compare('create', label, await record(create(reduced)), full);
+    const replaces = touchesCreateOnly(c.createOnly, path);
     let updateThrew = false;
-    if (!c.createOnly.has(String(path[0]))) {
+    if (!replaces) {
       updateThrew =
         compare(
           'update-add',
@@ -417,10 +452,10 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
     // makes the removal comparisons call-versus-no-call, which any call passes
     // whatever it carries. Varying the value with `prev` fixed observes WHAT
     // the call sends (an empty container has no value to vary).
-    const varyOnUpdate =
-      updateThrew ||
-      (isLeaf && leaf !== null && typeof leaf !== 'object' && !c.createOnly.has(String(path[0])));
-    if (!createThrew && !varyOnUpdate) continue;
+    const scalar = isLeaf && leaf !== null && typeof leaf !== 'object';
+    const varyOnUpdate = updateThrew || (scalar && !replaces);
+    const varyOnCreate = createThrew || scalar;
+    if (!varyOnCreate && !varyOnUpdate) continue;
     // A container whose removal throws (a required list or document) cannot be
     // varied, but each path beneath it is probed on its own: those probes are
     // its delivery evidence. An EMPTY one has none, so it stays silent below.
@@ -430,7 +465,7 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
       path,
       c.variants && label in c.variants ? { value: c.variants[label] } : undefined
     );
-    if (createThrew) {
+    if (varyOnCreate) {
       const altOutcome = alt === undefined ? undefined : await record(create(alt));
       if (altOutcome === undefined || altOutcome.threw || altOutcome.wire === fullWire) {
         silent.push(`create-vary:${label}`);
@@ -505,6 +540,13 @@ export interface TypeCase {
    */
   targets: { path: Path; command: string; names: string; notNames: string; where?: string }[];
   bags: BagCase[];
+  /**
+   * A type whose `handledProperties` is EMPTY (every schema property is
+   * read-only), so there is no bag to probe: `bags`, `exempt` and `targets`
+   * stay empty, and `create({})` / `update({}, {})` must succeed sending
+   * exactly `calls` (`<Command> <path>`, reads included, in order).
+   */
+  noProperties?: { reason: string; calls: { create: string[]; update: string[] } };
 }
 
 interface SchemaFixture {
@@ -521,9 +563,9 @@ function fixtureOf(resourceType: string): SchemaFixture {
   return JSON.parse(readFileSync(file, 'utf8')) as SchemaFixture;
 }
 
-/** A type's create-only top-levels, from its committed schema fixture. */
+/** A type's create-only paths, dotted, from its committed schema fixture. */
 export function createOnlyOf(resourceType: string): ReadonlySet<string> {
-  return new Set(fixtureOf(resourceType).createOnlyPropertyPaths.map((p) => p[0]!));
+  return new Set(fixtureOf(resourceType).createOnlyPropertyPaths.map((p) => p.join('.')));
 }
 
 /** Top-level -> every dotted nested path beneath it (no array indices), from the fixture. */
@@ -557,6 +599,19 @@ export function describeWireCases(cases: TypeCase[]): void {
   describe.each(cases)('$resourceType', (t) => {
     it('its bags carry every handledProperties entry not exempted', () => {
       const handled = [...(t.provider().handledProperties?.get(t.resourceType) ?? [])].sort();
+      // An empty set is a case only when the case says so, with its reason;
+      // and a case saying so must handle nothing.
+      if (t.noProperties) {
+        expect(t.noProperties.reason).not.toBe('');
+        expect(t.provider().handledProperties?.has(t.resourceType)).toBe(true);
+        expect({ handled, bags: t.bags, exempt: t.exempt, targets: t.targets }).toEqual({
+          handled: [],
+          bags: [],
+          exempt: {},
+          targets: [],
+        });
+        return;
+      }
       expect(handled.length).toBeGreaterThan(0);
       const carried = new Set(t.bags.flatMap((b) => Object.keys(b.bag)));
       for (const key of carried) expect(handled).toContain(key);
@@ -595,6 +650,24 @@ export function describeWireCases(cases: TypeCase[]): void {
       }
     });
 
+    if (t.noProperties) {
+      const expected = t.noProperties.calls;
+      it('creates and updates with no properties, sending only the declared calls', async () => {
+        const p = t.provider();
+        armFor(t, {});
+        const created = await record(() => p.create('L', t.resourceType, {}));
+        expect(created).toMatchObject({ threw: false });
+        expect([...calls], 'create').toEqual(expected.create);
+        armFor(t, {});
+        const updated = await record(() =>
+          p.update('L', t.physicalId, t.resourceType, {}, {}, t.updateContext)
+        );
+        expect(updated).toMatchObject({ threw: false });
+        expect([...calls], 'update').toEqual(expected.update);
+      });
+      return;
+    }
+
     it.each(t.bags)('delivers every path of the $name bag', async (b) => {
       const { silent, removalThrows, messages } = await probe({
         ...t,
@@ -605,7 +678,7 @@ export function describeWireCases(cases: TypeCase[]): void {
       const byDesign = t.wholeFromNext;
       const wholeFromNext = byDesign
         ? paths(b.bag)
-            .filter((p) => byDesign.keys(String(p[0])) && !t.createOnly.has(String(p[0])))
+            .filter((p) => byDesign.keys(String(p[0])) && !touchesCreateOnly(t.createOnly, p))
             .map((p) => `update-remove:${p.join('.')}`)
             // A removal that throws is a removal throw, not a silent probe.
             .filter((label) => !(label in (b.expectedRemovalThrows ?? {})))

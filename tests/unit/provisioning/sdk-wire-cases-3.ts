@@ -67,24 +67,11 @@ const BUDGET_TAG_REFUSED: Throw = {
   why: 'a ResourceTags entry without its Key is refused before any call (go-to-k/cdkd#3989)',
   says: /ResourceTags of budget L is not a list of tags/,
 };
-// Not a gap: the update addresses the budget by its physical id, and
-// `Budget.BudgetName` is create-only, so a changed name is a replacement the
-// engine makes, never an UpdateBudget.
-const BUDGET_NAME_SILENT: Record<string, string> = Object.fromEntries(
-  ['update-add', 'update-vary'].map((d) => [
-    `${d}:Budget.BudgetName`,
-    'a create-only name: a change replaces the budget; update() addresses it by physical id',
-  ])
-);
-
 /** The Budget refusals; with `full`, those of the notification and tag lists too. */
 const BUDGET_THROWS = (full: boolean): Record<string, Throw> => ({
-  ...Object.fromEntries(
-    ['create', 'update-add', 'update-remove'].map((d) => [
-      `${d}:Budget`,
-      REQUIRED('Budget', 'The Budget property is required for'),
-    ])
-  ),
+  // Only on create: removing `Budget` removes its create-only `BudgetName`, a
+  // replacement, so no update probe removes it.
+  'create:Budget': REQUIRED('Budget', 'The Budget property is required for'),
   ...(full
     ? {
         ...Object.fromEntries(
@@ -253,6 +240,7 @@ export const CASES_3: TypeCase[] = [
           // Not a gap: Serial is create-only, so a change replaces the key,
           // and no IAM API takes the integer itself.
           'create:Serial': 'a replacement trigger with no API counterpart; never sent',
+          'create-vary:Serial': 'a replacement trigger with no API counterpart; never sent',
           // An absent Status resets to CloudFormation's default `Active`
           // from next alone, so the recorded value changes nothing.
           'update-remove:Status': 'an absent Status is reset to Active from next; prev is not read',
@@ -267,11 +255,7 @@ export const CASES_3: TypeCase[] = [
     resourceType: 'AWS::Budgets::Budget',
     provider: () => new BudgetsBudgetProvider(),
     physicalId: 'b',
-    // The schema fixture's create-only paths are `Budget.BudgetName` and
-    // `NotificationsWithSubscribers`. `createOnlyOf` would widen the first to
-    // the whole `Budget`, leaving UpdateBudget unprobed, so the set is spelled
-    // here: only the BudgetName leaf is a replacement.
-    createOnly: new Set(['NotificationsWithSubscribers']),
+    createOnly: createOnlyOf('AWS::Budgets::Budget'),
     // UpdateBudget sends `NewBudget` whole from next.
     wholeFromNext: {
       keys: (k) => k === 'Budget',
@@ -329,7 +313,6 @@ export const CASES_3: TypeCase[] = [
           'Budget.TimePeriod.Start': '2030-02-01T00:00:00Z',
           'Budget.TimePeriod.End': '2031-02-01T00:00:00Z',
         },
-        expectedSilent: BUDGET_NAME_SILENT,
         expectedRemovalThrows: BUDGET_THROWS(true),
       },
       {
@@ -351,7 +334,6 @@ export const CASES_3: TypeCase[] = [
             },
           },
         },
-        expectedSilent: BUDGET_NAME_SILENT,
         expectedRemovalThrows: BUDGET_THROWS(false),
       },
     ],

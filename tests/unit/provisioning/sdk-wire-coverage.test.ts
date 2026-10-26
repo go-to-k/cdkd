@@ -22,6 +22,7 @@ import { CASES_2 } from './sdk-wire-cases-2.js';
 import { CASES_IAM_SECRETS } from './sdk-wire-cases-iam-secrets.js';
 import { CASES_3 } from './sdk-wire-cases-3.js';
 import { CASES_4 } from './sdk-wire-cases-4.js';
+import { CASES_NO_PROPERTIES } from './sdk-wire-cases-no-properties.js';
 
 // Every client class a covered provider reaches, wrapped so each instance
 // (shared or provider-built) is captured. A `vi.mock` factory is hoisted, so
@@ -712,8 +713,6 @@ const CASES: TypeCase[] = [
 const NOT_YET_COVERED = new Set([
   'ACMCertificateProvider',
   'ASGProvider',
-  'AgentCoreBrowserProvider',
-  'AgentCoreCodeInterpreterProvider',
   'AgentCoreEvaluatorProvider',
   'AgentCoreRuntimeProvider',
   'ApiGatewayProvider',
@@ -769,9 +768,8 @@ const NOT_YET_COVERED = new Set([
   'ServiceDiscoveryProvider',
   'StepFunctionsProvider',
   'WAFv2WebACLProvider',
-  'WaitConditionHandleProvider',
 ]);
-const MAX_UNCOVERED = 60;
+const MAX_UNCOVERED = 57;
 
 /**
  * Every case list, with the test file that runs it and the list's name there.
@@ -789,6 +787,11 @@ const CASE_LISTS: { cases: TypeCase[]; name: string; file: string }[] = [
   },
   { cases: CASES_3, name: 'CASES_3', file: 'sdk-wire-coverage-3.test.ts' },
   { cases: CASES_4, name: 'CASES_4', file: 'sdk-wire-coverage-4.test.ts' },
+  {
+    cases: CASES_NO_PROPERTIES,
+    name: 'CASES_NO_PROPERTIES',
+    file: 'sdk-wire-coverage-no-properties.test.ts',
+  },
 ];
 const ALL_CASES: TypeCase[] = CASE_LISTS.flatMap((l) => l.cases);
 
