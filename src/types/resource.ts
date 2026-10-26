@@ -1618,6 +1618,33 @@ export interface ResourceProvider {
   ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }>;
 
   /**
+   * Name the drift positions a secret-bearing template position MOVES to when
+   * {@link canonicalizeDriftProperties} / {@link canonicalizeDriftPair} (or the
+   * readback itself) puts its value somewhere else (go-to-k/cdkd#5332). Step
+   * Functions folds each `DefinitionSubstitutions` value into the `Definition`
+   * leaves that reference it, so a secret proven at
+   * `DefinitionSubstitutions.<name>` is compared, and printed, at
+   * `Definition.States.<S>.<...>`. `cdkd drift` adds every returned path to its
+   * MASKING set, so a change at (or under, or above) one is masked whatever the
+   * value's length — the value scan alone has a needle-length floor.
+   *
+   * Masking only: the paths never feed the exact-leaf rule that drops a change
+   * whose AWS side is absent. Return a coarser ancestor when the exact leaf
+   * cannot be computed (over-masking is the safe direction). MUST be pure,
+   * synchronous and free of AWS calls.
+   *
+   * @param resourceType e.g. `AWS::StepFunctions::StateMachine`
+   * @param properties the resource's recorded `properties` (template intent)
+   * @param secretPaths the dotted paths `cdkd drift` holds as secret-bearing
+   * @returns extra dotted paths to mask (empty when nothing moved)
+   */
+  getDriftSecretPathAliases?(
+    resourceType: string,
+    properties: Record<string, unknown>,
+    secretPaths: ReadonlySet<string>
+  ): string[];
+
+  /**
    * Find an already-deployed AWS resource matching the given logicalId from
    * the CDK template, and return its physical id + attributes so the state
    * file can be reconstructed.

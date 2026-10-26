@@ -15,8 +15,17 @@
 #      S3 (proving DefinitionS3Location reached AWS, not a dropped/empty def).
 #   2. the ${Greeting} token was substituted with `hello-from-cdkd` and the raw
 #      token is gone (proving DefinitionSubstitutions was applied to S3 content).
-#   3. destroy removes the state machine + state file with 0 errors. Bootstrap-
-#      bucket asset OBJECTS persist by design (shared infra cdkd never deletes).
+#   3. (issue #5298) DefinitionSubstitutions is applied to the INLINE forms too:
+#      ChainMachine (string DefinitionString + a separate
+#      DefinitionSubstitutions map, the pair an L2 chain body synthesizes)
+#      and ObjectMachine (L1 inline object Definition) deploy with their
+#      ${...} tokens substituted (v1).
+#   4. (issue #5298) a redeploy with -c phase=2 changes ONLY the two inline
+#      machines' substitution values; the same machines (no replacement) now
+#      carry the v2 values -- the update path applies them too.
+#   5. destroy removes all three state machines + state file with 0 errors.
+#      Bootstrap-bucket asset OBJECTS persist by design (shared infra cdkd
+#      never deletes).
 #
 # BSD/macOS-portable (no `grep -P`, no `date -d`). Captures the real rc and
 # prints an explicit `[verify] PASS` only on success.
@@ -162,6 +171,68 @@ if echo "${DEFINITION}" | grep -q '${Greeting}'; then
 fi
 echo "    OK: DefinitionSubstitutions applied to the S3 body (\${Greeting} -> hello-from-cdkd)"
 
+# --- Assertion 3 (issue #5298): substitutions applied to the inline forms ---
+# resolve_sm_arn <logical-id-prefix>: match by prefix (robust to a CDK hash
+# suffix) and require exactly one hit.
+resolve_sm_arn() {
+  local prefix="$1" state="$2" arns
+  arns=$(echo "${state}" | jq -r --arg p "${prefix}" \
+    '.resources | to_entries[] | select(.key | startswith($p)) | select(.value.resourceType == "AWS::StepFunctions::StateMachine") | .value.physicalId')
+  if [ -z "${arns}" ] || [ "$(printf '%s\n' "${arns}" | wc -l | tr -d ' ')" != "1" ]; then
+    echo "FAIL: expected exactly one StateMachine with logical id prefix '${prefix}' in state, got: '${arns}'" >&2
+    exit 1
+  fi
+  printf '%s' "${arns}"
+}
+# assert_inline_result <arn> <state-name> <token-name> <expected-result>
+assert_inline_result() {
+  local arn="$1" state_name="$2" token="$3" expected="$4" def got
+  if ! def=$(aws stepfunctions describe-state-machine --state-machine-arn "${arn}" \
+    --region "${REGION}" --query 'definition' --output text); then
+    echo "FAIL: #5298 describe-state-machine failed for ${state_name} (${arn})" >&2
+    return 1
+  fi
+  got=$(echo "${def}" | jq -r --arg s "${state_name}" '.States[$s].Result // empty')
+  if [ "${got}" != "${expected}" ]; then
+    echo "FAIL: #5298 inline DefinitionSubstitutions not applied on ${state_name} - Result is '${got}', expected '${expected}'" >&2
+    echo "${def}" >&2
+    exit 1
+  fi
+  if printf '%s' "${def}" | grep -qF "\${${token}}"; then
+    echo "FAIL: #5298 raw \${${token}} token still present in ${state_name}'s deployed definition" >&2
+    exit 1
+  fi
+  echo "    OK: ${state_name} Result is '${expected}' (inline \${${token}} substituted)"
+}
+
+CHAIN_ARN=$(resolve_sm_arn "ChainMachine" "${STATE}")
+OBJECT_ARN=$(resolve_sm_arn "ObjectMachine" "${STATE}")
+echo "    resolved ChainMachine ARN: ${CHAIN_ARN}"
+echo "    resolved ObjectMachine ARN: ${OBJECT_ARN}"
+assert_inline_result "${CHAIN_ARN}" "InlineGreet" "InlineGreeting" "inline-hello-v1"
+assert_inline_result "${OBJECT_ARN}" "ObjectGreet" "ObjectGreeting" "object-hello-v1"
+
+# --- Phase 1b (issue #5298): redeploy changing ONLY the substitution values ---
+echo "==> Phase 1b: redeploy with -c phase=2 (inline DefinitionSubstitutions values change)"
+node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  -c phase=2 \
+  --yes
+
+STATE2=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+CHAIN_ARN2=$(resolve_sm_arn "ChainMachine" "${STATE2}")
+OBJECT_ARN2=$(resolve_sm_arn "ObjectMachine" "${STATE2}")
+if [ "${CHAIN_ARN2}" != "${CHAIN_ARN}" ] || [ "${OBJECT_ARN2}" != "${OBJECT_ARN}" ]; then
+  echo "FAIL: #5298 a DefinitionSubstitutions-only change replaced a state machine (expected an in-place update)" >&2
+  echo "    ChainMachine: ${CHAIN_ARN} -> ${CHAIN_ARN2}" >&2
+  echo "    ObjectMachine: ${OBJECT_ARN} -> ${OBJECT_ARN2}" >&2
+  exit 1
+fi
+echo "    OK: both inline machines updated in place (ARNs unchanged)"
+assert_inline_result "${CHAIN_ARN}" "InlineGreet" "InlineGreeting" "inline-hello-v2"
+assert_inline_result "${OBJECT_ARN}" "ObjectGreet" "ObjectGreeting" "object-hello-v2"
+
 # --- Phase 2: destroy -----------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -174,24 +245,30 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 # the async deletion completes, so a successful describe is NOT a failure here —
 # only a still-ACTIVE status would be. Accept GONE (describe errors) / DELETING /
 # DELETED; the DELETING machine finishes deleting on its own.
-if gone_probe aws stepfunctions describe-state-machine --state-machine-arn "${SM_ARN}" --region "${REGION}"; then
-  SM_STATUS="GONE"
-elif ! SM_STATUS=$(aws stepfunctions describe-state-machine --state-machine-arn "${SM_ARN}" \
-    --region "${REGION}" --query 'status' --output text 2>&1); then
-  # TOCTOU: the machine can finish deleting between gone_probe and this requery.
-  printf '%s' "${SM_STATUS}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
-    && SM_STATUS="GONE" \
-    || { echo "FAIL: describe-state-machine requery undetermined: ${SM_STATUS}" >&2; exit 1; }
-fi
-case "${SM_STATUS}" in
-  GONE | DELETING | DELETED)
-    echo "    OK: state machine is deleted or async-deleting (status=${SM_STATUS})"
-    ;;
-  *)
-    echo "FAIL: state machine ${SM_ARN} is still '${SM_STATUS}' after destroy" >&2
-    exit 1
-    ;;
-esac
+assert_sm_deleted() { # usage: assert_sm_deleted <arn>
+  local arn="$1" sm_status
+  if gone_probe aws stepfunctions describe-state-machine --state-machine-arn "${arn}" --region "${REGION}"; then
+    sm_status="GONE"
+  elif ! sm_status=$(aws stepfunctions describe-state-machine --state-machine-arn "${arn}" \
+      --region "${REGION}" --query 'status' --output text 2>&1); then
+    # TOCTOU: the machine can finish deleting between gone_probe and this requery.
+    printf '%s' "${sm_status}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+      && sm_status="GONE" \
+      || { echo "FAIL: describe-state-machine requery undetermined: ${sm_status}" >&2; exit 1; }
+  fi
+  case "${sm_status}" in
+    GONE | DELETING | DELETED)
+      echo "    OK: state machine ${arn} is deleted or async-deleting (status=${sm_status})"
+      ;;
+    *)
+      echo "FAIL: state machine ${arn} is still '${sm_status}' after destroy" >&2
+      exit 1
+      ;;
+  esac
+}
+assert_sm_deleted "${SM_ARN}"
+assert_sm_deleted "${CHAIN_ARN}"
+assert_sm_deleted "${OBJECT_ARN}"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
@@ -202,5 +279,5 @@ echo "    OK: state file is gone"
 echo "    NOTE: bootstrap-bucket asset object persists by design (cdkd does not delete the CDK bootstrap bucket)"
 
 echo ""
-echo "==> stepfunctions-s3-definition test passed (DefinitionS3Location fetch + DefinitionSubstitutions applied + clean destroy)"
+echo "==> stepfunctions-s3-definition test passed (DefinitionS3Location fetch + DefinitionSubstitutions applied to S3 and inline bodies on create and update + clean destroy)"
 echo "[verify] PASS"

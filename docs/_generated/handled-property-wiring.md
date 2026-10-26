@@ -18,7 +18,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 - Declared properties: **1175** (**1173** with read evidence)
 - Fully wired classes: **87**
 - Allow-listed classes (visible, non-blocking): **2**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **38**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **39**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
@@ -78,6 +78,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `SecretsManagerSecretProvider` (secretsmanager-secret-provider.ts) | `object spread in retainPreviousGenerateBlock()` |
 | `ServiceDiscoveryProvider` (servicediscovery-provider.ts) | `computed key in planServiceChange()`, `withRemovalDefaults(...) in update()` |
 | `SNSTopicProvider` (sns-topic-provider.ts) | `computed key in applyUpdate()` |
+| `StepFunctionsProvider` (stepfunctions-provider.ts) | `object spread in canonicalizeDriftProperties()` |
 
 ## Full classification
 
