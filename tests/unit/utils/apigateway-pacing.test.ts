@@ -182,7 +182,9 @@ describe('withApiGatewayPacing against a real SDK client', () => {
   };
 
   beforeEach(() => {
-    vi.useFakeTimers();
+    // `performance` too: the pacer counts on it, and the shared-token loop
+    // would spin on the real clock while its sleeps run on the fake one.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -204,6 +206,35 @@ describe('withApiGatewayPacing against a real SDK client', () => {
     // The burst of 5 goes out together, the rest at the steady rate.
     expect(sentAt[4]! - sentAt[0]!).toBe(0);
     expect(gaps.every((gap) => gap >= 250)).toBe(true);
+  });
+
+  it('holds calls past the shared burst of 30 and sends them at 8 per second', async () => {
+    const { client, sentAt } = makeClient([]);
+    withApiGatewayPacing(client);
+    const start = Date.now();
+    const settled = Promise.all(
+      Array.from({ length: 33 }, () => client.send(new GetRestApiCommand({ restApiId: 'a' })))
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    await settled;
+
+    expect(sentAt.map((at) => at - start)).toEqual([...Array(30).fill(0), 125, 250, 375]);
+  });
+
+  it('makes a limited operation take a shared token too', async () => {
+    const { client, sentAt } = makeClient([]);
+    withApiGatewayPacing(client);
+    // The whole shared burst is spent; CreateResource has its own bucket free.
+    const pacer = apiGatewayPacerFor('eu-west-1');
+    for (let i = 0; i < 30; i++) expect(pacer.takeShared()).toBe(0);
+    const start = Date.now();
+    const settled = client.send(
+      new CreateResourceCommand({ restApiId: 'a', parentId: 'p', pathPart: 'x' })
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    await settled;
+
+    expect(sentAt.map((at) => at - start)).toEqual([125]);
   });
 
   it('paces the retried attempt of a throttled call like a first one', async () => {
