@@ -870,13 +870,23 @@ describe('the wire harness create-only paths', () => {
     [['Qux', 'List', 0], false],
     [['Qux', 'List'], false],
     [['Qux', 'Inner', 'Name'], true],
+    // An absent container walks (to `undefined`), as a Pipe's unused source
+    // parameters do.
+    [['Pipe', 'Other'], false],
   ] as const)('through a list or a wildcard, %j touches one: %s', (path, touches) => {
-    const createOnly = new Set(['Foo.Name', 'Bar.*.Name', 'Baz.Name', 'Qux.Inner.Name']);
+    const createOnly = new Set([
+      'Foo.Name',
+      'Bar.*.Name',
+      'Baz.Name',
+      'Qux.Inner.Name',
+      'Pipe.Source.Name',
+    ]);
     const bag = {
       Foo: [{ Name: 'n' }, { Other: 'o' }],
       Bar: { Other: 'o' },
       Baz: { Name: 'n', Other: 'o' },
       Qux: { Inner: { Name: 'n' }, List: ['x'] },
+      Pipe: { Other: 'o' },
     };
     expect(touchesCreateOnly(createOnly, [...path], bag)).toBe(touches);
   });
