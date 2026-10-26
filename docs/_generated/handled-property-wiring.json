@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 89,
-    "declaredProperties": 1179,
-    "wiredProperties": 1177,
+    "declaredProperties": 1181,
+    "wiredProperties": 1179,
     "wired": 87,
     "gap": 0,
     "allowListed": 2,
@@ -6335,10 +6335,28 @@
       "file": "ec2-provider.ts",
       "className": "EC2Provider",
       "bucket": "wired",
-      "declaredCount": 71,
+      "declaredCount": 73,
       "properties": [
         {
           "name": "AllocationId",
+          "status": "wired",
+          "types": [
+            "AWS::EC2::NatGateway"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createNatGateway",
+            "readCurrentState",
+            "readCurrentStateOnce",
+            "readNatGatewayCurrentState"
+          ]
+        },
+        {
+          "name": "AvailabilityMode",
           "status": "wired",
           "types": [
             "AWS::EC2::NatGateway"
@@ -6368,6 +6386,27 @@
             "create",
             "createInstance",
             "createSubnet"
+          ]
+        },
+        {
+          "name": "AvailabilityZoneAddresses",
+          "status": "wired",
+          "types": [
+            "AWS::EC2::NatGateway"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "applyUpdate",
+            "create",
+            "createNatGateway",
+            "readCurrentState",
+            "readCurrentStateOnce",
+            "readNatGatewayCurrentState",
+            "update",
+            "updateNatGateway"
           ]
         },
         {
@@ -7216,7 +7255,10 @@
           ],
           "seededBy": [
             "create",
-            "createNatGateway"
+            "createNatGateway",
+            "readCurrentState",
+            "readCurrentStateOnce",
+            "readNatGatewayCurrentState"
           ]
         },
         {
@@ -7566,6 +7608,7 @@
             "update",
             "updateEip",
             "updateInstance",
+            "updateNatGateway",
             "updateSecurityGroup",
             "updateSubnet",
             "updateVpc"
@@ -7654,6 +7697,7 @@
           "name": "VpcId",
           "status": "wired",
           "types": [
+            "AWS::EC2::NatGateway",
             "AWS::EC2::NetworkAcl",
             "AWS::EC2::RouteTable",
             "AWS::EC2::SecurityGroup",
@@ -7667,6 +7711,7 @@
           "seededBy": [
             "applyUpdate",
             "create",
+            "createNatGateway",
             "createNetworkAcl",
             "createRouteTable",
             "createSecurityGroup",

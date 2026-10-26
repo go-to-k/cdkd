@@ -27,6 +27,13 @@
 # (both compare clean after the deploy), and a standalone EIP released out of
 # band reports `deleted` with exit 1 rather than "drift unknown".
 #
+# PLUS go-to-k/cdkd#2762 (Assertion 4, Phases 1g / 1h / 1i): a REGIONAL NAT
+# gateway (`AvailabilityMode: regional`, `VpcId`, `AvailabilityZoneAddresses`)
+# is created by the SDK provider (pre-fix it auto-routed to Cloud Control),
+# reads back drift-clean, gains a zone and a new `Name` tag IN PLACE, releases
+# that zone again in a deploy started while it is still associating, and then
+# swaps its only address in one deploy.
+#
 # PLUS issue #4606 (Phases 1d / 1f): a `--no-rollback` deploy whose NAT gateway
 # (then Elastic IP) CREATE fails after AWS made it, then a fix-forward under the
 # same logical id: that successful deploy deletes the earlier one and exits 0.
@@ -133,6 +140,7 @@ cleanup() {
     echo "    NOTE: state destroy exited ${destroy_rc}; keeping cdkd state so the stack stays retryable" >&2
   fi
   rm -f "${FF_LOG:-}"
+  rm -f "${NAT_LOG:-}"
   # go-to-k/cdkd#4606: `state destroy` deletes what the rollback journal holds
   # too; this backstop releases a Phase 1e / 1f address neither record reached
   # (an unassociated EIP bills by the hour). Only the allocation ids THIS run
@@ -233,6 +241,7 @@ PLAIN_ROUTE=$(echo "${STATE}" | jq -r "
   [.resources | to_entries[]
    | select(.value.resourceType == \"${NAT_TYPE}\")
    | select(.value.properties.MaxDrainDurationSeconds == null)
+   | select(.value.properties.AvailabilityMode == null)
    | .value.provisionedBy // \"\"] | first // \"\"")
 if [ "${PLAIN_ROUTE}" != "sdk" ]; then
   echo "FAIL: the plain NAT gateway has provisionedBy='${PLAIN_ROUTE}', expected 'sdk' (the fix must be scoped to the property, not to the whole type)" >&2
@@ -250,6 +259,7 @@ PLAIN_NAT_ID=$(echo "${STATE}" | jq -r "
   [.resources | to_entries[]
    | select(.value.resourceType == \"${NAT_TYPE}\")
    | select(.value.properties.MaxDrainDurationSeconds == null)
+   | select(.value.properties.AvailabilityMode == null)
    | .value.physicalId // \"\"] | first // \"\"")
 case "${DRAIN_NAT_ID}" in nat-*) ;; *) echo "FAIL: drain NAT physicalId is not a NAT gateway id: '${DRAIN_NAT_ID}'" >&2; exit 1;; esac
 case "${PLAIN_NAT_ID}" in nat-*) ;; *) echo "FAIL: plain NAT physicalId is not a NAT gateway id: '${PLAIN_NAT_ID}'" >&2; exit 1;; esac
@@ -284,6 +294,50 @@ if [ "${DRAIN_CONNECTIVITY}" != "private" ]; then
 fi
 echo "    OK: drain NAT gateway is available with ConnectivityType=private (CC route forwarded the property map)"
 
+# --- Assertion 4: the regional NAT gateway is on the SDK route (go-to-k/cdkd#2762) ---
+# Pre-fix, AvailabilityMode / AvailabilityZoneAddresses were silent drops, so
+# this gateway auto-routed through Cloud Control (provisionedBy 'cc-api').
+REGIONAL_ID=$(echo "${STATE}" | jq -r "[.resources | to_entries[] | select(.value.resourceType == \"${NAT_TYPE}\") | select(.key | startswith(\"RegionalNatGateway\")) | .key] | first // \"\"")
+[ -n "${REGIONAL_ID}" ] || { echo "FAIL: no RegionalNatGateway in state" >&2; exit 1; }
+REGIONAL_ROUTE=$(echo "${STATE}" | jq -r --arg id "${REGIONAL_ID}" '.resources[$id].provisionedBy // ""')
+if [ "${REGIONAL_ROUTE}" != "sdk" ]; then
+  echo "FAIL: the regional NAT gateway has provisionedBy='${REGIONAL_ROUTE}', expected 'sdk' (go-to-k/cdkd#2762: AvailabilityMode / AvailabilityZoneAddresses must be wired, not auto-routed)" >&2
+  exit 1
+fi
+REGIONAL_NAT_ID=$(echo "${STATE}" | jq -r --arg id "${REGIONAL_ID}" '.resources[$id].physicalId // ""')
+case "${REGIONAL_NAT_ID}" in nat-*) ;; *) echo "FAIL: regional NAT physicalId is not a NAT gateway id: '${REGIONAL_NAT_ID}'" >&2; exit 1;; esac
+REGIONAL_VPC=$(echo "${STATE}" | jq -r --arg id "${REGIONAL_ID}" '.resources[$id].properties.VpcId // ""')
+case "${REGIONAL_VPC}" in vpc-*) ;; *) echo "FAIL: the regional NAT's recorded VpcId is '${REGIONAL_VPC}'" >&2; exit 1;; esac
+REGIONAL_ZONE_1=$(echo "${STATE}" | jq -r --arg id "${REGIONAL_ID}" '.resources[$id].properties.AvailabilityZoneAddresses[0].AvailabilityZone // ""')
+REGIONAL_ALLOC_1=$(echo "${STATE}" | jq -r --arg id "${REGIONAL_ID}" '.resources[$id].properties.AvailabilityZoneAddresses[0].AllocationIds[0] // ""')
+case "${REGIONAL_ALLOC_1}" in eipalloc-*) ;; *) echo "FAIL: the regional NAT's recorded first allocation id is '${REGIONAL_ALLOC_1}'" >&2; exit 1;; esac
+[ -n "${REGIONAL_ZONE_1}" ] || { echo "FAIL: the regional NAT records no first AvailabilityZone" >&2; exit 1; }
+# One call, tab-separated: State, AvailabilityMode, VpcId, AutoProvisionZones, SubnetId.
+REGIONAL_FACTS=$(aws ec2 describe-nat-gateways --nat-gateway-ids "${REGIONAL_NAT_ID}" --region "${REGION}" \
+  --query 'NatGateways[0].[State,AvailabilityMode,VpcId,AutoProvisionZones,SubnetId]' --output text)
+EXPECTED_FACTS=$(printf 'available\tregional\t%s\tdisabled\tNone' "${REGIONAL_VPC}")
+if [ "${REGIONAL_FACTS}" != "${EXPECTED_FACTS}" ]; then
+  echo "FAIL: regional NAT ${REGIONAL_NAT_ID} reads '${REGIONAL_FACTS}', expected '${EXPECTED_FACTS}' (state/mode/VPC/manual zones/no subnet)" >&2
+  exit 1
+fi
+REGIONAL_LIVE_ZONE_1=$(aws ec2 describe-nat-gateways --nat-gateway-ids "${REGIONAL_NAT_ID}" --region "${REGION}" \
+  --query "NatGateways[0].NatGatewayAddresses[?AllocationId=='${REGIONAL_ALLOC_1}'].AvailabilityZone | [0]" --output text)
+if [ "${REGIONAL_LIVE_ZONE_1}" != "${REGIONAL_ZONE_1}" ]; then
+  echo "FAIL: regional NAT ${REGIONAL_NAT_ID} holds ${REGIONAL_ALLOC_1} in '${REGIONAL_LIVE_ZONE_1}', expected '${REGIONAL_ZONE_1}' (AvailabilityZoneAddresses not delivered)" >&2
+  exit 1
+fi
+echo "    OK: regional NAT gateway ${REGIONAL_NAT_ID} is SDK-provisioned, regional, in ${REGIONAL_VPC}, holding ${REGIONAL_ALLOC_1} in ${REGIONAL_ZONE_1}"
+# Fn::GetAtt RouteTableId resolves to the route table AWS made for the gateway.
+REGIONAL_RTB_OUT=$(echo "${STATE}" | jq -r '.outputs.RegionalNatRouteTableId // ""')
+REGIONAL_RTB_LIVE=$(aws ec2 describe-nat-gateways --nat-gateway-ids "${REGIONAL_NAT_ID}" --region "${REGION}" \
+  --query 'NatGateways[0].RouteTableId' --output text)
+case "${REGIONAL_RTB_LIVE}" in rtb-*) ;; *) echo "FAIL: regional NAT ${REGIONAL_NAT_ID} reports RouteTableId '${REGIONAL_RTB_LIVE}'" >&2; exit 1;; esac
+if [ "${REGIONAL_RTB_OUT}" != "${REGIONAL_RTB_LIVE}" ]; then
+  echo "FAIL: output RegionalNatRouteTableId is '${REGIONAL_RTB_OUT}', expected the live ${REGIONAL_RTB_LIVE} (Fn::GetAtt RouteTableId)" >&2
+  exit 1
+fi
+echo "    OK: Fn::GetAtt RouteTableId resolved to ${REGIONAL_RTB_LIVE}"
+
 # --- Phase 1b: drift reads every Elastic IP back (issue #4447) --------------
 # Before #4447 `EC2Provider.readCurrentState` had no EIP arm, so both EIPs (the
 # NAT's and the standalone `DriftProbeEip`) landed in `notSupported` ("drift
@@ -291,8 +345,8 @@ echo "    OK: drain NAT gateway is available with ConnectivityType=private (CC r
 EIP_TYPE="AWS::EC2::EIP"
 EIP_IDS=$(echo "${STATE}" | jq -r "[.resources | to_entries[] | select(.value.resourceType == \"${EIP_TYPE}\") | .key] | sort | join(\" \")")
 EIP_COUNT=$(echo "${STATE}" | jq "[.resources[] | select(.resourceType == \"${EIP_TYPE}\")] | length")
-if [ "${EIP_COUNT}" -ne 2 ]; then
-  echo "FAIL: expected 2 ${EIP_TYPE} resources in state (the NAT's + DriftProbeEip), got ${EIP_COUNT}: '${EIP_IDS}'" >&2
+if [ "${EIP_COUNT}" -ne 4 ]; then
+  echo "FAIL: expected 4 ${EIP_TYPE} resources in state (the NAT's, DriftProbeEip and the regional NAT's two), got ${EIP_COUNT}: '${EIP_IDS}'" >&2
   exit 1
 fi
 PROBE_ID=$(echo "${STATE}" | jq -r "[.resources | to_entries[] | select(.value.resourceType == \"${EIP_TYPE}\") | select(.key | startswith(\"DriftProbeEip\")) | .key] | first // \"\"")
@@ -320,7 +374,15 @@ for id in ${EIP_IDS}; do
     exit 1
   fi
 done
-echo "    OK: both Elastic IPs were read back and compared clean"
+echo "    OK: every Elastic IP was read back and compared clean"
+# go-to-k/cdkd#2762: the regional gateway's readback (AvailabilityMode, VpcId,
+# AvailabilityZoneAddresses) compares clean against what it was created with.
+if ! jq -e --arg id "${REGIONAL_ID}" '[.[0].clean[]?.logicalId] | index($id) != null' "${DRIFT_JSON_FILE}" >/dev/null; then
+  echo "FAIL: regional NAT ${REGIONAL_ID} is not reported clean after a fresh deploy (drift rc=${DRIFT_RC}); report:" >&2
+  jq '.[0] | {drifted, deleted, notSupported, notCompared}' "${DRIFT_JSON_FILE}" >&2
+  exit 1
+fi
+echo "    OK: the regional NAT gateway was read back and compared clean"
 
 echo "==> Phase 1c: release ${PROBE_ID} (${PROBE_ALLOC}) out of band, then drift"
 aws ec2 release-address --allocation-id "${PROBE_ALLOC}" --region "${REGION}"
@@ -782,6 +844,141 @@ assert_gone "the fix-forward ${FF2_EIP_ALLOC} still exists after the deploy that
 rm -f "${FF_LOG}"
 echo "    OK: Phases 1d / 1e / 1f passed"
 
+# --- Phases 1g / 1h: a regional NAT gateway updates in place (go-to-k/cdkd#2762) ---
+regional_addr_status() { # usage: regional_addr_status <allocation-id>; prints the status or None
+  aws ec2 describe-nat-gateways --nat-gateway-ids "${REGIONAL_NAT_ID}" --region "${REGION}" \
+    --query "NatGateways[0].NatGatewayAddresses[?AllocationId=='$1'].Status | [0]" --output text || return 1
+}
+echo "==> Phase 1g: add a second zone and change the Name tag (REGIONAL_NAT_SECOND_ZONE=true)"
+REGIONAL_NAT_SECOND_ZONE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+G_NAT_ID=$(echo "${STATE}" | jq -r --arg id "${REGIONAL_ID}" '.resources[$id].physicalId // ""')
+if [ "${G_NAT_ID}" != "${REGIONAL_NAT_ID}" ]; then
+  echo "FAIL: the regional NAT is '${G_NAT_ID}' after Phase 1g, expected ${REGIONAL_NAT_ID} (the update must not replace it)" >&2
+  exit 1
+fi
+REGIONAL_ZONE_2=$(echo "${STATE}" | jq -r --arg id "${REGIONAL_ID}" '.resources[$id].properties.AvailabilityZoneAddresses[1].AvailabilityZone // ""')
+REGIONAL_ALLOC_2=$(echo "${STATE}" | jq -r --arg id "${REGIONAL_ID}" '.resources[$id].properties.AvailabilityZoneAddresses[1].AllocationIds[0] // ""')
+case "${REGIONAL_ALLOC_2}" in eipalloc-*) ;; *) echo "FAIL: Phase 1g records no second allocation id (got '${REGIONAL_ALLOC_2}')" >&2; exit 1;; esac
+G_LIVE=$(aws ec2 describe-nat-gateways --nat-gateway-ids "${REGIONAL_NAT_ID}" --region "${REGION}" \
+  --query "NatGateways[0].[NatGatewayAddresses[?AllocationId=='${REGIONAL_ALLOC_2}'].AvailabilityZone | [0], Tags[?Key=='Name'].Value | [0]]" --output text)
+if [ "${G_LIVE}" != "$(printf '%s\tcdkd-vpc-nat-gateway-regional-2' "${REGIONAL_ZONE_2}")" ]; then
+  echo "FAIL: after Phase 1g regional NAT ${REGIONAL_NAT_ID} reads '${G_LIVE}', expected ${REGIONAL_ALLOC_2} in ${REGIONAL_ZONE_2} and Name=cdkd-vpc-nat-gateway-regional-2" >&2
+  exit 1
+fi
+echo "    OK: ${REGIONAL_ALLOC_2} associated in ${REGIONAL_ZONE_2} and the Name tag updated, in place"
+
+# --- Phase 1h: revert the added zone at ONCE, while it is still associating ---
+# (go-to-k/cdkd#2762, PR #5337 review M1). An address being associated has no
+# association id, so AWS refuses to release it; CloudFormation's own update
+# waited for the association, so its rollback could release at once. cdkd's
+# update returns earlier, so this revert (what an automatic rollback of the
+# Phase 1g deploy would send) must wait for the association, then release.
+# The arm is only meaningful while the address is still associating (about
+# five minutes when measured): read it live first, or the arm is vacuous.
+H_START=$(regional_addr_status "${REGIONAL_ALLOC_2}")
+if [ "${H_START}" != "associating" ]; then
+  echo "FAIL: ${REGIONAL_ALLOC_2} is '${H_START}' when the Phase 1h revert starts, expected associating (the arm would not exercise the wait-for-association release)" >&2
+  exit 1
+fi
+# The provider's wait announces itself on a --verbose debug line; the needles
+# below are copied from its source, and the sentinel fails the run when that
+# source wording drifts, so a missing line cannot read as "no wait happened".
+NAT_SRC="${PWD}/../../../src/provisioning/providers/ec2-provider.ts"
+for needle in 'Waiting for NatGateway ${physicalId}: ${what}...' \
+  'before releasing it`' 'the release of ${plan.awaitingRelease' \
+  'an address the template keeps to associate before releasing the last associated one' \
+  'plans to release ${d.allocationId} (live status ${status})' \
+  'plans to associate ${id}, which AWS is still releasing'; do
+  if ! grep -qF -- "${needle}" "${NAT_SRC}"; then
+    echo "FAIL: ${NAT_SRC} no longer contains '${needle}': update the Phase 1h / 1i wait needles" >&2
+    exit 1
+  fi
+done
+NAT_LOG=$(mktemp)
+echo "==> Phase 1h: drop the second zone again while ${REGIONAL_ALLOC_2} is still associating (default template)"
+node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --verbose >"${NAT_LOG}" 2>&1 \
+  || { sed 's/^/  /' "${NAT_LOG}" | tail -40; echo "FAIL: the Phase 1h revert deploy failed" >&2; exit 1; }
+# Judge by what the deploy's own plan SAW, not by H_START: the association
+# can finish while the deploy synthesizes. The plan line names the live status.
+if grep -qF "plans to release ${REGIONAL_ALLOC_2} (live status associating)" "${NAT_LOG}"; then
+  if ! grep -qF "the association of ${REGIONAL_ALLOC_2} before releasing it" "${NAT_LOG}"; then
+    echo "FAIL: the Phase 1h deploy saw ${REGIONAL_ALLOC_2} still associating but did not wait for it before releasing it (no wait line in its --verbose log)" >&2
+    exit 1
+  fi
+  echo "    OK: the revert saw ${REGIONAL_ALLOC_2} still associating, waited for it, then released it"
+elif grep -qF "plans to release ${REGIONAL_ALLOC_2} (live status " "${NAT_LOG}"; then
+  echo "    NOTE: NOT EXERCISED THIS RUN -- ${REGIONAL_ALLOC_2} finished associating before the revert deploy read it, so the wait-for-association release did not run (the unit suite pins it)"
+else
+  echo "FAIL: the Phase 1h deploy logged no plan to release ${REGIONAL_ALLOC_2} (no plan line in its --verbose log)" >&2
+  exit 1
+fi
+H_STATUS=$(regional_addr_status "${REGIONAL_ALLOC_2}")
+case "${H_STATUS}" in
+  disassociating|None) echo "    OK: ${REGIONAL_ALLOC_2} is ${H_STATUS} after the zone was removed" ;;
+  *) echo "FAIL: ${REGIONAL_ALLOC_2} is '${H_STATUS}' after the deploy that removed its zone, expected disassociating or released" >&2; exit 1 ;;
+esac
+H_KEPT=$(regional_addr_status "${REGIONAL_ALLOC_1}")
+if [ "${H_KEPT}" != "succeeded" ]; then
+  echo "FAIL: ${REGIONAL_ALLOC_1} is '${H_KEPT}' after Phase 1h, expected succeeded (only the removed zone may be released)" >&2
+  exit 1
+fi
+H_NAT_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg id "${REGIONAL_ID}" '.resources[$id].physicalId // ""')
+if [ "${H_NAT_ID}" != "${REGIONAL_NAT_ID}" ]; then
+  echo "FAIL: the regional NAT is '${H_NAT_ID}' after Phase 1h, expected ${REGIONAL_NAT_ID} (the update must not replace it)" >&2
+  exit 1
+fi
+echo "    OK: Phases 1g / 1h passed"
+
+# --- Phase 1i: swap the gateway's ONLY address in one deploy (go-to-k/cdkd#2762) ---
+# AWS refuses a release that leaves no ASSOCIATED address, and one still being
+# associated does not count, so the provider must wait for the added address
+# before releasing the old one. It starts right after Phase 1h released
+# ${REGIONAL_ALLOC_2}: AWS refuses to associate an address still being
+# released, so the provider must also wait for that release first (review n3).
+# How long a release takes is not ours to choose, so a release already
+# finished only NOTEs that the n3 wait was not exercised this run.
+I_START=$(regional_addr_status "${REGIONAL_ALLOC_2}")
+case "${I_START}" in
+  disassociating) echo "    ${REGIONAL_ALLOC_2} is still being released: Phase 1i exercises the wait-for-release" ;;
+  None) echo "    NOTE: ${REGIONAL_ALLOC_2} was already released; the wait-for-release is not exercised this run" ;;
+  *) echo "FAIL: ${REGIONAL_ALLOC_2} is '${I_START}' when Phase 1i starts, expected disassociating or released" >&2; exit 1 ;;
+esac
+echo "==> Phase 1i: declare only ${REGIONAL_ZONE_2} (REGIONAL_NAT_SWAP=true)"
+REGIONAL_NAT_SWAP=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --verbose >"${NAT_LOG}" 2>&1 \
+  || { sed 's/^/  /' "${NAT_LOG}" | tail -40; echo "FAIL: the Phase 1i swap deploy failed" >&2; exit 1; }
+if ! grep -qF 'an address the template keeps to associate before releasing the last associated one' "${NAT_LOG}"; then
+  echo "FAIL: the Phase 1i swap did not wait for ${REGIONAL_ALLOC_2} to associate before releasing the last address (no wait line in its --verbose log)" >&2
+  exit 1
+fi
+# Judge the wait-for-release by what the deploy's plan SAW: the release can
+# finish between I_START and the plan read.
+if grep -qF "plans to associate ${REGIONAL_ALLOC_2}, which AWS is still releasing" "${NAT_LOG}"; then
+  if ! grep -qF "the release of ${REGIONAL_ALLOC_2}" "${NAT_LOG}"; then
+    echo "FAIL: the Phase 1i swap saw ${REGIONAL_ALLOC_2} still being released but did not wait for that release (no wait line in its --verbose log)" >&2
+    exit 1
+  fi
+  echo "    OK: the swap saw ${REGIONAL_ALLOC_2} still being released and waited for it"
+else
+  echo "    NOTE: NOT EXERCISED THIS RUN -- ${REGIONAL_ALLOC_2} was already released when the swap deploy read it, so the wait-for-release did not run (the unit suite pins it)"
+fi
+I_NAT_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg id "${REGIONAL_ID}" '.resources[$id].physicalId // ""')
+if [ "${I_NAT_ID}" != "${REGIONAL_NAT_ID}" ]; then
+  echo "FAIL: the regional NAT is '${I_NAT_ID}' after Phase 1i, expected ${REGIONAL_NAT_ID} (the swap must not replace it)" >&2
+  exit 1
+fi
+I_ADDED=$(regional_addr_status "${REGIONAL_ALLOC_2}")
+I_OLD=$(regional_addr_status "${REGIONAL_ALLOC_1}")
+if [ "${I_ADDED}" != "succeeded" ]; then
+  echo "FAIL: after the swap ${REGIONAL_ALLOC_2} is '${I_ADDED}', expected succeeded (the release must wait for it)" >&2
+  exit 1
+fi
+case "${I_OLD}" in
+  disassociating|None) echo "    OK: Phase 1i swapped ${REGIONAL_ALLOC_1} (${I_OLD}) for ${REGIONAL_ALLOC_2} (succeeded) in place" ;;
+  *) echo "FAIL: after the swap ${REGIONAL_ALLOC_1} is '${I_OLD}', expected disassociating or released" >&2; exit 1 ;;
+esac
+
 # --- Phase 2: destroy -----------------------------------------------------
 echo "==> Phase 2: destroy (SDK delete for one gateway, CC delete for the other)"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -791,9 +988,10 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 
 assert_nat_gone "${DRAIN_NAT_ID}" "drain (cc-api)"
 assert_nat_gone "${PLAIN_NAT_ID}" "plain (sdk)"
+assert_nat_gone "${REGIONAL_NAT_ID}" "regional (sdk)"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> vpc-nat-gateway test passed (SDK route + #1411 Cloud Control route, clean destroy)"
+echo "==> vpc-nat-gateway test passed (SDK route + #1411 Cloud Control route + #2762 regional gateway, clean destroy)"

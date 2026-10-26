@@ -1251,7 +1251,7 @@ describe('EC2Provider - NatGateway', () => {
   });
 
   describe('updateNatGateway', () => {
-    it('rejects with ResourceUpdateNotSupportedError (every readable property is immutable)', async () => {
+    it('rejects a create-only change with ResourceUpdateNotSupportedError', async () => {
       // Pre-PR (PR I follow-up for EC2): a silent no-op stub. That made
       // `cdkd drift --revert` report `✓ reverted` on a console-side
       // change that AWS would actually keep. Reject loudly instead.
@@ -1260,10 +1260,23 @@ describe('EC2Provider - NatGateway', () => {
           'Nat',
           'nat-12345',
           'AWS::EC2::NatGateway',
-          { SubnetId: 'subnet-abc' },
+          { SubnetId: 'subnet-def' },
           { SubnetId: 'subnet-abc' }
         )
       ).rejects.toMatchObject({ code: 'RESOURCE_UPDATE_NOT_SUPPORTED' });
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('sends nothing for an unchanged round trip (go-to-k/cdkd#2762)', async () => {
+      await expect(
+        provider.update(
+          'Nat',
+          'nat-12345',
+          'AWS::EC2::NatGateway',
+          { SubnetId: 'subnet-abc' },
+          { SubnetId: 'subnet-abc' }
+        )
+      ).resolves.toMatchObject({ physicalId: 'nat-12345', wasReplaced: false });
       expect(mockSend).not.toHaveBeenCalled();
     });
   });

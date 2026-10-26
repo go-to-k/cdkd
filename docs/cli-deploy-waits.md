@@ -29,6 +29,14 @@ Routes that need only the gateway's ID are created while the gateway is still
 through the gateway. A Lambda function that is invoked during the deploy and
 calls an external service is an example of something that does.
 
+A NAT gateway's `RouteTableId` and `EniId` exist only once it is `available`.
+A `Fn::GetAtt` of either, or of `AutoProvisionZones` / `AutoScalingIps`, on a
+gateway still `pending` waits for it to become available, up to 10 minutes,
+and then reads the value from AWS. Only a gateway that something references
+pays for that wait. When no value comes, the reference is refused with the
+cause rather than answered with the gateway's ID: the gateway stayed
+`pending`, it failed, or AWS reports none, as for a regional gateway's `EniId`.
+
 ### EC2 instance
 
 cdkd normally checks that the instance's `IamInstanceProfile` was attached.

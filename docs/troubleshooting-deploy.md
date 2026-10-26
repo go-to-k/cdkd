@@ -50,7 +50,7 @@ See the
 ### The type cannot be updated in place at all
 
 ```
-ResourceUpdateNotSupportedError: AWS::EC2::NatGateway (MyNat) cannot be updated in place: use cdkd deploy with --replace, or change the resource definition to create a new version.
+ResourceUpdateNotSupportedError: AWS::EC2::InternetGateway (MyIgw) cannot be updated in place: destroy + redeploy the InternetGateway. IGW properties are immutable in AWS.
 ```
 
 For such a type, every change is a replacement. The end of the message names

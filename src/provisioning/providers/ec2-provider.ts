@@ -95,6 +95,11 @@ import {
   type Instance,
   type ResourceType as Ec2TagResourceType,
   type TagSpecification,
+  type AvailabilityMode,
+  type NatGatewayAddress,
+  type NatGateway,
+  AssociateNatGatewayAddressCommand,
+  DisassociateNatGatewayAddressCommand,
 } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
@@ -624,6 +629,233 @@ function isNamedError(error: unknown, names: ReadonlySet<string>): boolean {
 
 /** `DescribeNatGateways`'s answer for a gateway id EC2 no longer lists. */
 const NAT_GATEWAY_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['NatGatewayNotFound']);
+
+/**
+ * One `AWS::EC2::NatGateway.AvailabilityZoneAddresses` entry (a regional NAT
+ * gateway's per-zone Elastic IPs, go-to-k/cdkd#2762). The zone is named by
+ * `AvailabilityZone`, `AvailabilityZoneId` or both, exactly as declared.
+ */
+export interface NatZoneAddressEntry {
+  availabilityZone?: string;
+  availabilityZoneId?: string;
+  allocationIds: string[];
+}
+
+/** The three answers a guard over `AvailabilityZoneAddresses` gives. */
+export type NatZoneAddressRead =
+  | { kind: 'absent' }
+  | { kind: 'usable'; entries: NatZoneAddressEntry[] }
+  | { kind: 'unusable'; reason: string };
+
+/**
+ * Read a CFn `AvailabilityZoneAddresses` value. `null` / `undefined` is
+ * ABSENT; anything else that is not a non-empty list of entries, each naming
+ * a zone and a non-empty `AllocationIds` list of strings, is UNUSABLE — never
+ * read as empty, since an empty desired set would release every address the
+ * gateway holds.
+ */
+export function readNatZoneAddresses(raw: unknown): NatZoneAddressRead {
+  if (raw === undefined || raw === null) return { kind: 'absent' };
+  const unusable = (reason: string): NatZoneAddressRead => ({ kind: 'unusable', reason });
+  if (!Array.isArray(raw)) return unusable('is not a list');
+  if (raw.length === 0) return unusable('is an empty list');
+  const entries: NatZoneAddressEntry[] = [];
+  const seen = new Set<string>();
+  for (const [index, item] of raw.entries()) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+      return unusable(`entry ${index} is not an object`);
+    }
+    const record = item as Record<string, unknown>;
+    const zone = record['AvailabilityZone'];
+    const zoneId = record['AvailabilityZoneId'];
+    if (zone !== undefined && (typeof zone !== 'string' || zone === '')) {
+      return unusable(`entry ${index}'s AvailabilityZone is not a zone name`);
+    }
+    if (zoneId !== undefined && (typeof zoneId !== 'string' || zoneId === '')) {
+      return unusable(`entry ${index}'s AvailabilityZoneId is not a zone id`);
+    }
+    if (zone === undefined && zoneId === undefined) {
+      return unusable(`entry ${index} names neither AvailabilityZone nor AvailabilityZoneId`);
+    }
+    const ids = record['AllocationIds'];
+    if (
+      !Array.isArray(ids) ||
+      ids.length === 0 ||
+      ids.some((id) => typeof id !== 'string' || id === '')
+    ) {
+      return unusable(`entry ${index}'s AllocationIds is not a non-empty list of allocation ids`);
+    }
+    for (const id of ids as string[]) {
+      if (seen.has(id)) return unusable(`declares allocation id ${id} more than once`);
+      seen.add(id);
+    }
+    entries.push({
+      ...(zone !== undefined && { availabilityZone: zone }),
+      ...(zoneId !== undefined && { availabilityZoneId: zoneId }),
+      allocationIds: [...(ids as string[])],
+    });
+  }
+  return { kind: 'usable', entries };
+}
+
+/**
+ * The `Fn::GetAtt` attributes of a described NAT gateway (go-to-k/cdkd#2762):
+ * `RouteTableId` (the route table AWS creates for a regional gateway), the two
+ * automatic-mode flags, and — for a zonal gateway, whose one interface it
+ * names — `EniId`. A regional gateway's `EniId` is left unanswered: which of
+ * its per-zone interfaces CloudFormation reports is not documented.
+ */
+export function natGatewayAttributes(gateway: NatGateway): Record<string, unknown> {
+  const addresses = gateway.NatGatewayAddresses ?? [];
+  const primary = addresses.find((a) => a.IsPrimary === true) ?? addresses[0];
+  return definedAttributes({
+    NatGatewayId: gateway.NatGatewayId,
+    EniId: gateway.AvailabilityMode === 'regional' ? undefined : primary?.NetworkInterfaceId,
+    RouteTableId: gateway.RouteTableId,
+    AutoProvisionZones: gateway.AutoProvisionZones,
+    AutoScalingIps: gateway.AutoScalingIps,
+  });
+}
+
+/**
+ * The bound on ALL the waits one regional NAT gateway address update makes
+ * for an association or a release to settle before a call AWS would otherwise
+ * refuse (one took about five minutes when measured on #2762): 15 minutes in
+ * 10 s polls, shared, so the update stays inside the default 30-minute
+ * --resource-timeout.
+ */
+const NAT_ADDRESS_SETTLE_POLLS = 90;
+const NAT_ADDRESS_SETTLE_DELAY_MS = 10_000;
+/** Polls an address just associated may stay unlisted by DescribeNatGateways (1 minute). */
+const NAT_ADDRESS_UNLISTED_POLLS = 6;
+
+/** Whether a live NAT gateway address sits in the zone an entry names. */
+function natAddressInZone(address: NatGatewayAddress, entry: NatZoneAddressEntry): boolean {
+  return (
+    (entry.availabilityZone !== undefined && address.AvailabilityZone === entry.availabilityZone) ||
+    (entry.availabilityZoneId !== undefined &&
+      address.AvailabilityZoneId === entry.availabilityZoneId)
+  );
+}
+
+/**
+ * A live address the gateway still HOLDS: one being released (or whose
+ * association failed) no longer counts.
+ */
+function natAddressHeld(address: NatGatewayAddress): boolean {
+  return (
+    typeof address.AllocationId === 'string' &&
+    address.Status !== 'disassociating' &&
+    address.Status !== 'failed'
+  );
+}
+
+/** The calls that move a regional NAT gateway's live addresses to `desired`. */
+export interface NatZoneAddressPlan {
+  associate: NatZoneAddressEntry[];
+  disassociate: { allocationId: string; associationId: string | undefined }[];
+  /** Allocation ids declared in one zone while the gateway holds them in another. */
+  moved: string[];
+  /**
+   * Declared allocation ids AWS is still RELEASING from this gateway: AWS
+   * refuses to associate one until the release finishes, so the update waits.
+   */
+  awaitingRelease: string[];
+  /**
+   * Whether an address the gateway KEEPS is already associated. AWS refuses a
+   * release leaving the gateway no associated address, and one still being
+   * associated does not count (measured on #2762), so a release swapping out
+   * the last settled address must wait for an added one first.
+   */
+  keptSettled: boolean;
+}
+
+/**
+ * Plan a regional NAT gateway's `AvailabilityZoneAddresses` update against the
+ * LIVE addresses (`DescribeNatGateways`), not the recorded ones: an address
+ * AWS still holds is the one a release must name, by its association id.
+ */
+export function planNatZoneAddressUpdate(
+  desired: NatZoneAddressEntry[],
+  live: NatGatewayAddress[]
+): NatZoneAddressPlan {
+  const held = live.filter(natAddressHeld);
+  const associate: NatZoneAddressEntry[] = [];
+  const moved: string[] = [];
+  const awaitingRelease: string[] = [];
+  const wanted = new Set<string>();
+  for (const entry of desired) {
+    const missing: string[] = [];
+    for (const allocationId of entry.allocationIds) {
+      wanted.add(allocationId);
+      const holder = held.find((a) => a.AllocationId === allocationId);
+      if (holder === undefined) {
+        missing.push(allocationId);
+        if (live.some((a) => a.AllocationId === allocationId && a.Status === 'disassociating')) {
+          awaitingRelease.push(allocationId);
+        }
+      } else if (!natAddressInZone(holder, entry)) moved.push(allocationId);
+    }
+    if (missing.length > 0) associate.push({ ...entry, allocationIds: missing });
+  }
+  const disassociate = held
+    .filter((a) => !wanted.has(a.AllocationId!))
+    .map((a) => ({ allocationId: a.AllocationId!, associationId: a.AssociationId }));
+  const keptSettled = held.some((a) => wanted.has(a.AllocationId!) && a.Status === 'succeeded');
+  return { associate, disassociate, moved, awaitingRelease, keptSettled };
+}
+
+/**
+ * The `AvailabilityZoneAddresses` a regional NAT gateway's live addresses
+ * read back as, in the template's shape: one entry per zone, spelled the way
+ * the RECORDED entry for that zone spells it (`AvailabilityZone` otherwise),
+ * in the recorded order with unrecorded zones and allocation ids appended.
+ */
+export function readbackNatZoneAddresses(
+  live: NatGatewayAddress[],
+  recorded: NatZoneAddressEntry[]
+): Record<string, unknown>[] {
+  // An address naming no zone cannot be placed in any entry.
+  const held = live
+    .filter(natAddressHeld)
+    .filter((a) => a.AvailabilityZone !== undefined || a.AvailabilityZoneId !== undefined);
+  const out: Record<string, unknown>[] = [];
+  const emit = (entry: NatZoneAddressEntry, addresses: NatGatewayAddress[]): void => {
+    if (addresses.length === 0) return;
+    const ids = addresses.map((a) => a.AllocationId!);
+    const ordered = [
+      ...entry.allocationIds.filter((id) => ids.includes(id)),
+      ...ids.filter((id) => !entry.allocationIds.includes(id)),
+    ];
+    out.push({
+      ...(entry.availabilityZone !== undefined && { AvailabilityZone: entry.availabilityZone }),
+      ...(entry.availabilityZoneId !== undefined && {
+        AvailabilityZoneId: entry.availabilityZoneId,
+      }),
+      AllocationIds: ordered,
+    });
+  };
+  let rest = held;
+  for (const entry of recorded) {
+    emit(
+      entry,
+      rest.filter((a) => natAddressInZone(a, entry))
+    );
+    rest = rest.filter((a) => !natAddressInZone(a, entry));
+  }
+  const zones = [...new Set(rest.map((a) => a.AvailabilityZone ?? a.AvailabilityZoneId ?? ''))];
+  for (const zone of zones) {
+    const inZone = rest.filter((a) => (a.AvailabilityZone ?? a.AvailabilityZoneId ?? '') === zone);
+    const first = inZone[0]!;
+    emit(
+      first.AvailabilityZone !== undefined
+        ? { availabilityZone: first.AvailabilityZone, allocationIds: [] }
+        : { availabilityZoneId: first.AvailabilityZoneId!, allocationIds: [] },
+      inZone
+    );
+  }
+  return out;
+}
 /** `DescribeAddresses`'s answer for an allocation id EC2 no longer holds. */
 const EIP_ALLOCATION_NOT_FOUND_NAMES: ReadonlySet<string> = new Set([
   'InvalidAllocationID.NotFound',
@@ -842,6 +1074,10 @@ export class EC2Provider implements ResourceProvider {
         'SecondaryPrivateIpAddresses',
         'SecondaryPrivateIpAddressCount',
         'Tags',
+        // go-to-k/cdkd#2762: a regional NAT gateway.
+        'AvailabilityMode',
+        'VpcId',
+        'AvailabilityZoneAddresses',
       ]),
     ],
     ['AWS::EC2::RouteTable', new Set(['VpcId', 'Tags'])],
@@ -1006,10 +1242,6 @@ export class EC2Provider implements ResourceProvider {
       'AWS::EC2::NatGateway',
       new Map<string, string>([
         [
-          'VpcId',
-          'AWS derives the VPC from SubnetId; the ec2:CreateNatGateway API has no VpcId parameter',
-        ],
-        [
           // Issue #1411. Verified against the installed @aws-sdk/client-ec2:
           // `CreateNatGatewayRequest` (models/models_1.d.ts) has NO
           // `MaxDrainDurationSeconds` member, and EC2 ships no
@@ -1019,9 +1251,13 @@ export class EC2Provider implements ResourceProvider {
           // (models/models_7.d.ts) — i.e. it is a per-call drain timeout for
           // RELEASING secondary addresses, which is why the CFn registry schema
           // lists it under `writeOnlyProperties` (no read handler can return
-          // it). cdkd's NatGateway update path rejects every property change
-          // (`ResourceUpdateNotSupportedError`, see `updateNatGateway`), so it
-          // never issues those two calls and has nowhere to deliver the value.
+          // it). cdkd's NatGateway update path releases a regional gateway's
+          // `AvailabilityZoneAddresses` (go-to-k/cdkd#2762) but rejects every
+          // change to a zonal gateway's secondary addresses
+          // (`ResourceUpdateNotSupportedError`, see `updateNatGateway`), so
+          // wiring the value would deliver it on one release path of three
+          // while moving a gateway that declares it off Cloud Control, where
+          // every address update works today.
           // It is NOT modelled as a replacement trigger either: the registry
           // schema does not list it under `createOnlyProperties`, so recreating
           // the gateway on a drain-timeout change would diverge from
@@ -1029,7 +1265,7 @@ export class EC2Provider implements ResourceProvider {
           // silent drop here routes any template that sets it through the #614
           // Cloud Control fallback, where AWS's own resource handler applies it.
           'MaxDrainDurationSeconds',
-          'write-only address-drain timeout with no CreateNatGateway member and no NAT gateway modify API; only ec2:DisassociateNatGatewayAddress / UnassignPrivateNatGatewayAddress accept it, and cdkd rejects NatGateway updates outright — routed via Cloud Control instead',
+          'write-only address-drain timeout with no CreateNatGateway member and no NAT gateway modify API; only ec2:DisassociateNatGatewayAddress / UnassignPrivateNatGatewayAddress accept it, and the cdkd NatGateway update releases only the AvailabilityZoneAddresses of a regional gateway, never the secondary addresses of a zonal one — routed via Cloud Control instead',
         ],
       ]),
     ],
@@ -1466,7 +1702,14 @@ export class EC2Provider implements ResourceProvider {
           context
         );
       case 'AWS::EC2::NatGateway':
-        return this.updateNatGateway(logicalId, physicalId);
+        return this.updateNatGateway(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          context
+        );
       case 'AWS::EC2::RouteTable':
         return this.updateRouteTable(logicalId, physicalId);
       case 'AWS::EC2::Route':
@@ -1616,9 +1859,24 @@ export class EC2Provider implements ResourceProvider {
         return this.getInstanceAttribute(physicalId, attributeName);
       case 'AWS::EC2::EIP':
         return this.getEipAttribute(physicalId, attributeName);
+      case 'AWS::EC2::NatGateway':
+        return this.getNatGatewayAttribute(physicalId, attributeName);
       default:
         return undefined;
     }
+  }
+
+  /** `AWS::EC2::NatGateway` attributes, read live ({@link natGatewayAttributes}). */
+  private async getNatGatewayAttribute(
+    physicalId: string,
+    attributeName: string
+  ): Promise<unknown> {
+    if (attributeName === 'NatGatewayId') return physicalId;
+    const response = await this.ec2Client.send(
+      new DescribeNatGatewaysCommand({ NatGatewayIds: [physicalId] })
+    );
+    const gateway = response.NatGateways?.find((g) => g.NatGatewayId === physicalId);
+    return gateway === undefined ? undefined : natGatewayAttributes(gateway)[attributeName];
   }
 
   /**
@@ -2829,7 +3087,8 @@ export class EC2Provider implements ResourceProvider {
       new ResourceUpdateNotSupportedError(
         'AWS::EC2::InternetGateway',
         logicalId,
-        'destroy + redeploy the InternetGateway. IGW properties are immutable in AWS.'
+        // The constructor appends the closing period.
+        'destroy + redeploy the InternetGateway. IGW properties are immutable in AWS'
       )
     );
   }
@@ -4042,10 +4301,21 @@ export class EC2Provider implements ResourceProvider {
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
+    // go-to-k/cdkd#2762: a REGIONAL gateway is created at the VPC level and
+    // takes VpcId, not SubnetId; a zonal one (the default) needs SubnetId.
+    const regional = properties['AvailabilityMode'] === 'regional';
     const subnetId = properties['SubnetId'] as string | undefined;
-    if (!subnetId) {
+    if (!subnetId && !regional) {
       throw new ProvisioningError(
-        `SubnetId is required for NatGateway ${logicalId}`,
+        `SubnetId is required for NatGateway ${logicalId} (a regional NAT gateway, AvailabilityMode: regional, takes VpcId instead)`,
+        resourceType,
+        logicalId
+      );
+    }
+    const zoneAddresses = readNatZoneAddresses(properties['AvailabilityZoneAddresses']);
+    if (zoneAddresses.kind === 'unusable') {
+      throw new ProvisioningError(
+        `AvailabilityZoneAddresses of NatGateway ${logicalId} ${zoneAddresses.reason}; each entry needs AvailabilityZone or AvailabilityZoneId and a non-empty AllocationIds list`,
         resourceType,
         logicalId
       );
@@ -4076,6 +4346,15 @@ export class EC2Provider implements ResourceProvider {
               ...(TagSpecifications && { TagSpecifications }),
               ClientToken: natGatewayToken.value,
               SubnetId: subnetId,
+              AvailabilityMode: properties['AvailabilityMode'] as AvailabilityMode | undefined,
+              VpcId: properties['VpcId'] as string | undefined,
+              ...(zoneAddresses.kind === 'usable' && {
+                AvailabilityZoneAddresses: zoneAddresses.entries.map((entry) => ({
+                  AvailabilityZone: entry.availabilityZone,
+                  AvailabilityZoneId: entry.availabilityZoneId,
+                  AllocationIds: entry.allocationIds,
+                })),
+              }),
               AllocationId: properties['AllocationId'] as string | undefined,
               ConnectivityType:
                 (properties['ConnectivityType'] as 'public' | 'private' | undefined) ?? undefined,
@@ -4105,9 +4384,12 @@ export class EC2Provider implements ResourceProvider {
       // Wait for `available` state unless --no-wait is set. Same gating
       // pattern as CloudFront / RDS / ElastiCache providers (env var
       // `CDKD_NO_WAIT=true` is set by the CLI when --no-wait is passed).
+      // The waiter's last DescribeNatGateways answer carries the computed
+      // attributes, so recording them costs no extra call.
+      let described: NatGateway | undefined;
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
         this.logger.debug(`Waiting for NatGateway ${natGatewayId} to reach available state...`);
-        await waitUntilNatGatewayAvailable(
+        const waited = await waitUntilNatGatewayAvailable(
           // 15-min cap matches AWS's documented worst case for NAT
           // provisioning. Per-resource `--resource-timeout` (default
           // 30 min) still bounds the outer call as a backstop.
@@ -4126,6 +4408,9 @@ export class EC2Provider implements ResourceProvider {
           { client: this.ec2Client, maxWaitTime: 15 * 60, minDelay: 5, maxDelay: 10 },
           { NatGatewayIds: [natGatewayId] }
         );
+        described = (
+          waited.reason as { NatGateways?: NatGateway[] } | undefined
+        )?.NatGateways?.find((g) => g.NatGatewayId === natGatewayId);
         this.logger.debug(`NatGateway ${natGatewayId} is available`);
       } else {
         this.logger.debug(
@@ -4139,6 +4424,11 @@ export class EC2Provider implements ResourceProvider {
       return {
         physicalId: natGatewayId,
         attributes: {
+          // Under --no-wait only the create's own answer is in hand: it carries
+          // the automatic-mode flags, while RouteTableId (and a zonal EniId)
+          // appear once the gateway is available, read by the attribute heal.
+          ...natGatewayAttributes(response.NatGateway ?? {}),
+          ...(described !== undefined && natGatewayAttributes(described)),
           NatGatewayId: natGatewayId,
         },
       };
@@ -4163,21 +4453,419 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
-  private updateNatGateway(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
-    // NAT Gateway is immutable on every property cdkd's
-    // `readCurrentState` surfaces (SubnetId / ConnectivityType /
-    // AllocationId / PrivateIpAddress are all CREATE-only). The deploy
-    // engine's replacement detection already routes property changes to
-    // DELETE + CREATE upstream of this method — `update()` is reached
-    // only via `cdkd drift --revert`, where silently no-op'ing would
-    // make the user think drift was reverted while AWS keeps the
-    // console-side change. Reject loudly instead. See PR I.
-    void physicalId;
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
-        'AWS::EC2::NatGateway',
+  /**
+   * `AWS::EC2::NatGateway` in place: `Tags` and a regional gateway's
+   * `AvailabilityZoneAddresses` (go-to-k/cdkd#2762), which the registry schema
+   * leaves mutable and CloudFormation updates without replacing the gateway.
+   *
+   * Every other property is either CREATE-only (the deploy engine's
+   * replacement detection routes it to DELETE + CREATE before this method; a
+   * change reaching here comes from `cdkd drift --revert`, and silently
+   * no-op'ing would read as a reverted drift) or a zonal gateway's secondary
+   * addresses, which this provider does not move: both are refused.
+   */
+  private async updateNatGateway(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(safeMsg`Updating NatGateway ${logicalId}: ${physicalId}`);
+    const refuse = (property: string): never => {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
         logicalId,
-        'destroy + redeploy the NatGateway (and the dependent Routes). NAT Gateway properties are immutable in AWS.'
+        `destroy + redeploy the NatGateway (and the dependent Routes). cdkd cannot change ${property} of an existing NAT gateway`
+      );
+    };
+    // CREATE-only: a change only when both sides hold a value (a drift
+    // --revert bag carries readback keys the record never declared).
+    for (const key of [
+      'SubnetId',
+      'ConnectivityType',
+      'AllocationId',
+      'PrivateIpAddress',
+      'AvailabilityMode',
+      'VpcId',
+    ]) {
+      const next = properties[key];
+      const prev = previousProperties[key];
+      if (
+        next !== undefined &&
+        prev !== undefined &&
+        JSON.stringify(next) !== JSON.stringify(prev)
+      ) {
+        refuse(key);
+      }
+    }
+    // An automatic-mode gateway gaining zone addresses is a REPLACEMENT in
+    // CloudFormation (`natZoneAddressesAddedToAutomaticGateway` routes the
+    // deploy there); only `cdkd drift --revert` reaches this arm with it.
+    if (
+      previousProperties['AvailabilityZoneAddresses'] == null &&
+      properties['AvailabilityZoneAddresses'] != null
+    ) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'destroy + redeploy the NatGateway (and the dependent Routes). Adding AvailabilityZoneAddresses to a gateway created without it replaces the gateway'
+      );
+    }
+    // Mutable in CloudFormation, not moved here: any difference, an addition
+    // or a removal included.
+    for (const key of [
+      'SecondaryAllocationIds',
+      'SecondaryPrivateIpAddresses',
+      'SecondaryPrivateIpAddressCount',
+    ]) {
+      if (JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key])) {
+        refuse(key);
+      }
+    }
+
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    const mask = maskerOrIdentity(context?.maskSecrets);
+
+    try {
+      // The address plan is decided before the first mutating call, so a
+      // refusal leaves the gateway untouched.
+      let zonePlan: NatZoneAddressPlan | undefined;
+      if (
+        JSON.stringify(properties['AvailabilityZoneAddresses']) !==
+        JSON.stringify(previousProperties['AvailabilityZoneAddresses'])
+      ) {
+        zonePlan = await this.planNatGatewayZoneAddresses(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties['AvailabilityZoneAddresses']
+        );
+      }
+
+      // Addresses first: a refused address call leaves the tags unchanged too.
+      if (zonePlan !== undefined) {
+        await this.applyNatGatewayZoneAddresses(logicalId, physicalId, resourceType, zonePlan);
+      }
+
+      await this.applyTagDiff(
+        physicalId,
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags'],
+        mask
+      );
+      this.logger.debug(safeMsg`Successfully updated NatGateway ${logicalId}`);
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      if (error instanceof CdkdError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update NatGateway ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+    }
+  }
+
+  /**
+   * Plan a regional NAT gateway's `AvailabilityZoneAddresses` change against
+   * its live addresses, refusing — before any mutating call — a desired value
+   * that cannot be read (read as empty it would release every address) and an
+   * allocation id declared in a zone other than the one holding it.
+   */
+  private async planNatGatewayZoneAddresses(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    rawDesired: unknown
+  ): Promise<NatZoneAddressPlan | undefined> {
+    const desired = readNatZoneAddresses(rawDesired);
+    if (desired.kind === 'unusable') {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `AvailabilityZoneAddresses of NatGateway ${logicalId} ${desired.reason}; each entry needs AvailabilityZone or AvailabilityZoneId and a non-empty AllocationIds list`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    if (desired.kind === 'absent') {
+      // CloudFormation fails this update too ("AvailabilityZoneAddress cannot
+      // be empty when AutoScalingIpsEnabled set to false"; A/B on #2762): a
+      // gateway created with explicit zones never returns to automatic mode,
+      // and AWS refuses to release its last address.
+      throw markNonRetryable(
+        new ProvisioningError(
+          `NatGateway ${logicalId} cannot drop AvailabilityZoneAddresses: a regional NAT gateway created with explicit zones does not return to automatic zone expansion, and CloudFormation refuses the same update. Keep at least one zone declared, or rename the logical id or change a create-only property to replace the gateway`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    const response = await this.ec2Client.send(
+      new DescribeNatGatewaysCommand({ NatGatewayIds: [physicalId] })
+    );
+    const gateway = response.NatGateways?.find((g) => g.NatGatewayId === physicalId);
+    if (gateway === undefined) {
+      throw new ProvisioningError(
+        `NatGateway ${logicalId} (${physicalId}) was not returned by DescribeNatGateways, so its addresses cannot be updated`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    const plan = planNatZoneAddressUpdate(desired.entries, gateway.NatGatewayAddresses ?? []);
+    // What the plan saw, at --verbose: the vpc-nat-gateway fixture reads these
+    // lines to tell a wait that was needed and skipped from one AWS made moot.
+    for (const d of plan.disassociate) {
+      const status =
+        gateway.NatGatewayAddresses?.find((x) => x.AllocationId === d.allocationId)?.Status ??
+        'unknown';
+      this.logger.debug(
+        safeMsg`NatGateway ${physicalId} plans to release ${d.allocationId} (live status ${status})`
+      );
+    }
+    for (const id of plan.awaitingRelease) {
+      this.logger.debug(
+        safeMsg`NatGateway ${physicalId} plans to associate ${id}, which AWS is still releasing`
+      );
+    }
+    if (plan.moved.length > 0) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `NatGateway ${logicalId} declares ${plan.moved.join(', ')} in a different zone from the one that holds it; cdkd does not move an Elastic IP between zones in one update. Remove it from AvailabilityZoneAddresses in one deploy and add it to the new zone in the next`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    return plan;
+  }
+
+  /**
+   * Run a planned address change: associate first, release second — AWS
+   * refuses a release that would leave the gateway without an address.
+   *
+   * Returns once AWS accepts the calls, without waiting the minutes an
+   * association or release takes to settle (CloudFormation waits): the
+   * gateway keeps serving its other zones meanwhile. It waits only where AWS
+   * would otherwise REFUSE the call (each measured on #2762):
+   * - re-associating an address AWS is still releasing waits for the release;
+   * - releasing an address still being associated (no association id yet;
+   *   e.g. a rollback right after the deploy that added it) waits for the
+   *   association;
+   * - a release leaving the gateway no associated address
+   *   (`NatZoneAddressPlan.keptSettled`) waits until an address the template
+   *   keeps has associated.
+   */
+  private async applyNatGatewayZoneAddresses(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    plan: NatZoneAddressPlan
+  ): Promise<void> {
+    // ONE budget for every wait of this update, so their sum stays inside the
+    // default 30-minute --resource-timeout and a timeout names the wait.
+    const budget = { polls: NAT_ADDRESS_SETTLE_POLLS };
+    if (plan.awaitingRelease.length > 0) {
+      const ids = new Set(plan.awaitingRelease);
+      await this.pollNatGateway(
+        logicalId,
+        physicalId,
+        resourceType,
+        budget,
+        `the release of ${plan.awaitingRelease.join(', ')}`,
+        'nothing was associated or released',
+        (gateway) =>
+          (gateway.NatGatewayAddresses ?? []).some(
+            (a) =>
+              typeof a.AllocationId === 'string' &&
+              ids.has(a.AllocationId) &&
+              a.Status === 'disassociating'
+          )
+            ? 'wait'
+            : 'done'
+      );
+    }
+    for (const entry of plan.associate) {
+      await this.ec2Client.send(
+        new AssociateNatGatewayAddressCommand({
+          NatGatewayId: physicalId,
+          AllocationIds: entry.allocationIds,
+          AvailabilityZone: entry.availabilityZone,
+          AvailabilityZoneId: entry.availabilityZoneId,
+        })
+      );
+    }
+    if (plan.disassociate.length === 0) return;
+
+    let associationIds = plan.disassociate
+      .map((d) => d.associationId)
+      .filter((id): id is string => id !== undefined);
+    const unassociated = plan.disassociate.filter((d) => d.associationId === undefined);
+    if (unassociated.length > 0) {
+      const targets = new Set(unassociated.map((d) => d.allocationId));
+      const gateway = await this.pollNatGateway(
+        logicalId,
+        physicalId,
+        resourceType,
+        budget,
+        `the association of ${unassociated.map((d) => d.allocationId).join(', ')} before releasing it`,
+        'the release was not sent',
+        (gw) =>
+          (gw.NatGatewayAddresses ?? []).some(
+            (a) =>
+              typeof a.AllocationId === 'string' &&
+              targets.has(a.AllocationId) &&
+              natAddressHeld(a) &&
+              !(a.Status === 'succeeded' && typeof a.AssociationId === 'string')
+          )
+            ? 'wait'
+            : 'done'
+      );
+      // A target whose association failed (or that AWS already dropped) is no
+      // longer held: there is nothing to release for it.
+      for (const a of gateway.NatGatewayAddresses ?? []) {
+        if (
+          typeof a.AllocationId === 'string' &&
+          targets.has(a.AllocationId) &&
+          natAddressHeld(a) &&
+          typeof a.AssociationId === 'string'
+        ) {
+          associationIds.push(a.AssociationId);
+        }
+      }
+      associationIds = [...new Set(associationIds)];
+    }
+    if (associationIds.length === 0) return;
+
+    if (!plan.keptSettled) {
+      const releasing = new Set(plan.disassociate.map((d) => d.allocationId));
+      const added = plan.associate.flatMap((e) => e.allocationIds);
+      let unlisted = 0;
+      await this.pollNatGateway(
+        logicalId,
+        physicalId,
+        resourceType,
+        budget,
+        'an address the template keeps to associate before releasing the last associated one',
+        'the release was not sent',
+        (gw) => {
+          const kept = (gw.NatGatewayAddresses ?? []).filter(
+            (a) => typeof a.AllocationId === 'string' && !releasing.has(a.AllocationId)
+          );
+          if (kept.some((a) => a.Status === 'succeeded')) return 'done';
+          if (kept.some((a) => a.Status === 'associating')) return 'wait';
+          // DescribeNatGateways may not list a just-associated address yet,
+          // but only briefly: one it never lists will never settle.
+          const missing = added.filter((id) => !kept.some((a) => a.AllocationId === id));
+          if (missing.length > 0) {
+            unlisted++;
+            if (unlisted <= NAT_ADDRESS_UNLISTED_POLLS) return 'wait';
+            return markNonRetryable(
+              new ProvisioningError(
+                `NatGateway ${logicalId} does not list ${missing.join(', ')} after associating it, so its last associated address was not released. Check \`aws ec2 describe-nat-gateways --nat-gateway-ids ${physicalId}\` and re-run the deploy`,
+                resourceType,
+                logicalId,
+                physicalId
+              )
+            );
+          }
+          // Only this update's own associations are named: an older failed
+          // address is not what kept the release from going ahead.
+          const failed = added.filter(
+            (id) => kept.find((a) => a.AllocationId === id)?.Status === 'failed'
+          );
+          return markNonRetryable(
+            new ProvisioningError(
+              failed.length > 0
+                ? `NatGateway ${logicalId} could not associate ${failed.join(', ')}, so its last associated address was not released. Read the failure with \`aws ec2 describe-nat-gateways --nat-gateway-ids ${physicalId}\` and fix the declared Elastic IP`
+                : `NatGateway ${logicalId} has no other associated or associating address, so its last associated address was not released. Declare an Elastic IP the gateway can associate`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+      );
+    }
+    await this.ec2Client.send(
+      new DisassociateNatGatewayAddressCommand({
+        NatGatewayId: physicalId,
+        AssociationIds: associationIds,
+      })
+    );
+  }
+
+  /**
+   * Poll `DescribeNatGateways` until `decide` answers `'done'` (returning that
+   * read), throwing the error it returns instead. Every wait of one update
+   * draws on the same `budget` ({@link NAT_ADDRESS_SETTLE_POLLS} in all), and
+   * is Ctrl-C aware; `unsent` says what the timeout leaves undone. A gateway that is gone,
+   * deleting or failed ends the wait at once: no address of it will settle.
+   */
+  private async pollNatGateway(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    budget: { polls: number },
+    what: string,
+    unsent: string,
+    decide: (gateway: NatGateway) => 'done' | 'wait' | ProvisioningError
+  ): Promise<NatGateway> {
+    this.logger.debug(safeMsg`Waiting for NatGateway ${physicalId}: ${what}...`);
+    const watch = startInterruptWatch(`NatGateway ${logicalId} address wait`);
+    try {
+      while (budget.polls > 0) {
+        budget.polls--;
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        const response = await this.ec2Client.send(
+          new DescribeNatGatewaysCommand({ NatGatewayIds: [physicalId] })
+        );
+        const gateway = response.NatGateways?.find((g) => g.NatGatewayId === physicalId);
+        if (
+          gateway === undefined ||
+          gateway.State === 'deleting' ||
+          gateway.State === 'deleted' ||
+          gateway.State === 'failed'
+        ) {
+          throw markNonRetryable(
+            new ProvisioningError(
+              `NatGateway ${logicalId} (${physicalId}) is ${gateway?.State ?? 'no longer returned by DescribeNatGateways'}, so cdkd stopped waiting for ${what}`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+        const verdict = decide(gateway);
+        if (verdict === 'done') return gateway;
+        if (verdict !== 'wait') throw verdict;
+        await this.sleep(NAT_ADDRESS_SETTLE_DELAY_MS);
+      }
+    } finally {
+      watch.dispose();
+    }
+    throw markNonRetryable(
+      new ProvisioningError(
+        `NatGateway ${logicalId} ran out of its ${(NAT_ADDRESS_SETTLE_POLLS * NAT_ADDRESS_SETTLE_DELAY_MS) / 60000}-minute address wait while waiting for ${what}; ${unsent}. Re-run the deploy once \`aws ec2 describe-nat-gateways --nat-gateway-ids ${physicalId}\` shows its addresses settled`,
+        resourceType,
+        logicalId,
+        physicalId
       )
     );
   }
@@ -8943,7 +9631,7 @@ export class EC2Provider implements ResourceProvider {
         case 'AWS::EC2::InternetGateway':
           return await this.readInternetGatewayCurrentState(physicalId);
         case 'AWS::EC2::NatGateway':
-          return await this.readNatGatewayCurrentState(physicalId);
+          return await this.readNatGatewayCurrentState(physicalId, properties);
         case 'AWS::EC2::RouteTable':
           return await this.readRouteTableCurrentState(physicalId);
         case 'AWS::EC2::SecurityGroup':
@@ -9184,7 +9872,8 @@ export class EC2Provider implements ResourceProvider {
   }
 
   private async readNatGatewayCurrentState(
-    physicalId: string
+    physicalId: string,
+    properties: Record<string, unknown> | undefined
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const resp = await this.ec2Client.send(
       new DescribeNatGatewaysCommand({ NatGatewayIds: [physicalId] })
@@ -9198,9 +9887,41 @@ export class EC2Provider implements ResourceProvider {
 
     // AllocationId / PrivateIpAddress live inside NatGatewayAddresses[0]
     // for single-AZ public NATs.
-    const primary = gw.NatGatewayAddresses?.[0];
-    if (primary?.AllocationId !== undefined) result['AllocationId'] = primary.AllocationId;
-    if (primary?.PrivateIp !== undefined) result['PrivateIpAddress'] = primary.PrivateIp;
+    // A regional gateway's addresses move between zones (see
+    // AvailabilityZoneAddresses below): reading an UNDECLARED one as
+    // AllocationId / PrivateIpAddress would record a drift baseline that flips
+    // after a swap, which `drift --revert` then sends to an update refusing
+    // both create-only keys. So a regional gateway reports each only when the
+    // record declares it (CDK's automatic mode with a given Elastic IP).
+    const regional = gw.AvailabilityMode === 'regional';
+    const primary =
+      gw.NatGatewayAddresses?.find((a) => a.IsPrimary === true) ?? gw.NatGatewayAddresses?.[0];
+    if (
+      primary?.AllocationId !== undefined &&
+      (!regional || properties?.['AllocationId'] != null)
+    ) {
+      result['AllocationId'] = primary.AllocationId;
+    }
+    if (
+      primary?.PrivateIp !== undefined &&
+      (!regional || properties?.['PrivateIpAddress'] != null)
+    ) {
+      result['PrivateIpAddress'] = primary.PrivateIp;
+    }
+
+    // go-to-k/cdkd#2762: a regional gateway's mode and VPC, and — once it no
+    // longer expands to new zones on its own (`AutoProvisionZones: disabled`,
+    // what a declared AvailabilityZoneAddresses selects) — its per-zone
+    // addresses, spelled the way the recorded entries spell each zone.
+    if (gw.AvailabilityMode !== undefined) result['AvailabilityMode'] = gw.AvailabilityMode;
+    if (gw.VpcId !== undefined) result['VpcId'] = gw.VpcId;
+    if (gw.AvailabilityMode === 'regional' && gw.AutoProvisionZones === 'disabled') {
+      const recorded = readNatZoneAddresses(properties?.['AvailabilityZoneAddresses']);
+      result['AvailabilityZoneAddresses'] = readbackNatZoneAddresses(
+        gw.NatGatewayAddresses ?? [],
+        recorded.kind === 'usable' ? recorded.entries : []
+      );
+    }
 
     return result;
   }
@@ -10166,7 +10887,7 @@ export class EC2Provider implements ResourceProvider {
             new DescribeNatGatewaysCommand({ NatGatewayIds: [physicalId] })
           );
           const gw = resp.NatGateways?.find((g) => g.State !== 'deleted' && g.State !== 'deleting');
-          return gw ? { physicalId, attributes: {} } : null;
+          return gw ? { physicalId, attributes: natGatewayAttributes(gw) } : null;
         }
         case 'AWS::EC2::EIP': {
           // Accept an allocation id, a public IP, or the composite `IP|alloc`.

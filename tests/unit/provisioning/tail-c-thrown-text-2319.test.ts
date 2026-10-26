@@ -244,6 +244,24 @@ const ec2Cases: Case[] = [
     wrap: 'Failed to create NatGateway Res',
     run: ec2Create('AWS::EC2::NatGateway', { SubnetId: 'subnet-1', AllocationId: 'eipalloc-1' }),
   },
+  {
+    // go-to-k/cdkd#2762: the zone-address update reads the gateway first.
+    wrap: 'Failed to update NatGateway Res',
+    run: ec2Update(
+      'AWS::EC2::NatGateway',
+      'nat-1',
+      {
+        AvailabilityMode: 'regional',
+        VpcId: 'vpc-1',
+        AvailabilityZoneAddresses: [{ AvailabilityZone: 'us-east-1b', AllocationIds: ['eipalloc-2'] }],
+      },
+      {
+        AvailabilityMode: 'regional',
+        VpcId: 'vpc-1',
+        AvailabilityZoneAddresses: [{ AvailabilityZone: 'us-east-1a', AllocationIds: ['eipalloc-1'] }],
+      }
+    ),
+  },
   { wrap: 'Failed to delete NatGateway Res', run: ec2Delete('AWS::EC2::NatGateway', 'nat-1') },
   {
     wrap: 'Failed to create RouteTable Res',
@@ -461,9 +479,9 @@ describe('tail-c provider wraps withhold AWS text (#2319)', () => {
     );
     // Minus one: `wrapDeleteError`'s own call into `wrapCaughtError`.
     const ec2Wraps = (ec2Source.match(/this\.wrap(Caught|Delete)Error\(/g) ?? []).length - 1;
-    expect(ec2Wraps).toBe(39);
+    expect(ec2Wraps).toBe(40);
     expect(new Set(ec2Cases.map((c) => c.wrap)).size).toBe(ec2Wraps - 3);
-    expect(ec2Cases).toHaveLength(38);
+    expect(ec2Cases).toHaveLength(39);
     expect(otherCases).toHaveLength(9);
   });
 
