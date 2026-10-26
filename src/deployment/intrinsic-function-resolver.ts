@@ -64,6 +64,7 @@ export {
   refStateLookupFromResource,
   glueTableRefFromPhysicalId,
   cfnRefValueFromPhysicalId,
+  lacksRecordedTableArn,
   carriesDynamicReference,
   type AbandonedResolution,
   DYNAMIC_REFERENCE_PREFIX,

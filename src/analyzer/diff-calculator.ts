@@ -162,25 +162,10 @@ const IN_PLACE_UPDATE_DERIVED_ATTR_PREFIXES: Readonly<Record<string, readonly st
  * `Ref` read (go-to-k/cdkd#3717 / #3722). Not a name any attribute can have, so
  * the property-name, derived-attribute and prefix arms of the in-place pass
  * never match it; only the custom-resource arm (whose physical id the handler
- * may change), the fresh-parameter arm (a parameter carrying a `NoEcho`
- * value supplied in this deploy) and the Ref-moving-type arm
- * ({@link IN_PLACE_REF_MOVING_PROPERTIES}) read it.
+ * may change) and the fresh-parameter arm (a parameter carrying a `NoEcho`
+ * value supplied in this deploy) read it.
  */
 const REF_READ = '<Ref>';
-
-/**
- * Types whose `Ref` value an IN-PLACE update MOVES, keyed to the properties
- * whose change moves it (go-to-k/cdkd#5313). cdkd resolves an
- * `AWS::S3Tables::Table`'s `Ref` to the table name (the SDK route's composite
- * id ends in it, the Cloud Control route reads the recorded `TableName`), and
- * a `TableName` change renames the table in place, so a `Ref` reader resolved
- * against the record holds the old name. Read by the in-place pass's arm 6.
- */
-const IN_PLACE_REF_MOVING_PROPERTIES: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze(
-  {
-    'AWS::S3Tables::Table': new Set(['TableName', 'Name']),
-  }
-);
 
 /**
  * Does `value` hold an intrinsic (`Ref` / `Fn::*`, a single-key object) at any
@@ -1302,14 +1287,12 @@ export class DiffCalculator {
    *      id — its handler may also change on an Update by returning a new
    *      `PhysicalResourceId` (go-to-k/cdkd#3722); or
    *   5. `Up` is a template PARAMETER in `freshParameters`, read by `Ref` or
-   *      `${Param}` (go-to-k/cdkd#3717); or
-   *   6. `Up`'s type is in {@link IN_PLACE_REF_MOVING_PROPERTIES}, one of the
-   *      listed properties changed, and the dependent reads its `Ref` or
-   *      `${Up}` (go-to-k/cdkd#5313).
-   * (Any other `Ref` resolves to a physical id an in-place update keeps, so
-   * Ref-only dependents of other types are left NO_CHANGE; likewise a GetAtt
-   * of a computed attribute NOT in the allow list, e.g. a Lambda `Arn` on a
-   * Description edit.)
+   *      `${Param}` (go-to-k/cdkd#3717).
+   * (Any other `Ref` resolves to a value an in-place update keeps, so
+   * Ref-only dependents of other types are left NO_CHANGE — an S3 Tables
+   * Table renamed in place among them, whose `Ref` is its unchanged TableARN
+   * (go-to-k/cdkd#5316); likewise a GetAtt of a computed attribute NOT in the
+   * allow list, e.g. a Lambda `Arn` on a Description edit.)
    *
    * Promotion is safe even when speculative: the deploy engine re-resolves the
    * promoted resource against the in-flight state and skips the provider call
@@ -1449,22 +1432,6 @@ export class DiffCalculator {
             matched = true;
             break;
           }
-          // Arm 6 (go-to-k/cdkd#5313): a `Ref` whose value the upstream's
-          // in-place update moves, e.g. an S3 Tables Table renamed in place.
-          const refMovingProps =
-            upstreamType !== undefined &&
-            Object.hasOwn(IN_PLACE_REF_MOVING_PROPERTIES, upstreamType)
-              ? IN_PLACE_REF_MOVING_PROPERTIES[upstreamType]
-              : undefined;
-          if (
-            refMovingProps &&
-            attrs.has(REF_READ) &&
-            changedProps &&
-            [...changedProps].some((prop) => refMovingProps.has(prop))
-          ) {
-            matched = true;
-            break;
-          }
           // Arm 5 (go-to-k/cdkd#3717): a `Ref` to a PARAMETER carrying a
           // `NoEcho` value supplied in this deploy. Its diff side is `***`
           // against a recorded `***`, so only this promotion reaches the
@@ -1531,9 +1498,8 @@ export class DiffCalculator {
    * Extract `Fn::GetAtt` / `Fn::Sub`-`${X.Attr}` references from a property value
    * as a map of `referencedLogicalId -> set of referenced attribute names`.
    * A plain `Ref` (and a dot-less `${X}`) is recorded under the
-   * {@link REF_READ} name, which only the custom-resource, fresh-parameter and
-   * Ref-moving-type arms of the in-place pass read (go-to-k/cdkd#3717 / #3722 /
-   * #5313). Recurses into arrays / objects so
+   * {@link REF_READ} name, which only the custom-resource and fresh-parameter
+   * arms of the in-place pass read (go-to-k/cdkd#3717 / #3722). Recurses into arrays / objects so
    * intrinsics nested inside `Fn::Sub`'s variable map / `Fn::Join` etc. are seen.
    */
   private static extractGetAttRefs(value: unknown): Map<string, Set<string>> {

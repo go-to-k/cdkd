@@ -61,12 +61,11 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 
 const TABLE_TYPE = 'AWS::S3Tables::Table';
 /**
- * Pipe-free and UUID-tailed: the #614-routed shape whose `Ref` is recovered
- * from the `TableName` state key. Its shape is what makes the two outcomes
- * distinguishable — no assertion here can mistake it for a table name.
+ * The SDK-routed composite, whose `Ref` (the TableARN, issue #5316) is
+ * recovered from the `TableARN` state key. Its shape is what makes the two
+ * outcomes distinguishable — no assertion here can mistake it for an ARN.
  */
-const TABLE_ARN =
-  'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/6f1f5a90-2847-4b1a-9d6f-eeee';
+const TABLE_COMPOSITE = 'arn:aws:s3tables:us-east-1:123456789012:bucket/b|ns|eeee';
 
 const STACK = 'resolver-context-bag-scope-stack';
 
@@ -77,14 +76,13 @@ function makeState(): StackState {
     region: 'us-east-1',
     resources: {
       Tbl: {
-        physicalId: TABLE_ARN,
+        physicalId: TABLE_COMPOSITE,
         resourceType: TABLE_TYPE,
         // The pre-existing issue #2274 record: the KEY survives, its value is
         // the mask.
         properties: { TableName: SECRET_MASK },
-        attributes: {},
+        attributes: { TableARN: SECRET_MASK },
         dependencies: [],
-        provisionedBy: 'cc-api',
       },
       Ok: {
         physicalId: 'ok-physical-id',
@@ -167,7 +165,7 @@ describe('the masked-read bag is scoped to contexts that READ it (#2847)', () =>
     // The diff pass is handed a resolve function bound to its own context, so
     // calling it from the DiffCalculator double observes exactly what the diff
     // sees. That is the discriminating observable: with the bag present the
-    // lookup skips the masked leaf and this resolves to `TABLE_ARN`, which is
+    // lookup skips the masked leaf and this resolves to `TABLE_COMPOSITE`, which is
     // then compared against the `'***'` in state — a change that is not real.
     let diffResolved: unknown;
     const calculateDiff = vi.fn(
@@ -189,7 +187,7 @@ describe('the masked-read bag is scoped to contexts that READ it (#2847)', () =>
     expect(diffResolved).toBe(SECRET_MASK);
     // NEGATIVE, and it is the one that fails under the regression: the raw
     // physical id is what the skip's fall-through emits.
-    expect(diffResolved).not.toBe(TABLE_ARN);
+    expect(diffResolved).not.toBe(TABLE_COMPOSITE);
   });
 
   it('a PROVISIONING resolution still REFUSES, so the guard is scoped rather than removed', async () => {
@@ -224,7 +222,7 @@ describe('the masked-read bag is scoped to contexts that READ it (#2847)', () =>
     expect(failure).toBeInstanceOf(Error);
     // Read off the CAUSE — the engine wraps every per-resource failure, so
     // asserting the wrapper alone would pass for any failure at all.
-    expect(String(failure?.cause?.message)).toContain('Ref Tbl (state key TableName)');
+    expect(String(failure?.cause?.message)).toContain('Ref Tbl (state key TableARN)');
     // And nothing was sent: the refusal precedes the provider call, which is
     // the property that keeps the literal mask off the live resource.
     expect(update).not.toHaveBeenCalled();
