@@ -237,6 +237,24 @@ describe('secret-redaction - a substituted Definition on the empty-map readback 
       );
     });
 
+    it('certified positions win where no derived needle can decide (two expressions, one value)', () => {
+      // Both references resolve to the SAME plaintext, so a value needle is
+      // ambiguous; only the POSITION walk can name each leaf's expression.
+      const OTHER = '{{resolve:secretsmanager:app/other:SecretString:key}}';
+      const props = {
+        Definition: { StartAt: 'A', States: { A: { Type: 'Pass', Result: { a: EXPR, b: OTHER } } } },
+        DefinitionSubstitutions: { region: REGION },
+      };
+      const bag = {
+        Definition: { StartAt: 'A', States: { A: { Type: 'Pass', Result: { a: PLAIN, b: PLAIN } } } },
+      };
+      const persisted = persist(props, bag);
+      expect(JSON.stringify(persisted)).not.toContain(PLAIN);
+      expect((persisted['observedProperties'] as Record<string, unknown>)['Definition']).toEqual(
+        props.Definition
+      );
+    });
+
     it('a NoEcho substitution value persisted as *** (no reference anywhere in the record)', () => {
       const props = {
         DefinitionString: JSON.stringify(templateDefinition),
