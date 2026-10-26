@@ -360,6 +360,7 @@ secret-derived-immutable-names	2026-10-24T15:38:28Z	PASS	917	verify.sh	PR #5265 
 secrets-array-nested	2026-10-20T06:38:29Z	PASS	516	verify.sh	deploy+destroy clean, 0 orphans
 secrets-dynamic-ref	2026-10-18T21:57:16Z	PASS	888	verify.sh	rc ok, orph clean (PR 5074)
 secrets-rotation-schedule	2026-10-20T06:31:33Z	PASS	90	verify.sh	deploy+destroy clean, 0 orphans
+secretsmanager-replica-rekey	2026-10-26T03:47:27Z	PASS	111	verify.sh	rc ok, orph clean; rekey-revert probe FAILed at Phase 2
 secretsmanager-update-value-source	2026-10-22T08:54:56Z	PASS	95	verify.sh	rc ok, orph clean (#5168)
 serverless-api	2026-10-18T18:32:28Z	PASS	58	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 servicediscovery	2026-10-24T09:20:37Z	PASS	215	verify.sh	rc 0, destroy 0 errors, orphans clean (#5257 second pass)
