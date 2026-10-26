@@ -192,7 +192,10 @@ describe('KinesisStreamProvider RecordDistributionStrategy (go-to-k/cdkd#2762)',
       'ReadProvisionedThroughputExceeded',
       'WriteProvisionedThroughputExceeded',
     ]);
-    expect(result.effectiveProperties?.['RecordDistributionStrategy']).toBe('AUTO');
+    expect(
+      commandsOfType(UpdateStreamRecordDistributionStrategyCommand)[0]?.input
+        .RecordDistributionStrategy
+    ).toBe('AUTO');
   });
 
   it('makes no call when the strategy is unchanged', async () => {
