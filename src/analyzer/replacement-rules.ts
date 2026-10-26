@@ -461,6 +461,10 @@ export class ReplacementRulesRegistry {
         // (one GSI per call, async) — NOT a replacement. The provider's update()
         // applies these via GlobalSecondaryIndexUpdates.
         'GlobalSecondaryIndexes',
+        // NOT a replacement, matching CloudFormation (go-to-k/cdkd#5354): its
+        // change set reports `RequiresRecreation: Never` for an LSI change and
+        // the update then FAILS. So the diff routes it to the provider's
+        // update(), which refuses it the same way, before any call.
         'LocalSecondaryIndexes',
         'StreamSpecification',
         'SSESpecification',

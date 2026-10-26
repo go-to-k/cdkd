@@ -6098,7 +6098,9 @@
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "canonicalizeDriftProperties",
+            "create",
+            "update"
           ]
         },
         {
@@ -6162,7 +6164,8 @@
             "canonicalizeDriftProperties",
             "create",
             "getDriftUnknownPaths",
-            "readCurrentState"
+            "readCurrentState",
+            "update"
           ]
         },
         {

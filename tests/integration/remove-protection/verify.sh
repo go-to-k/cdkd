@@ -6,6 +6,9 @@
 #   1. install + build cdkd (root) + install fixture deps
 #   2. cdkd deploy CdkdRemoveProtectionExample
 #      (every resource created with deletion-protection ENABLED)
+#   2c/2d. (issue #5354) re-deploy with the DynamoDB table's
+#      DeletionProtectionEnabled removed -> expect it false, then with it set
+#      again -> expect it true, on the same table
 #   3. NEGATIVE: cdkd destroy --force (no --remove-protection)
 #      -> expect non-zero exit; stack state must remain
 #   4. cdkd state list  -> stack still listed (not stripped from state)
@@ -284,6 +287,54 @@ if [ -z "${ASG_INSTANCE_IDS}" ] || [ "${ASG_INSTANCE_IDS}" = "None" ]; then
   exit 1
 fi
 echo "[verify] step 2b ok: ASG=${ASG_NAME} instances=[${ASG_INSTANCE_IDS}]"
+
+# ── Steps 2c / 2d: DeletionProtectionEnabled on the UPDATE path (#5354) ──
+# `update()` never sent DeletionProtectionEnabled, so a re-deploy that turned
+# it off (2c: the property REMOVED, which CloudFormation treats as off) or on
+# (2d) went green while the table kept its old setting. Pre-fix, 2c's
+# assertion is the red one: the table stays protected. 2d also puts the
+# protection back, which step 3 below needs.
+TABLE_NAME="$(${CLI} state show "${STACK}" --state-bucket "${STATE_BUCKET}" --json \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s).state?.outputs??{};if(!o.TableName)throw new Error("no TableName output");process.stdout.write(String(o.TableName))})')"
+table_protection() {
+  aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query 'Table.DeletionProtectionEnabled' --output json
+}
+table_created() {
+  aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query 'Table.CreationDateTime' --output text
+}
+# Precondition, so 2c's "false" cannot pass on a table that was never on.
+P0="$(table_protection)"
+if [ "${P0}" != "true" ]; then
+  echo "[verify] FAIL: ${TABLE_NAME} DeletionProtectionEnabled is '${P0}' after the step 2 create, expected true"
+  exit 1
+fi
+CREATED_P0="$(table_created)"
+
+echo "[verify] step 2c: re-deploy with the table's DeletionProtectionEnabled removed (#5354)"
+CDKD_TEST_5354_DROP_TABLE_PROTECTION=true ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
+P1="$(table_protection)"
+if [ "${P1}" != "false" ]; then
+  echo "[verify] FAIL (#5354): ${TABLE_NAME} DeletionProtectionEnabled is '${P1}' after a deploy that removed it, expected false — the update did not send it"
+  exit 1
+fi
+echo "[verify] step 2c ok: DeletionProtectionEnabled is false"
+
+echo "[verify] step 2d: re-deploy with DeletionProtectionEnabled: true again (#5354)"
+env -u CDKD_TEST_5354_DROP_TABLE_PROTECTION ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
+P2="$(table_protection)"
+if [ "${P2}" != "true" ]; then
+  echo "[verify] FAIL (#5354): ${TABLE_NAME} DeletionProtectionEnabled is '${P2}' after a deploy that set it, expected true"
+  exit 1
+fi
+# Same table throughout: both toggles were in-place updates, not replacements.
+CREATED_P2="$(table_created)"
+if [ "${CREATED_P0}" != "${CREATED_P2}" ]; then
+  echo "[verify] FAIL (#5354): ${TABLE_NAME} was replaced (CreationDateTime ${CREATED_P0} -> ${CREATED_P2})"
+  exit 1
+fi
+echo "[verify] step 2d ok: DeletionProtectionEnabled is true, same table"
 
 # ── NEGATIVE TEST ─────────────────────────────────────────────────
 # Without --remove-protection cdkd must NOT silently strip protected

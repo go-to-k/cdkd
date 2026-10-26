@@ -92,11 +92,16 @@ export class RemoveProtectionStack extends cdk.Stack {
     logGroup.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     // ── AWS::DynamoDB::Table with DeletionProtectionEnabled: true ────
+    // go-to-k/cdkd#5354: verify.sh step 2c re-deploys with
+    // CDKD_TEST_5354_DROP_TABLE_PROTECTION=true, which REMOVES the property
+    // (CloudFormation then turns protection off), and step 2d re-deploys
+    // without it to turn protection back on — both through update().
+    const dropTableProtection = process.env.CDKD_TEST_5354_DROP_TABLE_PROTECTION === 'true';
     const table = new dynamodb.Table(this, 'ProtectedTable', {
       partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      deletionProtection: true,
+      ...(dropTableProtection ? {} : { deletionProtection: true }),
     });
 
     // ── AWS::Cognito::UserPool with DeletionProtection: ACTIVE ───────

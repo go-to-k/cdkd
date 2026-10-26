@@ -61,7 +61,9 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import {
+  coerceCfnBoolean,
   coerceCfnInteger,
+  configBooleanRefusal,
   configIntegerRefusal,
   replayWarn,
   requireConfigString,
@@ -1649,6 +1651,63 @@ function declaresIndexList(value: unknown): boolean {
 }
 
 /**
+ * go-to-k/cdkd#5354: the refusal sentence for a `DeletionProtectionEnabled`
+ * that is not a CFn boolean, or `undefined` when it is one (or is absent).
+ * Shared by `create()` and `update()` so the two read one grammar —
+ * `coerceCfnBoolean`'s, the function the wire read calls.
+ */
+function deletionProtectionRefusal(value: unknown, logicalId: string): string | undefined {
+  return configBooleanRefusal(
+    { DeletionProtectionEnabled: value },
+    'DeletionProtectionEnabled',
+    `AWS::DynamoDB::Table ${logicalId}`
+  );
+}
+
+/**
+ * go-to-k/cdkd#5354: a comparison key for a `LocalSecondaryIndexes` list that
+ * ignores what DynamoDB itself ignores — the order of the indexes, the order of
+ * `Projection.NonKeyAttributes`, and member order inside an entry — so a
+ * recorded list that differs from the template only in spelling is not read
+ * as a change. Anything not shaped like an index list is keyed by its JSON, so
+ * a malformed value still compares unequal to a well-formed one.
+ */
+function localSecondaryIndexesKey(value: unknown): string {
+  if (value === undefined || value === null) return '[]';
+  if (!Array.isArray(value)) return JSON.stringify(value);
+  const isRecord = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v);
+  const entries = value.map((entry) => {
+    if (!isRecord(entry)) return JSON.stringify(entry);
+    const keySchema = Array.isArray(entry['KeySchema'])
+      ? entry['KeySchema'].map((element) =>
+          isRecord(element)
+            ? { AttributeName: element['AttributeName'], KeyType: element['KeyType'] }
+            : element
+        )
+      : entry['KeySchema'];
+    const projection = entry['Projection'];
+    const projectionKey = isRecord(projection)
+      ? {
+          ProjectionType: projection['ProjectionType'],
+          // An empty list projects nothing extra, the same as an absent one.
+          NonKeyAttributes: Array.isArray(projection['NonKeyAttributes'])
+            ? projection['NonKeyAttributes'].length > 0
+              ? [...(projection['NonKeyAttributes'] as unknown[])].map(String).sort()
+              : undefined
+            : projection['NonKeyAttributes'],
+        }
+      : projection;
+    return JSON.stringify({
+      IndexName: entry['IndexName'],
+      KeySchema: keySchema,
+      Projection: projectionKey,
+    });
+  });
+  return JSON.stringify(entries.sort());
+}
+
+/**
  * Index the DESIRED bag's secondary-index list by `IndexName` (issue #1767).
  *
  * Returns an empty map for anything {@link declaresIndexList} rejects — an
@@ -2172,9 +2231,25 @@ export class DynamoDBTableProvider implements ResourceProvider {
         createParams.Tags = desiredTags.map((t): Tag => ({ Key: t.Key, Value: t.Value }));
       }
 
-      // DeletionProtectionEnabled
+      // DeletionProtectionEnabled. Read as a CFn boolean (go-to-k/cdkd#5354):
+      // a template may spell it `"true"`, which the old `as boolean` cast put
+      // on the wire as a string. A value that is no boolean at all is refused
+      // before CreateTable rather than sent for AWS to reject.
       if (properties['DeletionProtectionEnabled'] !== undefined) {
-        createParams.DeletionProtectionEnabled = properties['DeletionProtectionEnabled'] as boolean;
+        const protectionRefusal = deletionProtectionRefusal(
+          properties['DeletionProtectionEnabled'],
+          logicalId
+        );
+        if (protectionRefusal !== undefined) {
+          throw new ProvisioningError(
+            `${maskSecrets(protectionRefusal)}. Nothing was created; fix the template value`,
+            resourceType,
+            logicalId
+          );
+        }
+        createParams.DeletionProtectionEnabled = coerceCfnBoolean(
+          properties['DeletionProtectionEnabled']
+        );
       }
 
       // Table class
@@ -2499,6 +2574,33 @@ export class DynamoDBTableProvider implements ResourceProvider {
         }
       }
 
+      // go-to-k/cdkd#5354: a changed `DeletionProtectionEnabled` that is no
+      // boolean is REFUSED on the template path, before any call, rather than
+      // sent for AWS to reject after the tag diff and the billing call have
+      // landed. The state-borne callers warn and skip it (below).
+      const deletionProtectionChanged =
+        JSON.stringify(properties['DeletionProtectionEnabled']) !==
+        JSON.stringify(previousProperties['DeletionProtectionEnabled']);
+      if (
+        deletionProtectionChanged &&
+        context?.replayingState !== true &&
+        context?.desiredFromAwsReadback !== true
+      ) {
+        const protectionRefusal = deletionProtectionRefusal(
+          properties['DeletionProtectionEnabled'],
+          logicalId
+        );
+        if (protectionRefusal !== undefined) {
+          throw new ProvisioningError(
+            `${maskSecrets(protectionRefusal)}. Nothing was applied to the table; fix ` +
+              `the template value`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+      }
+
       // Get current table description for attributes (also gives us the
       // table ARN we need for tag mutations).
       const response = await this.dynamoDBClient.send(
@@ -2506,6 +2608,42 @@ export class DynamoDBTableProvider implements ResourceProvider {
       );
 
       const table = response.Table;
+
+      // go-to-k/cdkd#5354: DynamoDB has no API that adds, removes or changes a
+      // local secondary index on an existing table, and CloudFormation does NOT
+      // replace the table for it either. Measured (us-east-1, 2026-10-26): a
+      // change set for an LSI projection change reports `Replacement: False` /
+      // `RequiresRecreation: Never`, and executing it — or one adding or
+      // removing an LSI — fails the table's update (`UPDATE_FAILED`) and rolls
+      // the stack back. So the change is REFUSED here, before any mutating
+      // call, instead of being dropped: `update()` used to never read the list,
+      // so the deploy went green, state recorded the new indexes, and AWS kept
+      // the old ones. A change whose desired list the LIVE table already holds
+      // is not refused: that is a record the old drop left wrong, or the
+      // rollback of a change that was itself refused, and this update just
+      // records what AWS has. The state-borne callers warn instead (no
+      // template-side remedy).
+      const desiredLsiKey = localSecondaryIndexesKey(properties['LocalSecondaryIndexes']);
+      if (
+        desiredLsiKey !== localSecondaryIndexesKey(previousProperties['LocalSecondaryIndexes']) &&
+        (table === undefined ||
+          desiredLsiKey !== localSecondaryIndexesKey(table.LocalSecondaryIndexes))
+      ) {
+        const lsiMessage =
+          `AWS::DynamoDB::Table ${logicalId}: LocalSecondaryIndexes changed, but DynamoDB ` +
+          `cannot add, remove or modify a local secondary index on an existing table, and ` +
+          `CloudFormation fails the same update rather than replacing the table`;
+        if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+          throw new ProvisioningError(
+            `${lsiMessage}. Nothing was applied to the table; revert the LocalSecondaryIndexes ` +
+              `change, or create a new table under a new logical ID (a new table starts empty)`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        warn(`${lsiMessage}; the LocalSecondaryIndexes change was not applied`);
+      }
 
       // The StreamArn attribute returned to the deploy engine. Seeded from the
       // DescribeTable snapshot above, but the StreamSpecification branch below
@@ -3509,6 +3647,39 @@ export class DynamoDBTableProvider implements ResourceProvider {
           );
           await this.waitForTableActiveAfterUpdate(physicalId);
           this.logger.debug(`Updated SSESpecification on DynamoDB table ${physicalId}`);
+        }
+      }
+
+      // DeletionProtectionEnabled (go-to-k/cdkd#5354) — its own UpdateTable,
+      // like SSE above. Only `create()` used to send it, so turning protection
+      // on (or off) deployed green while AWS kept the old setting. A REMOVED
+      // value means `false`: CloudFormation turns protection off when the
+      // property is dropped (measured us-east-1, 2026-10-26: a stack update
+      // removing `DeletionProtectionEnabled: true` left the table at `false`).
+      // Nothing is sent when the table already has the desired value (the
+      // `DescribeTable` above), e.g. `true` → `"true"`.
+      if (deletionProtectionChanged) {
+        const rawDeletionProtection = properties['DeletionProtectionEnabled'];
+        const desiredDeletionProtection =
+          rawDeletionProtection === undefined ? false : coerceCfnBoolean(rawDeletionProtection);
+        if (desiredDeletionProtection === undefined) {
+          // Only a state-borne caller reaches this: the template path refused
+          // the value above.
+          warn(
+            `AWS::DynamoDB::Table ${logicalId}: DeletionProtectionEnabled is not a boolean, so ` +
+              `it was not applied`
+          );
+        } else if (table?.DeletionProtectionEnabled !== desiredDeletionProtection) {
+          await this.dynamoDBClient.send(
+            new UpdateTableCommand({
+              TableName: physicalId,
+              DeletionProtectionEnabled: desiredDeletionProtection,
+            })
+          );
+          await this.waitForTableActiveAfterUpdate(physicalId);
+          debug(
+            `Set DeletionProtectionEnabled=${desiredDeletionProtection} on DynamoDB table ${physicalId}`
+          );
         }
       }
 
@@ -7148,6 +7319,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
   ): Record<string, unknown> {
     if (resourceType !== 'AWS::DynamoDB::Table') return properties;
     let result = properties;
+    // go-to-k/cdkd#5354: a template may spell `DeletionProtectionEnabled` as
+    // `'true'` / `'false'`, which create() / update() send as the boolean and
+    // the readback reports as one; read the recorded string the same way so it
+    // is not drift. A value that is no boolean passes through and is compared
+    // as is.
+    const protection = coerceCfnBoolean(result['DeletionProtectionEnabled']);
+    if (protection !== undefined && protection !== result['DeletionProtectionEnabled']) {
+      result = { ...result, DeletionProtectionEnabled: protection };
+    }
     for (const listKey of ['GlobalSecondaryIndexes', 'LocalSecondaryIndexes']) {
       const list = result[listKey];
       if (!Array.isArray(list)) continue;
