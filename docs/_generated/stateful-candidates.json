@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-25T17:40:02.027Z",
+  "generatedAt": "2026-10-26T10:39:25.065Z",
   "summary": {
     "tier2Count": 1622,
-    "schemasRead": 1622,
-    "withCreateOnly": 1420,
+    "schemasRead": 1618,
+    "withCreateOnly": 1416,
     "schemasWithNoProperties": 0,
-    "candidateCount": 116,
-    "guardedCount": 86,
+    "candidateCount": 115,
+    "guardedCount": 85,
     "unguardedCount": 30,
     "signalCounts": {
       "snapshot-or-backup": 16,
@@ -15,7 +15,7 @@
       "storage-capacity": 20,
       "deletion-protection": 13,
       "encryption-at-rest": 17,
-      "data-store-noun": 68
+      "data-store-noun": 67
     }
   },
   "candidates": [
@@ -663,17 +663,6 @@
       ],
       "signals": [
         "encryption-at-rest"
-      ],
-      "guarded": true
-    },
-    {
-      "typeName": "AWS::Kendra::Index",
-      "createOnlyProperties": [
-        "/properties/Edition",
-        "/properties/ServerSideEncryptionConfiguration"
-      ],
-      "signals": [
-        "data-store-noun"
       ],
       "guarded": true
     },
@@ -1565,5 +1554,10 @@
       "guarded": true
     }
   ],
-  "unreadable": []
+  "unreadable": [
+    "AWS::CloudFormation::TypeActivation",
+    "AWS::Comprehend::EntityRecognizer",
+    "AWS::DataSync::Task",
+    "AWS::Kendra::Index"
+  ]
 }
