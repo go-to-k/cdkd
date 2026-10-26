@@ -763,8 +763,8 @@ export function definitionSourceCarriesSecret(source: Record<string, unknown>): 
 
 /**
  * Every NUMBER / BOOLEAN leaf whose spelling (`String(leaf)`) IS a recorded
- * plaintext, replaced by that plaintext's expression — or `***` for the
- * mask-only class (issue #5315). WHOLE value only, like the string arm's
+ * plaintext, replaced by `***` (issue #5315; the expression until #5333, which
+ * drift reported against the live number on every run). WHOLE value only, like the string arm's
  * first test, matched by spelling and by JSON value (so `1.50` read back as
  * `1.5` is named). A plain container is rebuilt null-prototype; anything else is
  * returned by identity. A record with no JSON-scalar plaintext returns the
@@ -789,7 +789,11 @@ function nameScalarSecrets(value: unknown, secrets: RecordedSecretValues): unkno
   const walk = (node: unknown): unknown => {
     if (typeof node === 'number' || typeof node === 'boolean') {
       if (typeof node === 'number' && !Number.isFinite(node)) return node;
-      return secrets.get(String(node)) ?? byValue.get(node) ?? node;
+      // `***`, not the expression: a STRING where AWS holds a number would be
+      // drift on every run, and `--revert` would send it into the definition.
+      // A mask is what the uncertified-baseline partition owns.
+      const named = secrets.get(String(node)) ?? byValue.get(node);
+      return named === undefined ? node : SECRET_MASK;
     }
     if (Array.isArray(node)) return node.map(walk);
     if (isPlainObject(node) && hasPlainPrototype(node)) {
@@ -1050,10 +1054,10 @@ export function someKeyIsUnspelled(value: unknown, spelled: (key: string) => boo
  *   shape ({@link alignedSecretLeaf}), else the whole value is `***`: a secret
  *   holding a `"` or a `,` can splice fragments the value scan has no needle
  *   for;
- * - at an OUT-OF-QUOTES position the read-back value becomes the
- *   substitution's own value — the expression, or `***` — whatever it parsed to
- *   (a number, a boolean, a JSON-document secret's container). Only THAT
- *   position: a literal `Seconds: 3` beside a secret `3` stays a number.
+ * - at an OUT-OF-QUOTES position the read-back value becomes `***` (a number,
+ *   a boolean, a JSON-document secret's container), or the substitution's
+ *   expression where AWS holds a string there. Only THAT position: a literal
+ *   `Seconds: 3` beside a secret `3` stays a number.
  *
  * WITHOUT one (no body held, none parses) the record says nothing about
  * positions, so the map decides: a key holding a recorded plaintext (whole, or
@@ -1083,7 +1087,16 @@ function nameDefinitionSecrets(
   for (const leaf of sentinel.secretLeaves) {
     if (alignedSecretLeaf(out, leaf) === undefined) return SECRET_MASK;
     if (leaf.outOfStringName !== undefined) {
-      out = replaceAtPath(out, leaf.path, String(subs[leaf.outOfStringName]));
+      // The expression only where AWS holds a STRING there (a JSON-string
+      // secret). A number, boolean or container becomes `***`: an expression
+      // string in its place is drift on every run and a typed value `--revert`
+      // would replace with a string.
+      const at = alignedSecretLeaf(out, leaf)!.value;
+      out = replaceAtPath(
+        out,
+        leaf.path,
+        typeof at === 'string' ? String(subs[leaf.outOfStringName]) : SECRET_MASK
+      );
     }
   }
   return out;

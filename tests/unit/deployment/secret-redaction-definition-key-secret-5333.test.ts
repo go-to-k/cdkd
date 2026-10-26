@@ -146,7 +146,7 @@ describe('secret-redaction - a substitution secret in a definition KEY (issue #5
     expect(out['Definition']).toBe(SECRET_MASK);
   });
 
-  it('the DEPLOY persist names ONLY the out-of-quotes secret position, not an equal literal', () => {
+  it('the DEPLOY persist masks ONLY the out-of-quotes secret position, not an equal literal', () => {
     // A secret `3` and a secret `true`, beside a literal `Seconds: 3` and
     // `End: true` the template spells: only the substituted positions change.
     const body =
@@ -177,8 +177,8 @@ describe('secret-redaction - a substitution secret in a definition KEY (issue #5
       StartAt: 'W',
       States: {
         W: { Type: 'Wait', Seconds: 3, Next: 'X' },
-        X: { Type: 'Wait', Seconds: EXPR, Next: 'P' },
-        P: { Type: 'Pass', Result: { flag: ON_EXPR }, End: true },
+        X: { Type: 'Wait', Seconds: SECRET_MASK, Next: 'P' },
+        P: { Type: 'Pass', Result: { flag: SECRET_MASK }, End: true },
       },
     });
   });
@@ -315,7 +315,7 @@ describe('secret-redaction - a substitution secret in a definition KEY (issue #5
     });
   });
 
-  it('a JSON-ARRAY secret outside quotes is replaced by its expression at that position', () => {
+  it('a JSON-ARRAY secret outside quotes is masked at that position', () => {
     const body = '{"StartAt":"P","States":{"P":{"Type":"Pass","Result":${list},"End":true}}}';
     const template = { DefinitionString: body, DefinitionSubstitutions: { list: EXPR } };
     const out = deployPersist(
@@ -329,7 +329,7 @@ describe('secret-redaction - a substitution secret in a definition KEY (issue #5
     expect(JSON.stringify(out)).not.toContain('97531');
     expect(out['Definition']).toEqual({
       StartAt: 'P',
-      States: { P: { Type: 'Pass', Result: EXPR, End: true } },
+      States: { P: { Type: 'Pass', Result: SECRET_MASK, End: true } },
     });
   });
 
@@ -429,7 +429,7 @@ describe('secret-redaction - a substitution secret in a definition KEY (issue #5
     );
     expect(out['Definition']).toEqual({
       StartAt: 'W',
-      States: { W: { Type: 'Wait', Comment: marker, Seconds: EXPR, End: true } },
+      States: { W: { Type: 'Wait', Comment: marker, Seconds: SECRET_MASK, End: true } },
     });
   });
 
@@ -468,7 +468,7 @@ describe('secret-redaction - a substitution secret in a definition KEY (issue #5
     );
     expect(out['Definition']).toEqual({
       StartAt: 'W',
-      States: { W: { Type: 'Wait', Comment: decoded, Seconds: EXPR, End: true } },
+      States: { W: { Type: 'Wait', Comment: decoded, Seconds: SECRET_MASK, End: true } },
     });
   });
 
@@ -494,6 +494,27 @@ describe('secret-redaction - a substitution secret in a definition KEY (issue #5
         W: { Type: 'Wait', Seconds: SECRET_MASK, Next: 'P' },
         P: { Type: 'Pass', Result: 'Bearer ${k}', End: true },
       },
+    });
+  });
+
+  it('a JSON-STRING secret outside quotes reads back as a string: its expression, type kept', () => {
+    const body = '{"StartAt":"P","States":{"P":{"Type":"Pass","Result":${s},"End":true}}}';
+    const template = { DefinitionString: body, DefinitionSubstitutions: { s: EXPR } };
+    const out = deployPersist(
+      template,
+      { DefinitionString: body, DefinitionSubstitutions: { s: '"abc-json-string-secret"' } },
+      {
+        Definition: {
+          StartAt: 'P',
+          States: { P: { Type: 'Pass', Result: 'abc-json-string-secret', End: true } },
+        },
+      },
+      new Map([['"abc-json-string-secret"', EXPR]])
+    );
+    expect(JSON.stringify(out)).not.toContain('abc-json-string-secret');
+    expect(out['Definition']).toEqual({
+      StartAt: 'P',
+      States: { P: { Type: 'Pass', Result: EXPR, End: true } },
     });
   });
 });

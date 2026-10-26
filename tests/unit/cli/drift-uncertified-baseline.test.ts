@@ -1212,6 +1212,46 @@ describe('cdkd drift — a rendered Step Functions Definition mask (issue #5315)
     expect(JSON.stringify(sent)).not.toContain(SECRET_MASK);
   });
 
+  it('--revert beside a NUMERIC position mask sends the live number, never *** or a string', async () => {
+    const update = vi.fn(async () => ({}));
+    const liveDefinition = {
+      StartAt: 'W',
+      States: { W: { Type: 'Wait', Seconds: 901, End: true } },
+    };
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        M: {
+          physicalId: 'arn:aws:states:us-east-1:123456789012:stateMachine:m',
+          resourceType: SFN_TYPE,
+          properties: {
+            RoleArn: 'arn:aws:iam::123456789012:role/a',
+            DefinitionString: '{"StartAt":"W","States":{"W":{"Type":"Wait","Seconds":${pin},"End":true}}}',
+            DefinitionSubstitutions: { pin: ALPHA_EXPR },
+          },
+          observedProperties: {
+            RoleArn: 'arn:aws:iam::123456789012:role/a',
+            Definition: { StartAt: 'W', States: { W: { Type: 'Wait', Seconds: SECRET_MASK, End: true } } },
+          },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        RoleArn: 'arn:aws:iam::123456789012:role/edited',
+        Definition: liveDefinition,
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = (update.mock.calls[0] as unknown[])[3] as Record<string, unknown>;
+    expect(sent['RoleArn']).toBe('arn:aws:iam::123456789012:role/a');
+    expect(JSON.stringify(sent)).not.toContain(SECRET_MASK);
+    expect(sent['Definition']).toEqual(liveDefinition);
+  });
+
   it('keeps a real edit beside the mask as drift, exit 1', async () => {
     mockGetState.mockResolvedValueOnce(makeState({ M: machine({ apiKey: ALPHA_EXPR }) }));
     readsBack({ Definition: body(ALPHA_PLAINTEXT, 'Edited') });

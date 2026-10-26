@@ -392,7 +392,7 @@ describe('secret-redaction - a substituted Definition on the empty-map readback 
     expect(resultOf(persisted as Record<string, unknown>)['key']).not.toBe(SECRET_MASK);
   });
 
-  it('the DEPLOY persist with a POPULATED map rewrites a numeric substituted secret too', () => {
+  it('the DEPLOY persist with a POPULATED map masks a numeric substituted secret too', () => {
     // `deploy-engine.ts`'s persist call for the resource that resolved the
     // secret this deploy: its own map, the template bag, both claims. That
     // path is not fail-closed, so the value scan alone must name the number.
@@ -419,12 +419,12 @@ describe('secret-redaction - a substituted Definition on the empty-map readback 
         'Definition'
       ]!['States'] as Record<string, Record<string, unknown>>
     )['W']!;
-    expect(w['Seconds']).toBe(EXPR);
+    expect(w['Seconds']).toBe(SECRET_MASK);
     // The other polarity: a number and a boolean no needle names are kept.
     expect(w['End']).toBe(true);
   });
 
-  it('names a numeric secret AWS re-spells (1.50 read back as 1.5) on the deploy persist', () => {
+  it('masks a numeric secret AWS re-spells (1.50 read back as 1.5) on the deploy persist', () => {
     const template = {
       DefinitionString: '{"StartAt":"W","States":{"W":{"Type":"Wait","Seconds":${s},"End":true}}}',
       DefinitionSubstitutions: { s: EXPR },
@@ -442,7 +442,7 @@ describe('secret-redaction - a substituted Definition on the empty-map readback 
       { properties: 'same-generation', observed: 'same-generation' }
     );
     expect(JSON.stringify(persisted.observedProperties)).not.toContain('1.5');
-    expect(JSON.stringify(persisted.observedProperties)).toContain(EXPR);
+    expect(JSON.stringify(persisted.observedProperties)).toContain(SECRET_MASK);
   });
 
   it('names no number OUTSIDE a rendered definition, even one equal to a secret', () => {
@@ -462,7 +462,7 @@ describe('secret-redaction - a substituted Definition on the empty-map readback 
     expect(persisted.properties['Port']).toBe(5432);
     expect((persisted.observedProperties as Record<string, unknown>)['Port']).toBe(5432);
     expect((persisted.observedProperties as Record<string, unknown>)['Definition']).toEqual({
-      Seconds: EXPR,
+      Seconds: SECRET_MASK,
     });
   });
 });
