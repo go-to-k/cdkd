@@ -5,7 +5,7 @@
  * sits inside the SDK's retry loop on the SDK version this repo pins.
  */
 import { Readable } from 'node:stream';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import { APIGatewayClient, CreateResourceCommand, GetRestApiCommand } from '@aws-sdk/client-api-gateway';
 import {
   API_GATEWAY_MAX_ATTEMPTS,
@@ -181,6 +181,17 @@ describe('withApiGatewayPacing against a real SDK client', () => {
     return { client, sentAt };
   };
 
+  beforeAll(async () => {
+    // The first call of a process reads the shared config files
+    // (`fs/promises.readFile`, cached per process by the SDK). That read is
+    // real I/O on the libuv threadpool, so under fake timers it races the
+    // advances: on a loaded runner the advances run out first, the paced
+    // sleeps are never fired, and the case hangs to the test timeout. Done
+    // here, on real timers and an unpaced client, it leaves only microtasks
+    // and fake timers between a send and its handler.
+    await makeClient([]).client.send(new GetRestApiCommand({ restApiId: 'a' }));
+  });
+
   beforeEach(() => {
     // `performance` too: the pacer counts on it, and the shared-token loop
     // would spin on the real clock while its sleeps run on the fake one.
@@ -198,7 +209,9 @@ describe('withApiGatewayPacing against a real SDK client', () => {
     );
 
     const settled = Promise.all(sends);
-    for (let i = 0; i < 40; i++) await vi.advanceTimersByTimeAsync(250);
+    // The last paced send is due at 750 ms; one advance fires every sleep in
+    // range, including those scheduled while it runs.
+    await vi.advanceTimersByTimeAsync(10_000);
     await settled;
 
     const gaps = sentAt.slice(5).map((at, i) => at - sentAt[4 + i]!);
@@ -243,7 +256,8 @@ describe('withApiGatewayPacing against a real SDK client', () => {
     const reserve = vi.spyOn(apiGatewayPacerFor('eu-west-1'), 'reserveOperation');
 
     const send = client.send(new GetRestApiCommand({ restApiId: 'a' }));
-    for (let i = 0; i < 120; i++) await vi.advanceTimersByTimeAsync(250);
+    // Past the SDK's throttling backoff, which is capped at 20 s.
+    await vi.advanceTimersByTimeAsync(30_000);
     await send;
 
     expect(sentAt).toHaveLength(2);
