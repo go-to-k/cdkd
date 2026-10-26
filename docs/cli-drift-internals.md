@@ -430,9 +430,10 @@ at such a position, so it does not call the position drifted:
   still reports the resource drifted (exit `1`), with the cause alongside.
 
 A secret changed *at* a masked position cannot be seen; that is inherent to a
-position cdkd cannot name. Two shapes keep reporting as drift: a masked element
-of a list declared unordered, which is sorted apart from its live counterpart,
-and a masked binary value, which only a string can match.
+position cdkd cannot name, and so is a value there that changed type (a string
+become a number or an object). One shape keeps reporting as drift: a masked
+element of a list declared unordered, which is sorted apart from its live
+counterpart.
 
 A position reported as not compared is left alone by both remediation modes:
 `--accept` writes nothing over it, and `--revert` sends AWS's own value there
