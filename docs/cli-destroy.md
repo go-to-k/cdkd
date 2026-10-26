@@ -299,7 +299,7 @@ The flag turns off two kinds of protection:
 | `AWS::Neptune::DBCluster` | `DeletionProtection` | `ModifyDBCluster` with `ApplyImmediately` (Neptune) |
 | `AWS::Neptune::DBInstance` | `DeletionProtection` | `ModifyDBInstance` with `ApplyImmediately` (Neptune) |
 | `AWS::DynamoDB::Table` | `DeletionProtectionEnabled` | `UpdateTable`, then a wait until `ACTIVE` |
-| `AWS::DynamoDB::GlobalTable` | `DeletionProtectionEnabled` | `UpdateTable`, then a wait until `ACTIVE` |
+| `AWS::DynamoDB::GlobalTable` | `DeletionProtectionEnabled`, on the table and on each cross-region replica | `UpdateTable`, then a wait until `ACTIVE`; for a replica, `UpdateTable` in its region just before the replica is dropped, turned back on if the drop is refused |
 | `AWS::EC2::Instance` | `DisableApiTermination` | `ModifyInstanceAttribute` |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | attribute `deletion_protection.enabled` | `ModifyLoadBalancerAttributes` |
 | `AWS::Cognito::UserPool` | `DeletionProtection` (`ACTIVE` / `INACTIVE`) | `UpdateUserPool` |

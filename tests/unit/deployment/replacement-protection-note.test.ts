@@ -205,7 +205,7 @@ describe('site 9: the property-driven replacement refusal', () => {
   });
 });
 
-describe("the engine passes the STACK's region (a global table's flag is per replica)", () => {
+describe("a global table's flag is per replica", () => {
   const replicas = (onRegion: string) => ({
     Replicas: [
       { Region: 'us-east-1', DeletionProtectionEnabled: onRegion === 'us-east-1' },
@@ -218,11 +218,15 @@ describe("the engine passes the STACK's region (a global table's flag is per rep
     ['site 9', true, undefined],
     ['site 10', false, true],
   ] as const) {
-    it(`${site}: the deploy region's replica decides`, async () => {
-      // The engine is built for us-east-1.
-      const on = await refusal({ propertyDriven, replace, type: GT, recorded: replicas('us-east-1') });
-      expect(on).toContain('DeletionProtectionEnabled for the deploy region: true');
-      const off = await refusal({ propertyDriven, replace, type: GT, recorded: replicas('eu-west-1') });
+    it(`${site}: a protected replica in either region carries the note`, async () => {
+      // The engine is built for us-east-1. A cross-region replica's own guard
+      // blocks the replacement's delete too: AWS refuses that replica's drop
+      // (go-to-k/cdkd#5355), so it is evidence like the deploy region's.
+      for (const region of ['us-east-1', 'eu-west-1']) {
+        const on = await refusal({ propertyDriven, replace, type: GT, recorded: replicas(region) });
+        expect(on).toContain('DeletionProtectionEnabled on the table or a replica: true');
+      }
+      const off = await refusal({ propertyDriven, replace, type: GT, recorded: replicas('none') });
       expect(off).not.toContain(NOTE_MARKER);
     });
   }

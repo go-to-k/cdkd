@@ -277,7 +277,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
         Replicas: [
           { Region: 'us-east-1' },
-          { Region: 'eu-west-1', KMSMasterKeyId: 'alias/foo' },
+          { Region: 'eu-west-1', SSESpecification: { KMSMasterKeyId: 'alias/foo' } },
         ],
       });
 
@@ -570,12 +570,10 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(tag.input.Tags).toEqual([{ Key: 'Env', Value: 'Prod' }]);
     });
 
-    it('issues one combined UpdateTable for non-conflicting flat fields (DeletionProtection / TableClass / SSE / Stream / OnDemand)', async () => {
-      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
-      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
-      mockSend.mockResolvedValueOnce({}); // UpdateTable (flat fields)
-      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
-      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+    it('issues one combined UpdateTable for the flat fields, then TableClass and SSE each alone (DynamoDB refuses them combined)', async () => {
+      mockSend.mockImplementation(async () => ({
+        Table: { TableStatus: 'ACTIVE', TableArn: TABLE_ARN },
+      }));
 
       await provider.update(
         'X',
@@ -597,13 +595,21 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       const updateCalls = mockSend.mock.calls
         .map((c) => c[0])
         .filter((c) => c instanceof UpdateTableCommand) as UpdateTableCommand[];
-      expect(updateCalls).toHaveLength(1);
+      expect(updateCalls).toHaveLength(3);
       const u = updateCalls[0]!.input;
       expect(u.DeletionProtectionEnabled).toBe(true);
-      expect(u.TableClass).toBe('STANDARD_INFREQUENT_ACCESS');
-      expect(u.SSESpecification?.Enabled).toBe(true);
       expect(u.StreamSpecification?.StreamEnabled).toBe(true);
       expect(u.OnDemandThroughput?.MaxWriteRequestUnits).toBe(100);
+      expect(u.TableClass).toBeUndefined();
+      expect(u.SSESpecification).toBeUndefined();
+      expect(updateCalls[1]!.input).toEqual({
+        TableName: TABLE_NAME,
+        TableClass: 'STANDARD_INFREQUENT_ACCESS',
+      });
+      expect(updateCalls[2]!.input).toEqual({
+        TableName: TABLE_NAME,
+        SSESpecification: { Enabled: true, SSEType: 'KMS' },
+      });
     });
 
     it('extracts DeletionProtectionEnabled from Replicas[?Region==local].DPE on update (regression: PR #410)', async () => {
@@ -1007,7 +1013,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         TABLE_NAME,
         RESOURCE_TYPE,
         {
-          Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1', KMSMasterKeyId: 'alias/x' }],
+          Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1', SSESpecification: { KMSMasterKeyId: 'alias/x' } }],
         },
         { Replicas: [{ Region: 'us-east-1' }] }
       );
@@ -1294,34 +1300,33 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       });
     });
 
-    it('issues UpdateReplica for cross-region replica with KMSMasterKeyId change (non-Tags modify path)', async () => {
-      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
-      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for tag diff
-      mockSend.mockResolvedValueOnce({}); // UpdateTable Replica Update
-      mockSend.mockResolvedValueOnce({
+    it("sets a cross-region replica's changed KMS key with every region's key in one ReplicaUpdates call", async () => {
+      const localKey = 'arn:aws:kms:us-east-1:123456789012:key/local';
+      mockSend.mockImplementation(async () => ({
         Table: {
-          Replicas: [
-            { RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' },
-            { RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' },
-          ],
+          TableStatus: 'ACTIVE',
+          TableArn: TABLE_ARN,
+          SSEDescription: { Status: 'ENABLED', SSEType: 'KMS', KMSMasterKeyArn: localKey },
+          Replicas: [{ RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' }],
         },
-      }); // waitForReplicaActive
-      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+      }));
 
       await provider.update(
         'X',
         TABLE_NAME,
         RESOURCE_TYPE,
         {
+          SSESpecification: { SSEEnabled: true, SSEType: 'KMS' },
           Replicas: [
             { Region: 'us-east-1' },
-            { Region: 'eu-west-1', KMSMasterKeyId: 'alias/new' },
+            { Region: 'eu-west-1', SSESpecification: { KMSMasterKeyId: 'alias/new' } },
           ],
         },
         {
+          SSESpecification: { SSEEnabled: true, SSEType: 'KMS' },
           Replicas: [
             { Region: 'us-east-1' },
-            { Region: 'eu-west-1', KMSMasterKeyId: 'alias/old' },
+            { Region: 'eu-west-1', SSESpecification: { KMSMasterKeyId: 'alias/old' } },
           ],
         }
       );
@@ -1329,9 +1334,12 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         .map((c) => c[0])
         .filter((c) => c instanceof UpdateTableCommand) as UpdateTableCommand[];
       expect(updateCalls).toHaveLength(1);
-      const ru = updateCalls[0]!.input.ReplicaUpdates?.[0];
-      expect(ru?.Update?.RegionName).toBe('eu-west-1');
-      expect(ru?.Update?.KMSMasterKeyId).toBe('alias/new');
+      // DynamoDB refuses a one-replica key change; the undeclared local key
+      // is the one AWS reports.
+      expect(updateCalls[0]!.input.ReplicaUpdates).toEqual([
+        { Update: { RegionName: 'us-east-1', KMSMasterKeyId: localKey } },
+        { Update: { RegionName: 'eu-west-1', KMSMasterKeyId: 'alias/new' } },
+      ]);
     });
 
     it('propagates Tags to cross-region replica via regional UntagResource + TagResource (Issue #389)', async () => {
@@ -3218,7 +3226,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
             { Region: 'us-east-1' },
             {
               Region: 'eu-west-1',
-              KMSMasterKeyId: 'alias/new',
+              SSESpecification: { KMSMasterKeyId: 'alias/new' },
               ReadProvisionedThroughputSettings: {
                 ReadCapacityAutoScalingSettings: {
                   MinCapacity: 10,
@@ -3236,7 +3244,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
             { Region: 'us-east-1' },
             {
               Region: 'eu-west-1',
-              KMSMasterKeyId: 'alias/old',
+              SSESpecification: { KMSMasterKeyId: 'alias/old' },
               ReadProvisionedThroughputSettings: {
                 ReadCapacityAutoScalingSettings: {
                   MinCapacity: 5,

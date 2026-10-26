@@ -5927,7 +5927,10 @@
             "element-read"
           ],
           "seededBy": [
+            "applyReplicaKeys",
             "canonicalizeDesiredProperties",
+            "convergeReplicaDeletionProtection",
+            "convergeReplicaSettings",
             "create",
             "update"
           ]
@@ -5939,9 +5942,11 @@
             "AWS::DynamoDB::GlobalTable"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
+            "applyReplicaKeys",
             "create",
             "update"
           ]
@@ -5967,6 +5972,7 @@
             "AWS::DynamoDB::GlobalTable"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [

@@ -28,6 +28,7 @@ import {
   type Tag,
   type ReplicationGroupUpdate,
   type CreateReplicationGroupMemberAction,
+  type ReplicaDescription,
   type UpdateGlobalSecondaryIndexAction,
   type UpdateReplicationGroupMemberAction,
   type UpdateTableCommandInput,
@@ -68,7 +69,9 @@ import {
   type CfnTagEntry,
 } from '../tag-list.js';
 import {
+  coerceCfnBoolean,
   coerceCfnInteger,
+  configBooleanRefusal,
   configStringRefusal,
   readConfigString,
   replayWarn,
@@ -1194,16 +1197,37 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
 
     // SSE: GlobalTable's CFn shape is { SSEEnabled, SSEType } with NO
-    // top-level KMSMasterKeyId (per-replica only).
-    if (properties['SSESpecification']) {
-      const sse = properties['SSESpecification'] as Record<string, unknown>;
-      const sseInput: { Enabled: boolean; SSEType?: 'KMS' } = {
-        Enabled: sse['SSEEnabled'] !== undefined ? Boolean(sse['SSEEnabled']) : true,
-      };
-      if (sse['SSEType']) {
-        sseInput.SSEType = sse['SSEType'] as 'KMS';
+    // top-level KMSMasterKeyId — the key is per-replica, so the LOCAL table's
+    // comes from its own `Replicas[?Region==<deploy region>]` entry
+    // (go-to-k/cdkd#5355; before it, a CMK table was created under the AWS
+    // managed key).
+    // An `SSEEnabled` that is not a boolean is refused rather than read: the
+    // fallback below would ENABLE encryption for it. A replay of a state
+    // record (which the user cannot edit) warns and takes that fallback.
+    const sseEnabledRefusal = configBooleanRefusal(
+      properties['SSESpecification'],
+      'SSEEnabled',
+      'AWS::DynamoDB::GlobalTable SSESpecification'
+    );
+    if (sseEnabledRefusal !== undefined) {
+      const onReplay = replayWarn(log, context).onUnusable;
+      if (!onReplay) {
+        throw new ProvisioningError(
+          log.mask(
+            `AWS::DynamoDB::GlobalTable ${logicalId}: ${sseEnabledRefusal}. Nothing was created; ` +
+              `fix the template value`
+          ),
+          resourceType,
+          logicalId
+        );
       }
-      createParams.SSESpecification = sseInput;
+      onReplay(`${sseEnabledRefusal}. Encryption is enabled, the block's default.`);
+    }
+    if (properties['SSESpecification']) {
+      createParams.SSESpecification = toSdkTableSseSpecification(
+        properties['SSESpecification'],
+        readReplicaKmsMasterKeyId(localReplicaEntry(properties, currentRegion))
+      );
     }
 
     // DeletionProtectionEnabled is per-replica in the CFn schema for
@@ -1215,10 +1239,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     if (dpeResolved !== undefined) {
       createParams.DeletionProtectionEnabled = dpeResolved;
     }
-    if (properties['TableClass']) {
-      createParams.TableClass = properties['TableClass'] as
-        | 'STANDARD'
-        | 'STANDARD_INFREQUENT_ACCESS';
+    // Per-replica in the CFn schema too (`Replicas[].TableClass`, where CDK's
+    // `tableClass` renders) — go-to-k/cdkd#5355.
+    const localTableClass = extractLocalTableClass(properties, currentRegion);
+    if (localTableClass !== undefined) {
+      createParams.TableClass = localTableClass;
     }
 
     // Table-level on-demand ceilings. CDK's `Billing.onDemand({ maxRead…,
@@ -1473,6 +1498,42 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           const region = replica.RegionName;
           if (!region || region === currentRegion) continue;
           try {
+            // A replica `addReplica` protected (go-to-k/cdkd#5355) refuses
+            // the drop below. This create built it, so there is no user
+            // setting to preserve: turn the guard off first. Only a replica
+            // the template asked to protect can carry it, and even then it is
+            // read from AWS first: the failure may have come before the guard
+            // was set, and a flip against a replica still CREATING is refused.
+            // Its own best-effort try, so a failed flip still leaves the drop
+            // below to be attempted (and refused loudly).
+            const declared = readReplicaDeletionProtection(
+              localReplicaEntry(wiringProperties, region),
+              region
+            );
+            try {
+              const live =
+                declared === true
+                  ? await this.getRegionalClient(region).send(
+                      new DescribeTableCommand({ TableName: tableName })
+                    )
+                  : undefined;
+              if (live?.Table?.DeletionProtectionEnabled === true) {
+                await this.setReplicaDeletionProtection(
+                  tableName,
+                  region,
+                  false,
+                  logicalId,
+                  maskSecrets
+                );
+              }
+            } catch (flipError) {
+              if (isInterruptedWaitError(flipError)) throw flipError;
+              log.debug(
+                `Partial-create cleanup: could not turn off deletion protection on the ` +
+                  `${region} replica of ${log.value(tableName)}: ` +
+                  log.mask(describeAwsFailure(flipError).detail)
+              );
+            }
             await this.dynamoDBClient.send(
               new UpdateTableCommand({
                 TableName: tableName,
@@ -1488,6 +1549,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               maskSecrets
             );
           } catch (replicaCleanupErr) {
+            // A Ctrl-C stops the cleanup like every other wait here.
+            if (isInterruptedWaitError(replicaCleanupErr)) throw replicaCleanupErr;
             // The class at warn, AWS's text at debug (go-to-k/cdkd#2319).
             const msg = this.cleanupFailureText(
               log,
@@ -1692,8 +1755,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     const create: CreateReplicationGroupMemberAction = {
       RegionName: region,
     };
-    if (replica['KMSMasterKeyId']) {
-      create.KMSMasterKeyId = replica['KMSMasterKeyId'] as string;
+    // CFn spellings `SSESpecification.KMSMasterKeyId` / `TableClass`, not the
+    // SDK member names (go-to-k/cdkd#5355).
+    const kmsMasterKeyId = readReplicaKmsMasterKeyId(replica);
+    if (kmsMasterKeyId !== undefined) {
+      create.KMSMasterKeyId = kmsMasterKeyId;
     }
     // Replica-level GSI overrides. The CFn
     // `ReplicaGlobalSecondaryIndexSpecification` spells the per-replica read
@@ -1725,10 +1791,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     if (tableOverrides.OnDemandThroughputOverride) {
       create.OnDemandThroughputOverride = tableOverrides.OnDemandThroughputOverride;
     }
-    if (replica['TableClassOverride']) {
-      create.TableClassOverride = replica['TableClassOverride'] as
-        | 'STANDARD'
-        | 'STANDARD_INFREQUENT_ACCESS';
+    const tableClass = readReplicaTableClass(replica);
+    if (tableClass !== undefined) {
+      create.TableClassOverride = tableClass;
     }
 
     const replicaUpdates: ReplicationGroupUpdate[] = [{ Create: create }];
@@ -1764,6 +1829,752 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
 
     await this.waitForReplicaActive(tableName, region, logicalId, undefined, maskSecrets);
+
+    // `CreateReplicationGroupMemberAction` has no deletion-protection member,
+    // so a cross-region replica's `DeletionProtectionEnabled` is set on the
+    // replica's own table in its own region once it exists. A new replica
+    // starts unprotected, so only `true` needs a call (go-to-k/cdkd#5355).
+    const protect = readReplicaDeletionProtection(replica, region, (message) =>
+      this.logger.warn(maskSecrets(message))
+    );
+    if (protect === true) {
+      await this.setReplicaDeletionProtection(tableName, region, true, logicalId, maskSecrets);
+    }
+  }
+
+  /**
+   * Set `DeletionProtectionEnabled` on a CROSS-REGION replica: an
+   * `UpdateTable` against the replica's table through the region-scoped
+   * client, since the source table's `ReplicaUpdates` cannot carry it
+   * (go-to-k/cdkd#5355). Then waits for the change to settle — see
+   * {@link waitForReplicaProtectionSettled}.
+   */
+  private async setReplicaDeletionProtection(
+    tableName: string,
+    region: string,
+    enabled: boolean,
+    logicalId: string,
+    maskSecrets: SecretMasker,
+    budget?: ElapsedBudget
+  ): Promise<void> {
+    await this.sendReplicaDeletionProtection(tableName, region, enabled, logicalId, maskSecrets, {
+      budget,
+    });
+    await this.waitForReplicaProtectionSettled(
+      tableName,
+      region,
+      enabled,
+      logicalId,
+      maskSecrets,
+      budget
+    );
+  }
+
+  /**
+   * The protection write itself, after the table and every replica — this
+   * replica's own table included — read settled: a change still in flight
+   * (a key, class or protection change moments earlier) makes DynamoDB refuse
+   * it with `ResourceInUseException` (integ, 2026-10-27: the auto-disable
+   * straight after a key / class update was refused that way).
+   */
+  private async sendReplicaDeletionProtection(
+    tableName: string,
+    region: string,
+    enabled: boolean,
+    logicalId: string,
+    maskSecrets: SecretMasker,
+    opts: { budget?: ElapsedBudget | undefined } = {}
+  ): Promise<void> {
+    await this.waitForGlobalTableSettled(tableName, logicalId, maskSecrets, { ...opts, region });
+    await this.writeReplicaDeletionProtection(tableName, region, enabled);
+  }
+
+  private async writeReplicaDeletionProtection(
+    tableName: string,
+    region: string,
+    enabled: boolean
+  ): Promise<void> {
+    await this.getRegionalClient(region).send(
+      new UpdateTableCommand({ TableName: tableName, DeletionProtectionEnabled: enabled })
+    );
+  }
+
+  /**
+   * Wait for a replica's deletion-protection change to land. On a
+   * cross-region replica the change puts BOTH the replica's table and the
+   * source table into `UPDATING` for about 30 s, the new value reads back
+   * only once the replica is `ACTIVE` again, and the source refuses a replica
+   * update or drop meanwhile with `ResourceInUseException` (measured
+   * us-east-1 + us-west-2, 2026-10-26). Bounded and interruptible like the
+   * other waits here; on the delete path it spends the shared allowance.
+   */
+  private async waitForReplicaProtectionSettled(
+    tableName: string,
+    region: string,
+    enabled: boolean,
+    logicalId: string,
+    maskSecrets: SecretMasker,
+    budget?: ElapsedBudget
+  ): Promise<void> {
+    const wait = beginDeleteWait(REPLICA_PROTECTION_SETTLE_POLLS, budget);
+    const watch = startInterruptWatch(
+      maskSecrets(`DynamoDB replica ${region} deletion-protection change on ${tableName}`)
+    );
+    try {
+      while (wait.nextPoll()) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        const replica = await this.getRegionalClient(region).send(
+          new DescribeTableCommand({ TableName: tableName })
+        );
+        if (
+          replica.Table?.TableStatus === 'ACTIVE' &&
+          replica.Table.DeletionProtectionEnabled === enabled
+        ) {
+          const source = await this.dynamoDBClient.send(
+            new DescribeTableCommand({ TableName: tableName })
+          );
+          if (source.Table?.TableStatus === 'ACTIVE') return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, REPLICA_PROTECTION_SETTLE_POLL_MS));
+      }
+    } finally {
+      watch.dispose();
+    }
+    throw new ProvisioningError(
+      maskSecrets(
+        `DeletionProtectionEnabled=${enabled} on the ${region} replica of ${tableName} did not ` +
+          `settle within ${wait.pollsRun} polls${wait.note()}`
+      ),
+      'AWS::DynamoDB::GlobalTable',
+      logicalId,
+      tableName
+    );
+  }
+
+  /**
+   * `update()`'s cross-region `Replicas[].DeletionProtectionEnabled` pass
+   * (go-to-k/cdkd#5355), over every replica the update KEEPS — one it just
+   * added already took its setting in {@link addReplica}.
+   *
+   * A template-side change is sent, an absent value reading as `false` (what
+   * CloudFormation leaves after the member is removed, and what a new replica
+   * starts with). A DECLARED value the template did not change is checked
+   * against AWS, the twin of the local table's AWS-aware diff: before this
+   * issue the setting was never sent, so a replica deployed then holds `false`
+   * under a record saying `true`, and only a read converges it (a console-side
+   * enable under a declared `false` likewise). That read is best-effort — a
+   * failure leaves the replica as it is. A value that is not a boolean is
+   * reported and the replica's protection left alone, never read as `false`.
+   */
+  private async convergeReplicaDeletionProtection(
+    tableName: string,
+    logicalId: string,
+    currentRegion: string,
+    previousProperties: Record<string, unknown>,
+    properties: Record<string, unknown>,
+    addedRegions: ReadonlySet<unknown>,
+    warn: (message: string) => void,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const desired = Array.isArray(properties['Replicas'])
+      ? (properties['Replicas'] as unknown[])
+      : [];
+    for (const entry of desired) {
+      const replica = asRecord(entry);
+      const region = replica?.['Region'];
+      if (typeof region !== 'string' || region === currentRegion || addedRegions.has(region)) {
+        continue;
+      }
+      const declared = readReplicaDeletionProtection(replica, region, warn);
+      if (declared === UNUSABLE) continue;
+      const previous = readReplicaDeletionProtection(
+        localReplicaEntry(previousProperties, region),
+        region
+      );
+      const newDpe = declared ?? false;
+      const oldDpe = previous === UNUSABLE ? undefined : (previous ?? false);
+      if (oldDpe !== undefined && newDpe !== oldDpe) {
+        if (oldDpe && declared === undefined) {
+          // The local table's auto-disable warning, for the same footgun: a
+          // dropped `deletionProtection` line turns the guard off.
+          warn(
+            `Auto-disabling DeletionProtectionEnabled on the ${region} replica of ` +
+              `${tableName}: the template no longer sets it for that replica. Set it ` +
+              `to false explicitly to silence this warning.`
+          );
+        }
+        await this.setReplicaDeletionProtection(tableName, region, newDpe, logicalId, maskSecrets);
+        continue;
+      }
+      // Only a DECLARED value is converged against AWS; an absent one with an
+      // unreadable record has no change to send and nothing to assert.
+      if (declared === undefined) continue;
+      let live: boolean | undefined;
+      try {
+        const described = await this.getRegionalClient(region).send(
+          new DescribeTableCommand({ TableName: tableName })
+        );
+        live = described.Table?.DeletionProtectionEnabled;
+      } catch (readError) {
+        this.logger.debug(
+          maskSecrets(
+            `Could not read DeletionProtectionEnabled on the ${region} replica of ${tableName}: ` +
+              describeAwsFailure(readError).detail
+          )
+        );
+      }
+      if (typeof live === 'boolean' && live !== newDpe) {
+        await this.setReplicaDeletionProtection(tableName, region, newDpe, logicalId, maskSecrets);
+      }
+    }
+  }
+
+  /**
+   * `update()`'s AWS-aware pass over the KEPT cross-region replicas' declared
+   * `TableClass` (go-to-k/cdkd#5355). The diff-driven replica update only
+   * fires on a template change, but a replica deployed before this issue
+   * holds `STANDARD` under a record that already names the declared class —
+   * so the two sides match and only AWS can say the replica is wrong. Read
+   * from ONE source `DescribeTable` after the replica updates ran, which
+   * reports each replica's class. The KMS keys are {@link applyReplicaKeys}'.
+   */
+  private async convergeReplicaSettings(
+    tableName: string,
+    logicalId: string,
+    currentRegion: string,
+    properties: Record<string, unknown>,
+    addedRegions: ReadonlySet<unknown>,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const desired = Array.isArray(properties['Replicas'])
+      ? (properties['Replicas'] as unknown[])
+      : [];
+    const kept = desired
+      .map(asRecord)
+      .filter(
+        (r): r is Record<string, unknown> =>
+          typeof r?.['Region'] === 'string' &&
+          r['Region'] !== currentRegion &&
+          !addedRegions.has(r['Region'])
+      );
+    if (kept.every((r) => readReplicaTableClass(r) === undefined)) return;
+    let liveReplicas: ReplicaDescription[] | undefined;
+    let sourceClass: string | undefined;
+    try {
+      const described = await this.dynamoDBClient.send(
+        new DescribeTableCommand({ TableName: tableName })
+      );
+      liveReplicas = described.Table?.Replicas;
+      sourceClass = described.Table?.TableClassSummary?.TableClass;
+    } catch (readError) {
+      this.logger.debug(
+        maskSecrets(
+          `Could not read the replicas of ${tableName} to converge their table class: ` +
+            describeAwsFailure(readError).detail
+        )
+      );
+      return;
+    }
+    for (const replica of kept) {
+      const region = replica['Region'] as string;
+      const live = liveReplicas?.find((r) => r.RegionName === region);
+      if (!live) continue;
+      const tableClass = readReplicaTableClass(replica);
+      if (tableClass === undefined) continue;
+      // A replica without its own class summary inherits the source table's.
+      const liveClass = live.ReplicaTableClassSummary?.TableClass ?? sourceClass ?? 'STANDARD';
+      if (tableClass === liveClass) {
+        this.logger.debug(
+          maskSecrets(
+            `The ${region} replica of ${tableName} already holds its declared table class`
+          )
+        );
+        continue;
+      }
+      this.logger.debug(
+        maskSecrets(`Bringing the ${region} replica of ${tableName} to its declared table class`)
+      );
+      // Best-effort: this corrects a replica the TEMPLATE did not change, so
+      // a refusal must not fail a deploy that would otherwise succeed. It is
+      // reported; this pass runs again on the table's next update.
+      try {
+        await this.dynamoDBClient.send(
+          new UpdateTableCommand({
+            TableName: tableName,
+            ReplicaUpdates: [{ Update: { RegionName: region, TableClassOverride: tableClass } }],
+          })
+        );
+        // The whole table, so the key pass after this is not refused.
+        await this.waitForGlobalTableSettled(tableName, logicalId, maskSecrets);
+      } catch (convergeError) {
+        if (isInterruptedWaitError(convergeError)) throw convergeError;
+        this.logger.debug(
+          maskSecrets(
+            `Could not bring the ${region} replica of ${tableName} to its declared table class: ` +
+              describeAwsFailure(convergeError).detail
+          )
+        );
+        this.logger.warn(
+          maskSecrets(
+            `The ${region} replica of ${tableName} does not hold its declared TableClass, and ` +
+              `setting it failed (${describeAwsFailure(convergeError).summary}). The next deploy ` +
+              `that updates this table tries again.`
+          )
+        );
+      }
+    }
+  }
+
+  /**
+   * `update()`'s customer managed key pass for a table with cross-region
+   * replicas (go-to-k/cdkd#5355). DynamoDB takes such a key change only
+   * through `ReplicaUpdates`, and only with EVERY region's key in the same
+   * call — the table's own region as one of the entries (measured 2026-10-26:
+   * `SSESpecification` with a key is refused, a one-replica `Update` is
+   * refused with "KMSMasterKeyId must be specified for each replica", and an
+   * `Update` per region in one call is accepted, from the AWS owned key, the
+   * AWS managed key or another customer managed key alike).
+   *
+   * Sent when a region's declared key changed in the template, or when a
+   * declared key ARN differs from the one AWS reports (a table deployed
+   * before this issue sits on the AWS managed key under a record naming the
+   * declared one; AWS reports every key as an ARN — measured). A region
+   * without a declared key keeps the key AWS reports. A template-side change
+   * that fails, or that leaves a region with neither key (DynamoDB needs
+   * every region's), fails the update; a correction AWS alone asked for is
+   * best-effort and reported, as {@link convergeReplicaSettings} is.
+   * A table without cross-region replicas took its key through
+   * `SSESpecification` already.
+   */
+  private async applyReplicaKeys(
+    tableName: string,
+    logicalId: string,
+    currentRegion: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    addedRegions: ReadonlySet<unknown>,
+    // The local key update step 3 held back for this pass, if any.
+    deferredSseUpdate: UpdateTableCommandInput['SSESpecification'],
+    // Whether that held-back update is a template change (else an AWS-aware
+    // correction, best-effort like the rest of the convergence).
+    deferredSseFromTemplate: boolean,
+    // Whether step 3 sent a template-driven `SSESpecification` without a key,
+    // which moved every replica to the AWS managed key.
+    keylessSseFromTemplate: boolean,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const tableOnKms =
+      properties['SSESpecification'] !== undefined &&
+      configBooleanRefusal(
+        properties['SSESpecification'],
+        'SSEEnabled',
+        'AWS::DynamoDB::GlobalTable SSESpecification'
+      ) === undefined &&
+      toSdkTableSseSpecification(properties['SSESpecification'], undefined).Enabled;
+    if (!tableOnKms) return;
+    const declared = new Map<string, string | undefined>();
+    for (const entry of Array.isArray(properties['Replicas'])
+      ? (properties['Replicas'] as unknown[])
+      : []) {
+      const replica = asRecord(entry);
+      const region = replica?.['Region'];
+      if (typeof region === 'string') declared.set(region, readReplicaKmsMasterKeyId(replica));
+    }
+    if ([...declared.values()].every((key) => key === undefined)) return;
+    // A cross-region replica's key changed in the template: not one this
+    // update added (its `Create` carried the key) and not one the template
+    // stopped naming. The local key's change is step 3's held-back update.
+    const replicaKeyChanged = [...declared].some(
+      ([region, key]) =>
+        region !== currentRegion &&
+        key !== undefined &&
+        !addedRegions.has(region) &&
+        key !== readReplicaKmsMasterKeyId(localReplicaEntry(previousProperties, region))
+    );
+    let liveKeys: Map<string, string | undefined>;
+    try {
+      liveKeys = await this.readLiveKeys(tableName, currentRegion);
+    } catch (readError) {
+      if (replicaKeyChanged || deferredSseFromTemplate || keylessSseFromTemplate) throw readError;
+      this.logger.debug(
+        maskSecrets(
+          `Could not read the KMS keys of ${tableName} to converge them: ` +
+            describeAwsFailure(readError).detail
+        )
+      );
+      return;
+    }
+    // A held-back local update whose key AWS already reports (only the
+    // block's spelling changed) is no change.
+    const templateChanged =
+      replicaKeyChanged ||
+      (keylessSseFromTemplate &&
+        [...declared].some(([region, key]) => region !== currentRegion && key !== undefined)) ||
+      (deferredSseFromTemplate && declared.get(currentRegion) !== liveKeys.get(currentRegion));
+    let request: UpdateTableCommandInput;
+    if (liveKeys.size < 2) {
+      // The update dropped every cross-region replica: the key held back for
+      // this pass goes through `SSESpecification` after all.
+      if (deferredSseUpdate === undefined) return;
+      request = { TableName: tableName, SSESpecification: deferredSseUpdate };
+    } else {
+      const built = this.replicaKeysRequest(
+        tableName,
+        logicalId,
+        liveKeys,
+        declared,
+        templateChanged,
+        maskSecrets
+      );
+      if (built === undefined) return;
+      request = built;
+    }
+    try {
+      await this.dynamoDBClient.send(new UpdateTableCommand(request));
+      await this.waitForGlobalTableSettled(tableName, logicalId, maskSecrets);
+    } catch (keyError) {
+      if (templateChanged || isInterruptedWaitError(keyError)) throw keyError;
+      this.logger.debug(
+        maskSecrets(
+          `Could not bring the KMS keys of ${tableName} to the declared ones: ` +
+            describeAwsFailure(keyError).detail
+        )
+      );
+      this.logger.warn(
+        maskSecrets(
+          `${tableName} does not hold its declared KMS keys, and setting them failed ` +
+            `(${describeAwsFailure(keyError).summary}). The next deploy that updates this ` +
+            `table tries again.`
+        )
+      );
+    }
+  }
+
+  /** The key ARN each region of `tableName` reports, the local one included. */
+  private async readLiveKeys(
+    tableName: string,
+    currentRegion: string
+  ): Promise<Map<string, string | undefined>> {
+    const described = await this.dynamoDBClient.send(
+      new DescribeTableCommand({ TableName: tableName })
+    );
+    const keys = new Map<string, string | undefined>([
+      [currentRegion, described.Table?.SSEDescription?.KMSMasterKeyArn],
+    ]);
+    for (const r of described.Table?.Replicas ?? []) {
+      if (r.RegionName !== undefined && r.RegionName !== currentRegion) {
+        keys.set(r.RegionName, r.KMSMasterKeyId);
+      }
+    }
+    return keys;
+  }
+
+  /**
+   * {@link applyReplicaKeys}' `ReplicaUpdates` call for a table with
+   * cross-region replicas, or `undefined` when there is nothing to send.
+   */
+  private replicaKeysRequest(
+    tableName: string,
+    logicalId: string,
+    liveKeys: ReadonlyMap<string, string | undefined>,
+    declared: ReadonlyMap<string, string | undefined>,
+    templateChanged: boolean,
+    maskSecrets: SecretMasker
+  ): UpdateTableCommandInput | undefined {
+    const drifted = [...liveKeys].some(([region, live]) => {
+      const key = declared.get(region);
+      return isKmsKeyArn(key) && key !== live;
+    });
+    if (!templateChanged && !drifted) {
+      this.logger.debug(
+        maskSecrets(`Every region of ${tableName} already holds its declared KMS key`)
+      );
+      return undefined;
+    }
+    const entries = [...liveKeys].map(([region, live]) => ({
+      Update: { RegionName: region, KMSMasterKeyId: declared.get(region) ?? live },
+    }));
+    const keyless = entries.filter((e) => e.Update.KMSMasterKeyId === undefined);
+    if (keyless.length > 0) {
+      const text =
+        `The KMS keys of ${tableName} were not changed: DynamoDB takes every region's key ` +
+        `in one call, and no key is declared or reported for ` +
+        `${keyless.map((e) => e.Update.RegionName).join(', ')}`;
+      // A change the template asked for fails the update; a correction AWS
+      // alone asked for is reported.
+      if (templateChanged) {
+        throw new ProvisioningError(
+          maskSecrets(`${text}. Declare a key for every replica`),
+          'AWS::DynamoDB::GlobalTable',
+          logicalId,
+          tableName
+        );
+      }
+      this.logger.warn(maskSecrets(`${text}.`));
+      return undefined;
+    }
+    this.logger.debug(
+      maskSecrets(`Setting the KMS key of every region of ${tableName} in one ReplicaUpdates call`)
+    );
+    return { TableName: tableName, ReplicaUpdates: entries };
+  }
+
+  /**
+   * Step 3's `TableClass` / `SSESpecification` call, each alone, waited out
+   * across the global table. A template change that fails fails the update;
+   * a correction AWS alone asked for is reported and left for the next
+   * update (go-to-k/cdkd#5355).
+   */
+  private async sendLocalSettingUpdate(
+    input: UpdateTableCommandInput,
+    fromTemplate: boolean,
+    what: string,
+    tableName: string,
+    logicalId: string,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    try {
+      await this.dynamoDBClient.send(new UpdateTableCommand(input));
+      await this.waitForGlobalTableSettled(tableName, logicalId, maskSecrets);
+    } catch (error) {
+      if (fromTemplate || isInterruptedWaitError(error)) throw error;
+      this.logger.debug(
+        maskSecrets(
+          `Could not bring the ${what} of ${tableName} to the declared one: ` +
+            describeAwsFailure(error).detail
+        )
+      );
+      this.logger.warn(
+        maskSecrets(
+          `${tableName} does not hold its declared ${what}, and setting it failed ` +
+            `(${describeAwsFailure(error).summary}). The next deploy that updates this table ` +
+            `tries again.`
+        )
+      );
+    }
+  }
+
+  /**
+   * Wait until the table, every replica it lists and its encryption all read
+   * as settled — what a table-class, encryption or replica-key change leaves
+   * in flux across the regions, and what the next change on the table is
+   * refused until (go-to-k/cdkd#5355).
+   */
+  private async waitForGlobalTableSettled(
+    tableName: string,
+    logicalId: string,
+    maskSecrets: SecretMasker,
+    opts: {
+      // Also require this replica region's own table to read ACTIVE.
+      region?: string;
+      budget?: ElapsedBudget | undefined;
+      maxPolls?: number;
+      // `false` only for the compensation after a Ctrl-C, which must still
+      // run; it stays bounded by `maxPolls`.
+      interruptible?: boolean;
+    } = {}
+  ): Promise<void> {
+    const wait = beginDeleteWait(opts.maxPolls ?? GLOBAL_TABLE_ACTIVE_WAIT_ATTEMPTS, opts.budget);
+    const watch = startInterruptWatch(
+      maskSecrets(`DynamoDB global table ${tableName} settling after an update`)
+    );
+    try {
+      while (wait.nextPoll()) {
+        if (opts.interruptible !== false && watch.isInterrupted()) throw watch.onInterrupted();
+        const response = await this.dynamoDBClient.send(
+          new DescribeTableCommand({ TableName: tableName })
+        );
+        const table = response.Table;
+        if (
+          table?.TableStatus === 'ACTIVE' &&
+          table.SSEDescription?.Status !== 'UPDATING' &&
+          (table.Replicas ?? []).every((r) => r.ReplicaStatus === 'ACTIVE')
+        ) {
+          if (opts.region === undefined) return;
+          const replica = await this.getRegionalClient(opts.region).send(
+            new DescribeTableCommand({ TableName: tableName })
+          );
+          if (replica.Table?.TableStatus === 'ACTIVE') return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    } finally {
+      watch.dispose();
+    }
+    throw new ProvisioningError(
+      maskSecrets(
+        `Table ${tableName} and its replicas did not settle within ${wait.pollsRun} polls${wait.note()}`
+      ),
+      'AWS::DynamoDB::GlobalTable',
+      logicalId,
+      tableName
+    );
+  }
+
+  /**
+   * `delete()`'s cross-region replica drop. Under `--remove-protection` the
+   * replica's own deletion protection (go-to-k/cdkd#5355) is turned off first,
+   * the same flag the local table's flip honours; without the flag AWS refuses
+   * a protected replica's drop and that refusal propagates, as the local
+   * table's `DeleteTable` refusal does.
+   *
+   * Observe-then-flip like the local flip (issue #1978): only a guard that was
+   * ON and that this call turned off is put back, and only when AWS refused
+   * the drop (or the wait before it failed) — once the drop is accepted the
+   * replica is on its way out.
+   * DynamoDB throttles a second deletion-protection change on one table
+   * within {@link DELETION_PROTECTION_REFLIP_MS} of the first (measured
+   * 2026-10-26: `ThrottlingException: Deletion protection setting for table X
+   * modified within the previous 15000 milliseconds`), so the restore waits
+   * that window out once before giving up and saying how to restore it.
+   */
+  private async dropReplicaForDelete(
+    tableName: string,
+    region: string,
+    removeProtection: boolean,
+    logicalId: string,
+    budget: ElapsedBudget,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    let flippedOff = false;
+    if (removeProtection) {
+      try {
+        const before = await this.getRegionalClient(region).send(
+          new DescribeTableCommand({ TableName: tableName })
+        );
+        if (before.Table?.DeletionProtectionEnabled === true) {
+          await this.sendReplicaDeletionProtection(
+            tableName,
+            region,
+            false,
+            logicalId,
+            maskSecrets,
+            {
+              budget,
+            }
+          );
+          flippedOff = true;
+        }
+      } catch (flipError) {
+        // A Ctrl-C in the wait before the write stops the destroy; nothing
+        // was turned off yet, so there is nothing to put back.
+        if (isInterruptedWaitError(flipError)) throw flipError;
+        // Best-effort like the local flip: a guard left on makes the drop
+        // below refuse, and that refusal is what the user sees.
+        this.logger.debug(
+          maskSecrets(
+            `Could not disable DeletionProtectionEnabled on the ${region} replica of ${tableName}: ` +
+              describeAwsFailure(flipError).detail
+          )
+        );
+      }
+      if (flippedOff) {
+        // Outside the best-effort catch: the source refuses the drop until
+        // the change settles, and a wait that runs out or is interrupted must
+        // stop the delete — with the guard put back first.
+        try {
+          await this.waitForReplicaProtectionSettled(
+            tableName,
+            region,
+            false,
+            logicalId,
+            maskSecrets,
+            budget
+          );
+        } catch (waitError) {
+          // The throttle wait runs even after a Ctrl-C: a replica left
+          // unprotected costs more than 16 s.
+          await this.restoreReplicaDeletionProtection(
+            tableName,
+            region,
+            logicalId,
+            maskSecrets,
+            isInterruptedWaitError(waitError)
+              ? 'the destroy was interrupted'
+              : 'its deletion-protection change did not settle'
+          );
+          throw waitError;
+        }
+      }
+    }
+    try {
+      await this.dynamoDBClient.send(
+        new UpdateTableCommand({
+          TableName: tableName,
+          ReplicaUpdates: [{ Delete: { RegionName: region } }],
+        })
+      );
+    } catch (dropError) {
+      if (flippedOff) {
+        await this.restoreReplicaDeletionProtection(
+          tableName,
+          region,
+          logicalId,
+          maskSecrets,
+          'it could not be dropped'
+        );
+      }
+      throw dropError;
+    }
+  }
+
+  /** {@link dropReplicaForDelete}'s compensation; never throws. */
+  private async restoreReplicaDeletionProtection(
+    tableName: string,
+    region: string,
+    logicalId: string,
+    maskSecrets: SecretMasker,
+    // Why the delete stopped, as the warning states it.
+    reason: string
+  ): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        // Settled first like every protection write, but this compensation
+        // runs after a Ctrl-C or a wait that ran out too: the wait is short,
+        // not interruptible, runs once (the throttle retry already waited
+        // out its window), and the write is attempted whatever it found.
+        if (attempt === 1) {
+          await this.waitForGlobalTableSettled(tableName, logicalId, maskSecrets, {
+            region,
+            maxPolls: REPLICA_PROTECTION_SETTLE_POLLS,
+            interruptible: false,
+          }).catch(() => undefined);
+        }
+        await this.writeReplicaDeletionProtection(tableName, region, true);
+        return;
+      } catch (restoreError) {
+        if (
+          attempt === 1 &&
+          restoreError instanceof Error &&
+          restoreError.name === 'ThrottlingException'
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, DELETION_PROTECTION_REFLIP_MS));
+          continue;
+        }
+        try {
+          // The class at warn, AWS's text at debug (go-to-k/cdkd#2319).
+          this.logger.debug(
+            maskSecrets(
+              `Could not restore DeletionProtectionEnabled on the ${region} replica of ` +
+                `${tableName}: ${describeAwsFailure(restoreError).detail}`
+            )
+          );
+          const head = maskSecrets(
+            `The ${region} replica of ${tableName} was not deleted (${reason}), and its ` +
+              `deletion protection, which this destroy turned off, could not be turned back on ` +
+              `(${describeAwsFailure(restoreError).summary}). It is LEFT UNPROTECTED. ` +
+              `To restore it, run: `
+          );
+          const command = pasteableAwsCommand(
+            maskSecrets
+          )`aws dynamodb update-table --table-name ${tableName} --deletion-protection-enabled --region ${region}`.render();
+          this.logger.warn(safeMsg`${head}${command}`);
+        } catch {
+          // A throwing logger must not replace the drop error on its way out.
+        }
+        return;
+      }
+    }
   }
 
   /**
@@ -1941,6 +2752,41 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       } catch {
         guardRegion = '';
       }
+      // A protected CROSS-REGION replica blocks the replacement's delete too:
+      // AWS refuses that replica's drop (go-to-k/cdkd#5355). Named with its
+      // region, since that is where the guard has to come off.
+      // An unresolved region cannot tell the local entry from the others, so
+      // nothing is named then (the degradation the note above bounds).
+      const protectedReplica =
+        guardRegion === '' ||
+        extractLocalDeletionProtection(previousProperties, guardRegion) === true
+          ? undefined
+          : (Array.isArray(previousProperties['Replicas'])
+              ? (previousProperties['Replicas'] as unknown[])
+              : []
+            )
+              .map(asRecord)
+              .find(
+                (r) =>
+                  typeof r?.['Region'] === 'string' &&
+                  r['Region'] !== guardRegion &&
+                  coerceCfnBoolean(r['DeletionProtectionEnabled']) === true
+              )?.['Region'];
+      if (typeof protectedReplica === 'string') {
+        return protectedReplacementAdvice({
+          evidence:
+            "cdkd's recorded properties for this table carry " +
+            `DeletionProtectionEnabled: true for the ${protectedReplica} replica`,
+          replaceFlags,
+          disable: {
+            before: 'aws dynamodb update-table --table-name',
+            identifier: physicalId,
+            after: '--no-deletion-protection-enabled',
+            caveat: "Run it with --region set to that replica's region.",
+            maskSecrets,
+          },
+        });
+      }
       return extractLocalDeletionProtection(previousProperties, guardRegion) === true
         ? protectedReplacementAdvice({
             evidence:
@@ -2101,6 +2947,21 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           'AWS::DynamoDB::GlobalTable StreamSpecification'
         );
       }
+      // go-to-k/cdkd#5355: the flat SSE update reads `SSEEnabled` with a
+      // default of ON, so a non-boolean one must not reach it. Its trigger is
+      // the block OR the local replica's key, so both gate the refusal (the
+      // key-convergence arm skips an unusable value instead).
+      if (
+        refusal === undefined &&
+        (changed('SSESpecification') ||
+          !deepEqual(replicaKeyBlocks(properties), replicaKeyBlocks(previousProperties)))
+      ) {
+        refusal = configBooleanRefusal(
+          properties['SSESpecification'],
+          'SSEEnabled',
+          'AWS::DynamoDB::GlobalTable SSESpecification'
+        );
+      }
       if (refusal === undefined && changed('GlobalSecondaryIndexes')) {
         refusal = globalSecondaryIndexesShapeDetail(
           properties['GlobalSecondaryIndexes'],
@@ -2108,6 +2969,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
       }
       if (refusal !== undefined) refuse(refusal);
+    } else {
+      const sseEnabledRefusal = configBooleanRefusal(
+        properties['SSESpecification'],
+        'SSEEnabled',
+        'AWS::DynamoDB::GlobalTable SSESpecification'
+      );
+      if (sseEnabledRefusal !== undefined) {
+        warn(`${sseEnabledRefusal}. Encryption is treated as enabled, the block's default.`);
+      }
     }
 
     // Resolve the client region ONCE for the whole update — the Tags
@@ -2551,6 +3421,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
       this.reportThroughputDiagnostics(diagnostics, logicalId, physicalId, maskSecrets);
 
+      // The local table's customer managed key when cross-region replicas
+      // make `SSESpecification` the wrong channel for it: `applyReplicaKeys`
+      // sends it after the replica diff (go-to-k/cdkd#5355).
+      let deferredSseUpdate: UpdateTableCommandInput['SSESpecification'];
+      let deferredSseFromTemplate = false;
+      let keylessSseFromTemplate = false;
       // 3. Non-conflicting flat fields in one combined UpdateTable.
       // AWS allows combining these in a single call because they don't
       // conflict with each other or with each other's modes.
@@ -2573,6 +3449,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const awsDpe = describeResp.Table?.DeletionProtectionEnabled;
       const flatUpdate: UpdateTableCommandInput = { TableName: physicalId };
       let flatChanged = false;
+      // A table-class change and an encryption change each go out as their
+      // OWN UpdateTable after the flat one (see where they are sent).
+      let tableClassUpdate: UpdateTableCommandInput['TableClass'];
+      let sseUpdate: UpdateTableCommandInput['SSESpecification'];
+      // Whether `sseUpdate` comes from a template change (fails the update
+      // when refused) rather than from the AWS-aware correction (best-effort).
+      let sseFromTemplate = false;
+      // The same for `tableClassUpdate`.
+      let tableClassFromTemplate = false;
       const dpeDiffersFromState = newDpe !== oldDpe;
       const dpeDiffersFromAws =
         newDpe !== undefined && typeof awsDpe === 'boolean' && Boolean(newDpe) !== awsDpe;
@@ -2611,25 +3496,63 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         flatUpdate.DeletionProtectionEnabled = Boolean(newDpe ?? false);
         flatChanged = true;
       }
-      if (
-        properties['TableClass'] !== undefined &&
-        properties['TableClass'] !== previousProperties['TableClass']
-      ) {
-        flatUpdate.TableClass = properties['TableClass'] as
-          | 'STANDARD'
-          | 'STANDARD_INFREQUENT_ACCESS';
-        flatChanged = true;
+      // The local table's class and KMS key are per-replica in the CFn schema
+      // (go-to-k/cdkd#5355), so both sides are read from the local replica.
+      const tableClassChange = tableClassToSend(
+        extractLocalTableClass(previousProperties, currentRegion),
+        extractLocalTableClass(properties, currentRegion)
+      );
+      // AWS-aware like the protection flag above: a table created before
+      // go-to-k/cdkd#5355 holds STANDARD under a record that already names the
+      // declared class, so an unchanged template converges it only by a read.
+      const declaredTableClass = extractLocalTableClass(properties, currentRegion);
+      const liveTableClass = describeResp.Table?.TableClassSummary?.TableClass ?? 'STANDARD';
+      if (tableClassChange !== undefined) {
+        tableClassUpdate = tableClassChange;
+        tableClassFromTemplate = true;
+      } else if (declaredTableClass !== undefined && declaredTableClass !== liveTableClass) {
+        tableClassUpdate = declaredTableClass as UpdateTableCommandInput['TableClass'];
       }
+      const newLocalKmsKey = readReplicaKmsMasterKeyId(
+        localReplicaEntry(properties, currentRegion)
+      );
       if (
         properties['SSESpecification'] !== undefined &&
-        !deepEqual(properties['SSESpecification'], previousProperties['SSESpecification'])
+        (!deepEqual(properties['SSESpecification'], previousProperties['SSESpecification']) ||
+          newLocalKmsKey !==
+            readReplicaKmsMasterKeyId(localReplicaEntry(previousProperties, currentRegion)))
       ) {
-        const sse = properties['SSESpecification'] as Record<string, unknown>;
-        flatUpdate.SSESpecification = {
-          Enabled: sse['SSEEnabled'] !== undefined ? Boolean(sse['SSEEnabled']) : true,
-          ...(sse['SSEType'] !== undefined && { SSEType: sse['SSEType'] as 'KMS' }),
-        };
-        flatChanged = true;
+        sseUpdate = toSdkTableSseSpecification(properties['SSESpecification'], newLocalKmsKey);
+        sseFromTemplate = true;
+      } else if (
+        properties['SSESpecification'] === undefined &&
+        previousProperties['SSESpecification'] !== undefined &&
+        toSdkTableSseSpecification(previousProperties['SSESpecification'], undefined).Enabled
+      ) {
+        // A REMOVED block resets the table to the AWS owned key, which is what
+        // CloudFormation does (CFn A/B, us-east-1 + us-west-2, 2026-10-26:
+        // `SSEDescription` absent on both regions once the update completed).
+        // `Enabled: false` is DynamoDB's spelling of "AWS owned key"; sent only
+        // when the previous block had encryption on, since that is the one
+        // case with anything to reset (go-to-k/cdkd#5355).
+        sseUpdate = { Enabled: false };
+        sseFromTemplate = true;
+      } else if (
+        isKmsKeyArn(newLocalKmsKey) &&
+        properties['SSESpecification'] !== undefined &&
+        configBooleanRefusal(
+          properties['SSESpecification'],
+          'SSEEnabled',
+          'AWS::DynamoDB::GlobalTable SSESpecification'
+        ) === undefined &&
+        toSdkTableSseSpecification(properties['SSESpecification'], undefined).Enabled &&
+        describeResp.Table?.SSEDescription?.KMSMasterKeyArn !== newLocalKmsKey
+      ) {
+        // AWS-aware, for the reason the table class above is: a table created
+        // before go-to-k/cdkd#5355 sits on the AWS managed key under a record
+        // naming the declared one. Compared only for a key ARN, which is what
+        // AWS reports back (CDK's `customerManagedKey` renders the ARN).
+        sseUpdate = toSdkTableSseSpecification(properties['SSESpecification'], newLocalKmsKey);
       }
       if (
         properties['StreamSpecification'] !== undefined &&
@@ -2983,6 +3906,56 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           undefined,
           maskSecrets
         );
+      }
+      // DynamoDB takes a table-class change and an encryption change each as
+      // the ONLY operation of its UpdateTable (measured 2026-10-26 on a
+      // two-region table: `TableClass modification must be the only operation
+      // in the request`, and the same for `Server-Side Encryption`, refused
+      // with deletion protection or each other alongside), and an encryption
+      // change moves every replica with it, so each is sent alone and waited
+      // out across the whole global table (go-to-k/cdkd#5355).
+      // A correction AWS alone asked for (a table deployed before
+      // go-to-k/cdkd#5355, a console-side change) is best-effort, as the
+      // replica convergence is: DynamoDB's encryption-change throttle or an
+      // unusable key must not fail every later deploy of the table.
+      if (tableClassUpdate !== undefined) {
+        await this.sendLocalSettingUpdate(
+          { TableName: physicalId, TableClass: tableClassUpdate },
+          tableClassFromTemplate,
+          'TableClass',
+          physicalId,
+          logicalId,
+          maskSecrets
+        );
+      }
+      // A customer managed key on a table with cross-region replicas cannot
+      // go through `SSESpecification` (measured: "Customer Managed CMKs on
+      // Global Table Version 2019.11.21 replicas cannot be updated through
+      // SSESpecification parameter and can only be updated through
+      // ReplicaUpdates parameter"); `applyReplicaKeys` sets it after the
+      // replica diff. The AWS managed key (`SSEType: KMS`, no key) and the
+      // AWS owned key (`Enabled: false`) do go through it, and move every
+      // replica with the table (measured).
+      const liveHasCrossRegionReplica = (describeResp.Table?.Replicas ?? []).some(
+        (r) => r.RegionName !== undefined && r.RegionName !== currentRegion
+      );
+      if (sseUpdate?.KMSMasterKeyId !== undefined && liveHasCrossRegionReplica) {
+        deferredSseUpdate = sseUpdate;
+        deferredSseFromTemplate = sseFromTemplate;
+      } else if (sseUpdate !== undefined) {
+        await this.sendLocalSettingUpdate(
+          { TableName: physicalId, SSESpecification: sseUpdate },
+          sseFromTemplate,
+          'encryption',
+          physicalId,
+          logicalId,
+          maskSecrets
+        );
+        // A template change to the AWS managed key moved every replica with
+        // the table; a replica the template still names a customer managed
+        // key for is then a template change for the key pass too.
+        keylessSseFromTemplate =
+          sseFromTemplate && sseUpdate.KMSMasterKeyId === undefined && liveHasCrossRegionReplica;
       }
 
       // 4. BillingMode flip (own UpdateTable per AWS state-machine rule).
@@ -3410,10 +4383,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           );
         }
 
+        // A replica's KMS key is not sent here: DynamoDB refuses a key
+        // change for one replica alone ("KMSMasterKeyId must be specified
+        // for each replica", measured), so `applyReplicaKeys` sets every
+        // region's key in one call after this loop (go-to-k/cdkd#5355). A
+        // REMOVED key (CDK's `customerManagedKey` -> `awsManagedKey`) needs
+        // nothing here either: the table's `SSESpecification` update moves
+        // every replica to the AWS managed key (measured).
         const updateAction: UpdateReplicationGroupMemberAction = { RegionName: region };
-        if (replica['KMSMasterKeyId'] !== undefined) {
-          updateAction.KMSMasterKeyId = replica['KMSMasterKeyId'] as string;
-        }
         // Same CFn -> SDK per-replica GSI throughput translation as the
         // create-side `addReplica` (Issue #1387).
         const replicaIndexes = toSdkReplicaGlobalSecondaryIndexes(
@@ -3493,10 +4470,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             );
           }
         }
-        if (replica['TableClassOverride']) {
-          updateAction.TableClassOverride = replica['TableClassOverride'] as
-            | 'STANDARD'
-            | 'STANDARD_INFREQUENT_ACCESS';
+        const replicaTableClassChange = tableClassToSend(
+          readReplicaTableClass(oldReplica),
+          readReplicaTableClass(replica)
+        );
+        if (replicaTableClassChange !== undefined) {
+          updateAction.TableClassOverride = replicaTableClassChange;
         }
         // AWS rejects an UpdateReplica with no update fields
         // (ValidationException). When the only change in the modified
@@ -3505,7 +4484,6 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // UpdateReplica SDK call in that case — the Tags-only diff is
         // already in flight against the regional client.
         const hasUpdateField =
-          updateAction.KMSMasterKeyId !== undefined ||
           updateAction.GlobalSecondaryIndexes !== undefined ||
           updateAction.TableClassOverride !== undefined ||
           updateAction.ProvisionedThroughputOverride !== undefined ||
@@ -3526,6 +4504,37 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
         await this.waitForReplicaActive(physicalId, region, logicalId, undefined, maskSecrets);
       }
+      const addedReplicaRegions = new Set(replicaDiff.added.map((r) => r['Region']));
+      await this.convergeReplicaDeletionProtection(
+        physicalId,
+        logicalId,
+        currentRegion,
+        previousProperties,
+        properties,
+        addedReplicaRegions,
+        warn,
+        maskSecrets
+      );
+      await this.convergeReplicaSettings(
+        physicalId,
+        logicalId,
+        currentRegion,
+        properties,
+        addedReplicaRegions,
+        maskSecrets
+      );
+      await this.applyReplicaKeys(
+        physicalId,
+        logicalId,
+        currentRegion,
+        properties,
+        previousProperties,
+        addedReplicaRegions,
+        deferredSseUpdate,
+        deferredSseFromTemplate,
+        keylessSseFromTemplate,
+        maskSecrets
+      );
 
       // 6. GSI diff. New GSI Create may need additional AttributeDefinitions
       // — AWS allows combining `AttributeDefinitions` and one GSI
@@ -5273,11 +6282,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               progress
             );
           }
-          await this.dynamoDBClient.send(
-            new UpdateTableCommand({
-              TableName: physicalId,
-              ReplicaUpdates: [{ Delete: { RegionName: region } }],
-            })
+          await this.dropReplicaForDelete(
+            physicalId,
+            region,
+            context?.removeProtection === true,
+            logicalId,
+            budget,
+            deleteMask
           );
           progress.stripped = true;
           await this.waitForReplicaGone(
@@ -7266,10 +8277,163 @@ export function extractLocalDeletionProtection(
   region: string
 ): boolean | undefined {
   const local = localReplicaEntry(props, region);
-  const perReplica = local?.['DeletionProtectionEnabled'];
-  if (typeof perReplica === 'boolean') return perReplica;
+  // `coerceCfnBoolean`: a template's `'true'` protects, as CloudFormation
+  // reads it, and as the cross-region replicas' reads do (go-to-k/cdkd#5355).
+  const perReplica = coerceCfnBoolean(local?.['DeletionProtectionEnabled']);
+  if (perReplica !== undefined) return perReplica;
   const topLevel = props['DeletionProtectionEnabled'];
   return typeof topLevel === 'boolean' ? topLevel : undefined;
+}
+
+/**
+ * Whether the table OR any cross-region replica is protected: the local
+ * table's value (as {@link extractLocalDeletionProtection} reads it), `true`
+ * when any replica's `DeletionProtectionEnabled` is. What the protection
+ * locator reports, now that cdkd sets a replica's own guard and
+ * `--remove-protection` turns it off (go-to-k/cdkd#5355).
+ */
+export function extractAnyDeletionProtection(
+  props: Record<string, unknown>,
+  region: string
+): boolean | undefined {
+  const replicas = Array.isArray(props['Replicas']) ? (props['Replicas'] as unknown[]) : [];
+  if (replicas.some((r) => coerceCfnBoolean(asRecord(r)?.['DeletionProtectionEnabled']) === true)) {
+    return true;
+  }
+  return extractLocalDeletionProtection(props, region);
+}
+
+/**
+ * A replica's customer-managed KMS key, read where the CFn schema puts it:
+ * `Replicas[].SSESpecification.KMSMasterKeyId` (`ReplicaSSESpecification`).
+ * CDK's `TableV2` renders it there for every replica of a
+ * `TableEncryptionV2.customerManagedKey(...)` table. The provider used to read
+ * a flat `Replicas[].KMSMasterKeyId`, which the schema does not have
+ * (`additionalProperties: false`), so the key was silently dropped and the
+ * replica came up under the AWS managed key (go-to-k/cdkd#5355).
+ */
+export function readReplicaKmsMasterKeyId(replica: unknown): string | undefined {
+  const sse = asRecord(asRecord(replica)?.['SSESpecification']);
+  const key = sse?.['KMSMasterKeyId'];
+  return typeof key === 'string' && key !== '' ? key : undefined;
+}
+
+/**
+ * A replica's table class, read where the CFn schema puts it:
+ * `Replicas[].TableClass`. The SDK spells the cross-region member
+ * `TableClassOverride`, which is not a CFn property — reading THAT name from
+ * the template dropped every table class (go-to-k/cdkd#5355).
+ */
+export function readReplicaTableClass(replica: unknown): ReplicaTableClass | undefined {
+  const tableClass = asRecord(replica)?.['TableClass'];
+  return typeof tableClass === 'string' && tableClass !== ''
+    ? (tableClass as ReplicaTableClass)
+    : undefined;
+}
+
+type ReplicaTableClass = 'STANDARD' | 'STANDARD_INFREQUENT_ACCESS';
+
+/** {@link readReplicaDeletionProtection}'s answer for a value that is not a boolean. */
+export const UNUSABLE = Symbol('unusable');
+
+/**
+ * A replica's `DeletionProtectionEnabled`: the boolean (a CFn string
+ * `'true'` / `'false'` included), `undefined` when absent, or
+ * {@link UNUSABLE} for anything else — reported through `warn` when one is
+ * given. Never read as `false`: that would turn a protected replica's guard
+ * off on a value nobody can read (go-to-k/cdkd#5355).
+ */
+export function readReplicaDeletionProtection(
+  replica: Record<string, unknown> | undefined,
+  region: string,
+  warn?: (message: string) => void
+): boolean | undefined | typeof UNUSABLE {
+  const refusal = configBooleanRefusal(
+    replica,
+    'DeletionProtectionEnabled',
+    `AWS::DynamoDB::GlobalTable Replicas[${region}]`
+  );
+  if (refusal !== undefined) {
+    warn?.(`${refusal}. The ${region} replica's deletion protection is left as it is.`);
+    return UNUSABLE;
+  }
+  return coerceCfnBoolean(replica?.['DeletionProtectionEnabled']);
+}
+
+/**
+ * Each replica's `SSESpecification` by region — what decides whether an update
+ * re-sends the local table's SSE block (its key lives there), compared before
+ * the client region is resolved.
+ */
+function replicaKeyBlocks(props: Record<string, unknown>): unknown[] {
+  return (Array.isArray(props['Replicas']) ? (props['Replicas'] as unknown[]) : []).map((r) => [
+    asRecord(r)?.['Region'],
+    asRecord(r)?.['SSESpecification'],
+  ]);
+}
+
+/** Whether a KMS key reference is a key ARN (what AWS reports back for a replica). */
+function isKmsKeyArn(key: string | undefined): key is string {
+  return key !== undefined && /^arn:aws[a-z-]*:kms:[^:]+:\d+:key\//.test(key);
+}
+
+/**
+ * The table class an update sends, or `undefined` for none: a changed value,
+ * or `STANDARD` when the template REMOVED a non-standard one — CloudFormation
+ * resets a removed `Replicas[].TableClass` to `STANDARD` on the local table
+ * and on a cross-region replica alike (CFn A/B, us-east-1 + us-west-2,
+ * 2026-10-26, go-to-k/cdkd#5355). Before, a removal sent nothing and the old
+ * class stayed.
+ */
+export function tableClassToSend(
+  previous: ReplicaTableClass | undefined,
+  desired: ReplicaTableClass | undefined
+): ReplicaTableClass | undefined {
+  if (desired !== undefined) return desired !== previous ? desired : undefined;
+  return previous !== undefined && previous !== 'STANDARD' ? 'STANDARD' : undefined;
+}
+
+/**
+ * The SDK `SSESpecification` for the LOCAL table: the top-level CFn block's
+ * `{ SSEEnabled, SSEType }` plus the local replica's KMS key, which the CFn
+ * schema keeps per replica. Shared by `create()` and `update()` so the two
+ * cannot disagree on the key (go-to-k/cdkd#5355).
+ */
+function toSdkTableSseSpecification(
+  block: unknown,
+  kmsMasterKeyId: string | undefined
+): { Enabled: boolean; SSEType?: 'KMS'; KMSMasterKeyId?: string } {
+  const sse = asRecord(block) ?? {};
+  return {
+    // `coerceCfnBoolean`, not `Boolean(...)`: a template's `"false"` is a
+    // truthy string, and read that way it ENABLED encryption it disabled.
+    Enabled: coerceCfnBoolean(sse['SSEEnabled']) ?? true,
+    ...(sse['SSEType'] !== undefined &&
+      sse['SSEType'] !== '' && {
+        SSEType: sse['SSEType'] as 'KMS',
+      }),
+    ...(kmsMasterKeyId !== undefined && { KMSMasterKeyId: kmsMasterKeyId }),
+  };
+}
+
+/**
+ * The table class the LOCAL table (the one `CreateTable` builds) should carry:
+ * its `Replicas[?Region==<region>].TableClass`, falling back to a top-level
+ * `TableClass`. The top-level spelling is not in the CFn schema (CloudFormation
+ * refuses it at validation, measured for go-to-k/cdkd#5355), but it is the one
+ * this provider always read, so it stays as the same legacy pass-through
+ * {@link extractLocalDeletionProtection} keeps.
+ */
+export function extractLocalTableClass(
+  props: Record<string, unknown>,
+  region: string
+): ReplicaTableClass | undefined {
+  const perReplica = readReplicaTableClass(localReplicaEntry(props, region));
+  if (perReplica !== undefined) return perReplica;
+  const topLevel = props['TableClass'];
+  return typeof topLevel === 'string' && topLevel !== ''
+    ? (topLevel as ReplicaTableClass)
+    : undefined;
 }
 
 /**
@@ -7583,6 +8747,21 @@ export function collectAutoScalingTargets(
  */
 export const REPLICA_COPY_RELEASE_POLLS = 180;
 export const REPLICA_COPY_RELEASE_POLL_MS = 5000;
+
+/**
+ * How long DynamoDB refuses a second `DeletionProtectionEnabled` change on one
+ * table after the first (measured 15000 ms, us-west-2, 2026-10-26), plus a
+ * second of margin (go-to-k/cdkd#5355).
+ */
+export const DELETION_PROTECTION_REFLIP_MS = 16_000;
+
+/**
+ * {@link DynamoDBGlobalTableProvider.waitForReplicaProtectionSettled}'s cap:
+ * 60 polls 5 s apart, five minutes against the ~30 s a replica's protection
+ * change took to settle when measured (go-to-k/cdkd#5355).
+ */
+export const REPLICA_PROTECTION_SETTLE_POLLS = 60;
+export const REPLICA_PROTECTION_SETTLE_POLL_MS = 5000;
 /** Replica-add attempts in total, the first included. */
 export const REPLICA_COPY_RELEASE_ATTEMPTS = 3;
 
@@ -9520,8 +10699,8 @@ export function collectTableOnDemandCeilings(
 
 /**
  * Diff CFn `Replicas[]` arrays. Keyed by `Region`. Returns adds, removes,
- * and modifies (entries whose other keys — KMSMasterKeyId,
- * GlobalSecondaryIndexes, TableClassOverride — differ from the old shape).
+ * and modifies (entries whose other keys — SSESpecification,
+ * GlobalSecondaryIndexes, TableClass, ... — differ from the old shape).
  */
 export function diffReplicas(
   oldReplicas: Array<Record<string, unknown>>,

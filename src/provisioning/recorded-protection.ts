@@ -25,7 +25,7 @@ import {
  * enforces it.
  */
 const READER_LABELS: Record<string, string> = {
-  'AWS::DynamoDB::GlobalTable': 'DeletionProtectionEnabled for the deploy region',
+  'AWS::DynamoDB::GlobalTable': 'DeletionProtectionEnabled on the table or a replica',
   'AWS::ElasticLoadBalancingV2::LoadBalancer': 'LoadBalancerAttributes deletion_protection.enabled',
 };
 

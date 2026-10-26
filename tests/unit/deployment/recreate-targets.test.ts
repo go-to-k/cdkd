@@ -2678,7 +2678,7 @@ describe('a protected stateful target says the flag alone cannot remove it (#261
     expect(renderRecreateTargetsErrors(revalidated)).toContain(NOTE_MARKER);
   });
 
-  it("reads a global table's replica flag in the STATE record's region", () => {
+  it("reads a global table's replica flags, a cross-region one included (go-to-k/cdkd#5355)", () => {
     const validateGlobal = (region: string) =>
       validateRecreateTargets({
         template: {
@@ -2702,11 +2702,15 @@ describe('a protected stateful target says the flag alone cannot remove it (#261
         allowUnsupportedProperties: new Set(),
         forceStatefulRecreation: false,
       });
-    expect(validateGlobal('eu-west-1').targets[0]!.protectionEvidence).toBe(
-      "cdkd's recorded properties for this resource carry DeletionProtectionEnabled for the " +
-        'deploy region: true'
-    );
-    expect(validateGlobal('us-east-1').targets[0]!.protectionEvidence).toBeUndefined();
+    // A protected cross-region replica blocks the delete as the deploy
+    // region's own guard does (AWS refuses that replica's drop), so the
+    // evidence holds from either region.
+    for (const region of ['eu-west-1', 'us-east-1']) {
+      expect(validateGlobal(region).targets[0]!.protectionEvidence).toBe(
+        "cdkd's recorded properties for this resource carry DeletionProtectionEnabled on the " +
+          'table or a replica: true'
+      );
+    }
   });
 
   it('the header points at the per-resource note only when a target is protected', () => {

@@ -968,6 +968,11 @@
       "scenarios": []
     },
     {
+      "name": "dynamodb-globaltable-replica-settings",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "dynamodb-gsi-update",
       "annotated": false,
       "scenarios": []
@@ -3497,6 +3502,7 @@
     "dynamodb-autoscaling",
     "dynamodb-fix-forward-orphan",
     "dynamodb-globaltable-implied-stream",
+    "dynamodb-globaltable-replica-settings",
     "dynamodb-gsi-update",
     "dynamodb-ondemand",
     "dynamodb-sse",
