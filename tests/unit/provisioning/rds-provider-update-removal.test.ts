@@ -45,12 +45,16 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
   });
 
   describe('DBCluster update (ModifyDBCluster)', () => {
-    // The port-apply wait has its own cases below; the rest skip it.
+    // The port-apply wait has its own cases below; the rest skip it. The
+    // caller's own value is put back afterwards, and unset only if it was.
+    let savedNoWait: string | undefined;
     beforeEach(() => {
+      savedNoWait = process.env['CDKD_NO_WAIT'];
       process.env['CDKD_NO_WAIT'] = 'true';
     });
     afterEach(() => {
-      delete process.env['CDKD_NO_WAIT'];
+      if (savedNoWait === undefined) delete process.env['CDKD_NO_WAIT'];
+      else process.env['CDKD_NO_WAIT'] = savedNoWait;
     });
 
     const mockClusterUpdate = () => {
