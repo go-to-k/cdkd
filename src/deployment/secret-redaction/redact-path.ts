@@ -848,7 +848,7 @@ export interface SentinelDefinition {
 /** One position of a sentinel body a secret lands in. */
 export interface SecretLeaf {
   readonly path: ReadonlyArray<string | number>;
-  /** The container at each depth of `path`: an array's length, or an object's keys. */
+  /** The container at each depth of `path`: an array's length, or an object's keys as written. */
   readonly shapes: ReadonlyArray<number | ReadonlySet<string>>;
   /** The substitution placed OUTSIDE quotes, or `undefined` for one inside a string. */
   readonly outOfStringName: string | undefined;
@@ -920,6 +920,7 @@ export function sentinelDefinitionOf(
     const marked = (t: string): boolean =>
       t.includes(SENTINEL_IN_STRING) || t.includes(SENTINEL_OUT_OF_STRING);
     const outOfString = new RegExp(`^${SENTINEL_OUT_OF_STRING}(\\d+)${SENTINEL_OUT_OF_STRING}$`);
+    const inStringMarkers = new RegExp(`${SENTINEL_IN_STRING}(\\d+)${SENTINEL_IN_STRING}`, 'g');
     const walk = (
       node: unknown,
       path: Array<string | number>,
@@ -945,10 +946,16 @@ export function sentinelDefinitionOf(
         return;
       }
       if (isPlainObject(node)) {
-        const own = new Set(Object.keys(node));
+        // A key a secret lands in is walked by its spelling AS WRITTEN
+        // (`${name}`): the only readback that can still hold the key there is
+        // an unsubstituted one, since a substituted key holds the plaintext,
+        // which the key rule masks whole before any position is read.
+        const asWritten = (k: string): string =>
+          k.replace(inStringMarkers, (_m, i: string) => `\${${names[Number(i)]}}`);
+        const own = new Set(Object.keys(node).map(asWritten));
         for (const [k, v] of Object.entries(node)) {
           if (!marked(k)) keys.add(k);
-          walk(v, [...path, k], [...shapes, own]);
+          walk(v, [...path, asWritten(k)], [...shapes, own]);
         }
       }
     };
@@ -979,16 +986,10 @@ export function alignedSecretLeaf(root: unknown, leaf: SecretLeaf): { value: unk
       cursor = cursor[segment as number];
     } else {
       if (!isPlainObject(cursor)) return undefined;
-      // The same NUMBER of keys, and every key the body spells as a literal.
-      // A key a secret lands in is a wildcard here: the key rule decides it.
-      // The presence half is DEFENSIVE and unpinned: a splice that keeps the
-      // count but renames a key introduces a key the record does not spell,
-      // which the key rule has already masked whole before this runs.
-      const own = new Set(Object.keys(cursor));
-      if (own.size !== shape.size) return undefined;
-      for (const k of shape) {
-        if (!k.includes(SENTINEL_IN_STRING) && !own.has(k)) return undefined;
-      }
+      // The same key set as the body (keys a secret lands in, as written).
+      const own = Object.keys(cursor);
+      if (own.length !== shape.size || own.some((k) => !shape.has(k))) return undefined;
+      if (!Object.hasOwn(cursor, segment)) return undefined;
       cursor = cursor[segment as string];
     }
   }

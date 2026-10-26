@@ -432,4 +432,17 @@ describe('secret-redaction - a substitution secret in a definition KEY (issue #5
       States: { W: { Type: 'Wait', Comment: marker, Seconds: EXPR, End: true } },
     });
   });
+
+  it('an unsubstituted readback whose secret KEY holds a secret VALUE stays exactly as written', () => {
+    // The position under a `${k}` key is walked by the key's written spelling,
+    // so nothing is invented beside it.
+    const body = '{"StartAt":"A","States":{"A":{"Type":"Pass","Result":{"${k}":"${v}"},"End":true}}}';
+    const props = { DefinitionString: body, DefinitionSubstitutions: { k: EXPR, v: EXPR } };
+    const unsubstituted = JSON.parse(body) as Record<string, unknown>;
+    for (const persist of [refreshObserved, autoRefresh]) {
+      expect(persist(props, { Definition: structuredClone(unsubstituted) })['Definition']).toEqual(
+        unsubstituted
+      );
+    }
+  });
 });
