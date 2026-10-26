@@ -168,6 +168,116 @@ describe('LambdaFunctionProvider', () => {
     });
   });
 
+  // Issue #5300: `Code.S3ObjectStorageMode` (`COPY` | `REFERENCE`) and
+  // `Code.SourceKMSKeyArn` were never forwarded, on CreateFunction or on
+  // UpdateFunctionCode: a template's REFERENCE deployed as the default COPY,
+  // and the package's customer managed key fell back to the AWS owned key.
+  describe('Code S3ObjectStorageMode / SourceKMSKeyArn (issue #5300)', () => {
+    const KEY = 'arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555';
+    const ROLE = 'arn:aws:iam::123456789012:role/exec';
+
+    async function createInput(code: Record<string, unknown>) {
+      mockLambdaSend.mockResolvedValueOnce({
+        FunctionName: 'fn-5300',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-5300',
+      });
+      await provider.create('Fn', 'AWS::Lambda::Function', {
+        FunctionName: 'fn-5300',
+        Role: ROLE,
+        Handler: 'index.handler',
+        Runtime: 'nodejs20.x',
+        Code: code,
+      });
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(CreateFunctionCommand);
+      return cmd.input;
+    }
+
+    async function updateCodeInput(
+      code: Record<string, unknown>,
+      previousCode: Record<string, unknown>
+    ) {
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionCode
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // waiter
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-5300',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-5300',
+          },
+        });
+      await provider.update(
+        'Fn',
+        'fn-5300',
+        'AWS::Lambda::Function',
+        { Role: ROLE, Code: code },
+        { Role: ROLE, Code: previousCode }
+      );
+      const codeCmds = mockLambdaSend.mock.calls
+        .map((c) => c[0])
+        .filter((cmd) => cmd instanceof UpdateFunctionCodeCommand);
+      expect(codeCmds).toHaveLength(1);
+      return codeCmds[0].input;
+    }
+
+    it('sends both on CreateFunction', async () => {
+      const input = await createInput({
+        S3Bucket: 'b',
+        S3Key: 'k',
+        S3ObjectVersion: 'v1',
+        S3ObjectStorageMode: 'REFERENCE',
+        SourceKMSKeyArn: KEY,
+      });
+      expect(input.Code).toEqual({
+        S3Bucket: 'b',
+        S3Key: 'k',
+        S3ObjectVersion: 'v1',
+        S3ObjectStorageMode: 'REFERENCE',
+        SourceKMSKeyArn: KEY,
+      });
+    });
+
+    it('leaves both off CreateFunction when the template omits them', async () => {
+      const input = await createInput({ S3Bucket: 'b', S3Key: 'k' });
+      expect(input.Code).toEqual({ S3Bucket: 'b', S3Key: 'k' });
+    });
+
+    it('sends both on UpdateFunctionCode when the code changes', async () => {
+      const input = await updateCodeInput(
+        { S3Bucket: 'b', S3Key: 'new-k', S3ObjectStorageMode: 'REFERENCE', SourceKMSKeyArn: KEY },
+        { S3Bucket: 'b', S3Key: 'old-k', S3ObjectStorageMode: 'REFERENCE', SourceKMSKeyArn: KEY }
+      );
+      expect(input).toMatchObject({
+        FunctionName: 'fn-5300',
+        S3Bucket: 'b',
+        S3Key: 'new-k',
+        S3ObjectStorageMode: 'REFERENCE',
+        SourceKMSKeyArn: KEY,
+      });
+    });
+
+    it('a storage-mode-only change re-sends the code with the new mode', async () => {
+      const input = await updateCodeInput(
+        { S3Bucket: 'b', S3Key: 'k', S3ObjectStorageMode: 'REFERENCE' },
+        { S3Bucket: 'b', S3Key: 'k', S3ObjectStorageMode: 'COPY' }
+      );
+      expect(input).toMatchObject({ S3Bucket: 'b', S3Key: 'k', S3ObjectStorageMode: 'REFERENCE' });
+    });
+
+    // The outcome matches CloudFormation's: a stack update dropping
+    // SourceKMSKeyArn kept the key, and one dropping REFERENCE went back to
+    // COPY (measured A/B, 2026-10-26).
+    it('a removed mode or key is absent from UpdateFunctionCode, matching CloudFormation\'s outcome', async () => {
+      const input = await updateCodeInput(
+        { S3Bucket: 'b', S3Key: 'k' },
+        { S3Bucket: 'b', S3Key: 'k', S3ObjectStorageMode: 'REFERENCE', SourceKMSKeyArn: KEY }
+      );
+      expect(input.S3ObjectStorageMode).toBeUndefined();
+      expect(input.SourceKMSKeyArn).toBeUndefined();
+      expect(input).toMatchObject({ S3Bucket: 'b', S3Key: 'k' });
+    });
+  });
+
   // Issue #609: backfill of native CreateFunction /
   // UpdateFunctionConfiguration config fields cdkd previously silent-dropped.
   // Trigger lineage for the CC-API-fallback integ fixtures + coverage-derived

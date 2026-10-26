@@ -100,6 +100,13 @@ gc deletes data, so it stops or keeps the item whenever something is unclear.
 
 ### Edge cases
 
+- **Lambda packages stored by reference.** A function or layer version
+  deployed with `S3ObjectStorageMode: REFERENCE` has Lambda read its package
+  from the asset bucket instead of keeping a copy. A version that state no
+  longer records, such as a retained function version or an earlier layer
+  version, can then still depend on an object gc counts as unreferenced. Keep
+  `--older-than` above the age of any such version you still invoke.
+
 - **How age is measured.** gc reads an object's `LastModified` and an image's
   `imagePushedAt`. A missing timestamp counts as new, and an item exactly at
   the cutoff is kept.

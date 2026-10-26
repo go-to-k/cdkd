@@ -18,6 +18,7 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *   a DLQ, and the removal of its optional properties (CDKD_TEST_REMOVAL)
  * - EventBridge rule with event pattern on custom bus
  * - Lambda function as rule target (inline code)
+ * - Lambda `Code.SourceKMSKeyArn` on create and UpdateFunctionCode (issue #5300)
  * - IAM permissions for EventBridge to invoke Lambda
  * - EventBridge Scheduler Schedule (AWS::Scheduler::Schedule)
  * - EventBridge Pipe: SQS → Lambda (AWS::Pipes::Pipe)
@@ -87,6 +88,38 @@ def handler(event, context):
         EVENT_BUS_NAME: bus.eventBusName,
       },
     });
+
+    // Issue #5300: `Code.SourceKMSKeyArn` was never sent, so the package was
+    // encrypted with the AWS owned key instead. The UPDATE phase changes the
+    // code, so UpdateFunctionCode must carry the key too. The REMOVAL phase
+    // drops the key along with another code change: Lambda, and so
+    // CloudFormation, keeps the key on an UpdateFunctionCode that names none,
+    // and cdkd must leave it the same way.
+    const sourceKeyFn = new lambda.Function(this, 'SourceKeyHandler', {
+      functionName: `cdkd-test-source-key-fn-${cdk.Aws.ACCOUNT_ID}`,
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline(
+        `def handler(event, context):\n    return "${isRemoval ? 'v3' : isUpdate ? 'v2' : 'v1'}"\n`
+      ),
+    });
+    // Lambda refuses a SourceKMSKeyArn key whose policy does not let the
+    // Lambda service principal use it (measured: AccessDeniedException "The
+    // key policy must allow Lambda to perform 'kms:GenerateDataKey' and
+    // 'kms:Decrypt' operations"; CloudFormation fails the same way).
+    busKey.addToResourcePolicy(
+      new iam.PolicyStatement({
+        principals: [new iam.ServicePrincipal('lambda.amazonaws.com')],
+        actions: ['kms:GenerateDataKey', 'kms:Decrypt'],
+        resources: ['*'],
+      })
+    );
+    if (!isRemoval) {
+      (sourceKeyFn.node.defaultChild as lambda.CfnFunction).addPropertyOverride(
+        'Code.SourceKMSKeyArn',
+        busKey.keyArn
+      );
+    }
 
     // UPDATE phase (issue #955): drop the rule while KEEPING the bus, so the
     // re-deploy exercises the standalone diff-driven delete of a custom-bus

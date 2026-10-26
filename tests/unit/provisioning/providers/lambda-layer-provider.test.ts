@@ -1,10 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { GetLayerVersionByArnCommand } from '@aws-sdk/client-lambda';
+import { GetLayerVersionByArnCommand, PublishLayerVersionCommand } from '@aws-sdk/client-lambda';
 
 const mockSend = vi.fn();
+// create() publishes through its own `LambdaClient`, not the shared one.
+vi.mock('@aws-sdk/client-lambda', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-lambda')>();
+  return {
+    ...actual,
+    LambdaClient: vi.fn().mockImplementation(() => ({
+      send: mockSend,
+      config: { region: () => Promise.resolve('us-east-1') },
+    })),
+  };
+});
 vi.mock('../../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    lambda: { send: mockSend, config: { region: () => 'us-east-1' } },
+    lambda: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
   }),
 }));
 vi.mock('../../../../src/utils/logger.js', () => {
@@ -87,5 +98,53 @@ describe('LambdaLayerVersionProvider update region guard (issue #2613)', () => {
     );
     expect(region).not.toHaveBeenCalled();
     expect(mockSend).not.toHaveBeenCalled();
+  });
+});
+
+// Issue #5300: `Content.S3ObjectStorageMode` (`COPY` | `REFERENCE`) was never
+// copied into the PublishLayerVersion request, so a template's REFERENCE
+// layer was published as the Lambda default COPY.
+describe('LambdaLayerVersionProvider create Content (issue #5300)', () => {
+  let provider: LambdaLayerVersionProvider;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new LambdaLayerVersionProvider();
+  });
+
+  const ARN = 'arn:aws:lambda:us-east-1:123456789012:layer:my-layer:1';
+
+  async function publishedContent(content: Record<string, unknown>): Promise<unknown> {
+    mockSend.mockResolvedValueOnce({ LayerVersionArn: ARN });
+    await provider.create('MyLayer', 'AWS::Lambda::LayerVersion', {
+      LayerName: 'my-layer',
+      Content: content,
+    });
+    const publish = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((cmd) => cmd instanceof PublishLayerVersionCommand);
+    expect(publish).toHaveLength(1);
+    return (publish[0] as PublishLayerVersionCommand).input.Content;
+  }
+
+  it.each(['REFERENCE', 'COPY'])('sends Content.S3ObjectStorageMode %s', async (mode) => {
+    expect(
+      await publishedContent({
+        S3Bucket: 'assets-bucket',
+        S3Key: 'layer.zip',
+        S3ObjectVersion: 'v1',
+        S3ObjectStorageMode: mode,
+      })
+    ).toEqual({
+      S3Bucket: 'assets-bucket',
+      S3Key: 'layer.zip',
+      S3ObjectVersion: 'v1',
+      S3ObjectStorageMode: mode,
+    });
+  });
+
+  it('leaves S3ObjectStorageMode off the request when the template omits it', async () => {
+    const content = await publishedContent({ S3Bucket: 'assets-bucket', S3Key: 'layer.zip' });
+    expect(content).toEqual({ S3Bucket: 'assets-bucket', S3Key: 'layer.zip' });
+    expect(content).not.toHaveProperty('S3ObjectStorageMode');
   });
 });
