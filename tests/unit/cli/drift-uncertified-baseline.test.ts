@@ -1146,6 +1146,71 @@ describe('cdkd drift — a rendered Step Functions Definition mask (issue #5315)
     expect(exitSpy).toHaveBeenCalledWith(2);
   });
 
+  it('a WHOLE-Definition mask (a key secret, #5333) is notCompared, exit 2', async () => {
+    const record: ResourceState = {
+      physicalId: 'arn:aws:states:us-east-1:123456789012:stateMachine:m',
+      resourceType: SFN_TYPE,
+      properties: {
+        DefinitionString: '{"StartAt":"${k}","States":{"${k}":{"Type":"Pass","End":true}}}',
+        DefinitionSubstitutions: { k: ALPHA_EXPR },
+      },
+      observedProperties: { Definition: SECRET_MASK },
+    };
+    mockGetState.mockResolvedValueOnce(makeState({ M: record }));
+    readsBack({
+      Definition: {
+        StartAt: ALPHA_PLAINTEXT,
+        States: { [ALPHA_PLAINTEXT]: { Type: 'Pass', End: true } },
+      },
+    });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    assertNoPlaintext(output);
+    const payload = JSON.parse(output) as DriftJson[];
+    expect(payload[0]!.drifted).toEqual([]);
+    expect(payload[0]!.notCompared).toEqual([
+      { logicalId: 'M', type: SFN_TYPE, cause: 'uncertifiedBaseline', referencesUnresolved: true },
+    ]);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('--revert beside a WHOLE-Definition mask sends the live Definition, never ***', async () => {
+    const update = vi.fn(async () => ({}));
+    const liveDefinition = {
+      StartAt: ALPHA_PLAINTEXT,
+      States: { [ALPHA_PLAINTEXT]: { Type: 'Pass', End: true } },
+    };
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        M: {
+          physicalId: 'arn:aws:states:us-east-1:123456789012:stateMachine:m',
+          resourceType: SFN_TYPE,
+          properties: {
+            RoleArn: 'arn:aws:iam::123456789012:role/a',
+            DefinitionString: '{"StartAt":"${k}","States":{"${k}":{"Type":"Pass","End":true}}}',
+            DefinitionSubstitutions: { k: ALPHA_EXPR },
+          },
+          observedProperties: { RoleArn: 'arn:aws:iam::123456789012:role/a', Definition: SECRET_MASK },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        RoleArn: 'arn:aws:iam::123456789012:role/edited',
+        Definition: liveDefinition,
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = (update.mock.calls[0] as unknown[])[3] as Record<string, unknown>;
+    expect(sent['RoleArn']).toBe('arn:aws:iam::123456789012:role/a');
+    expect(JSON.stringify(sent)).not.toContain(SECRET_MASK);
+  });
+
   it('keeps a real edit beside the mask as drift, exit 1', async () => {
     mockGetState.mockResolvedValueOnce(makeState({ M: machine({ apiKey: ALPHA_EXPR }) }));
     readsBack({ Definition: body(ALPHA_PLAINTEXT, 'Edited') });
