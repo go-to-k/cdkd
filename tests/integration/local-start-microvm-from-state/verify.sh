@@ -276,8 +276,14 @@ echo "    ${BODY}"
 echo "${BODY}" | grep -q '"env":{"BUCKET_NAME":null,"BUCKET_ARN":null,"PARAM_NAME":null}' \
   || fail "an intrinsic variable reached the container without a state flag: ${BODY}"
 for key in BUCKET_NAME BUCKET_ARN PARAM_NAME; do
-  grep -q "env var ${key} contains a CloudFormation intrinsic and was dropped" "${OUT_FILE}" \
-    || fail "no drop warning for ${key} without a state flag"
+  if ! grep -q "Environment variable ${key} contains a CloudFormation intrinsic and was dropped" "${OUT_FILE}"; then
+    # Sentinel: a line naming the key next to "intrinsic" means the warning
+    # fired but its wording drifted from the phrase parsed above.
+    if grep -E "\\b${key}\\b" "${OUT_FILE}" | grep -q 'intrinsic'; then
+      fail "the drop warning for ${key} changed wording; update this fixture's grep"
+    fi
+    fail "no drop warning for ${key} without a state flag"
+  fi
 done
 terminate_run
 
