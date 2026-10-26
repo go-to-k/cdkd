@@ -203,7 +203,7 @@ lambda-config-field-removal	2026-10-02T01:44:21Z	PASS	110	verify.sh	PR #4378 rem
 lambda-destinations	2026-10-24T14:12:33Z	PASS	71	verify.sh	rc ok, orph clean
 lambda-durable-replacement	2026-10-20T06:12:01Z	PASS	170	verify.sh	deploy+destroy clean, 0 orphans
 lambda-env-removal	2026-10-01T04:01:28Z	PASS	110	verify.sh	rc ok, orph clean (#4241)
-lambda-esm-self-managed-kafka	2026-10-20T12:43:49Z	PASS	140	verify.sh	issue #1160 Phase 2c BatchSize/PollerConfig/LoggingConfig reset, destroy clean
+lambda-esm-self-managed-kafka	2026-10-26T14:38:35Z	PASS	141	verify.sh	rc ok, orph clean; pre-fix probe RED at Value-less tag create
 lambda-event-invoke-config-update	2026-10-24T14:12:33Z	PASS	136	verify.sh	rc ok, orph clean
 lambda-fix-forward-orphan	2026-10-24T14:12:33Z	PASS	145	verify.sh	rc ok, orph clean
 lambda-layer-version-update	2026-10-26T11:08:47Z	PASS	126	verify.sh	rc ok, orph clean
