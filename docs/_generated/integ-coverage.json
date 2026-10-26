@@ -4402,6 +4402,7 @@
     {
       "resourceType": "AWS::IAM::Group",
       "integs": [
+        "iam-access-key",
         "iam-managed-policy",
         "iam-profile-policy-fix-forward-orphan",
         "iam-recreate-reattach",
@@ -4411,6 +4412,9 @@
         "infra-security"
       ],
       "signals": {
+        "iam-access-key": [
+          "l2"
+        ],
         "iam-managed-policy": [
           "l2"
         ],
@@ -4665,6 +4669,8 @@
         "local-run-task-from-state",
         "local-start-alb-from-state",
         "local-start-api-websocket",
+        "local-start-web-function",
+        "local-start-web-function-from-state",
         "log-pipeline",
         "macro-expansion",
         "migrate-from-cfn",
@@ -4921,6 +4927,13 @@
           "literal"
         ],
         "local-start-api-websocket": [
+          "literal"
+        ],
+        "local-start-web-function": [
+          "l2"
+        ],
+        "local-start-web-function-from-state": [
+          "l2",
           "literal"
         ],
         "log-pipeline": [
@@ -6023,10 +6036,15 @@
       "resourceType": "AWS::Lambda::WebFunctionEndpoint",
       "integs": [
         "lambda-web-function-revision-replace",
+        "local-start-web-function-from-state",
         "wide-web-functions"
       ],
       "signals": {
         "lambda-web-function-revision-replace": [
+          "l1",
+          "literal"
+        ],
+        "local-start-web-function-from-state": [
           "l1",
           "literal"
         ],
@@ -6040,10 +6058,15 @@
       "resourceType": "AWS::Lambda::WebFunctionRevision",
       "integs": [
         "lambda-web-function-revision-replace",
+        "local-start-web-function-from-state",
         "wide-web-functions"
       ],
       "signals": {
         "lambda-web-function-revision-replace": [
+          "l1",
+          "literal"
+        ],
+        "local-start-web-function-from-state": [
           "l1",
           "literal"
         ],
@@ -8027,6 +8050,7 @@
         "secrets-array-nested",
         "secrets-dynamic-ref",
         "secrets-rotation-schedule",
+        "secretsmanager-replica-rekey",
         "secretsmanager-update-value-source",
         "servicediscovery"
       ],
@@ -8082,6 +8106,10 @@
         ],
         "secrets-rotation-schedule": [
           "l2",
+          "literal"
+        ],
+        "secretsmanager-replica-rekey": [
+          "l1",
           "literal"
         ],
         "secretsmanager-update-value-source": [

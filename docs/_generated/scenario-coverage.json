@@ -1825,6 +1825,16 @@
       "scenarios": []
     },
     {
+      "name": "local-start-web-function",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "local-start-web-function-from-state",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "log-pipeline",
       "annotated": true,
       "scenarios": []
@@ -2439,6 +2449,11 @@
     },
     {
       "name": "secrets-rotation-schedule",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "secretsmanager-replica-rekey",
       "annotated": false,
       "scenarios": []
     },
@@ -3536,6 +3551,8 @@
     "local-start-cloudfront",
     "local-start-cloudfront-from-state",
     "local-start-service-watch-fast",
+    "local-start-web-function",
+    "local-start-web-function-from-state",
     "loggroup-class-guard",
     "loggroup-kms-associate",
     "loggroup-never-expire-guard",
@@ -3590,6 +3607,7 @@
     "sdk-to-cc-autoroute",
     "secret-derived-immutable-names",
     "secrets-rotation-schedule",
+    "secretsmanager-replica-rekey",
     "secretsmanager-update-value-source",
     "servicediscovery",
     "shared-stackname-multi-region",

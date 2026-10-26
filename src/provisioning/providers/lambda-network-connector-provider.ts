@@ -28,7 +28,13 @@ import { logicalIdShown } from '../composite-id.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { definedAttributes } from '../attribute-map.js';
 import { generatedNameFor } from '../resource-name.js';
-import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
+import {
+  planTagDiff,
+  tagPlanWarning,
+  refuseMalformedDesiredTags,
+  DBPROXY_TAG_OPTIONS,
+  DBPROXY_TAGS_WHAT,
+} from '../tag-list.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -122,7 +128,17 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(safeMsg`Creating Lambda network connector ${logicalId}`);
-    const tagList = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
+    // The CFn schema makes a tag's Value optional (nestedRequired.Tags is
+    // ["Key"]); an omitted Value is sent as '' like the RDS DBProxy providers.
+    const tagList = refuseMalformedDesiredTags(
+      properties['Tags'],
+      resourceType,
+      logicalId,
+      undefined,
+      'Tags',
+      DBPROXY_TAGS_WHAT,
+      DBPROXY_TAG_OPTIONS
+    );
     const name =
       typeof properties['Name'] === 'string' && properties['Name'] !== ''
         ? properties['Name']
@@ -204,7 +220,15 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
       physicalId,
       'pre-update'
     );
-    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    refuseMalformedDesiredTags(
+      properties['Tags'],
+      resourceType,
+      logicalId,
+      physicalId,
+      'Tags',
+      DBPROXY_TAGS_WHAT,
+      DBPROXY_TAG_OPTIONS
+    );
     // Refused before any write: the block is the whole connector.
     const vpc = this.readVpcEgress(properties, logicalId, resourceType, physicalId);
     const updateRole = this.readOperatorRole(
@@ -476,7 +500,7 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
     newTags: unknown,
     oldTags: unknown
   ): Promise<void> {
-    const plan = planTagDiff(oldTags, newTags);
+    const plan = planTagDiff(oldTags, newTags, DBPROXY_TAG_OPTIONS);
     const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
     if (tagWarning !== undefined) this.logger.warn(tagWarning);
     if (plan.remove.length > 0) {

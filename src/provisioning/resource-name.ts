@@ -884,6 +884,17 @@ const FALLBACK_NAME_RULES: Record<string, GeneratedNameRule> = {
     nameProperty: 'DBProxyEndpointName',
     options: { maxLength: 64 },
   },
+  // go-to-k/cdkd#5309: the SDK provider refused a missing name, which the
+  // schema leaves optional (CloudFormation generates one). 3-63 characters of
+  // lowercase letters, digits and `-`: the generator emits that, a stack name
+  // starts with a letter, and the suffix is hex. A legacy stack's Cloud
+  // Control create still leaves the name to the handler.
+  'AWS::S3Vectors::VectorBucket': {
+    nameProperty: 'VectorBucketName',
+    options: { maxLength: 63, lowercase: true },
+    legacy: { cloudControl: 'none' },
+    notAdopted: true,
+  },
   // ...and the handler named these, which a legacy stack keeps.
   'AWS::Scheduler::Schedule': {
     nameProperty: 'Name',

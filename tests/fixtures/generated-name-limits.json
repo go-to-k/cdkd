@@ -247,6 +247,11 @@
       "schemaMaxLength": 64,
       "schemaPattern": "^[\\.\\-_A-Za-z0-9]+$"
     },
+    "AWS::S3Vectors::VectorBucket": {
+      "nameProperty": "VectorBucketName",
+      "schemaMaxLength": 63,
+      "schemaMinLength": 3
+    },
     "AWS::EC2::SecurityGroup": {
       "nameProperty": "GroupName",
       "apiMaxLength": 255,
