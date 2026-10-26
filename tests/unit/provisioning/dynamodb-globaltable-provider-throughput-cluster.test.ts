@@ -1331,7 +1331,7 @@ describe('DynamoDB GlobalTable throughput cluster', () => {
       const next: Record<string, unknown> = { ...clone(previous), BillingMode: 'PROVISIONED' };
       delete (next['Replicas'] as Record<string, unknown>[])[1]!['ReadOnDemandThroughputSettings'];
       // Give the flipped replica a real edit so it still classifies modified.
-      (next['Replicas'] as Record<string, unknown>[])[1]!['TableClassOverride'] =
+      (next['Replicas'] as Record<string, unknown>[])[1]!['TableClass'] =
         'STANDARD_INFREQUENT_ACCESS';
 
       await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);

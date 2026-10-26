@@ -1110,6 +1110,7 @@
       "integs": [
         "dynamodb-globaltable",
         "dynamodb-globaltable-implied-stream",
+        "dynamodb-globaltable-replica-settings",
         "globaltable-fix-forward-orphan",
         "lambda",
         "rollback-replay-effective-props"
@@ -1122,6 +1123,10 @@
         ],
         "dynamodb-globaltable-implied-stream": [
           "l1",
+          "literal"
+        ],
+        "dynamodb-globaltable-replica-settings": [
+          "l2",
           "literal"
         ],
         "globaltable-fix-forward-orphan": [
@@ -5155,11 +5160,15 @@
       "resourceType": "AWS::KMS::Alias",
       "integs": [
         "composite-stack",
+        "dynamodb-globaltable-replica-settings",
         "infra-security",
         "kms-encryption"
       ],
       "signals": {
         "composite-stack": [
+          "literal"
+        ],
+        "dynamodb-globaltable-replica-settings": [
           "literal"
         ],
         "infra-security": [
@@ -5177,6 +5186,7 @@
         "composite-stack",
         "cross-backend-same-stack",
         "drift-revert",
+        "dynamodb-globaltable-replica-settings",
         "dynamodb-streams",
         "ecr-scanning",
         "eventbridge",
@@ -5200,6 +5210,10 @@
         ],
         "drift-revert": [
           "l2"
+        ],
+        "dynamodb-globaltable-replica-settings": [
+          "l2",
+          "literal"
         ],
         "dynamodb-streams": [
           "l2"

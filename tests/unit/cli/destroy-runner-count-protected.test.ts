@@ -418,7 +418,9 @@ describe('countProtectedResources', () => {
       ).toBe(1);
     });
 
-    it("does not count another region's replica flag", () => {
+    it("counts another region's replica flag, which --remove-protection now flips", () => {
+      // go-to-k/cdkd#5355: cdkd sets a cross-region replica's own guard, and
+      // the delete turns it off before dropping the replica.
       expect(
         countProtectedResources(
           table({
@@ -428,7 +430,7 @@ describe('countProtectedResources', () => {
             ],
           })
         )
-      ).toBe(0);
+      ).toBe(1);
     });
 
     it('counts protection enabled out of band over a template that says off', () => {

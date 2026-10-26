@@ -138,14 +138,12 @@ describe('DynamoDB GlobalTable immutable-property refusals (sites 5-7)', () => {
       });
     }, 120_000);
 
-    it(`${label}: keeps the short advice when the local replica is unprotected`, async () => {
+    it(`${label}: keeps the short advice when no replica is protected`, async () => {
       const message = await refusal(next, {
         ...prev,
         Replicas: [
           { Region: 'us-east-1', DeletionProtectionEnabled: false },
-          // A NON-local replica carrying protection must not trip the advice:
-          // the resolution is per-replica and scoped to the deploy region.
-          { Region: 'eu-west-1', DeletionProtectionEnabled: true },
+          { Region: 'eu-west-1', DeletionProtectionEnabled: false },
         ],
       });
       expect(message).toContain(
@@ -153,6 +151,20 @@ describe('DynamoDB GlobalTable immutable-property refusals (sites 5-7)', () => {
       );
       expect(message).not.toContain('--remove-protection');
       expect(message).not.toContain('update-table');
+    });
+
+    it(`${label}: names a protected cross-region replica (go-to-k/cdkd#5355)`, async () => {
+      // AWS refuses a protected replica's drop, so the replacement's delete is
+      // blocked by it as by the local table's guard.
+      const message = await refusal(next, {
+        ...prev,
+        Replicas: [
+          { Region: 'us-east-1', DeletionProtectionEnabled: false },
+          { Region: 'eu-west-1', DeletionProtectionEnabled: true },
+        ],
+      });
+      expect(message).toContain('DeletionProtectionEnabled: true for the eu-west-1 replica');
+      expect(message).toContain('update-table');
     });
   }
 
