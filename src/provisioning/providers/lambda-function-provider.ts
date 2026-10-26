@@ -32,6 +32,7 @@ import {
   type UpdateFunctionCodeCommandInput,
   type Runtime,
   type Architecture,
+  type S3ObjectStorageMode,
   type TracingConfig,
   type EphemeralStorage,
   type VpcConfig,
@@ -1455,6 +1456,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
           S3Bucket: builtCode.S3Bucket,
           S3Key: builtCode.S3Key,
           S3ObjectVersion: builtCode.S3ObjectVersion,
+          S3ObjectStorageMode: builtCode.S3ObjectStorageMode,
+          SourceKMSKeyArn: builtCode.SourceKMSKeyArn,
           ZipFile: builtCode.ZipFile,
           ImageUri: builtCode.ImageUri,
           // A removed Architectures property reverts to the Lambda default
@@ -2169,6 +2172,15 @@ export class LambdaFunctionProvider implements ResourceProvider {
     if (code['S3ObjectVersion']) {
       result.S3ObjectVersion = code['S3ObjectVersion'] as string;
     }
+    // Both were never forwarded (issue #5300): a template's `REFERENCE`
+    // deployed as the Lambda default `COPY`, and a customer managed key for
+    // the deployment package fell back to the AWS owned key.
+    if (code['S3ObjectStorageMode']) {
+      result.S3ObjectStorageMode = code['S3ObjectStorageMode'] as S3ObjectStorageMode;
+    }
+    if (code['SourceKMSKeyArn']) {
+      result.SourceKMSKeyArn = code['SourceKMSKeyArn'] as string;
+    }
     if (code['ZipFile']) {
       // Lambda SDK expects a zip binary, not raw text.
       // CloudFormation's ZipFile property auto-zips inline code, but SDK does not.
@@ -2438,7 +2450,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * are not surfaced: `GetFunction` returns a pre-signed S3 URL for the
    * deployed code, not the asset hash cdkd state holds, so they could
    * never match. Those keys are declared via `getDriftUnknownPaths` so
-   * the drift comparator skips them. `Code.ImageUri` IS surfaced for
+   * the drift comparator skips them, along with `Code.S3ObjectStorageMode`
+   * (no read-back member) and `Code.SourceKMSKeyArn` (see
+   * `getDriftUnknownPaths`). `Code.ImageUri` IS surfaced for
    * container Lambdas (`PackageType: 'Image'`) — AWS returns it on the
    * `GetFunction.Code.ImageUri` field, so a console-side image swap is
    * detectable as drift.
@@ -2718,7 +2732,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * `Code.ImageUri` IS recoverable — `GetFunction.Code.ImageUri` returns
    * the templated image URI for container Lambdas — so it is surfaced by
    * `readCurrentState` and NOT declared drift-unknown. `Code.SourceKMSKeyArn`
-   * is also write-only on the FunctionCodeLocation read shape.
+   * does come back (`FunctionCodeLocation.SourceKMSKeyArn`) but
+   * `readCurrentState` does not surface it yet, so it stays skipped here.
+   * `Code.S3ObjectStorageMode` has no member on that read shape at all.
    *
    * Pre-PR this method returned the whole `['Code']` subtree as
    * drift-unknown, which also hid `Code.ImageUri` drift on container
@@ -2729,6 +2745,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       'Code.S3Bucket',
       'Code.S3Key',
       'Code.S3ObjectVersion',
+      'Code.S3ObjectStorageMode',
       'Code.ZipFile',
       'Code.SourceKMSKeyArn',
     ];

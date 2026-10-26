@@ -7,6 +7,7 @@ import {
   ResourceNotFoundException,
   type PublishLayerVersionCommandOutput,
   type LayerVersionContentInput,
+  type S3ObjectStorageMode,
   type Runtime,
   type Architecture,
 } from '@aws-sdk/client-lambda';
@@ -315,6 +316,10 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
       if (content['S3Key']) contentInput.S3Key = content['S3Key'] as string;
       if (content['S3ObjectVersion'])
         contentInput.S3ObjectVersion = content['S3ObjectVersion'] as string;
+      // `COPY` (the Lambda default) or `REFERENCE`; dropping it published a
+      // template's REFERENCE layer as a COPY (issue #5300).
+      if (content['S3ObjectStorageMode'])
+        contentInput.S3ObjectStorageMode = content['S3ObjectStorageMode'] as S3ObjectStorageMode;
 
       // Issue #2080: after an earlier ambiguous attempt, name the version it
       // may have published before a second PublishLayerVersion is sent.
