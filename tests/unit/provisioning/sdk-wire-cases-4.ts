@@ -107,15 +107,16 @@ export const CASES_4: TypeCase[] = [
         },
         expectedSilent: {
           // An absent DataRedundancy is filled with SingleAvailabilityZone,
-          // so removing that value sends the same request. The local-zone bag
-          // below is where the value's delivery is observed.
+          // so removing that value sends the same request. The value itself
+          // is read by `sdk-wire-coverage-4.test.ts`.
           'create:DataRedundancy': REQUIRED_BY_SCHEMA,
         },
         expectedRemovalThrows: TAG_THROWS(ALL_DIRECTIONS, 2),
       },
       {
-        // Observes DataRedundancy's delivery; the Location.Type sent beside
-        // it is read by `sdk-wire-coverage-4.test.ts`.
+        // Removing DataRedundancy here changes the wire through the
+        // Location.Type derived from it, so this bag alone does not prove the
+        // value is sent; `sdk-wire-coverage-4.test.ts` reads both.
         name: 'a local zone',
         bag: {
           BucketName: 'b--use1-mia2-az1--x-s3',

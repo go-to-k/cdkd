@@ -57,10 +57,11 @@ describe('AWS::Logs::LogGroup LogGroupClass on create', () => {
   });
 });
 
-// The location type rides beside DataRedundancy, and no bag path names it:
-// a Local Zone bucket must say `LocalZone`, a zonal one `AvailabilityZone`
-// (go-to-k/cdkd#5317).
-describe('AWS::S3Express::DirectoryBucket Location.Type on create', () => {
+// Both values are read here: DataRedundancy is create-only and its removal
+// shows on the wire only through the location type derived from it, which no
+// bag path names. A Local Zone bucket must say `LocalZone`, a zonal one
+// `AvailabilityZone` (go-to-k/cdkd#5317).
+describe('AWS::S3Express::DirectoryBucket DataRedundancy and Location.Type on create', () => {
   it.each([
     ['SingleAvailabilityZone', 'use1-az4', 'AvailabilityZone'],
     ['SingleLocalZone', 'use1-mia2-az1', 'LocalZone'],
@@ -78,5 +79,6 @@ describe('AWS::S3Express::DirectoryBucket Location.Type on create', () => {
       .split('\n')
       .find((line) => line.startsWith('["CreateBucketCommand"'));
     expect(create).toContain(`<Type>${locationType}</Type>`);
+    expect(create).toContain(`<DataRedundancy>${dataRedundancy}</DataRedundancy>`);
   });
 });
