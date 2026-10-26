@@ -11,6 +11,10 @@ export class S3TablesStack extends cdk.Stack {
     // change on the TableBucket and the SDK-routed Table, so the redeploy
     // reaches the S3 Tables provider's update() and its recorded-region guard.
     const teamTag = process.env.CDKD_S3T_TEAM ?? 'platform';
+    // Issue #5313: verify.sh's Phase 1c redeploys with both set, renaming the
+    // SDK-routed Table and moving it to the second namespace in place.
+    const tableName = process.env.CDKD_S3T_TABLE_NAME ?? 'cdkd_integ_tbl';
+    const tableNamespace = process.env.CDKD_S3T_TABLE_NS ?? 'cdkd_integ_ns';
 
     const tableBucket = new s3tables.CfnTableBucket(this, 'TableBucket', {
       tableBucketName: `${this.stackName}-table-bucket`.toLowerCase(),
@@ -39,6 +43,13 @@ export class S3TablesStack extends cdk.Stack {
     });
     namespace.addDependency(tableBucket);
 
+    // The namespace Phase 1c (issue #5313) moves the Table into.
+    const namespace2 = new s3tables.CfnNamespace(this, 'Namespace2', {
+      tableBucketArn: tableBucket.attrTableBucketArn,
+      namespace: 'cdkd_integ_ns2',
+    });
+    namespace2.addDependency(tableBucket);
+
     // CfnTable L1 emits only the props set here (no L2 defaults that
     // might still be silent-drop and flip routing to CC-API per memory
     // rule feedback_l1_over_l2_for_backfill_integ_fixture). The
@@ -47,11 +58,22 @@ export class S3TablesStack extends cdk.Stack {
     // handledProperties as an alias for the legacy `Format` name.
     const table = new s3tables.CfnTable(this, 'Table', {
       tableBucketArn: tableBucket.attrTableBucketArn,
-      namespace: 'cdkd_integ_ns',
-      tableName: 'cdkd_integ_tbl',
+      namespace: tableNamespace,
+      tableName,
       openTableFormat: 'ICEBERG',
     });
     table.addDependency(namespace);
+    table.addDependency(namespace2);
+
+    // Issue #5313: a reader of the SDK-routed Table's `Ref`. Phase 1c renames
+    // the table in place; verify.sh asserts this parameter follows the Ref
+    // (equals the `TableRef` output) rather than keeping the old value.
+    const tableRefReader = new ssm.CfnParameter(this, 'TableRefParam', {
+      name: `/${this.stackName}/table-ref`,
+      type: 'String',
+      value: table.ref,
+    });
+    tableRefReader.addDependency(table);
 
     // Two tags via CDK's `Tags.of(...)` aspect — emits Tags: [{Key, Value}]
     // on the synthesized template, matching the cdkd silent-drop entry
@@ -108,6 +130,10 @@ export class S3TablesStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'TableBucketArn', {
       value: tableBucket.attrTableBucketArn,
       description: 'S3 Table Bucket ARN',
+    });
+    new cdk.CfnOutput(this, 'TableRef', {
+      value: table.ref,
+      description: 'Ref of the SDK-routed table (the TableRefParam reader must equal it)',
     });
     new cdk.CfnOutput(this, 'TableArn', {
       value: table.attrTableArn,

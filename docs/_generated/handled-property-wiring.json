@@ -17905,8 +17905,11 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createTable"
+            "createTable",
+            "planTableRename",
+            "update"
           ]
         },
         {
@@ -17921,9 +17924,12 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
             "createNamespace",
-            "createTable"
+            "createTable",
+            "planTableRename",
+            "update"
           ]
         },
         {
@@ -17984,8 +17990,11 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createTable"
+            "createTable",
+            "planTableRename",
+            "update"
           ]
         },
         {
