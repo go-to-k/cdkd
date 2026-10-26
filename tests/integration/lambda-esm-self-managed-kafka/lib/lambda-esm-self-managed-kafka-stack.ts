@@ -52,6 +52,13 @@ import {
  * drops `batchSize`, the poller config and the `LoggingConfig` the UPDATE phase
  * added. CloudFormation resets them (BatchSize 100, `LoggingConfig: {}`,
  * `ProvisionedPollerConfig: {}`); cdkd used to leave all three live.
+ *
+ * Issue #5356, in every phase: a declared `MaximumBatchingWindowInSeconds: 0`
+ * (cdkd dropped it on create, leaving AWS's 500 ms default, which reads back
+ * as no value) and a tag with a Key but no Value (CFn accepts it; cdkd refused
+ * it). TOPIC phase (the DEFAULTS env plus CDKD_TEST_ESM_TOPIC=true) changes the
+ * topic, which UpdateEventSourceMapping cannot carry and CloudFormation
+ * refuses: the deploy must fail and leave the mapping's topic as it was.
  */
 export class LambdaEsmSelfManagedKafkaStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -60,6 +67,7 @@ export class LambdaEsmSelfManagedKafkaStack extends cdk.Stack {
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
     const isRemoval = isUpdate && process.env.CDKD_TEST_REMOVAL === 'true';
     const isDefaults = isRemoval && process.env.CDKD_TEST_ESM_DEFAULTS === 'true';
+    const isTopicChange = isDefaults && process.env.CDKD_TEST_ESM_TOPIC === 'true';
 
     const secret = new secretsmanager.Secret(this, 'KafkaAuth', {
       secretName: `${this.stackName}-kafka-auth`,
@@ -111,6 +119,13 @@ export class LambdaEsmSelfManagedKafkaStack extends cdk.Stack {
       .findAll()
       .find((c): c is lambda.CfnEventSourceMapping => c instanceof lambda.CfnEventSourceMapping);
     if (cfnEsm === undefined) throw new Error('no CfnEventSourceMapping under the function');
+    // Issue #5356 (every phase): a zero batching window and a Value-less tag.
+    cfnEsm.addPropertyOverride('MaximumBatchingWindowInSeconds', 0);
+    cfnEsm.addPropertyOverride('Tags', [{ Key: 'cdkd-5356-novalue' }]);
+    // On the L1: the L2 puts the topic in the mapping's construct id, so a
+    // changed L2 `topic` is a new logical ID (a create + delete), never an
+    // update.
+    if (isTopicChange) cfnEsm.addPropertyOverride('Topics', ['cdkd-integ-topic-5356']);
     if (isDefaults) cfnEsm.addPropertyDeletionOverride('BatchSize');
     else if (isUpdate) cfnEsm.addPropertyOverride('LoggingConfig', { SystemLogLevel: 'WARN' });
   }
