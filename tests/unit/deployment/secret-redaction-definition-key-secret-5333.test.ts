@@ -332,4 +332,104 @@ describe('secret-redaction - a substitution secret in a definition KEY (issue #5
       States: { P: { Type: 'Pass', Result: EXPR, End: true } },
     });
   });
+
+  it('a secret EQUAL to a literal the body spells elsewhere is still masked at its own position', () => {
+    // The position-free keep-sets hold `3` and `abc` because the body spells
+    // them; the secret positions must be refused before those sets are read.
+    const props = {
+      DefinitionString:
+        '{"StartAt":"W","States":{"W":{"Type":"Wait","Seconds":${pin},"Next":"P"},' +
+        '"P":{"Type":"Pass","Result":{"retries":3,"label":"${k}","other":"abc"},"End":true}}}',
+      DefinitionSubstitutions: { pin: EXPR, k: EXPR },
+    };
+    const bag = {
+      Definition: {
+        StartAt: 'W',
+        States: {
+          W: { Type: 'Wait', Seconds: 3, Next: 'P' },
+          P: { Type: 'Pass', Result: { retries: 3, label: 'abc', other: 'abc' }, End: true },
+        },
+      },
+    };
+    for (const persist of [refreshObserved, autoRefresh]) {
+      const out = persist(props, structuredClone(bag));
+      expect(out['Definition']).toEqual({
+        StartAt: 'W',
+        States: {
+          W: { Type: 'Wait', Seconds: SECRET_MASK, Next: 'P' },
+          P: { Type: 'Pass', Result: { retries: 3, label: SECRET_MASK, other: 'abc' }, End: true },
+        },
+      });
+    }
+  });
+
+  it('a secret that adds an OBJECT key splices the tree: whole *** on every path', () => {
+    // `1,"b":77` turns `{"a":${k}}` into `{"a":1,"b":77}`; `b` is spelled
+    // elsewhere, so only the shape check at the secret position sees it.
+    const body =
+      '{"StartAt":"P","States":{"P":{"Type":"Pass","Result":{"a":${k}},"End":true},' +
+      '"Q":{"Type":"Pass","Result":{"b":5},"End":true}}}';
+    const template = { DefinitionString: body, DefinitionSubstitutions: { k: EXPR } };
+    const bag = {
+      Definition: {
+        StartAt: 'P',
+        States: {
+          P: { Type: 'Pass', Result: { a: 1, b: 77 }, End: true },
+          Q: { Type: 'Pass', Result: { b: 5 }, End: true },
+        },
+      },
+    };
+    const deploy = deployPersist(
+      template,
+      { DefinitionString: body, DefinitionSubstitutions: { k: '1,"b":77' } },
+      structuredClone(bag),
+      new Map([['1,"b":77', EXPR]])
+    );
+    expect(deploy['Definition']).toBe(SECRET_MASK);
+    expect(refreshObserved(template, structuredClone(bag))['Definition']).toBe(SECRET_MASK);
+  });
+
+  it('a secret holding a quote that splices an ARRAY of strings: whole *** on the deploy persist', () => {
+    const body = '{"StartAt":"P","States":{"P":{"Type":"Pass","Result":["${k}"],"End":true}}}';
+    const template = { DefinitionString: body, DefinitionSubstitutions: { k: EXPR } };
+    const out = deployPersist(
+      template,
+      { DefinitionString: body, DefinitionSubstitutions: { k: 'alpha-part","beta-part' } },
+      {
+        Definition: {
+          StartAt: 'P',
+          States: { P: { Type: 'Pass', Result: ['alpha-part', 'beta-part'], End: true } },
+        },
+      },
+      new Map([['alpha-part","beta-part', EXPR]])
+    );
+    expect(JSON.stringify(out)).not.toContain('beta-part');
+    expect(out['Definition']).toBe(SECRET_MASK);
+  });
+
+  it('a body that already holds a marker character reads as unknown, never naming a literal', () => {
+    // A user literal spelling the out-of-quotes marker must not be taken for
+    // a secret position (it would be rewritten to an expression).
+    const marker = '' + '0' + '';
+    const body =
+      '{"StartAt":"W","States":{"W":{"Type":"Wait","Comment":"' +
+      marker +
+      '","Seconds":${pin},"End":true}}}';
+    const template = { DefinitionString: body, DefinitionSubstitutions: { pin: EXPR } };
+    const out = deployPersist(
+      template,
+      { DefinitionString: body, DefinitionSubstitutions: { pin: '987654321' } },
+      {
+        Definition: {
+          StartAt: 'W',
+          States: { W: { Type: 'Wait', Comment: marker, Seconds: 987654321, End: true } },
+        },
+      },
+      new Map([['987654321', EXPR]])
+    );
+    expect(out['Definition']).toEqual({
+      StartAt: 'W',
+      States: { W: { Type: 'Wait', Comment: marker, Seconds: EXPR, End: true } },
+    });
+  });
 });

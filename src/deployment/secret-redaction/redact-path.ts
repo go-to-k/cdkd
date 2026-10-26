@@ -817,34 +817,41 @@ function substitutionIsSecret(value: string): boolean {
  * `${name}` replaced by a SENTINEL (issue
  * [#5333](https://github.com/go-to-k/cdkd/issues/5333)).
  *
- * A small scan tracks the ORIGINAL body's JSON string state (the provider's
+ * A small scan tracks the body's JSON string state (the provider's
  * substitution is a blind split / join, so where a placeholder sits in the
  * body is where its value lands): a secret placeholder inside a string becomes
  * a private-use marker, one outside quotes a JSON string value naming its
- * index. A non-secret scalar substitution is inserted verbatim; an unknown
- * name is left as `${name}`. The result then parses even where the substituted
- * body does not (`"Seconds": ${pin}` with an expression value).
+ * index. A non-secret scalar substitution is inserted verbatim and scanned like
+ * the body; an unknown name is left as `${name}`. The result then parses even
+ * where the substituted body does not (`"Seconds": ${pin}` with an expression
+ * value).
  *
  * - `keys`: every object key holding no marker (a literal the record spells),
  *   plus the keys of the body as WRITTEN (a `${name}` key is a placeholder,
  *   which an unsubstituted readback still spells, and no secret);
  * - `strings` / `scalars`: every leaf holding no marker;
- * - `secretPaths`: where an OUT-OF-QUOTES secret lands, with its name.
+ * - `secretLeaves`: every leaf a secret lands in — inside a string or, with
+ *   its `name`, outside quotes — with the SHAPE of each container on its path,
+ *   so a reader can refuse a readback the secret itself reshaped.
  *
- * `undefined` when no body is held (`DefinitionS3Location`) or none parses (a
- * `***` body, a placeholder glued to other tokens). A marker colliding with
- * text the user wrote only makes that leaf or key non-literal: over-masking.
+ * `undefined` when no body is held (`DefinitionS3Location`), none parses (a
+ * `***` body, a placeholder glued to other tokens), or the body already holds a
+ * marker character, which could then name the wrong substitution.
  */
 export interface SentinelDefinition {
   readonly keys: Set<string>;
   readonly strings: Set<string>;
   readonly scalars: Set<unknown>;
-  readonly secretPaths: ReadonlyArray<{
-    path: ReadonlyArray<string | number>;
-    /** The length of each ARRAY the path passes through, by depth (`undefined` for an object). */
-    lengths: ReadonlyArray<number | undefined>;
-    name: string;
-  }>;
+  readonly secretLeaves: ReadonlyArray<SecretLeaf>;
+}
+
+/** One position of a sentinel body a secret lands in. */
+export interface SecretLeaf {
+  readonly path: ReadonlyArray<string | number>;
+  /** The container at each depth of `path`: an array's length, or an object's keys. */
+  readonly shapes: ReadonlyArray<number | ReadonlySet<string>>;
+  /** The substitution placed OUTSIDE quotes, or `undefined` for one inside a string. */
+  readonly outOfStringName: string | undefined;
 }
 
 export function sentinelDefinitionOf(
@@ -865,10 +872,21 @@ export function sentinelDefinitionOf(
     const body =
       typeof raw === 'string' ? raw : isPlainObject(raw) ? JSON.stringify(raw) : undefined;
     if (body === undefined) continue;
+    if (body.includes(SENTINEL_IN_STRING) || body.includes(SENTINEL_OUT_OF_STRING)) continue;
     const names: string[] = [];
     let text = '';
     let inString = false;
     let escaped = false;
+    const feed = (c: string): void => {
+      text += c;
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (c === '\\') escaped = true;
+        else if (c === '"') inString = false;
+      } else if (c === '"') {
+        inString = true;
+      }
+    };
     for (let i = 0; i < body.length; i++) {
       if (body.startsWith('${', i)) {
         const end = body.indexOf('}', i + 2);
@@ -881,22 +899,13 @@ export function sentinelDefinitionOf(
               ? `${SENTINEL_IN_STRING}${index}${SENTINEL_IN_STRING}`
               : `"${SENTINEL_OUT_OF_STRING}${index}${SENTINEL_OUT_OF_STRING}"`;
           } else {
-            text += value;
+            for (const c of value) feed(c);
           }
           i = end;
-          escaped = false;
           continue;
         }
       }
-      const c = body[i]!;
-      text += c;
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (c === '\\') escaped = true;
-        else if (c === '"') inString = false;
-      } else if (c === '"') {
-        inString = true;
-      }
+      feed(body[i]!);
     }
     let parsed: unknown;
     try {
@@ -904,58 +913,87 @@ export function sentinelDefinitionOf(
     } catch {
       continue;
     }
-    const out = {
-      keys: new Set<string>(),
-      strings: new Set<string>(),
-      scalars: new Set<unknown>(),
-      secretPaths: [] as Array<{
-        path: Array<string | number>;
-        lengths: Array<number | undefined>;
-        name: string;
-      }>,
-    };
+    const keys = new Set<string>();
+    const strings = new Set<string>();
+    const scalars = new Set<unknown>();
+    const secretLeaves: SecretLeaf[] = [];
     const marked = (t: string): boolean =>
       t.includes(SENTINEL_IN_STRING) || t.includes(SENTINEL_OUT_OF_STRING);
     const outOfString = new RegExp(`^${SENTINEL_OUT_OF_STRING}(\\d+)${SENTINEL_OUT_OF_STRING}$`);
     const walk = (
       node: unknown,
       path: Array<string | number>,
-      lengths: Array<number | undefined>
+      shapes: Array<number | ReadonlySet<string>>
     ): void => {
       if (typeof node === 'string') {
         const m = outOfString.exec(node);
-        if (m !== null) out.secretPaths.push({ path, lengths, name: names[Number(m[1])]! });
-        else if (!marked(node)) out.strings.add(node);
+        if (m !== null) {
+          secretLeaves.push({ path, shapes, outOfStringName: names[Number(m[1])] });
+        } else if (marked(node)) {
+          secretLeaves.push({ path, shapes, outOfStringName: undefined });
+        } else {
+          strings.add(node);
+        }
         return;
       }
       if (typeof node === 'number' || typeof node === 'boolean') {
-        out.scalars.add(node);
+        scalars.add(node);
         return;
       }
       if (Array.isArray(node)) {
-        node.forEach((item, i) => walk(item, [...path, i], [...lengths, node.length]));
+        node.forEach((item, i) => walk(item, [...path, i], [...shapes, node.length]));
         return;
       }
       if (isPlainObject(node)) {
+        const own = new Set(Object.keys(node));
         for (const [k, v] of Object.entries(node)) {
-          if (!marked(k)) out.keys.add(k);
-          walk(v, [...path, k], [...lengths, undefined]);
+          if (!marked(k)) keys.add(k);
+          walk(v, [...path, k], [...shapes, own]);
         }
       }
     };
     walk(parsed, [], []);
     try {
-      collectObjectKeys(JSON.parse(body) as unknown, out.keys);
+      collectObjectKeys(JSON.parse(body) as unknown, keys);
     } catch {
       // The body as written does not parse (a placeholder outside quotes).
     }
-    return out;
+    return { keys, strings, scalars, secretLeaves };
   }
   return undefined;
 }
 
+/**
+ * The read-back value at a sentinel {@link SecretLeaf}, or `undefined` when the
+ * readback does not have the body's shape on the way: an array of another
+ * length, or an object with another key set — a secret `1, 2` splices an
+ * element in, a secret `1, "b": 2` adds a key, and a position in a misaligned
+ * tree names the wrong leaf.
+ */
+export function alignedSecretLeaf(root: unknown, leaf: SecretLeaf): { value: unknown } | undefined {
+  let cursor = root;
+  for (const [depth, segment] of leaf.path.entries()) {
+    const shape = leaf.shapes[depth]!;
+    if (typeof shape === 'number') {
+      if (!Array.isArray(cursor) || cursor.length !== shape) return undefined;
+      cursor = cursor[segment as number];
+    } else {
+      if (!isPlainObject(cursor)) return undefined;
+      // The same NUMBER of keys, and every key the body spells as a literal.
+      // A key a secret lands in is a wildcard here: the key rule decides it.
+      const own = new Set(Object.keys(cursor));
+      if (own.size !== shape.size) return undefined;
+      for (const k of shape) {
+        if (!k.includes(SENTINEL_IN_STRING) && !own.has(k)) return undefined;
+      }
+      cursor = cursor[segment as string];
+    }
+  }
+  return { value: cursor };
+}
+
 /** Every object key of a parsed body (plain containers only). */
-function collectObjectKeys(value: unknown, into: Set<string>): void {
+export function collectObjectKeys(value: unknown, into: Set<string>): void {
   if (Array.isArray(value)) {
     for (const item of value) collectObjectKeys(item, into);
   } else if (isPlainObject(value)) {
@@ -985,12 +1023,14 @@ export function someKeyIsUnspelled(value: unknown, spelled: (key: string) => boo
  *   one whose value broke out of its string and reshaped the keys) makes the
  *   WHOLE value `***` — the representation the maintainer chose on #5333, which
  *   `cdkd drift` classifies as an uncertified baseline;
- * - at each OUT-OF-QUOTES secret position, walked in lockstep with the body
- *   (an array of a different length on the way is misalignment: whole `***`),
- *   the read-back value becomes the substitution's own value — the expression,
- *   or `***` — whatever it parsed to (a number, a boolean, a JSON-document
- *   secret's container). Only THAT position: a literal `Seconds: 3` beside a
- *   secret `3` stays a number.
+ * - every position a secret lands in must sit in a readback of the body's
+ *   shape ({@link alignedSecretLeaf}), else the whole value is `***`: a secret
+ *   holding a `"` or a `,` can splice fragments the value scan has no needle
+ *   for;
+ * - at an OUT-OF-QUOTES position the read-back value becomes the
+ *   substitution's own value — the expression, or `***` — whatever it parsed to
+ *   (a number, a boolean, a JSON-document secret's container). Only THAT
+ *   position: a literal `Seconds: 3` beside a secret `3` stays a number.
  *
  * WITHOUT one (no body held, none parses) the record says nothing about
  * positions, so the map decides: a key holding a recorded plaintext (whole, or
@@ -1017,28 +1057,17 @@ function nameDefinitionSecrets(
   }
   const subs = source['DefinitionSubstitutions'] as Record<string, unknown>;
   let out: unknown = value;
-  for (const { path, lengths, name } of sentinel.secretPaths) {
-    // Walk the body's path through the readback; every container on the way
-    // must have the body's shape (keys are already all spelled above).
-    let cursor: unknown = out;
-    for (const [depth, segment] of path.entries()) {
-      if (typeof segment === 'number') {
-        // The SAME length as the body's array: a secret `1, 2` splices an
-        // element in, and an index into a misaligned list names the wrong one.
-        if (!Array.isArray(cursor) || cursor.length !== lengths[depth]) return SECRET_MASK;
-        cursor = cursor[segment];
-      } else {
-        if (!isPlainObject(cursor) || !Object.hasOwn(cursor, segment)) return SECRET_MASK;
-        cursor = cursor[segment];
-      }
+  for (const leaf of sentinel.secretLeaves) {
+    if (alignedSecretLeaf(out, leaf) === undefined) return SECRET_MASK;
+    if (leaf.outOfStringName !== undefined) {
+      out = replaceAtPath(out, leaf.path, String(subs[leaf.outOfStringName]));
     }
-    out = replaceAtPath(out, path, String(subs[name]));
   }
   return out;
 }
 
 /** `root` with the leaf at `path` replaced, containers on the way copied. */
-function replaceAtPath(
+export function replaceAtPath(
   root: unknown,
   path: ReadonlyArray<string | number>,
   leaf: unknown

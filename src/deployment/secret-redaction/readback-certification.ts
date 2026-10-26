@@ -17,6 +17,10 @@ import {
   definitionSourceCarriesSecret,
   sentinelDefinitionOf,
   someKeyIsUnspelled,
+  collectObjectKeys,
+  alignedSecretLeaf,
+  replaceAtPath,
+  type SentinelDefinition,
 } from './redact-path.js';
 import { wholeStringLeavesOf } from './mask-only.js';
 import { identityKeyFor } from './identity-keys.js';
@@ -44,15 +48,20 @@ import { identityKeyFor } from './identity-keys.js';
  * not hold.
  *
  * `scalars` is the same set for NUMBER / BOOLEAN leaves: those of each body
- * that parses, plus each substitution value's JSON-scalar spelling. A body that
- * parses in neither spelling (a `${name}` outside quotes) contributes none, so
- * every number and boolean of its readback is masked, a whole non-secret
- * substitution value excepted.
+ * that parses, plus each substitution value's JSON-scalar spelling. `keys` is
+ * every object key those bodies spell.
+ *
+ * The SENTINEL reading ({@link sentinelDefinitionOf}, issue #5333) adds what a
+ * body with a `${name}` outside quotes spells, which parses in neither plain
+ * spelling, and is returned as `sentinel` so the arm can mask the positions a
+ * secret lands in BEFORE these position-free sets are consulted: a secret `3`
+ * must not survive because the body also spells `"retries": 3` elsewhere.
  */
 function renderedDefinitionLiterals(source: Record<string, unknown>): {
   strings: Set<string>;
   scalars: Set<unknown>;
   keys: Set<string>;
+  sentinel: SentinelDefinition | undefined;
 } {
   const keep = new Set<string>();
   const scalarKeep = new Set<unknown>();
@@ -87,7 +96,7 @@ function renderedDefinitionLiterals(source: Record<string, unknown>): {
         const parsed = JSON.parse(text) as unknown;
         for (const leaf of wholeStringLeavesOf(parsed)) keep.add(leaf);
         collectScalarLeaves(parsed, scalarKeep);
-        collectKeys(parsed, keyKeep);
+        collectObjectKeys(parsed, keyKeep);
       } catch {
         // Not JSON: the text above is all it spells.
       }
@@ -102,23 +111,28 @@ function renderedDefinitionLiterals(source: Record<string, unknown>): {
     for (const leaf of sentinel.scalars) scalarKeep.add(leaf);
     for (const key of sentinel.keys) keyKeep.add(key);
   }
-  return {
-    strings: keep,
-    scalars: scalarKeep,
-    keys: keyKeep,
-  };
+  return { strings: keep, scalars: scalarKeep, keys: keyKeep, sentinel };
 }
 
-/** Every object key of a parsed body (plain containers only). */
-function collectKeys(value: unknown, into: Set<string>): void {
-  if (Array.isArray(value)) {
-    for (const item of value) collectKeys(item, into);
-  } else if (isPlainObject(value)) {
-    for (const [k, v] of Object.entries(value)) {
-      into.add(k);
-      collectKeys(v, into);
-    }
-  }
+/**
+ * May the value the walk left at a position a secret lands in stay (issue
+ * #5333)? Only an answer the walk itself gave: a position MARK (a symbol), a
+ * whole token of a service cdkd resolves, or a string carrying an expression
+ * that the record's own rendered body spells (`Bearer {{resolve:...}}`), which
+ * holds no plaintext, or the unsubstituted placeholder the body as written
+ * spells. A bare readback value there is the secret, whatever literal it
+ * happens to equal.
+ */
+function certifiedAtSecretPosition(value: unknown, rendered: ReadonlySet<string>): boolean {
+  if (typeof value === 'symbol') return true;
+  if (typeof value !== 'string') return false;
+  if (isSingleDynamicReferenceToken(value) && spanNamesResolvableService(value)) return true;
+  // ...or the placeholder itself, unsubstituted (inline definitions before
+  // go-to-k/cdkd#5298): the body as written spells it, and it is no secret.
+  return (
+    (value.includes('{{resolve:') || value.includes(SECRET_MASK) || value.includes('${')) &&
+    rendered.has(value)
+  );
 }
 
 /**
@@ -659,15 +673,11 @@ export function refuseUncertifiedReadbackPositions(
   //
   // NUMBER and BOOLEAN leaves are refused here too, against the scalars the
   // record spells: a `${name}` OUTSIDE quotes reads back as a JSON number, so a
-  // secret of digits is not a string leaf. (Such a body parses in neither
-  // spelling, so every number of that readback is masked.) Like the string
-  // set, the scalar set is the whole definition's, not this position's: a
-  // numeric secret EQUAL to a number the record spells elsewhere (`3`), or a
-  // boolean one (two values), is kept, as the plaintext already sits in the
-  // record. The residual is a
-  // secret substituted into a JSON KEY (a state name): no walk here masks a key,
-  // and what a masked key should look like is open in
-  // go-to-k/cdkd#5333.
+  // secret of digits is not a string leaf. The positions a secret lands in are
+  // read off the body's SENTINEL reading and refused first, so a secret equal
+  // to a literal the body spells elsewhere (`3`, `true`) is not kept as that
+  // literal. A KEY the record does not spell (a secret in a state name) masks
+  // the whole value (go-to-k/cdkd#5333).
   if (
     failClosed === true &&
     isPlainObject(bag) &&
@@ -706,13 +716,39 @@ export function refuseUncertifiedReadbackPositions(
       const walked = Object.hasOwn(source, k)
         ? refuseUncertifiedReadbackPositions(v, source[k], secrets, failClosed, learn, mark)
         : v;
+      // The positions a secret LANDS in (issue #5333), masked before the
+      // position-free literal sets below are consulted: a secret `3` equal to
+      // a `"retries": 3` the body spells elsewhere would otherwise be kept as
+      // that literal. A position the walk certified keeps its answer (a mark,
+      // a whole resolvable token, or an expression the record renders); a
+      // readback that does not have the body's shape there is masked whole.
+      let positioned: unknown = walked;
+      let misaligned = false;
+      for (const leaf of keep.sentinel?.secretLeaves ?? []) {
+        const at = alignedSecretLeaf(positioned, leaf);
+        if (at === undefined) {
+          misaligned = true;
+          break;
+        }
+        if (!certifiedAtSecretPosition(at.value, keep.strings)) {
+          positioned = replaceAtPath(
+            positioned,
+            leaf.path,
+            mark ? POSITION_UNCERTIFIED : SECRET_MASK
+          );
+        }
+      }
+      if (misaligned) {
+        out[k] = mark ? POSITION_UNCERTIFIED : SECRET_MASK;
+        continue;
+      }
       // A POSITION mark is a symbol, which the refusal returns untouched.
       // `mark` is LOAD-BEARING: in mark mode a refused leaf must come back as
       // {@link POSITION_UNCERTIFIED}. A literal `***` there reads to
       // {@link preferPositionDecisions} as an undecided position, which hands
       // it the RAW bag's value wherever a derived needle rewrote nothing — the
       // plaintext of every substituted secret the needles do not name.
-      out[k] = refuseUncertifiedSubtree(walked, keep.strings, mark, keep.scalars);
+      out[k] = refuseUncertifiedSubtree(positioned, keep.strings, mark, keep.scalars);
     }
     return out;
   }
