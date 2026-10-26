@@ -12,6 +12,8 @@
 # removed beside a HealthCheckConfig change is CLEARED; and a DnsConfig removed
 # beside a Description change is REFUSED by AWS. A service declaring no Name is
 # created under a generated name that every redeploy keeps (go-to-k/cdkd#5348).
+# A DnsConfig.NamespaceId / RoutingPolicy change, which CloudFormation leaves
+# unapplied, is left unapplied too and named in a warning (go-to-k/cdkd#5373).
 # Then destroys and confirms a clean teardown.
 #
 # Required env vars:
@@ -73,6 +75,7 @@ SECRET_HC_KEPT_NAME="cdkd-svcdisc-secret-hc-kept"
 NOECHO_HC_KEPT_NAME="cdkd-svcdisc-noecho-hc-kept"
 DESC_SECRET_NAME="cdkd-svcdisc-desc-secret"
 PUBLIC_NS_NAME="cdkd-svcdisc-hc.cdkd-integ-test.com"
+PINNED_NAME="cdkd-svcdisc-pinned-dns"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -85,6 +88,7 @@ cleanup() {
   # Phase 4's deploy log, left behind when a run fails before it is removed.
   [ -n "${P4_LOG_DIR:-}" ] && rm -rf "${P4_LOG_DIR}"
   [ -n "${P1_LOG:-}" ] && rm -f "${P1_LOG}"
+  [ -n "${P2_LOG:-}" ] && rm -f "${P2_LOG}"
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -207,12 +211,12 @@ deploy_phase() {
     --region "${REGION}" \
     --yes
 }
-# expect_field <id> <jmespath> <expected> <failure message>
+# expect_field <id> <jmespath> <expected> <failure message> [issue]
 expect_field() {
   local got
   got=$(service_field "$1" "$2")
   if [ "${got}" != "$3" ]; then
-    echo "FAIL: $4 (issue #1160): $1 $2='${got}', expected '$3'" >&2
+    echo "FAIL: $4 (${5:-issue #1160}): $1 $2='${got}', expected '$3'" >&2
     exit 1
   fi
 }
@@ -231,6 +235,7 @@ DNS_KEPT_ID=$(require_id "${DNS_KEPT_NAME}")
 HC_KEPT_ID=$(require_id "${HC_KEPT_NAME}")
 SECRET_HC_KEPT_ID=$(require_id "${SECRET_HC_KEPT_NAME}")
 NOECHO_HC_KEPT_ID=$(require_id "${NOECHO_HC_KEPT_NAME}")
+PINNED_ID=$(require_id "${PINNED_NAME}")
 expect_field "${SERVICE_ID}" Description cdkd-svcdisc-kept-description "phase 1 baseline"
 expect_field "${TTL_ID}" Description cdkd-svcdisc-ttl-description "phase 1 baseline"
 expect_field "${TTL_ID}" "DnsConfig.DnsRecords[0].TTL" 90 "phase 1 baseline"
@@ -273,6 +278,15 @@ if [[ "${RECORDED_DESC}" != "{{resolve:secretsmanager:"* ]]; then
   echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): state does not record ${SECRET_HC_KEPT_NAME}'s Description as its {{resolve:...}} reference, so phase 2 proves nothing" >&2
   exit 1
 fi
+# go-to-k/cdkd#5373 baseline: PinnedDnsService sits in the private namespace
+# with MULTIVALUE routing.
+PRIVATE_NS_ID=$(printf '%s' "${P1_STATE}" | jq -r '.outputs.NamespaceId // empty')
+if [ -z "${PRIVATE_NS_ID}" ]; then
+  echo "FAIL: phase 1 baseline (go-to-k/cdkd#5373): no NamespaceId output in state" >&2
+  exit 1
+fi
+expect_field "${PINNED_ID}" NamespaceId "${PRIVATE_NS_ID}" "phase 1 baseline" go-to-k/cdkd#5373
+expect_field "${PINNED_ID}" DnsConfig.RoutingPolicy MULTIVALUE "phase 1 baseline" go-to-k/cdkd#5373
 echo "    OK: phase 1 baseline (Descriptions, TTL 90, HealthCheckConfig threshold 3 on AWS)"
 
 # --- Assertion: a nameless service gets a generated name (go-to-k/cdkd#5348) ---
@@ -304,10 +318,30 @@ echo "    OK: nameless Cloud Map service created as '${NAMELESS_NAME}' (go-to-k/
 
 # --- Phase 2 (kept): removals CloudFormation keeps (issue #1160) -------
 echo "==> Phase 2: drop ${SERVICE_NAME}'s Description on its own; ${DNS_KEPT_NAME}'s DnsConfig and ${HC_KEPT_NAME}'s HealthCheckConfig beside an unchanged Description; ${TTL_NAME}'s Description beside a TTL change"
-if ! deploy_phase kept; then
+# Read by cleanup() too, which removes it on an early exit.
+P2_LOG="$(mktemp -t cdkd-svcdisc-p2.XXXXXX)"
+P2_RC=0
+deploy_phase kept 2>&1 | tee "${P2_LOG}" || P2_RC=$?
+if [ "${P2_RC}" != "0" ]; then
   echo "FAIL: the phase 2 deploy failed (issue #1160): a removal beside an unchanged declared Description must send no UpdateService (a DnsConfig-less one is refused), as CloudFormation sends none" >&2
   exit 1
 fi
+# go-to-k/cdkd#5373: PinnedDnsService's DnsConfig.NamespaceId and RoutingPolicy
+# changed. CloudFormation completes the update without applying either and
+# without replacing the service; cdkd must match that, and say so.
+P2_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${P2_LOG}" | tr '\n' ' ' | tr -s ' ')"
+if ! printf '%s' "${P2_FLAT}" | grep -qF "PinnedDnsService (AWS::ServiceDiscovery::Service): DnsConfig.NamespaceId and DnsConfig.RoutingPolicy changed, but Cloud Map cannot change them on an existing service"; then
+  echo "FAIL: the phase 2 deploy did not warn that PinnedDnsService's DnsConfig.NamespaceId and RoutingPolicy changes were not applied (go-to-k/cdkd#5373)" >&2
+  exit 1
+fi
+rm -f "${P2_LOG}"
+P2_LOG=""
+expect_same_id "${PINNED_NAME}" "${PINNED_ID}"
+expect_field "${PINNED_ID}" NamespaceId "${PRIVATE_NS_ID}" \
+  "a DnsConfig.NamespaceId change moved the service, where CloudFormation leaves it" go-to-k/cdkd#5373
+expect_field "${PINNED_ID}" DnsConfig.RoutingPolicy MULTIVALUE \
+  "a DnsConfig.RoutingPolicy change was applied, where CloudFormation leaves it" go-to-k/cdkd#5373
+echo "    OK: DnsConfig.NamespaceId / RoutingPolicy changes left unapplied, as CloudFormation leaves them, and named in a warning (go-to-k/cdkd#5373)"
 expect_same_id "${SERVICE_NAME}" "${SERVICE_ID}"
 expect_same_id "${TTL_NAME}" "${TTL_ID}"
 expect_same_id "${DNS_KEPT_NAME}" "${DNS_KEPT_ID}"
@@ -407,7 +441,7 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 
 # Cloud Map service deletion is synchronous; re-query once in case the
 # list index lags briefly.
-for name in "${SERVICE_NAME}" "${TTL_NAME}" "${HC_NAME}" "${REFUSED_NAME}" "${DNS_KEPT_NAME}" "${HC_KEPT_NAME}" "${SECRET_HC_KEPT_NAME}" "${NOECHO_HC_KEPT_NAME}" "${NAMELESS_NAME}"; do
+for name in "${SERVICE_NAME}" "${TTL_NAME}" "${HC_NAME}" "${REFUSED_NAME}" "${DNS_KEPT_NAME}" "${HC_KEPT_NAME}" "${SECRET_HC_KEPT_NAME}" "${NOECHO_HC_KEPT_NAME}" "${NAMELESS_NAME}" "${PINNED_NAME}"; do
   STILL=$(service_id "${name}")
   if [ -n "${STILL}" ] && [ "${STILL}" != "None" ]; then
     sleep 5 2>/dev/null || true
@@ -462,4 +496,4 @@ s3_purge_prefix_versions "${STATE_BUCKET}" "${PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${PREFIX}" "stack state teardown"
 
 echo ""
-echo "==> servicediscovery test passed (ServiceDiscovery::Service ServiceAttributes property-coverage backfill closed + #1160 removal phases follow CloudFormation + #5348 generated name + clean destroy)"
+echo "==> servicediscovery test passed (ServiceDiscovery::Service ServiceAttributes property-coverage backfill closed + #1160 removal phases follow CloudFormation + #5348 generated name + #5373 unapplied DnsConfig members + clean destroy)"

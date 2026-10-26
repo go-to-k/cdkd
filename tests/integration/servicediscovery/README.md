@@ -27,7 +27,13 @@ CloudFormation A/Bs on the issue:
   `healthCheckConfig` each removed beside an unchanged declared `description`,
   and a `description` removed beside a DnsRecords TTL change are all still on
   the service; the TTL change is applied (CloudFormation drops a
-  DnsRecords-only change; cdkd applies it on purpose).
+  DnsRecords-only change; cdkd applies it on purpose). Also in this phase,
+  `cdkd-svcdisc-pinned-dns` moves its `dnsConfig.namespaceId` to the public
+  namespace and switches `dnsConfig.routingPolicy` from `MULTIVALUE` to
+  `WEIGHTED` (go-to-k/cdkd#5373). `UpdateService` cannot change either, and
+  CloudFormation finishes the update without applying them, so the service
+  keeps its id, namespace and policy. The deploy must warn that both changes
+  were not applied.
 - `combined`: a `description` removed beside a `healthCheckConfig` change is
   cleared.
 - `refused`: a `dnsConfig` removed beside a `description` change is refused by

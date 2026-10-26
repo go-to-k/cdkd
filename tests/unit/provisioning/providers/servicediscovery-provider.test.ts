@@ -26,6 +26,7 @@ import {
 import { ServiceDiscoveryProvider } from '../../../../src/provisioning/providers/servicediscovery-provider.js';
 import { ProvisioningError } from '../../../../src/utils/error-handler.js';
 import { generatedNameFor, withStackScope } from '../../../../src/provisioning/resource-name.js';
+import { getLogger } from '../../../../src/utils/logger.js';
 
 describe('ServiceDiscoveryProvider — import', () => {
   let provider: ServiceDiscoveryProvider;
@@ -515,5 +516,204 @@ describe('ServiceDiscoveryProvider — Service without a Name (#5348)', () => {
     );
 
     expect(createdName()).toBe('declared');
+  });
+});
+
+// go-to-k/cdkd#5373: `UpdateService`'s `DnsConfigChange` has no member for
+// `DnsConfig.NamespaceId` or `DnsConfig.RoutingPolicy`. CloudFormation, measured
+// in us-east-1, leaves both as they are and reports UPDATE_COMPLETE (no
+// replacement, no failure); cdkd matches that outcome and names them in a
+// warning instead of staying silent, once the live service confirms the
+// difference.
+describe('ServiceDiscoveryProvider — unapplied DnsConfig members are named (#5373)', () => {
+  const TYPE = 'AWS::ServiceDiscovery::Service';
+  const BASE = {
+    Name: 'svc',
+    Description: 'desc',
+    DnsConfig: {
+      NamespaceId: 'ns-a',
+      RoutingPolicy: 'MULTIVALUE',
+      DnsRecords: [{ Type: 'A', TTL: 60 }],
+    },
+  };
+  let provider: ServiceDiscoveryProvider;
+  const warn = () => getLogger().child('x').warn as ReturnType<typeof vi.fn>;
+  const warnings = () => warn().mock.calls.map(([m]) => String(m));
+  const dns = (patch: Record<string, unknown>) => ({ ...BASE, DnsConfig: { ...BASE.DnsConfig, ...patch } });
+  const sentChange = () =>
+    (mockSend.mock.calls.find(([c]) => c instanceof UpdateServiceCommand)?.[0] as UpdateServiceCommand | undefined)
+      ?.input.Service;
+
+  /** What AWS holds: the BASE values, never changed by an update. */
+  let live: Record<string, unknown> | Error;
+  const nonReads = () => mockSend.mock.calls.filter(([c]) => !(c instanceof GetServiceCommand));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new ServiceDiscoveryProvider();
+    live = { Id: 'srv-1', NamespaceId: 'ns-a', DnsConfig: { ...BASE.DnsConfig } };
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof UpdateServiceCommand) return { OperationId: 'op-1' };
+      if (cmd instanceof GetOperationCommand) return { Operation: { Status: 'SUCCESS' } };
+      if (cmd instanceof GetServiceCommand) {
+        if (live instanceof Error) throw live;
+        return { Service: live };
+      }
+      return {};
+    });
+  });
+
+  it('a RoutingPolicy change on its own sends nothing and names the member, pointing at a new Name', async () => {
+    await provider.update('Svc', 'srv-1', TYPE, dns({ RoutingPolicy: 'WEIGHTED' }), structuredClone(BASE));
+    expect(nonReads()).toEqual([]);
+    expect(warnings()).toEqual([
+      'Svc (AWS::ServiceDiscovery::Service): DnsConfig.RoutingPolicy changed, but Cloud Map cannot change it on an existing service, so the service keeps its current value, as CloudFormation does. To change it, replace the service, for example by giving it a new Name.',
+    ]);
+  });
+
+  it('a DnsConfig.NamespaceId change on its own sends nothing and points at the top-level NamespaceId', async () => {
+    await provider.update('Svc', 'srv-1', TYPE, dns({ NamespaceId: 'ns-b' }), structuredClone(BASE));
+    expect(nonReads()).toEqual([]);
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]).toContain('DnsConfig.NamespaceId changed');
+    expect(warnings()[0]).toContain('declare the namespace in the top-level NamespaceId');
+  });
+
+  it('both beside a TTL change: the records are sent without either member, and both are named in one warning', async () => {
+    await provider.update(
+      'Svc',
+      'srv-1',
+      TYPE,
+      dns({ NamespaceId: 'ns-b', RoutingPolicy: 'WEIGHTED', DnsRecords: [{ Type: 'A', TTL: 90 }] }),
+      structuredClone(BASE)
+    );
+    expect(sentChange()?.DnsConfig).toStrictEqual({ DnsRecords: [{ Type: 'A', TTL: 90 }] });
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]).toContain(
+      'DnsConfig.NamespaceId and DnsConfig.RoutingPolicy changed, but Cloud Map cannot change them on an existing service, so the service keeps its current values'
+    );
+  });
+
+  it('beside a Description change: the Description is sent and the member is named', async () => {
+    await provider.update(
+      'Svc',
+      'srv-1',
+      TYPE,
+      { ...dns({ RoutingPolicy: 'WEIGHTED' }), Description: 'changed' },
+      structuredClone(BASE)
+    );
+    expect(sentChange()?.Description).toBe('changed');
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]).toContain('DnsConfig.RoutingPolicy changed');
+  });
+
+  it.each([
+    ['an added member', { ...BASE, DnsConfig: { DnsRecords: BASE.DnsConfig.DnsRecords } }, BASE, 'NamespaceId'],
+    ['a removed member', BASE, { ...BASE, DnsConfig: { DnsRecords: BASE.DnsConfig.DnsRecords } }, 'NamespaceId'],
+  ])('%s counts as a change while AWS holds another value', async (_label, previous, next, member) => {
+    live = { Id: 'srv-1', NamespaceId: 'ns-z', DnsConfig: { ...BASE.DnsConfig, RoutingPolicy: 'WEIGHTED' } };
+    await provider.update('Svc', 'srv-1', TYPE, structuredClone(next), structuredClone(previous));
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]).toContain(`DnsConfig.${member} and DnsConfig.RoutingPolicy changed`);
+  });
+
+  it.each([
+    ['nothing changed', () => provider.update('Svc', 'srv-1', TYPE, structuredClone(BASE), structuredClone(BASE))],
+    [
+      'only the records changed',
+      () =>
+        provider.update('Svc', 'srv-1', TYPE, dns({ DnsRecords: [{ Type: 'A', TTL: 90 }] }), structuredClone(BASE)),
+    ],
+    [
+      'DnsConfig removed whole (the #1160 removal path)',
+      () => provider.update('Svc', 'srv-1', TYPE, { Name: 'svc', Description: 'desc' }, structuredClone(BASE)),
+    ],
+    [
+      'the engine says DnsConfig did not change template to template',
+      () =>
+        provider.update('Svc', 'srv-1', TYPE, dns({ RoutingPolicy: 'WEIGHTED' }), structuredClone(BASE), {
+          changedProperties: new Set(['Description']),
+        }),
+    ],
+  ])('no warning when %s', async (_label, run) => {
+    await run();
+    expect(warn()).not.toHaveBeenCalled();
+  });
+
+  // The state records the declared value, never applied, so the template-to-
+  // state difference alone is not enough: AWS must still hold another value.
+  it.each([
+    [
+      'a rollback (or a reverted template) going back to what AWS holds',
+      () => provider.update('Svc', 'srv-1', TYPE, structuredClone(BASE), dns({ NamespaceId: 'ns-b', RoutingPolicy: 'WEIGHTED' })),
+    ],
+    [
+      'a member added at the value AWS already holds',
+      () =>
+        provider.update('Svc', 'srv-1', TYPE, structuredClone(BASE), {
+          ...BASE,
+          DnsConfig: { DnsRecords: BASE.DnsConfig.DnsRecords },
+        }),
+    ],
+    [
+      'a recorded stand-in on the previous side, with the declared value live',
+      () =>
+        provider.update('Svc', 'srv-1', TYPE, structuredClone(BASE), {
+          ...BASE,
+          DnsConfig: { ...BASE.DnsConfig, NamespaceId: '{{resolve:ssm:/ns-id}}' },
+        }),
+    ],
+  ])('no warning for %s', async (_label, run) => {
+    await run();
+    expect(warn()).not.toHaveBeenCalled();
+  });
+
+  it('confirms against the top-level NamespaceId when DnsConfig declares none', async () => {
+    await provider.update(
+      'Svc',
+      'srv-1',
+      TYPE,
+      { ...BASE, NamespaceId: 'ns-a', DnsConfig: { DnsRecords: BASE.DnsConfig.DnsRecords, RoutingPolicy: 'MULTIVALUE' } },
+      structuredClone(BASE),
+      { changedProperties: new Set(['DnsConfig', 'NamespaceId']) }
+    );
+    expect(warn()).not.toHaveBeenCalled();
+  });
+
+  it('only the member AWS does not hold is named', async () => {
+    live = { Id: 'srv-1', NamespaceId: 'ns-a', DnsConfig: { ...BASE.DnsConfig, RoutingPolicy: 'WEIGHTED' } };
+    await provider.update(
+      'Svc',
+      'srv-1',
+      TYPE,
+      dns({ NamespaceId: 'ns-b', RoutingPolicy: 'WEIGHTED' }),
+      structuredClone(BASE)
+    );
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]).toContain('DnsConfig.NamespaceId changed, but Cloud Map cannot change it');
+  });
+
+  it('a failed read-back keeps the warning, and the update still succeeds', async () => {
+    live = new Error('throttled');
+    const result = await provider.update('Svc', 'srv-1', TYPE, dns({ RoutingPolicy: 'WEIGHTED' }), structuredClone(BASE));
+    expect(result).toEqual({ physicalId: 'srv-1', wasReplaced: false });
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]).toContain('DnsConfig.RoutingPolicy changed');
+  });
+
+  it('a failed UpdateService names nothing: the warning follows a successful update only', async () => {
+    mockSend.mockImplementation(async () => {
+      throw new Error('boom');
+    });
+    await expect(
+      provider.update(
+        'Svc',
+        'srv-1',
+        TYPE,
+        { ...dns({ RoutingPolicy: 'WEIGHTED' }), Description: 'changed' },
+        structuredClone(BASE)
+      )
+    ).rejects.toBeInstanceOf(ProvisioningError);
+    expect(warn()).not.toHaveBeenCalled();
   });
 });

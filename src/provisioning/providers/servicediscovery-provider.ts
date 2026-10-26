@@ -181,6 +181,39 @@ function sameAsRecorded(desired: unknown, recorded: unknown): boolean {
   return isDeepStrictEqual(desired, recorded);
 }
 
+/**
+ * The `DnsConfig` members of a Cloud Map service that changed but cannot be
+ * applied in place (go-to-k/cdkd#5373): `UpdateService`'s `DnsConfigChange`
+ * carries `DnsRecords` only, so a `NamespaceId` or `RoutingPolicy` change has
+ * no member to send. CloudFormation behaves the same way. Measured in
+ * us-east-1 on 2026-10-26: moving `DnsConfig.NamespaceId` to another namespace
+ * and changing `RoutingPolicy` from MULTIVALUE to WEIGHTED, each on its own and
+ * beside a `Description` change, planned `Modify` with `Replacement: False`,
+ * ended `UPDATE_COMPLETE` and left the service id, namespace and routing
+ * policy as they were. cdkd matches that outcome and names the members in a
+ * warning instead of staying silent.
+ *
+ * Only a `DnsConfig` the template still declares is compared: a removed
+ * `DnsConfig` is the #1160 removal path in {@link planServiceChange}.
+ */
+function unappliedDnsConfigMembers(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  changedProperties: ReadonlySet<string> | undefined
+): string[] {
+  if (changedProperties !== undefined && !changedProperties.has('DnsConfig')) return [];
+  const desired = properties['DnsConfig'];
+  const previous = previousProperties['DnsConfig'];
+  if (!isPlainObject(desired) || !isPlainObject(previous)) return [];
+  return ['NamespaceId', 'RoutingPolicy'].filter(
+    (member) => !sameAsRecorded(desired[member], previous[member])
+  );
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 /** A recorded string standing in for a resolved secret: a dynamic reference, or the mask. */
 function isRecordedStandIn(value: string): boolean {
   return dynamicReferenceTokens(value).length > 0 || value.includes(SECRET_MASK);
@@ -1436,9 +1469,11 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * Update a service discovery service.
    *
    * Per AWS docs, `UpdateService` accepts a `ServiceChange` body with
-   * `Description`, `DnsConfig.DnsRecords` (TTLs etc. — `NamespaceId` /
-   * `RoutingPolicy` are not part of the change shape and are immutable
-   * here), and `HealthCheckConfig`. `Name` / `NamespaceId` /
+   * `Description`, `DnsConfig.DnsRecords` (TTLs etc. — `DnsConfig.NamespaceId`
+   * / `RoutingPolicy` are not part of the change shape: a change to either is
+   * not applied, as in CloudFormation, and is named in a warning; see
+   * {@link unappliedDnsConfigMembers}), and `HealthCheckConfig`. `Name` /
+   * `NamespaceId` /
    * `HealthCheckCustomConfig` are immutable on UpdateService — the
    * replacement-detection layer routes those through DELETE+CREATE.
    *
@@ -1496,10 +1531,15 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     const tagWarning = tagPlanWarning(tagPlan, resourceType, logicalId);
     if (tagWarning !== undefined) this.logger.warn(tagWarning);
 
+    // go-to-k/cdkd#5373: named once the update has succeeded (or had nothing
+    // to send), never before a call that could still fail.
+    const unapplied = unappliedDnsConfigMembers(properties, previousProperties, changedProperties);
+
     if (!hasServiceChange && !hasAttrUpsert && !hasAttrRemove && !hasTagChange) {
       this.logger.debug(
         `No mutable diff for ServiceDiscovery Service ${logicalId}, skipping update`
       );
+      await this.warnUnappliedDnsConfigMembers(logicalId, physicalId, properties, unapplied);
       return { physicalId, wasReplaced: false };
     }
 
@@ -1617,6 +1657,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       }
 
       this.logger.debug(`Successfully updated service discovery service ${logicalId}`);
+      await this.warnUnappliedDnsConfigMembers(logicalId, physicalId, properties, unapplied);
 
       return { physicalId, wasReplaced: false };
     } catch (error) {
@@ -1693,7 +1734,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       return { change, keepRemovedFromLive: false };
     }
     // `DnsConfig` unchanged as written leaves its records unchanged; changed,
-    // the records themselves are compared (its other members are create-only).
+    // the records themselves are compared (its other members cannot be
+    // updated; go-to-k/cdkd#5373).
     if (
       desiredRecords !== undefined &&
       (changedProperties === undefined || changedProperties.has('DnsConfig')) &&
@@ -1702,6 +1744,51 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       return { change, keepRemovedFromLive: true };
     }
     return undefined;
+  }
+
+  /**
+   * Name each `DnsConfig` member {@link unappliedDnsConfigMembers} found, in
+   * one warning (go-to-k/cdkd#5373), once the live service confirms it still
+   * differs. The state records the declared value, never applied, so a
+   * template-to-state difference alone also fires on a rollback revert, on a
+   * template reverted to what AWS holds, and on a member added at the value
+   * AWS already has. A failed read keeps the warning: it cannot be confirmed
+   * either way, and the update itself has already succeeded.
+   */
+  private async warnUnappliedDnsConfigMembers(
+    logicalId: string,
+    physicalId: string,
+    properties: Record<string, unknown>,
+    candidates: readonly string[]
+  ): Promise<void> {
+    if (candidates.length === 0) return;
+    let members = candidates;
+    try {
+      const live = (await this.getClient().send(new GetServiceCommand({ Id: physicalId }))).Service;
+      const dns = properties['DnsConfig'] as DnsConfig;
+      const desired: Record<string, unknown> = {
+        NamespaceId: dns.NamespaceId ?? properties['NamespaceId'],
+        RoutingPolicy: dns.RoutingPolicy,
+      };
+      const held: Record<string, unknown> = {
+        NamespaceId: live?.NamespaceId ?? live?.DnsConfig?.NamespaceId,
+        RoutingPolicy: live?.DnsConfig?.RoutingPolicy,
+      };
+      members = candidates.filter((m) => desired[m] === undefined || desired[m] !== held[m]);
+    } catch {
+      this.logger.debug(
+        safeMsg`Could not read service discovery service ${logicalId} back to confirm its DnsConfig; warning unconfirmed`
+      );
+    }
+    if (members.length === 0) return;
+    const paths = members.map((m) => `DnsConfig.${m}`).join(' and ');
+    const [it, value] = members.length > 1 ? ['them', 'values'] : ['it', 'value'];
+    const remedy = members.includes('NamespaceId')
+      ? 'To move the service, declare the namespace in the top-level NamespaceId: a change there replaces the service.'
+      : 'To change it, replace the service, for example by giving it a new Name.';
+    this.logger.warn(
+      safeMsg`${logicalId} (AWS::ServiceDiscovery::Service): ${paths} changed, but Cloud Map cannot change ${it} on an existing service, so the service keeps its current ${value}, as CloudFormation does. ${remedy}`
+    );
   }
 
   /**
