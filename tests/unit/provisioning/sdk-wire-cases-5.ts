@@ -120,15 +120,23 @@ function armDefinitionObject(): void {
   });
 }
 
-// Not a gap: UpdateStateMachine sends the definition, role and each config
-// block whole from `next`, so a member removed from `prev` alone sends the
-// same request (its update-add probe observes delivery). A removed block
-// itself is reset from `prev`, which those probes observe.
-const SM_WHOLE_FROM_NEXT =
-  'UpdateStateMachine sends this whole from next; prev is read only for a removed block';
-const smWholeFromNext = (labels: string[]): Record<string, string> =>
-  Object.fromEntries(labels.map((l) => [`update-remove:${l}`, SM_WHOLE_FROM_NEXT]));
-const SM_DEFINITION_FROM_NEXT = ['RoleArn', 'DefinitionSubstitutions', 'DefinitionSubstitutions.s'];
+// Not a gap: UpdateStateMachine is patch-style, an omitted member keeping its
+// live value, so cdkd sends the role, the definition and each config block
+// from `next` on every update, and reads `prev` only to reset a removed block
+// (which those probes observe). A member removed from `prev` alone therefore
+// sends the same request; its update-add probe observes delivery.
+const SM_FROM_NEXT =
+  'sent from next on every update; prev is read only to reset a removed block';
+// Not a gap: a state machine always has a role and a definition (`RoleArn` is
+// required; a body in one of the three forms is the machine), so no valid
+// template removes the only one a bag declares.
+const SM_REQUIRED = 'no valid template removes the role or the only definition form';
+const smFromNext = (labels: string[], required: string[] = []): Record<string, string> =>
+  Object.fromEntries([
+    ...labels.map((l) => [`update-remove:${l}`, SM_FROM_NEXT]),
+    ...required.map((l) => [`update-remove:${l}`, SM_REQUIRED]),
+  ]);
+const SM_DEFINITION_FROM_NEXT = ['DefinitionSubstitutions', 'DefinitionSubstitutions.s'];
 const SM_ROLE_REQUIRED = { 'create:RoleArn': REQUIRED('RoleArn') };
 
 const CONNECTOR_ARN = `arn:aws:lambda:us-east-1:${ACCOUNT}:network-connector:nc`;
@@ -416,17 +424,19 @@ export const CASES_5: TypeCase[] = [
           'LoggingConfiguration.Level': 'ERROR',
           'EncryptionConfiguration.Type': 'AWS_OWNED_KEY',
         },
-        expectedSilent: smWholeFromNext([
-          ...SM_DEFINITION_FROM_NEXT,
-          'DefinitionString',
-          'EncryptionConfiguration.KmsDataKeyReusePeriodSeconds',
+        expectedSilent: smFromNext(
+          [
+            ...SM_DEFINITION_FROM_NEXT,
+            'EncryptionConfiguration.KmsDataKeyReusePeriodSeconds',
           'EncryptionConfiguration.KmsKeyId',
           'LoggingConfiguration.Destinations',
           'LoggingConfiguration.Destinations.0',
           'LoggingConfiguration.Destinations.0.CloudWatchLogsLogGroup',
           'LoggingConfiguration.Destinations.0.CloudWatchLogsLogGroup.LogGroupArn',
-          'LoggingConfiguration.IncludeExecutionData',
-        ]),
+            'LoggingConfiguration.IncludeExecutionData',
+          ],
+          ['RoleArn', 'DefinitionString']
+        ),
         expectedRemovalThrows: { ...SM_ROLE_REQUIRED, ...TAG_THROWS(ALL_DIRECTIONS, 2) },
       },
       {
@@ -436,15 +446,17 @@ export const CASES_5: TypeCase[] = [
           Definition: JSON.parse(SM_BODY) as Bag,
           DefinitionSubstitutions: { s: 'P' },
         },
-        expectedSilent: smWholeFromNext([
-          ...SM_DEFINITION_FROM_NEXT,
-          'Definition',
-          'Definition.StartAt',
+        expectedSilent: smFromNext(
+          [
+            ...SM_DEFINITION_FROM_NEXT,
+            'Definition.StartAt',
           'Definition.States',
           'Definition.States.${s}',
           'Definition.States.${s}.End',
-          'Definition.States.${s}.Type',
-        ]),
+            'Definition.States.${s}.Type',
+          ],
+          ['RoleArn', 'Definition']
+        ),
         expectedRemovalThrows: SM_ROLE_REQUIRED,
       },
       {
@@ -454,13 +466,15 @@ export const CASES_5: TypeCase[] = [
           DefinitionS3Location: { Bucket: 'b', Key: 'k', Version: 'v1' },
           DefinitionSubstitutions: { s: 'P' },
         },
-        expectedSilent: smWholeFromNext([
-          ...SM_DEFINITION_FROM_NEXT,
-          'DefinitionS3Location',
-          'DefinitionS3Location.Bucket',
+        expectedSilent: smFromNext(
+          [
+            ...SM_DEFINITION_FROM_NEXT,
+            'DefinitionS3Location.Bucket',
           'DefinitionS3Location.Key',
-          'DefinitionS3Location.Version',
-        ]),
+            'DefinitionS3Location.Version',
+          ],
+          ['RoleArn', 'DefinitionS3Location']
+        ),
         expectedRemovalThrows: SM_ROLE_REQUIRED,
       },
     ],
@@ -628,7 +642,10 @@ export const CASES_5: TypeCase[] = [
     resourceType: 'AWS::Events::Rule',
     provider: () => new EventBridgeRuleProvider(),
     physicalId: RULE_ARN,
-    createOnly: createOnlyOf('AWS::Events::Rule'),
+    // The engine replaces a rule moved to another bus (`replacement-rules.ts`),
+    // as it does a renamed one: PutRule upserts by name on the bus it is
+    // given, so update() is never handed a bus change.
+    createOnly: new Set([...createOnlyOf('AWS::Events::Rule'), 'EventBusName']),
     wholeFromNext: {
       keys: (key) => key !== 'Targets' && key !== 'Tags',
       reason: RULE_FROM_NEXT,

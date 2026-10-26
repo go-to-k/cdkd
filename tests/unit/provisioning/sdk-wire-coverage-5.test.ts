@@ -62,19 +62,31 @@ describe('AWS::KMS::Key BypassPolicyLockoutSafetyCheck on an update that changes
     Statement: [{ Effect: 'Allow', Principal: { AWS: '*' }, Action: action, Resource: '*' }],
   });
 
+  // The flag is read from `next` alone: a previous side declaring it says
+  // nothing about this put, and a string `'false'` (a String parameter's Ref)
+  // is false, as CloudFormation reads it.
   it.each([
-    [true, true],
-    ['true', true],
-    [false, false],
-    [undefined, false],
-  ])('declared %j: PutKeyPolicy carries the bypass: %s', async (bypass, sent) => {
+    [true, true, true],
+    ['true', 'true', true],
+    [undefined, true, true],
+    [true, undefined, false],
+    ['false', 'false', false],
+    [false, false, false],
+    [undefined, undefined, false],
+  ])('previous %j, desired %j: PutKeyPolicy carries the bypass: %s', async (prev, next, sent) => {
     setOutputOverrides(undefined);
-    const bag = (action: string) => ({
+    const bag = (action: string, bypass: unknown) => ({
       KeyPolicy: policy(action),
       ...(bypass !== undefined && { BypassPolicyLockoutSafetyCheck: bypass }),
     });
     const outcome = await record(() =>
-      new KMSProvider().update('L', 'k', 'AWS::KMS::Key', bag('kms:*'), bag('kms:Decrypt'))
+      new KMSProvider().update(
+        'L',
+        'k',
+        'AWS::KMS::Key',
+        bag('kms:*', next),
+        bag('kms:Decrypt', prev)
+      )
     );
     expect(outcome).toMatchObject({ threw: false });
     const puts = (outcome as { wire: string }).wire
