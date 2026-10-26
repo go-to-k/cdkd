@@ -52,7 +52,7 @@ cloudfront-function-url	2026-10-23T23:55:45Z	PASS	225	verify.sh	rc ok, orph clea
 cloudtrail-trail	2026-10-21T13:56:47Z	PASS	200	verify.sh	rc ok, reset/retain split verified, orph clean (1 lambda log group routinely swept)
 cloudwatch	2026-10-20T05:58:30Z	PASS	65	standard	deploy+destroy clean, 0 orphans
 cloudwatch-anomaly-detector	2026-10-26T05:42:10Z	PASS	61	verify.sh	rc ok, orph clean; TZ=Asia/Tokyo offset-less range read as UTC (5311)
-codebuild-project	2026-10-26T11:35:05Z	PASS	221	verify.sh	rc ok, orph clean
+codebuild-project	2026-10-26T11:39:42Z	PASS	174	verify.sh	rc ok, orph clean
 codecommit	2026-10-25T00:07:44Z	PASS	125	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
 cognito	2026-10-24T19:26:15Z	PASS	214	verify.sh	rc ok, orph clean, #5266 tail-c
