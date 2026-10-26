@@ -2935,11 +2935,12 @@ function partitionNoEchoParameterChanges(
  * - the mask is the fail-closed class, not a `NoEcho` one
  *   ({@link isUncertifiedBaselineMaskPosition}) — a `NoEcho` mask keeps the
  *   issue #2274 disposition;
- * - the two sides are equal once each masked leaf is allowed to match any live
- *   string, number or boolean — never a container ({@link equalModuloMask};
- *   the number and boolean arms since go-to-k/cdkd#5315, where a Step Functions
- *   `${name}` placed outside quotes reads back as a JSON number). Anything else
- *   — a length change, a reorder, an edit beside the mask — stays real drift.
+ * - the two sides are equal once each mask is allowed to match any present,
+ *   non-null live value ({@link equalModuloMask}): a string, number or boolean
+ *   since go-to-k/cdkd#5315 (a Step Functions `${name}` placed outside quotes
+ *   reads back as a JSON number), and a container since go-to-k/cdkd#5333 (a
+ *   definition whose KEY held a secret is masked whole). Anything else — a
+ *   length change, a reorder, an edit beside the mask — stays real drift.
  *
  * Runs on the COMPARISON values, before {@link redactDriftChanges}: after it
  * the AWS side is itself a mask or an expression and the equality means
@@ -6171,13 +6172,17 @@ export function overlayLiveAtUncertifiedPaths(
       // No alignment to register by position, so register every live string
       // under the path: over-masking fails safe, and for an overlaid key the
       // mask walk after this one still refuses rather than guesses.
-      if (live !== undefined) recordMaskOnlyValuesIn(live, secrets);
+      if (live !== undefined) recordMaskOnlyLiveSubtree(live, secrets);
       continue;
     }
     const needles: string[] = [];
     const collect = (b: unknown, l: unknown): void => {
-      if (b === SECRET_MASK && typeof l === 'string') {
-        needles.push(l);
+      if (b === SECRET_MASK) {
+        // A mask matches any live value since go-to-k/cdkd#5333 (a definition
+        // whose KEY held a secret is masked whole), so a CONTAINER here is
+        // aligned too: what it holds, keys included, must reach the masker.
+        if (typeof l === 'string') needles.push(l);
+        else recordMaskOnlyLiveSubtree(l, secrets);
         return;
       }
       if (Array.isArray(b) && Array.isArray(l)) {
@@ -6201,6 +6206,30 @@ export function overlayLiveAtUncertifiedPaths(
     if (overlaidTopLevelKeys.has(topLevelKey)) out = withValueAtPath(out, path, live);
   }
   return out;
+}
+
+/**
+ * Register every string leaf AND every object KEY of a live value cdkd could not
+ * name as a mask-only needle (go-to-k/cdkd#5342). `recordMaskOnlyValuesIn`
+ * walks values only, and a Step Functions state NAMED by a secret is a key,
+ * which a provider's validation error echoes (`at /States/<name>`).
+ */
+function recordMaskOnlyLiveSubtree(live: unknown, secrets: RecordedSecretValues): void {
+  recordMaskOnlyValuesIn(live, secrets);
+  const seen = new Set<object>();
+  const walk = (node: unknown): void => {
+    if (node === null || typeof node !== 'object' || seen.has(node)) return;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      recordMaskOnlyValue(secrets, key);
+      walk(value);
+    }
+  };
+  walk(live);
 }
 
 /**

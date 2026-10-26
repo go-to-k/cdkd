@@ -473,6 +473,58 @@ describe('cdkd drift — an uncertified-position baseline mask (issue #3595)', (
     expect(context?.maskSecrets?.(`bad value ${ALPHA_PLAINTEXT}`)).not.toContain(ALPHA_PLAINTEXT);
   });
 
+  it('--revert registers the strings AND keys of a CONTAINER at a masked position (#5333, #5342)', async () => {
+    // Since #5333 a mask matches a live container, so the position is aligned;
+    // what the container holds must still reach the provider's log masker, its
+    // object KEYS included (a state name a validation error echoes).
+    const ROTATED_VALUE = 'cdkd-rotated-inner-value-904';
+    const ROTATED_KEY = 'cdkd-rotated-inner-key-905';
+    const update = vi.fn(async () => ({}));
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Task: {
+          physicalId: 'x',
+          resourceType: ECS_TYPE,
+          properties: { Cfg: { Mode: 'a', Doc: ALPHA_EXPR } },
+          observedProperties: { Cfg: { Mode: 'a', Doc: SECRET_MASK } },
+        },
+      })
+    );
+    readsBack(
+      { Cfg: { Mode: 'edited', Doc: { inner: ROTATED_VALUE, [ROTATED_KEY]: 'x' } } },
+      update
+    );
+
+    const { output } = await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(output).not.toContain(ROTATED_VALUE);
+    expect(output).not.toContain(ROTATED_KEY);
+    expect(update).toHaveBeenCalledTimes(1);
+    const context = (update.mock.calls[0] as unknown[])[5] as
+      | { maskSecrets?: (t: string) => string }
+      | undefined;
+    expect(context?.maskSecrets).toBeTypeOf('function');
+    expect(context!.maskSecrets!(`bad value ${ROTATED_VALUE}`)).not.toContain(ROTATED_VALUE);
+    expect(context!.maskSecrets!(`at /States/${ROTATED_KEY}`)).not.toContain(ROTATED_KEY);
+  });
+
+  it('registers the KEYS of a live value at a position it could not align (#5342)', async () => {
+    const { overlayLiveAtUncertifiedPaths } = await import('../../../src/cli/commands/drift.js');
+    const ROTATED_KEY = 'cdkd-unaligned-key-906';
+    const ROTATED_VALUE = 'cdkd-unaligned-value-907';
+    const secrets = new Map<string, string>();
+    overlayLiveAtUncertifiedPaths(
+      {},
+      ['X'],
+      { X: ['-p', { [ROTATED_KEY]: ROTATED_VALUE }, '-q'] },
+      { X: ['-p', SECRET_MASK] },
+      secrets,
+      new Set()
+    );
+    expect(secrets.get(ROTATED_KEY)).toBe(SECRET_MASK);
+    expect(secrets.get(ROTATED_VALUE)).toBe(SECRET_MASK);
+  });
+
   it('--revert registers a live value at a masked position that is NOT today\'s secret', async () => {
     // A rotated-away (or edited) value sits where the baseline holds the mask:
     // equality modulo the mask still holds, so nothing is reverted there, but

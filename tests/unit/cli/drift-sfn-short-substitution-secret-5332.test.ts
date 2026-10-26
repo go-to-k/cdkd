@@ -447,30 +447,72 @@ describe('cdkd drift — a short DefinitionSubstitutions secret folded into Defi
     expect(sent['Definition']).toEqual(asl(`Bearer ${SHORT_SECRET}`));
   });
 
-  it('--revert sends AWS its own Definition when a NoEcho `***` sits outside quotes (body unparseable)', async () => {
+  it('a NoEcho `***` outside quotes (body unparseable) is notCompared, and --revert sends no `***`', async () => {
+    // The fold masks the whole `Definition`; since #5333 a mask matches any
+    // live value, so the position is an uncertified baseline (exit 2), and a
+    // --revert driven by a real edit elsewhere sends AWS its own Definition.
     const record = fallbackRecord();
     record.properties!['DefinitionString'] =
       '{"StartAt":"W","States":{"W":{"Type":"Wait","Seconds":${Token},"End":true}}}';
     record.properties!['DefinitionSubstitutions'] = { Token: SECRET_MASK };
     const live = { StartAt: 'W', States: { W: { Type: 'Wait', Seconds: 901, End: true } } };
+    const provider = (roleArn: string): StepFunctionsProvider => {
+      const p = new StepFunctionsProvider();
+      vi.spyOn(p, 'readCurrentState').mockResolvedValue({
+        StateMachineName: 'sm',
+        RoleArn: roleArn,
+        Definition: live,
+      });
+      return p;
+    };
+
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
-    mockGetState.mockResolvedValueOnce(makeState({ Machine: record }));
-    const provider = new StepFunctionsProvider();
-    vi.spyOn(provider, 'readCurrentState').mockResolvedValue({
-      StateMachineName: 'sm',
-      RoleArn: 'arn:aws:iam::123456789012:role/sfn',
-      Definition: live,
-    });
+    mockGetState.mockResolvedValueOnce(makeState({ Machine: structuredClone(record) }));
+    mockRegistryGetProvider.mockReturnValue(provider('arn:aws:iam::123456789012:role/sfn'));
+    const { output } = await runDrift(['TestStack', '--json']);
+    const payload = JSON.parse(output) as Array<{
+      drifted: unknown[];
+      notCompared: Array<{ cause: string }>;
+    }>;
+    expect(payload[0]!.drifted).toEqual([]);
+    expect(payload[0]!.notCompared.map((n) => n.cause)).toEqual(['uncertifiedBaseline']);
+
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Machine: structuredClone(record) }));
+    const edited = provider('arn:aws:iam::123456789012:role/edited');
     const update = vi
-      .spyOn(provider, 'update')
+      .spyOn(edited, 'update')
       .mockResolvedValue({ physicalId: record.physicalId, wasReplaced: false });
-    mockRegistryGetProvider.mockReturnValue(provider);
-
+    mockRegistryGetProvider.mockReturnValue(edited);
     await runDrift(['TestStack', '--revert', '--yes']);
-
     expect(update).toHaveBeenCalledTimes(1);
     const sent = update.mock.calls[0]![3] as Record<string, unknown>;
     expect(JSON.stringify(sent)).not.toContain(SECRET_MASK);
     expect(sent['Definition']).toEqual(live);
+  });
+
+  it('a NoEcho `***` used as a state-name KEY folds into an uncertified baseline (exit 2), #5333', async () => {
+    const record = fallbackRecord();
+    record.properties!['DefinitionString'] =
+      '{"StartAt":"${Token}","States":{"${Token}":{"Type":"Pass","End":true}}}';
+    record.properties!['DefinitionSubstitutions'] = { Token: SECRET_MASK };
+    const provider = new StepFunctionsProvider();
+    vi.spyOn(provider, 'readCurrentState').mockResolvedValue({
+      StateMachineName: 'sm',
+      RoleArn: 'arn:aws:iam::123456789012:role/sfn',
+      Definition: { StartAt: 'nk-secret', States: { 'nk-secret': { Type: 'Pass', End: true } } },
+    });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Machine: record }));
+    mockRegistryGetProvider.mockReturnValue(provider);
+
+    const { output } = await runDrift(['TestStack', '--json']);
+    expect(output).not.toContain('nk-secret');
+    const payload = JSON.parse(output) as Array<{
+      drifted: unknown[];
+      notCompared: Array<{ cause: string }>;
+    }>;
+    expect(payload[0]!.drifted).toEqual([]);
+    expect(payload[0]!.notCompared.map((n) => n.cause)).toEqual(['uncertifiedBaseline']);
   });
 });
