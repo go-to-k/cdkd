@@ -176,6 +176,7 @@ export { identityKeyFor } from './secret-redaction/identity-keys.js';
 export {
   pathCrossesDottedKey,
   isUncertifiedBaselineMaskPosition,
+  spelledKeysOf,
   DYNAMIC_REFERENCE_TOKEN_SCAN,
   dynamicReferenceTokens,
 } from './secret-redaction/redact-path.js';

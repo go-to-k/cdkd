@@ -121,7 +121,8 @@ receives the same value it would receive from `cdk deploy`.
 | `AWS::EC2::EIP` | The public IP |
 | `AWS::Glue::Table` | The table name |
 | `AWS::Route53::RecordSet` | The record name |
-| `AWS::S3Tables::Namespace`, `AWS::S3Tables::Table` | The namespace or table name |
+| `AWS::S3Tables::Namespace` | The namespace name |
+| `AWS::S3Tables::Table` | The table ARN |
 
 ### Records with no recorded ARN
 

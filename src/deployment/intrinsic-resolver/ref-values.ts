@@ -35,9 +35,9 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *    packs the segments because its CRUD calls need all of them while
  *    `ResourceProvider`'s read-side methods receive a single string. Here the
  *    extraction is load-bearing on the ORDINARY deploy path and there is no
- *    pipe-free variant to fall through. `AWS::S3Tables::Namespace` /
- *    `::Table` (whose per-routing split is spelled out at their entry) are
- *    these. `AWS::Glue::Table` was too (issue #1667) until its table name was
+ *    pipe-free variant to fall through. `AWS::S3Tables::Namespace` is one.
+ *    (`::Table` was too, until issue #5316 measured its `Ref` as the
+ *    TableARN; it now takes {@link s3TablesTableRefFromPhysicalId}.) `AWS::Glue::Table` was too (issue #1667) until its table name was
  *    allowed to contain `|` (issue #1672); it now takes
  *    {@link glueTableRefFromPhysicalId}.
  *
@@ -121,7 +121,8 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *     and with no documented contract the raw id is the least-surprising value
  *     (the same call the maintenance note above already records for it);
  *   - already correct, no change needed: EC2::EIP (before-first-pipe),
- *     S3Tables::Namespace / ::Table (added by the 2026-07-03 close-out audit),
+ *     S3Tables::Namespace (added by the 2026-07-03 close-out audit; its
+ *     sibling ::Table was later measured to return the TableARN, issue #5316),
  *     ECS::Service (before-first-pipe; stores the bare ARN on the SDK path);
  *   - was KNOWN WRONG and not fixable by a Set entry; FIXED by issue #1681,
  *     each with a mechanism of its own rather than an entry here:
@@ -156,24 +157,15 @@ export const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   'AWS::AppConfig::ConfigurationProfile',
   'AWS::AppConfig::HostedConfigurationVersion',
   'AWS::AppConfig::Deployment',
-  // S3Tables children (cross-family close-out audit, 2026-07-03): their SDK
-  // provider ITSELF stores the compound (`<tableBucketARN>|<namespace>` /
-  // `<tableBucketARN>|<namespace>|<tableName>`), so unlike the ApiGateway
-  // family the extraction is load-bearing on the SDK path for BOTH types. On
-  // the CC path it is load-bearing for Namespace only (compound
-  // primaryIdentifier `[TableBucketARN, Namespace]`); Table's CC
-  // primaryIdentifier is the bare single-segment TableARN, so a #614-routed
-  // Table stores a pipe-free ARN and the after-pipe extraction no-ops. That
-  // pipe-free ARN ends in a UUID (not the table name CFn `Ref` returns) and is
-  // NOT reconstructible from the physical id alone — so the CC-routed table
-  // name is recovered from the stored `TableName` property via the
-  // `stateLookup` seam in `cfnRefValueFromPhysicalId` (issue #974), which fires
-  // ONLY when the physical id has no pipe (i.e. the CC path) and leaves the SDK
-  // compound path untouched. The TableBucketARN contains no pipes, so
-  // after-LAST-pipe is safe on the SDK path. Docs: Namespace `Ref` returns the
-  // namespace name; Table `Ref` returns the table name.
+  // S3Tables Namespace (cross-family close-out audit, 2026-07-03): its SDK
+  // provider ITSELF stores the compound `<tableBucketARN>|<namespace>`, and
+  // its CC primaryIdentifier is the same pair, so the extraction is
+  // load-bearing on both routes. The TableBucketARN contains no pipes, so
+  // after-LAST-pipe is safe. Docs: Namespace `Ref` returns the namespace name.
+  // `AWS::S3Tables::Table` is NOT here: its `Ref` is the TableARN, which no
+  // segment of the composite holds (issue #5316, measured against
+  // CloudFormation) — {@link s3TablesTableRefFromPhysicalId}.
   'AWS::S3Tables::Namespace',
-  'AWS::S3Tables::Table',
   // AWS::Glue::Table is NOT here, though its id is `<databaseName>|<tableName>`
   // and its `Ref` is the table name: a table name may itself contain `|`, so
   // after-LAST-pipe would return only its tail. It takes
@@ -329,9 +321,9 @@ export function isStalePlaceholderArnAttribute(
 /**
  * Optional state-backed lookup so {@link cfnRefValueFromPhysicalId} can recover
  * a `Ref` value that is NOT reconstructible from the physical id alone (see the
- * `AWS::S3Tables::Table` CC-routed case). Both call sites pass the resource's
+ * SDK-routed `AWS::S3Tables::Table` case). Both call sites pass the resource's
  * stored `properties` then `attributes` map, so a template property recorded at
- * create time (`TableName`) or an enriched attribute is reachable. Returns the
+ * create time (`DatabaseName`) or an enriched attribute is reachable. Returns the
  * stringified value for the first key present, or `undefined` when none match.
  */
 export type RefStateLookup = (
@@ -393,8 +385,9 @@ export interface RefStateLookupOptions {
  * caller broken by it, because skipping a mask is only an improvement for a
  * caller that has somewhere to put the refusal. For everyone else it REMOVES a
  * guarded sentinel and substitutes an unguarded wrong value: the fall-through
- * emits the raw physical id — for `AWS::S3Tables::Table` an ARN ending in a
- * UUID rather than the table name CFn `Ref` returns — which
+ * emits the raw physical id — for an SDK-routed `AWS::S3Tables::Table` the
+ * `<tableBucketARN>|<namespace>|<name>` composite rather than the TableARN
+ * CFn `Ref` returns — which
  * `refuseMaskedReplayBaseline`, `cdkd export`'s blocker, `cdkd drift`'s mask
  * handling and the deploy-time refusal all pass, where every one of them
  * REJECTS `'***'` loudly. The rounds found it in `cdkd orphan`, then in
@@ -438,7 +431,7 @@ export interface RefStateLookupOptions {
  *
  * `onMaskedValue` fires only when the WHOLE lookup came up empty, not at the
  * masked leaf. The scan spans two bags and several alias keys, so a masked
- * `properties.TableName` beside a live `attributes.TableName` is an ordinary,
+ * `properties.DatabaseName` beside a live `attributes.DatabaseName` is an ordinary,
  * fully resolvable record — `cdkd import`'s own shape — and notifying there
  * would fail a deploy that has the value it needs. The distinction is "cdkd
  * could not answer, and the reason was a redaction", which is the only case
@@ -612,6 +605,73 @@ export function recordSetRefFromPhysicalId(
 }
 
 /**
+ * The `Ref` value of an `AWS::S3Tables::Table` — its TableARN, the value
+ * CloudFormation returns (measured with a CloudFormation stack, us-east-1,
+ * 2026-10-26: `Ref` equals `Fn::GetAtt TableARN` and stays unchanged across a
+ * `TableName` and a `Namespace` change; issue #5316).
+ *
+ * - A pipe-free physical id IS the TableARN: Cloud Control's primaryIdentifier
+ *   for the type is the bare `TableARN`, so a #614-routed table (IcebergMetadata
+ *   and friends) records it, as does `S3TablesProvider.importTable` for one.
+ *   Returned as is, without reading state.
+ * - cdkd's SDK composite `<tableBucketARN>|<namespace>|<tableName>` holds no
+ *   segment of the ARN (it ends in a table id AWS mints), so the ARN comes from
+ *   the `TableARN` attribute every SDK create (since go-to-k/cdkd#739) and
+ *   every import records. A recorded value that is not an ARN, or carries a
+ *   `|`, is not used. A record with NO `TableARN` (a table created before
+ *   #739) does not reach here from the deploy-time resolver: `resolveRef`
+ *   reads it as `Fn::GetAtt TableARN`, whose healer re-reads it from AWS.
+ * - Otherwise a record with no usable `TableARN` falls back to the raw
+ *   composite id, as the {@link REF_RETURNS_ARN_FROM_STATE} types do, never to
+ *   the table name: a name is no value CloudFormation's `Ref` returns, and it
+ *   would pass every reader that rejects the composite.
+ *
+ * A MASKED `TableARN` follows the Glue rule ({@link glueTableRefFromPhysicalId}):
+ * a caller with a redaction bag gets the redacted read reported, one without
+ * gets the mask back.
+ */
+export function s3TablesTableRefFromPhysicalId(
+  physicalId: string,
+  stateLookup?: RefStateLookup
+): string {
+  if (!physicalId.includes(COMPOSITE_ID_SEPARATOR) || !stateLookup) return physicalId;
+  const tableArn = stateLookup(['TableARN']);
+  if (tableArn === undefined) return physicalId;
+  if (carriesSecretMask(tableArn)) return tableArn;
+  return tableArn.startsWith('arn:') && !tableArn.includes(COMPOSITE_ID_SEPARATOR)
+    ? tableArn
+    : physicalId;
+}
+
+/**
+ * Is `resource` an SDK-routed `AWS::S3Tables::Table` (its physical id the
+ * `<tableBucketARN>|<namespace>|<name>` composite) with no USABLE `TableARN`
+ * recorded in either bag (go-to-k/cdkd#5316)? Usable is what
+ * {@link s3TablesTableRefFromPhysicalId} would serve: a pipe-free `arn:`
+ * string. A masked value counts as recorded, so it keeps that helper's
+ * redaction handling.
+ */
+export function lacksRecordedTableArn(resource: {
+  resourceType: string;
+  physicalId: string;
+  properties?: Record<string, unknown>;
+  attributes?: Record<string, unknown>;
+}): boolean {
+  if (resource.resourceType !== 'AWS::S3Tables::Table') return false;
+  if (!resource.physicalId.includes(COMPOSITE_ID_SEPARATOR)) return false;
+  const recorded = (bag: Record<string, unknown> | undefined): boolean => {
+    if (bag === undefined || !Object.hasOwn(bag, 'TableARN')) return false;
+    const value = bag['TableARN'];
+    return (
+      typeof value === 'string' &&
+      (carriesSecretMask(value) ||
+        (value.startsWith('arn:') && !value.includes(COMPOSITE_ID_SEPARATOR)))
+    );
+  };
+  return !recorded(resource.properties) && !recorded(resource.attributes);
+}
+
+/**
  * Resolve the value CloudFormation's `Ref` returns for a resource, given its
  * type and cdkd-stored physical id. Pure function shared by the deploy-time
  * resolver (`resolveRefValue` in `refs.ts`) and the
@@ -620,9 +680,9 @@ export function recordSetRefFromPhysicalId(
  * extraction and name-from-ARN extraction included).
  *
  * `stateLookup` (optional) recovers a `Ref` value that the physical id cannot
- * yield — the `AWS::S3Tables::Table` CC-routed case, whose bare TableARN ends
- * in a UUID (not the table name CFn `Ref` returns), so the name is read from
- * the stored `TableName` property/attribute instead (issue #974) — and, since
+ * yield — the SDK-routed `AWS::S3Tables::Table`, whose `Ref` is the TableARN
+ * its composite id does not contain, read from the recorded `TableARN`
+ * attribute ({@link s3TablesTableRefFromPhysicalId}, issue #5316) — and, since
  * issue #1681, the {@link REF_RETURNS_ARN_FROM_STATE} types, whose `Ref` is an
  * ARN that is no segment of their compound id — and, since issue #1672,
  * `AWS::Glue::Table`, whose recorded `DatabaseName` places a table name that
@@ -633,23 +693,10 @@ export function cfnRefValueFromPhysicalId(
   physicalId: string,
   stateLookup?: RefStateLookup
 ): string {
-  // AWS::S3Tables::Table diverges by ROUTING layer. The SDK provider stores the
-  // compound `<tableBucketARN>|<namespace>|<tableName>` (the after-pipe
-  // extraction below returns the table name). But a #614-routed Table (its SDK
-  // handledProperties omit IcebergMetadata / Compaction / SnapshotManagement /
-  // WithoutMetadata — IcebergMetadata is the everyday schema-bearing path) goes
-  // through Cloud Control, whose primaryIdentifier is the bare single-segment
-  // `TableARN` — pipe-free, and the ARN ends in a UUID, not the table name CFn
-  // `Ref` returns. So when the physical id has no pipe, recover the name from
-  // the stored `TableName` property (or the `Name` alias older fixtures use)
-  // before falling through to the after-pipe extraction, which would no-op and
-  // leak the ARN (issue #974). SDK-provisioned Tables keep the compound and
-  // never take this branch.
-  if (resourceType === 'AWS::S3Tables::Table' && !physicalId.includes('|') && stateLookup) {
-    const tableName = stateLookup(['TableName', 'Name']);
-    if (tableName) {
-      return tableName;
-    }
+  // AWS::S3Tables::Table: CFn's `Ref` is the TableARN (issue #5316) — see
+  // the helper for the two routes' physical ids.
+  if (resourceType === 'AWS::S3Tables::Table') {
+    return s3TablesTableRefFromPhysicalId(physicalId, stateLookup);
   }
   // AWS::Glue::Table: the table name, which may itself contain `|` (issue
   // #1672) — see the helper for why no generic Set can extract it.

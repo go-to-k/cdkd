@@ -329,20 +329,20 @@ function deepEqual(a: unknown, b: unknown): boolean {
  * drift beside it. Positional and shape-strict on purpose: an array whose
  * length changed or whose elements AWS reordered is NOT equal, because a mask
  * cannot say which element it stood for, and treating a reorder as equal would
- * hide an edit. Only a SCALAR can match a mask: the redaction masks string
- * leaves, and the rendered Step Functions definition arm (issue
+ * hide an edit. A mask matches any PRESENT, non-null live value: the redaction
+ * masks string leaves, the rendered Step Functions definition arm (issue
  * [#5315](https://github.com/go-to-k/cdkd/issues/5315)) number and boolean
- * leaves as well, since a `${name}` placed outside quotes reads back as a JSON
- * number. A container never matches one. The cost, for every mask and not
- * only that arm's: a live value at a masked position that changed TYPE (a
- * string become a number) is no longer seen as a difference there.
+ * leaves too, and a definition whose KEY holds a secret is masked WHOLE (issue
+ * [#5333](https://github.com/go-to-k/cdkd/issues/5333)), so its live object
+ * must match the scalar mask too. The cost, for every mask and not only that
+ * arm's: a live value at a masked position that changed TYPE (a string become
+ * a number or a container) is no longer seen as a difference there; the
+ * position is one cdkd cannot name anyway.
  */
 export function equalModuloMask(state: unknown, aws: unknown, mask: string): boolean {
   const a = jsonForm(state);
   const b = jsonForm(aws);
-  if (a === mask && (typeof b === 'string' || typeof b === 'number' || typeof b === 'boolean')) {
-    return true;
-  }
+  if (a === mask && b !== null && b !== undefined) return true;
   if (a === b) return true;
   if (a === null || b === null || a === undefined || b === undefined) return a === b;
   if (typeof a !== typeof b || typeof a !== 'object') return false;

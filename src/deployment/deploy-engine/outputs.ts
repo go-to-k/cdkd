@@ -435,9 +435,10 @@ export async function resolveOutputs(
    * and consulted nothing, so the note this pass records was written and
    * never read — and once `refStateLookupFromResource` learned to refuse a
    * masked leaf, "never read" stopped being harmless. A `{"Ref": <record
-   * whose TableName / SelectionId / RepositoryId / AppSync ARN is masked>}`
-   * in `Outputs` publishes the RAW PHYSICAL ID: for a Cloud-Control-routed
-   * `AWS::S3Tables::Table`, a UUID-tailed ARN where the table NAME belongs.
+   * whose TableARN / SelectionId / RepositoryId / AppSync ARN is masked>}`
+   * in `Outputs` publishes the RAW PHYSICAL ID: for an SDK-routed
+   * `AWS::S3Tables::Table`, the `<tableBucketARN>|<namespace>|<name>`
+   * composite where the TableARN belongs.
    *
    * THE ASYMMETRY IS WHY THIS IS A REFUSAL RATHER THAN A WARNING. Before the
    * refusal existed this published `'***'`, which the CONSUMER stack rejects
