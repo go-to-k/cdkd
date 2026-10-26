@@ -825,9 +825,10 @@ function substitutionIsSecret(value: string): boolean {
  * name is left as `${name}`. The result then parses even where the substituted
  * body does not (`"Seconds": ${pin}` with an expression value).
  *
- * - `keys`: every object key holding no marker (a literal the record spells);
+ * - `keys`: every object key holding no marker (a literal the record spells),
+ *   plus the keys of the body as WRITTEN (a `${name}` key is a placeholder,
+ *   which an unsubstituted readback still spells, and no secret);
  * - `strings` / `scalars`: every leaf holding no marker;
- * - `secretKey`: some key holds a marker (a secret in a state name);
  * - `secretPaths`: where an OUT-OF-QUOTES secret lands, with its name.
  *
  * `undefined` when no body is held (`DefinitionS3Location`) or none parses (a
@@ -838,7 +839,6 @@ export interface SentinelDefinition {
   readonly keys: Set<string>;
   readonly strings: Set<string>;
   readonly scalars: Set<unknown>;
-  readonly secretKey: boolean;
   readonly secretPaths: ReadonlyArray<{
     path: ReadonlyArray<string | number>;
     /** The length of each ARRAY the path passes through, by depth (`undefined` for an object). */
@@ -908,7 +908,6 @@ export function sentinelDefinitionOf(
       keys: new Set<string>(),
       strings: new Set<string>(),
       scalars: new Set<unknown>(),
-      secretKey: false,
       secretPaths: [] as Array<{
         path: Array<string | number>;
         lengths: Array<number | undefined>;
@@ -939,16 +938,32 @@ export function sentinelDefinitionOf(
       }
       if (isPlainObject(node)) {
         for (const [k, v] of Object.entries(node)) {
-          if (marked(k)) out.secretKey = true;
-          else out.keys.add(k);
+          if (!marked(k)) out.keys.add(k);
           walk(v, [...path, k], [...lengths, undefined]);
         }
       }
     };
     walk(parsed, [], []);
+    try {
+      collectObjectKeys(JSON.parse(body) as unknown, out.keys);
+    } catch {
+      // The body as written does not parse (a placeholder outside quotes).
+    }
     return out;
   }
   return undefined;
+}
+
+/** Every object key of a parsed body (plain containers only). */
+function collectObjectKeys(value: unknown, into: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectObjectKeys(item, into);
+  } else if (isPlainObject(value)) {
+    for (const [k, v] of Object.entries(value)) {
+      into.add(k);
+      collectObjectKeys(v, into);
+    }
+  }
 }
 
 /** Does any object key anywhere in `value` fail `spelled`? */
@@ -966,16 +981,16 @@ export function someKeyIsUnspelled(value: unknown, spelled: (key: string) => boo
  * `Definition` / `DefinitionString` key.
  *
  * WITH a sentinel body ({@link sentinelDefinitionOf}):
- * - a secret in a KEY, or any read-back key the record does not spell (a
- *   secret whose value broke out of its string reshapes the keys), makes the
+ * - any read-back KEY the record does not spell (a secret in a state name, or
+ *   one whose value broke out of its string and reshaped the keys) makes the
  *   WHOLE value `***` — the representation the maintainer chose on #5333, which
  *   `cdkd drift` classifies as an uncertified baseline;
  * - at each OUT-OF-QUOTES secret position, walked in lockstep with the body
  *   (an array of a different length on the way is misalignment: whole `***`),
- *   a number or boolean becomes the substitution's own value — the expression,
- *   or `***` — and anything else there (a JSON-document secret read back as a
- *   container, a string, `null`) makes the whole value `***`. Only THAT
- *   position: a literal `Seconds: 3` beside a secret `3` stays a number.
+ *   the read-back value becomes the substitution's own value — the expression,
+ *   or `***` — whatever it parsed to (a number, a boolean, a JSON-document
+ *   secret's container). Only THAT position: a literal `Seconds: 3` beside a
+ *   secret `3` stays a number.
  *
  * WITHOUT one (no body held, none parses) the record says nothing about
  * positions, so the map decides: a key holding a recorded plaintext (whole, or
@@ -997,7 +1012,7 @@ function nameDefinitionSecrets(
     if (someKeyIsUnspelled(value, (key) => !keyHoldsSecret(key))) return SECRET_MASK;
     return nameScalarSecrets(value, secrets);
   }
-  if (sentinel.secretKey || someKeyIsUnspelled(value, (key) => sentinel.keys.has(key))) {
+  if (someKeyIsUnspelled(value, (key) => sentinel.keys.has(key))) {
     return SECRET_MASK;
   }
   const subs = source['DefinitionSubstitutions'] as Record<string, unknown>;
@@ -1017,7 +1032,6 @@ function nameDefinitionSecrets(
         cursor = cursor[segment];
       }
     }
-    if (typeof cursor !== 'number' && typeof cursor !== 'boolean') return SECRET_MASK;
     out = replaceAtPath(out, path, String(subs[name]));
   }
   return out;

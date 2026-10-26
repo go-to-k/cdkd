@@ -53,7 +53,6 @@ function renderedDefinitionLiterals(source: Record<string, unknown>): {
   strings: Set<string>;
   scalars: Set<unknown>;
   keys: Set<string>;
-  secretKey: boolean;
 } {
   const keep = new Set<string>();
   const scalarKeep = new Set<unknown>();
@@ -107,7 +106,6 @@ function renderedDefinitionLiterals(source: Record<string, unknown>): {
     strings: keep,
     scalars: scalarKeep,
     keys: keyKeep,
-    secretKey: sentinel?.secretKey === true,
   };
 }
 
@@ -701,7 +699,7 @@ export function refuseUncertifiedReadbackPositions(
       // `cdkd drift` classifies as an uncertified baseline. A body the record
       // does not hold, or that parses in no spelling, spells no key, so any
       // object here is masked whole: fail closed.
-      if (keep.secretKey || someKeyIsUnspelled(v, (key) => keep.keys.has(key))) {
+      if (someKeyIsUnspelled(v, (key) => keep.keys.has(key))) {
         out[k] = mark ? POSITION_UNCERTIFIED : SECRET_MASK;
         continue;
       }

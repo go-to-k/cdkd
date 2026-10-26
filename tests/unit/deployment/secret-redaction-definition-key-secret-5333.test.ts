@@ -274,4 +274,62 @@ describe('secret-redaction - a substitution secret in a definition KEY (issue #5
       expect(out['Note']).toBe(OTHER);
     }
   });
+
+  it('keeps an UNSUBSTITUTED readback whose key still spells the placeholder', () => {
+    // Inline definitions before #5298: AWS stores `${k}` verbatim, no secret.
+    const props = { DefinitionString: keyedBody, DefinitionSubstitutions: { k: EXPR } };
+    const unsubstituted = JSON.parse(keyedBody) as Record<string, unknown>;
+    for (const out of [
+      refreshObserved(props, { Definition: structuredClone(unsubstituted) }),
+      autoRefresh(props, { Definition: structuredClone(unsubstituted) }),
+      deployPersist(
+        props,
+        { DefinitionString: keyedBody, DefinitionSubstitutions: { k: PLAIN } },
+        { Definition: structuredClone(unsubstituted) },
+        new Map([[PLAIN, EXPR]])
+      ),
+    ]) {
+      expect(out['Definition']).toEqual(unsubstituted);
+    }
+  });
+
+  it('a DefinitionS3Location record on the DEPLOY persist: a key holding the secret masks it whole', () => {
+    const template = {
+      DefinitionS3Location: { Bucket: 'b', Key: 'k.json' },
+      DefinitionSubstitutions: { k: EXPR },
+    };
+    const resolved = { ...template, DefinitionSubstitutions: { k: PLAIN } };
+    const masked = deployPersist(template, resolved, keyedReadback(), new Map([[PLAIN, EXPR]]));
+    expect(JSON.stringify(masked)).not.toContain(PLAIN);
+    expect(masked['Definition']).toBe(SECRET_MASK);
+    // ...and a key holding NO recorded plaintext keeps the value's shape.
+    const kept = deployPersist(
+      template,
+      resolved,
+      { Definition: { StartAt: 'A', States: { A: { Type: 'Pass', Result: PLAIN, End: true } } } },
+      new Map([[PLAIN, EXPR]])
+    );
+    expect(kept['Definition']).toEqual({
+      StartAt: 'A',
+      States: { A: { Type: 'Pass', Result: EXPR, End: true } },
+    });
+  });
+
+  it('a JSON-ARRAY secret outside quotes is replaced by its expression at that position', () => {
+    const body = '{"StartAt":"P","States":{"P":{"Type":"Pass","Result":${list},"End":true}}}';
+    const template = { DefinitionString: body, DefinitionSubstitutions: { list: EXPR } };
+    const out = deployPersist(
+      template,
+      { DefinitionString: body, DefinitionSubstitutions: { list: '[97531,86420]' } },
+      {
+        Definition: { StartAt: 'P', States: { P: { Type: 'Pass', Result: [97531, 86420], End: true } } },
+      },
+      new Map([['[97531,86420]', EXPR]])
+    );
+    expect(JSON.stringify(out)).not.toContain('97531');
+    expect(out['Definition']).toEqual({
+      StartAt: 'P',
+      States: { P: { Type: 'Pass', Result: EXPR, End: true } },
+    });
+  });
 });
