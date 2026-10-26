@@ -252,6 +252,11 @@
       "schemaMaxLength": 63,
       "schemaMinLength": 3
     },
+    "AWS::ServiceDiscovery::Service": {
+      "nameProperty": "Name",
+      "apiMaxLength": 63,
+      "apiSource": "CreateService Name (ServiceName pattern: one DNS label is at most 63 characters)"
+    },
     "AWS::EC2::SecurityGroup": {
       "nameProperty": "GroupName",
       "apiMaxLength": 255,

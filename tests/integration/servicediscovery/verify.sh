@@ -10,7 +10,9 @@
 # the CloudFormation A/Bs: a removal on its own, beside an unchanged declared
 # Description, or beside a DnsRecords-only change is KEPT; a Description
 # removed beside a HealthCheckConfig change is CLEARED; and a DnsConfig removed
-# beside a Description change is REFUSED by AWS. Then destroys and confirms a clean teardown.
+# beside a Description change is REFUSED by AWS. A service declaring no Name is
+# created under a generated name that every redeploy keeps (go-to-k/cdkd#5348).
+# Then destroys and confirms a clean teardown.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -82,6 +84,7 @@ cleanup() {
   set +eu
   # Phase 4's deploy log, left behind when a run fails before it is removed.
   [ -n "${P4_LOG_DIR:-}" ] && rm -rf "${P4_LOG_DIR}"
+  [ -n "${P1_LOG:-}" ] && rm -f "${P1_LOG}"
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -124,10 +127,25 @@ cleanup
 
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
+# go-to-k/cdkd#5348: NamelessService declares no Name. Before the fix the
+# provider refused its create, failing this deploy; name that refusal instead
+# of leaving only the deploy's exit code.
+P1_LOG="$(mktemp -t cdkd-svcdisc-p1.XXXXXX)"
+P1_RC=0
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --yes
+  --yes 2>&1 | tee "${P1_LOG}" || P1_RC=$?
+if [ "${P1_RC}" != "0" ]; then
+  if grep -qF 'Name is required for ServiceDiscovery Service' "${P1_LOG}"; then
+    echo "FAIL: the nameless Cloud Map service's create was refused (go-to-k/cdkd#5348 NOT closed)" >&2
+  else
+    echo "FAIL: Phase 1 deploy exited ${P1_RC}" >&2
+  fi
+  exit 1
+fi
+rm -f "${P1_LOG}"
+P1_LOG=""
 
 STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 if [ -z "${STATE}" ]; then
@@ -257,6 +275,28 @@ if [[ "${RECORDED_DESC}" != "{{resolve:secretsmanager:"* ]]; then
 fi
 echo "    OK: phase 1 baseline (Descriptions, TTL 90, HealthCheckConfig threshold 3 on AWS)"
 
+# --- Assertion: a nameless service gets a generated name (go-to-k/cdkd#5348) ---
+# cdkd generates `{stack}-{logicalId}-{suffix}`: one DNS label of at most 63
+# characters. A fresh stack always carries an instance id, so the 12-hex
+# suffix is required (a suffix-less legacy name here would be a regression).
+NAMELESS_NAME=$(printf '%s' "${P1_STATE}" | jq -r '.outputs.NamelessServiceName // empty')
+if ! printf '%s' "${NAMELESS_NAME}" | grep -qE '^ServiceDiscoveryStack-NamelessService-[0-9a-f]{12}$'; then
+  echo "FAIL: the nameless Cloud Map service is named '${NAMELESS_NAME}', expected the generated ServiceDiscoveryStack-NamelessService-<12 hex> (go-to-k/cdkd#5348)" >&2
+  exit 1
+fi
+NAMELESS_ID=$(require_id "${NAMELESS_NAME}")
+# expect_nameless <phase>: the redeploy kept the generated name and the service.
+expect_nameless() {
+  local name
+  name=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.outputs.NamelessServiceName // empty')
+  if [ "${name}" != "${NAMELESS_NAME}" ]; then
+    echo "FAIL: after $1, the nameless Cloud Map service is '${name}', expected '${NAMELESS_NAME}' (go-to-k/cdkd#5348)" >&2
+    exit 1
+  fi
+  expect_same_id "${NAMELESS_NAME}" "${NAMELESS_ID}"
+}
+echo "    OK: nameless Cloud Map service created as '${NAMELESS_NAME}' (go-to-k/cdkd#5348)"
+
 # The removal phases follow the CloudFormation A/Bs on #1160
 # (issuecomment-6272137682, issuecomment-6281592365): UpdateService replaces
 # its body, CloudFormation sends it only when a declared Description /
@@ -301,6 +341,8 @@ if [ "$(service_field "${NOECHO_HC_KEPT_ID}" Description)" != "${NOECHO_DESC}" ]
   exit 1
 fi
 echo "    OK: HealthCheckConfig kept beside an unchanged NoEcho-parameter Description (go-to-k/cdkd#5112)"
+expect_nameless "phase 2"
+echo "    OK: the nameless service kept its generated name across phase 2 (go-to-k/cdkd#5348)"
 
 # --- Phase 3 (combined): a removal beside a sent change (issue #1160) --
 echo "==> Phase 3: drop ${HC_NAME}'s Description beside a HealthCheckConfig change"
@@ -318,6 +360,7 @@ if [ "${P3_HC_DESC}" != "None" ] && [ -n "${P3_HC_DESC}" ]; then
   exit 1
 fi
 echo "    OK: Description cleared beside the HealthCheckConfig change (issue #1160)"
+expect_nameless "phase 3"
 
 # --- Phase 4 (refused): DnsConfig removed beside a Description change ---
 # CloudFormation's update fails here with AWS's own refusal; cdkd must too.
@@ -352,6 +395,8 @@ expect_same_id "${REFUSED_NAME}" "${REFUSED_ID}"
 expect_field "${REFUSED_ID}" Description cdkd-svcdisc-refused "the refused update changed the service"
 expect_field "${REFUSED_ID}" "DnsConfig.DnsRecords[0].TTL" 90 "the refused update changed the service"
 echo "    OK: DnsConfig removal beside a Description change refused by AWS, service unchanged (issue #1160)"
+expect_nameless "phase 4"
+echo "    OK: the nameless service kept its generated name through phases 3 and 4, the refused one included (go-to-k/cdkd#5348)"
 
 # --- Phase 5: destroy -------------------------------------------------
 echo "==> Phase 5: destroy"
@@ -362,7 +407,7 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 
 # Cloud Map service deletion is synchronous; re-query once in case the
 # list index lags briefly.
-for name in "${SERVICE_NAME}" "${TTL_NAME}" "${HC_NAME}" "${REFUSED_NAME}" "${DNS_KEPT_NAME}" "${HC_KEPT_NAME}" "${SECRET_HC_KEPT_NAME}" "${NOECHO_HC_KEPT_NAME}"; do
+for name in "${SERVICE_NAME}" "${TTL_NAME}" "${HC_NAME}" "${REFUSED_NAME}" "${DNS_KEPT_NAME}" "${HC_KEPT_NAME}" "${SECRET_HC_KEPT_NAME}" "${NOECHO_HC_KEPT_NAME}" "${NAMELESS_NAME}"; do
   STILL=$(service_id "${name}")
   if [ -n "${STILL}" ] && [ "${STILL}" != "None" ]; then
     sleep 5 2>/dev/null || true
@@ -417,4 +462,4 @@ s3_purge_prefix_versions "${STATE_BUCKET}" "${PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${PREFIX}" "stack state teardown"
 
 echo ""
-echo "==> servicediscovery test passed (ServiceDiscovery::Service ServiceAttributes property-coverage backfill closed + #1160 removal phases follow CloudFormation + clean destroy)"
+echo "==> servicediscovery test passed (ServiceDiscovery::Service ServiceAttributes property-coverage backfill closed + #1160 removal phases follow CloudFormation + #5348 generated name + clean destroy)"

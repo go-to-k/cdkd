@@ -895,6 +895,17 @@ const FALLBACK_NAME_RULES: Record<string, GeneratedNameRule> = {
     legacy: { cloudControl: 'none' },
     notAdopted: true,
   },
+  // go-to-k/cdkd#5348: the same, for a Cloud Map service. CreateService takes
+  // DNS labels of `[a-zA-Z0-9_-]`, each at most 63 characters, starting and
+  // ending with a letter, digit or `_`: the generator emits one label of
+  // letters, digits and `-` that starts with a stack name and ends with the
+  // hex suffix or the logical id. The schema sets no limit.
+  'AWS::ServiceDiscovery::Service': {
+    nameProperty: 'Name',
+    options: { maxLength: 63 },
+    legacy: { cloudControl: 'none' },
+    notAdopted: true,
+  },
   // ...and the handler named these, which a legacy stack keeps.
   'AWS::Scheduler::Schedule': {
     nameProperty: 'Name',

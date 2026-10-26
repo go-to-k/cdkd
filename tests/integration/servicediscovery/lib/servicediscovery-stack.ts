@@ -42,6 +42,11 @@ import * as servicediscovery from 'aws-cdk-lib/aws-servicediscovery';
  *
  * `HcService` lives in a `PublicDnsNamespace`: a Route 53 `HealthCheckConfig`
  * is only accepted there.
+ *
+ * go-to-k/cdkd#5348: `NamelessService` declares no `name` (the L2's
+ * `@default CloudFormation-generated name`); cdkd used to refuse its create.
+ * It is identical in every phase, so each redeploy must keep its generated
+ * name.
  */
 export class ServiceDiscoveryStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -167,6 +172,16 @@ export class ServiceDiscoveryStack extends cdk.Stack {
       ...(kept
         ? {}
         : { healthCheckConfig: { type: 'HTTP', resourcePath: '/health', failureThreshold: 3 } }),
+    });
+
+    // go-to-k/cdkd#5348: no `name`, so cdkd generates one.
+    const namelessService = new servicediscovery.CfnService(this, 'NamelessService', {
+      namespaceId: namespace.attrId,
+      dnsConfig: { dnsRecords: [{ type: 'A', ttl: 60 }] },
+    });
+    new cdk.CfnOutput(this, 'NamelessServiceName', {
+      value: namelessService.attrName,
+      description: 'Generated name of the nameless Cloud Map service',
     });
 
     new cdk.CfnOutput(this, 'NamespaceId', {
