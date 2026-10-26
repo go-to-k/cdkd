@@ -18555,7 +18555,8 @@
             "createService",
             "planServiceChange",
             "update",
-            "updateService"
+            "updateService",
+            "warnUnappliedDnsConfigMembers"
           ]
         },
         {
@@ -18624,7 +18625,10 @@
           ],
           "seededBy": [
             "create",
-            "createService"
+            "createService",
+            "update",
+            "updateService",
+            "warnUnappliedDnsConfigMembers"
           ]
         },
         {

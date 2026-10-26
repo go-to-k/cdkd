@@ -43,6 +43,12 @@ import * as servicediscovery from 'aws-cdk-lib/aws-servicediscovery';
  * `HcService` lives in a `PublicDnsNamespace`: a Route 53 `HealthCheckConfig`
  * is only accepted there.
  *
+ * go-to-k/cdkd#5373 `kept`: `PinnedDnsService` moves `DnsConfig.NamespaceId` to
+ * the public namespace and changes `DnsConfig.RoutingPolicy` MULTIVALUE ->
+ * WEIGHTED. `UpdateService` has no member for either, and CloudFormation (CFn
+ * A/B on go-to-k/cdkd#5373) completes the update without applying them, so the
+ * service keeps its id, namespace and policy; cdkd does the same and warns.
+ *
  * go-to-k/cdkd#5348: `NamelessService` declares no `name` (the L2's
  * `@default CloudFormation-generated name`); cdkd used to refuse its create.
  * It is identical in every phase, so each redeploy must keep its generated
@@ -172,6 +178,16 @@ export class ServiceDiscoveryStack extends cdk.Stack {
       ...(kept
         ? {}
         : { healthCheckConfig: { type: 'HTTP', resourcePath: '/health', failureThreshold: 3 } }),
+    });
+
+    // go-to-k/cdkd#5373 `kept`: DnsConfig members UpdateService cannot change.
+    new servicediscovery.CfnService(this, 'PinnedDnsService', {
+      name: 'cdkd-svcdisc-pinned-dns',
+      dnsConfig: {
+        namespaceId: kept ? publicNamespace.attrId : namespace.attrId,
+        dnsRecords: [{ type: 'A', ttl: 60 }],
+        routingPolicy: kept ? 'WEIGHTED' : 'MULTIVALUE',
+      },
     });
 
     // go-to-k/cdkd#5348: no `name`, so cdkd generates one.

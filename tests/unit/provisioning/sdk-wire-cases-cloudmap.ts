@@ -69,12 +69,14 @@ const NAMESPACE_NAME_REQUIRED = {
  * A field removed on its own keeps its live value, as CloudFormation does
  * (go-to-k/cdkd#1160, measured live); `UpdateService`'s `DnsConfigChange`
  * carries `DnsRecords` only, so `DnsConfig.NamespaceId` (deprecated for the
- * top-level `NamespaceId`) and `DnsConfig.RoutingPolicy` (the CloudFormation
- * template reference's `AWS::ServiceDiscovery::Service DnsConfig` page: "Update
- * requires: Updates are not supported") have no member to send after the create.
+ * top-level `NamespaceId`) and `DnsConfig.RoutingPolicy` have no member to send
+ * after the create. CloudFormation does not apply either (go-to-k/cdkd#5373,
+ * measured: the update completes with no replacement and the service keeps
+ * both), so cdkd sends nothing too and names them in a warning.
  */
 const KEPT_ALONE = 'a field removed on its own keeps its live value, as in CloudFormation (#1160)';
-const NO_CHANGE_MEMBER = "UpdateService's DnsConfigChange has no member for it";
+const NO_CHANGE_MEMBER =
+  "UpdateService's DnsConfigChange has no member for it; CloudFormation does not apply it either, and cdkd warns (#5373)";
 const SERVICE_SILENT: Record<string, string> = {
   'update-remove:Description': KEPT_ALONE,
   'update-remove:DnsConfig': KEPT_ALONE,
