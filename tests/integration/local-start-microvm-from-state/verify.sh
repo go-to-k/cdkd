@@ -63,6 +63,10 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+# The state bucket is versioned, so the code artifact's versions and delete
+# markers are swept with the prefix-scoped helper (issue #2096).
+# shellcheck source=../s3-versions.sh
+. ../s3-versions.sh
 
 STACK="CdkdLocalStartMicrovmFromState"
 # The stack pins us-east-1, as lambda-microvm-image does.
@@ -79,7 +83,9 @@ PREFIX="cdkd-integ-mvmfs-${RUN_TOKEN}"
 IMAGE_NAME="${PREFIX}"
 PARAM_NAME="/cdkd-integ/mvmfs/${RUN_TOKEN}"
 PARAM_VALUE="value-${RUN_TOKEN}"
-ARTIFACT_PREFIX="cdkd-integ-microvm-fs-artifacts/${RUN_TOKEN}"
+# Under the stack's state prefix (the stack builds the same path), so the
+# prefix-scoped s3-versions helper can sweep every version of it.
+ARTIFACT_PREFIX="cdkd/${STACK}/${REGION}/microvm-artifacts/${RUN_TOKEN}"
 BUILD_LOG_GROUP="/aws/lambda/microvms/${IMAGE_NAME}"
 BASE_IMAGE="public.ecr.aws/docker/library/node:24-slim"
 PORT=18496
@@ -141,14 +147,14 @@ reap_run() { (
       ;;
   esac
   arn="$(aws lambda-microvms list-microvm-images --name-filter "${IMAGE_NAME}" \
-    --region "${REGION}" --query 'items[0].imageArn' --output text 2>/dev/null)"
+    --region "${REGION}" --query "items[?name=='${IMAGE_NAME}'].imageArn | [0]" --output text 2>/dev/null)"
   if [ -n "${arn}" ] && [ "${arn}" != "None" ]; then
     aws lambda-microvms delete-microvm-image --image-identifier "${arn}" --region "${REGION}" >/dev/null 2>&1
   fi
   aws s3api delete-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1
   aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1
   aws logs delete-log-group --log-group-name "${BUILD_LOG_GROUP}" --region "${REGION}" >/dev/null 2>&1
-  aws s3 rm "s3://${STATE_BUCKET}/${ARTIFACT_PREFIX}/" --recursive --region "${REGION}" >/dev/null 2>&1
+  s3_purge_prefix_versions "${STATE_BUCKET}" "${ARTIFACT_PREFIX}/" all
 ) }
 
 cleanup() {
@@ -247,7 +253,7 @@ DEPLOYED=1
 ${CDKD} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 IMAGE_ARN="$(aws lambda-microvms list-microvm-images --name-filter "${IMAGE_NAME}" \
-  --region "${REGION}" --query 'items[0].imageArn' --output text)"
+  --region "${REGION}" --query "items[?name=='${IMAGE_NAME}'].imageArn | [0]" --output text)"
 case "${IMAGE_ARN}" in
   arn:aws:lambda:*:microvm-image:*) ;;
   *) echo "FAIL: no MicroVM image named ${IMAGE_NAME} after deploy: '${IMAGE_ARN}'" >&2; exit 1 ;;
@@ -277,9 +283,10 @@ echo "${BODY}" | grep -q '"env":{"BUCKET_NAME":null,"BUCKET_ARN":null,"PARAM_NAM
   || fail "an intrinsic variable reached the container without a state flag: ${BODY}"
 for key in BUCKET_NAME BUCKET_ARN PARAM_NAME; do
   if ! grep -q "Environment variable ${key} contains a CloudFormation intrinsic and was dropped" "${OUT_FILE}"; then
-    # Sentinel: a line naming the key next to "intrinsic" means the warning
-    # fired but its wording drifted from the phrase parsed above.
-    if grep -E "\\b${key}\\b" "${OUT_FILE}" | grep -q 'intrinsic'; then
+    # Sentinel: a line naming the key next to the warning's independent
+    # remedy marker (`--env-vars`) means the warning fired but its wording
+    # drifted from the phrase parsed above.
+    if grep -E "\\b${key}\\b" "${OUT_FILE}" | grep -q -- '--env-vars'; then
       fail "the drop warning for ${key} changed wording; update this fixture's grep"
     fi
     fail "no drop warning for ${key} without a state flag"
@@ -297,7 +304,7 @@ echo "${BODY}" | grep -q "\"BUCKET_ARN\":\"${BUCKET_ARN}\"" \
   || fail "BUCKET_ARN (Fn::GetAtt Arn) is not ${BUCKET_ARN}: ${BODY}"
 echo "${BODY}" | grep -q "\"PARAM_NAME\":\"${PARAM_NAME}\"" \
   || fail "PARAM_NAME (Ref) is not the deployed parameter ${PARAM_NAME}: ${BODY}"
-if grep -qE 'contains a CloudFormation intrinsic and was dropped|state source could not substitute' "${OUT_FILE}"; then
+if grep -qE 'contains a CloudFormation intrinsic and was dropped|could not substitute env var' "${OUT_FILE}"; then
   fail "cdkd warned that a variable was not substituted under --from-state"
 fi
 terminate_run
@@ -323,11 +330,12 @@ if ! gone_probe aws logs describe-log-streams --log-group-name "${BUILD_LOG_GROU
 fi
 assert_gone "build log group ${BUILD_LOG_GROUP} still exists" \
   aws logs describe-log-streams --log-group-name "${BUILD_LOG_GROUP}" --region "${REGION}" --max-items 1
-aws s3 rm "s3://${STATE_BUCKET}/${ARTIFACT_PREFIX}/${CODE_KEY}" --region "${REGION}" >/dev/null
-assert_gone "code artifact ${ARTIFACT_URI} still exists" \
-  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${ARTIFACT_PREFIX}/${CODE_KEY}"
-
 trap - EXIT INT TERM
+# Every version and delete marker of the code artifact, then assert none is
+# left: `aws s3 rm` alone would only write a delete marker.
+s3_purge_prefix_versions "${STATE_BUCKET}" "${ARTIFACT_PREFIX}/" all \
+  || { echo "FAIL: could not purge the code artifact versions under ${ARTIFACT_PREFIX}/" >&2; exit 1; }
+s3_assert_versions_swept "${STATE_BUCKET}" "${ARTIFACT_PREFIX}/" "code artifact teardown"
 rm -f "${OUT_FILE}"
 rm -rf "${WORK}"
 echo "[verify] PASS — local start-microvm --from-state resolved the image's Ref / Fn::GetAtt env vars"

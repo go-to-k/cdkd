@@ -39,7 +39,9 @@ export class LocalStartMicrovmFromStateStack extends cdk.Stack {
     const run = process.env['CDKD_MVMFS_RUN'] ?? 'r0';
     const prefix = `cdkd-integ-mvmfs-${run}`;
     const stateBucket = process.env['STATE_BUCKET'] ?? 'REPLACE_ME';
-    const artifactPrefix = `cdkd-integ-microvm-fs-artifacts/${run}`;
+    // Under this stack's own state prefix, so verify.sh can sweep every version
+    // of it with the prefix-scoped s3-versions helper (the bucket is versioned).
+    const artifactPrefix = `cdkd/${this.stackName}/${this.region}/microvm-artifacts/${run}`;
 
     const code = new s3assets.Asset(this, 'Code', { path: path.join(here, '..', 'app') });
     const artifactUri =
