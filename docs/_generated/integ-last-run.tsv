@@ -251,7 +251,7 @@ local-start-api-websocket	2026-10-22T05:48:49Z	PASS	103	verify.sh	PR #5159 cdk-l
 local-start-cloudfront	2026-10-22T19:48:48Z	PASS	10	verify.sh	PR #5174 cdk-local 0.154.0 bump; full pipeline incl. --watch reload + escaping-origin refusal; no AWS/docker
 local-start-cloudfront-from-state	2026-10-22T19:53:26Z	PASS	240	verify.sh	PR #5174 cdk-local 0.154.0 bump; served deployed S3 origin byte-for-byte; destroy+docker sweep clean
 local-start-microvm	2026-10-26T04:59:45Z	PASS	25	verify.sh	rc ok, docker clean; rerun @5999c0499
-local-start-microvm-from-state	2026-10-26T06:01:29Z	FAIL	301	verify.sh	Arm 1 grep expects 'env var K contains...' but CLI prints 'Environment variable K contains...'; cleanup trap ran, AWS clean; @2e708b088
+local-start-microvm-from-state	2026-10-26T06:08:07Z	PASS	311	verify.sh	rc ok, orph clean; @3b70fc88a
 local-start-service	2026-10-22T19:41:02Z	PASS	105	verify.sh	PR #5174 cdk-local 0.154.0 bump; 2 replicas + dual-stack/FIPS ECR pull; destroy+docker sweep clean
 local-start-service-watch-fast	2026-10-22T05:48:49Z	PASS	62	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 local-start-web-function	2026-10-25T18:43:18Z	PASS	15	verify.sh	rc ok, docker clean; rerun @c9cdb4870
