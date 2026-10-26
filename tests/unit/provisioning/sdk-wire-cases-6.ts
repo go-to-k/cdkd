@@ -323,6 +323,26 @@ const RULES = [
     Action: { Block: {} },
     VisibilityConfig: RULE_VISIBILITY('r12'),
   },
+  {
+    Name: 'ipset',
+    Priority: 13,
+    Statement: { IPSetReferenceStatement: { Arn: IPSET_ARN } },
+    Action: { Block: {} },
+    VisibilityConfig: RULE_VISIBILITY('r13'),
+  },
+  {
+    Name: 'regex-set',
+    Priority: 14,
+    Statement: {
+      RegexPatternSetReferenceStatement: {
+        Arn: REGEX_SET_ARN,
+        FieldToMatch: { Method: {} },
+        TextTransformations: [{ Priority: 0, Type: 'NONE' }],
+      },
+    },
+    Action: { Count: {} },
+    VisibilityConfig: RULE_VISIBILITY('r14'),
+  },
 ];
 
 const ACL_FULL: Bag = {
@@ -384,17 +404,40 @@ const RULES_VERBATIM =
 // where every probe reaches it.
 const MAP_KEYED = 'a member of a keyed map: carried under its key, where the probes reach it';
 
+/** Every dotted path RULES carries (array indices dropped). */
+export const RULES_CARRIED: ReadonlySet<string> = new Set(
+  paths(RULES).map((p) => p.filter((seg) => typeof seg === 'string').join('.'))
+);
+
+/**
+ * Every path through which `toSdkStatement` rewrites a member, at the top of
+ * a statement and under each recursion point. The `Rules` exemptions are
+ * DERIVED from what RULES carries, so a carrier dropped from RULES would only
+ * add an exemption: `sdk-wire-coverage-6.test.ts` asserts each is carried.
+ * The schema fixture stops before the recursion, so the nested-path check
+ * never names the nested ones.
+ */
+export const CONVERSION_CARRIERS = [
+  'Statement.ByteMatchStatement.SearchStringBase64',
+  'Statement.IPSetReferenceStatement.Arn',
+  'Statement.RegexPatternSetReferenceStatement.Arn',
+  'Statement.RuleGroupReferenceStatement.Arn',
+  'Statement.AndStatement.Statements.IPSetReferenceStatement.Arn',
+  'Statement.AndStatement.Statements.NotStatement.Statement.RegexPatternSetReferenceStatement.Arn',
+  'Statement.OrStatement.Statements.ByteMatchStatement.SearchStringBase64',
+  'Statement.RateBasedStatement.ScopeDownStatement.IPSetReferenceStatement.Arn',
+  'Statement.ManagedRuleGroupStatement.ScopeDownStatement.NotStatement.Statement.RuleGroupReferenceStatement.Arn',
+];
+
 /** Every schema `Rules` path no bag carries, each with the reason. */
-function rulesExemptions(): Record<string, string> {
+export function rulesExemptions(): Record<string, string> {
   const fixture = JSON.parse(
     readFileSync(
       new URL('../../fixtures/cfn-schemas/AWS-WAFv2-WebACL.json', import.meta.url),
       'utf8'
     )
   ) as { nestedPropertyPaths: Record<string, string[]> };
-  const carried = new Set(
-    paths(RULES).map((p) => p.filter((seg) => typeof seg === 'string').join('.'))
-  );
+  const carried = RULES_CARRIED;
   return Object.fromEntries(
     fixture.nestedPropertyPaths['Rules']!.filter((p) => !carried.has(p)).map((p) => [
       `Rules.${p}`,
@@ -682,6 +725,14 @@ const PIPES_CASES: TypeCase[] = [
         command: 'UpdatePipeCommand',
         names: '{\\"b\\":[\\"2\\"]}',
         notNames: '{\\"a\\":[\\"1\\"]}',
+      },
+      // A removed source member must not ride along from prev either: the
+      // block is rebuilt from next alone.
+      {
+        path: ['SourceParameters', 'KinesisStreamParameters', 'BatchSize'],
+        command: 'UpdatePipeCommand',
+        names: 'MaximumBatchingWindowInSeconds',
+        notNames: '"BatchSize"',
       },
     ],
     bags: [

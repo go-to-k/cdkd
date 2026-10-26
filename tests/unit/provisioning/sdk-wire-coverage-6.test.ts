@@ -13,10 +13,32 @@ const { wrap } = vi.hoisted(() => ({
 vi.mock('@aws-sdk/client-wafv2', (orig) => wrap(orig, 'WAFV2Client'));
 vi.mock('@aws-sdk/client-pipes', (orig) => wrap(orig, 'PipesClient'));
 
-import { CASES_6, LOCK_TOKEN, WEB_ACL_ARN, armWebAcl } from './sdk-wire-cases-6.js';
+import {
+  CASES_6,
+  CONVERSION_CARRIERS,
+  LOCK_TOKEN,
+  RULES_CARRIED,
+  WEB_ACL_ARN,
+  armWebAcl,
+  rulesExemptions,
+} from './sdk-wire-cases-6.js';
 
 describe('SDK wire coverage (batch 6)', () => {
   describeWireCases(CASES_6);
+});
+
+// The WAFv2 `Rules` exemptions are derived from what RULES carries, so the
+// nested-path check cannot notice RULES shrinking: a dropped path only becomes
+// another exemption. The conversions are pinned by name, and the exemptions by
+// a cap at today's count, which a shrinking RULES exceeds.
+describe('AWS::WAFv2::WebACL Rules bag', () => {
+  it.each(CONVERSION_CARRIERS)('carries the conversion path %s', (path) => {
+    expect(RULES_CARRIED.has(path)).toBe(true);
+  });
+
+  it('exempts no more Rules paths than it does today', () => {
+    expect(Object.keys(rulesExemptions()).length).toBeLessThanOrEqual(388);
+  });
 });
 
 // The bag probes compare two updates that both carry the same lock token, so
@@ -26,9 +48,11 @@ describe('SDK wire coverage (batch 6)', () => {
 describe('AWS::WAFv2::WebACL UpdateWebACL lock token and address', () => {
   it('sends the LockToken GetWebACL returned, addressed by the ARN', async () => {
     armWebAcl();
+    // Name and Scope differ from the ARN's, so only an address read from the
+    // ARN passes (both are create-only: the engine never changes them in place).
     const bag = {
-      Name: 'acl',
-      Scope: 'CLOUDFRONT',
+      Name: 'acl-template',
+      Scope: 'REGIONAL',
       DefaultAction: { Allow: {} },
       VisibilityConfig: {
         CloudWatchMetricsEnabled: false,
