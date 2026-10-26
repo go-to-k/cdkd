@@ -499,8 +499,9 @@ export interface TypeCase {
    * Removal probes that only see THAT the wire changed, not WHICH member it
    * names: removing one element of a two-element list (or one key of a map)
    * from `bags[0]` must send `command` exactly once, naming `names` and not
-   * `notNames`. With `where`, only `command` requests whose body contains it
-   * count (a clear among the same command's writes).
+   * `notNames` in its query string or body. With `where`, only `command`
+   * requests whose body contains it count (a clear among the same command's
+   * writes).
    */
   targets: { path: Path; command: string; names: string; notNames: string; where?: string }[];
   bags: BagCase[];
@@ -639,15 +640,22 @@ export function describeWireCases(cases: TypeCase[]): void {
           )
       );
       expect(outcome).toMatchObject({ threw: false });
-      const bodies = (outcome as { wire: string }).wire
+      // A REST protocol carries the named member in the query string (DLM's
+      // `UntagResource` sends `tagKeys` there, with no body), so the query
+      // counts beside the body; the path and headers do not.
+      const requests = (outcome as { wire: string }).wire
         .split('\n')
-        .map((line) => JSON.parse(line) as string[])
+        .map((line) => JSON.parse(line) as unknown[])
         .filter((entry) => entry[0] === target.command)
-        .map((entry) => entry[entry.length - 1]!)
-        .filter((body) => target.where === undefined || body.includes(target.where));
-      expect(bodies).toHaveLength(1);
-      expect(bodies[0]).toContain(target.names);
-      expect(bodies[0]).not.toContain(target.notNames);
+        .map((entry) => ({
+          body: entry[entry.length - 1] as string,
+          query: JSON.stringify(entry[3] ?? null),
+        }))
+        .filter((r) => target.where === undefined || r.body.includes(target.where));
+      expect(requests).toHaveLength(1);
+      const named = `${requests[0]!.query}\n${requests[0]!.body}`;
+      expect(named).toContain(target.names);
+      expect(named).not.toContain(target.notNames);
     });
   });
 }
