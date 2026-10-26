@@ -15,6 +15,7 @@ import {
   isRefusedBeforeApplying,
   markRefusedBeforeApplying,
   priorAttemptsInJournal,
+  provenOrphanIdsInJournal,
 } from '../../../src/deployment/prior-attempt-scope.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
@@ -142,6 +143,35 @@ describe('the deploy engine binds prior-attempt evidence per resource (#4355)', 
     expect(seen.own).toEqual([{ ...RULE, CidrIp: '10.0.0.0/16' }]);
     expect(seen.other).toBeUndefined();
     expect(loadRollbackJournal).toHaveBeenCalledWith('MyStack', 'us-east-1');
+  });
+
+  it('a CREATE also sees the proven-orphan ids of the same journal (go-to-k/cdkd#5294)', async () => {
+    loadRollbackJournal.mockResolvedValue({
+      ...JOURNAL,
+      segments: [
+        {
+          ...JOURNAL.segments[0],
+          failedOperations: [
+            {
+              ...JOURNAL.segments[0]!.failedOperations![0],
+              physicalId: 'sg-1|tcp|5432|5432',
+              physicalIdRecoveredFromError: true,
+            },
+          ],
+        },
+      ],
+    });
+    let ids: unknown = 'unobserved';
+    const p: ResourceProvider = {
+      ...provider(),
+      create: vi.fn(async () => {
+        ids = await getPriorAttempts('Rule')?.provenOrphanIds?.();
+        return { physicalId: 'sg-1|tcp|5432|5432', attributes: {} };
+      }),
+    };
+    await provision(engineWith(p), createChange, {});
+
+    expect(ids).toEqual(['sg-1|tcp|5432|5432']);
   });
 
   it('two concurrent dispatches each see only their own evidence and possibly-landed flag (only Rule notes one)', async () => {
@@ -505,6 +535,88 @@ describe('priorAttemptsInJournal (#4355, #4402)', () => {
 
   it('answers no attempts when the stack has no journal', () => {
     expect(priorAttemptsInJournal(null, 'Rule', TYPE)).toEqual([]);
+  });
+});
+
+// go-to-k/cdkd#5294: only a failed CREATE whose provider PROVED it made the
+// resource names a leftover; a bare attempted bag does not.
+describe('provenOrphanIdsInJournal (#5294)', () => {
+  const journal = (segments: unknown[]): RollbackJournal =>
+    ({ journalVersion: 1, stackName: 'S', region: 'r', segments }) as unknown as RollbackJournal;
+  const failed = (extra: Record<string, unknown>) => ({
+    logicalId: 'M',
+    changeType: 'CREATE',
+    resourceType: 'AWS::ApiGateway::Method',
+    attemptedProperties: { HttpMethod: 'POST' },
+    ...extra,
+  });
+  const ids = (segments: unknown[], logicalId = 'M', type = 'AWS::ApiGateway::Method') =>
+    provenOrphanIdsInJournal(journal(segments), logicalId, type);
+
+  it('names the id of a failed CREATE its provider proved it made', () => {
+    expect(
+      ids([
+        {
+          operations: [],
+          failedOperations: [failed({ physicalId: 'a|r|POST', physicalIdRecoveredFromError: true })],
+        },
+      ])
+    ).toEqual(['a|r|POST']);
+  });
+
+  it.each([
+    ['a refused or cleaned-up attempt (bag, no id)', failed({})],
+    ['a state-sourced id', failed({ physicalId: 'a|r|POST' })],
+    [
+      'an UPDATE',
+      failed({ changeType: 'UPDATE', physicalId: 'a|r|POST', physicalIdRecoveredFromError: true }),
+    ],
+    ['an empty id', failed({ physicalId: '', physicalIdRecoveredFromError: true })],
+    [
+      'another logical id',
+      failed({ logicalId: 'N', physicalId: 'a|r|POST', physicalIdRecoveredFromError: true }),
+    ],
+    [
+      'another type',
+      failed({
+        resourceType: 'AWS::ApiGateway::Stage',
+        physicalId: 'a|r|POST',
+        physicalIdRecoveredFromError: true,
+      }),
+    ],
+  ])('names nothing for %s', (_label, op) => {
+    expect(ids([{ operations: [], failedOperations: [op] }])).toEqual([]);
+  });
+
+  it('a later completed op of the id supersedes the orphan', () => {
+    expect(
+      ids([
+        {
+          operations: [],
+          failedOperations: [failed({ physicalId: 'a|r|POST', physicalIdRecoveredFromError: true })],
+        },
+        {
+          operations: [{ logicalId: 'M', changeType: 'DELETE', resourceType: 'AWS::ApiGateway::Method' }],
+          failedOperations: [],
+        },
+      ])
+    ).toEqual([]);
+  });
+
+  it("a removed superseding segment's marker clears it", () => {
+    expect(
+      ids([
+        {
+          operations: [],
+          failedOperations: [failed({ physicalId: 'a|r|POST', physicalIdRecoveredFromError: true })],
+          supersededLogicalIds: ['M'],
+        },
+      ])
+    ).toEqual([]);
+  });
+
+  it('answers nothing when the stack has no journal', () => {
+    expect(provenOrphanIdsInJournal(null, 'M', 'AWS::ApiGateway::Method')).toEqual([]);
   });
 });
 
