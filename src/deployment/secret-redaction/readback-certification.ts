@@ -15,6 +15,8 @@ import {
   mixedLeafMayCarryPublicReference,
   RENDERED_DEFINITION_KEYS,
   definitionSourceCarriesSecret,
+  sentinelDefinitionOf,
+  someKeyIsUnspelled,
 } from './redact-path.js';
 import { wholeStringLeavesOf } from './mask-only.js';
 import { identityKeyFor } from './identity-keys.js';
@@ -50,9 +52,12 @@ import { identityKeyFor } from './identity-keys.js';
 function renderedDefinitionLiterals(source: Record<string, unknown>): {
   strings: Set<string>;
   scalars: Set<unknown>;
+  keys: Set<string>;
+  secretKey: boolean;
 } {
   const keep = new Set<string>();
   const scalarKeep = new Set<unknown>();
+  const keyKeep = new Set<string>();
   const subs = source['DefinitionSubstitutions'];
   const scalars: Array<[string, string]> = [];
   if (isPlainObject(subs)) {
@@ -83,12 +88,39 @@ function renderedDefinitionLiterals(source: Record<string, unknown>): {
         const parsed = JSON.parse(text) as unknown;
         for (const leaf of wholeStringLeavesOf(parsed)) keep.add(leaf);
         collectScalarLeaves(parsed, scalarKeep);
+        collectKeys(parsed, keyKeep);
       } catch {
         // Not JSON: the text above is all it spells.
       }
     }
   }
-  return { strings: keep, scalars: scalarKeep };
+  // The SENTINEL reading (issue #5333): each secret `${name}` replaced by a
+  // marker, so a body that parses in neither spelling above (a placeholder
+  // outside quotes, rendered as an expression) still yields what it spells.
+  const sentinel = sentinelDefinitionOf(source);
+  if (sentinel !== undefined) {
+    for (const leaf of sentinel.strings) keep.add(leaf);
+    for (const leaf of sentinel.scalars) scalarKeep.add(leaf);
+    for (const key of sentinel.keys) keyKeep.add(key);
+  }
+  return {
+    strings: keep,
+    scalars: scalarKeep,
+    keys: keyKeep,
+    secretKey: sentinel?.secretKey === true,
+  };
+}
+
+/** Every object key of a parsed body (plain containers only). */
+function collectKeys(value: unknown, into: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectKeys(item, into);
+  } else if (isPlainObject(value)) {
+    for (const [k, v] of Object.entries(value)) {
+      into.add(k);
+      collectKeys(v, into);
+    }
+  }
 }
 
 /**
@@ -661,6 +693,16 @@ export function refuseUncertifiedReadbackPositions(
     for (const [k, v] of Object.entries(bag)) {
       if (!RENDERED_DEFINITION_KEYS.has(k)) {
         out[k] = walkedRest[k];
+        continue;
+      }
+      // A KEY the record does not spell (issue #5333): a secret placed in a
+      // state name reads back as a key, and no walk here masks keys. The
+      // maintainer's representation is the WHOLE value as `***`, which
+      // `cdkd drift` classifies as an uncertified baseline. A body the record
+      // does not hold, or that parses in no spelling, spells no key, so any
+      // object here is masked whole: fail closed.
+      if (keep.secretKey || someKeyIsUnspelled(v, (key) => keep.keys.has(key))) {
+        out[k] = mark ? POSITION_UNCERTIFIED : SECRET_MASK;
         continue;
       }
       const walked = Object.hasOwn(source, k)

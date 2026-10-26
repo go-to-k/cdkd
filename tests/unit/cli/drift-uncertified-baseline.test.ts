@@ -1008,15 +1008,16 @@ describe('cdkd drift — an uncertified-position baseline mask (issue #3595)', (
 });
 
 describe('equalModuloMask / isUncertifiedBaselineMaskPosition (issue #3595)', () => {
-  it('lets a mask match only a SCALAR, positionally', async () => {
+  it('lets a mask match any present non-null value, positionally', async () => {
     const { equalModuloMask } = await import('../../../src/analyzer/drift-calculator.js');
     expect(equalModuloMask(['a', SECRET_MASK], ['a', 'live'], SECRET_MASK)).toBe(true);
     // A number or boolean too: the rendered-definition arm masks those leaves (#5315).
     expect(equalModuloMask({ K: SECRET_MASK }, { K: 42 }, SECRET_MASK)).toBe(true);
     expect(equalModuloMask({ K: SECRET_MASK }, { K: false }, SECRET_MASK)).toBe(true);
     expect(equalModuloMask({ K: SECRET_MASK }, { K: null }, SECRET_MASK)).toBe(false);
-    expect(equalModuloMask({ K: SECRET_MASK }, { K: [] }, SECRET_MASK)).toBe(false);
-    expect(equalModuloMask({ K: SECRET_MASK }, { K: { nested: 'x' } }, SECRET_MASK)).toBe(false);
+    // ...and a container: a definition whose KEY holds a secret is masked whole (#5333).
+    expect(equalModuloMask({ K: SECRET_MASK }, { K: [] }, SECRET_MASK)).toBe(true);
+    expect(equalModuloMask({ K: SECRET_MASK }, { K: { nested: 'x' } }, SECRET_MASK)).toBe(true);
     expect(equalModuloMask({ K: SECRET_MASK }, {}, SECRET_MASK)).toBe(false);
     expect(equalModuloMask([SECRET_MASK, 'a'], ['a', 'live'], SECRET_MASK)).toBe(false);
     expect(equalModuloMask({ A: 1, B: SECRET_MASK }, { A: 1, B: 'x', C: 2 }, SECRET_MASK)).toBe(

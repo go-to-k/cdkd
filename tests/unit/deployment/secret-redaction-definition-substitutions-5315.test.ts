@@ -154,15 +154,17 @@ describe('secret-redaction - a substituted Definition on the empty-map readback 
       expect(resultOf(persisted)['key']).toBe(SECRET_MASK);
     });
 
-    it('a DefinitionS3Location source: no body in the record, the substituted leaf is still masked', () => {
+    it('a DefinitionS3Location source: no body in the record, the WHOLE Definition is masked', () => {
+      // No body spells any KEY, and a key can hold the secret (#5333), so the
+      // whole value is `***` rather than leaf by leaf.
       const persisted = persist(
         properties({ DefinitionS3Location: { Bucket: 'b', Key: 'k.json' } }),
         observed()
       );
       expect(JSON.stringify(persisted)).not.toContain(PLAIN);
-      // A whole leaf equal to a NON-secret substitution value is spelled by the
-      // record, so it is kept even with no body to render.
-      expect(resultOf(persisted)['region']).toBe(REGION);
+      expect((persisted['observedProperties'] as Record<string, unknown>)['Definition']).toBe(
+        SECRET_MASK
+      );
     });
 
     it('an ssm-secure substitution, and a Definition read back as an unparsed STRING', () => {
@@ -319,11 +321,10 @@ describe('secret-redaction - a substituted Definition on the empty-map readback 
         'Definition'
       ] as Record<string, Record<string, Record<string, unknown>>>;
       expect(def['States']!['W']!['Seconds']).toBe(SECRET_MASK);
-      // The body does not parse in either spelling (`${pin}` sits outside
-      // quotes), so the record spells no number: the over-mask stated in the
-      // arm. A whole NON-secret substitution value is still kept by its own
-      // spelling, and a boolean the record cannot vouch for is masked too.
-      expect(def['States']!['P']!['Result']).toEqual({ retries: SECRET_MASK, wait: 45, on: SECRET_MASK });
+      // The body parses in neither plain spelling (`${pin}` sits outside
+      // quotes), but its SENTINEL reading does (#5333), so the numbers and
+      // booleans it spells, and the non-secret substitution, are kept.
+      expect(def['States']!['P']!['Result']).toEqual({ retries: 3, wait: 45, on: true });
     });
 
     it('keeps the numbers and booleans a PARSEABLE body spells', () => {

@@ -182,4 +182,96 @@ describe('secret-redaction - a substitution secret in a definition KEY (issue #5
       },
     });
   });
+
+  it('a body no sentinel reading parses falls back to naming every equal number (#5327 rule)', () => {
+    // `1${q}` glues a placeholder to a digit, so the body parses in no
+    // spelling; the out-of-quotes `${pin}` must still not reach state.
+    const body =
+      '{"StartAt":"W","States":{"W":{"Type":"Wait","Seconds":${pin},"Next":"X"},' +
+      '"X":{"Type":"Pass","Result":1${q},"End":true}}}';
+    const Q = '{{resolve:secretsmanager:app/q:SecretString:q}}';
+    const template = { DefinitionString: body, DefinitionSubstitutions: { pin: EXPR, q: Q } };
+    const out = deployPersist(
+      template,
+      { DefinitionString: body, DefinitionSubstitutions: { pin: '987654321', q: '5' } },
+      {
+        Definition: {
+          StartAt: 'W',
+          States: {
+            W: { Type: 'Wait', Seconds: 987654321, Next: 'X' },
+            X: { Type: 'Pass', Result: 15, End: true },
+          },
+        },
+      },
+      new Map([
+        ['987654321', EXPR],
+        ['5', Q],
+      ])
+    );
+    expect(JSON.stringify(out)).not.toContain('987654321');
+  });
+
+  it('a JSON-document secret placed outside quotes reads back as a container: whole ***', () => {
+    const body = '{"StartAt":"P","States":{"P":{"Type":"Pass","Result":${doc},"End":true}}}';
+    const doc = '{"user":"u","pw":"pw-the-document-secret"}';
+    const template = { DefinitionString: body, DefinitionSubstitutions: { doc: EXPR } };
+    const out = deployPersist(
+      template,
+      { DefinitionString: body, DefinitionSubstitutions: { doc } },
+      {
+        Definition: {
+          StartAt: 'P',
+          States: { P: { Type: 'Pass', Result: { user: 'u', pw: 'pw-the-document-secret' }, End: true } },
+        },
+      },
+      new Map([[doc, EXPR]])
+    );
+    expect(JSON.stringify(out)).not.toContain('pw-the-document-secret');
+    expect(out['Definition']).toBe(SECRET_MASK);
+  });
+
+  it('a secret that SPLICES array elements misaligns the list: whole ***, never an index rewrite', () => {
+    const body = '{"StartAt":"P","States":{"P":{"Type":"Pass","Result":[${n},7],"End":true}}}';
+    const template = { DefinitionString: body, DefinitionSubstitutions: { n: EXPR } };
+    const out = deployPersist(
+      template,
+      { DefinitionString: body, DefinitionSubstitutions: { n: '41, 42' } },
+      {
+        Definition: {
+          StartAt: 'P',
+          States: { P: { Type: 'Pass', Result: [41, 42, 7], End: true } },
+        },
+      },
+      new Map([['41, 42', EXPR]])
+    );
+    expect(out['Definition']).toBe(SECRET_MASK);
+  });
+
+  it('a SHORT secret inside a key is caught by the body, not the map (no needle floor)', () => {
+    const body = '{"StartAt":"state-${s}","States":{"state-${s}":{"Type":"Pass","End":true}}}';
+    const template = { DefinitionString: body, DefinitionSubstitutions: { s: EXPR } };
+    const out = deployPersist(
+      template,
+      { DefinitionString: body, DefinitionSubstitutions: { s: 'zq' } },
+      { Definition: { StartAt: 'state-zq', States: { 'state-zq': { Type: 'Pass', End: true } } } },
+      new Map([['zq', EXPR]])
+    );
+    expect(JSON.stringify(out)).not.toContain('state-zq');
+    expect(out['Definition']).toBe(SECRET_MASK);
+  });
+
+  it('the whole *** survives the derived-needle merge on the empty-map path', () => {
+    // A certified whole-token sibling makes the derived scan run; the merge
+    // must keep the refusal at the container position.
+    const OTHER = '{{resolve:secretsmanager:app/other:SecretString:x}}';
+    for (const persist of [refreshObserved, autoRefresh]) {
+      const out = persist(
+        { Note: OTHER, DefinitionString: keyedBody, DefinitionSubstitutions: { k: EXPR } },
+        { Note: PLAIN, ...keyedReadback() }
+      );
+      expect(JSON.stringify(out)).not.toContain(PLAIN);
+      expect(out['Definition']).toBe(SECRET_MASK);
+      expect(out['Note']).toBe(OTHER);
+    }
+  });
 });

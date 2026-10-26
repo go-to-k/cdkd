@@ -5,6 +5,7 @@ import {
   isSingleDynamicReferenceToken,
   isPlainObject,
   DYNAMIC_REFERENCE_INNER,
+  MIN_NEEDLE_LENGTH,
 } from './rules.js';
 import { spanNamesResolvableService } from './anchors.js';
 import { redactForState } from './context.js';
@@ -626,25 +627,19 @@ export function redactByPath(
       out[k] = Object.hasOwn(source, k)
         ? redactByPath(v, source[k], secrets, rules, secretExpressions, bagIsSameGeneration)
         : redactForState(v, { provenance: 'value-scan', secrets });
-      // A rendered Step Functions definition (issue #5315): a `${name}`
-      // substituted OUTSIDE quotes reads back as a JSON NUMBER, which neither
-      // the path pass nor the value scan (both string-only) ever names, so a
-      // populated map — the deploy's own persist of the resource that resolved
-      // the secret — wrote the digits verbatim. Scoped to these keys and to a
-      // record whose definition carries a secret: everywhere else a number is
-      // a value the template spells as one, and rewriting a `Port` that merely
-      // EQUALS a secret would turn a number into a string in `properties`
-      // (measured), which the diff reports against the template on every deploy.
-      // The same cost remains INSIDE a definition: a secret equal to a number or
-      // boolean the definition itself spells (`true`, `3`) rewrites that
-      // literal too, in `properties` when the record holds `Definition` as an
-      // object. That needs a secret equal to a literal already in the record.
+      // A rendered Step Functions definition (issues #5315, #5333). Neither
+      // the path pass nor the value scan reads object KEYS or names a NUMBER,
+      // so a populated map — the deploy's own persist of the resource that
+      // resolved the secret — wrote a secret placed in a key (a state name) or
+      // outside quotes verbatim. Scoped to these keys and to a record whose
+      // definition carries a secret: everywhere else a number is a value the
+      // template spells as one. See {@link nameDefinitionSecrets}.
       if (
         secrets.size > 0 &&
         RENDERED_DEFINITION_KEYS.has(k) &&
         definitionSourceCarriesSecret(source)
       ) {
-        out[k] = nameScalarSecrets(out[k], secrets);
+        out[k] = nameDefinitionSecrets(out[k], source, secrets);
       }
     }
     return out;
@@ -805,6 +800,250 @@ function nameScalarSecrets(value: unknown, secrets: RecordedSecretValues): unkno
     return node;
   };
   return walk(value);
+}
+
+/** Marks a secret `${name}` INSIDE a JSON string of a sentinel-rendered body. */
+const SENTINEL_IN_STRING = '';
+/** Wraps the index of a secret `${name}` placed OUTSIDE quotes (rendered as a JSON string value). */
+const SENTINEL_OUT_OF_STRING = '';
+
+/** A substitution value that stands for a secret: a reference, or a `NoEcho` `***`, anywhere in it. */
+function substitutionIsSecret(value: string): boolean {
+  return subtreeHasDynamicReference(value) || value.includes(SECRET_MASK);
+}
+
+/**
+ * What the record's own definition body SPELLS, read with each secret
+ * `${name}` replaced by a SENTINEL (issue
+ * [#5333](https://github.com/go-to-k/cdkd/issues/5333)).
+ *
+ * A small scan tracks the ORIGINAL body's JSON string state (the provider's
+ * substitution is a blind split / join, so where a placeholder sits in the
+ * body is where its value lands): a secret placeholder inside a string becomes
+ * a private-use marker, one outside quotes a JSON string value naming its
+ * index. A non-secret scalar substitution is inserted verbatim; an unknown
+ * name is left as `${name}`. The result then parses even where the substituted
+ * body does not (`"Seconds": ${pin}` with an expression value).
+ *
+ * - `keys`: every object key holding no marker (a literal the record spells);
+ * - `strings` / `scalars`: every leaf holding no marker;
+ * - `secretKey`: some key holds a marker (a secret in a state name);
+ * - `secretPaths`: where an OUT-OF-QUOTES secret lands, with its name.
+ *
+ * `undefined` when no body is held (`DefinitionS3Location`) or none parses (a
+ * `***` body, a placeholder glued to other tokens). A marker colliding with
+ * text the user wrote only makes that leaf or key non-literal: over-masking.
+ */
+export interface SentinelDefinition {
+  readonly keys: Set<string>;
+  readonly strings: Set<string>;
+  readonly scalars: Set<unknown>;
+  readonly secretKey: boolean;
+  readonly secretPaths: ReadonlyArray<{
+    path: ReadonlyArray<string | number>;
+    /** The length of each ARRAY the path passes through, by depth (`undefined` for an object). */
+    lengths: ReadonlyArray<number | undefined>;
+    name: string;
+  }>;
+}
+
+export function sentinelDefinitionOf(
+  source: Record<string, unknown>
+): SentinelDefinition | undefined {
+  const subs = source['DefinitionSubstitutions'];
+  const values = new Map<string, string>();
+  if (isPlainObject(subs)) {
+    for (const [name, value] of Object.entries(subs)) {
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        values.set(name, String(value));
+      }
+    }
+  }
+  for (const key of ['DefinitionString', 'Definition']) {
+    if (!Object.hasOwn(source, key)) continue;
+    const raw = source[key];
+    const body =
+      typeof raw === 'string' ? raw : isPlainObject(raw) ? JSON.stringify(raw) : undefined;
+    if (body === undefined) continue;
+    const names: string[] = [];
+    let text = '';
+    let inString = false;
+    let escaped = false;
+    for (let i = 0; i < body.length; i++) {
+      if (body.startsWith('${', i)) {
+        const end = body.indexOf('}', i + 2);
+        const name = end === -1 ? undefined : body.slice(i + 2, end);
+        const value = name === undefined ? undefined : values.get(name);
+        if (name !== undefined && value !== undefined) {
+          if (substitutionIsSecret(value)) {
+            const index = names.push(name) - 1;
+            text += inString
+              ? `${SENTINEL_IN_STRING}${index}${SENTINEL_IN_STRING}`
+              : `"${SENTINEL_OUT_OF_STRING}${index}${SENTINEL_OUT_OF_STRING}"`;
+          } else {
+            text += value;
+          }
+          i = end;
+          escaped = false;
+          continue;
+        }
+      }
+      const c = body[i]!;
+      text += c;
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (c === '\\') escaped = true;
+        else if (c === '"') inString = false;
+      } else if (c === '"') {
+        inString = true;
+      }
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text) as unknown;
+    } catch {
+      continue;
+    }
+    const out = {
+      keys: new Set<string>(),
+      strings: new Set<string>(),
+      scalars: new Set<unknown>(),
+      secretKey: false,
+      secretPaths: [] as Array<{
+        path: Array<string | number>;
+        lengths: Array<number | undefined>;
+        name: string;
+      }>,
+    };
+    const marked = (t: string): boolean =>
+      t.includes(SENTINEL_IN_STRING) || t.includes(SENTINEL_OUT_OF_STRING);
+    const outOfString = new RegExp(`^${SENTINEL_OUT_OF_STRING}(\\d+)${SENTINEL_OUT_OF_STRING}$`);
+    const walk = (
+      node: unknown,
+      path: Array<string | number>,
+      lengths: Array<number | undefined>
+    ): void => {
+      if (typeof node === 'string') {
+        const m = outOfString.exec(node);
+        if (m !== null) out.secretPaths.push({ path, lengths, name: names[Number(m[1])]! });
+        else if (!marked(node)) out.strings.add(node);
+        return;
+      }
+      if (typeof node === 'number' || typeof node === 'boolean') {
+        out.scalars.add(node);
+        return;
+      }
+      if (Array.isArray(node)) {
+        node.forEach((item, i) => walk(item, [...path, i], [...lengths, node.length]));
+        return;
+      }
+      if (isPlainObject(node)) {
+        for (const [k, v] of Object.entries(node)) {
+          if (marked(k)) out.secretKey = true;
+          else out.keys.add(k);
+          walk(v, [...path, k], [...lengths, undefined]);
+        }
+      }
+    };
+    walk(parsed, [], []);
+    return out;
+  }
+  return undefined;
+}
+
+/** Does any object key anywhere in `value` fail `spelled`? */
+export function someKeyIsUnspelled(value: unknown, spelled: (key: string) => boolean): boolean {
+  if (Array.isArray(value)) return value.some((item) => someKeyIsUnspelled(item, spelled));
+  if (isPlainObject(value)) {
+    return Object.entries(value).some(([k, v]) => !spelled(k) || someKeyIsUnspelled(v, spelled));
+  }
+  return false;
+}
+
+/**
+ * The populated-map half of the rendered-definition rule (issues #5315,
+ * #5333), applied to the value the path pass and value scan produced for a
+ * `Definition` / `DefinitionString` key.
+ *
+ * WITH a sentinel body ({@link sentinelDefinitionOf}):
+ * - a secret in a KEY, or any read-back key the record does not spell (a
+ *   secret whose value broke out of its string reshapes the keys), makes the
+ *   WHOLE value `***` — the representation the maintainer chose on #5333, which
+ *   `cdkd drift` classifies as an uncertified baseline;
+ * - at each OUT-OF-QUOTES secret position, walked in lockstep with the body
+ *   (an array of a different length on the way is misalignment: whole `***`),
+ *   a number or boolean becomes the substitution's own value — the expression,
+ *   or `***` — and anything else there (a JSON-document secret read back as a
+ *   container, a string, `null`) makes the whole value `***`. Only THAT
+ *   position: a literal `Seconds: 3` beside a secret `3` stays a number.
+ *
+ * WITHOUT one (no body held, none parses) the record says nothing about
+ * positions, so the map decides: a key holding a recorded plaintext (whole, or
+ * a substring at least {@link MIN_NEEDLE_LENGTH} long) makes the whole value
+ * `***`, and every number / boolean whose spelling is a recorded plaintext is
+ * named ({@link nameScalarSecrets}) — #5327's rule, kept as the fallback.
+ */
+function nameDefinitionSecrets(
+  value: unknown,
+  source: Record<string, unknown>,
+  secrets: RecordedSecretValues
+): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  const sentinel = sentinelDefinitionOf(source);
+  if (sentinel === undefined) {
+    const plaintexts = [...secrets.keys()].filter((p) => p !== '');
+    const keyHoldsSecret = (key: string): boolean =>
+      plaintexts.some((p) => key === p || (p.length >= MIN_NEEDLE_LENGTH && key.includes(p)));
+    if (someKeyIsUnspelled(value, (key) => !keyHoldsSecret(key))) return SECRET_MASK;
+    return nameScalarSecrets(value, secrets);
+  }
+  if (sentinel.secretKey || someKeyIsUnspelled(value, (key) => sentinel.keys.has(key))) {
+    return SECRET_MASK;
+  }
+  const subs = source['DefinitionSubstitutions'] as Record<string, unknown>;
+  let out: unknown = value;
+  for (const { path, lengths, name } of sentinel.secretPaths) {
+    // Walk the body's path through the readback; every container on the way
+    // must have the body's shape (keys are already all spelled above).
+    let cursor: unknown = out;
+    for (const [depth, segment] of path.entries()) {
+      if (typeof segment === 'number') {
+        // The SAME length as the body's array: a secret `1, 2` splices an
+        // element in, and an index into a misaligned list names the wrong one.
+        if (!Array.isArray(cursor) || cursor.length !== lengths[depth]) return SECRET_MASK;
+        cursor = cursor[segment];
+      } else {
+        if (!isPlainObject(cursor) || !Object.hasOwn(cursor, segment)) return SECRET_MASK;
+        cursor = cursor[segment];
+      }
+    }
+    if (typeof cursor !== 'number' && typeof cursor !== 'boolean') return SECRET_MASK;
+    out = replaceAtPath(out, path, String(subs[name]));
+  }
+  return out;
+}
+
+/** `root` with the leaf at `path` replaced, containers on the way copied. */
+function replaceAtPath(
+  root: unknown,
+  path: ReadonlyArray<string | number>,
+  leaf: unknown
+): unknown {
+  if (path.length === 0) return leaf;
+  const [head, ...rest] = path;
+  if (Array.isArray(root)) {
+    const copy = [...root];
+    copy[head as number] = replaceAtPath(root[head as number], rest, leaf);
+    return copy;
+  }
+  const copy: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  Object.assign(copy, root as Record<string, unknown>);
+  copy[head as string] = replaceAtPath(
+    (root as Record<string, unknown>)[head as string],
+    rest,
+    leaf
+  );
+  return copy;
 }
 
 /**
