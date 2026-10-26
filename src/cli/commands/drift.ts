@@ -2935,9 +2935,11 @@ function partitionNoEchoParameterChanges(
  * - the mask is the fail-closed class, not a `NoEcho` one
  *   ({@link isUncertifiedBaselineMaskPosition}) — a `NoEcho` mask keeps the
  *   issue #2274 disposition;
- * - the two sides are equal once each masked string is allowed to match any
- *   live string ({@link equalModuloMask}). Anything else — a length change, a
- *   reorder, an edit beside the mask — stays real drift.
+ * - the two sides are equal once each masked leaf is allowed to match any live
+ *   string, number or boolean — never a container ({@link equalModuloMask};
+ *   the number and boolean arms since go-to-k/cdkd#5315, where a Step Functions
+ *   `${name}` placed outside quotes reads back as a JSON number). Anything else
+ *   — a length change, a reorder, an edit beside the mask — stays real drift.
  *
  * Runs on the COMPARISON values, before {@link redactDriftChanges}: after it
  * the AWS side is itself a mask or an expression and the equality means
@@ -4193,6 +4195,27 @@ async function runDriftForStack(
             resource.properties ?? {},
             baseline
           );
+          // go-to-k/cdkd#5332: a provider that compares a secret-bearing value at
+          // ANOTHER position (Step Functions folds `DefinitionSubstitutions` into
+          // `Definition`) names where it landed, so the position mask follows it
+          // and a value shorter than the value scan's needle floor is still
+          // masked. Into `maskSecretPaths`, the masking-only set: these positions
+          // are readable back, so they must not license the exact-leaf drop that
+          // `secretPaths` also drives.
+          if (provider.getDriftSecretPathAliases) {
+            for (const alias of provider.getDriftSecretPathAliases(
+              resource.resourceType,
+              resource.properties ?? {},
+              // The `***` positions too: a NoEcho value substituted into a
+              // folded leaf is as secret as a dynamic reference.
+              new Set([
+                ...(secretResolutionFailed ? seededSecretPaths : secretPaths),
+                ...maskSecretPaths,
+              ])
+            )) {
+              maskSecretPaths.add(alias);
+            }
+          }
           const reported = redactDriftChanges(
             partitioned.kept,
             secrets,

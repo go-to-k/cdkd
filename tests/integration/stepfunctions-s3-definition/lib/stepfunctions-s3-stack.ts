@@ -23,10 +23,22 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * itself (CloudFormation parity). The deployed state machine's definition
  * therefore proves BOTH the S3 fetch AND the substitution reached real AWS.
  *
- * L1 `CfnStateMachine` is used deliberately (memory
+ * L1 `CfnStateMachine` is used deliberately for the S3 machine (memory
  * `feedback_l1_over_l2_for_backfill_integ_fixture`): an L2
  * `stepfunctions.StateMachine` would synthesize the definition inline and
  * never set `DefinitionS3Location`, defeating the backfill verification.
+ *
+ * Issue #5298 widens the fixture to the INLINE forms, where
+ * `DefinitionSubstitutions` used to be dropped:
+ *   - `ChainMachine` — a string `DefinitionString` plus a SEPARATE
+ *     `DefinitionSubstitutions` map (no `Fn::Sub`): the exact pair an L2
+ *     `StateMachine` with a chain body synthesizes, the shape most CDK apps
+ *     deploy.
+ *   - `ObjectMachine` — an L1 `CfnStateMachine` with an inline object
+ *     `Definition`.
+ * The `phase` context (`-c phase=2`) changes ONLY the two inline machines'
+ * substitution values, so the redeploy exercises the update path with a
+ * byte-identical definition body.
  */
 export class StepFunctionsS3Stack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -43,6 +55,8 @@ export class StepFunctionsS3Stack extends cdk.Stack {
       assumedBy: new iam.ServicePrincipal('states.amazonaws.com'),
     });
 
+    const phase = String(this.node.tryGetContext('phase') ?? '1');
+
     const stateMachine = new stepfunctions.CfnStateMachine(this, 'StateMachine', {
       roleArn: role.roleArn,
       stateMachineType: 'STANDARD',
@@ -55,8 +69,51 @@ export class StepFunctionsS3Stack extends cdk.Stack {
       },
     });
 
+    // Issue #5298: a string `DefinitionString` plus a separate
+    // `DefinitionSubstitutions` map -- byte-for-byte the pair aws-cdk-lib's L2
+    // `StateMachine` synthesizes for a chain body
+    // (`DefinitionBody.fromChainable(new Pass(..., { result: Result.fromString('${InlineGreeting}') }))`).
+    // Spelled as an L1 so the fixture's resource-coverage rows stay unchanged;
+    // the template the provider receives is the same. `${InlineGreeting}` is
+    // plain text here (no `Fn::Sub`); only DefinitionSubstitutions fills it.
+    const chainMachine = new stepfunctions.CfnStateMachine(this, 'ChainMachine', {
+      roleArn: role.roleArn,
+      stateMachineType: 'STANDARD',
+      definitionString:
+        '{"StartAt":"InlineGreet","States":{"InlineGreet":{"Type":"Pass","Result":"${InlineGreeting}","ResultPath":"$.greeting","End":true}}}',
+      definitionSubstitutions: {
+        InlineGreeting: `inline-hello-v${phase}`,
+      },
+    });
+
+    // Issue #5298: an L1 inline object `Definition`.
+    const objectMachine = new stepfunctions.CfnStateMachine(this, 'ObjectMachine', {
+      roleArn: role.roleArn,
+      stateMachineType: 'STANDARD',
+      definition: {
+        StartAt: 'ObjectGreet',
+        States: {
+          ObjectGreet: {
+            Type: 'Pass',
+            Result: '${ObjectGreeting}',
+            ResultPath: '$.greeting',
+            End: true,
+          },
+        },
+      },
+      definitionSubstitutions: {
+        ObjectGreeting: `object-hello-v${phase}`,
+      },
+    });
+
     new cdk.CfnOutput(this, 'StateMachineArn', {
       value: stateMachine.attrArn,
+    });
+    new cdk.CfnOutput(this, 'ChainMachineArn', {
+      value: chainMachine.attrArn,
+    });
+    new cdk.CfnOutput(this, 'ObjectMachineArn', {
+      value: objectMachine.attrArn,
     });
   }
 }
