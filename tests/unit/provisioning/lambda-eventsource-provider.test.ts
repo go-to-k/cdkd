@@ -333,6 +333,24 @@ describe('LambdaEventSourceMappingProvider', () => {
       expect(input.StartingPositionTimestamp.toISOString()).toBe('2024-05-29T18:13:20.000Z');
     });
 
+    it('reads an offset-less StartingPositionTimestamp string as UTC under a non-UTC TZ (#5311)', async () => {
+      const original = process.env.TZ;
+      try {
+        process.env.TZ = 'Asia/Tokyo';
+        await provider.create('L', 'AWS::Lambda::EventSourceMapping', {
+          FunctionName: 'fn',
+          EventSourceArn: 'arn:aws:kinesis:us-east-1:123:stream/s',
+          StartingPosition: 'AT_TIMESTAMP',
+          StartingPositionTimestamp: '2024-05-29T18:13:20',
+        });
+        const input = getCreateInput() as { StartingPositionTimestamp: Date };
+        expect(input.StartingPositionTimestamp.toISOString()).toBe('2024-05-29T18:13:20.000Z');
+      } finally {
+        if (original === undefined) delete process.env.TZ;
+        else process.env.TZ = original;
+      }
+    });
+
     it('passes a Date through StartingPositionTimestamp unchanged', async () => {
       const d = new Date('2024-05-29T18:13:20.000Z');
       await provider.create('L', 'AWS::Lambda::EventSourceMapping', {

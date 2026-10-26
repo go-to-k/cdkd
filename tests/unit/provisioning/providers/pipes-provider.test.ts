@@ -380,6 +380,36 @@ describe('PipesPipeProvider.update', () => {
 });
 
 describe('PipesPipeProvider.create', () => {
+  it('reads an offset-less Kinesis StartingPositionTimestamp as UTC under a non-UTC TZ (#5311)', async () => {
+    const original = process.env.TZ;
+    try {
+      process.env.TZ = 'Asia/Tokyo';
+      route({
+        CreatePipeCommand: () => ({ Name: NAME, Arn: ARN }),
+        DescribePipeCommand: () => described({ CurrentState: 'RUNNING' }),
+      });
+      await new PipesPipeProvider({ sleep: noSleep }).create('Pipe', TYPE, {
+        Name: NAME,
+        RoleArn: 'arn:aws:iam::123456789012:role/r',
+        Source: 'arn:aws:kinesis:us-east-1:123456789012:stream/src',
+        Target: 'arn:aws:sqs:us-east-1:123456789012:q',
+        SourceParameters: {
+          KinesisStreamParameters: {
+            StartingPosition: 'AT_TIMESTAMP',
+            StartingPositionTimestamp: '2026-01-01T00:00:00',
+          },
+        },
+      });
+      const input = sent(CreatePipeCommand)[0]!.input;
+      expect(
+        (input.SourceParameters.KinesisStreamParameters.StartingPositionTimestamp as Date).toISOString()
+      ).toBe('2026-01-01T00:00:00.000Z');
+    } finally {
+      if (original === undefined) delete process.env.TZ;
+      else process.env.TZ = original;
+    }
+  });
+
   it('maps the ECS target islands and the Kinesis timestamp, then waits for the pipe to settle', async () => {
     const states = ['CREATING', 'RUNNING'];
     route({
