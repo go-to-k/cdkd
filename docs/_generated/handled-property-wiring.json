@@ -2850,8 +2850,7 @@
           ],
           "evidence": [
             "delegated",
-            "element-read",
-            "table-loop"
+            "element-read"
           ],
           "seededBy": [
             "create",

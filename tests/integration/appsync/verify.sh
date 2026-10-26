@@ -19,6 +19,9 @@
 #       UpdateGraphqlApi change — REFUSED before any write (issue #3781)
 #   2c. the same value replayed by `cdkd rollback` from a doctored journal —
 #       WARNED, the live map kept, state recording it (issue #3781)
+#   2d. the GraphQLSchema's ApiId moved with its definition unchanged —
+#       REFUSED, as CloudFormation fails it (issue #5359; phase 2 also renames
+#       the API and switches a data source's Type, both IN PLACE)
 #   3. REMOVAL          — the properties with an AWS reset sentinel are dropped
 #                         from the template; each must be RESET on AWS, while
 #                         EnhancedMetricsConfig stays RETAINED (so a blanket
@@ -225,6 +228,15 @@ NON_SDK_ROWS=$(echo "${STATE}" | jq -r '[.resources[]
 assert_eq "non-sdk Resolver/DataSource rows" "0" "${NON_SDK_ROWS}"
 echo "    Resolved AppSync API id: ${API_ID}"
 
+# Issue #5359 baseline: the name the update phase renames, and the data source
+# whose Type it switches (its ARN must survive the switch).
+assert_eq "baseline API name" "${API_NAME}" "$(api_query 'graphqlApi.name')"
+assert_eq "baseline TypeSwitch DS type" "NONE" \
+  "$(datasource_query TypeSwitchDataSource 'dataSource.type')"
+TYPE_SWITCH_ARN="$(datasource_query TypeSwitchDataSource 'dataSource.dataSourceArn')"
+SCHEMA_PHYSICAL_ID="$(echo "${STATE}" | jq -r '.resources.GraphQLSchema.physicalId')"
+assert_eq "baseline GraphQLSchema physical id (the API id)" "${API_ID}" "${SCHEMA_PHYSICAL_ID}"
+
 # --- Assertion: Ref to each CHILD type is its real ARN (issue #1681) ---
 # cdkd stores a compound physicalId for all three (`<apiId>|<name>`,
 # `<apiId>|<typeName>|<fieldName>`, `<apiId>|<apiKeyId>`), while
@@ -418,11 +430,26 @@ esac
 
 # --- Phase 2: UPDATE --------------------------------------------------------
 echo "==> Phase 2: UPDATE (every mutable property changed)"
+set +e
 UPDATE_OUT="$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes 2>&1)"
+UPDATE_RC=$?
+set -e
 echo "${UPDATE_OUT}"
+if [ "${UPDATE_RC}" -ne 0 ]; then
+  # Issue #5359: the API rename and the data source Type switch are in-place
+  # updates on CloudFormation; pre-fix cdkd refused both.
+  UPDATE_PLAIN="$(printf '%s' "${UPDATE_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
+  for refusal in "GraphqlApi.Name is immutable" "DataSource.Type is immutable"; do
+    if printf '%s' "${UPDATE_PLAIN}" | grep -qF "${refusal}"; then
+      echo "FAIL [issue #5359]: the update was refused with '${refusal}'; CloudFormation updates it in place" >&2
+    fi
+  done
+  echo "FAIL: update deploy exited ${UPDATE_RC}" >&2
+  exit 1
+fi
 
 # An in-place update must NOT wipe the create-time attributes: the deploy
 # engine treats a returned attributes object as authoritative, so a provider
@@ -437,6 +464,20 @@ fi
 echo "    OK: GraphQLApiUrl output still resolves after an in-place update"
 
 assert_eq "updated introspectionConfig" "ENABLED" "$(api_query 'graphqlApi.introspectionConfig')"
+
+# Issue #5359: renamed IN PLACE (the API id is unchanged: API_ID is read from
+# the baseline state and the query below addresses it), and the data source's
+# Type switched in place (same ARN).
+assert_eq "renamed API name (in place, same API id)" "cdkd-appsync-example-renamed" \
+  "$(api_query 'graphqlApi.name')"
+assert_eq "GraphQLApi physical id after the rename" "${API_ID}" \
+  "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.GraphQLApi.physicalId')"
+assert_eq "updated TypeSwitch DS type" "HTTP" \
+  "$(datasource_query TypeSwitchDataSource 'dataSource.type')"
+assert_eq "updated TypeSwitch DS endpoint" "https://example.com" \
+  "$(datasource_query TypeSwitchDataSource 'dataSource.httpConfig.endpoint')"
+assert_eq "TypeSwitch DS ARN after the Type switch (not replaced)" "${TYPE_SWITCH_ARN}" \
+  "$(datasource_query TypeSwitchDataSource 'dataSource.dataSourceArn')"
 assert_eq "updated queryDepthLimit" "8" "$(api_query 'graphqlApi.queryDepthLimit')"
 assert_eq "updated resolverCountLimit" "200" "$(api_query 'graphqlApi.resolverCountLimit')"
 assert_eq "updated ownerContact" "cdkd-integ-updated" "$(api_query 'graphqlApi.ownerContact')"
@@ -507,6 +548,35 @@ assert_eq "phase 2b: ownerContact untouched (UpdateGraphqlApi never went out)" "
   "$(api_query 'graphqlApi.ownerContact')"
 assert_eq "phase 2b: environmentVariables untouched" '{"CdkdExtra":"added","CdkdStage":"updated"}' \
   "$(env_vars_json | jq -cS '.')"
+
+# --- Phase 2d: the GraphQLSchema's ApiId moves (issue #5359) ----------------
+# The update template with ONLY the schema's ApiId changed, its definition
+# unchanged. Pre-fix the update returned success with no call, so the deploy
+# exited 0 while the schema stayed where it was. CloudFormation fails this
+# update (measured: no replacement in the change set, then `Internal Failure`
+# and a rollback), so cdkd refuses it before any call.
+echo "==> Phase 2d: moving the GraphQLSchema to another ApiId must be REFUSED"
+set +e
+PHASE2D_OUT="$(CDKD_TEST_UPDATE=true CDKD_TEST_SCHEMA_MOVE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
+PHASE2D_RC=$?
+set -e
+printf '%s\n' "${PHASE2D_OUT}"
+PHASE2D_PLAIN="$(printf '%s' "${PHASE2D_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
+if [ "${PHASE2D_RC}" -eq 0 ]; then
+  echo "FAIL [phase 2d]: the ApiId move deployed (exit 0); issue #5359 refuses it rather than leaving the schema on the old API" >&2
+  exit 1
+fi
+if ! printf '%s' "${PHASE2D_PLAIN}" | grep -qF 'GraphQLSchema.ApiId cannot move a schema to another API in place'; then
+  echo "FAIL [phase 2d]: the deploy failed, but not with the #5359 refusal" >&2
+  exit 1
+fi
+echo "    [phase 2d] the ApiId move was REFUSED (exit ${PHASE2D_RC})"
+PHASE2D_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+assert_eq "phase 2d: state keeps the schema on the API" "${API_ID}" \
+  "$(echo "${PHASE2D_STATE}" | jq -r '.resources.GraphQLSchema.physicalId')"
+assert_eq "phase 2d: state keeps the schema's recorded ApiId" "${API_ID}" \
+  "$(echo "${PHASE2D_STATE}" | jq -r '.resources.GraphQLSchema.properties.ApiId')"
 
 # --- Phase 2c: the same value on the REPLAY path (issue #3781) --------------
 # A state record can carry such a value only if an older cdkd wrote it or it was
@@ -590,6 +660,17 @@ assert_eq "reset queryDepthLimit" "0" "$(echo "${API_JSON}" | jq -r '.queryDepth
 assert_eq "reset resolverCountLimit" "0" "$(echo "${API_JSON}" | jq -r '.resolverCountLimit // 0')"
 assert_eq "reset ownerContact" "" "$(echo "${API_JSON}" | jq -r '.ownerContact // ""')"
 assert_eq "reset introspectionConfig" "ENABLED" "$(echo "${API_JSON}" | jq -r '.introspectionConfig')"
+# Issue #5359: renamed back in place, and the data source switched back to
+# NONE, its HttpConfig dropped.
+assert_eq "API name renamed back (in place)" "${API_NAME}" "$(echo "${API_JSON}" | jq -r '.name')"
+assert_eq "API id after the rename back" "${API_ID}" "$(echo "${API_JSON}" | jq -r '.apiId')"
+assert_eq "TypeSwitch DS type switched back" "NONE" \
+  "$(datasource_query TypeSwitchDataSource 'dataSource.type')"
+assert_eq "TypeSwitch DS httpConfig cleared" "NONE" \
+  "$(aws appsync get-data-source --api-id "${API_ID}" --name TypeSwitchDataSource \
+    --region "${REGION}" --query 'dataSource.httpConfig' --output json | jq -r '. // "NONE"')"
+assert_eq "TypeSwitch DS ARN after the switch back (not replaced)" "${TYPE_SWITCH_ARN}" \
+  "$(datasource_query TypeSwitchDataSource 'dataSource.dataSourceArn')"
 assert_eq "reset additionalAuthenticationProviders" "0" \
   "$(echo "${API_JSON}" | jq -r '[.additionalAuthenticationProviders // [] | .[]] | length')"
 # AWS renders a cleared environment-variable map as an ABSENT member, so
@@ -742,9 +823,12 @@ assert_gone "EventBus cdkd-appsync-example-bus still exists after destroy" \
   aws events describe-event-bus --name cdkd-appsync-example-bus --region "${REGION}"
 echo "    OK: EventBridge bus is gone"
 
-REMAINING_APIS="$(aws appsync list-graphql-apis --region "${REGION}" \
-  --query "length(graphqlApis[?name=='${API_NAME}'])" --output text)"
-assert_eq "leftover '${API_NAME}' APIs" "0" "${REMAINING_APIS}"
+# Both names this fixture gives the API: the update phase renames it (#5359).
+for leftover_name in "${API_NAME}" "${API_NAME}-renamed"; do
+  REMAINING_APIS="$(aws appsync list-graphql-apis --region "${REGION}" \
+    --query "length(graphqlApis[?name=='${leftover_name}'])" --output text)"
+  assert_eq "leftover '${leftover_name}' APIs" "0" "${REMAINING_APIS}"
+done
 
 REMAINING_POOLS="$(aws cognito-idp list-user-pools --max-results 60 --region "${REGION}" \
   --query "length(UserPools[?Name=='${POOL_NAME}'])" --output text)"
