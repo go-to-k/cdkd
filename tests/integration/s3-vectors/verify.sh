@@ -67,6 +67,7 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  [ -n "${DEPLOY_LOG:-}" ] && rm -f "${DEPLOY_LOG}"
   set -eu
 }
 
@@ -177,16 +178,18 @@ fi
 echo "    OK: VectorBucket tags { env=cdkd-integ, team=platform } reached AWS (Tags backfill CLOSED)"
 
 # --- Assertion: a nameless VectorBucket gets a generated name (#5309) ---
-# cdkd generates `{stack}-{logicalId}[-{suffix}]`, lowercased: vector bucket
-# names are 3-63 characters of lowercase letters, digits and hyphens.
+# cdkd generates `{stack}-{logicalId}-{suffix}`, lowercased: vector bucket
+# names are 3-63 characters of lowercase letters, digits and hyphens. A fresh
+# stack always carries an instance id, so the 12-hex suffix is required (a
+# suffix-less legacy name here would be a regression).
 NAMELESS_NAME=$(echo "${STATE}" | jq -r '.outputs.NamelessVectorBucketName // empty')
 if [ -z "${NAMELESS_NAME}" ]; then
   echo "FAIL: state.outputs.NamelessVectorBucketName missing after deploy (issue #5309)" >&2
   echo "${STATE}" | jq '.outputs'
   exit 1
 fi
-if ! printf '%s' "${NAMELESS_NAME}" | grep -qE '^s3vectorsstack-namelessvectorbucket(-[0-9a-f]{12})?$'; then
-  echo "FAIL: nameless VectorBucket is named '${NAMELESS_NAME}', expected the generated s3vectorsstack-namelessvectorbucket[-<suffix>] (issue #5309)" >&2
+if ! printf '%s' "${NAMELESS_NAME}" | grep -qE '^s3vectorsstack-namelessvectorbucket-[0-9a-f]{12}$'; then
+  echo "FAIL: nameless VectorBucket is named '${NAMELESS_NAME}', expected the generated s3vectorsstack-namelessvectorbucket-<12 hex> (issue #5309)" >&2
   exit 1
 fi
 NAMELESS_ARN=$(aws s3vectors get-vector-bucket \
