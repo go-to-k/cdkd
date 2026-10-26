@@ -34,9 +34,11 @@ vi.mock('@aws-sdk/client-glue', async () => {
   };
 });
 
+const { debugSpy } = vi.hoisted(() => ({ debugSpy: vi.fn() }));
+
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
-    debug: vi.fn(),
+    debug: debugSpy,
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
@@ -417,7 +419,10 @@ describe('GlueConnectionProvider Tags (go-to-k/cdkd#2762)', () => {
     );
     expect(sent(TagResourceCommand)).toHaveLength(0);
     const [untag] = sent(UntagResourceCommand);
-    expect(untag!.input.TagsToRemove).toEqual(['env']);
+    expect(untag!.input).toEqual({
+      ResourceArn: 'arn:aws:glue:us-east-1:111122223333:connection/my-connection',
+      TagsToRemove: ['env'],
+    });
   });
 
   it('makes no tag call when the tags are unchanged', async () => {
@@ -481,5 +486,27 @@ describe('GlueConnectionProvider Tags (go-to-k/cdkd#2762)', () => {
     expect(getTags!.input.ResourceArn).toBe(
       'arn:aws:glue:us-east-1:111122223333:connection/my-connection'
     );
+  });
+
+  it('keeps the connection NAME out of a failed GetTags debug line (go-to-k/cdkd#2007)', async () => {
+    mockSend.mockImplementation((cmd) => {
+      if (cmd instanceof GetConnectionCommand) {
+        return Promise.resolve({ Connection: { Name: 'secret-derived-conn-name' } });
+      }
+      if (cmd instanceof GetTagsCommand) {
+        return Promise.reject(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }));
+      }
+      return Promise.resolve({});
+    });
+    debugSpy.mockClear();
+    const result = (await provider.readCurrentState(
+      'secret-derived-conn-name',
+      'L',
+      'AWS::Glue::Connection'
+    )) as Record<string, unknown>;
+    expect(result['Tags']).toEqual([]);
+    const lines = debugSpy.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('GetTags failed for a Glue connection'))).toBe(true);
+    expect(lines.some((l) => l.includes('secret-derived-conn-name'))).toBe(false);
   });
 });

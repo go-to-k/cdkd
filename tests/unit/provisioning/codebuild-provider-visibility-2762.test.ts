@@ -146,6 +146,35 @@ describe('CodeBuildProvider Visibility / ResourceAccessRole (go-to-k/cdkd#2762)'
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Replaying a state record'));
   });
 
+  it('replays with a valid Visibility but an unusable role: warns, sends no visibility call', async () => {
+    await provider.create(
+      'L',
+      TYPE,
+      { ...BASE, Visibility: 'PUBLIC_READ', ResourceAccessRole: { Ref: 'X' } },
+      { replayingState: true }
+    );
+    expect(sent(CreateProjectCommand)).toHaveLength(1);
+    // The pair is one unit: an unreadable half leaves the project PRIVATE.
+    expect(sent(UpdateProjectVisibilityCommand)).toHaveLength(0);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('ResourceAccessRole must be a non-empty string')
+    );
+  });
+
+  it('fails the update when UpdateProjectVisibility is refused', async () => {
+    mockSend.mockImplementation((cmd) => {
+      if (cmd instanceof UpdateProjectVisibilityCommand) {
+        return Promise.reject(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }));
+      }
+      return Promise.resolve({ project: { name: 'proj', arn: ARN } });
+    });
+    await expect(
+      provider.update('L', 'proj', TYPE, { ...BASE, Visibility: 'PUBLIC_READ' }, { ...BASE })
+    ).rejects.toThrow(/Failed to update CodeBuild Project L/);
+    expect(sent(UpdateProjectCommand)).toHaveLength(1);
+    expect(sent(UpdateProjectVisibilityCommand)).toHaveLength(1);
+  });
+
   it('marks a visibility failure as an auxiliary one naming the created project', async () => {
     mockSend.mockImplementation((cmd) => {
       if (cmd instanceof UpdateProjectVisibilityCommand) {

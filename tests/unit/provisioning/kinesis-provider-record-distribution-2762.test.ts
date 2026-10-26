@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   CreateStreamCommand,
+  DescribeStreamCommand,
   DescribeStreamSummaryCommand,
   UpdateStreamModeCommand,
   UpdateStreamRecordDistributionStrategyCommand,
@@ -229,12 +230,48 @@ describe('KinesisStreamProvider RecordDistributionStrategy (go-to-k/cdkd#2762)',
       'mystream',
       'AWS::Kinesis::Stream',
       { Name: 'mystream', StreamModeDetails: ON_DEMAND, RecordDistributionStrategy: 'AUTO' },
-      { Name: 'mystream', StreamModeDetails: ON_DEMAND, RecordDistributionStrategy: null }
+      { Name: 'mystream', StreamModeDetails: ON_DEMAND, RecordDistributionStrategy: 42 }
     );
     expect(
       commandsOfType(UpdateStreamRecordDistributionStrategyCommand)[0]?.input
         .RecordDistributionStrategy
     ).toBe('AUTO');
+  });
+
+  it('waits for the stream to settle ACTIVE after the strategy update, before the next call', async () => {
+    const statuses = ['ACTIVE', 'UPDATING', 'ACTIVE'];
+    mockSend.mockImplementation((cmd) => {
+      if (cmd instanceof DescribeStreamCommand) {
+        const status = statuses.length > 1 ? statuses.shift() : statuses[0];
+        return Promise.resolve({
+          StreamDescription: { StreamName: 'mystream', StreamStatus: status, StreamARN: 'arn:d' },
+        });
+      }
+      return Promise.resolve(SUMMARY);
+    });
+    vi.useFakeTimers();
+    try {
+      const done = provider.update(
+        'L',
+        'mystream',
+        'AWS::Kinesis::Stream',
+        { Name: 'mystream', StreamModeDetails: ON_DEMAND, RecordDistributionStrategy: 'AUTO' },
+        { Name: 'mystream', StreamModeDetails: ON_DEMAND }
+      );
+      await vi.runAllTimersAsync();
+      await done;
+    } finally {
+      vi.useRealTimers();
+    }
+    const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+    const strategyAt = names.indexOf('UpdateStreamRecordDistributionStrategyCommand');
+    expect(strategyAt).toBeGreaterThanOrEqual(0);
+    // The wait polls past UPDATING: two DescribeStream reads follow the update
+    // before anything else is sent.
+    expect(names.slice(strategyAt + 1, strategyAt + 3)).toEqual([
+      'DescribeStreamCommand',
+      'DescribeStreamCommand',
+    ]);
   });
 
   it('reads the strategy back from DescribeStreamSummary when AWS reports one', async () => {

@@ -4349,7 +4349,8 @@ async function fetchGlueTags(
     const resp = await client.send(new GetTagsCommand({ ResourceArn: arn }));
     return normalizeAwsTagsToCfn(resp.Tags);
   } catch (err) {
-    logger.debug(`GetTags failed for ${resource}/${name}: ${describeAwsFailure(err).detail}`);
+    // The NAME is left out: a Connection's can be secret-derived (go-to-k/cdkd#2007).
+    logger.debug(`GetTags failed for a Glue ${resource}: ${describeAwsFailure(err).detail}`);
     return [];
   }
 }
