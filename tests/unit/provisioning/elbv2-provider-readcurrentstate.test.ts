@@ -250,6 +250,34 @@ describe('ELBv2Provider.readCurrentState', () => {
         ]);
       });
 
+      it('keeps a QuicServerId (#5394), since the update diff keys on it', async () => {
+        const result = await readTargets({
+          TargetHealthDescriptions: [
+            {
+              Target: { Id: 'i-quic', Port: 8080, QuicServerId: '0x0123456789abcdef' },
+              TargetHealth: { State: 'healthy' },
+            },
+            { Target: { Id: 'i-plain', Port: 8080 }, TargetHealth: { State: 'healthy' } },
+          ],
+        });
+        expect(result?.['Targets']).toEqual([
+          { Id: 'i-quic', Port: 8080, QuicServerId: '0x0123456789abcdef' },
+          { Id: 'i-plain', Port: 8080 },
+        ]);
+      });
+
+      it('drops an empty QuicServerId rather than echoing it (#5394)', async () => {
+        const result = await readTargets({
+          TargetHealthDescriptions: [
+            {
+              Target: { Id: 'i-quic', Port: 8080, QuicServerId: '' },
+              TargetHealth: { State: 'healthy' },
+            },
+          ],
+        });
+        expect(result?.['Targets']).toEqual([{ Id: 'i-quic', Port: 8080 }]);
+      });
+
       it("drops the AvailabilityZone AWS substitutes as 'all' but keeps a real one", async () => {
         const result = await readTargets({
           TargetHealthDescriptions: [
