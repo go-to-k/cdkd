@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd GlobalTable replica settings integ (issues #5355, #5365, #5381).
+# verify.sh — cdkd GlobalTable replica settings integ (issues #5355, #5365, #5381, #5399).
 #
 # A two-region `TableV2` renders its KMS key, table class and deletion
 # protection PER REPLICA. cdkd read the key and the class under names the CFn
@@ -42,6 +42,11 @@
 #      replica is unprotected, cdkd warned that it auto-disabled the replica's
 #      protection, and every #5365 setting reset as CloudFormation resets it
 #      (measured): PITR and insights off, streaming disabled, both policies gone.
+#  5b. Drift is clean; then both regions move to their customer managed keys
+#      out of band (one every-region ReplicaUpdates call), drift reports
+#      SSESpecification leaving the AWS owned key, and `drift --revert`
+#      returns both regions to it (SSEDescription absent) and drift is clean
+#      again (#5399).
 #   6. `tag,removed,protect`: protect the replica again.
 #   7. `destroy --remove-protection`: assert the table is gone in BOTH regions
 #      (the replica's guard is turned off before its drop) and the state file
@@ -548,7 +553,7 @@ await_replica "${SECOND_REGION}" "^ENABLED	10	ENABLED	${REPLICA_KINESIS_ARN}	pre
 # and `drift --revert` could not restore them.
 echo "==> Phase 2c: drift is clean, then sees an out-of-band period, policy and protection change"
 DRIFT_OUT="${LOG_DIR}/drift.log"
-run_drift() { # usage: run_drift <expected exit code>; output in ${DRIFT_OUT}
+run_drift() { # usage: run_drift <expected exit code> [phase label]; output in ${DRIFT_OUT}
   local rc
   set +e
   node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
@@ -559,7 +564,7 @@ run_drift() { # usage: run_drift <expected exit code>; output in ${DRIFT_OUT}
   # 0 = no drift, 1 = drift (docs/cli-drift.md); anything else, or a crash
   # printing no row at all, must not read as "clean".
   if [ "${rc}" != "$1" ]; then
-    echo "FAIL: Phase 2c: drift exited ${rc}, expected $1 (issue #5381)" >&2
+    echo "FAIL: ${2:-Phase 2c (issue #5381)}: drift exited ${rc}, expected $1" >&2
     exit 1
   fi
 }
@@ -681,6 +686,55 @@ await_replica "${REGION}" "^DISABLED	None	DISABLED	none	absent	absent$" \
   "Phase 5: the ${REGION} table did not reset its point-in-time recovery, insights, Kinesis stream and policies (issue #5365)"
 await_replica "${SECOND_REGION}" "^DISABLED	None	DISABLED	none	absent	absent$" \
   "Phase 5: the ${SECOND_REGION} replica did not reset its point-in-time recovery, insights, Kinesis stream and policies (issue #5365)"
+
+# --- Phase 5b: drift --revert returns the AWS owned key (#5399) ----------
+# The Phase 5 deploy recorded the table on the AWS owned key: a baseline with
+# no top-level SSESpecification. Moved out of band to the customer managed keys,
+# drift used to report only the replicas' keys, and `drift --revert` kept the
+# live SSESpecification, so the table stayed on the keys.
+echo "==> Phase 5b: move both regions to their customer managed keys out of band, then drift --revert"
+PHASE5B="Phase 5b (issue #5399)"
+run_drift 0 "${PHASE5B}"
+if grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
+  echo "FAIL: ${PHASE5B}: drift reports the GlobalTable before the out-of-band change" >&2
+  exit 1
+fi
+# DynamoDB takes a customer managed key on a table with replicas only as one
+# ReplicaUpdates call naming every region's key (measured, Phase 3).
+aws dynamodb update-table --table-name "${TABLE}" --region "${REGION}" --replica-updates \
+  "[{\"Update\":{\"RegionName\":\"${REGION}\",\"KMSMasterKeyId\":\"${LOCAL_KEY_ARN}\"}},{\"Update\":{\"RegionName\":\"${SECOND_REGION}\",\"KMSMasterKeyId\":\"${REPLICA_KEY_ARN}\"}}]" \
+  >/dev/null
+wait_settled
+await_settings "${REGION}" "^ENABLED	KMS	${LOCAL_KEY_ARN}	STANDARD	False$" \
+  "${PHASE5B} premise: the out-of-band move to the customer managed key did not land"
+await_settings "${SECOND_REGION}" "^ENABLED	KMS	${REPLICA_KEY_ARN}	STANDARD	False$" \
+  "${PHASE5B} premise: the out-of-band move did not reach the replica"
+run_drift 1 "${PHASE5B}"
+if ! grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
+  echo "FAIL: ${PHASE5B}: drift does not report the out-of-band key" >&2
+  exit 1
+fi
+# A pre-fix binary fails here: the recorded side has no SSESpecification, and
+# the comparator walked only the recorded side's top-level keys.
+if ! grep -qE '^ +\+ SSESpecification: \{"SSEEnabled":true,"SSEType":"KMS"\}' "${DRIFT_OUT}"; then
+  echo "FAIL: ${PHASE5B}: drift does not report SSESpecification moving off the AWS owned key" >&2
+  exit 1
+fi
+echo "    OK: drift reports the move off the AWS owned key"
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --revert --yes 2>&1 | tee "${LOG_DIR}/phase5b-revert.log"
+wait_settled
+# An AWS owned key reads back as no SSEDescription (None), as in Phase 5.
+await_settings "${REGION}" "^None	None	None	STANDARD	False$" \
+  "${PHASE5B}: drift --revert did not return the ${REGION} table to the AWS owned key"
+await_settings "${SECOND_REGION}" "^None	None	None	STANDARD	False$" \
+  "${PHASE5B}: drift --revert did not return the ${SECOND_REGION} replica to the AWS owned key"
+run_drift 0 "${PHASE5B}"
+if grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
+  echo "FAIL: ${PHASE5B}: the GlobalTable still drifts after --revert" >&2
+  exit 1
+fi
+echo "    OK: back on the AWS owned key, and clean after --revert"
 
 # --- Phase 6: protect the replica again ----------------------------------
 echo "==> Phase 6: protect the replica again"

@@ -1618,6 +1618,34 @@ export interface ResourceProvider {
   ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }>;
 
   /**
+   * Top-level keys whose ABSENCE from an `observedProperties` baseline records
+   * the property's DEFAULT state, because `readCurrentState` omits the key
+   * while the property is at its default (go-to-k/cdkd#5399: a GlobalTable on
+   * the AWS owned key reads back with no `SSESpecification`). The comparator
+   * otherwise walks only the baseline's top-level keys, so a move away from
+   * the default was invisible there, and `drift --revert` kept the live value.
+   *
+   * For each key returned, `cdkd drift` compares the key even when the
+   * baseline lacks it, and `drift --revert` sends it ABSENT, so `update()`
+   * takes the removal path it takes for a template that removed the property.
+   * Return a key only when that removal path resets it to the default, as
+   * CloudFormation does, and only when `properties` (the template intent)
+   * agrees the property is at its default: a baseline that disagrees with the
+   * template it was captured under is not trusted to clear what the template
+   * declares. Not consulted for a record without `observedProperties`.
+   *
+   * Pure and synchronous: no AWS call.
+   *
+   * @param properties the resource's recorded `properties`. May be `{}`.
+   * @returns top-level property names only; a dotted path is ignored (with a
+   *   debug line) by the caller.
+   */
+  getDriftAbsentMeansDefaultKeys?(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): readonly string[];
+
+  /**
    * Name the drift positions a secret-bearing template position MOVES to when
    * {@link canonicalizeDriftProperties} / {@link canonicalizeDriftPair} (or the
    * readback itself) puts its value somewhere else (go-to-k/cdkd#5332). Step

@@ -4166,7 +4166,17 @@ async function runDriftForStack(
             paired.baseline,
             paired.aws
           );
-          const changes = calculateResourceDrift(nameBaseline, paired.aws, {
+          // go-to-k/cdkd#5399: a key the provider says the readback omits at
+          // its default is compared even when the observed baseline lacks it,
+          // which the comparator's baseline-keys-only top-level walk skips.
+          const comparedBaseline = useObserved
+            ? withAbsentDefaultKeys(
+                nameBaseline,
+                paired.aws,
+                driftAbsentMeansDefaultKeys(provider, resource.resourceType, resource.properties)
+              )
+            : nameBaseline;
+          const changes = calculateResourceDrift(comparedBaseline, paired.aws, {
             ignorePaths: observedIgnorePaths.length
               ? [...ignorePaths, ...observedIgnorePaths]
               : ignorePaths,
@@ -6556,14 +6566,21 @@ export function preserveLiveValuesAtMaskedLeaves(
  * `observedProperties` — see {@link mergeUntemplatedValue} for why that is the
  * only baseline on which it is correct, and why the fix has to live on this
  * side rather than on `previousProperties`.
+ *
+ * `absentMeansDefault` (go-to-k/cdkd#5399) names the drifted top-level keys
+ * the baseline records at their default by leaving them out (see
+ * {@link driftAbsentMeansDefaultKeys}). Such a key is sent ABSENT instead of
+ * keeping the AWS value, so the provider's `update()` resets it the way it
+ * resets a property a template removed.
  */
 export function buildRevertNewProperties(
   drifts: readonly PropertyDrift[],
   desiredProperties: Record<string, unknown>,
   awsProperties: Record<string, unknown>,
-  options: { preserveUntemplated?: boolean } = {}
+  options: { preserveUntemplated?: boolean; absentMeansDefault?: readonly string[] } = {}
 ): Record<string, unknown> {
   const preserveUntemplated = options.preserveUntemplated === true;
+  const absentMeansDefault = options.absentMeansDefault ?? [];
   // A plain spread on purpose (every provider receives this bag, and spread
   // defines an own `__proto__` key correctly); the overlays below go through
   // `defineOwnKey` because a top-level drift at a key literally named
@@ -6608,6 +6625,10 @@ export function buildRevertNewProperties(
             : desiredValue
         );
       }
+    } else if (absentMeansDefault.includes(topLevelKey)) {
+      // go-to-k/cdkd#5399: the baseline recorded this key at its default by
+      // omitting it, so the revert sends it absent and `update()` resets it.
+      delete result[topLevelKey];
     } else {
       // Drift surfaced on a key that's no longer in `desiredProperties`
       // (defensive — drift was computed against `desiredProperties`, so
@@ -6616,6 +6637,53 @@ export function buildRevertNewProperties(
     }
   }
   return result;
+}
+
+/**
+ * The provider's {@link ResourceProvider.getDriftAbsentMeansDefaultKeys} for
+ * this record (go-to-k/cdkd#5399), or none. `properties` is the record's
+ * template intent. A record whose `properties` is not a plain object (a
+ * malformed state file) names no key: to the hook, `{}` would read as a
+ * template on the default, which licenses resetting the live value.
+ */
+export function driftAbsentMeansDefaultKeys(
+  provider: Pick<ResourceProvider, 'getDriftAbsentMeansDefaultKeys'>,
+  resourceType: string,
+  properties: unknown
+): readonly string[] {
+  if (provider.getDriftAbsentMeansDefaultKeys === undefined || !isPlainRecord(properties)) {
+    return [];
+  }
+  const keys = provider.getDriftAbsentMeansDefaultKeys(resourceType, properties);
+  // The contract is top-level property names: a dotted path would match no
+  // top-level key on either path and silently do nothing, so it is dropped
+  // where a provider author can see it.
+  const dotted = keys.filter((key) => key.includes('.'));
+  if (dotted.length === 0) return keys;
+  getLogger().debug(
+    safeMsg`${resourceType}: getDriftAbsentMeansDefaultKeys returned non-top-level name(s) ` +
+      safeMsg`${dotted.join(', ')}; ignored (top-level property names only).`
+  );
+  return keys.filter((key) => !key.includes('.'));
+}
+
+/**
+ * The comparison baseline with each of `keys` the baseline lacks and the AWS
+ * side holds added as an own `undefined`, so the comparator's baseline-keys
+ * top-level walk compares it (go-to-k/cdkd#5399). The input by identity when
+ * no key applies, and a copy otherwise, so no other reader of the baseline
+ * sees the added key.
+ */
+export function withAbsentDefaultKeys(
+  baseline: Record<string, unknown>,
+  aws: Record<string, unknown>,
+  keys: readonly string[]
+): Record<string, unknown> {
+  const missing = keys.filter((key) => !hasOwnKey(baseline, key) && hasOwnKey(aws, key));
+  if (missing.length === 0) return baseline;
+  const out: Record<string, unknown> = { ...baseline };
+  for (const key of missing) defineOwnKey(out, key, undefined);
+  return out;
 }
 
 /**
@@ -7249,7 +7317,17 @@ async function runRevert(
                     outcome.changes,
                     desiredProperties,
                     outcome.awsProperties,
-                    { preserveUntemplated: stateResource.observedProperties === undefined }
+                    stateResource.observedProperties === undefined
+                      ? { preserveUntemplated: true }
+                      : {
+                          // go-to-k/cdkd#5399: the keys detection compared while
+                          // the observed baseline lacked them.
+                          absentMeansDefault: driftAbsentMeansDefaultKeys(
+                            provider,
+                            outcome.resourceType,
+                            stateResource.properties
+                          ),
+                        }
                   );
                   // Issue #3595: nothing is reverted at an uncertified-baseline
                   // position — AWS's own value goes back — and this runs FIRST, so the

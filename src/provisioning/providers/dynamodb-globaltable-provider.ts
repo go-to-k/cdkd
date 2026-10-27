@@ -8576,6 +8576,34 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
+   * `SSESpecification`, while the template leaves the table on the AWS owned
+   * key: no block (CDK's default) or `SSEEnabled: false` (CDK's
+   * `dynamoOwnedKey()`). `readCurrentState` omits the block unless encryption
+   * is ENABLED, so a baseline captured on the AWS owned key has none, and a
+   * later move to a KMS key was compared nowhere at the top level and kept by
+   * `drift --revert` (go-to-k/cdkd#5399). Sent absent, `update()` takes its
+   * removal path: `SSESpecification: { Enabled: false }`, which returns every
+   * region to the AWS owned key, as CloudFormation does (go-to-k/cdkd#5355).
+   *
+   * A template declaring encryption ON gets nothing: a baseline without the
+   * block disagrees with that template, and it must not turn the declared
+   * encryption off. A missing block is not proof of the AWS owned key on its
+   * own (the read-back omits it for every status but ENABLED, e.g.
+   * ENABLING, UPDATING, DISABLING or INACCESSIBLE_ENCRYPTION_CREDENTIALS), so the template's answer is what bounds the reset.
+   */
+  getDriftAbsentMeansDefaultKeys(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): readonly string[] {
+    if (resourceType !== 'AWS::DynamoDB::GlobalTable') return [];
+    const declared = properties['SSESpecification'];
+    if (declared === undefined) return ['SSESpecification'];
+    return coerceCfnBoolean(asRecord(declared)?.['SSEEnabled']) === false
+      ? ['SSESpecification']
+      : [];
+  }
+
+  /**
    * Adopt an existing DynamoDB GlobalTable into cdkd state.
    *
    * Lookup order:
