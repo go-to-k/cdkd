@@ -2438,24 +2438,6 @@ export class FSxFileSystemProvider implements ResourceProvider {
   }
 
   /**
-   * State property paths this provider cannot read back from AWS:
-   *  - `SecurityGroupIds` — `DescribeFileSystems` returns network
-   *    interface ids, never the original security group list.
-   *  - `BackupId` — creation-source input, not surfaced on the deployed
-   *    file system.
-   *  - `WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.Password`
-   *    / `OntapConfiguration.FsxAdminPassword` — write-only credentials; the
-   *    API never echoes them back.
-   *  - `OpenZFSConfiguration.RootVolumeConfiguration` — configured on the
-   *    root VOLUME, not the file system; `DescribeFileSystems` returns only
-   *    `RootVolumeId`, so reading it back would need a separate
-   *    `DescribeVolumes` call (out of scope here).
-   *
-   * The whole-block `WindowsConfiguration` / `OntapConfiguration` /
-   * `OpenZFSConfiguration` entries are gone as of the variant reverse-mappers
-   * — only the individually-unreadable leaves above stay unknown.
-   */
-  /**
    * Drop a logging-off `LustreConfiguration.LogConfiguration` (`Level`
    * `DISABLED`, no `Destination`) from each drift comparison side
    * (go-to-k/cdkd#5430). AWS reports that block on a Lustre file system that
@@ -2487,6 +2469,24 @@ export class FSxFileSystemProvider implements ResourceProvider {
     return { ...properties, LustreConfiguration: rest };
   }
 
+  /**
+   * State property paths this provider cannot read back from AWS:
+   *  - `SecurityGroupIds` — `DescribeFileSystems` returns network
+   *    interface ids, never the original security group list.
+   *  - `BackupId` — creation-source input, not surfaced on the deployed
+   *    file system.
+   *  - `WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.Password`
+   *    / `OntapConfiguration.FsxAdminPassword` — write-only credentials; the
+   *    API never echoes them back.
+   *  - `OpenZFSConfiguration.RootVolumeConfiguration` — configured on the
+   *    root VOLUME, not the file system; `DescribeFileSystems` returns only
+   *    `RootVolumeId`, so reading it back would need a separate
+   *    `DescribeVolumes` call (out of scope here).
+   *
+   * The whole-block `WindowsConfiguration` / `OntapConfiguration` /
+   * `OpenZFSConfiguration` entries are gone as of the variant reverse-mappers
+   * — only the individually-unreadable leaves above stay unknown.
+   */
   getDriftUnknownPaths(resourceType: string): string[] {
     if (resourceType !== 'AWS::FSx::FileSystem') return [];
     return [
