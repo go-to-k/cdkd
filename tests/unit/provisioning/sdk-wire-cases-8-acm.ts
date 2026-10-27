@@ -72,8 +72,10 @@ export const ACM_CASES: TypeCase[] = [
     resourceType: 'AWS::CertificateManager::Certificate',
     provider: () => new ACMCertificateProvider(),
     physicalId: CERT_ARN,
-    // Every property but CertificateTransparencyLoggingPreference and Tags is
-    // create-only, so only those two are probed on update.
+    // CertificateTransparencyLoggingPreference and Tags are updated in place;
+    // ValidationMethod is not create-only in the schema, but update() replaces
+    // the certificate through create() when it changes
+    // (acm-certificate-provider.ts:633-637); the rest is create-only.
     createOnly: createOnlyOf('AWS::CertificateManager::Certificate'),
     arm: armPendingThenIssued,
     exempt: {},

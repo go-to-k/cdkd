@@ -192,11 +192,15 @@ const ENDPOINT_CASE: TypeCase = {
   arm: () => armEndpoint(),
   // Not a gap: update() never reads previousProperties
   // (lambda-web-function-endpoint-provider.ts:223) and sends the whole desired
-  // config, an absent optional member sent cleared (:249-296).
+  // config, an absent optional member sent cleared (:249-296). With `prev`
+  // unread, the update-remove probe cannot tell a clear from a member left
+  // live: the clears themselves are pinned in
+  // lambda-web-function-providers.test.ts (Description '' and the omitted
+  // ScalingConfig). AuthType is NOT cleared (:256-257) and is listed on its own.
   wholeFromNext: {
-    keys: () => true,
+    keys: (key) => key !== 'AuthType',
     reason:
-      'update() never reads previousProperties and sends the whole desired config, an absent optional member cleared (lambda-web-function-endpoint-provider.ts:223, 249-296)',
+      'update() never reads previousProperties and sends the whole desired config, an absent optional member cleared (lambda-web-function-endpoint-provider.ts:223, 249-296; clears pinned in lambda-web-function-providers.test.ts)',
   },
   exempt: {},
   targets: [
@@ -223,6 +227,14 @@ const ENDPOINT_CASE: TypeCase = {
         Regions: ['us-east-1', 'us-west-2'],
         ScalingConfig: { MaxEnvironments: 5 },
         ThrottleConfig: { RateLimit: 100 },
+      },
+      expectedSilent: {
+        // Not a deployable template: create() refuses a missing AuthType
+        // (lambda-web-function-endpoint-provider.ts:131-139), and update()
+        // sends it only when declared (:256-257), so a removal keeps the live
+        // value rather than clearing it.
+        'update-remove:AuthType':
+          'AuthType is required by create (:131-139); update() sends it only when declared (:256-257), so a removal keeps the live value',
       },
       expectedRemovalThrows: {
         'create:FunctionName': ENDPOINT_CREATE_REQUIRED,

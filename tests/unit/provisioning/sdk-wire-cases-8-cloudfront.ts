@@ -34,6 +34,16 @@ type Converter = {
  * provider's own CFn -> SDK conversion, what CloudFront would hold), a fixed
  * ETag and CallerReference, and a deployed distribution with its ARN for the
  * tag diff.
+ *
+ * Because the live config IS `prev`, a top-level `update-remove` probe cannot
+ * tell a reset from a member left at its live value: both differ from the
+ * `update(reduced, reduced)` side. The reset to `REMOVAL_RESET_DEFAULTS` is
+ * pinned in `cloudfront-distribution-provider.test.ts`; a member with no
+ * schema-documented default (AnycastIpListId, CacheTagConfig,
+ * ConnectionFunctionAssociation, ConnectionMode, ContinuousDeploymentPolicyId,
+ * IPV6Enabled, Staging, TenantConfig, ViewerMtlsConfig) keeps its live value
+ * with a warning by design (cloudfront-distribution-provider.ts:127-131), the
+ * absent-field removal class tracked by go-to-k/cdkd#1160.
  */
 function armDistribution(bag: Bag): void {
   const convert = new CloudFrontDistributionProvider() as unknown as Converter;
@@ -99,7 +109,13 @@ const behavior = {
   ViewerProtocolPolicy: 'redirect-to-https',
 };
 
-/** Every modern DistributionConfig member, each list with two entries where a removal names one. */
+/**
+ * Every modern DistributionConfig member, each list with two entries where a
+ * removal names one. Unrealistic on purpose: members AWS accepts only one of
+ * (ViewerCertificate's ACM / IAM / CloudFront-default certificate, an origin's
+ * S3OriginConfig beside VpcOriginConfig) share the bag, so each is probed; a
+ * union member the conversion dropped would still show as silent.
+ */
 const DISTRIBUTION_FULL: Bag = {
   DistributionConfig: {
     Aliases: ['alias-one.example.com', 'alias-two.example.com'],
