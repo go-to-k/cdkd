@@ -11,6 +11,7 @@ import {
   TagDeliveryStreamCommand,
   UntagDeliveryStreamCommand,
   type CreateDeliveryStreamCommandInput,
+  type DeliveryStreamDescription,
   type DeliveryStreamEncryptionConfiguration,
   type S3DestinationConfiguration,
   type ExtendedS3DestinationConfiguration,
@@ -70,6 +71,7 @@ import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { generatedNameFor } from '../resource-name.js';
 import { startInterruptWatch } from '../interrupt-watch.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { isDeepStrictEqual } from 'node:util';
 import {
   enclosingDeadlineExpired,
   enclosingDeadlineRemainingMs,
@@ -208,6 +210,69 @@ const SUPPORTED_UPDATE_DESTINATIONS: ReadonlySet<string> = new Set([
   'SnowflakeDestinationConfiguration',
   'SplunkDestinationConfiguration',
 ]);
+
+/**
+ * The destinations whose `S3BackupMode` cannot change after the stream is
+ * created (go-to-k/cdkd#5386), each with the `DescribeDeliveryStream`
+ * description member that reports the live mode. Their `UpdateDestination`
+ * shapes (`ElasticsearchDestinationUpdate`,
+ * `AmazonopensearchserviceDestinationUpdate`,
+ * `AmazonOpenSearchServerlessDestinationUpdate`) have no `S3BackupMode`
+ * member, so the change has nothing to be sent through.
+ *
+ * CloudFormation behaves the same way, and `S3BackupMode` is not a
+ * create-only property in its schema. Measured in us-east-1 on 2026-10-27: a
+ * stack with an `AmazonOpenSearchServerlessDestinationConfiguration` at
+ * `FailedDocumentsOnly`, updated to `AllDocuments`, ended `UPDATE_COMPLETE`
+ * with the same stream, its `VersionId` still 1 and its mode still
+ * `FailedDocumentsOnly`. (The two domain-backed destinations could not be
+ * created without a live OpenSearch domain; they share the schema and the
+ * update shape's gap.) cdkd keeps that outcome, records the declared value as
+ * CloudFormation's stored template does, and warns instead of staying silent.
+ */
+const FIXED_BACKUP_MODE_DESTINATIONS: Readonly<
+  Record<
+    string,
+    | 'ElasticsearchDestinationDescription'
+    | 'AmazonopensearchserviceDestinationDescription'
+    | 'AmazonOpenSearchServerlessDestinationDescription'
+  >
+> = {
+  ElasticsearchDestinationConfiguration: 'ElasticsearchDestinationDescription',
+  AmazonopensearchserviceDestinationConfiguration: 'AmazonopensearchserviceDestinationDescription',
+  AmazonOpenSearchServerlessDestinationConfiguration:
+    'AmazonOpenSearchServerlessDestinationDescription',
+};
+
+/** The mode Firehose applies when these destinations declare none. */
+const DEFAULT_OPENSEARCH_BACKUP_MODE = 'FailedDocumentsOnly';
+
+/**
+ * The destination key whose `S3BackupMode` changed between the two bags but
+ * cannot be applied in place (go-to-k/cdkd#5386), or `undefined`. Only a
+ * destination both bags declare as an object is compared: a destination switch
+ * is refused earlier, and with `changedProperties` set (the deploy's in-place
+ * update) a destination the engine did not report as changed is skipped.
+ */
+function unappliedS3BackupModeDestination(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  destKey: string | undefined,
+  changedProperties: ReadonlySet<string> | undefined
+): string | undefined {
+  if (destKey === undefined || !Object.hasOwn(FIXED_BACKUP_MODE_DESTINATIONS, destKey)) {
+    return undefined;
+  }
+  if (changedProperties !== undefined && !changedProperties.has(destKey)) return undefined;
+  const desired = properties[destKey];
+  const previous = previousProperties[destKey];
+  if (!isPlainRecord(desired) || !isPlainRecord(previous)) return undefined;
+  return isDeepStrictEqual(desired['S3BackupMode'], previous['S3BackupMode']) ? undefined : destKey;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 /**
  * Poll cadence and cap for the post-delete gone-wait (issue #3872). The
@@ -735,9 +800,9 @@ export class FirehoseProvider implements ResourceProvider {
    *     `TypeName`, `IndexRotationPeriod`, `BufferingHints`,
    *     `RetryOptions`, `S3Configuration` → `S3Update`,
    *     `ProcessingConfiguration`, `CloudWatchLoggingOptions`,
-   *     `DocumentIdOptions`. `VpcConfiguration` is read-only on
-   *     AWS-side Update — diffs to that field will not be forwarded
-   *     and surface on the next `cdkd drift` run.
+   *     `DocumentIdOptions`. `VpcConfiguration` has no Update member;
+   *     it is create-only in the CloudFormation schema, so the diff
+   *     plans a replacement for a change there.
    *
    *   - `AmazonOpenSearchServerlessDestinationConfiguration` (#549) —
    *     `AmazonOpenSearchServerlessDestinationUpdate` payload
@@ -746,6 +811,11 @@ export class FirehoseProvider implements ResourceProvider {
    *     `CollectionEndpoint`, `IndexName`, `BufferingHints`,
    *     `RetryOptions`, `S3Configuration` → `S3Update`,
    *     `ProcessingConfiguration`, `CloudWatchLoggingOptions`.
+   *
+   *   - `S3BackupMode` on the three OpenSearch / Elasticsearch
+   *     destinations has no Update member: a change is not sent, as
+   *     CloudFormation does, and is warned (#5386,
+   *     {@link warnUnappliedS3BackupMode}).
    *
    *   - `HttpEndpointDestinationConfiguration` (#549) —
    *     `HttpEndpointDestinationUpdate` payload produced by
@@ -760,7 +830,7 @@ export class FirehoseProvider implements ResourceProvider {
    *     `ElasticsearchDestinationUpdate` payload produced by
    *     {@link mapElasticsearchConfigToUpdate}. Legacy variant of
    *     `Amazonopensearchservice*`; same field shape sans
-   *     `VpcConfiguration` (also read-only on Update).
+   *     `VpcConfiguration` (also create-only, so replaced).
    *
    *   - `IcebergDestinationConfiguration` (#549) —
    *     `IcebergDestinationUpdate` payload produced by
@@ -1051,6 +1121,20 @@ export class FirehoseProvider implements ResourceProvider {
     const description = await this.getClient().send(
       new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
     );
+    // go-to-k/cdkd#5386: named after the last call that could fail, so a
+    // failed update (and its retry) never prints it, and confirmed against
+    // this same read rather than a second one.
+    this.warnUnappliedS3BackupMode(
+      logicalId,
+      properties,
+      unappliedS3BackupModeDestination(
+        properties,
+        previousProperties,
+        destKey,
+        context?.changedProperties
+      ),
+      description.DeliveryStreamDescription
+    );
     const desc = description.DeliveryStreamDescription;
     return {
       physicalId,
@@ -1066,6 +1150,42 @@ export class FirehoseProvider implements ResourceProvider {
         ),
       }),
     };
+  }
+
+  /**
+   * Warn that the `S3BackupMode` change {@link unappliedS3BackupModeDestination}
+   * found was not applied (go-to-k/cdkd#5386), unless the live stream already
+   * holds the declared mode. The state records the declared value, never
+   * applied, so a template-to-state difference alone also fires on a rollback
+   * revert, on a template reverted to what AWS holds, and on a mode declared at
+   * the value AWS already has. `live` is the update's own closing
+   * `DescribeDeliveryStream` answer. When it does not report the destination's
+   * mode, the warning is kept: it cannot be confirmed either way, and the
+   * update itself has succeeded.
+   */
+  private warnUnappliedS3BackupMode(
+    logicalId: string,
+    properties: Record<string, unknown>,
+    destKey: string | undefined,
+    live: DeliveryStreamDescription | undefined
+  ): void {
+    if (destKey === undefined) return;
+    const declared = (properties[destKey] as Record<string, unknown>)['S3BackupMode'];
+    const desired = declared ?? DEFAULT_OPENSEARCH_BACKUP_MODE;
+    const member = FIXED_BACKUP_MODE_DESTINATIONS[destKey];
+    const liveMode: unknown =
+      member === undefined ? undefined : live?.Destinations?.[0]?.[member]?.S3BackupMode;
+    if (liveMode !== undefined && liveMode === desired) return;
+    if (liveMode === undefined) {
+      this.logger.debug(
+        safeMsg`Firehose delivery stream ${logicalId} reported no S3BackupMode for ${destKey}; warning unconfirmed`
+      );
+    }
+    const kept =
+      typeof liveMode === 'string' ? `its current mode (${liveMode})` : 'its current mode';
+    this.logger.warn(
+      safeMsg`${logicalId} (AWS::KinesisFirehose::DeliveryStream): ${destKey}.S3BackupMode changed, but Firehose cannot change the backup mode of an existing delivery stream, so the stream keeps ${kept}, as CloudFormation does. To apply it, replace the stream, for example by giving it a new DeliveryStreamName or a new logical id.`
+    );
   }
 
   /**
@@ -2005,9 +2125,9 @@ export class FirehoseProvider implements ResourceProvider {
    * `!== undefined` gated. CFn `S3Configuration` → SDK `S3Update`.
    * `VpcConfiguration` is intentionally NOT included — the SDK Update
    * shape has no field for it (AWS treats Vpc placement as immutable
-   * post-create). VpcConfiguration-only diffs will surface on the next
-   * `cdkd drift` run if the user re-applies a different Vpc on the
-   * console side.
+   * post-create), and the CloudFormation schema lists it as create-only,
+   * so a change there plans a replacement. `S3BackupMode` has no field
+   * either and is not create-only: see {@link warnUnappliedS3BackupMode}.
    */
   private mapAmazonopensearchserviceConfigToUpdate(
     config: Record<string, unknown>

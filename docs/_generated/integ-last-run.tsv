@@ -389,7 +389,7 @@ state-info-command	2026-10-08T05:48:01Z	PASS	155	verify.sh	rc ok, orph clean (#4
 stepfunctions	2026-10-20T06:33:25Z	PASS	90	verify.sh	deploy+destroy clean, 0 orphans
 stepfunctions-logging	2026-10-14T05:21:01Z	PASS	215	verify.sh	rc ok, orph clean
 stepfunctions-s3-definition	2026-10-26T08:20:06Z	PASS	60	verify.sh	rc ok, orph clean; #5298 inline substitutions create+update (-c phase=2); pre-fix probe red at InlineGreet
-stream-delete-redeploy	2026-10-26T17:16:32Z	PASS	483	verify.sh	rc ok, orph clean; PR #5375 Phase 3d/3e (Firehose encryption on/off on update), probes red at 3d (full revert) and 3e (Stop-on-removal reverted)
+stream-delete-redeploy	2026-10-27T09:32:55Z	PASS	481	verify.sh	rc ok, orph clean, #5388 head 5aef9bfee
 synthetics-canary	2026-10-11T09:33:22Z	PASS	151	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 tags-propagation	2026-10-24T19:26:15Z	PASS	167	verify.sh	rc ok, orph clean, #5266 tail-c
 termination-protection	2026-10-24T05:02:39Z	PASS	60	verify.sh	rc ok, orph clean; re-run on 564761a4b after rebase onto main (incl. #5235 delete path) (#5238)
