@@ -754,8 +754,104 @@ describe('EMRClusterProvider update', () => {
         )
         .catch((e: unknown) => e);
       expect(err).toBeInstanceOf(ProvisioningError);
-      expect((err as Error).message).toContain('found 0 TASK instance groups named tx');
+      expect((err as Error).message).toContain('found 0 matching TASK instance groups');
       expect(callsOf(ModifyInstanceGroupsCommand)).toHaveLength(0);
+    });
+
+    it('changes nothing in AWS when a later target cannot be found', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: { InstanceGroups: [coreGroup(2), taskGroup('ig-t1', 't1', 1)] },
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const tasks = (count: number) => [{ InstanceCount: count, InstanceType: 'm5.xlarge', Name: 'tx' }];
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({
+            TerminationProtected: true,
+            UnhealthyNodeReplacement: false,
+            CoreInstanceGroup: core(2),
+            TaskInstanceGroups: tasks(2),
+          }),
+          withInstances({ CoreInstanceGroup: core(1), TaskInstanceGroups: tasks(1) })
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProvisioningError);
+      const sent = mockSend.mock.calls.map((c) => (c[0] as object).constructor.name);
+      expect(sent.every((name) => name === 'ListInstanceGroupsCommand')).toBe(true);
+    });
+
+    it('refuses a task group whose Name is a secret reference, before any call that changes AWS', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: { InstanceGroups: [coreGroup(1), taskGroup('ig-t1', 'batch', 1)] },
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const REF = '{{resolve:secretsmanager:group-name:SecretString:name}}';
+      const task = (name: string, count: number) => [
+        { InstanceCount: count, InstanceType: 'm5.xlarge', Name: name },
+      ];
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({ TaskInstanceGroups: task('batch', 2) }),
+          withInstances({ TaskInstanceGroups: task(REF, 1) }),
+          { maskSecrets: (text: string) => text.split('batch').join('***') }
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect((err as Error).message).toContain('its Name is a secret reference');
+      expect(callsOf(ModifyInstanceGroupsCommand)).toHaveLength(0);
+    });
+
+    it('finds an unnamed task group by its instance type', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: {
+          InstanceGroups: [
+            coreGroup(1),
+            { ...taskGroup('ig-small', 'x', 1), InstanceType: 'm5.large' },
+            { ...taskGroup('ig-big', 'y', 3), InstanceType: 'm5.xlarge' },
+          ],
+        },
+        ModifyInstanceGroupsCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const tasks = (count: number) => [{ InstanceCount: count, InstanceType: 'm5.xlarge' }];
+      await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ TaskInstanceGroups: tasks(3) }),
+        withInstances({ TaskInstanceGroups: tasks(1) })
+      );
+      expect(callsOf(ModifyInstanceGroupsCommand)[0]!.input['InstanceGroups']).toEqual([
+        { InstanceGroupId: 'ig-big', InstanceCount: 3 },
+      ]);
+    });
+
+    it('restates a resize failure for the cluster, naming the Instances path', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: { InstanceGroups: [coreGroup(1)] },
+        ModifyInstanceGroupsCommand: new Error('boom'),
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({ CoreInstanceGroup: core(2) }),
+          withInstances({ CoreInstanceGroup: core(1) })
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect((err as Error).message).toContain(
+        `Failed to apply Instances.CoreInstanceGroup to EMR cluster ${CLUSTER_ID}: `
+      );
+      expect((err as ProvisioningError).resourceType).toBe(RESOURCE_TYPE);
     });
 
     it('puts and removes a core group AutoScalingPolicy', async () => {
@@ -825,6 +921,20 @@ describe('EMRClusterProvider update', () => {
         'removing Instances.UnhealthyNodeReplacement fails under CloudFormation too'
       );
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('names an immutable top-level change before an UnhealthyNodeReplacement removal', async () => {
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          { ...withInstances({}), ReleaseLabel: 'emr-7.10.0' },
+          withInstances({ UnhealthyNodeReplacement: false })
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((err as Error).message).toContain('ReleaseLabel is immutable');
     });
 
     it('keeps the live UnhealthyNodeReplacement on a rollback replay removing it', async () => {

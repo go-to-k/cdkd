@@ -67,7 +67,12 @@ import {
 import { emrClusterInstancesReplaced } from '../../analyzer/replacement-rules.js';
 import { EMRInstanceGroupConfigProvider } from './emr-instance-group-config-provider.js';
 import { EMRInstanceFleetConfigProvider } from './emr-instance-fleet-config-provider.js';
-import { createMaskedLogSinks, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  isSecretDerivedValue,
+  maskerOrIdentity,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 import {
   collectOrphanIds,
   orphanCommandRegionArg,
@@ -234,6 +239,17 @@ interface InstancesInPlacePlan {
   readonly groups: readonly InstancesResize[];
   readonly fleets: readonly InstancesResize[];
 }
+
+/** Each planned resize with the id of the group or fleet it addresses. */
+interface InstancesTargets {
+  readonly groups: readonly { resize: InstancesResize; id: string }[];
+  readonly fleets: readonly { resize: InstancesResize; id: string }[];
+}
+
+const NO_INSTANCES_TARGETS: InstancesTargets = { groups: [], fleets: [] };
+
+/** Reads a recorded value as written: a `{{resolve:...}}` reference stays one. */
+const IDENTITY_MASK: MaskerFn = maskerOrIdentity(undefined);
 
 const EMPTY_INSTANCES_PLAN: InstancesInPlacePlan = {
   terminationProtected: false,
@@ -545,8 +561,10 @@ export class EMRClusterProvider implements ResourceProvider {
         // Create-only (a removal replaces), or `Instances`: required; a removed
         // sub-field replaces, except the in-place ones update() handles:
         // `TerminationProtected` is sent as false, `AutoScalingPolicy` is
-        // removed, a fleet capacity is sent as 0, and `UnhealthyNodeReplacement`
-        // is refused (CloudFormation fails that removal).
+        // removed, a fleet capacity is sent as 0 (the fleet provider's
+        // convention; CloudFormation's removal on this path is unmeasured), and
+        // `UnhealthyNodeReplacement` is refused (CloudFormation fails that
+        // removal).
         ...[...(this.handledProperties.get('AWS::EMR::Cluster') ?? [])].filter(
           (key) => !MUTABLE_TOP_LEVEL_PROPS.has(key)
         ),
@@ -975,91 +993,169 @@ export class EMRClusterProvider implements ResourceProvider {
   }
 
   /**
-   * Apply the planned group and fleet changes (go-to-k/cdkd#5422) through the
+   * Find the EMR instance group or fleet each planned resize addresses
+   * (go-to-k/cdkd#5422), BEFORE any call that changes AWS: a target that cannot
+   * be found refuses the whole update with nothing applied. A group or fleet is
+   * found by its role; a TASK one by its `Name` when declared (CloudFormation
+   * tells them apart by name), else by its instance type. Anything but exactly
+   * one match is refused, as is a `Name` recorded as a `{{resolve:...}}`
+   * reference: the resolved value ADDRESSES the call, and a rotated secret
+   * could name another group (the delegates never exempt their `JobFlowId` /
+   * `ClusterId` for the same reason).
+   */
+  private async resolveInstancesTargets(
+    logicalId: string,
+    clusterId: string,
+    plan: InstancesInPlacePlan
+  ): Promise<InstancesTargets> {
+    const refuse = (resize: InstancesResize, why: string): never => {
+      throw new ProvisioningError(
+        safeMsg`Cannot apply Instances.${resize.path} to EMR cluster ${clusterId}: ` + why,
+        'AWS::EMR::Cluster',
+        logicalId,
+        clusterId
+      );
+    };
+    const pick = <T extends { Id?: string | undefined; Name?: string | undefined }>(
+      candidates: T[],
+      resize: InstancesResize,
+      kind: string,
+      instanceTypeOf: (candidate: T) => string | undefined
+    ): string => {
+      if (isSecretDerivedValue(resize.prev['Name'], IDENTITY_MASK)) {
+        refuse(
+          resize,
+          `its Name is a secret reference, which cannot address an instance ${kind}; declare the Name literally`
+        );
+      }
+      const name = resize.next['Name'];
+      const instanceType = resize.next['InstanceType'];
+      let matches = candidates;
+      if (resize.type === 'TASK') {
+        if (typeof name === 'string') {
+          matches = candidates.filter((c) => c.Name === name);
+        } else if (typeof instanceType === 'string') {
+          matches = candidates.filter((c) => instanceTypeOf(c) === instanceType);
+        }
+      }
+      if (matches.length !== 1 || matches[0]!.Id === undefined) {
+        refuse(
+          resize,
+          `found ${String(matches.length)} matching ${resize.type} instance ${kind}s, expected exactly one` +
+            (resize.type === 'TASK' ? ' (declare a unique Name to tell them apart)' : '')
+        );
+      }
+      return matches[0]!.Id!;
+    };
+    const groups =
+      plan.groups.length > 0
+        ? (await this.listInstanceGroups(clusterId)).filter((g) => g.Status?.State !== 'TERMINATED')
+        : [];
+    const fleets =
+      plan.fleets.length > 0
+        ? (await this.listInstanceFleets(clusterId)).filter((f) => f.Status?.State !== 'TERMINATED')
+        : [];
+    return {
+      groups: plan.groups.map((resize) => ({
+        resize,
+        id: pick(
+          groups.filter((g) => g.InstanceGroupType === resize.type),
+          resize,
+          'group',
+          (g) => g.InstanceType
+        ),
+      })),
+      fleets: plan.fleets.map((resize) => ({
+        resize,
+        id: pick(
+          fleets.filter((f) => f.InstanceFleetType === resize.type),
+          resize,
+          'fleet',
+          () => undefined
+        ),
+      })),
+    };
+  }
+
+  /**
+   * Apply the resolved group and fleet changes (go-to-k/cdkd#5422) through the
    * `AWS::EMR::InstanceGroupConfig` / `InstanceFleetConfig` providers' own
    * `update()`, which issue `ModifyInstanceGroups` / `PutAutoScalingPolicy` /
    * `RemoveAutoScalingPolicy` / `ModifyInstanceFleet` and wait for the resize to
-   * settle, so the two paths share one resize and one wait. Each group or
-   * fleet is found by its role, and a TASK one by its `Name` (CloudFormation
-   * tells them apart by name); one at a time, since EMR refuses a resize while
-   * another is in progress.
+   * settle, so the two paths share one resize and one wait. One at a time,
+   * since EMR refuses a resize while another is in progress, under ONE shared
+   * wait budget (`maxWaitMs`), so the sum stays inside
+   * `getMinResourceTimeoutMs()`. A delegate's failure is re-stated for the
+   * cluster, naming the `Instances` path.
    */
   private async applyInstancesResizes(
     logicalId: string,
     clusterId: string,
-    plan: InstancesInPlacePlan,
+    targets: InstancesTargets,
     mask: MaskerFn | undefined
   ): Promise<void> {
-    if (plan.groups.length === 0 && plan.fleets.length === 0) return;
-    const options = { pollIntervalMs: this.pollIntervalMs, maxWaitMs: this.maxWaitMs };
-    const pick = <T extends { Name?: string | undefined }>(
-      candidates: T[],
+    if (targets.groups.length === 0 && targets.fleets.length === 0) return;
+    const deadline = Date.now() + this.maxWaitMs;
+    const options = (): { pollIntervalMs: number; maxWaitMs: number } => ({
+      pollIntervalMs: this.pollIntervalMs,
+      maxWaitMs: Math.max(1, deadline - Date.now()),
+    });
+    const context = mask ? { maskSecrets: mask } : undefined;
+    const restated = async (
       resize: InstancesResize,
-      kind: string
-    ): T => {
-      const name = resize.next['Name'];
-      const matches =
-        resize.type === 'TASK' && typeof name === 'string'
-          ? candidates.filter((c) => c.Name === name)
-          : candidates;
-      if (matches.length !== 1) {
+      run: () => Promise<unknown>
+    ): Promise<void> => {
+      try {
+        await run();
+      } catch (error) {
+        // The delegates throw a ProvisioningError whose message is already
+        // masked (their catch and waits go through `context.maskSecrets`);
+        // anything else reaches update()'s own wrap unchanged.
+        if (!(error instanceof ProvisioningError)) throw error;
         throw new ProvisioningError(
-          safeMsg`Cannot apply Instances.${resize.path} to EMR cluster ${clusterId}: found ${String(matches.length)} ${resize.type} instance ${kind}s${resize.type === 'TASK' && typeof name === 'string' ? safeMsg` named ${name}` : ''}, expected exactly one`,
+          safeMsg`Failed to apply Instances.${resize.path} to EMR cluster ${clusterId}: ` +
+            error.message,
           'AWS::EMR::Cluster',
           logicalId,
-          clusterId
+          clusterId,
+          error
         );
       }
-      return matches[0]!;
     };
-    if (plan.groups.length > 0) {
-      const groups = await this.listInstanceGroups(clusterId);
-      const groupProvider = new EMRInstanceGroupConfigProvider(options);
-      for (const resize of plan.groups) {
-        const group = pick(
-          groups.filter((g) => g.InstanceGroupType === resize.type),
-          resize,
-          'group'
-        );
-        const bag = (side: Record<string, unknown>): Record<string, unknown> => ({
-          JobFlowId: clusterId,
-          InstanceCount: side['InstanceCount'],
-          AutoScalingPolicy: side['AutoScalingPolicy'],
-        });
-        await groupProvider.update(
+    for (const { resize, id } of targets.groups) {
+      const bag = (side: Record<string, unknown>): Record<string, unknown> => ({
+        JobFlowId: clusterId,
+        InstanceCount: side['InstanceCount'],
+        AutoScalingPolicy: side['AutoScalingPolicy'],
+      });
+      await restated(resize, () =>
+        new EMRInstanceGroupConfigProvider(options()).update(
           logicalId,
-          group.Id!,
+          id,
           'AWS::EMR::InstanceGroupConfig',
           bag(resize.next),
           bag(resize.prev),
-          mask ? { maskSecrets: mask } : undefined
-        );
-      }
+          context
+        )
+      );
     }
-    if (plan.fleets.length > 0) {
-      const fleets = await this.listInstanceFleets(clusterId);
-      const fleetProvider = new EMRInstanceFleetConfigProvider(options);
-      for (const resize of plan.fleets) {
-        const fleet = pick(
-          fleets.filter((f) => f.InstanceFleetType === resize.type),
-          resize,
-          'fleet'
-        );
-        const bag = (side: Record<string, unknown>): Record<string, unknown> => ({
-          ClusterId: clusterId,
-          InstanceFleetType: resize.type,
-          TargetOnDemandCapacity: side['TargetOnDemandCapacity'],
-          TargetSpotCapacity: side['TargetSpotCapacity'],
-        });
-        await fleetProvider.update(
+    for (const { resize, id } of targets.fleets) {
+      const bag = (side: Record<string, unknown>): Record<string, unknown> => ({
+        ClusterId: clusterId,
+        InstanceFleetType: resize.type,
+        TargetOnDemandCapacity: side['TargetOnDemandCapacity'],
+        TargetSpotCapacity: side['TargetSpotCapacity'],
+      });
+      await restated(resize, () =>
+        new EMRInstanceFleetConfigProvider(options()).update(
           logicalId,
-          fleet.Id!,
+          id,
           'AWS::EMR::InstanceFleetConfig',
           bag(resize.next),
           bag(resize.prev),
-          mask ? { maskSecrets: mask } : undefined
-        );
-      }
+          context
+        )
+      );
     }
   }
 
@@ -1140,6 +1236,8 @@ export class EMRClusterProvider implements ResourceProvider {
       // a replacement and never reaches this method. The in-place
       // sub-members are planned below from the RAW sides, so an in-place edit
       // is never dropped behind a reference that stood beside it.
+      // A `***` (NoEcho) value carries no `{{resolve:` token, so it is left
+      // as is: it compares unequal and is refused, the safe direction.
       const mask = context?.maskSecrets;
       const isReplacingMember = (key: string): boolean =>
         emrClusterInstancesReplaced(
@@ -1176,21 +1274,6 @@ export class EMRClusterProvider implements ResourceProvider {
         );
       }
       instancesPlan = planInstancesInPlace(prevInstances, nextInstances);
-      // REMOVING `UnhealthyNodeReplacement` has no value to send: CloudFormation
-      // fails that update ("Internal Failure", then a rollback; raw CFn A/B on
-      // go-to-k/cdkd#5422), so cdkd refuses it before any call. A rollback
-      // replay cannot edit the template, so it keeps the live value and warns.
-      if (
-        instancesPlan.unhealthyNodeReplacement &&
-        nextInstances['UnhealthyNodeReplacement'] === undefined
-      ) {
-        const removal = safeMsg`${logicalId} (AWS::EMR::Cluster): removing Instances.UnhealthyNodeReplacement fails under CloudFormation too (its update ends in Internal Failure and rolls back). Declare it explicitly instead (true is EMR's default).`;
-        if (!context?.replayingState) {
-          throw new ResourceUpdateNotSupportedError(resourceType, logicalId, removal);
-        }
-        this.logger.warn(safeMsg`${removal} The rollback leaves the live value in place.`);
-        instancesPlan = { ...instancesPlan, unhealthyNodeReplacement: false };
-      }
     }
     const terminationProtectedChanged = instancesPlan.terminationProtected;
 
@@ -1218,6 +1301,46 @@ export class EMRClusterProvider implements ResourceProvider {
           logicalId,
           safeMsg`AWS EMR Cluster ${key} is immutable on AWS — it is fixed at cluster creation. ` +
             replaceRemedy()
+        );
+      }
+    }
+
+    // REMOVING `UnhealthyNodeReplacement` has no value to send: CloudFormation
+    // fails that update ("Internal Failure", then a rollback; raw CFn A/B on
+    // go-to-k/cdkd#5422), so cdkd refuses it before any call. A rollback
+    // replay cannot edit the template, so it keeps the live value and warns.
+    if (
+      instancesPlan.unhealthyNodeReplacement &&
+      nextInstances['UnhealthyNodeReplacement'] === undefined
+    ) {
+      const removal = safeMsg`${logicalId} (AWS::EMR::Cluster): removing Instances.UnhealthyNodeReplacement fails under CloudFormation too (its update ends in Internal Failure and rolls back). Declare it explicitly instead (true is EMR's default).`;
+      if (!context?.replayingState) {
+        throw new ResourceUpdateNotSupportedError(resourceType, logicalId, removal);
+      }
+      this.logger.warn(safeMsg`${removal} The rollback leaves the live value in place.`);
+      instancesPlan = { ...instancesPlan, unhealthyNodeReplacement: false };
+    }
+
+    // Every refusal above came first: now find what each resize addresses,
+    // still before any call that changes AWS.
+    let instancesTargets = NO_INSTANCES_TARGETS;
+    if (instancesPlan.groups.length > 0 || instancesPlan.fleets.length > 0) {
+      try {
+        instancesTargets = await this.resolveInstancesTargets(logicalId, physicalId, instancesPlan);
+      } catch (error) {
+        if (error instanceof ProvisioningError) throw error;
+        const cause = error instanceof Error ? error : undefined;
+        throw this.wrapCaughtError(
+          context?.maskSecrets,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to update EMR Cluster ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
         );
       }
     }
@@ -1292,7 +1415,12 @@ export class EMRClusterProvider implements ResourceProvider {
         );
       }
 
-      await this.applyInstancesResizes(logicalId, physicalId, instancesPlan, context?.maskSecrets);
+      await this.applyInstancesResizes(
+        logicalId,
+        physicalId,
+        instancesTargets,
+        context?.maskSecrets
+      );
 
       if (visibleChanged) {
         await this.getClient().send(

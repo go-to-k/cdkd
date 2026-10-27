@@ -277,7 +277,6 @@ const INSTANCES_FIXED = [
   'TaskInstanceGroups',
 ].map((member) => `Instances.${member}`);
 
-
 /**
  * Removing `UnhealthyNodeReplacement` is refused before any call: CloudFormation
  * fails that update too (go-to-k/cdkd#5422).

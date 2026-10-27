@@ -120,9 +120,13 @@ Any other property change replaces the resource, as CloudFormation does,
 including most changes inside a cluster's `Instances` (measured: a security
 group added, a task group added, `KeepJobFlowAliveWhenNoSteps` turned off).
 CloudFormation applies the `Instances` changes in the table in place, and so
-does cdkd: a resize waits until the group or fleet reaches its new size, and a
-task group or fleet is found by its `Name`. A fleet capacity the template
-leaves out is sent as 0, since `ModifyInstanceFleet` needs both. A create
+does cdkd: a resize waits until the group or fleet reaches its new size. A
+task group or fleet is found by its `Name`, or a task group without one by its
+instance type; cdkd refuses the update when that matches more or fewer than
+one, or when the `Name` is a `{{resolve:...}}` reference. A fleet capacity the
+template leaves out is sent as 0, since `ModifyInstanceFleet` needs both.
+Removing `UnhealthyNodeReplacement` is refused, because CloudFormation fails
+that update too. A create
 waits until a cluster is `WAITING` or `RUNNING`, and until a group or fleet is
 `RUNNING`.
 

@@ -68,7 +68,8 @@ export class EmrClusterStack extends cdk.Stack {
     const isInstancesReplace = process.env.CDKD_TEST_INSTANCES_REPLACE === 'true';
     // go-to-k/cdkd#5422: Phase 3d resizes the replacement's core group and
     // sets UnhealthyNodeReplacement, both applied in place.
-    const isInstancesInPlace = isInstancesReplace && process.env.CDKD_TEST_INSTANCES_IN_PLACE === 'true';
+    const isInstancesInPlace =
+      isInstancesReplace && process.env.CDKD_TEST_INSTANCES_IN_PLACE === 'true';
 
     // VPC with 1 AZ, public subnet only, no NAT (cheapest legal shape).
     const vpc = new ec2.Vpc(this, 'Vpc', {

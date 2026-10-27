@@ -130,7 +130,9 @@ EMR clusters).
    (`STATEFUL_REPLACE_BLOCKED`, the type is in the stateful-recreate guard
    set) and leaves the cluster running; `--force-stateful-recreation`
    replaces it: a new ClusterId carrying the SG (and a one-node core group,
-   for Phase 3d), and the re-adopted cluster
+   for Phase 3d; the core group is added in the same deploy, so the SG change
+   replacing ON ITS OWN is pinned by the `emrClusterInstancesReplaced` unit
+   test, not here), and the re-adopted cluster
    terminated through its imported state record (so a broken import surfaces
    here as a cluster that never terminates).
 3d. **In-place Instances changes** (issue #5422) —
