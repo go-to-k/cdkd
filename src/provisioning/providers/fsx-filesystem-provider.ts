@@ -25,6 +25,7 @@ import {
   type OpenZFSUserOrGroupQuota,
   type OpenZFSReadCacheConfiguration,
   type LustreFileSystemConfiguration,
+  type LustreLogCreateConfiguration,
   type WindowsFileSystemConfiguration,
   type OntapFileSystemConfiguration,
   type OpenZFSFileSystemConfiguration,
@@ -101,6 +102,11 @@ const LUSTRE_MUTABLE_SUBPROPS = new Set<string>([
   'MetadataConfiguration',
   'ThroughputCapacity',
   'DataReadCacheConfiguration',
+  // CFn "Update requires: No interruption"; UpdateFileSystemLustreConfiguration
+  // carries it (go-to-k/cdkd#5430). Its removal is left in place like the
+  // others (issue #1160); what CloudFormation does there is unmeasured, so it
+  // is not in CFN_KEEPS_ON_REMOVAL.
+  'LogConfiguration',
 ]);
 
 /**
@@ -486,6 +492,18 @@ const leftInPlaceWarning = (
     ? safeMsg`${logicalId} (AWS::FSx::FileSystem): ${subject} ${names.join(', ')} ${verb} no longer declared and ${one ? 'keeps its' : 'keep their'} current AWS value, as CloudFormation leaves ${one ? 'it' : 'them'}; UpdateFileSystem keeps a setting it is not sent. Declare the intended value explicitly to change it.`
     : safeMsg`${logicalId} (AWS::FSx::FileSystem): ${subject} ${names.join(', ')} ${verb} no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`;
 };
+
+/**
+ * The log-group ARN a Lustre `LogConfiguration.Destination` names. FSx reads
+ * the destination back as the LOG-STREAM ARN it writes to
+ * (`...:log-group:/aws/fsx/x:log-stream:datarepo_fs-...`, measured us-east-1
+ * on go-to-k/cdkd#5430), never the declared log-group ARN, and a declaration
+ * may carry the log group `Arn` attribute's `:*` suffix. Reading it back
+ * as-is would report drift on every file system with logging, so both forms
+ * fold to the log-group ARN a template declares.
+ */
+const toLogGroupArn = (destination: string | undefined): string | undefined =>
+  destination?.replace(/:log-stream:.*$/, '').replace(/:\*$/, '');
 
 const toNumber = (v: unknown): number | undefined => (v === undefined ? undefined : Number(v));
 
@@ -990,8 +1008,25 @@ export class FSxFileSystemProvider implements ResourceProvider {
             SizeGiB: toNumber(readCache['SizeGiB']),
           }
         : undefined,
+      LogConfiguration: this.toLustreLogConfiguration(
+        config['LogConfiguration'] as Record<string, unknown> | undefined
+      ),
     };
     return out;
+  }
+
+  /**
+   * Map the CFn `LustreConfiguration.LogConfiguration` block to the SDK shape
+   * `CreateFileSystem` and `UpdateFileSystem` both take (go-to-k/cdkd#5430).
+   */
+  private toLustreLogConfiguration(
+    config: Record<string, unknown> | undefined
+  ): LustreLogCreateConfiguration | undefined {
+    if (!config) return undefined;
+    return {
+      Level: config['Level'] as LustreLogCreateConfiguration['Level'],
+      Destination: config['Destination'] as string | undefined,
+    };
   }
 
   /** Map the CFn `WindowsConfiguration` block to the SDK create shape. */
@@ -1611,6 +1646,11 @@ export class FSxFileSystemProvider implements ResourceProvider {
           : undefined;
         break;
       }
+      case 'LogConfiguration':
+        out.LogConfiguration = this.toLustreLogConfiguration(
+          next as Record<string, unknown> | undefined
+        );
+        break;
       default:
         this.unmappedMutableSubprop(ctx, key);
     }
@@ -2247,6 +2287,12 @@ export class FSxFileSystemProvider implements ResourceProvider {
       putIfDefined(readCache, 'SizeGiB', lustre.DataReadCacheConfiguration.SizeGiB);
       if (Object.keys(readCache).length > 0) config['DataReadCacheConfiguration'] = readCache;
     }
+    if (lustre.LogConfiguration) {
+      const log: Record<string, unknown> = {};
+      putIfDefined(log, 'Level', lustre.LogConfiguration.Level);
+      putIfDefined(log, 'Destination', toLogGroupArn(lustre.LogConfiguration.Destination));
+      if (Object.keys(log).length > 0) config['LogConfiguration'] = log;
+    }
     // Data-repository fields live under DataRepositoryConfiguration on the
     // read side but are flat LustreConfiguration inputs in CFn.
     const dataRepo = lustre.DataRepositoryConfiguration;
@@ -2401,6 +2447,38 @@ export class FSxFileSystemProvider implements ResourceProvider {
     putIfDefined(out, 'Mode', diskIops.Mode);
     putIfDefined(out, 'Iops', diskIops.Iops);
     return Object.keys(out).length > 0 ? out : undefined;
+  }
+
+  /**
+   * Drop a logging-off `LustreConfiguration.LogConfiguration` (`Level`
+   * `DISABLED`, no `Destination`) from each drift comparison side
+   * (go-to-k/cdkd#5430). AWS reports that block on a Lustre file system that
+   * never enabled logging, and `readLustreConfiguration` started reading it
+   * back in #5430, so an `observedProperties` baseline captured by an earlier
+   * binary lacks the key while the readback carries it: `drift.ts` walks the
+   * key union on that baseline, and every existing Lustre file system would
+   * report `LogConfiguration` as drift until a `drift --accept`. Logging off
+   * and the key absent mean the same here, so both sides drop it; logging
+   * turned ON or OFF against the baseline still differs and is still reported.
+   */
+  canonicalizeDriftProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::FSx::FileSystem') return properties;
+    const lustre = properties['LustreConfiguration'];
+    if (typeof lustre !== 'object' || lustre === null || Array.isArray(lustre)) return properties;
+    const log = (lustre as Record<string, unknown>)['LogConfiguration'];
+    if (
+      typeof log !== 'object' ||
+      log === null ||
+      Array.isArray(log) ||
+      JSON.stringify(log) !== JSON.stringify({ Level: 'DISABLED' })
+    ) {
+      return properties;
+    }
+    const { LogConfiguration: _disabled, ...rest } = lustre as Record<string, unknown>;
+    return { ...properties, LustreConfiguration: rest };
   }
 
   /**
