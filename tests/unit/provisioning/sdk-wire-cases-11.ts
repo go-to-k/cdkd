@@ -115,6 +115,29 @@ const TRAIL_CASE: TypeCase = {
         ...TAG_THROWS(ALL_DIRECTIONS, 2),
       },
     },
+    {
+      // Multi-region, where a removed IncludeGlobalServiceEvents is passed
+      // through instead of reset (cloudtrail-provider.ts:575-597).
+      name: 'multi-region',
+      bag: {
+        TrailName: 'trail',
+        S3BucketName: 'bucket',
+        IsMultiRegionTrail: true,
+        IncludeGlobalServiceEvents: true,
+      },
+      expectedSilent: {
+        'update-remove:IncludeGlobalServiceEvents':
+          'passed through on removal while the trail stays multi-region: AWS refuses a multi-region trail that excludes global service events, so the reset applies only to a known single-region trail (cloudtrail-provider.ts:575-597)',
+        'update-remove:S3BucketName':
+          'S3BucketName is required, so no deployable template removes it: create() refuses a trail without it (cloudtrail-provider.ts:342-349)',
+      },
+      expectedRemovalThrows: {
+        'create:S3BucketName': REQUIRED(
+          'S3BucketName is required: create() refuses a trail without it before any call (cloudtrail-provider.ts:342-349)',
+          /S3BucketName is required/
+        ),
+      },
+    },
   ],
 };
 
