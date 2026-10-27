@@ -709,6 +709,181 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
         );
       });
     });
+
+    // go-to-k/cdkd#5423: DescribeKinesisStreamingDestination read ACTIVE for
+    // about a second after the disable answered DISABLING, so the drift
+    // baseline captured right after the update kept the destination.
+    describe('waits for a disabled destination to read DISABLED (#5423)', () => {
+      const OLD = 'arn:aws:kinesis:us-east-1:123456789012:stream/old';
+      const NEW = 'arn:aws:kinesis:us-east-1:123456789012:stream/new';
+      const read = (...live: Array<[string, string]>) => ({
+        KinesisDataStreamDestinations: [
+          // A lingering DISABLED entry for the same stream is not the live one.
+          { StreamArn: OLD, DestinationStatus: 'DISABLED' },
+          ...live.map(([StreamArn, DestinationStatus]) => ({ StreamArn, DestinationStatus })),
+        ],
+      });
+      const warn = (): ReturnType<typeof vi.fn> =>
+        (provider as unknown as { logger: { warn: ReturnType<typeof vi.fn> } }).logger.warn;
+      const order: string[] = [];
+      const route = (describes: unknown[]) => {
+        order.length = 0;
+        let i = 0;
+        mockSend.mockImplementation(async (cmd: unknown) => {
+          if (cmd instanceof DescribeKinesisStreamingDestinationCommand) {
+            order.push('describe');
+            const r = describes[Math.min(i++, describes.length - 1)];
+            if (r instanceof Error) throw r;
+            return r;
+          }
+          if (cmd instanceof DisableKinesisStreamingDestinationCommand) order.push('disable');
+          if (cmd instanceof EnableKinesisStreamingDestinationCommand) order.push('enable');
+          return cmd instanceof DescribeTableCommand ? activeTable() : {};
+        });
+      };
+      const runUpdate = (from: string | undefined, to: string | undefined) =>
+        provider.update(
+          'MyTable',
+          'MyTable',
+          'AWS::DynamoDB::Table',
+          { ...baseCreateProps, ...(to ? { KinesisStreamSpecification: { StreamArn: to } } : {}) },
+          { ...baseCreateProps, ...(from ? { KinesisStreamSpecification: { StreamArn: from } } : {}) }
+        );
+
+      it('re-reads through DISABLING and a stale ACTIVE until the destination reads DISABLED', async () => {
+        vi.useFakeTimers();
+        try {
+          route([read([OLD, 'DISABLING']), read([OLD, 'ACTIVE']), read()]);
+          const done = runUpdate(OLD, undefined);
+          await vi.advanceTimersByTimeAsync(10_000);
+          await done;
+
+          expect(order).toEqual(['disable', 'describe', 'describe', 'describe']);
+          expect(warn()).not.toHaveBeenCalled();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('ends the wait when the destination is no longer listed', async () => {
+        route([{ KinesisDataStreamDestinations: [] }]);
+
+        await runUpdate(OLD, undefined);
+
+        expect(order).toEqual(['disable', 'describe']);
+        expect(warn()).not.toHaveBeenCalled();
+      });
+
+      it('waits before enabling the new stream when the ARN changes', async () => {
+        vi.useFakeTimers();
+        try {
+          route([read([OLD, 'ACTIVE']), read()]);
+          const done = runUpdate(OLD, NEW);
+          await vi.advanceTimersByTimeAsync(10_000);
+          await done;
+
+          expect(order).toEqual(['disable', 'describe', 'describe', 'enable']);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('goes on with a warning naming cdkd drift when the destination never settles', async () => {
+        vi.useFakeTimers();
+        try {
+          route([read([OLD, 'ACTIVE'])]);
+          const done = runUpdate(OLD, undefined);
+          await vi.advanceTimersByTimeAsync(120_000);
+          await expect(done).resolves.toBeDefined();
+
+          expect(countOfCommand(DescribeKinesisStreamingDestinationCommand)).toBe(120);
+          expect(warn()).toHaveBeenCalledTimes(1);
+          const message = warn().mock.calls[0][0] as string;
+          expect(message).toContain(`${OLD} disabled on DynamoDB table MyTable still read as ACTIVE after 60 seconds`);
+          expect(message).toContain('`cdkd drift` may report it');
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('goes on with a warning when the read-back fails', async () => {
+        route([Object.assign(new Error('not authorized'), { name: 'AccessDeniedException' })]);
+
+        await expect(runUpdate(OLD, undefined)).resolves.toBeDefined();
+
+        expect(countOfCommand(DescribeKinesisStreamingDestinationCommand)).toBe(1);
+        expect(warn().mock.calls[0][0]).toContain('could not be read back');
+        expect(warn().mock.calls[0][0]).not.toContain('not authorized');
+      });
+
+      it('stops at the per-resource deadline with a warning, not an error', async () => {
+        vi.useFakeTimers();
+        try {
+          route([read([OLD, 'ACTIVE'])]);
+          let inner: Promise<unknown> | undefined;
+          const outer = withResourceDeadline(
+            () => {
+              inner = runUpdate(OLD, undefined).then(
+                () => 'resolved',
+                (e: unknown) => e
+              );
+              return inner;
+            },
+            { warnAfterMs: 1000, timeoutMs: 5_250, onTimeout: () => new Error('deadline fired') }
+          ).then(
+            (r) => r,
+            (e: unknown) => e
+          );
+          const startedAt = Date.now();
+          await vi.runAllTimersAsync();
+          expect(((await outer) as Error).message).toBe('deadline fired');
+          expect(await inner).toBe('resolved');
+          // Reads at 0, 0.5, ..., 5 s; the last sleep is cut to the deadline.
+          expect(Date.now() - startedAt).toBe(5_250);
+          expect(countOfCommand(DescribeKinesisStreamingDestinationCommand)).toBe(11);
+          expect(warn().mock.calls[0][0]).toContain(
+            'still read as ACTIVE when the resource timeout expired'
+          );
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('stops the wait on Ctrl-C', async () => {
+        disarmInterruptWatchForTests();
+        interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+        try {
+          const baselineListeners = process.listeners('SIGINT');
+          route([read([OLD, 'ACTIVE'])]);
+          const inner = mockSend.getMockImplementation()!;
+          mockSend.mockImplementation(async (cmd: unknown) => {
+            if (cmd instanceof DescribeKinesisStreamingDestinationCommand) {
+              const ours = process.listeners('SIGINT').filter((l) => !baselineListeners.includes(l));
+              expect(ours.length).toBeGreaterThan(0);
+              for (const l of ours) (l as unknown as () => void)();
+            }
+            return inner(cmd);
+          });
+
+          const error = await runUpdate(OLD, NEW).catch((e: unknown) => e);
+          expect(isInterruptedWaitError(error)).toBe(true);
+          expect(order).toEqual(['disable', 'describe']);
+        } finally {
+          interruptWatchTestSeam.commandOwnsInterrupts = undefined;
+          disarmInterruptWatchForTests();
+        }
+      });
+
+      it('reads nothing when nothing was disabled', async () => {
+        route([read([OLD, 'ACTIVE'])]);
+
+        await runUpdate(undefined, NEW);
+        await runUpdate(NEW, NEW);
+
+        expect(order).toEqual(['enable']);
+        expect(commandSent(DescribeKinesisStreamingDestinationCommand)).toBe(false);
+      });
+    });
   });
 
   describe('SSESpecification (SSEEnabled -> Enabled mapping)', () => {

@@ -1114,6 +1114,17 @@ const KINESIS_DESTINATION_SETTLE_POLL_MS = 2000;
  * answered `UPDATING`, and a read right after a write can lag it.
  */
 const KINESIS_PRECISION_STALE_READ_GRACE_POLLS = 5;
+/**
+ * Re-reads (x {@link KINESIS_DISABLE_SETTLE_POLL_MS}) after
+ * `DisableKinesisStreamingDestination` until the destination reads `DISABLED`
+ * or absent (go-to-k/cdkd#5423). The disable answered `DISABLING`, yet
+ * `DescribeKinesisStreamingDestination` read `ACTIVE` at about 1 s and
+ * `DISABLED` at about 2.5 s (measured us-east-1, 2026-10-28), so a short
+ * cadence keeps the wait near that; 60 s bounds a destination that never
+ * settles, after which the deploy goes on with a warning.
+ */
+const KINESIS_DISABLE_SETTLE_POLLS = 120;
+const KINESIS_DISABLE_SETTLE_POLL_MS = 500;
 
 /**
  * Is this `WarmThroughput` VALUE one cdkd will actually put on the wire
@@ -5150,6 +5161,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       this.logger.debug(
         `Disabled Kinesis streaming destination ${prevArn} on DynamoDB table ${tableName}`
       );
+      await this.waitForKinesisDisableSettled(tableName, prevArn, maskSecrets);
     }
 
     // Enable streaming to the new stream when present.
@@ -5179,6 +5191,91 @@ export class DynamoDBTableProvider implements ResourceProvider {
         `Enabled Kinesis streaming destination ${newArn} on DynamoDB table ${tableName}`
       );
     }
+  }
+
+  /**
+   * After `DisableKinesisStreamingDestination`: poll until every destination
+   * for `streamArn` reads `DISABLED`, or none is listed (go-to-k/cdkd#5423).
+   * The read-back reports an `ACTIVE` / `ENABLING` / `UPDATING` destination as
+   * present, and `DescribeKinesisStreamingDestination` went on reading `ACTIVE`
+   * for about a second after the disable answered `DISABLING`, so the
+   * drift baseline captured right after this update recorded a destination
+   * AWS was removing, and every later `cdkd drift` reported it. `DISABLING`
+   * still counts as settling. It also runs before an ARN change's enable,
+   * whose read-back would otherwise find the old destination first.
+   *
+   * Best-effort, since AWS accepted the disable: a destination still
+   * reported after {@link KINESIS_DISABLE_SETTLE_POLLS} reads, a failed read,
+   * or the enclosing per-resource deadline expiring ends the wait with a
+   * warning rather than failing the deploy. Interruptible.
+   */
+  private async waitForKinesisDisableSettled(
+    tableName: string,
+    streamArn: string,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const watch = startInterruptWatch(
+      maskSecrets(`Kinesis streaming destination on ${tableName} disabling`)
+    );
+    const warnUnsettled = (state: string): void =>
+      this.logger.warn(
+        maskSecrets(
+          `The Kinesis streaming destination ${streamArn} disabled on DynamoDB table ` +
+            `${tableName} ${state}; \`cdkd drift\` may report it until AWS finishes disabling it`
+        )
+      );
+    let last: string | undefined;
+    try {
+      for (let poll = 1; poll <= KINESIS_DISABLE_SETTLE_POLLS; poll++) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        if (enclosingDeadlineRemainingMs() <= 0) {
+          warnUnsettled(`still read as ${last ?? 'unread'} when the resource timeout expired`);
+          return;
+        }
+        let destinations: KinesisDataStreamDestination[];
+        try {
+          const response = await this.retryOnTransientControlPlane(
+            () =>
+              this.dynamoDBClient.send(
+                new DescribeKinesisStreamingDestinationCommand({ TableName: tableName })
+              ),
+            `describe Kinesis streaming on ${tableName}`,
+            undefined,
+            { maskSecrets }
+          );
+          destinations = response?.KinesisDataStreamDestinations ?? [];
+        } catch (error) {
+          this.logger.debug(
+            maskSecrets(
+              `Could not read Kinesis streaming on ${tableName} after the disable: ` +
+                describeAwsFailure(error).detail
+            )
+          );
+          warnUnsettled('could not be read back');
+          return;
+        }
+        // DISABLED entries linger beside a live one for the same stream, so
+        // the disable has settled only once no entry for it is anything else.
+        const pending = destinations.find(
+          (d) => d.StreamArn === streamArn && d.DestinationStatus !== 'DISABLED'
+        );
+        if (!pending) return;
+        last = pending.DestinationStatus ?? 'unknown';
+        if (poll === KINESIS_DISABLE_SETTLE_POLLS) break;
+        await new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.max(0, Math.min(KINESIS_DISABLE_SETTLE_POLL_MS, enclosingDeadlineRemainingMs()))
+          )
+        );
+      }
+    } finally {
+      watch.dispose();
+    }
+    warnUnsettled(
+      `still read as ${last ?? 'unread'} after ` +
+        `${(KINESIS_DISABLE_SETTLE_POLLS * KINESIS_DISABLE_SETTLE_POLL_MS) / 1000} seconds`
+    );
   }
 
   private extractKinesisStreamArn(spec: unknown): string | undefined {
