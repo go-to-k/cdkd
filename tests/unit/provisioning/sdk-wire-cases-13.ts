@@ -486,10 +486,14 @@ const COGNITO_ROLE = `arn:aws:iam::${ACCOUNT}:role/sms`;
 /**
  * The properties `UpdateUserPool` has no member for: `update()` refuses a
  * change to one before any call (cognito-provider.ts:3193-3216,
- * `createTimeOnlyChanges` at :408-440), as CloudFormation's handler does
- * ("Updates are not allowed for property", measured there). The schema lists
- * no create-only path for the type (:396-397), so the case marks them itself;
- * `describeCognitoExtras` pins each refusal.
+ * `createTimeOnlyChanges` at :408-440). CloudFormation's handler refuses the
+ * same ("Updates are not allowed for property"), measured for a change to each
+ * of the three and for the removal of `UsernameAttributes` or
+ * `UsernameConfiguration` (:396-406); the removal of `AliasAttributes`, and
+ * declaring any of them on a pool created without it, are CloudFormation-
+ * unmeasured. The schema lists no create-only path for the type (:396-397), so
+ * the case marks them itself; `describeCognitoExtras` pins each refusal, in
+ * every direction the harness skips for a create-only path.
  */
 const COGNITO_CREATE_TIME_ONLY = [
   'UsernameAttributes',
@@ -820,6 +824,14 @@ export function describeCognitoExtras(): void {
       const { [member]: _omit, ...next } = bag;
       await refusal(member, next, bag);
     });
+    it.each(COGNITO_CREATE_TIME_ONLY)(
+      'refuses a newly declared %s and sends nothing',
+      async (member) => {
+        const bag = bagWith(member);
+        const { [member]: _omit, ...prev } = bag;
+        await refusal(member, bag, prev);
+      }
+    );
   });
 }
 
