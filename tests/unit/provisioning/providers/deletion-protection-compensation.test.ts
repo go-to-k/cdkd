@@ -424,6 +424,22 @@ describe('deleteAfterProtectionFlipWithFinalSnapshot (#5184)', () => {
     expect(reads).toBe(3);
   });
 
+  it('keeps -recoverable terminal after a refusal: rethrows at once (#5426)', async () => {
+    const { error, sends, reads } = await runDelete(
+      [
+        OFF('modifying'),
+        OFF('available'),
+        OFF('inaccessible-encryption-credentials-recoverable'),
+        OFF('available'),
+      ],
+      [CLUSTER_NOT_AVAILABLE, undefined]
+    );
+
+    expect(error).toBe(CLUSTER_NOT_AVAILABLE);
+    expect(sends).toBe(1);
+    expect(reads).toBe(3);
+  });
+
   it('rethrows at once when the guard reads ON again after the refusal', async () => {
     const { error, sends, reads } = await runDelete(
       [OFF('modifying'), OFF('available'), ON('available')],

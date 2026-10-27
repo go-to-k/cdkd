@@ -965,10 +965,11 @@ export function isTerminalDbStatus(status: string | undefined): boolean {
 /**
  * Issue #5426: {@link isTerminalDbStatus} for a deploy's WAIT on a status (a
  * create's or update's `available` wait, the `ModifyDBInstance` retry). The
- * one difference is `inaccessible-encryption-credentials-recoverable`: AWS
- * documents it as recoverable once the KMS key is usable again, so such a wait
- * keeps polling within its budget instead of failing the deploy, as it did
- * before these waits failed fast. The `--remove-protection` final-snapshot
+ * one difference is `inaccessible-encryption-credentials-recoverable`, which
+ * AWS tells apart from `inaccessible-encryption-credentials` as recoverable
+ * once the KMS key is usable again (for an instance, possibly only after a
+ * reboot). Such a wait keeps polling within its budget instead of failing the
+ * deploy, as it did before these waits failed fast. The `--remove-protection` final-snapshot
  * paths keep {@link isTerminalDbStatus}: there a terminal status sends the
  * delete for AWS to accept or refuse, or fails closed with the guard put back,
  * and waiting out a KMS key no one is restoring only spends the destroy's

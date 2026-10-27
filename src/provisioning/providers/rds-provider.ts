@@ -1007,6 +1007,20 @@ export class RDSProvider implements ResourceProvider {
             `Delete requested for partially-created DBCluster ${logicalId} (${dbClusterIdentifier}) after wiring failure (not waiting for deleted state)`
           );
         } catch (cleanupError) {
+          // Issue #5426: a cluster deleted from outside cdkd (the create wait
+          // read `deleting`) refuses this delete yet is not left running: say
+          // so instead of the billing warning. Only AWS's own not-found class
+          // counts as gone; any other read keeps the warning.
+          const retiring = await this.partialClusterRetiring(dbClusterIdentifier);
+          if (retiring === 'gone') clusterLeftBehind = false;
+          if (retiring !== undefined) {
+            this.logger.warn(
+              maskerOrIdentity(mask)(
+                `Partially-created DBCluster ${logicalId} (${dbClusterIdentifier}) is ${retiring === 'gone' ? 'already deleted' : "already in status 'deleting'"}; cdkd did not delete it again`
+              )
+            );
+            throw innerError;
+          }
           // The identifier is TEMPLATE-chosen (or generated), so the recovery
           // commands render through `pasteableAwsCommand` (issue #3136): one
           // that cannot be printed exactly withholds them rather than naming
@@ -2012,6 +2026,23 @@ export class RDSProvider implements ResourceProvider {
         new AddTagsToResourceCommand({ ResourceName: arn, Tags: tagsToAdd })
       );
       this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on RDS resource ${arn}`);
+    }
+  }
+
+  /**
+   * Issue #5426: after a failed cleanup delete of a partially-created cluster,
+   * whether AWS already has it on its way out: `gone` on `DBClusterNotFoundFault`
+   * by class, `deleting` on that status, `undefined` for anything else (an
+   * empty read or another failure included), which keeps the caller's warning.
+   */
+  private async partialClusterRetiring(
+    dbClusterIdentifier: string
+  ): Promise<'gone' | 'deleting' | undefined> {
+    try {
+      const cluster = await this.describeDBCluster(dbClusterIdentifier);
+      return cluster?.Status === 'deleting' ? 'deleting' : undefined;
+    } catch (error) {
+      return error instanceof Error && error.name === 'DBClusterNotFoundFault' ? 'gone' : undefined;
     }
   }
 

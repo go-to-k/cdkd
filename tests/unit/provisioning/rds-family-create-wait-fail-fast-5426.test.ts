@@ -6,7 +6,7 @@
 // polling, as do the update-path cluster waits (#5411 / #5417 / #5419).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
-const { mockSend } = vi.hoisted(() => ({ mockSend: vi.fn() }));
+const { mockSend, mockWarn } = vi.hoisted(() => ({ mockSend: vi.fn(), mockWarn: vi.fn() }));
 
 function clientMock(name: string) {
   return async (importOriginal: () => Promise<unknown>) => {
@@ -29,7 +29,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: mockWarn,
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -267,5 +267,104 @@ describe.each([
     expect(() => require('inaccessible-encryption-credentials')).toThrow(
       'MyCluster entered status inaccessible-encryption-credentials'
     );
+  });
+});
+
+describe('RDS DBCluster create cleanup after a terminal status (issue #5426)', () => {
+  const savedNoWait = process.env['CDKD_NO_WAIT'];
+  let provider: RDSProvider;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    mockWarn.mockReset();
+    delete process.env['CDKD_NO_WAIT'];
+    provider = new RDSProvider();
+    (provider as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async () => {};
+  });
+
+  afterEach(() => {
+    if (savedNoWait === undefined) delete process.env['CDKD_NO_WAIT'];
+    else process.env['CDKD_NO_WAIT'] = savedNoWait;
+  });
+
+  /** `statuses` answer the describes in order (the last repeating); DeleteDBCluster answers `deleteResult`. */
+  function routeCleanup(statuses: Array<string | Error>, deleteResult: () => unknown): void {
+    let read = 0;
+    mockSend.mockImplementation(async (command: object) => {
+      const name = command.constructor.name;
+      if (name === 'CreateDBClusterCommand') return { DBCluster: { DBClusterIdentifier: CLUSTER_ID } };
+      if (name === 'DescribeDBClustersCommand') {
+        const next = statuses[Math.min(read, statuses.length - 1)];
+        read += 1;
+        if (next instanceof Error) throw next;
+        return { DBClusters: [{ DBClusterIdentifier: CLUSTER_ID, Status: next }] };
+      }
+      if (name === 'DeleteDBClusterCommand') return deleteResult();
+      if (name === 'ModifyDBClusterCommand') return {};
+      throw new Error(`unexpected ${name}`);
+    });
+  }
+
+  const refused = () => {
+    throw Object.assign(new Error('DB cluster is already being deleted.'), {
+      name: 'InvalidDBClusterStateFault',
+    });
+  };
+  const warnings = () => mockWarn.mock.calls.map((call) => String(call[0]));
+  const create = (props: Record<string, unknown> = {}) =>
+    provider.create(LOGICAL_ID, 'AWS::RDS::DBCluster', {
+      DBClusterIdentifier: CLUSTER_ID,
+      Engine: 'aurora-mysql',
+      ...props,
+    });
+
+  it('turns DeletionProtection off before the cleanup delete when the template declared it', async () => {
+    routeCleanup(['incompatible-parameters'], () => ({}));
+
+    const error = await caught(create({ DeletionProtection: true }));
+
+    expect(error.message).toContain(`DBCluster ${LOGICAL_ID} entered status incompatible-parameters`);
+    const sent = mockSend.mock.calls
+      .map((call) => (call[0] as { constructor: { name: string } }).constructor.name)
+      .filter((name) => name === 'ModifyDBClusterCommand' || name === 'DeleteDBClusterCommand');
+    expect(sent).toEqual(['ModifyDBClusterCommand', 'DeleteDBClusterCommand']);
+  });
+
+  it('a refused cleanup on a cluster already deleting says so, not that it is still billing', async () => {
+    routeCleanup(['deleting'], refused);
+
+    const error = await caught(create());
+
+    expect(error.message).toContain(`DBCluster ${LOGICAL_ID} entered status deleting`);
+    expect(warnings()).toEqual([
+      `Partially-created DBCluster ${LOGICAL_ID} (${CLUSTER_ID}) is already in status 'deleting'; cdkd did not delete it again`,
+    ]);
+    // Still journaled: a delete in progress can fail.
+    expect(createdBeforeFailure(error, LOGICAL_ID, 'AWS::RDS::DBCluster')).toBe(CLUSTER_ID);
+  });
+
+  it('a refused cleanup on a cluster already gone drops the created-before-failure mark', async () => {
+    const gone = Object.assign(new Error('DBCluster not found'), { name: 'DBClusterNotFoundFault' });
+    routeCleanup(['deleting', gone], refused);
+
+    const error = await caught(create());
+
+    expect(warnings()).toEqual([
+      `Partially-created DBCluster ${LOGICAL_ID} (${CLUSTER_ID}) is already deleted; cdkd did not delete it again`,
+    ]);
+    expect(createdBeforeFailure(error, LOGICAL_ID, 'AWS::RDS::DBCluster')).toBeUndefined();
+  });
+
+  it.each([
+    ['a status other than deleting', ['incompatible-parameters']],
+    ['a not-found MESSAGE under another class', ['incompatible-parameters', new Error('cluster not found')]],
+  ])('keeps the billing warning on %s', async (_label, statuses) => {
+    routeCleanup(statuses as Array<string | Error>, refused);
+
+    const error = await caught(create());
+
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0]).toContain('THE CLUSTER IS STILL RUNNING AND BILLING');
+    expect(createdBeforeFailure(error, LOGICAL_ID, 'AWS::RDS::DBCluster')).toBe(CLUSTER_ID);
   });
 });
