@@ -8,6 +8,7 @@ import {
   DeleteDBInstanceCommand,
   ModifyDBInstanceCommand,
   DescribeDBInstancesCommand,
+  type DBCluster,
 } from '@aws-sdk/client-docdb';
 import { getLogger } from '../../utils/logger.js';
 import { markNotGone } from '../not-gone.js';
@@ -638,6 +639,7 @@ export class DocDBProvider implements ResourceProvider {
           if (member.DBInstanceIdentifier) {
             await this.waitForMemberAfterClusterChange(
               member.DBInstanceIdentifier,
+              logicalId,
               PORT_CHANGE_MEMBER_STATUSES,
               'port'
             );
@@ -668,6 +670,7 @@ export class DocDBProvider implements ResourceProvider {
           if (member.DBInstanceIdentifier) {
             await this.waitForMemberAfterClusterChange(
               member.DBInstanceIdentifier,
+              logicalId,
               SECURITY_GROUP_CHANGE_MEMBER_STATUSES,
               'VPC security groups'
             );
@@ -1275,6 +1278,7 @@ export class DocDBProvider implements ResourceProvider {
    */
   private async waitForMemberAfterClusterChange(
     dbInstanceIdentifier: string,
+    clusterLogicalId: string,
     transitional: ReadonlySet<string>,
     change: string,
     maxWaitMs = 1_800_000
@@ -1294,8 +1298,33 @@ export class DocDBProvider implements ResourceProvider {
       delay = Math.min(delay * 2, 10_000);
     }
     throw new Error(
-      `Timed out waiting for a member instance of the cluster to finish applying its new ${change}`
+      safeMsg`Timed out waiting for member instance ${dbInstanceIdentifier} of DocDB DBCluster ${clusterLogicalId} to finish applying its new ${change}`
     );
+  }
+
+  /**
+   * A cluster read inside an update wait (issues #5411, #5419). A vanished
+   * cluster or a terminal status (`isTerminalDbStatus`) never reaches the
+   * awaited state, so fail now rather than after the 30-minute budget.
+   */
+  private requireClusterWhileWaiting(
+    cluster: DBCluster | undefined,
+    logicalId: string,
+    change: string
+  ): DBCluster {
+    // A deleted cluster usually throws DBClusterNotFoundFault from the describe
+    // itself; this arm covers an empty `DBClusters` list.
+    if (cluster === undefined) {
+      throw new Error(
+        safeMsg`DescribeDBClusters returned no cluster for DocDB DBCluster ${logicalId} while waiting for its new ${change}`
+      );
+    }
+    if (isTerminalDbStatus(cluster.Status)) {
+      throw new Error(
+        safeMsg`DocDB DBCluster ${logicalId} entered status ${cluster.Status ?? ''} while applying its new ${change}`
+      );
+    }
+    return cluster;
   }
 
   /**
@@ -1312,18 +1341,11 @@ export class DocDBProvider implements ResourceProvider {
     const startTime = Date.now();
     let delay = 5_000;
     while (Date.now() - startTime < maxWaitMs) {
-      const cluster = await this.describeDBCluster(dbClusterIdentifier);
-      // Neither ends within the budget: fail now rather than after 30 minutes.
-      if (cluster === undefined) {
-        throw new Error(
-          `DescribeDBClusters returned no cluster for DocDB DBCluster ${logicalId} while waiting for its new port`
-        );
-      }
-      if (isTerminalDbStatus(cluster.Status)) {
-        throw new Error(
-          safeMsg`DocDB DBCluster ${logicalId} entered status ${cluster.Status ?? ''} while applying its new port`
-        );
-      }
+      const cluster = this.requireClusterWhileWaiting(
+        await this.describeDBCluster(dbClusterIdentifier),
+        logicalId,
+        'port'
+      );
       if (cluster.Status !== 'modifying' && cluster.Port === port) return;
       this.logger.debug(
         safeMsg`DocDB DBCluster ${logicalId} port not applied yet (status ${cluster.Status ?? 'unknown'})`
@@ -1349,8 +1371,12 @@ export class DocDBProvider implements ResourceProvider {
     const startTime = Date.now();
     let delay = 5_000;
     while (Date.now() - startTime < maxWaitMs) {
-      const cluster = await this.describeDBCluster(dbClusterIdentifier);
-      const groups = cluster?.VpcSecurityGroups ?? [];
+      const cluster = this.requireClusterWhileWaiting(
+        await this.describeDBCluster(dbClusterIdentifier),
+        logicalId,
+        'VPC security groups'
+      );
+      const groups = cluster.VpcSecurityGroups ?? [];
       const ids = groups
         .map((group) => group.VpcSecurityGroupId ?? '')
         .sort()
@@ -1358,13 +1384,12 @@ export class DocDBProvider implements ResourceProvider {
       // `modifying` is the swap's own transition; any lasting state (backing-up,
       // maintenance, ...) is not this change's to wait out.
       const settled =
-        cluster !== undefined &&
         cluster.Status !== 'modifying' &&
         groups.every((group) => group.Status === 'active') &&
         ids === want;
       if (settled) return;
       this.logger.debug(
-        safeMsg`DocDB DBCluster ${logicalId} security groups not settled yet (status ${cluster?.Status ?? 'unknown'})`
+        safeMsg`DocDB DBCluster ${logicalId} security groups not settled yet (status ${cluster.Status ?? 'unknown'})`
       );
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
