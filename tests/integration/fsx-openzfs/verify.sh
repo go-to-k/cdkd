@@ -118,6 +118,8 @@ PHASE2_LOG=""
 PHASE2B_LOG=""
 PHASE2C_LOG=""
 DESTROY_LOG=""
+# Set by Phase 2d once the child volume exists (go-to-k/cdkd#5431).
+CHILD_VOLUME_ID=""
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -156,6 +158,16 @@ cleanup() {
   if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
       --stack-region "${REGION}" --yes >/dev/null 2>&1
+  fi
+  # A child volume still CREATING (a run interrupted in Phase 2d) makes FSx
+  # refuse the file system delete below, so let it settle first (#5431).
+  if [ -n "${CHILD_VOLUME_ID:-}" ]; then
+    local child_deadline=$((SECONDS + 900))
+    while [ ${SECONDS} -lt ${child_deadline} ] && [ "$(aws fsx describe-volumes \
+      --volume-ids "${CHILD_VOLUME_ID}" --region "${REGION}" \
+      --query 'Volumes[0].Lifecycle' --output text 2>/dev/null)" = "CREATING" ]; do
+      sleep 15
+    done
   fi
   # Delete any leftover file system carrying the fixture's constant tag and
   # wait until it is gone (its ENIs block the VPC teardown below).
@@ -531,7 +543,7 @@ CHILD_DEADLINE=$((SECONDS + 900))
 while [ ${SECONDS} -lt ${CHILD_DEADLINE} ]; do
   CHILD_LIFECYCLE="$(aws fsx describe-volumes --volume-ids "${CHILD_VOLUME_ID}" --region "${REGION}" \
     --query 'Volumes[0].Lifecycle' --output text)"
-  [ "${CHILD_LIFECYCLE}" = "AVAILABLE" ] && break
+  case "${CHILD_LIFECYCLE}" in AVAILABLE | FAILED | MISCONFIGURED) break ;; esac
   sleep 15
 done
 if [ "${CHILD_LIFECYCLE}" != "AVAILABLE" ]; then
