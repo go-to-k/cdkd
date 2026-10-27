@@ -1118,6 +1118,49 @@ describe('DynamoDB GlobalTable replica settings writes (go-to-k/cdkd#5365)', () 
       ]);
     });
 
+    it('leaves an unchanged stream policy on the retired stream', async () => {
+      const NEW_STREAM = `${LOCAL_ARN}/stream/2026-10-28T00:00:00.000`;
+      let current = LOCAL_STREAM;
+      mockSend.mockImplementation(async (command: Sent) => {
+        if (
+          command.constructor.name === UpdateTableCommand.name &&
+          command.input['StreamSpecification'] !== undefined
+        ) {
+          current = NEW_STREAM;
+        }
+        return regionDouble(LOCAL_ARN, current, {}, [])(command);
+      });
+      const stream = { ResourcePolicy: { PolicyDocument: policy('dynamodb:GetRecords') } };
+      await provider.update(
+        'T',
+        TABLE,
+        RESOURCE_TYPE,
+        {
+          ...base({ ReplicaStreamSpecification: stream }, null),
+          StreamSpecification: { StreamViewType: 'NEW_IMAGE' },
+        },
+        base({ ReplicaStreamSpecification: stream }, null)
+      );
+      expect(sent(mockSend, PutResourcePolicyCommand).map((i) => i['ResourceArn'])).toEqual([
+        NEW_STREAM,
+      ]);
+      expect(sent(mockSend, DeleteResourcePolicyCommand)).toEqual([]);
+    });
+
+    it('warns when a rollback replay leaves point-in-time recovery on', async () => {
+      await provider.update(
+        'T',
+        TABLE,
+        RESOURCE_TYPE,
+        base({}, {}),
+        base({}, { PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true } }),
+        { replayingState: true } as never
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/eu-west-1 replica of gt-5365: point-in-time recovery was left on/)
+      );
+    });
+
     it('names the whole table in the create-time refusal', () => {
       expect(
         replicaSettingsRefusal(

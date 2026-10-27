@@ -212,7 +212,7 @@ export const SETTING_MEMBER: Readonly<Record<ReplicaSetting, string>> = {
   streamPolicy: `${REPLICA_STREAM_KEY}.ResourcePolicy`,
 };
 
-function samePolicyDocument(left: string, right: string): boolean {
+export function samePolicyDocument(left: string, right: string): boolean {
   if (left === right) return true;
   try {
     return JSON.stringify(JSON.parse(left)) === JSON.stringify(JSON.parse(right));

@@ -166,6 +166,7 @@ import { injectiveKey } from '../../state/record-keys.js';
 import {
   declaredReplicaSettings,
   readStreamPolicy,
+  samePolicyDocument,
   planReplicaSettingCorrections,
   planReplicaSettingOps,
   replicaSettingRefusals,
@@ -2435,6 +2436,18 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
                 : `Fix the template value and re-deploy.`)
           )
       );
+      if (
+        !fresh &&
+        keepOnRemoval.has('pitr') &&
+        replica?.['PointInTimeRecoverySpecification'] == null &&
+        previous?.['PointInTimeRecoverySpecification'] != null
+      ) {
+        warn(
+          `The ${region} replica of ${tableName}: point-in-time recovery was left on, although ` +
+            `the record being restored declares none — turning it off would delete every ` +
+            `recovery point. Turn it off by hand if that is intended.`
+        );
+      }
       // What the template did not change but declares: checked against AWS.
       const unchanged = fresh ? new Set<ReplicaSetting>() : declaredReplicaSettings(replica);
       for (const op of ops) unchanged.delete(settingOf(op));
@@ -2494,14 +2507,28 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
 
       // A `StreamViewType` change leaves the OLD stream readable for 24 h
-      // under its old policy. When this deploy removes or changes that policy,
-      // the old stream loses it too — best-effort: it may already be gone.
+      // under its old policy. When this deploy removes or changes that policy
+      // in the template, the old stream loses it too — best-effort: it may
+      // already be gone. An UNCHANGED policy stays there, so a consumer still
+      // draining the old stream keeps its access. Only the deploy region's
+      // retired stream is known here: a cross-region replica's keeps its old
+      // policy until it expires.
+      const priorStreamPolicy = readStreamPolicy(previous);
+      const desiredStreamPolicy = readStreamPolicy(replica);
+      const streamPolicyChanged =
+        priorStreamPolicy.kind !== 'absent' &&
+        desiredStreamPolicy.kind !== 'unusable' &&
+        !(desiredStreamPolicy.kind === 'absent' && keepOnRemoval.has('streamPolicy')) &&
+        !(
+          priorStreamPolicy.kind === 'usable' &&
+          desiredStreamPolicy.kind === 'usable' &&
+          samePolicyDocument(priorStreamPolicy.document, desiredStreamPolicy.document)
+        );
       if (
         region === currentRegion &&
         streamReplaced &&
         previousLocalStreamArn !== undefined &&
-        readStreamPolicy(previous).kind !== 'absent' &&
-        ops.some((op) => op.kind === 'deleteStreamPolicy' || op.kind === 'putStreamPolicy') &&
+        streamPolicyChanged &&
         (await describe()).streamArn !== previousLocalStreamArn
       ) {
         await this.deleteOldStreamPolicy(
