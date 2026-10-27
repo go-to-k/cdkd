@@ -1626,7 +1626,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       });
 
       it('sends nothing when the live TTL is already disabled', async () => {
-        routeSends({ TimeToLiveStatus: 'DISABLED' });
+        routeSends({ TimeToLiveStatus: 'DISABLED', AttributeName: 'liveTtl' });
         await provider.update(
           'X',
           TABLE_NAME,
