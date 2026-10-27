@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd Lambda Kinesis ESM FilterCriteria integ.
-# Asserts the ESM FilterCriteria reaches AWS, then destroys clean.
+# Asserts the ESM FilterCriteria reaches AWS. UPDATE phase (issue #1160):
+# removes BisectBatchOnFunctionError from the template and asserts AWS resets
+# it to false, with the filter kept. Then destroys clean.
 # Confirmed-clean /hunt-bugs pattern; regression guard.
 
 set -euo pipefail
@@ -73,8 +75,15 @@ trap '(exit 143); cleanup; exit 143' TERM
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"; cleanup
 
-echo "==> Deploy"
-node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+# Reads the ESM's BisectBatchOnFunctionError. Not silenced: a failed read
+# aborts under `set -e`.
+esm_bisect() {
+  aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" \
+    --query 'EventSourceMappings[0].BisectBatchOnFunctionError' --output text
+}
+
+echo "==> Deploy (base: bisectBatchOnError set)"
+env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 # FilterCriteria.Filters[0].Pattern must be present AND carry the templated
 # filter content (the stack filters on data.type == "order"). Asserting the
@@ -91,6 +100,44 @@ if ! printf '%s' "${PATTERN}" | grep -q 'order'; then
   exit 1
 fi
 echo "    OK: ESM FilterCriteria reached AWS (pattern: ${PATTERN})"
+
+BISECT=$(esm_bisect)
+if [ "${BISECT}" != "True" ]; then
+  echo "FAIL: base BisectBatchOnFunctionError is '${BISECT}', expected True (silent-drop?)" >&2
+  exit 1
+fi
+echo "    OK: base BisectBatchOnFunctionError == True on AWS"
+
+# cdkd does not wait on a mapping's State, and an update sent while the new
+# mapping is still Creating can be refused as in use. Let it settle first.
+ESM_STATE=""
+for _ in $(seq 1 30); do
+  ESM_STATE=$(aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" \
+    --query 'EventSourceMappings[0].State' --output text)
+  [ "${ESM_STATE}" = "Enabled" ] && break
+  sleep 2
+done
+[ "${ESM_STATE}" = "Enabled" ] || { echo "FAIL: mapping State is '${ESM_STATE}' 60 s after the deploy, expected Enabled" >&2; exit 1; }
+
+echo "==> Deploy (UPDATE: bisectBatchOnError removed from template)"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+# Removal must RESET it to false, as CloudFormation does.
+BISECT_AFTER=$(esm_bisect)
+if [ "${BISECT_AFTER}" != "False" ]; then
+  echo "FAIL: after removal, BisectBatchOnFunctionError is '${BISECT_AFTER}', expected False — removal silently dropped (issue #1160)" >&2
+  exit 1
+fi
+echo "    OK: BisectBatchOnFunctionError RESET to False on AWS after removal"
+
+# The retained sibling: the filter is still declared, so it must survive.
+PATTERN_AFTER=$(aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" \
+  --query 'EventSourceMappings[0].FilterCriteria.Filters[0].Pattern' --output text)
+if ! printf '%s' "${PATTERN_AFTER}" | grep -q 'order'; then
+  echo "FAIL: after the update, the still-declared filter is gone: '${PATTERN_AFTER}'" >&2
+  exit 1
+fi
+echo "    OK: still-declared FilterCriteria kept after the update"
 
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force

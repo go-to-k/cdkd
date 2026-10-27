@@ -193,7 +193,7 @@ inplace-attr-propagation	2026-10-03T05:58:37Z	PASS	60	verify.sh	rc ok, orph clea
 intrinsic-functions	2026-08-15T00:12:35Z	PASS	20	standard	0 err / 0 orph; resolver change regression check (#1916)
 intrinsics-torture	2026-10-24T03:05:49Z	PASS	50	verify.sh	PR 5234 rc0, destroy 0 errors, orph clean (2457d0149)
 intrinsics-torture-2	2026-10-11T09:33:22Z	PASS	65	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-kinesis-esm-filter	2026-10-16T08:48:48Z	PASS	70	verify.sh	rc ok, orph clean (#3341 slice 4996)
+kinesis-esm-filter	2026-10-27T12:08:24Z	PASS	90	verify.sh	rc ok, orph clean; #1160 Bisect removal arm, probe-red on origin/main provider
 kinesis-stream-mode-switch	2026-10-26T11:35:05Z	PASS	220	verify.sh	rc ok, orph clean
 kms-encryption	2026-10-26T05:02:44Z	PASS	87	verify.sh	destroy 0 errors, orph clean; #5299 KeyUsage refusal + lockout bypass OK; pre-fix probe red at Phase 2b (PR 5304)
 lambda	2026-10-24T14:12:33Z	PASS	101	verify.sh	rc ok, orph clean
@@ -378,7 +378,7 @@ sns-sqs-event	2026-10-20T06:36:42Z	PASS	300	verify.sh	deploy+destroy clean, 0 or
 sns-subscription-filter	2026-10-24T03:05:49Z	PASS	275	verify.sh	PR 5234 rc0, destroy 0 errors, orph clean (2457d0149)
 sns-subscription-update	2026-10-24T03:05:49Z	PASS	115	verify.sh	PR 5234 rc0, destroy 0 errors, orph clean (2457d0149)
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
-sqs-esm-max-concurrency	2026-10-20T12:43:49Z	PASS	80	verify.sh	issue #1160 BatchSize reset to 10, destroy clean
+sqs-esm-max-concurrency	2026-10-27T12:08:24Z	PASS	91	verify.sh	rc ok, orph clean; #1160 Enabled removal arm, probe-red on origin/main provider
 ssm-secure-dynamic-ref	2026-10-18T05:02:48Z	PASS	143	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 stack-copy-create-tokens	2026-10-25T02:23:30Z	PASS	1747	verify.sh	rc ok, orph clean
 stack-lock-renewal	2026-10-25T02:23:30Z	PASS	342	verify.sh	rc ok, orph clean
