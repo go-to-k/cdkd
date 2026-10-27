@@ -2456,6 +2456,7 @@
     "--permissions-config",
     "--plaintext",
     "--platform",
+    "--point-in-time-recovery-specification",
     "--policies",
     "--policy",
     "--policy-arn",

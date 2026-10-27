@@ -8,12 +8,23 @@ import {
   DescribeKinesisStreamingDestinationCommand,
   DescribeTableCommand,
   DescribeTimeToLiveCommand,
+  DeleteResourcePolicyCommand,
+  DisableKinesisStreamingDestinationCommand,
+  EnableKinesisStreamingDestinationCommand,
+  GetResourcePolicyCommand,
   ListTagsOfResourceCommand,
+  PolicyNotFoundException,
+  PutResourcePolicyCommand,
   TagResourceCommand,
   UntagResourceCommand,
+  UpdateContinuousBackupsCommand,
+  UpdateContributorInsightsCommand,
+  UpdateKinesisStreamingDestinationCommand,
   UpdateTableCommand,
   UpdateTimeToLiveCommand,
   ResourceNotFoundException,
+  type ApproximateCreationDateTimePrecision,
+  type ContributorInsightsMode,
   type CreateTableCommandInput,
   type KeySchemaElement,
   type AttributeDefinition,
@@ -152,6 +163,17 @@ import {
   type CredentialConfig,
 } from '../../utils/ambient-client-defaults.js';
 import { injectiveKey } from '../../state/record-keys.js';
+import {
+  declaredReplicaSettings,
+  planReplicaSettingCorrections,
+  planReplicaSettingOps,
+  replicaSettingRefusals,
+  settingOf,
+  SETTING_MEMBER,
+  type LiveReplicaSettings,
+  type ReplicaSetting,
+  type ReplicaSettingOp,
+} from '../dynamodb-replica-settings.js';
 
 /**
  * A DynamoDB table NAME (3-255 of `a-z A-Z 0-9 _ . -`), the physical id this
@@ -1223,6 +1245,21 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
       onReplay(`${sseEnabledRefusal}. Encryption is enabled, the block's default.`);
     }
+    // go-to-k/cdkd#5365: the per-replica settings the wiring below sends, read
+    // by the write plan's own readers, refused before anything is created. A
+    // replay of a state record (which the user cannot edit) skips an
+    // unreadable block with a warning instead, and tries a policy anyway.
+    const replicaSettingRefusal = replicaSettingsRefusal(properties, undefined, currentRegion);
+    if (replicaSettingRefusal !== undefined && !replayWarn(log, context).onUnusable) {
+      throw new ProvisioningError(
+        log.mask(
+          `AWS::DynamoDB::GlobalTable ${logicalId}: ${replicaSettingRefusal}. Nothing was ` +
+            `created; fix the template value`
+        ),
+        resourceType,
+        logicalId
+      );
+    }
     if (properties['SSESpecification']) {
       createParams.SSESpecification = toSdkTableSseSpecification(
         properties['SSESpecification'],
@@ -1399,6 +1436,24 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           maskSecrets
         );
       }
+
+      // Per-replica point-in-time recovery, Contributor Insights, Kinesis
+      // destination and resource policies (go-to-k/cdkd#5365), each through
+      // its replica's own region once every replica is ACTIVE. A failure here
+      // is a wiring failure: the cleanup below removes the table.
+      await this.applyReplicaSettings(
+        tableName,
+        logicalId,
+        currentRegion,
+        wiringProperties,
+        undefined,
+        new Set(),
+        false,
+        replayWarn(log, context).onUnusable !== undefined,
+        false,
+        warn,
+        maskSecrets
+      );
 
       // TTL is a separate API call (UpdateTimeToLive). Applied after
       // table + replicas are ACTIVE so the AWS-side request validates.
@@ -1726,14 +1781,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * Capped at 10 minutes per replica (AWS Replica provisioning typically
    * takes 1–5 min).
    *
-   * DELIBERATELY UNMAPPED replica sub-keys (Issue #1387 — recorded rather
-   * than silently dropped; `CreateReplicationGroupMemberAction` simply has
-   * no member for them, so they need their own follow-up API calls):
-   *  - `ReplicaStreamSpecification.ResourcePolicy` — the DynamoDB Streams
-   *    resource policy is set by `PutResourcePolicy` against the replica's
-   *    STREAM ARN, not by any `UpdateTable` field.
-   *  - `ResourcePolicy` — the table-level resource policy, likewise a
-   *    separate `PutResourcePolicy` call.
+   * `CreateReplicationGroupMemberAction` has no member for a replica's
+   * point-in-time recovery, Contributor Insights, Kinesis destination or
+   * resource policies: {@link applyReplicaSettings} sends those through the
+   * replica's own region once every replica is ACTIVE (go-to-k/cdkd#5365).
+   *
+   * DELIBERATELY UNMAPPED replica sub-key (Issue #1387 — recorded rather
+   * than silently dropped):
    *  - `GlobalSecondaryIndexes[].ContributorInsightsSpecification` — a
    *    per-index `UpdateContributorInsights` call.
    * `Replicas` is declared in `handledProperties` at the TOP level, which
@@ -2317,6 +2371,477 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       maskSecrets(`Setting the KMS key of every region of ${tableName} in one ReplicaUpdates call`)
     );
     return { TableName: tableName, ReplicaUpdates: entries };
+  }
+
+  /**
+   * The per-replica settings pass (go-to-k/cdkd#5365): point-in-time recovery,
+   * Contributor Insights, the Kinesis streaming destination and the two
+   * resource policies — none of which rides `CreateTable` or `ReplicaUpdates` —
+   * for every replica the desired side declares, the local table included,
+   * each through its own region.
+   *
+   * `previousProperties` is `undefined` on `create()`; `freshRegions` names
+   * the replicas this operation created, which hold none of the settings yet.
+   * A template-side change that fails fails the operation. On `update()` a
+   * DECLARED setting the template did not change is also checked against AWS
+   * and corrected — before this issue none was ever sent, so a replica deployed
+   * then holds none of them under a record that names them — and that
+   * correction is best-effort and reported, like {@link convergeReplicaSettings}.
+   */
+  private async applyReplicaSettings(
+    tableName: string,
+    logicalId: string,
+    currentRegion: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown> | undefined,
+    freshRegions: ReadonlySet<unknown>,
+    streamReplaced: boolean,
+    // A state replay (no template to fix): a table policy refused on a replica
+    // this operation created is reported rather than failing the replay.
+    replaying: boolean,
+    // `cdkd drift --revert`: never turn point-in-time recovery off for a
+    // member its read-back omitted (see `planReplicaSettingOps`).
+    keepRecovery: boolean,
+    warn: (message: string) => void,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const desired = Array.isArray(properties['Replicas'])
+      ? (properties['Replicas'] as unknown[])
+      : [];
+    for (const entry of desired) {
+      const replica = asRecord(entry);
+      const region = replica?.['Region'];
+      if (typeof region !== 'string' || region === '') continue;
+      const fresh = previousProperties === undefined || freshRegions.has(region);
+      const previous =
+        previousProperties === undefined
+          ? undefined
+          : localReplicaEntry(previousProperties, region);
+      const ops = planReplicaSettingOps(
+        replica,
+        previous,
+        { fresh, streamReplaced, keepRecovery },
+        (reason) =>
+          warn(
+            `The ${region} replica of ${tableName}: ${reason}, so that setting was left as it ` +
+              `is. ` +
+              (replaying
+                ? `The value came from a recorded state, which a template edit cannot reach.`
+                : `Fix the template value and re-deploy.`)
+          )
+      );
+      // What the template did not change but declares: checked against AWS.
+      const unchanged = fresh ? new Set<ReplicaSetting>() : declaredReplicaSettings(replica);
+      for (const op of ops) unchanged.delete(settingOf(op));
+      if (ops.length === 0 && unchanged.size === 0) continue;
+
+      const client =
+        region === currentRegion ? this.dynamoDBClient : this.getRegionalClient(region);
+      // A key, class or protection change moments earlier leaves the table
+      // (and this replica) UPDATING, and these calls are refused meanwhile.
+      await this.waitForGlobalTableSettled(tableName, logicalId, maskSecrets, {
+        ...(region !== currentRegion && { region }),
+      });
+      let arns: { tableArn?: string; streamArn?: string } | undefined;
+      const describe = async (): Promise<{ tableArn?: string; streamArn?: string }> => {
+        if (arns === undefined) {
+          const described = await client.send(new DescribeTableCommand({ TableName: tableName }));
+          arns = {
+            ...(described.Table?.TableArn !== undefined && { tableArn: described.Table.TableArn }),
+            ...(described.Table?.LatestStreamArn !== undefined && {
+              streamArn: described.Table.LatestStreamArn,
+            }),
+          };
+        }
+        return arns;
+      };
+
+      for (const op of ops) {
+        try {
+          await this.sendReplicaSettingOp(
+            client,
+            tableName,
+            region,
+            logicalId,
+            op,
+            describe,
+            maskSecrets
+          );
+        } catch (error) {
+          // A table policy on a replica this operation created is refused on
+          // the template path (`replicaSettingsRefusal`, CloudFormation
+          // parity), so only a state replay reaches here: it is reported, and
+          // the next update's AWS-aware pass puts it.
+          if (
+            !replaying ||
+            !fresh ||
+            op.kind !== 'putTablePolicy' ||
+            isInterruptedWaitError(error)
+          ) {
+            throw error;
+          }
+          warn(
+            `The ${region} replica of ${tableName} was created without its ResourcePolicy: ` +
+              `${describeAwsFailure(error).summary}. The next deploy that updates this table ` +
+              `puts it.`
+          );
+        }
+      }
+
+      if (unchanged.size === 0) continue;
+      const live = await this.readLiveReplicaSettings(
+        client,
+        tableName,
+        region,
+        unchanged,
+        describe,
+        maskSecrets
+      );
+      for (const op of planReplicaSettingCorrections(replica, live, unchanged)) {
+        const member = SETTING_MEMBER[settingOf(op)];
+        this.logger.debug(
+          maskSecrets(`Bringing the ${region} replica of ${tableName} to its declared ${member}`)
+        );
+        try {
+          await this.sendReplicaSettingOp(
+            client,
+            tableName,
+            region,
+            logicalId,
+            op,
+            describe,
+            maskSecrets
+          );
+        } catch (convergeError) {
+          if (isInterruptedWaitError(convergeError)) throw convergeError;
+          this.logger.debug(
+            maskSecrets(
+              `Could not bring the ${region} replica of ${tableName} to its declared ${member}: ` +
+                describeAwsFailure(convergeError).detail
+            )
+          );
+          this.logger.warn(
+            maskSecrets(
+              `The ${region} replica of ${tableName} does not hold its declared ${member}, and ` +
+                `setting it failed (${describeAwsFailure(convergeError).summary}). The next ` +
+                `deploy that updates this table tries again.`
+            )
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * What AWS reports for the given settings of one replica. Each read is
+   * best-effort: a failure leaves that setting unknown, and an unknown setting
+   * is never corrected.
+   */
+  private async readLiveReplicaSettings(
+    client: DynamoDBClient,
+    tableName: string,
+    region: string,
+    wanted: ReadonlySet<ReplicaSetting>,
+    describe: () => Promise<{ tableArn?: string; streamArn?: string }>,
+    maskSecrets: SecretMasker
+  ): Promise<LiveReplicaSettings> {
+    const live: LiveReplicaSettings = {};
+    const attempt = async (what: string, read: () => Promise<void>): Promise<void> => {
+      try {
+        await read();
+      } catch (readError) {
+        this.logger.debug(
+          maskSecrets(
+            `Could not read ${what} of the ${region} replica of ${tableName}: ` +
+              describeAwsFailure(readError).detail
+          )
+        );
+      }
+    };
+    if (wanted.has('pitr')) {
+      await attempt('point-in-time recovery', async () => {
+        const out = await client.send(
+          new DescribeContinuousBackupsCommand({ TableName: tableName })
+        );
+        const pitr = out.ContinuousBackupsDescription?.PointInTimeRecoveryDescription;
+        const status = pitr?.PointInTimeRecoveryStatus;
+        // ENABLING / DISABLING are on their way: nothing to correct yet.
+        if (status === 'ENABLED' || status === 'DISABLED') {
+          live.pitr = {
+            enabled: status === 'ENABLED',
+            ...(pitr?.RecoveryPeriodInDays !== undefined && {
+              recoveryPeriodInDays: pitr.RecoveryPeriodInDays,
+            }),
+          };
+        }
+      });
+    }
+    if (wanted.has('contributorInsights')) {
+      await attempt('Contributor Insights', async () => {
+        const out = await client.send(
+          new DescribeContributorInsightsCommand({ TableName: tableName })
+        );
+        const status = out.ContributorInsightsStatus;
+        if (status === 'ENABLED' || status === 'ENABLING') live.contributorInsightsEnabled = true;
+        else if (status === 'DISABLED' || status === 'DISABLING') {
+          live.contributorInsightsEnabled = false;
+        }
+      });
+    }
+    if (wanted.has('kinesis')) {
+      await attempt('the Kinesis streaming destination', async () => {
+        live.kinesisStreamArns = await this.activeKinesisStreamArns(client, tableName);
+      });
+    }
+    const hasPolicy = async (arn: string | undefined): Promise<boolean | undefined> => {
+      if (arn === undefined) return undefined;
+      try {
+        await client.send(new GetResourcePolicyCommand({ ResourceArn: arn }));
+        return true;
+      } catch (error) {
+        if (error instanceof PolicyNotFoundException) return false;
+        throw error;
+      }
+    };
+    if (wanted.has('tablePolicy')) {
+      await attempt('the resource policy', async () => {
+        const answer = await hasPolicy((await describe()).tableArn);
+        if (answer !== undefined) live.hasTablePolicy = answer;
+      });
+    }
+    if (wanted.has('streamPolicy')) {
+      await attempt('the stream resource policy', async () => {
+        const answer = await hasPolicy((await describe()).streamArn);
+        if (answer !== undefined) live.hasStreamPolicy = answer;
+      });
+    }
+    return live;
+  }
+
+  /**
+   * After a refused Kinesis enable / disable: whether the table streams to
+   * `streamArn` now. An interrupt, or a read that fails, rethrows the ORIGINAL
+   * refusal rather than hiding it behind the read's own error.
+   */
+  private async kinesisStreaming(
+    client: DynamoDBClient,
+    tableName: string,
+    streamArn: string,
+    refusal: unknown
+  ): Promise<boolean> {
+    if (isInterruptedWaitError(refusal)) throw refusal;
+    try {
+      return (await this.activeKinesisStreamArns(client, tableName)).has(streamArn);
+    } catch {
+      throw refusal;
+    }
+  }
+
+  /** The Kinesis streams a table streams to (`ACTIVE` or `ENABLING`). */
+  private async activeKinesisStreamArns(
+    client: DynamoDBClient,
+    tableName: string
+  ): Promise<Set<string>> {
+    const out = await client.send(
+      new DescribeKinesisStreamingDestinationCommand({ TableName: tableName })
+    );
+    return new Set(
+      (out.KinesisDataStreamDestinations ?? [])
+        .filter((d) => d.DestinationStatus === 'ACTIVE' || d.DestinationStatus === 'ENABLING')
+        .flatMap((d) => (d.StreamArn !== undefined ? [d.StreamArn] : []))
+    );
+  }
+
+  /**
+   * Send ONE {@link ReplicaSettingOp} through the replica's own region,
+   * retrying the "settling" refusals DynamoDB returns while an earlier change
+   * on the table is still in flight (enabling point-in-time recovery, say).
+   * The policy text is never logged: it names principals and can carry a
+   * resolved secret in a condition value.
+   */
+  private async sendReplicaSettingOp(
+    client: DynamoDBClient,
+    tableName: string,
+    region: string,
+    logicalId: string,
+    op: ReplicaSettingOp,
+    describe: () => Promise<{ tableArn?: string; streamArn?: string }>,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const scope = `the ${region} replica of ${tableName}`;
+    const arnFor = async (which: 'tableArn' | 'streamArn'): Promise<string> => {
+      const arn = (await describe())[which];
+      if (arn === undefined || arn === '') {
+        throw new ProvisioningError(
+          maskSecrets(
+            `Cannot apply ${SETTING_MEMBER[settingOf(op)]} to ${scope}: DescribeTable returned ` +
+              `no ${which === 'tableArn' ? 'TableArn' : 'LatestStreamArn (the table has no stream)'}`
+          ),
+          'AWS::DynamoDB::GlobalTable',
+          logicalId,
+          tableName
+        );
+      }
+      return arn;
+    };
+    const send = (call: () => Promise<unknown>): Promise<void> =>
+      this.retrySettlingRefusal(call, `${op.kind} on ${scope}`, maskSecrets);
+    switch (op.kind) {
+      case 'pitr':
+        await send(() =>
+          client.send(
+            new UpdateContinuousBackupsCommand({
+              TableName: tableName,
+              PointInTimeRecoverySpecification: {
+                PointInTimeRecoveryEnabled: op.enabled,
+                ...(op.recoveryPeriodInDays !== undefined && {
+                  RecoveryPeriodInDays: op.recoveryPeriodInDays,
+                }),
+              },
+            })
+          )
+        );
+        break;
+      case 'contributorInsights':
+        await send(() =>
+          client.send(
+            new UpdateContributorInsightsCommand({
+              TableName: tableName,
+              ContributorInsightsAction: op.action,
+              ...(op.mode !== undefined && {
+                ContributorInsightsMode: op.mode as ContributorInsightsMode,
+              }),
+            })
+          )
+        );
+        break;
+      case 'kinesisEnable':
+        // Already streaming there (a re-run): enabling it again is refused, and
+        // that refusal can be one the settling retry would wait out first.
+        // A read that fails here falls through to the enable, which decides.
+        if (
+          await this.activeKinesisStreamArns(client, tableName).then(
+            (arns) => arns.has(op.streamArn),
+            () => false
+          )
+        ) {
+          break;
+        }
+        try {
+          await send(() =>
+            client.send(
+              new EnableKinesisStreamingDestinationCommand({
+                TableName: tableName,
+                StreamArn: op.streamArn,
+                ...(op.precision !== undefined && {
+                  EnableKinesisStreamingConfiguration: {
+                    ApproximateCreationDateTimePrecision:
+                      op.precision as ApproximateCreationDateTimePrecision,
+                  },
+                }),
+              })
+            )
+          );
+        } catch (error) {
+          // A re-run after a deploy that enabled it and failed before state
+          // recorded it: the destination is what the template asks for.
+          if (!(await this.kinesisStreaming(client, tableName, op.streamArn, error))) throw error;
+        }
+        break;
+      case 'kinesisDisable':
+        try {
+          await send(() =>
+            client.send(
+              new DisableKinesisStreamingDestinationCommand({
+                TableName: tableName,
+                StreamArn: op.streamArn,
+              })
+            )
+          );
+        } catch (error) {
+          // Already off (a re-run, or an out-of-band disable) is the goal.
+          if (await this.kinesisStreaming(client, tableName, op.streamArn, error)) throw error;
+        }
+        break;
+      case 'kinesisPrecision':
+        await send(() =>
+          client.send(
+            new UpdateKinesisStreamingDestinationCommand({
+              TableName: tableName,
+              StreamArn: op.streamArn,
+              UpdateKinesisStreamingConfiguration: {
+                ApproximateCreationDateTimePrecision:
+                  op.precision as ApproximateCreationDateTimePrecision,
+              },
+            })
+          )
+        );
+        break;
+      case 'putTablePolicy':
+      case 'putStreamPolicy': {
+        const arn = await arnFor(op.kind === 'putTablePolicy' ? 'tableArn' : 'streamArn');
+        await send(() =>
+          client.send(new PutResourcePolicyCommand({ ResourceArn: arn, Policy: op.document }))
+        );
+        break;
+      }
+      case 'deleteTablePolicy':
+      case 'deleteStreamPolicy': {
+        // No stream left means no stream policy left: the goal.
+        if (op.kind === 'deleteStreamPolicy' && (await describe()).streamArn === undefined) break;
+        const arn = await arnFor(op.kind === 'deleteTablePolicy' ? 'tableArn' : 'streamArn');
+        try {
+          await send(() => client.send(new DeleteResourcePolicyCommand({ ResourceArn: arn })));
+        } catch (error) {
+          // No policy left to remove is the goal.
+          if (!(error instanceof PolicyNotFoundException)) throw error;
+        }
+        break;
+      }
+    }
+    this.logger.debug(maskSecrets(`Applied ${op.kind} to ${scope}`));
+  }
+
+  /**
+   * Retry a call DynamoDB refused only because an earlier change on the table
+   * is still settling ("Backups are being enabled ... retry later",
+   * `ResourceInUseException`, `LimitExceededException`). Bounded (about two
+   * minutes) and interruptible, like the other waits here.
+   */
+  private async retrySettlingRefusal(
+    call: () => Promise<unknown>,
+    label: string,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const watch = startInterruptWatch(maskSecrets(`DynamoDB ${label}`));
+    try {
+      let delayMs = SETTLING_RETRY_INITIAL_MS;
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await call();
+          return;
+        } catch (error) {
+          const detail = describeAwsFailure(error).detail;
+          const name = error instanceof Error ? error.name : '';
+          const settling =
+            /being enabled|being updated|please retry later|backups are being/i.test(detail) ||
+            name === 'ResourceInUseException' ||
+            name === 'LimitExceededException';
+          if (!settling || attempt >= SETTLING_RETRY_ATTEMPTS) throw error;
+          this.logger.debug(
+            maskSecrets(
+              `Transient refusal of ${label} (attempt ${attempt}/${SETTLING_RETRY_ATTEMPTS}): ` +
+                `${detail} - retrying in ${delayMs}ms`
+            )
+          );
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          if (watch.isInterrupted()) throw watch.onInterrupted();
+          delayMs = Math.min(delayMs * 2, 30000);
+        }
+      }
+    } finally {
+      watch.dispose();
+    }
   }
 
   /**
@@ -2967,6 +3492,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           properties['GlobalSecondaryIndexes'],
           maskSecrets
         );
+      }
+      // go-to-k/cdkd#5365: a replica's point-in-time recovery, Contributor
+      // Insights, Kinesis destination and resource policies, each block read by
+      // the reader the write plan uses — refused only for a replica whose
+      // blocks changed (an unchanged one is not a pending operation).
+      if (refusal === undefined) {
+        refusal = replicaSettingsRefusal(properties, previousProperties);
       }
       if (refusal !== undefined) refuse(refusal);
     } else {
@@ -4533,6 +5065,25 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         deferredSseUpdate,
         deferredSseFromTemplate,
         keylessSseFromTemplate,
+        maskSecrets
+      );
+      // go-to-k/cdkd#5365: the per-replica settings, the local table's
+      // included, after every replica change above has settled. A
+      // `StreamViewType` change minted a new stream, which holds no policy.
+      await this.applyReplicaSettings(
+        physicalId,
+        logicalId,
+        currentRegion,
+        properties,
+        previousProperties,
+        addedReplicaRegions,
+        !deepEqual(
+          asRecord(properties['StreamSpecification'])?.['StreamViewType'],
+          asRecord(previousProperties['StreamSpecification'])?.['StreamViewType']
+        ),
+        context?.replayingState === true || context?.desiredFromAwsReadback === true,
+        context?.desiredFromAwsReadback === true,
+        warn,
         maskSecrets
       );
 
@@ -8258,6 +8809,76 @@ export function localReplicaEntry(
   ) as Record<string, unknown> | undefined;
 }
 
+/** The replica members {@link replicaSettingsRefusal} reads. */
+const REPLICA_SETTING_MEMBERS = [
+  'PointInTimeRecoverySpecification',
+  'ContributorInsightsSpecification',
+  'KinesisStreamSpecification',
+  'ResourcePolicy',
+  'ReplicaStreamSpecification',
+] as const;
+
+/**
+ * The template-path refusal for the per-replica settings go-to-k/cdkd#5365
+ * wires, or `undefined`. `previousProperties` is `undefined` on a create.
+ *
+ *  - A block the write plan cannot read, on a replica whose blocks changed (an
+ *    unchanged one is not a pending operation).
+ *  - A `ResourcePolicy` on a replica created in the same deploy, which
+ *    CloudFormation refuses ("A replica cannot be created in the same stack
+ *    update as putting a resource-based policy on that new replica", measured
+ *    us-east-1 + us-west-2, 2026-10-27): on a create with a cross-region
+ *    replica that is every replica's, the deploy region's included (a
+ *    single-region create takes it); on an update, an added replica's
+ *    (measured the same day: an update adding a replica that declares one is
+ *    refused with the same message and rolled back).
+ *
+ * Names the region (an AWS region name, never a secret) and the member path,
+ * never a value.
+ */
+export function replicaSettingsRefusal(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown> | undefined,
+  currentRegion?: string
+): string | undefined {
+  const desired = Array.isArray(properties['Replicas'])
+    ? (properties['Replicas'] as unknown[])
+    : [];
+  const crossRegionCreate =
+    previousProperties === undefined &&
+    desired.some((entry) => {
+      const region = asRecord(entry)?.['Region'];
+      return typeof region === 'string' && region !== currentRegion;
+    });
+  for (const entry of desired) {
+    const replica = asRecord(entry);
+    const region = replica?.['Region'];
+    if (typeof region !== 'string') continue;
+    const previous =
+      previousProperties === undefined ? undefined : localReplicaEntry(previousProperties, region);
+    const changed =
+      previous === undefined ||
+      REPLICA_SETTING_MEMBERS.some((member) => !deepEqual(replica?.[member], previous[member]));
+    if (!changed) continue;
+    const [refusal] = replicaSettingRefusals(replica);
+    if (refusal !== undefined) return `The ${region} replica: ${refusal}`;
+    const created = previousProperties === undefined ? crossRegionCreate : previous === undefined;
+    if (
+      created &&
+      replica?.['ResourcePolicy'] !== undefined &&
+      replica['ResourcePolicy'] !== null
+    ) {
+      return (
+        `The ${region} replica: Replicas[].ResourcePolicy cannot be set in the deploy that ` +
+        `creates the replica — CloudFormation refuses it ("A replica cannot be created in the ` +
+        `same stack update as putting a resource-based policy on that new replica"). Deploy the ` +
+        `replica without it, then add the policy in a later deploy`
+      );
+    }
+  }
+  return undefined;
+}
+
 /**
  * Extract the local replica's `DeletionProtectionEnabled` from a CFn
  * properties shape. The `AWS::DynamoDB::GlobalTable` CFn schema places
@@ -8762,6 +9383,13 @@ export const DELETION_PROTECTION_REFLIP_MS = 16_000;
  */
 export const REPLICA_PROTECTION_SETTLE_POLLS = 60;
 export const REPLICA_PROTECTION_SETTLE_POLL_MS = 5000;
+/**
+ * {@link DynamoDBGlobalTableProvider.retrySettlingRefusal}'s schedule: 8
+ * attempts, 2 s doubling to a 30 s cap — about two minutes, the bound the
+ * `AWS::DynamoDB::Table` provider's twin uses for the same refusals.
+ */
+export const SETTLING_RETRY_ATTEMPTS = 8;
+export const SETTLING_RETRY_INITIAL_MS = 2000;
 /** Replica-add attempts in total, the first included. */
 export const REPLICA_COPY_RELEASE_ATTEMPTS = 3;
 
