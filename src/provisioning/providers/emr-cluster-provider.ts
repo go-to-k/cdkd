@@ -1056,7 +1056,12 @@ export class EMRClusterProvider implements ResourceProvider {
             const shape = shapeOf(c);
             return (
               shape === undefined ||
-              Object.entries(want).every(([key, value]) => shape[key] === value)
+              Object.entries(want).every(([key, value]) =>
+                // A bid price is a decimal string: "0.1" and "0.10" are one price.
+                key === 'BidPrice'
+                  ? Number.parseFloat(String(shape[key])) === Number.parseFloat(String(value))
+                  : shape[key] === value
+              )
             );
           });
           byShape = true;
@@ -1391,7 +1396,9 @@ export class EMRClusterProvider implements ResourceProvider {
           return safeMsg`Instances.${resize.path}.${key} is not a number, so cdkd cannot resize to it.`;
         }
         if (refuseRemoval && resize.next[key] === undefined && resize.prev[key] !== undefined) {
-          return safeMsg`removing Instances.${resize.path}.${key} fails under CloudFormation too (ModifyInstanceFleet needs both capacities). Declare it explicitly instead (0 for none).`;
+          return key === 'InstanceCount'
+            ? safeMsg`removing Instances.${resize.path}.${key} is refused: CloudFormation requires it, and sending none would scale the group to 0. Declare it explicitly instead.`
+            : safeMsg`removing Instances.${resize.path}.${key} fails under CloudFormation too (ModifyInstanceFleet needs both capacities). Declare it explicitly instead (0 for none).`;
         }
       }
       return undefined;
@@ -1408,12 +1415,17 @@ export class EMRClusterProvider implements ResourceProvider {
         if (!context?.replayingState) {
           throw new ResourceUpdateNotSupportedError(resourceType, logicalId, message);
         }
-        this.logger.warn(safeMsg`${message} The rollback leaves the live size in place.`);
+        this.logger.warn(
+          keys.includes('InstanceCount') &&
+            !jsonEqual(resize.prev['AutoScalingPolicy'], resize.next['AutoScalingPolicy'])
+            ? safeMsg`${message} The rollback leaves the live size in place, and the group's AutoScalingPolicy change is not applied either.`
+            : safeMsg`${message} The rollback leaves the live size in place.`
+        );
         return false;
       });
     instancesPlan = {
       ...instancesPlan,
-      groups: keepNumeric(instancesPlan.groups, ['InstanceCount']),
+      groups: keepNumeric(instancesPlan.groups, ['InstanceCount'], true),
       fleets: keepNumeric(instancesPlan.fleets, FLEET_IN_PLACE_MEMBERS, true),
     };
 

@@ -60,6 +60,13 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../../../src/utils/error-handler.js';
 import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
+import { getLogger } from '../../../../src/utils/logger.js';
+
+/** The provider's child logger (the mock hands out one object). */
+const providerWarn = (): string[] =>
+  (getLogger().child('EMRClusterProvider') as unknown as {
+    warn: { mock: { calls: unknown[][] } };
+  }).warn.mock.calls.map((c) => String(c[0]));
 
 const RESOURCE_TYPE = 'AWS::EMR::Cluster';
 const CLUSTER_ID = 'j-1A2B3C4D5E6F7';
@@ -924,6 +931,24 @@ describe('EMRClusterProvider update', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    it('refuses removing a group InstanceCount instead of scaling the group to 0', async () => {
+      const { InstanceCount: _count, ...uncounted } = core(1);
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({ CoreInstanceGroup: uncounted }),
+          withInstances({ CoreInstanceGroup: core(1) })
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((err as Error).message).toContain(
+        'removing Instances.CoreInstanceGroup.InstanceCount is refused'
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     it('keeps the live size on a rollback replay whose capacity is a masked value', async () => {
       routeSend({ DescribeClusterCommand: clusterOf('WAITING') });
       const fleet = (onDemand: unknown) => ({
@@ -941,6 +966,49 @@ describe('EMRClusterProvider update', () => {
       );
       expect(result.wasReplaced).toBe(false);
       expect(callsOf(ModifyInstanceFleetCommand)).toHaveLength(0);
+    });
+
+    it('says a replay skips the AutoScalingPolicy change beside a masked count', async () => {
+      routeSend({ DescribeClusterCommand: clusterOf('WAITING') });
+      const POLICY = { Constraints: { MinCapacity: 1, MaxCapacity: 3 }, Rules: [] };
+      await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ CoreInstanceGroup: { ...core(1), InstanceCount: '***', AutoScalingPolicy: POLICY } }),
+        withInstances({ CoreInstanceGroup: core(2) }),
+        { replayingState: true }
+      );
+      expect(providerWarn().some((line) => line.includes("AutoScalingPolicy change is not applied either"))).toBe(true);
+      expect(callsOf(PutAutoScalingPolicyCommand)).toHaveLength(0);
+    });
+
+    it('matches an unnamed SPOT task group by its bid price numerically', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: {
+          InstanceGroups: [
+            coreGroup(1),
+            { ...taskGroup('ig-a', 'a', 1), InstanceType: 'm5.xlarge', Market: 'SPOT', BidPrice: '0.2' },
+            { ...taskGroup('ig-b', 'b', 3), InstanceType: 'm5.xlarge', Market: 'SPOT', BidPrice: '0.1' },
+          ],
+        },
+        ModifyInstanceGroupsCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const tasks = (count: number) => [
+        { InstanceCount: 1, InstanceType: 'm5.xlarge', Market: 'SPOT', BidPrice: '0.20' },
+        { InstanceCount: count, InstanceType: 'm5.xlarge', Market: 'SPOT', BidPrice: '0.10' },
+      ];
+      await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ TaskInstanceGroups: tasks(3) }),
+        withInstances({ TaskInstanceGroups: tasks(1) })
+      );
+      expect(callsOf(ModifyInstanceGroupsCommand)[0]!.input['InstanceGroups']).toEqual([
+        { InstanceGroupId: 'ig-b', InstanceCount: 3 },
+      ]);
     });
 
     it('tells an unnamed SPOT task group from an ON_DEMAND one of the same type', async () => {
