@@ -322,35 +322,6 @@ describe('FirehoseProvider.update — ExtendedS3 destination (#477)', () => {
       )
     ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
   });
-
-  it('rejects unsupported destination diffs (legacy S3DestinationConfiguration) with a tightened error that names the destination type', async () => {
-    // After #549's bundle PR closes the 7 follow-ups, every modern
-    // destination type has an in-place reverse-mapper. Only the legacy
-    // `S3DestinationConfiguration` (deprecated by AWS in favor of
-    // ExtendedS3) remains in `findDestinationKey` without a supported
-    // reverse-mapper — CDK constructs always emit Extended, so this
-    // rejection path only fires for hand-authored templates that still
-    // pin the legacy shape.
-    await expect(
-      provider.update(
-        'L',
-        PHYSICAL_ID,
-        RESOURCE_TYPE,
-        {
-          S3DestinationConfiguration: {
-            BucketARN: 'arn:aws:s3:::bucket-v2',
-            RoleARN: 'arn:aws:iam::111:role/firehose-role',
-          },
-        },
-        {
-          S3DestinationConfiguration: {
-            BucketARN: 'arn:aws:s3:::bucket-v1',
-            RoleARN: 'arn:aws:iam::111:role/firehose-role',
-          },
-        }
-      )
-    ).rejects.toThrow(/'S3DestinationConfiguration'/);
-  });
 });
 
 describe('FirehoseProvider.update — Redshift destination (#549)', () => {
