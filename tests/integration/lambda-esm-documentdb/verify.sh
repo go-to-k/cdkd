@@ -241,8 +241,21 @@ VPCS=$(aws ec2 describe-vpcs --region "${REGION}" --filters "Name=tag:Name,Value
   --query 'Vpcs[].VpcId' --output text)
 [ -n "${VPCS}" ] && { echo "FAIL: VPC(s) ${VPCS} tagged ${STACK}/Vpc still exist after destroy" >&2; exit 1; }
 echo "    OK: VPC gone"
-assert_gone "secret ${SECRET} still exists after destroy" \
-  aws secretsmanager describe-secret --secret-id "${SECRET}" --region "${REGION}"
+# POLLED, not probed once: `DeleteSecret` is asynchronous, so `describe-secret`
+# can still resolve for a few seconds after a force delete returns.
+SECRET_GONE=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if gone_probe aws secretsmanager describe-secret --secret-id "${SECRET}" --region "${REGION}"; then
+    SECRET_GONE=1
+    break
+  fi
+  sleep 5
+done
+if [ "${SECRET_GONE}" -ne 1 ]; then
+  echo "FAIL: secret ${SECRET} still exists 60s after destroy" >&2
+  exit 1
+fi
+echo "    OK: secret gone"
 assert_gone "state remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state gone"
 aws logs delete-log-group --log-group-name "/aws/lambda/${FN}" --region "${REGION}" >/dev/null 2>&1 || true
