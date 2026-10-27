@@ -17,7 +17,9 @@
 #      (provisionedBy=sdk).
 #   2. Re-deploy with CDKD_TEST_UPDATE=true: ThroughputCapacity 64 -> 128
 #      (UpdateFileSystem — a mutable OpenZFSConfiguration sub-property) +
-#      tag value change AND tag removal (TagResource / UntagResource).
+#      tag value change AND tag removal (TagResource / UntagResource) +
+#      OpenZFSConfiguration.Options DELETE_CHILD_VOLUMES_AND_SNAPSHOTS added
+#      (go-to-k/cdkd#5431: a delete-time option, accepted with nothing sent).
 #      Assert the FileSystemId is UNCHANGED (in-place update, no
 #      replacement).
 #   2.5. `cdkd drift` must be CLEAN on the untouched file system (issue
@@ -36,6 +38,9 @@
 #      CloudFormation keeping it on MULTI_AZ_1 only, so on this SINGLE_AZ_1
 #      file system the warning must claim nothing about CloudFormation, and
 #      the value (128) must stay on the same file system.
+#   2d. Create a child volume under the root volume, outside the stack
+#      (go-to-k/cdkd#5431). FSx refuses to delete a file system with child
+#      volumes unless DeleteFileSystem carries the Options above.
 #   3. Destroy + assert the file system is GONE from AWS (by id AND by the
 #      fixture's constant tag — an FSx file system bills per hour, so a
 #      leftover is never acceptable) and the cdkd state file is removed.
@@ -88,6 +93,8 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 CLEANUP_TAG_KEY="cdkd-integ"
 CLEANUP_TAG_VALUE="fsx-openzfs"
+# go-to-k/cdkd#5431: the child volume Phase 2d creates outside the stack.
+CHILD_VOLUME_NAME="cdkd_child"
 # Phase 2b (issue #1160): the provider's removal warning. The needle names the
 # removed properties in the provider's order; the sentinel is an independent
 # substring of the same line, so a reworded warning fails loudly instead of
@@ -152,7 +159,9 @@ cleanup() {
   # wait until it is gone (its ENIs block the VPC teardown below).
   for fsid in $(tagged_fs_ids); do
     echo "    deleting leftover FSx file system ${fsid}"
-    aws fsx delete-file-system --file-system-id "${fsid}" --region "${REGION}" >/dev/null 2>&1
+    # Phase 2d's child volume goes with it (go-to-k/cdkd#5431).
+    aws fsx delete-file-system --file-system-id "${fsid}" --region "${REGION}" \
+      --open-zfs-configuration 'Options=DELETE_CHILD_VOLUMES_AND_SNAPSHOTS' >/dev/null 2>&1
     wait_fs_gone "${fsid}"
   done
   # Best-effort teardown of the fixture VPC (found via the CDK Name tag).
@@ -294,7 +303,11 @@ env -u CDKD_TEST_REMOVAL -u CDKD_TEST_MAINT_ALT -u CDKD_TEST_TP_REMOVAL CDKD_TES
 PHASE2_RC=${PIPESTATUS[0]}
 set -e
 if [ "${PHASE2_RC}" -ne 0 ]; then
-  echo "FAIL [phase 2]: deploy exited ${PHASE2_RC}" >&2
+  if sed 's/\x1b\[[0-9;]*m//g' "${PHASE2_LOG}" | grep -qF "OpenZFSConfiguration.Options is immutable"; then
+    echo "FAIL [phase 2]: adding OpenZFSConfiguration.Options was refused as immutable (issue #5431: it is a DeleteFileSystem option, CFn 'Update requires: No interruption')" >&2
+  else
+    echo "FAIL [phase 2]: deploy exited ${PHASE2_RC}" >&2
+  fi
   exit 1
 fi
 # Negative control for Phase 2b's needle: this deploy removes no top-level
@@ -494,12 +507,49 @@ if [ "${TP_P2C_AFTER}" != "${TP_P2C_BEFORE}" ]; then
 fi
 echo "    ThroughputCapacity left in place (${TP_P2C_AFTER})"
 
+# --- Phase 2d: a child volume outside the stack (issue #5431) ------------
+# FSx refuses DeleteFileSystem on a file system with child volumes unless it
+# carries OpenZFSConfiguration.Options DELETE_CHILD_VOLUMES_AND_SNAPSHOTS,
+# which the template declares from Phase 2. The volume is made with the CLI,
+# not the stack, so the destroy cannot delete it first.
+echo "==> Phase 2d: create child volume ${CHILD_VOLUME_NAME} under ${ROOTVOL_OUT}"
+CHILD_VOLUME_ID="$(aws fsx create-volume --volume-type OPENZFS --name "${CHILD_VOLUME_NAME}" \
+  --open-zfs-configuration "ParentVolumeId=${ROOTVOL_OUT}" \
+  --tags "Key=${CLEANUP_TAG_KEY},Value=${CLEANUP_TAG_VALUE}" \
+  --region "${REGION}" --query 'Volume.VolumeId' --output text)"
+if [ -z "${CHILD_VOLUME_ID}" ] || [ "${CHILD_VOLUME_ID}" = "None" ]; then
+  echo "FAIL [phase 2d]: create-volume returned no volume id" >&2
+  exit 1
+fi
+CHILD_LIFECYCLE=""
+CHILD_DEADLINE=$((SECONDS + 900))
+while [ ${SECONDS} -lt ${CHILD_DEADLINE} ]; do
+  CHILD_LIFECYCLE="$(aws fsx describe-volumes --volume-ids "${CHILD_VOLUME_ID}" --region "${REGION}" \
+    --query 'Volumes[0].Lifecycle' --output text)"
+  [ "${CHILD_LIFECYCLE}" = "AVAILABLE" ] && break
+  sleep 15
+done
+if [ "${CHILD_LIFECYCLE}" != "AVAILABLE" ]; then
+  echo "FAIL [phase 2d]: child volume ${CHILD_VOLUME_ID} did not become AVAILABLE (last '${CHILD_LIFECYCLE}')" >&2
+  exit 1
+fi
+echo "    child volume ${CHILD_VOLUME_ID} is AVAILABLE"
+
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy (FSx deletion takes a few minutes)"
+set +e
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+DESTROY_RC=$?
+set -e
+if [ "${DESTROY_RC}" -ne 0 ]; then
+  echo "FAIL [phase 3]: destroy exited ${DESTROY_RC} with child volume ${CHILD_VOLUME_ID} present (issue #5431: DeleteFileSystem must carry the recorded OpenZFSConfiguration.Options)" >&2
+  exit 1
+fi
 
 assert_gone "FSx file system ${FS_ID_P2} still exists after destroy" aws fsx describe-file-systems --file-system-ids "${FS_ID_P2}" --region "${REGION}"
 echo "    file system deleted (by id)"
+assert_gone "child volume ${CHILD_VOLUME_ID} still exists after destroy" aws fsx describe-volumes --volume-ids "${CHILD_VOLUME_ID}" --region "${REGION}"
+echo "    child volume deleted with it"
 
 LEFTOVERS="$(tagged_fs_ids)"
 if [ -n "${LEFTOVERS}" ]; then
