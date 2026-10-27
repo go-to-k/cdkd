@@ -19,6 +19,12 @@
 # CloudWatch role: apigw-stage-props, apigw-stage-throttling, and
 # apigw-cloudwatch-role-redeploy (#5084).
 #
+# The same redeploy changes an Authorizer's Type (REQUEST -> TOKEN) and a
+# standalone Deployment's Description, and asserts both were updated in place,
+# as CloudFormation updates them (issue #5391, A/B in us-east-1). A further
+# redeploy (CDKD_TEST_DEPLOYMENT_DESCRIPTION_REMOVAL=true) removes the
+# Description and asserts it is cleared on the same deployment.
+#
 # Then destroys and confirms a clean teardown.
 #
 # Required env vars:
@@ -156,7 +162,7 @@ cleanup() {
   # should run as much as it can with the env it has.
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
-    env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
+    env -u CDKD_TEST_REMOVAL -u CDKD_TEST_DEPLOYMENT_DESCRIPTION_REMOVAL node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   # After the destroy: it clears the account's CloudWatch role.
   if ! restore_account_role; then
@@ -285,6 +291,25 @@ if [ "${AUTHORIZER_AUTH_TYPE}" != "custom" ]; then
 fi
 echo "    OK: Authorizer authType == 'custom' on AWS (AuthType backfill CLOSED)"
 
+# --- Assertion 3b: baselines for the #5391 in-place updates in Phase 1b ---
+AUTHORIZER_ID=$(echo "${AUTHORIZERS}" | jq -r '.items[] | select(.name == "cdkd-request-authorizer") | .id // empty')
+AUTHORIZER_TYPE=$(echo "${AUTHORIZERS}" | jq -r '.items[] | select(.name == "cdkd-request-authorizer") | .type // empty')
+if [ -z "${AUTHORIZER_ID}" ] || [ "${AUTHORIZER_TYPE}" != "REQUEST" ]; then
+  echo "FAIL: Authorizer cdkd-request-authorizer is id '${AUTHORIZER_ID}' type '${AUTHORIZER_TYPE}', expected a REQUEST authorizer" >&2
+  exit 1
+fi
+# Ids of the API's deployments carrying the given description, one per line.
+deployments_described() { # usage: deployments_described <description>
+  aws apigateway get-deployments --rest-api-id "${API_ID}" --region "${REGION}" \
+    --output json | jq -r --arg d "$1" '.items[] | select(.description == $d) | .id'
+}
+DESCRIBED_DEPLOYMENT_ID=$(deployments_described cdkd-5391-v1)
+if [ -z "${DESCRIBED_DEPLOYMENT_ID}" ] || [ "$(printf '%s\n' "${DESCRIBED_DEPLOYMENT_ID}" | wc -l | tr -d " ")" -ne 1 ]; then
+  echo "FAIL: expected exactly one deployment described 'cdkd-5391-v1', got: '${DESCRIBED_DEPLOYMENT_ID}'" >&2
+  exit 1
+fi
+echo "    OK: REQUEST authorizer ${AUTHORIZER_ID} and deployment ${DESCRIBED_DEPLOYMENT_ID} described 'cdkd-5391-v1' (baselines for #5391)"
+
 # --- Assertion 4: {proxy+} ANY method routes to the Lambda ------------
 # The greedy proxy resource + ANY method (the LambdaRestApi proxy pattern). A
 # curl to an arbitrary sub-path must reach the Lambda — proving the {proxy+}
@@ -344,7 +369,7 @@ echo "    OK: account CloudWatch role == the fixture role (baseline for the #116
 # CloudFormation clears the account's role ARN when the property is removed
 # (A/B, us-east-1). Pre-fix, cdkd sent UpdateAccount with an empty patch list,
 # which succeeds and keeps the role ARN.
-echo "==> Phase 1b: redeploy with CDKD_TEST_REMOVAL=true (Account drops CloudWatchRoleArn)"
+echo "==> Phase 1b: redeploy with CDKD_TEST_REMOVAL=true (Account drops CloudWatchRoleArn; Authorizer Type and Deployment Description change)"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -357,9 +382,46 @@ if [ -n "${ACCOUNT_ROLE_NOW}" ]; then
 fi
 echo "    OK: removed CloudWatchRoleArn cleared the account's CloudWatch role (issue #1160)"
 
+# --- Phase 1b (issue #5391): the Authorizer Type and Deployment Description
+# changes were applied in place, as CloudFormation applies them (A/B, us-east-1:
+# both kept their ids). Pre-fix, the Type change sent nothing and the
+# Description change failed the redeploy above.
+AUTHORIZER_AFTER=$(aws apigateway get-authorizer --rest-api-id "${API_ID}" \
+  --authorizer-id "${AUTHORIZER_ID}" --region "${REGION}" --query type --output text)
+if [ "${AUTHORIZER_AFTER}" != "TOKEN" ]; then
+  echo "FAIL: Authorizer ${AUTHORIZER_ID} type is '${AUTHORIZER_AFTER}' after the template changed it to TOKEN (issue #5391)" >&2
+  exit 1
+fi
+echo "    OK: Authorizer ${AUTHORIZER_ID} type changed REQUEST -> TOKEN in place (issue #5391)"
+
+DESCRIBED_AFTER=$(aws apigateway get-deployment --rest-api-id "${API_ID}" \
+  --deployment-id "${DESCRIBED_DEPLOYMENT_ID}" --region "${REGION}" --query description --output text)
+if [ "${DESCRIBED_AFTER}" != "cdkd-5391-v2" ]; then
+  echo "FAIL: deployment ${DESCRIBED_DEPLOYMENT_ID} description is '${DESCRIBED_AFTER}', expected 'cdkd-5391-v2' (issue #5391)" >&2
+  exit 1
+fi
+echo "    OK: deployment ${DESCRIBED_DEPLOYMENT_ID} description updated in place to 'cdkd-5391-v2' (issue #5391)"
+
+# --- Phase 1c (issue #5391): REMOVE the Deployment Description. CloudFormation
+# clears it (A/B, us-east-1: the field is then absent); cdkd sends
+# `replace /description ''`. Same deployment id.
+echo "==> Phase 1c: redeploy with CDKD_TEST_DEPLOYMENT_DESCRIPTION_REMOVAL=true (Deployment drops Description)"
+CDKD_TEST_REMOVAL=true CDKD_TEST_DEPLOYMENT_DESCRIPTION_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+DESCRIBED_CLEARED=$(aws apigateway get-deployment --rest-api-id "${API_ID}" \
+  --deployment-id "${DESCRIBED_DEPLOYMENT_ID}" --region "${REGION}" --query description --output text)
+if [ "${DESCRIBED_CLEARED}" != "None" ] && [ -n "${DESCRIBED_CLEARED}" ]; then
+  echo "FAIL: deployment ${DESCRIBED_DEPLOYMENT_ID} description is '${DESCRIBED_CLEARED}' after Description was removed; CloudFormation clears it (issue #5391)" >&2
+  exit 1
+fi
+echo "    OK: deployment ${DESCRIBED_DEPLOYMENT_ID} description cleared in place after removal (issue #5391)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
-CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" destroy "${STACK}" \
+CDKD_TEST_REMOVAL=true CDKD_TEST_DEPLOYMENT_DESCRIPTION_REMOVAL=true node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
