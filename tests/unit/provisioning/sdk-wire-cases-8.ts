@@ -15,7 +15,7 @@ import { LAMBDAWEB_CASES } from './sdk-wire-cases-8-lambdaweb.js';
  * only.
  *
  * The other candidates of this batch stay uncovered behind the provider bugs
- * their draft cases found: ApiGatewayV2 (#5390), ApiGateway (#5391) and ECS
- * (#5392).
+ * their draft cases found: ApiGatewayV2 (#5390), ApiGateway (#5391), ECS
+ * (#5392), ELBv2 (#5394) and the S3 bucket (#5395).
  */
 export const CASES_8: TypeCase[] = [...CLOUDFRONT_CASES, ...LAMBDAWEB_CASES];
