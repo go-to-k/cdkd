@@ -883,13 +883,103 @@ describe('EMRClusterProvider update', () => {
       }
     });
 
+    it('refuses a count that is present but not a number, before any call', async () => {
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({ CoreInstanceGroup: { ...core(1), InstanceCount: { Ref: 'Count' } } }),
+          withInstances({ CoreInstanceGroup: core(1) })
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((err as Error).message).toContain(
+        'Instances.CoreInstanceGroup.InstanceCount is not a number'
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('keeps the live size on a rollback replay whose capacity is a masked value', async () => {
+      routeSend({ DescribeClusterCommand: clusterOf('WAITING') });
+      const fleet = (onDemand: unknown) => ({
+        Name: 'Core',
+        TargetOnDemandCapacity: onDemand,
+        InstanceTypeConfigs: [{ InstanceType: 'm5.xlarge' }],
+      });
+      const result = await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ CoreInstanceFleet: fleet('***') }),
+        withInstances({ CoreInstanceFleet: fleet(2) }),
+        { replayingState: true }
+      );
+      expect(result.wasReplaced).toBe(false);
+      expect(callsOf(ModifyInstanceFleetCommand)).toHaveLength(0);
+    });
+
+    it('tells an unnamed SPOT task group from an ON_DEMAND one of the same type', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: {
+          InstanceGroups: [
+            coreGroup(1),
+            { ...taskGroup('ig-od', 'a', 1), InstanceType: 'm5.xlarge', Market: 'ON_DEMAND' },
+            { ...taskGroup('ig-spot', 'b', 4), InstanceType: 'm5.xlarge', Market: 'SPOT' },
+          ],
+        },
+        ModifyInstanceGroupsCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const tasks = (count: number) => [
+        { InstanceCount: 1, InstanceType: 'm5.xlarge' },
+        { InstanceCount: count, InstanceType: 'm5.xlarge', Market: 'SPOT' },
+      ];
+      await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ TaskInstanceGroups: tasks(4) }),
+        withInstances({ TaskInstanceGroups: tasks(2) })
+      );
+      expect(callsOf(ModifyInstanceGroupsCommand)[0]!.input['InstanceGroups']).toEqual([
+        { InstanceGroupId: 'ig-spot', InstanceCount: 4 },
+      ]);
+    });
+
+    it('refuses two indistinguishable unnamed task groups without advising a Name', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: {
+          InstanceGroups: [
+            coreGroup(1),
+            { ...taskGroup('ig-1', 'a', 1), InstanceType: 'm5.xlarge', Market: 'ON_DEMAND' },
+            { ...taskGroup('ig-2', 'b', 1), InstanceType: 'm5.xlarge', Market: 'ON_DEMAND' },
+          ],
+        },
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const tasks = (count: number) => [{ InstanceCount: count, InstanceType: 'm5.xlarge' }];
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({ TaskInstanceGroups: tasks(2) }),
+          withInstances({ TaskInstanceGroups: tasks(1) })
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect((err as Error).message).toContain('giving the entry a Name now would replace the cluster');
+      expect(callsOf(ModifyInstanceGroupsCommand)).toHaveLength(0);
+    });
+
     it('finds an unnamed task group by its instance type', async () => {
       routeSend({
         ListInstanceGroupsCommand: {
           InstanceGroups: [
             coreGroup(1),
-            { ...taskGroup('ig-small', 'x', 1), InstanceType: 'm5.large' },
-            { ...taskGroup('ig-big', 'y', 3), InstanceType: 'm5.xlarge' },
+            { ...taskGroup('ig-small', 'x', 1), InstanceType: 'm5.large', Market: 'ON_DEMAND' },
+            { ...taskGroup('ig-big', 'y', 3), InstanceType: 'm5.xlarge', Market: 'ON_DEMAND' },
           ],
         },
         ModifyInstanceGroupsCommand: {},

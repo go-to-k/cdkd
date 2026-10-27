@@ -1029,7 +1029,7 @@ export class EMRClusterProvider implements ResourceProvider {
       candidates: T[],
       resize: InstancesResize,
       kind: string,
-      instanceTypeOf: (candidate: T) => string | undefined
+      shapeOf: (candidate: T) => Record<string, string | undefined> | undefined
     ): string => {
       const name = resize.next['Name'];
       // The member that ADDRESSES a TASK group or fleet (CORE goes by role).
@@ -1040,20 +1040,37 @@ export class EMRClusterProvider implements ResourceProvider {
           `its ${matchKey} is a secret reference, which cannot address an instance ${kind}; declare it literally`
         );
       }
-      const instanceType = resize.next['InstanceType'];
       let matches = candidates;
+      let byShape = false;
       if (resize.type === 'TASK') {
         if (typeof name === 'string') {
           matches = candidates.filter((c) => c.Name === name);
-        } else if (typeof instanceType === 'string') {
-          matches = candidates.filter((c) => instanceTypeOf(c) === instanceType);
+        } else {
+          // An unnamed task group: its instance type, market (CloudFormation's
+          // default ON_DEMAND) and bid price, so an ON_DEMAND + SPOT pair of
+          // one type is told apart. A fleet has no such shape.
+          const want: Record<string, unknown> = {
+            InstanceType: resize.next['InstanceType'],
+            Market: resize.next['Market'] ?? 'ON_DEMAND',
+            ...(resize.next['BidPrice'] !== undefined && { BidPrice: resize.next['BidPrice'] }),
+          };
+          matches = candidates.filter((c) => {
+            const shape = shapeOf(c);
+            return (
+              shape === undefined ||
+              Object.entries(want).every(([key, value]) => shape[key] === value)
+            );
+          });
+          byShape = true;
         }
       }
       if (matches.length !== 1 || matches[0]!.Id === undefined) {
         refuse(
           resize,
           `found ${String(matches.length)} matching ${resize.type} instance ${kind}s, expected exactly one` +
-            (resize.type === 'TASK' ? ' (declare a unique Name to tell them apart)' : '')
+            (byShape && matches.length > 1
+              ? ' (cdkd cannot tell them apart; giving the entry a Name now would replace the cluster)'
+              : '')
         );
       }
       return matches[0]!.Id!;
@@ -1077,7 +1094,7 @@ export class EMRClusterProvider implements ResourceProvider {
           groups.filter((g) => g.InstanceGroupType === resize.type),
           resize,
           'group',
-          (g) => g.InstanceType
+          (g) => ({ InstanceType: g.InstanceType, Market: g.Market, BidPrice: g.BidPrice })
         ),
       })),
       fleets: plan.fleets.map((resize) => ({
@@ -1099,18 +1116,25 @@ export class EMRClusterProvider implements ResourceProvider {
    * `RemoveAutoScalingPolicy` / `ModifyInstanceFleet` and wait for the resize to
    * settle, so the two paths share one resize and one wait. One at a time,
    * since EMR refuses a resize while another is in progress, under ONE shared
-   * wait budget (`maxWaitMs`), so the sum stays inside
-   * `getMinResourceTimeoutMs()`. A delegate's failure is re-stated for the
-   * cluster, naming the `Instances` path.
+   * wait budget (`maxWaitMs` from the start of `update()`), so the sum stays
+   * inside `getMinResourceTimeoutMs()`. A delegate's failure is re-stated for
+   * the cluster, naming the `Instances` path. The group delegate waits for
+   * `RunningInstanceCount` to equal the requested count, so a managed-scaling
+   * or auto-scaling policy that holds the group elsewhere keeps it waiting
+   * until the budget runs out (the delegate's own behaviour).
+   *
+   * Not atomic: a `Set*` call or resize that succeeded stays applied when a
+   * later one fails. State keeps the old values, so the next deploy converges;
+   * a rollback that reverts a group EMR still reads `RESIZING` can be refused.
    */
   private async applyInstancesResizes(
     logicalId: string,
     clusterId: string,
     targets: InstancesTargets,
+    deadline: number,
     mask: MaskerFn | undefined
   ): Promise<void> {
     if (targets.groups.length === 0 && targets.fleets.length === 0) return;
-    const deadline = Date.now() + this.maxWaitMs;
     const options = (resize: InstancesResize): { pollIntervalMs: number; maxWaitMs: number } => {
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
@@ -1199,6 +1223,8 @@ export class EMRClusterProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    // The ONE wait budget every resize below shares (applyInstancesResizes).
+    const resizeDeadline = Date.now() + this.maxWaitMs;
 
     const changed = (key: string): boolean => !jsonEqual(properties[key], previousProperties[key]);
 
@@ -1349,6 +1375,34 @@ export class EMRClusterProvider implements ResourceProvider {
       instancesPlan = { ...instancesPlan, unhealthyNodeReplacement: false };
     }
 
+    // A count or capacity that is PRESENT but not a number (a `***` NoEcho
+    // value on a rollback replay, an intrinsic left unresolved) would reach
+    // the delegates as absent and be sent as 0, scaling a TASK group or fleet
+    // away. Refused before any call; a replay keeps the live size and warns.
+    const notNumeric = (resize: InstancesResize, keys: readonly string[]): string | undefined =>
+      keys.find(
+        (key) => resize.next[key] !== undefined && toNumber(resize.next[key]) === undefined
+      );
+    const keepNumeric = (
+      resizes: readonly InstancesResize[],
+      keys: readonly string[]
+    ): InstancesResize[] =>
+      resizes.filter((resize) => {
+        const key = notNumeric(resize, keys);
+        if (key === undefined) return true;
+        const message = safeMsg`${logicalId} (AWS::EMR::Cluster): Instances.${resize.path}.${key} is not a number, so cdkd cannot resize to it.`;
+        if (!context?.replayingState) {
+          throw new ResourceUpdateNotSupportedError(resourceType, logicalId, message);
+        }
+        this.logger.warn(safeMsg`${message} The rollback leaves the live size in place.`);
+        return false;
+      });
+    instancesPlan = {
+      ...instancesPlan,
+      groups: keepNumeric(instancesPlan.groups, ['InstanceCount']),
+      fleets: keepNumeric(instancesPlan.fleets, FLEET_IN_PLACE_MEMBERS),
+    };
+
     // Every refusal above came first: now find what each resize addresses,
     // still before any call that changes AWS.
     let instancesTargets = NO_INSTANCES_TARGETS;
@@ -1447,6 +1501,7 @@ export class EMRClusterProvider implements ResourceProvider {
         logicalId,
         physicalId,
         instancesTargets,
+        resizeDeadline,
         context?.maskSecrets
       );
 
