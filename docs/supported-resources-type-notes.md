@@ -127,7 +127,8 @@ one, or when the `Name` (or that instance type) is a `{{resolve:...}}`
 reference. A fleet capacity the
 template never declared is sent as 0, since `ModifyInstanceFleet` needs both.
 Removing a fleet capacity, or `UnhealthyNodeReplacement`, is refused, because
-CloudFormation fails that update too; so is a count or capacity that is not a
+CloudFormation fails that update too, and so is removing a group's
+`InstanceCount`, which CloudFormation requires; so is a count or capacity that is not a
 number. A create
 waits until a cluster is `WAITING` or `RUNNING`, and until a group or fleet is
 `RUNNING`.
