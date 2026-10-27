@@ -117,6 +117,7 @@ MAINT_ALT_TARGET="1:04:45"
 PHASE2_LOG=""
 PHASE2B_LOG=""
 PHASE2C_LOG=""
+DESTROY_LOG=""
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -151,6 +152,7 @@ cleanup() {
   [ -n "${PHASE2_LOG:-}" ] && rm -f "${PHASE2_LOG}"
   [ -n "${PHASE2B_LOG:-}" ] && rm -f "${PHASE2B_LOG}"
   [ -n "${PHASE2C_LOG:-}" ] && rm -f "${PHASE2C_LOG}"
+  [ -n "${DESTROY_LOG:-}" ] && rm -f "${DESTROY_LOG}"
   if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
       --stack-region "${REGION}" --yes >/dev/null 2>&1
@@ -162,7 +164,10 @@ cleanup() {
     # Phase 2d's child volume goes with it (go-to-k/cdkd#5431).
     aws fsx delete-file-system --file-system-id "${fsid}" --region "${REGION}" \
       --open-zfs-configuration 'Options=DELETE_CHILD_VOLUMES_AND_SNAPSHOTS' >/dev/null 2>&1
-    wait_fs_gone "${fsid}"
+    if ! wait_fs_gone "${fsid}"; then
+      # e.g. a child volume still CREATING when an interrupted run got here
+      echo "    WARNING: FSx file system ${fsid} is still present after cleanup; it bills per hour, delete it by hand" >&2
+    fi
   done
   # Best-effort teardown of the fixture VPC (found via the CDK Name tag).
   for vpcid in $(aws ec2 describe-vpcs --region "${REGION}" \
@@ -537,12 +542,17 @@ echo "    child volume ${CHILD_VOLUME_ID} is AVAILABLE"
 
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy (FSx deletion takes a few minutes)"
+DESTROY_LOG="$(mktemp)"
 set +e
-node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
-DESTROY_RC=$?
+node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1 | tee "${DESTROY_LOG}"
+DESTROY_RC=${PIPESTATUS[0]}
 set -e
 if [ "${DESTROY_RC}" -ne 0 ]; then
-  echo "FAIL [phase 3]: destroy exited ${DESTROY_RC} with child volume ${CHILD_VOLUME_ID} present (issue #5431: DeleteFileSystem must carry the recorded OpenZFSConfiguration.Options)" >&2
+  if sed 's/\x1b\[[0-9;]*m//g' "${DESTROY_LOG}" | grep -qiE 'child volume'; then
+    echo "FAIL [phase 3]: FSx refused to delete the file system with child volume ${CHILD_VOLUME_ID} present (issue #5431: DeleteFileSystem must carry the recorded OpenZFSConfiguration.Options)" >&2
+  else
+    echo "FAIL [phase 3]: destroy exited ${DESTROY_RC}" >&2
+  fi
   exit 1
 fi
 
