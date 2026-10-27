@@ -969,11 +969,11 @@ export function isTerminalDbStatus(status: string | undefined): boolean {
  * AWS tells apart from `inaccessible-encryption-credentials` as recoverable
  * once the KMS key is usable again (for an instance, possibly only after a
  * reboot). Such a wait keeps polling within its budget instead of failing the
- * deploy, as it did before these waits failed fast. The `--remove-protection` final-snapshot
- * paths keep {@link isTerminalDbStatus}: there a terminal status sends the
- * delete for AWS to accept or refuse, or fails closed with the guard put back,
- * and waiting out a KMS key no one is restoring only spends the destroy's
- * remaining deadline on the same outcome.
+ * deploy, as it did before these waits failed fast. The
+ * `--remove-protection` final-snapshot paths keep {@link isTerminalDbStatus}:
+ * there a terminal status sends the delete for AWS to accept or refuse, or
+ * fails closed with the guard put back, and waiting out a KMS key no one is
+ * restoring only spends the destroy's remaining deadline on the same outcome.
  */
 export function isTerminalDbWaitStatus(status: string | undefined): boolean {
   return status !== 'inaccessible-encryption-credentials-recoverable' && isTerminalDbStatus(status);

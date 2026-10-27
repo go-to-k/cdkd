@@ -6,7 +6,11 @@
 // polling, as do the update-path cluster waits (#5411 / #5417 / #5419).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
-const { mockSend, mockWarn } = vi.hoisted(() => ({ mockSend: vi.fn(), mockWarn: vi.fn() }));
+const { mockSend, mockWarn, mockDebug } = vi.hoisted(() => ({
+  mockSend: vi.fn(),
+  mockWarn: vi.fn(),
+  mockDebug: vi.fn(),
+}));
 
 function clientMock(name: string) {
   return async (importOriginal: () => Promise<unknown>) => {
@@ -27,7 +31,7 @@ vi.mock('@aws-sdk/client-neptune', clientMock('NeptuneClient'));
 
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
-    debug: vi.fn(),
+    debug: mockDebug,
     info: vi.fn(),
     warn: mockWarn,
     error: vi.fn(),
@@ -277,6 +281,7 @@ describe('RDS DBCluster create cleanup after a terminal status (issue #5426)', (
   beforeEach(() => {
     mockSend.mockReset();
     mockWarn.mockReset();
+    mockDebug.mockReset();
     delete process.env['CDKD_NO_WAIT'];
     provider = new RDSProvider();
     (provider as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async () => {};
@@ -339,6 +344,14 @@ describe('RDS DBCluster create cleanup after a terminal status (issue #5426)', (
     expect(warnings()).toEqual([
       `Partially-created DBCluster ${LOGICAL_ID} (${CLUSTER_ID}) is already in status 'deleting'; cdkd did not delete it again`,
     ]);
+    // AWS's refusal text stays at debug.
+    expect(
+      mockDebug.mock.calls.some((call) =>
+        String(call[0]).includes(
+          `Cleanup delete of partially-created DBCluster ${LOGICAL_ID} refused: `
+        ) && String(call[0]).includes('already being deleted')
+      )
+    ).toBe(true);
     // Still journaled: a delete in progress can fail.
     expect(createdBeforeFailure(error, LOGICAL_ID, 'AWS::RDS::DBCluster')).toBe(CLUSTER_ID);
   });

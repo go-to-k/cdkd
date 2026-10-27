@@ -1014,6 +1014,12 @@ export class RDSProvider implements ResourceProvider {
           const retiring = await this.partialClusterRetiring(dbClusterIdentifier);
           if (retiring === 'gone') clusterLeftBehind = false;
           if (retiring !== undefined) {
+            // AWS's refusal text at debug only, masked (go-to-k/cdkd#2319).
+            this.logger.debug(
+              maskerOrIdentity(mask)(
+                `Cleanup delete of partially-created DBCluster ${logicalId} refused: ${maskerOrIdentity(mask)(describeAwsFailure(cleanupError).detail)}`
+              )
+            );
             this.logger.warn(
               maskerOrIdentity(mask)(
                 `Partially-created DBCluster ${logicalId} (${dbClusterIdentifier}) is ${retiring === 'gone' ? 'already deleted' : "already in status 'deleting'"}; cdkd did not delete it again`
