@@ -9824,11 +9824,6 @@ export const REPLICA_COPY_RELEASE_POLL_MS = 5000;
 export const DELETION_PROTECTION_REFLIP_MS = 16_000;
 
 /**
- * {@link DynamoDBGlobalTableProvider.waitForReplicaProtectionSettled}'s cap:
- * 60 polls 5 s apart, five minutes against the ~30 s a replica's protection
- * change took to settle when measured (go-to-k/cdkd#5355).
- */
-/**
  * The Kinesis destination statuses a disable has not settled from
  * (go-to-k/cdkd#5399): the read-back's present set plus `DISABLING`.
  */
@@ -9839,6 +9834,11 @@ const KINESIS_DISABLE_UNSETTLED: ReadonlySet<string> = new Set([
   'DISABLING',
 ]);
 
+/**
+ * {@link DynamoDBGlobalTableProvider.waitForReplicaProtectionSettled}'s cap:
+ * 60 polls 5 s apart, five minutes against the ~30 s a replica's protection
+ * change took to settle when measured (go-to-k/cdkd#5355).
+ */
 export const REPLICA_PROTECTION_SETTLE_POLLS = 60;
 export const REPLICA_PROTECTION_SETTLE_POLL_MS = 5000;
 /**
