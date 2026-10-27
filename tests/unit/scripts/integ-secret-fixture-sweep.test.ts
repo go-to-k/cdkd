@@ -374,6 +374,9 @@ describe('a secret-seeding integ fixture must sweep S3 object versions', () => {
       'eventbridge-api-destination',
       'iam-access-key',
       'import-secret-observed',
+      // Issue #1160: a generated DocumentDB master password, resolved through
+      // a dynamic reference into the cluster; the fixture sweeps the prefix.
+      'lambda-esm-documentdb',
       'lambda-esm-self-managed-kafka',
       // Issue #2056: an `unsafePlainText` secret behind a `{{resolve:...}}`
       // export; both stacks' prefixes are swept and asserted on success.

@@ -475,6 +475,7 @@
             "element-read"
           ],
           "seededBy": [
+            "canonicalizeDriftProperties",
             "create",
             "createMethod",
             "update",
@@ -1079,6 +1080,7 @@
       "blindSpots": [
         "computed key in updateAuthorizer()",
         "computed key in updateMethod()",
+        "object spread in canonicalizeDriftProperties()",
         "withRemovalDefaults(...) in update()"
       ]
     },
@@ -14238,7 +14240,8 @@
       ],
       "gaps": [],
       "blindSpots": [
-        "computed key in applyUpdate()"
+        "computed key in applyUpdate()",
+        "object spread in applyUpdate()"
       ]
     },
     {

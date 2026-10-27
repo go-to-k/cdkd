@@ -7,6 +7,7 @@ import {
   GetResourceCommand,
   GetStageCommand,
   NotFoundException,
+  UpdateMethodCommand,
 } from '@aws-sdk/client-api-gateway';
 
 const mockSend = vi.fn();
@@ -88,6 +89,66 @@ describe('ApiGatewayProvider.readCurrentState', () => {
       AuthorizationType: 'NONE',
       Integration: { type: 'AWS_PROXY', uri: 'arn:aws:lambda:...' },
       MethodResponses: {},
+    });
+  });
+
+  describe('Method AuthorizationScopes (go-to-k/cdkd#5408)', () => {
+    const cognitoMethod = {
+      httpMethod: 'GET',
+      authorizationType: 'COGNITO_USER_POOLS',
+      authorizerId: 'auth-1',
+    };
+
+    it('emits the live scopes on a COGNITO_USER_POOLS method', async () => {
+      mockSend.mockResolvedValueOnce({
+        ...cognitoMethod,
+        authorizationScopes: ['s/read', 's/write'],
+      });
+      const result = await provider.readCurrentState(
+        'api-1|res-1|GET',
+        'MethodLogical',
+        'AWS::ApiGateway::Method'
+      );
+      expect((result as Record<string, unknown>)['AuthorizationScopes']).toEqual([
+        's/read',
+        's/write',
+      ]);
+    });
+
+    it('emits [] on a COGNITO_USER_POOLS method with no scopes', async () => {
+      mockSend.mockResolvedValueOnce({ ...cognitoMethod });
+      const result = await provider.readCurrentState(
+        'api-1|res-1|GET',
+        'MethodLogical',
+        'AWS::ApiGateway::Method'
+      );
+      expect((result as Record<string, unknown>)['AuthorizationScopes']).toEqual([]);
+    });
+
+    it('a revert to the recorded scopes diffs against the LIVE scopes', async () => {
+      // A console-side scope added to a method whose template declares one:
+      // the revert removes only the added scope, never re-adds the declared one.
+      mockSend.mockResolvedValueOnce({
+        ...cognitoMethod,
+        authorizationScopes: ['s/read', 's/console'],
+      });
+      const live = (await provider.readCurrentState(
+        'api-1|res-1|GET',
+        'MethodLogical',
+        'AWS::ApiGateway::Method'
+      )) as Record<string, unknown>;
+      mockSend.mockResolvedValueOnce({});
+      await provider.update(
+        'MethodLogical',
+        'api-1|res-1|GET',
+        'AWS::ApiGateway::Method',
+        { ...live, AuthorizationScopes: ['s/read'] },
+        live
+      );
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateMethodCommand);
+      expect(call?.[0].input.patchOperations).toEqual([
+        { op: 'remove', path: '/authorizationScopes', value: 's/console' },
+      ]);
     });
   });
 

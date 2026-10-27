@@ -41,7 +41,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | Provider class | Blind spot(s) |
 | --- | --- |
 | `ACMCertificateProvider` (acm-certificate-provider.ts) | `withRemovalDefaults(...) in update()` |
-| `ApiGatewayProvider` (apigateway-provider.ts) | `computed key in updateAuthorizer()`, `computed key in updateMethod()`, `withRemovalDefaults(...) in update()` |
+| `ApiGatewayProvider` (apigateway-provider.ts) | `computed key in updateAuthorizer()`, `computed key in updateMethod()`, `object spread in canonicalizeDriftProperties()`, `withRemovalDefaults(...) in update()` |
 | `ApiGatewayV2Provider` (apigatewayv2-provider.ts) | `object spread in updateIntegration()`, `withRemovalDefaults(...) in updateAuthorizer()` |
 | `AppSyncProvider` (appsync-provider.ts) | `computed key in applyGraphQLApiConfig()`, `computed key in refuseChangedMalformedGraphQLApiBlocks()`, `computed key in updateDataSource()`, `computed key in updateGraphQLApi()`, `computed key in updateResolver()`, `object spread in withEnvironmentVariablesRecord()` |
 | `ASGProvider` (asg-provider.ts) | `computed key in canonicalizeDriftProperties()`, `object spread in canonicalizeDriftProperties()`, `withRemovalDefaults(...) in update()` |
@@ -65,7 +65,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `KinesisStreamProvider` (kinesis-provider.ts) | `object spread in canonicalizeDesiredProperties()`, `object spread in effectiveMetricsProperties()` |
 | `KMSProvider` (kms-provider.ts) | `withRemovalDefaults(...) in updateKey()` |
 | `LambdaEventInvokeConfigProvider` (lambda-event-invoke-config-provider.ts) | `computed key in update()`, `object spread in canonicalizeDriftProperties()` |
-| `LambdaEventSourceMappingProvider` (lambda-eventsource-provider.ts) | `computed key in applyUpdate()` |
+| `LambdaEventSourceMappingProvider` (lambda-eventsource-provider.ts) | `computed key in applyUpdate()`, `object spread in applyUpdate()` |
 | `LambdaFunctionProvider` (lambda-function-provider.ts) | `walk(...) in jsonEscapedPairs()`, `withRemovalDefaults(...) in update()` |
 | `LambdaMicrovmImageProvider` (lambda-microvm-image-provider.ts) | `computed key in update()` |
 | `LambdaUrlProvider` (lambda-url-provider.ts) | `computed key in update()`, `object spread in update()` |

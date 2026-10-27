@@ -31,6 +31,8 @@
 #       AutoMinorVersionUpgrade=false). Step 3c also drops both clusters'
 #       VpcSecurityGroupIds (#1160): Neptune must move to the VPC's default
 #       security group and DocDB must keep `Sg`, as CloudFormation does.
+#       It drops both clusters' non-default ports too (#1160): DocDB must
+#       reset to 27017 and Neptune keep 8183, as CloudFormation does.
 #       Step 3c leaves the DocDB MasterUserPassword unchanged, so the DocDB
 #       cluster must never read `resetting-master-credentials` from the
 #       deploy's return until it is stable (#5153).
@@ -413,6 +415,13 @@ if [ "${NEPTUNE_BASE_AMVU}" != "false" ]; then
   echo "[verify] FAIL: Neptune instance baseline AutoMinorVersionUpgrade='${NEPTUNE_BASE_AMVU}', expected false" >&2
   exit 1
 fi
+# Issue #1160 Port removal arm: both clusters start on a non-default port.
+DOCDB_BASE_PORT=$(echo "${DOCDB_BASE}" | jq -r '.Port // "null"')
+NEPTUNE_BASE_PORT=$(echo "${NEPTUNE_BASE}" | jq -r '.Port // "null"')
+if [ "${DOCDB_BASE_PORT}" != "27018" ] || [ "${NEPTUNE_BASE_PORT}" != "8183" ]; then
+  echo "[verify] FAIL: #1160 premise: baseline cluster ports are docdb='${DOCDB_BASE_PORT}' (expected 27018), neptune='${NEPTUNE_BASE_PORT}' (expected 8183)" >&2
+  exit 1
+fi
 echo "[verify] step 3b ok: baseline non-default fields live on both clusters and the Neptune instance"
 
 # Issue #1160 VpcSecurityGroupIds removal arm. The baseline puts both clusters
@@ -640,6 +649,23 @@ if [ "${DOCDB_STATUS}" != "available" ] || [ "${DOCDB_PROT}" != "true" ] || [ "$
   exit 1
 fi
 echo "[verify] step 3d ok: DeletionProtection=true + BackupRetentionPeriod=7 (+ Neptune IAMDatabaseAuthenticationEnabled=true, instance AutoMinorVersionUpgrade=false) retained after removal — #5004"
+
+# Issue #1160: Port was removed from both clusters. A real CloudFormation A/B
+# resets a DocDB cluster to 27017 and keeps a Neptune cluster's port; a pre-fix
+# cdkd sends nothing and DocDB stays on 27018, which fails HERE. Read from the
+# step-3d stable poll above, taken after the deploy returned: cdkd waits for a
+# changed port before it finishes the cluster update.
+DOCDB_PORT=$(echo "${DOCDB_AFTER}" | jq -r '.Port // "null"')
+NEPTUNE_PORT=$(echo "${NEPTUNE_AFTER}" | jq -r '.Port // "null"')
+if [ "${DOCDB_PORT}" != "27017" ]; then
+  echo "[verify] FAIL: #1160: after Port was removed, the DocDB cluster's port is '${DOCDB_PORT}', want '27017' (CloudFormation resets it to the default; still 27018 means the removal sent nothing)" >&2
+  exit 1
+fi
+if [ "${NEPTUNE_PORT}" != "8183" ]; then
+  echo "[verify] FAIL: #1160: after DBPort was removed, the Neptune cluster's port is '${NEPTUNE_PORT}', want '8183' (CloudFormation keeps the live port)" >&2
+  exit 1
+fi
+echo "[verify] step 3d ok: Port removal: DocDB reset to 27017, Neptune kept 8183 (#1160, matches CloudFormation)"
 
 # Issue #1160: VpcSecurityGroupIds was removed from both clusters. Neptune must
 # move to the VPC default group, as CloudFormation does; a pre-fix cdkd sends

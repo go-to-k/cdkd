@@ -688,9 +688,10 @@ export class NeptuneProvider implements ResourceProvider {
       //     a RANDOM window at create; there is no documented "reset to
       //     random" sentinel (doc-checked 2026-07-27: the Modify docs only
       //     describe the create-time random default).
-      //   * Port / DBPort — Neptune documents a fixed default (8182), but
-      //     resetting the port is connection-breaking for every client;
-      //     leave unchanged.
+      //   * Port / DBPort — a real CloudFormation A/B (#1160) showed
+      //     CloudFormation KEEPS the live port when `DBPort` is removed (8183
+      //     stayed 8183, not the 8182 default), so a removal sends nothing.
+      //     DocDB differs: there CloudFormation resets it to 27017.
       // A removed VpcSecurityGroupIds IS reset, to the VPC's default security
       // group (`dbClusterSecurityGroupsToSend`).
       await this.getClient().send(
