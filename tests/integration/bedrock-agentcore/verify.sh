@@ -152,6 +152,8 @@ if [ "${REGION}" = "us-east-1" ]; then
     exit 1
   fi
   export CDKD_AUTH_AZS
+else
+  echo "    WARN (issue #5433): auth VPC AZs are UNPINNED outside us-east-1 (the first two AZ names); AgentCore / VPC Lattice may not serve them"
 fi
 
 # --- Phase 1: deploy --------------------------------------------------
@@ -232,26 +234,27 @@ if [ "${P2_FIELDS}" != "${P2_EXPECTED}" ]; then
 fi
 echo "    OK: removed fields cleared and the lifecycle back to 900 / 28800, in place (issue #1160)"
 
-# Issue #5433: removing the authorizer drops the service-managed Lattice
-# resource gateway; wait (bounded) until its ENIs leave the auth VPC, so the
-# destroy is not left with a VPC it cannot delete. ASSUMPTION, unconfirmed
-# until the first live run: the service drops the gateway when the
-# authorizer goes, not only when the runtime is deleted.
+# Issue #5433, LOG-ONLY premise probe: does removing the authorizer drop the
+# service-managed Lattice gateway's ENIs from the auth VPC, or do they stay
+# until the runtime is deleted? Records the answer; never fails the run (a
+# probe ERROR still fails loudly). The gate is Phase 3's VPC-gone assertion,
+# and the stack orders the runtime's delete before the VPC's.
 enis="?"
-for _ in $(seq 1 60); do
+for _ in $(seq 1 12); do
   enis=$(aws ec2 describe-network-interfaces --region "${REGION}" --filters "Name=vpc-id,Values=${AUTH_VPC_ID}" \
     --query 'length(NetworkInterfaces)' --output text) \
-    || { echo "FAIL (issue #5433): the ENI probe on auth VPC ${AUTH_VPC_ID} failed while waiting for the managed endpoint to drain" >&2; exit 1; }
+    || { echo "FAIL (issue #5433): the ENI probe on auth VPC ${AUTH_VPC_ID} failed" >&2; exit 1; }
   [ "${enis}" = "0" ] && break
   sleep 10
 done
-if [ "${enis}" != "0" ]; then
-  echo "FAIL (issue #5433): ${enis} network interface(s) still in auth VPC ${AUTH_VPC_ID} 600s after the private endpoint was removed:" >&2
+if [ "${enis}" = "0" ]; then
+  echo "    NOTE (issue #5433): premise HOLDS - no network interface left in auth VPC ${AUTH_VPC_ID} after the private endpoint was removed"
+else
+  echo "    NOTE (issue #5433): premise FAILS - ${enis} network interface(s) still in auth VPC ${AUTH_VPC_ID} 120s after the private endpoint was removed:"
   aws ec2 describe-network-interfaces --region "${REGION}" --filters "Name=vpc-id,Values=${AUTH_VPC_ID}" \
-    --query 'NetworkInterfaces[].[NetworkInterfaceId,InterfaceType,Description]' --output text >&2
-  exit 1
+    --query 'NetworkInterfaces[].[NetworkInterfaceId,InterfaceType,Description]' --output text \
+    || { echo "FAIL (issue #5433): the ENI listing on auth VPC ${AUTH_VPC_ID} failed" >&2; exit 1; }
 fi
-echo "    OK: the managed private endpoint left no network interface in the auth VPC"
 
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"

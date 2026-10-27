@@ -91,6 +91,9 @@ export class BedrockAgentcoreStack extends cdk.Stack {
         { name: 'isolated', subnetType: ec2.SubnetType.PRIVATE_ISOLATED, cidrMask: 24 },
       ],
     });
+    // Both phases: destroy deletes the runtime (and its managed endpoint)
+    // before the subnets / VPC.
+    codeRuntime.node.addDependency(authVpc);
     if (!isRemoval) {
       (codeRuntime.node.defaultChild as cdk.CfnResource).addPropertyOverride(
         'AuthorizerConfiguration.CustomJWTAuthorizer.PrivateEndpoint',
