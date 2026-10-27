@@ -807,6 +807,81 @@ describe('EMRClusterProvider update', () => {
       expect(callsOf(ModifyInstanceGroupsCommand)).toHaveLength(0);
     });
 
+    it('refuses an unnamed task group whose InstanceType is a secret reference', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: {
+          InstanceGroups: [coreGroup(1), { ...taskGroup('ig-t1', 'x', 1), InstanceType: 'm5.large' }],
+        },
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const REF = '{{resolve:secretsmanager:group-type:SecretString:type}}';
+      const task = (type: string, count: number) => [{ InstanceCount: count, InstanceType: type }];
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({ TaskInstanceGroups: task('m5.large', 2) }),
+          withInstances({ TaskInstanceGroups: task(REF, 1) }),
+          { maskSecrets: (text: string) => text.split('m5.large').join('***') }
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect((err as Error).message).toContain('its InstanceType is a secret reference');
+      expect(callsOf(ModifyInstanceGroupsCommand)).toHaveLength(0);
+    });
+
+    it('never matches a task group that is shutting down', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: {
+          InstanceGroups: [
+            coreGroup(1),
+            { ...taskGroup('ig-old', 't1', 1), Status: { State: 'SHUTTING_DOWN' } },
+            taskGroup('ig-t1', 't1', 2),
+          ],
+        },
+        ModifyInstanceGroupsCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const tasks = (count: number) => [{ InstanceCount: count, InstanceType: 'm5.xlarge', Name: 't1' }];
+      await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ TaskInstanceGroups: tasks(2) }),
+        withInstances({ TaskInstanceGroups: tasks(1) })
+      );
+      expect(callsOf(ModifyInstanceGroupsCommand)[0]!.input['InstanceGroups']).toEqual([
+        { InstanceGroupId: 'ig-t1', InstanceCount: 2 },
+      ]);
+    });
+
+    it('starts no resize once the shared wait budget is spent', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: { InstanceGroups: [coreGroup(2)] },
+        ModifyInstanceGroupsCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      let now = 1_000_000;
+      const spy = vi.spyOn(Date, 'now').mockImplementation(() => (now += 10_000));
+      try {
+        const err = await newProvider({ maxWaitMs: 5000 })
+          .update(
+            'MyCluster',
+            CLUSTER_ID,
+            RESOURCE_TYPE,
+            withInstances({ CoreInstanceGroup: core(2) }),
+            withInstances({ CoreInstanceGroup: core(1) })
+          )
+          .catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(ProvisioningError);
+        expect((err as Error).message).toContain('the earlier resizes used the whole wait');
+        expect(callsOf(ModifyInstanceGroupsCommand)).toHaveLength(0);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it('finds an unnamed task group by its instance type', async () => {
       routeSend({
         ListInstanceGroupsCommand: {

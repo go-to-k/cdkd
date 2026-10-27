@@ -248,6 +248,15 @@ interface InstancesTargets {
 
 const NO_INSTANCES_TARGETS: InstancesTargets = { groups: [], fleets: [] };
 
+/** Group / fleet states that end it: never a resize target. */
+const ENDED_GROUP_STATES: ReadonlySet<string> = new Set([
+  'TERMINATING',
+  'TERMINATED',
+  'SHUTTING_DOWN',
+  'ENDED',
+]);
+const ENDED_FLEET_STATES: ReadonlySet<string> = new Set(['TERMINATING', 'TERMINATED']);
+
 /** Reads a recorded value as written: a `{{resolve:...}}` reference stays one. */
 const IDENTITY_MASK: MaskerFn = maskerOrIdentity(undefined);
 
@@ -1022,13 +1031,15 @@ export class EMRClusterProvider implements ResourceProvider {
       kind: string,
       instanceTypeOf: (candidate: T) => string | undefined
     ): string => {
-      if (isSecretDerivedValue(resize.prev['Name'], IDENTITY_MASK)) {
+      const name = resize.next['Name'];
+      // The member that ADDRESSES a TASK group or fleet (CORE goes by role).
+      const matchKey = typeof name === 'string' ? 'Name' : 'InstanceType';
+      if (resize.type === 'TASK' && isSecretDerivedValue(resize.prev[matchKey], IDENTITY_MASK)) {
         refuse(
           resize,
-          `its Name is a secret reference, which cannot address an instance ${kind}; declare the Name literally`
+          `its ${matchKey} is a secret reference, which cannot address an instance ${kind}; declare it literally`
         );
       }
-      const name = resize.next['Name'];
       const instanceType = resize.next['InstanceType'];
       let matches = candidates;
       if (resize.type === 'TASK') {
@@ -1049,11 +1060,15 @@ export class EMRClusterProvider implements ResourceProvider {
     };
     const groups =
       plan.groups.length > 0
-        ? (await this.listInstanceGroups(clusterId)).filter((g) => g.Status?.State !== 'TERMINATED')
+        ? (await this.listInstanceGroups(clusterId)).filter(
+            (g) => !ENDED_GROUP_STATES.has(g.Status?.State ?? '')
+          )
         : [];
     const fleets =
       plan.fleets.length > 0
-        ? (await this.listInstanceFleets(clusterId)).filter((f) => f.Status?.State !== 'TERMINATED')
+        ? (await this.listInstanceFleets(clusterId)).filter(
+            (f) => !ENDED_FLEET_STATES.has(f.Status?.State ?? '')
+          )
         : [];
     return {
       groups: plan.groups.map((resize) => ({
@@ -1096,10 +1111,19 @@ export class EMRClusterProvider implements ResourceProvider {
   ): Promise<void> {
     if (targets.groups.length === 0 && targets.fleets.length === 0) return;
     const deadline = Date.now() + this.maxWaitMs;
-    const options = (): { pollIntervalMs: number; maxWaitMs: number } => ({
-      pollIntervalMs: this.pollIntervalMs,
-      maxWaitMs: Math.max(1, deadline - Date.now()),
-    });
+    const options = (resize: InstancesResize): { pollIntervalMs: number; maxWaitMs: number } => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        // Never start a resize there is no time left to wait for.
+        throw new ProvisioningError(
+          safeMsg`Timed out before applying Instances.${resize.path} to EMR cluster ${clusterId}: the earlier resizes used the whole wait (${String(Math.round(this.maxWaitMs / 60000))} min)`,
+          'AWS::EMR::Cluster',
+          logicalId,
+          clusterId
+        );
+      }
+      return { pollIntervalMs: this.pollIntervalMs, maxWaitMs: remaining };
+    };
     const context = mask ? { maskSecrets: mask } : undefined;
     const restated = async (
       resize: InstancesResize,
@@ -1129,7 +1153,7 @@ export class EMRClusterProvider implements ResourceProvider {
         AutoScalingPolicy: side['AutoScalingPolicy'],
       });
       await restated(resize, () =>
-        new EMRInstanceGroupConfigProvider(options()).update(
+        new EMRInstanceGroupConfigProvider(options(resize)).update(
           logicalId,
           id,
           'AWS::EMR::InstanceGroupConfig',
@@ -1147,7 +1171,7 @@ export class EMRClusterProvider implements ResourceProvider {
         TargetSpotCapacity: side['TargetSpotCapacity'],
       });
       await restated(resize, () =>
-        new EMRInstanceFleetConfigProvider(options()).update(
+        new EMRInstanceFleetConfigProvider(options(resize)).update(
           logicalId,
           id,
           'AWS::EMR::InstanceFleetConfig',
