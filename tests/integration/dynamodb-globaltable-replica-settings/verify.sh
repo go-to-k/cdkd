@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd GlobalTable replica settings integ (issues #5355, #5365).
+# verify.sh — cdkd GlobalTable replica settings integ (issues #5355, #5365, #5381).
 #
 # A two-region `TableV2` renders its KMS key, table class and deletion
 # protection PER REPLICA. cdkd read the key and the class under names the CFn
@@ -29,6 +29,10 @@
 #      time recovery is turned off out of band too, and must come back on
 #      (#5365), with no correction for the four settings AWS still holds.
 #  2b. `tag,policy`: a table resource policy on both replicas (#5365).
+#  2c. `cdkd drift` reports the untouched table clean; then the second
+#      region's PITR period (10 -> 20 days), table resource policy (deleted)
+#      and deletion protection (off) change out of band, drift reports all
+#      three on that replica, and `drift --revert` restores them (#5381).
 #   3. `tag,rotated`: a second customer managed key per region. Assert each
 #      region holds its new key, sent as one every-region ReplicaUpdates call.
 #   4. `tag,managed`: customer managed keys -> the AWS managed key. Assert
@@ -536,6 +540,96 @@ await_replica "${REGION}" "^ENABLED	10	ENABLED	${LOCAL_KINESIS_ARN}	present	pres
   "Phase 2b: the ${REGION} table has no resource policy (issue #5365)"
 await_replica "${SECOND_REGION}" "^ENABLED	10	ENABLED	${REPLICA_KINESIS_ARN}	present	present$" \
   "Phase 2b: the ${SECOND_REGION} replica has no resource policy (issue #5365)"
+
+# --- Phase 2c: drift reads the replica settings back (#5381) ---------------
+# The read-back used to drop a replica's PITR period, its table resource policy
+# and a cross-region replica's protection, so none of the three out-of-band
+# changes below was drift (a pre-fix binary reports the table clean at step 2),
+# and `drift --revert` could not restore them.
+echo "==> Phase 2c: drift is clean, then sees an out-of-band period, policy and protection change"
+DRIFT_OUT="${LOG_DIR}/drift.log"
+run_drift() { # usage: run_drift <expected exit code>; output in ${DRIFT_OUT}
+  local rc
+  set +e
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+    > "${DRIFT_OUT}" 2>&1
+  rc=$?
+  set -e
+  cat "${DRIFT_OUT}"
+  # 0 = no drift, 1 = drift (docs/cli-drift.md); anything else, or a crash
+  # printing no row at all, must not read as "clean".
+  if [ "${rc}" != "$1" ]; then
+    echo "FAIL: Phase 2c: drift exited ${rc}, expected $1 (issue #5381)" >&2
+    exit 1
+  fi
+}
+GT_ROW='[~?] [A-Za-z0-9]+ \(AWS::DynamoDB::GlobalTable\)'
+# 1. Clean: every member the read-back now carries equals the baseline the
+#    Phase 2b deploy captured (no phantom drift from the new members).
+run_drift 0
+if grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
+  echo "FAIL: Phase 2c: drift reports the untouched GlobalTable (issue #5381)" >&2
+  exit 1
+fi
+echo "    OK: the untouched GlobalTable is not drift"
+# 2. Out of band, on the second region's replica: a 20-day period, no table
+#    resource policy, no deletion protection.
+aws dynamodb update-continuous-backups --table-name "${TABLE}" --region "${SECOND_REGION}" \
+  --point-in-time-recovery-specification PointInTimeRecoveryEnabled=true,RecoveryPeriodInDays=20 >/dev/null
+SECOND_TABLE_ARN="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${SECOND_REGION}" \
+  --query 'Table.TableArn' --output text)"
+aws dynamodb delete-resource-policy --resource-arn "${SECOND_TABLE_ARN}" --region "${SECOND_REGION}" >/dev/null
+unprotected=0
+for _ in 1 2 3 4; do
+  if out="$(aws dynamodb update-table --table-name "${TABLE}" --region "${SECOND_REGION}" \
+    --no-deletion-protection-enabled 2>&1 >/dev/null)"; then
+    unprotected=1
+    break
+  fi
+  case "${out}" in
+    *ThrottlingException*) echo "    protection change throttled; retrying in 16 s"; sleep 16 ;;
+    *) echo "FAIL: Phase 2c premise: the out-of-band unprotect failed: ${out}" >&2; exit 1 ;;
+  esac
+done
+if [ "${unprotected}" != "1" ]; then
+  echo "FAIL: Phase 2c premise: the out-of-band unprotect stayed throttled" >&2
+  exit 1
+fi
+wait_settled
+await_settings "${SECOND_REGION}" "	False$" "Phase 2c premise: the out-of-band unprotect did not land"
+await_replica "${SECOND_REGION}" "^ENABLED	20	ENABLED	${REPLICA_KINESIS_ARN}	absent	present$" \
+  "Phase 2c premise: the out-of-band period change or policy delete did not land"
+run_drift 1
+if ! grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
+  echo "FAIL: Phase 2c: drift does not report the out-of-band replica changes (issue #5381)" >&2
+  exit 1
+fi
+# The second region's entry on each side of the `Replicas` change: the
+# recorded period / policy / protection against the out-of-band ones.
+replica_side() { # usage: replica_side <-|+>; prints "<period> <policy?> <protection>"
+  grep -E "^ +\\$1 Replicas: " "${DRIFT_OUT}" | head -1 | sed -E "s/^ +\\$1 Replicas: //" \
+    | REGION_NAME="${SECOND_REGION}" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s).find(e=>e.Region===process.env.REGION_NAME)||{};const p=r.PointInTimeRecoverySpecification||{};process.stdout.write([p.RecoveryPeriodInDays,"ResourcePolicy" in r?"policy":"nopolicy",r.DeletionProtectionEnabled].join(" "))})'
+}
+RECORDED="$(replica_side -)" || RECORDED="(unparsed)"
+LIVE="$(replica_side +)" || LIVE="(unparsed)"
+if [ "${RECORDED}" != "10 policy true" ] || [ "${LIVE}" != "20 nopolicy false" ]; then
+  echo "FAIL: Phase 2c: expected the ${SECOND_REGION} replica to drift '10 policy true' -> '20 nopolicy false', got '${RECORDED}' -> '${LIVE}' (issue #5381)" >&2
+  exit 1
+fi
+echo "    OK: drift reports ${SECOND_REGION} '${RECORDED}' -> '${LIVE}'"
+# 3. --revert restores all three, and drift is clean again.
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --revert --yes 2>&1 | tee "${LOG_DIR}/phase2c-revert.log"
+wait_settled
+await_settings "${SECOND_REGION}" "	True$" "Phase 2c: drift --revert did not protect the replica again (issue #5381)"
+await_replica "${SECOND_REGION}" "^ENABLED	10	ENABLED	${REPLICA_KINESIS_ARN}	present	present$" \
+  "Phase 2c: drift --revert did not restore the 10-day period and the table resource policy (issue #5381)"
+run_drift 0
+if grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
+  echo "FAIL: Phase 2c: the GlobalTable still drifts after --revert (issue #5381)" >&2
+  exit 1
+fi
+echo "    OK: clean after --revert"
 
 # --- Phase 3: rotate to a second customer managed key in each region -------
 # DynamoDB takes this only as ONE ReplicaUpdates call naming every region's

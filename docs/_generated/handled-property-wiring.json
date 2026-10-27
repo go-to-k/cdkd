@@ -5933,6 +5933,7 @@
             "convergeReplicaDeletionProtection",
             "convergeReplicaSettings",
             "create",
+            "readCurrentState",
             "update"
           ]
         },
@@ -6047,6 +6048,7 @@
         "computed key in replicationImpliedStreamSpecification()",
         "computed key in update()",
         "extractLocalTags(...) in update()",
+        "keepUnreadReplicaMembers(...) in update()",
         "object spread in canonicalizeDesiredProperties()",
         "object spread in canonicalizeDriftProperties()",
         "object spread in create()",
