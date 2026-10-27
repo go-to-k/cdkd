@@ -521,6 +521,45 @@ describe('EMRClusterProvider update', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
+  // go-to-k/cdkd#5418: the diff replaces the cluster for a replacing member, so
+  // this refusal is defence in depth and says what CloudFormation does.
+  it('refuses a replacing Instances member as a CloudFormation replacement', async () => {
+    const next = {
+      ...BASE_PROPS,
+      Instances: { ...BASE_PROPS.Instances, AdditionalMasterSecurityGroups: ['sg-extra'] },
+    };
+    const err = await newProvider()
+      .update('MyCluster', CLUSTER_ID, RESOURCE_TYPE, next, { ...BASE_PROPS })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect((err as Error).message).toContain(
+      'Instances.AdditionalMasterSecurityGroups cannot be updated in place — CloudFormation replaces the cluster for this change.'
+    );
+    expect((err as Error).message).toContain('--replace --force-stateful-recreation');
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  // go-to-k/cdkd#5418: CloudFormation resizes a core group in place (measured),
+  // so the diff does not replace it; the provider cannot resize yet and says so.
+  it('refuses an in-place core group resize without calling it immutable', async () => {
+    const core = { InstanceCount: 1, InstanceType: 'm5.xlarge', Name: 'Core' };
+    const prev = { ...BASE_PROPS, Instances: { ...BASE_PROPS.Instances, CoreInstanceGroup: core } };
+    const next = {
+      ...BASE_PROPS,
+      Instances: { ...BASE_PROPS.Instances, CoreInstanceGroup: { ...core, InstanceCount: 2 } },
+    };
+    const err = await newProvider()
+      .update('MyCluster', CLUSTER_ID, RESOURCE_TYPE, next, prev)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    const message = (err as Error).message;
+    expect(message).toContain(
+      'Instances.CoreInstanceGroup: CloudFormation applies this change in place (an instance group'
+    );
+    expect(message).not.toContain('immutable');
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   it('refuses an immutable top-level property change with a --replace pointer', async () => {
     await expect(
       newProvider().update(

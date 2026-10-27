@@ -442,6 +442,7 @@
         "diff-fail-on-destructive",
         "dynamodb-autoscaling",
         "efs-immutable-replacement",
+        "emr-cluster",
         "fallback-recreate-children",
         "generated-name-lifecycle",
         "glue-update-hardening",

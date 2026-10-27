@@ -60,6 +60,7 @@ import {
   toSdkStepConfigs,
 } from '../emr-configuration.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
+import { emrClusterInstancesReplaced } from '../../analyzer/replacement-rules.js';
 import { createMaskedLogSinks, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import {
   collectOrphanIds,
@@ -122,7 +123,7 @@ const TERMINAL_STATES: ReadonlySet<ClusterState> = new Set<ClusterState>([
  * Top-level CFn properties that map to a MUTABLE EMR API surface. Every other
  * property is either registry-createOnly (routed through DELETE+CREATE by the
  * replacement-detection layer) or lives inside the `Instances` block (handled
- * specially in `update()` — only `TerminationProtected` is mutable there).
+ * specially in `update()` — only `TerminationProtected` is applied there).
  */
 const MUTABLE_TOP_LEVEL_PROPS = new Set<string>([
   'Tags',
@@ -866,10 +867,11 @@ export class EMRClusterProvider implements ResourceProvider {
 
     const changed = (key: string): boolean => !jsonEqual(properties[key], previousProperties[key]);
 
-    // The `Instances` block is NOT registry-createOnly, so a change to it
-    // reaches update() instead of being routed through DELETE+CREATE. Only
-    // `Instances.TerminationProtected` is mutable in place — every other
-    // sub-field (topology, subnets, key name, ...) requires a replacement.
+    // The deploy diff classifies an `Instances` change as a replacement unless
+    // only members CloudFormation updates in place moved (go-to-k/cdkd#5418,
+    // `emrClusterInstancesReplaced`). Of those, this method applies
+    // `Instances.TerminationProtected`; it refuses the rest, and refuses a
+    // replacing member as defence in depth (the diff was bypassed).
     const nextInstances = (properties['Instances'] ?? {}) as Record<string, unknown>;
     const prevInstances = (previousProperties['Instances'] ?? {}) as Record<string, unknown>;
 
@@ -918,6 +920,12 @@ export class EMRClusterProvider implements ResourceProvider {
 
     let terminationProtectedChanged = false;
     if (changed('Instances')) {
+      // Whether CloudFormation would REPLACE the cluster for this change: the
+      // deploy diff's own predicate, so the two never disagree.
+      const replacing = emrClusterInstancesReplaced(
+        previousProperties['Instances'],
+        properties['Instances']
+      );
       const instanceKeys = new Set([...Object.keys(nextInstances), ...Object.keys(prevInstances)]);
       for (const key of instanceKeys) {
         if (jsonEqual(nextInstances[key], prevInstances[key])) continue;
@@ -928,7 +936,9 @@ export class EMRClusterProvider implements ResourceProvider {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          `AWS EMR Cluster Instances.${key} is immutable on AWS — a running cluster's instance topology / networking cannot be changed in place. ${replaceRemedy()}`
+          replacing
+            ? `AWS EMR Cluster Instances.${key} cannot be updated in place — CloudFormation replaces the cluster for this change. ${replaceRemedy()}`
+            : `AWS EMR Cluster Instances.${key}: CloudFormation applies this change in place (an instance group's count or auto-scaling policy, a fleet's target capacity, unhealthy node replacement), which cdkd does not do yet. Revert it in the template, or replace the cluster: ${replaceRemedy()}`
         );
       }
     }

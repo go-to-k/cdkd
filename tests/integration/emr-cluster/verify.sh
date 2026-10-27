@@ -43,12 +43,19 @@
 #      the same logical id succeeds, names the earlier cluster as already
 #      terminated (deleted from the journal), keeps the new one and exits 0; a
 #      plain deploy then removes the new one.
+#   3c. An `Instances` change CloudFormation replaces (issue #5418):
+#      `Instances.AdditionalMasterSecurityGroups` gains a fixture-owned SG.
+#      `cdkd diff` must mark Instances `[requires replacement]`; a plain
+#      deploy is refused (the type is in the stateful-recreate guard set) and
+#      leaves the cluster alone; `--force-stateful-recreation` replaces it — a
+#      new ClusterId carrying the SG, the old cluster TERMINATING/TERMINATED.
 #   4. Destroy + assert the cluster is TERMINATED (an EMR cluster bills per
 #      instance-hour, so a leftover is never acceptable) with no ACTIVE
 #      cluster carrying the fixture tag, and the cdkd state file is removed.
-#      Because Phase 3 re-adopted the cluster, this destroy runs THROUGH the
-#      imported state record — the round-trip is only proven if the cluster
-#      actually terminates from it.
+#      Phase 3c's replacement already terminated the re-adopted cluster
+#      THROUGH its imported state record (the round-trip is only proven if it
+#      terminates from it); this destroy terminates the replacement, and both
+#      ids, plus the Phase 3c SG, are asserted gone.
 #
 # NOTE: EMR cluster creation to WAITING takes ~5-15 minutes and termination a
 # few more — expect a total wall clock of 20-40 minutes. Phase 3 adds only a
@@ -121,6 +128,8 @@ PHASE2B_LOG=""
 # the stale sweep finds any run's by the literal prefix.
 JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
 FF_LOG=""
+# Phase 3c (issue #5418): the diff / deploy log it greps.
+P3C_LOG=""
 DENY_ROLE="cdkd-emr-ff-deny-$(date +%s)-$$"
 DENY_POLICY_NAME="cdkd-emr-ff-deny"
 
@@ -273,6 +282,7 @@ cleanup() {
   [ -n "${PHASE2_LOG:-}" ] && rm -f "${PHASE2_LOG}"
   [ -n "${PHASE2B_LOG:-}" ] && rm -f "${PHASE2B_LOG}"
   [ -n "${FF_LOG:-}" ] && rm -f "${FF_LOG}"
+  [ -n "${P3C_LOG:-}" ] && rm -f "${P3C_LOG}"
   # Only THIS run's role: another run's may be live.
   delete_deny_role "${DENY_ROLE}"
   # ORDER MATTERS — the tag-scoped cluster sweep MUST run before
@@ -1170,10 +1180,118 @@ fi
 rm -f "${FF_LOG}"
 echo "    OK: Phase 3b passed"
 
+# --- Phase 3c: an Instances change CloudFormation replaces (issue #5418) ---
+# The template adds `Instances.AdditionalMasterSecurityGroups` (a fixture-owned
+# SG). CloudFormation replaces the cluster for that change (raw CFn A/B on
+# #5418). Before the fix the diff called it an in-place update, which the
+# provider refused, so the cluster could not be changed at all. Baseline synth
+# otherwise, like Phase 3b.
+CID_P3C_OLD="$(state_query 'st.resources["Cluster"]?.physicalId')"
+case "${CID_P3C_OLD}" in j-*) ;; *) echo "FAIL [phase 3c]: state records Cluster as '${CID_P3C_OLD}' (expected a cluster id)" >&2; exit 1;; esac
+
+echo "==> Phase 3c: cdkd diff must call the Instances change a replacement"
+P3C_LOG="$(mktemp)"
+set +e
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL CDKD_TEST_INSTANCES_REPLACE=true \
+  node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" >"${P3C_LOG}" 2>&1
+P3C_RC=$?
+set -e
+sed 's/^/  /' "${P3C_LOG}"
+if [ "${P3C_RC}" -ne 0 ]; then
+  echo "FAIL [phase 3c]: cdkd diff exited ${P3C_RC} (output above)" >&2
+  exit 1
+fi
+# The property line under `[~] Cluster`. Its sentinel is the same line without
+# the marker, so a reworded marker fails loudly instead of reading as in place.
+P3C_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${P3C_LOG}")"
+if ! awk 'index($0, "Instances") && index($0, "[requires replacement]") { f = 1 } END { exit !f }' <<<"${P3C_PLAIN}"; then
+  if grep -q "Instances" <<<"${P3C_PLAIN}"; then
+    echo "FAIL [phase 3c]: cdkd diff shows the Instances change without [requires replacement] (go-to-k/cdkd#5418: an in-place update the provider refuses)" >&2
+  else
+    echo "FAIL [phase 3c]: cdkd diff does not show the Instances change at all (output above)" >&2
+  fi
+  exit 1
+fi
+echo "    OK: diff marks Instances [requires replacement]"
+
+# AWS::EMR::Cluster is in cdkd's stateful-recreate guard set, so a plain deploy
+# refuses the replacement before touching the cluster; the refusal must name
+# the property and the consent flag.
+echo "==> Phase 3c: a deploy without --force-stateful-recreation is refused"
+set +e
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL CDKD_TEST_INSTANCES_REPLACE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${P3C_LOG}" 2>&1
+P3C_RC=$?
+set -e
+sed 's/^/  /' "${P3C_LOG}"
+P3C_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${P3C_LOG}")"
+if [ "${P3C_RC}" -eq 0 ]; then
+  echo "FAIL [phase 3c]: the deploy replacing a stateful EMR cluster succeeded without --force-stateful-recreation" >&2
+  exit 1
+fi
+if ! grep -qF "requires replacement (immutable property changed: Instances)" <<<"${P3C_PLAIN}" \
+  || ! grep -qF -- "--force-stateful-recreation" <<<"${P3C_PLAIN}"; then
+  echo "FAIL [phase 3c]: the refusal does not name the Instances replacement and --force-stateful-recreation (output above)" >&2
+  exit 1
+fi
+P3C_STATE="$(strict_cluster_state "${CID_P3C_OLD}")" || { echo "FAIL [phase 3c]: could not read ${CID_P3C_OLD} (DescribeCluster failed)" >&2; exit 1; }
+if [ "${P3C_STATE}" != "WAITING" ] && [ "${P3C_STATE}" != "RUNNING" ]; then
+  echo "FAIL [phase 3c]: the refused deploy left ${CID_P3C_OLD} '${P3C_STATE}' (expected WAITING/RUNNING)" >&2
+  exit 1
+fi
+echo "    OK: refused with STATEFUL_REPLACE_BLOCKED; ${CID_P3C_OLD} untouched (${P3C_STATE})"
+
+echo "==> Phase 3c: the replacement with --force-stateful-recreation (~10 min)"
+set +e
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL CDKD_TEST_INSTANCES_REPLACE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --force-stateful-recreation \
+  >"${P3C_LOG}" 2>&1
+P3C_RC=$?
+set -e
+sed 's/^/  /' "${P3C_LOG}"
+if [ "${P3C_RC}" -ne 0 ]; then
+  echo "FAIL [phase 3c]: the replacing deploy exited ${P3C_RC} (output above; before go-to-k/cdkd#5418 the provider refused Instances.AdditionalMasterSecurityGroups as an in-place update)" >&2
+  exit 1
+fi
+CID_P3C="$(state_query 'st.resources["Cluster"]?.physicalId')"
+case "${CID_P3C}" in j-*) ;; *) echo "FAIL [phase 3c]: state records Cluster as '${CID_P3C}' after the replacement" >&2; exit 1;; esac
+if [ "${CID_P3C}" = "${CID_P3C_OLD}" ]; then
+  echo "FAIL [phase 3c]: the cluster was NOT replaced (still ${CID_P3C})" >&2
+  exit 1
+fi
+if [ "$(output_value ClusterId)" != "${CID_P3C}" ]; then
+  echo "FAIL [phase 3c]: the ClusterId output '$(output_value ClusterId)' is not the new cluster ${CID_P3C}" >&2
+  exit 1
+fi
+P3C_STATE="$(strict_cluster_state "${CID_P3C_OLD}")" || { echo "FAIL [phase 3c]: could not read the old cluster ${CID_P3C_OLD} (DescribeCluster failed)" >&2; exit 1; }
+case "${P3C_STATE}" in
+  TERMINATING|TERMINATED) ;;
+  *) echo "FAIL [phase 3c]: the replaced cluster ${CID_P3C_OLD} is '${P3C_STATE}' (expected TERMINATING/TERMINATED)" >&2; exit 1;;
+esac
+EXTRA_SG="$(state_query 'st.resources["ExtraMasterSg"]?.physicalId')"
+case "${EXTRA_SG}" in sg-*) ;; *) echo "FAIL [phase 3c]: state records ExtraMasterSg as '${EXTRA_SG}'" >&2; exit 1;; esac
+read -r P3C_NEW_STATE P3C_EXTRA_SGS <<EOF
+$(aws emr describe-cluster --cluster-id "${CID_P3C}" --region "${REGION}" \
+  --query "Cluster.[Status.State,join(',', Ec2InstanceAttributes.AdditionalMasterSecurityGroups || \`[]\`)]" --output text)
+EOF
+if [ "${P3C_NEW_STATE}" != "WAITING" ] && [ "${P3C_NEW_STATE}" != "RUNNING" ]; then
+  echo "FAIL [phase 3c]: the new cluster ${CID_P3C} is '${P3C_NEW_STATE}' (expected WAITING/RUNNING)" >&2
+  exit 1
+fi
+if [ "${P3C_EXTRA_SGS}" != "${EXTRA_SG}" ]; then
+  echo "FAIL [phase 3c]: the new cluster's AdditionalMasterSecurityGroups is '${P3C_EXTRA_SGS}', expected ${EXTRA_SG}" >&2
+  exit 1
+fi
+rm -f "${P3C_LOG}"
+echo "    OK: replaced ${CID_P3C_OLD} (${P3C_STATE}) with ${CID_P3C} (${P3C_NEW_STATE}, AdditionalMasterSecurityGroups=${EXTRA_SG})"
+
 # --- Phase 4: destroy ----------------------------------------------------
-# Runs THROUGH the state record Phase 3 re-adopted — a broken import would
-# surface here as a cluster that never terminates.
-echo "==> Phase 4: destroy via the re-adopted state record (EMR termination takes a few minutes)"
+# Phase 3c's replacement terminated the cluster Phase 3 re-adopted, through its
+# imported record; this destroy terminates the replacement Phase 3c created.
+echo "==> Phase 4: destroy (EMR termination takes a few minutes)"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 # Strict probe: a DescribeCluster failure must not abort at the assignment
@@ -1189,6 +1307,20 @@ if [ "${FINAL_STATE}" != "TERMINATED" ] && [ "${FINAL_STATE}" != "TERMINATED_WIT
   exit 1
 fi
 echo "    cluster ${FINAL_STATE} (by id)"
+# Phase 3c's replacement: the cluster the destroy ran through, and its extra SG.
+FINAL_STATE="$(strict_cluster_state "${CID_P3C}")" || { echo "FAIL: could not read the replacement cluster ${CID_P3C} after destroy (DescribeCluster failed)" >&2; exit 1; }
+if [ "${FINAL_STATE}" != "TERMINATED" ] && [ "${FINAL_STATE}" != "TERMINATED_WITH_ERRORS" ]; then
+  echo "FAIL: the replacement EMR cluster ${CID_P3C} not terminated after destroy (state '${FINAL_STATE}')" >&2
+  exit 1
+fi
+FINAL_STATE="$(strict_cluster_state "${CID_P3C_OLD}")" || { echo "FAIL: could not read the replaced cluster ${CID_P3C_OLD} after destroy (DescribeCluster failed)" >&2; exit 1; }
+if [ "${FINAL_STATE}" != "TERMINATED" ] && [ "${FINAL_STATE}" != "TERMINATED_WITH_ERRORS" ]; then
+  echo "FAIL: the cluster Phase 3c replaced, ${CID_P3C_OLD}, is '${FINAL_STATE}' after destroy" >&2
+  exit 1
+fi
+assert_gone "security group ${EXTRA_SG} (ExtraMasterSg) still exists after destroy" \
+  aws ec2 describe-security-groups --group-ids "${EXTRA_SG}" --region "${REGION}"
+echo "    replacement cluster ${CID_P3C} and replaced ${CID_P3C_OLD} terminated, ${EXTRA_SG} deleted"
 
 # Leak assertion — use the STRICT lookup so a throttled `emr list-clusters`
 # cannot masquerade as "no leftover clusters". Retry a few times before
@@ -1232,4 +1364,4 @@ if ! printf '%s' "${HEAD_ERR}" | grep -qiE '404|Not Found'; then
 fi
 echo "    cdkd state removed (confirmed via a 404, not an ambiguous error)"
 
-echo "[verify] PASS — AWS::EMR::Cluster SDK provider: deploy + in-place update (incl. tag removal) + StepConcurrencyLevel removal warning + import round-trip (orphan -> import -> observedProperties from live AWS) + fix-forward of a failed CREATE (#4606) + destroy (TERMINATED) all passed"
+echo "[verify] PASS — AWS::EMR::Cluster SDK provider: deploy + in-place update (incl. tag removal) + StepConcurrencyLevel removal warning + import round-trip (orphan -> import -> observedProperties from live AWS) + fix-forward of a failed CREATE (#4606) + Instances change replaces the cluster (#5418) + destroy (TERMINATED) all passed"
