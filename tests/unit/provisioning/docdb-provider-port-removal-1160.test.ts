@@ -140,6 +140,19 @@ describe('DocDBProvider DBCluster Port removal (issue #1160)', () => {
     expect(result.attributes?.['Port']).toBe('27019');
   });
 
+  it('waits for a newly declared Port (none recorded before)', async () => {
+    mockSend
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce(cluster(27017))
+      .mockResolvedValueOnce(cluster(27018))
+      .mockResolvedValueOnce(cluster(27018));
+
+    await provider.update('MyCluster', 'my-cluster', TYPE, { Port: 27018 }, {});
+
+    expect(mockSend.mock.calls[0][0].input.Port).toBe(27018);
+    expect(mockSend).toHaveBeenCalledTimes(4);
+  });
+
   it('re-sends an unchanged declared Port without waiting', async () => {
     mockSend.mockResolvedValueOnce({}).mockResolvedValueOnce(cluster(27018));
 
