@@ -27,6 +27,8 @@ import { CASES_5 } from './sdk-wire-cases-5.js';
 import { CASES_6 } from './sdk-wire-cases-6.js';
 import { CASES_7 } from './sdk-wire-cases-7.js';
 import { LAMBDA_CASES } from './sdk-wire-cases-7-lambda.js';
+import { CASES_8 } from './sdk-wire-cases-8.js';
+import { ACM_CASES } from './sdk-wire-cases-8-acm.js';
 import { CASES_CLOUDMAP } from './sdk-wire-cases-cloudmap.js';
 import { CASES_NO_PROPERTIES } from './sdk-wire-cases-no-properties.js';
 
@@ -717,13 +719,11 @@ const CASES: TypeCase[] = [
  * here. `MAX_UNCOVERED` is its exact size, lowered by hand with each removal.
  */
 const NOT_YET_COVERED = new Set([
-  'ACMCertificateProvider',
   'ASGProvider',
   'AgentCoreEvaluatorProvider',
   'AgentCoreRuntimeProvider',
   'ApiGatewayProvider',
   'ApiGatewayV2Provider',
-  'CloudFrontDistributionProvider',
   'CloudTrailProvider',
   'CodeBuildProvider',
   'CognitoUserPoolProvider',
@@ -750,9 +750,6 @@ const NOT_YET_COVERED = new Set([
   'GlueWorkflowProvider',
   'KinesisStreamProvider',
   'LambdaEventSourceMappingProvider',
-  'LambdaMicrovmImageProvider',
-  'LambdaWebFunctionEndpointProvider',
-  'LambdaWebFunctionRevisionProvider',
   'NeptuneProvider',
   'NestedStackProvider',
   'RDSDBProxyEndpointProvider',
@@ -762,7 +759,7 @@ const NOT_YET_COVERED = new Set([
   'Route53Provider',
   'S3BucketProvider',
 ]);
-const MAX_UNCOVERED = 44;
+const MAX_UNCOVERED = 39;
 
 /**
  * Every case list, with the test file that runs it and the list's name there.
@@ -784,6 +781,8 @@ const CASE_LISTS: { cases: TypeCase[]; name: string; file: string }[] = [
   { cases: CASES_6, name: 'CASES_6', file: 'sdk-wire-coverage-6.test.ts' },
   { cases: CASES_7, name: 'CASES_7', file: 'sdk-wire-coverage-7.test.ts' },
   { cases: LAMBDA_CASES, name: 'LAMBDA_CASES', file: 'sdk-wire-coverage-7.test.ts' },
+  { cases: CASES_8, name: 'CASES_8', file: 'sdk-wire-coverage-8.test.ts' },
+  { cases: ACM_CASES, name: 'ACM_CASES', file: 'sdk-wire-coverage-8.test.ts' },
   {
     cases: CASES_CLOUDMAP,
     name: 'CASES_CLOUDMAP',
