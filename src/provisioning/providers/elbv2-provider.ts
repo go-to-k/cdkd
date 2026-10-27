@@ -254,6 +254,7 @@ interface CfnTargetDescription {
   Id?: string;
   Port?: number | string;
   AvailabilityZone?: string;
+  QuicServerId?: string;
 }
 
 // ─── Targets reads (go-to-k/cdkd#3989) ──────────────────────────────
@@ -273,8 +274,8 @@ type TargetsSide = 'desired' | 'recorded';
 
 type TargetsRead =
   | { kind: 'list'; items: CfnTargetDescription[] }
-  // `onlySecret`: well-shaped, and malformed ONLY because an `Id` holds a
-  // dynamic reference or its mask.
+  // `onlySecret`: well-shaped, and malformed ONLY because an `Id` or
+  // `QuicServerId` holds a dynamic reference or its mask.
   | { kind: 'malformed'; onlySecret: boolean };
 
 /** An integer port, as a number or a digit string (CFn coerces scalars). */
@@ -295,9 +296,19 @@ function isWellFormedTarget(entry: unknown, side: TargetsSide, ignoreSecrets = f
   const e = entry as Record<string, unknown>;
   const id = e['Id'];
   if (typeof id !== 'string' || id.length === 0) return false;
-  if (side === 'desired' && !ignoreSecrets && holdsSecretDerivedEntry(id)) return false;
+  // The `QuicServerId` is a wire value too: a recorded reference or mask there
+  // would reach RegisterTargets / DeregisterTargets as a literal token.
+  if (
+    side === 'desired' &&
+    !ignoreSecrets &&
+    (holdsSecretDerivedEntry(id) || holdsSecretDerivedEntry(e['QuicServerId']))
+  ) {
+    return false;
+  }
   if (e['Port'] != null && !isTargetPort(e['Port'])) return false;
   const az = e['AvailabilityZone'];
+  const quic = e['QuicServerId'];
+  if (quic != null && (typeof quic !== 'string' || quic.length === 0)) return false;
   return az == null || (typeof az === 'string' && az.length > 0);
 }
 
@@ -315,12 +326,14 @@ function readTargets(value: unknown, side: TargetsSide): TargetsRead {
 }
 
 /**
- * A recorded `Targets` list minus every entry whose `Id` is secret-derived: the
+ * A recorded `Targets` list minus every entry whose `Id` or `QuicServerId` is secret-derived: the
  * diff would otherwise deregister a literal `{{resolve:...}}` id. Dropping it
  * only misses that one removal, the safe direction.
  */
 function removableRecordedTargets(items: CfnTargetDescription[]): CfnTargetDescription[] {
-  return items.filter((e) => !holdsSecretDerivedEntry(e.Id));
+  return items.filter(
+    (e) => !holdsSecretDerivedEntry(e.Id) && !holdsSecretDerivedEntry(e.QuicServerId)
+  );
 }
 
 /**
@@ -353,6 +366,7 @@ function toTargetDescriptions(
       Id: e.Id as string,
       ...(port !== undefined && { Port: port }),
       ...(e.AvailabilityZone != null && { AvailabilityZone: e.AvailabilityZone }),
+      ...(e.QuicServerId != null && { QuicServerId: e.QuicServerId }),
     };
   });
 }
@@ -360,13 +374,13 @@ function toTargetDescriptions(
 /** The refusal's cause clause for a desired list refused only for a dynamic reference. */
 function targetsSecretCause(read: TargetsRead): string {
   return read.kind === 'malformed' && read.onlySecret
-    ? ' (an Id holds a dynamic reference or its mask, which names no target Elastic Load ' +
+    ? ' (an Id or QuicServerId holds a dynamic reference or its mask, which names no target Elastic Load ' +
         'Balancing accepts)'
     : '';
 }
 
 const TARGETS_WHAT =
-  'targets, each with a string Id and, where given, an integer Port and a string AvailabilityZone';
+  'targets, each with a string Id and, where given, an integer Port, a string AvailabilityZone and a string QuicServerId';
 
 /**
  * The removal resolver of all three attribute bags: a key REMOVED from
@@ -2447,39 +2461,84 @@ export class ELBv2Provider implements ResourceProvider {
 
       // ─── Targets ─────────────────────────────────────────────────────
       // RegisterTargets / DeregisterTargets diff keyed on the full
-      // (Id, Port, AvailabilityZone) tuple — a changed Port registers the new
+      // (Id, Port, AvailabilityZone, QuicServerId) tuple — a changed Port registers the new
       // tuple and deregisters the old one. Register first so a target whose
-      // spelling changed never has a window with zero registrations.
+      // spelling changed never has a window with zero registrations; the one
+      // exception is a QuicServerId-only change (see `deregisterFirst`), which
+      // AWS only accepts as deregister then register.
       // BOTH sides are normalized against the SAME group port so the keys are
       // comparable — see toTargetDescriptions' note on why the omitted-Port
       // case is a destructive diff rather than a cosmetic one. Both were read
       // by `readUpdateTargets` above.
       const targetKey = (t: TargetDescription) =>
-        JSON.stringify([t.Id, t.Port ?? null, t.AvailabilityZone ?? null]);
+        JSON.stringify([t.Id, t.Port ?? null, t.AvailabilityZone ?? null, t.QuicServerId ?? null]);
       const oldTargetKeys = new Set(oldTargets.map(targetKey));
       const newTargetKeys = new Set(newTargets.map(targetKey));
       const targetsToRegister = newTargets.filter((t) => !oldTargetKeys.has(targetKey(t)));
       const targetsToDeregister = oldTargets.filter((t) => !newTargetKeys.has(targetKey(t)));
+      // A target whose only change is its QuicServerId sits in BOTH sets under
+      // the same (Id, Port, AvailabilityZone). AWS cannot modify a registered
+      // target's server id: it must be deregistered, then registered again. So
+      // those deregister FIRST: measured on a QUIC target group, RegisterTargets
+      // for a different server id while one is registered is REFUSED ("deregister
+      // the target first"). A change TO an absent server id is the exception: a
+      // QUIC target group refuses a target without one, so deregistering first
+      // would take the live target down for a register that cannot succeed;
+      // that case stays register-first and AWS's refusal leaves it intact.
+      // (A secret-derived recorded server id never reaches this path: its tuple
+      // is filtered out of the recorded side, so there is nothing to pair.)
+      const baseKey = (t: TargetDescription) =>
+        JSON.stringify([t.Id, t.Port ?? null, t.AvailabilityZone ?? null]);
+      const quicRegisterBaseKeys = new Set(
+        targetsToRegister.filter((t) => t.QuicServerId !== undefined).map(baseKey)
+      );
+      const deregisterFirst = targetsToDeregister.filter((t) =>
+        quicRegisterBaseKeys.has(baseKey(t))
+      );
+      const deregisterAfter = targetsToDeregister.filter(
+        (t) => !quicRegisterBaseKeys.has(baseKey(t))
+      );
+      const sendDeregister = async (targets: TargetDescription[]): Promise<void> => {
+        if (targets.length === 0) return;
+        await this.getClient().send(
+          new DeregisterTargetsCommand({ TargetGroupArn: physicalId, Targets: targets })
+        );
+        this.logger.debug(`Deregistered ${targets.length} target(s) for ${logicalId}`);
+      };
+      // Wait BEFORE the early deregister, so the unregistered window is one
+      // RegisterTargets call.
       if (targetsToRegister.length > 0) {
         await this.waitForLambdaTargetsActive(
           logicalId,
           properties['TargetType'],
           targetsToRegister
         );
-        await this.getClient().send(
-          new RegisterTargetsCommand({ TargetGroupArn: physicalId, Targets: targetsToRegister })
-        );
+      }
+      await sendDeregister(deregisterFirst);
+      if (targetsToRegister.length > 0) {
+        try {
+          await this.getClient().send(
+            new RegisterTargetsCommand({ TargetGroupArn: physicalId, Targets: targetsToRegister })
+          );
+        } catch (registerError) {
+          if (deregisterFirst.length === 0) throw registerError;
+          // The early deregister already took those targets down: put them back.
+          try {
+            await this.getClient().send(
+              new RegisterTargetsCommand({ TargetGroupArn: physicalId, Targets: deregisterFirst })
+            );
+          } catch (reRegisterError) {
+            throw new Error(
+              `${deregisterFirst.length} target(s) were deregistered to change their QuicServerId and ` +
+                `could not be registered again; register them with their previous QuicServerId`,
+              { cause: new AggregateError([registerError, reRegisterError]) }
+            );
+          }
+          throw registerError;
+        }
         this.logger.debug(`Registered ${targetsToRegister.length} target(s) for ${logicalId}`);
       }
-      if (targetsToDeregister.length > 0) {
-        await this.getClient().send(
-          new DeregisterTargetsCommand({
-            TargetGroupArn: physicalId,
-            Targets: targetsToDeregister,
-          })
-        );
-        this.logger.debug(`Deregistered ${targetsToDeregister.length} target(s) for ${logicalId}`);
-      }
+      await sendDeregister(deregisterAfter);
 
       // Describe to get current attributes
       const describeResponse = await this.getClient().send(
@@ -3245,17 +3304,44 @@ export class ELBv2Provider implements ResourceProvider {
     const holds = (want: TargetDescription, have: TargetDescription): boolean =>
       want.Id === have.Id &&
       (want.Port ?? null) === (have.Port ?? null) &&
+      (want.AvailabilityZone === undefined || want.AvailabilityZone === have.AvailabilityZone) &&
+      (want.QuicServerId === undefined || want.QuicServerId === have.QuicServerId);
+    // A desired entry that names ANOTHER server id for a live Id / Port replaces it.
+    const replaces = (want: TargetDescription, have: TargetDescription): boolean =>
+      want.QuicServerId !== undefined &&
+      have.QuicServerId !== undefined &&
+      want.Id === have.Id &&
+      (want.Port ?? null) === (have.Port ?? null) &&
       (want.AvailabilityZone === undefined || want.AvailabilityZone === have.AvailabilityZone);
-    const retained = live.filter((have) => !newTargets.some((want) => holds(want, have)));
+    const retained = live.filter(
+      (have) => !newTargets.some((want) => holds(want, have) || replaces(want, have))
+    );
     if (retained.length > 0) {
       this.logger.warn(
         safeMsg`The recorded Targets of TargetGroup ${logicalId} is not a list cdkd can read, so cdkd read the registered targets from Elastic Load Balancing; the target group holds ${retained.length} target(s) the desired Targets does not name, and cdkd left them registered. Deregister them yourself if they are no longer wanted.`
       );
     }
-    return {
-      newTargets,
-      oldTargets: newTargets.filter((want) => live.some((have) => holds(want, have))),
-    };
+    // A live target with the desired Id / Port but ANOTHER server id is what the
+    // desired entry changes: carry the live tuple as the old side so the diff
+    // deregisters it before registering the new one (AWS refuses the register
+    // while the old server id is held).
+    const oldTargets: TargetDescription[] = [];
+    for (const want of newTargets) {
+      if (live.some((have) => holds(want, have))) {
+        oldTargets.push(want);
+        continue;
+      }
+      const changed = live.find((have) => replaces(want, have));
+      if (changed !== undefined) {
+        oldTargets.push({
+          Id: changed.Id,
+          ...(changed.Port !== undefined && { Port: changed.Port }),
+          ...(want.AvailabilityZone !== undefined && { AvailabilityZone: want.AvailabilityZone }),
+          QuicServerId: changed.QuicServerId,
+        });
+      }
+    }
+    return { newTargets, oldTargets };
   }
 
   /**
@@ -3548,8 +3634,8 @@ export class ELBv2Provider implements ResourceProvider {
    * Two AWS-SUBSTITUTED values are dropped, because echoing back a value the
    * template never wrote is phantom drift against a `properties`-fallback
    * baseline — and, worse, a DESTRUCTIVE one: `updateTargetGroup` keys its
-   * register / deregister diff on the whole `(Id, Port, AvailabilityZone)`
-   * tuple, so one extra member makes the SAME live target read as a different
+   * register / deregister diff on the whole `(Id, Port, AvailabilityZone,
+   * QuicServerId)` tuple, so one extra member makes the SAME live target read as a different
    * one and `--revert` deregisters it.
    *
    *  - `Port` when it equals the target group's own port — what AWS
@@ -3591,10 +3677,15 @@ export class ELBv2Provider implements ResourceProvider {
         if (typeof id !== 'string' || id.length === 0) continue;
         const port = desc.Target?.Port;
         const az = desc.Target?.AvailabilityZone;
+        const quicServerId = desc.Target?.QuicServerId;
         targets.push({
           Id: id,
           ...(port !== undefined && port !== groupPort && { Port: port }),
           ...(isIpTargetGroup && az !== undefined && az !== 'all' && { AvailabilityZone: az }),
+          // Echoed: the diff key includes it, so omitting it would make a
+          // registered QUIC target read as a different tuple and be deregistered.
+          ...(typeof quicServerId === 'string' &&
+            quicServerId.length > 0 && { QuicServerId: quicServerId }),
         });
       }
       result['Targets'] = targets;

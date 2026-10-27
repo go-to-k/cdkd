@@ -114,6 +114,13 @@ PITR_REFUSED_TABLE="cdkd-ondemand-test-pitr-refused-table"
 # issue go-to-k/cdkd#3286: exists only in the create-arm ceiling refusal deploy
 # and must NEVER be created.
 CEILING_REFUSED_TABLE="cdkd-ondemand-test-ceiling-refused-table"
+# issue go-to-k/cdkd#5412: the table created on the fixture-owned customer
+# managed key below, whose SSESpecification the UPDATE phase REMOVES. The key's
+# alias carries the stack name; the tag finds a key whose alias is gone.
+SSE_REMOVAL_TABLE="cdkd-ondemand-test-sse-removal-table"
+SSE_REMOVAL_LOGICAL_ID="SseRemovalTable"
+SSE_KEY_ALIAS="alias/${STACK}-sse-removal"
+SSE_KEY_TAG="cdkd-integ-sse-removal"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -136,7 +143,28 @@ cleanup() {
   aws dynamodb delete-table --table-name "${CEILING_REMOVAL_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
   aws dynamodb delete-table --table-name "${PITR_REFUSED_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
   aws dynamodb delete-table --table-name "${CEILING_REFUSED_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws dynamodb delete-table --table-name "${SSE_REMOVAL_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
   aws kinesis delete-stream --stream-name "${STREAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  # issue go-to-k/cdkd#5412: the fixture-owned key -- by alias (alias first,
+  # so a re-run can create it again), then by tag for one whose alias is gone.
+  # Only an Enabled key is scheduled: one already PendingDeletion is done.
+  local sse_key k
+  sse_key=$(aws kms describe-key --key-id "${SSE_KEY_ALIAS}" --region "${REGION}" \
+    --query 'KeyMetadata.KeyId' --output text 2>/dev/null)
+  if [ -n "${sse_key}" ] && [ "${sse_key}" != "None" ]; then
+    aws kms delete-alias --alias-name "${SSE_KEY_ALIAS}" --region "${REGION}" >/dev/null 2>&1
+  fi
+  for k in ${sse_key} $(aws resourcegroupstaggingapi get-resources --region "${REGION}" \
+    --resource-type-filters kms --tag-filters "Key=${SSE_KEY_TAG},Values=${STACK}" \
+    --query 'ResourceTagMappingList[].ResourceARN' --output text 2>/dev/null); do
+    [ "${k}" = "None" ] && continue
+    if [ "$(aws kms describe-key --key-id "${k}" --region "${REGION}" \
+      --query 'KeyMetadata.KeyState' --output text 2>/dev/null)" = "Enabled" ]; then
+      aws kms schedule-key-deletion --key-id "${k}" --pending-window-in-days 7 \
+        --region "${REGION}" >/dev/null 2>&1 ||
+        echo "WARN: cleanup could not schedule deletion of KMS key ${k}" >&2
+    fi
+  done
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -490,6 +518,22 @@ assert_ceiling_removal "the removal table's baseline per-index" "${CEILING_REMOV
   MaxWriteRequestUnits "${CEILING_REMOVAL_GSI_WRITE}"
 echo "    OK (Phase 1): both ceiling positions carry ${CEILING_REMOVAL_TABLE_READ}/${CEILING_REMOVAL_TABLE_WRITE} and ${CEILING_REMOVAL_GSI_READ}/${CEILING_REMOVAL_GSI_WRITE} before the removal"
 
+# --- issue go-to-k/cdkd#5412 BASELINE: the table is on the fixture's CMK ----
+# Asserted LIVE before the removal phase, or "SSEDescription absent" afterwards
+# would also pass for a key that never reached AWS.
+SSE_KEY_ARN=$(aws kms describe-key --key-id "${SSE_KEY_ALIAS}" --region "${REGION}" \
+  --query 'KeyMetadata.Arn' --output text)
+SSE_BASE=$(aws dynamodb describe-table --table-name "${SSE_REMOVAL_TABLE}" --region "${REGION}" \
+  --query 'Table.[SSEDescription.Status, SSEDescription.SSEType, SSEDescription.KMSMasterKeyArn]' \
+  --output text)
+if [ "${SSE_BASE}" != "$(printf 'ENABLED\tKMS\t%s' "${SSE_KEY_ARN}")" ]; then
+  echo "FAIL (issue go-to-k/cdkd#5412): ${SSE_REMOVAL_TABLE} reads '${SSE_BASE}' before the removal, expected ENABLED / KMS / ${SSE_KEY_ARN}" >&2
+  exit 1
+fi
+SSE_BASE_ID=$(aws dynamodb describe-table --table-name "${SSE_REMOVAL_TABLE}" --region "${REGION}" \
+  --query 'Table.TableId' --output text)
+echo "    OK (Phase 1): ${SSE_REMOVAL_TABLE} is on the fixture's customer managed key"
+
 echo "==> Phase 1.5: re-deploy with CDKD_TEST_UPDATE=true (BillingMode/ProvisionedThroughput in-place update)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -528,6 +572,49 @@ if [ "${KDS_PRECISION_UPDATED}" != "ACTIVE MICROSECOND" ]; then
   exit 1
 fi
 echo "    OK (Phase 1.5): Kinesis destination precision changed in place to MICROSECOND (issue #5385)"
+
+# --- Phase 1.5 (issue go-to-k/cdkd#5412): SSESpecification REMOVAL ----------
+# The same deploy drops the table's SSESpecification. CloudFormation moves the
+# table back to the AWS owned key (`SSEDescription` absent once the update
+# completes); before the fix cdkd sent nothing and the CMK stayed. The key
+# switch settles asynchronously, so poll; then the table must read CLEAN in
+# `cdkd drift` (no phantom SSESpecification) and must not have been replaced.
+SSE_NOW=""
+for _ in $(seq 1 36); do
+  SSE_NOW=$(aws dynamodb describe-table --table-name "${SSE_REMOVAL_TABLE}" --region "${REGION}" \
+    --query 'Table.SSEDescription' --output json)
+  [ "${SSE_NOW}" = "null" ] && break
+  sleep 5
+done
+if [ "${SSE_NOW}" != "null" ]; then
+  echo "FAIL (issue go-to-k/cdkd#5412): ${SSE_REMOVAL_TABLE} still reports SSEDescription ${SSE_NOW} ~3min after the SSESpecification removal -- the reset to the AWS owned key was NOT sent" >&2
+  exit 1
+fi
+SSE_ID_AFTER=$(aws dynamodb describe-table --table-name "${SSE_REMOVAL_TABLE}" --region "${REGION}" \
+  --query 'Table.TableId' --output text)
+if [ "${SSE_ID_AFTER}" != "${SSE_BASE_ID}" ]; then
+  echo "FAIL (issue go-to-k/cdkd#5412): ${SSE_REMOVAL_TABLE} was REPLACED (TableId ${SSE_BASE_ID} -> ${SSE_ID_AFTER}), not updated in place" >&2
+  exit 1
+fi
+SSE_DRIFT_JSON=$(mktemp)
+SSE_DRIFT_ERR=$(mktemp)
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json >"${SSE_DRIFT_JSON}" 2>"${SSE_DRIFT_ERR}"
+SSE_DRIFT_RC=$?
+set -e
+SSE_CLEAN=$(jq --arg id "${SSE_REMOVAL_LOGICAL_ID}" \
+  '[.[].clean[]? | select(.logicalId == $id)] | length' "${SSE_DRIFT_JSON}" 2>/dev/null || echo unparsable)
+SSE_DRIFTED=$(jq --arg id "${SSE_REMOVAL_LOGICAL_ID}" \
+  '[.[].drifted[]? | select(.logicalId == $id)] | length' "${SSE_DRIFT_JSON}" 2>/dev/null || echo unparsable)
+if [ "${SSE_CLEAN}" != "1" ] || [ "${SSE_DRIFTED}" != "0" ]; then
+  echo "FAIL (issue go-to-k/cdkd#5412): expected ${SSE_REMOVAL_LOGICAL_ID} CLEAN in cdkd drift after the reset (clean=${SSE_CLEAN} drifted=${SSE_DRIFTED} rc=${SSE_DRIFT_RC}):" >&2
+  cat "${SSE_DRIFT_JSON}" "${SSE_DRIFT_ERR}" >&2
+  rm -f "${SSE_DRIFT_JSON}" "${SSE_DRIFT_ERR}"
+  exit 1
+fi
+rm -f "${SSE_DRIFT_JSON}" "${SSE_DRIFT_ERR}"
+echo "    OK (Phase 1.5): removing SSESpecification moved ${SSE_REMOVAL_TABLE} to the AWS owned key in place, and drift reads it clean (issue go-to-k/cdkd#5412)"
 
 # --- Phase 1.55: the per-GSI on-demand ceiling EDIT (issue #3287) ------
 # The headline shape: the same CDKD_TEST_UPDATE=true deploy changes NOTHING on
@@ -932,6 +1019,30 @@ if [ -z "${CEILING_REMOVAL_TABLE_GONE}" ]; then
 fi
 echo "    OK: ceiling-removal DynamoDB table is gone"
 
+# ...and so is the issue go-to-k/cdkd#5412 SSE-removal table, and its key is
+# scheduled for deletion with the alias gone.
+SSE_REMOVAL_TABLE_GONE=""
+for _ in $(seq 1 24); do
+  if gone_probe aws dynamodb describe-table --table-name "${SSE_REMOVAL_TABLE}" --region "${REGION}"; then
+    SSE_REMOVAL_TABLE_GONE=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${SSE_REMOVAL_TABLE_GONE}" ]; then
+  echo "FAIL: DynamoDB table ${SSE_REMOVAL_TABLE} still exists ~2min after destroy" >&2
+  exit 1
+fi
+assert_gone "KMS alias ${SSE_KEY_ALIAS} still exists after destroy" \
+  aws kms describe-key --key-id "${SSE_KEY_ALIAS}" --region "${REGION}"
+SSE_KEY_STATE=$(aws kms describe-key --key-id "${SSE_KEY_ARN}" --region "${REGION}" \
+  --query 'KeyMetadata.KeyState' --output text)
+if [ "${SSE_KEY_STATE}" != "PendingDeletion" ]; then
+  echo "FAIL: KMS key ${SSE_KEY_ARN} is '${SSE_KEY_STATE}' after destroy, expected PendingDeletion" >&2
+  exit 1
+fi
+echo "    OK: SSE-removal DynamoDB table is gone and its key is pending deletion"
+
 # Kinesis DeleteStream is async too.
 STREAM_GONE=""
 for _ in $(seq 1 24); do
@@ -951,4 +1062,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> dynamodb-ondemand test passed (OnDemandThroughput + ResourcePolicy + KinesisStreamSpecification + ContributorInsightsSpecification backfill closed + BillingMode/ProvisionedThroughput in-place UPDATE + per-GSI ceiling edit + rejected ceiling member dropped + per-member ceiling REMOVAL at both positions + malformed RecoveryPeriodInDays refused on create and update + clean destroy)"
+echo "==> dynamodb-ondemand test passed (OnDemandThroughput + ResourcePolicy + KinesisStreamSpecification + ContributorInsightsSpecification backfill closed + BillingMode/ProvisionedThroughput in-place UPDATE + per-GSI ceiling edit + rejected ceiling member dropped + per-member ceiling REMOVAL at both positions + malformed RecoveryPeriodInDays refused on create and update + SSESpecification removal reset to the AWS owned key + clean destroy)"
