@@ -358,7 +358,15 @@ describe('ElastiCacheProvider CacheCluster in-place modify (issue #5438)', () =>
     });
 
     it('does not warn when TransitEncryptionEnabled: false is added (the create default)', async () => {
-      available();
+      // The describe reports no encryption setting, so only the previous
+      // template value (absent = the create default, false) can stand in.
+      mockSend.mockImplementation((cmd: Sent) =>
+        Promise.resolve(
+          cmd.constructor.name === 'DescribeCacheClustersCommand'
+            ? { CacheClusters: [{ CacheClusterStatus: 'available', CacheNodeType: 'cache.t4g.micro' }] }
+            : {}
+        )
+      );
 
       await provider.update(
         'Cache',
