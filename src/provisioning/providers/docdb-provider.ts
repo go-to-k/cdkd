@@ -101,6 +101,29 @@ function masterUserPasswordToSend(
 }
 
 /**
+ * Issue #1160: the port CloudFormation resets a removed DBCluster `Port` to.
+ * A real CloudFormation A/B (#1160) measured a removed `Port: 27018` reading
+ * back 27017 once the update completed.
+ */
+const DOCDB_DEFAULT_PORT = 27017;
+
+/** A template number (CFn numbers may arrive as strings), or `undefined` when absent. */
+function numberOrUndefined(value: unknown): number | undefined {
+  return value == null ? undefined : Number(value);
+}
+
+/** The ModifyDBCluster `Port`: the declared one, or the default on removal. */
+function clusterPortToSend(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): number | undefined {
+  if (properties['Port'] != null) return Number(properties['Port']);
+  if (previousProperties['Port'] == null) return undefined;
+  // The removed value already was the default: nothing to change.
+  return Number(previousProperties['Port']) === DOCDB_DEFAULT_PORT ? undefined : DOCDB_DEFAULT_PORT;
+}
+
+/**
  * The attribute map a DocumentDB DB cluster records (issue #3650), under
  * CloudFormation's `Fn::GetAtt` names (`Endpoint`, `Port`, `ReadEndpoint`,
  * `ClusterResourceId`). The RDS-style dotted keys (`Endpoint.Address`, ...)
@@ -557,8 +580,9 @@ export class DocDBProvider implements ResourceProvider {
       //     property is removed, so a removal sends nothing. RDS and Neptune
       //     differ: there CloudFormation moves the cluster to the VPC's
       //     default security group.
-      //   * Port — DocDB documents a fixed default (27017), but resetting
-      //     the port is connection-breaking for every client; leave unchanged.
+      // A removed Port IS reset, to 27017 (`clusterPortToSend`): a real
+      // CloudFormation A/B (#1160) read a removed `Port: 27018` back as 27017.
+      const portToSend = clusterPortToSend(properties, previousProperties);
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
@@ -581,12 +605,25 @@ export class DocDBProvider implements ResourceProvider {
           ...(sendVpcSgIds && { VpcSecurityGroupIds: vpcSgIds }),
           // #5153: only a changed password; any supplied one resets credentials.
           MasterUserPassword: masterUserPasswordToSend(properties, previousProperties, context),
-          Port: properties['Port'] != null ? Number(properties['Port']) : undefined,
+          Port: portToSend,
           ApplyImmediately: true,
         })
       );
 
       this.logger.debug(`Successfully updated DocDB DBCluster ${logicalId}`);
+
+      // A changed Port (declared, or the default on removal) applies
+      // asynchronously: the describe below could still read the old one, and a
+      // same-deploy `Fn::GetAtt <cluster>.Port` would get it. CloudFormation
+      // reports the update once it has settled, so wait for the new port first.
+      // An unchanged port adds no call; `--no-wait` skips it.
+      if (
+        process.env['CDKD_NO_WAIT'] !== 'true' &&
+        portToSend !== undefined &&
+        portToSend !== numberOrUndefined(previousProperties['Port'])
+      ) {
+        await this.waitForClusterPortApplied(physicalId, logicalId, portToSend);
+      }
 
       const described = await this.describeDBCluster(physicalId);
 
@@ -1229,6 +1266,31 @@ export class DocDBProvider implements ResourceProvider {
     throw new Error(
       `Timed out waiting for a member instance of the cluster to finish applying its new VPC security groups`
     );
+  }
+
+  /**
+   * Wait until the cluster is out of `modifying` and reports `port` (issue
+   * #1160). `available` alone can still read before the port change starts;
+   * the port cannot.
+   */
+  private async waitForClusterPortApplied(
+    dbClusterIdentifier: string,
+    logicalId: string,
+    port: number,
+    maxWaitMs = 1_800_000
+  ): Promise<void> {
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      const cluster = await this.describeDBCluster(dbClusterIdentifier);
+      if (cluster !== undefined && cluster.Status !== 'modifying' && cluster.Port === port) return;
+      this.logger.debug(
+        safeMsg`DocDB DBCluster ${logicalId} port not applied yet (status ${cluster?.Status ?? 'unknown'})`
+      );
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(`Timed out waiting for DocDB DBCluster ${logicalId} to apply its new port`);
   }
 
   /**
