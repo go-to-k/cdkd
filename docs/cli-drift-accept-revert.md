@@ -102,7 +102,6 @@ AWS treats these as immutable:
 
 - `AWS::Lambda::LayerVersion`
 - `AWS::Lambda::Permission`
-- `AWS::ApiGateway::Deployment`
 
 cdkd has no in-place update for these:
 
@@ -110,7 +109,6 @@ cdkd has no in-place update for these:
 - `AWS::EFS::*`
 - `AWS::KinesisFirehose::DeliveryStream`
 - `AWS::ApiGatewayV2::*`
-- `AWS::ApiGateway::Authorizer`, `Deployment` and `Method`
 - `AWS::Glue::Database`
 - `AWS::ServiceDiscovery::*`
 - `AWS::ElasticLoadBalancingV2::LoadBalancer`

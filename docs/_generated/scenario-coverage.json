@@ -452,6 +452,11 @@
       "scenarios": []
     },
     {
+      "name": "apigw-vpclink-integration-target",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "app-autoscaling-recreate",
       "annotated": false,
       "scenarios": []
@@ -3479,6 +3484,7 @@
     "apigw-stage-props",
     "apigw-stage-throttling",
     "apigw-usage-plan-key",
+    "apigw-vpclink-integration-target",
     "app-autoscaling-recreate",
     "appconfig",
     "aws-custom-resource",
