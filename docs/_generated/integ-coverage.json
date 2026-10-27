@@ -5256,6 +5256,7 @@
         "cross-backend-same-stack",
         "drift-revert",
         "dynamodb-globaltable-replica-settings",
+        "dynamodb-ondemand",
         "dynamodb-streams",
         "ecr-scanning",
         "eventbridge",
@@ -5283,6 +5284,9 @@
         "dynamodb-globaltable-replica-settings": [
           "l2",
           "literal"
+        ],
+        "dynamodb-ondemand": [
+          "l2"
         ],
         "dynamodb-streams": [
           "l2"
