@@ -938,7 +938,10 @@ export class EMRClusterProvider implements ResourceProvider {
       // refuses, naming the whole block.
       const named = replacing
         ? (movedKeys.find((key) =>
-            emrClusterInstancesReplaced({ [key]: prevInstances[key] }, { [key]: nextInstances[key] })
+            emrClusterInstancesReplaced(
+              { [key]: prevInstances[key] },
+              { [key]: nextInstances[key] }
+            )
           ) ?? '*')
         : movedKeys.find((key) => key !== 'TerminationProtected');
       if (named !== undefined) {
