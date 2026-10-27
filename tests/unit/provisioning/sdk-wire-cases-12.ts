@@ -435,7 +435,7 @@ const ROUTE_CASE: TypeCase = {
           ])
         ),
         'update-remove:ModelSelectionExpression': apigwv2Kept('3019-3029', '#1160'),
-        'update-remove:RouteResponseSelectionExpression': apigwv2Kept('3019-3039', '#1160'),
+        'update-remove:RouteResponseSelectionExpression': apigwv2Kept('3030-3039', '#1160'),
       },
       expectedRemovalThrows: {
         'create:ApiId': APIGWV2_REQUIRED(
@@ -538,7 +538,7 @@ const CASES_12_APIGWV2: TypeCase[] = [
  * The twelfth batch's ECS wire cases (#3723): the cluster, task definition and
  * service (`@aws-sdk/client-ecs`). The provider builds its own clients (a
  * `RegisterTaskDefinition` create client among them), so
- * `sdk-wire-coverage-12-ecs.test.ts` mocks the package.
+ * `sdk-wire-coverage-12.test.ts` mocks the package.
  */
 
 const ECS_ALL_DIRECTIONS = ['create', 'update-add', 'update-remove'];
@@ -888,6 +888,10 @@ const DEPLOYMENT_CONFIGURATION_SILENT: Record<string, string> = Object.fromEntri
       `update-remove:DeploymentConfiguration.${p}`,
       'a member dropped from a still-declared DeploymentConfiguration is sent as the desired block; UpdateService merges the top level and replaces / default-fills the nested blocks, the end state CloudFormation reached for the same template (CFn A/B us-east-1 2026-08-13, ecs-provider.ts:2083-2154, 2233-2235); a required member it drops is refused by CloudFormation and by the nested-required pre-flight (ecs-provider.ts:2096-2117, 2163-2183)',
     ]),
+  [
+    'update-remove:DeploymentConfiguration.DeploymentCircuitBreaker',
+    'the whole circuit breaker dropped from a still-declared DeploymentConfiguration resets nothing: the provider passes it through by design, and CloudFormation is unmeasured for this removal (ecs-provider.ts:3456-3460)',
+  ],
 ]);
 
 const SERVICE_TOP = {
@@ -1042,7 +1046,7 @@ const SERVICE_CASE: TypeCase = {
   wholeFromNext: {
     keys: (key) => SERVICE_FROM_NEXT.has(key),
     reason:
-      'sent from the desired bag on every UpdateService and kept live on removal, as CloudFormation keeps it (#5004 A/B; see SERVICE_FROM_NEXT)',
+      'sent from the desired bag on every UpdateService, so a removal sends nothing and the live value stays: for the eight keys a CloudFormation A/B measured, as CloudFormation keeps it (#5004, ecs-provider.ts:476-489); DesiredCount by CloudFormation\'s documented omit-on-update rule; TaskDefinition / NetworkConfiguration as the provider\'s always-carried pass-throughs, unmeasured against CloudFormation (ecs-provider.ts:2247-2250; see SERVICE_FROM_NEXT)',
   },
   exempt: {},
   targets: ECS_TAG_TARGETS,
@@ -1063,7 +1067,7 @@ const SERVICE_CASE: TypeCase = {
         'update-remove:AvailabilityZoneRebalancing':
           'left in place on removal: CloudFormation KEEPS the live value (DISABLED stayed DISABLED, CFn A/B #5004/#1160), and UpdateService keeps an absent member (ecs-provider.ts:2288-2290)',
         'update-remove:DeploymentController':
-          'absent means the default ECS controller, and sending nothing keeps the live one; a controller change is sent only when declared and changed (ecs-provider.ts:2294-2298, 2310-2318)',
+          'absent means the default ECS controller, and sending nothing keeps the live one; a controller change is sent only when declared and changed (ecs-provider.ts:2294-2298, 2310-2318). The provider does not reset by design; CloudFormation is unmeasured for this removal',
       },
       expectedRemovalThrows: TAG_THROWS(ECS_ALL_DIRECTIONS, 2),
     },
@@ -1697,7 +1701,7 @@ const firehoseExtendedS3Full = () => ({
 
 /** The legacy destination: `update()` refuses any change to it (see below). */
 const FIREHOSE_LEGACY_S3_REFUSED: Throw = {
-  why: 'an in-place change to the legacy S3DestinationConfiguration is refused with ResourceUpdateNotSupportedError before any call (firehose-provider.ts:866-871, 986-1000): AWS deprecated the shape for ExtendedS3DestinationConfiguration, which CDK always emits',
+  why: 'an in-place change to the legacy S3DestinationConfiguration is refused with ResourceUpdateNotSupportedError before any call (firehose-provider.ts:866-871, 986-1000): AWS deprecated the shape for ExtendedS3DestinationConfiguration, which CDK always emits. CloudFormation updates it in place: go-to-k/cdkd#5439',
   says: /In-place update for 'S3DestinationConfiguration'/,
 };
 
@@ -1726,7 +1730,7 @@ function firehoseLegacyS3(bag: Bag): Pick<BagCase, 'expectedSilent' | 'expectedR
     expectedSilent: Object.fromEntries(
       leaves.map((p) => [
         `update-vary:${p.join('.')}`,
-        'the legacy S3DestinationConfiguration cannot be updated in place: both sides of the vary are the refusal (firehose-provider.ts:866-871, 986-1000)',
+        'the legacy S3DestinationConfiguration cannot be updated in place: both sides of the vary are the refusal (firehose-provider.ts:866-871, 986-1000; go-to-k/cdkd#5439)',
       ])
     ),
   };
@@ -2002,7 +2006,7 @@ const CASES_12_FIREHOSE: TypeCase[] = [FIREHOSE_CASE];
 /**
  * The twelfth batch's Auto Scaling group case (#3723): `ASGProvider` builds its
  * own `@aws-sdk/client-auto-scaling` clients (a create client among them), so
- * `sdk-wire-coverage-12-asg.test.ts` mocks that package, and EC2's, which the
+ * `sdk-wire-coverage-12.test.ts` mocks that package, and EC2's, which the
  * provider constructs for its delete path.
  */
 
