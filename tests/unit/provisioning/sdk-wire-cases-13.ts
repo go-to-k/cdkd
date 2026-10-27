@@ -709,7 +709,7 @@ const USER_POOL_CASE: TypeCase = {
   wholeFromNext: {
     keys: (key) => key !== 'UserPoolTags' && key !== 'MfaConfiguration' && key !== 'Schema',
     reason:
-      `UpdateUserPool and SetUserPoolMfaConfig are built from the desired bag alone (${COGNITO_SRC}:3290-3409, 795-973); the previous side is read only to warn about a kept removal (${COGNITO_SRC}:3263-3270). An omitted member is then reset by AWS (UpdateUserPool ledger at ${COGNITO_SRC}:2680-2696; SetUserPoolMfaConfig a full replace, ${COGNITO_SRC}:904-918) or kept as CloudFormation keeps it (each named in the bag's expectedSilent); EmailVerificationMessage, EmailVerificationSubject, SmsVerificationMessage and UserAttributeUpdateSettings are unmeasured on omission (${COGNITO_SRC}:120-151), and CloudFormation is unmeasured for their removal`,
+      `UpdateUserPool and SetUserPoolMfaConfig are built from the desired bag alone (${COGNITO_SRC}:3290-3409, 795-973); the previous side is read only to warn about a kept removal (${COGNITO_SRC}:3263-3270). So an omitted member is simply not sent. What AWS does on that omission is measured only for the members the provider's ledgers name (UpdateUserPool: AutoVerifiedAttributes, LambdaConfig, UserPoolAddOns, VerificationMessageTemplate, SmsAuthenticationMessage, DeviceConfiguration and AdminCreateUserConfig.AllowAdminCreateUserOnly reset, ${COGNITO_SRC}:2680-2696; SetUserPoolMfaConfig: MfaConfiguration and WebAuthnConfiguration.FactorConfiguration, ${COGNITO_SRC}:2715-2729), and a member CloudFormation keeps on removal is named in the bag's expectedSilent; for every other member (EnabledMfas, the WebAuthn relying party and verification, the email-OTP message and subject, AdminCreateUserConfig.InviteMessageTemplate / UnusedAccountValidityDays, the email / SMS verification messages, UserAttributeUpdateSettings: ${COGNITO_SRC}:120-151) both the omission and CloudFormation's removal are unmeasured`,
   },
   exempt: {},
   targets: [
@@ -882,12 +882,12 @@ const S3_NESTED_LOCK_CONSTANT = `the provider always sends ObjectLockConfigurati
 const S3_VERSIONING_LOCKED = `suspending versioning is refused on an Object Lock bucket (this bag declares ObjectLockEnabled and the live bucket reads locked): the provider warns and leaves versioning enabled, since S3 does not allow suspending it there (${S3_SRC}:6205-6262); the 'versioning without object lock' bag observes the suspend`;
 
 const S3_REPLICATION_DESTINATION: Throw = {
-  why: `Destination is CloudFormation-required on a replication rule; with it absent the provider reads Bucket off the missing block and throws before any call (${S3_SRC}:4629, 4510)`,
+  why: `Destination is CloudFormation-required on a replication rule; with it absent the provider reads Bucket off the missing block and throws (a TypeError, not a refusal) before that configuration's call (${S3_SRC}:4629, 4510)`,
   says: /Cannot read properties of undefined \(reading 'Bucket'\)/,
 };
 
 const S3_NO_DESTINATION_BUCKET = (what: string): Throw => ({
-  why: `${what} Destination.BucketArn is required by CloudFormation and by S3; without it the provider refuses the item before any call (${S3_SRC}:3818-3825)`,
+  why: `${what} Destination.BucketArn is required by CloudFormation and by S3; without it the provider refuses the item before that configuration's call (${S3_SRC}:3818-3825)`,
   says: /has no destination bucket \(BucketArn\)/,
 });
 
