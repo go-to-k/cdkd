@@ -62,7 +62,7 @@ import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
-import { planTimeToLive } from './dynamodb-ttl.js';
+import { planTimeToLive } from '../dynamodb-ttl.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { isRefusedByName, markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import {

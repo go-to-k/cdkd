@@ -158,7 +158,7 @@ import type {
   ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
-import { planTimeToLive, readTtlSpec } from './dynamodb-ttl.js';
+import { planTimeToLive, readTtlSpec } from '../dynamodb-ttl.js';
 
 /**
  * A DynamoDB table NAME (3-255 of `a-z A-Z 0-9 _ . -`), the physical id this
