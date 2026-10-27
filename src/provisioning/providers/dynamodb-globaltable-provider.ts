@@ -99,7 +99,9 @@ import {
 import { withRetry } from '../../deployment/retry.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
 import {
+  isAmbiguousOutcomeError,
   isThrottlingError,
+  isTransientServerError,
   markRedactedCause,
   relayedNameCollision,
   wrapMaskedAwsError,
@@ -154,6 +156,7 @@ import type {
   SecretMasker,
   ResourceNotFound,
   ResourceIdentityVerdict,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { safeMsg } from '../../utils/display-safe.js';
@@ -165,8 +168,13 @@ import {
 import { injectiveKey } from '../../state/record-keys.js';
 import {
   declaredReplicaSettings,
+  canonicalizePre5381ReplicaBaseline,
+  keepUnreadReplicaMembers,
   readPitrSpec,
   readStreamPolicy,
+  readTablePolicy,
+  reverseMapReplicaContributorInsights,
+  reverseMapReplicaPitr,
   samePolicyDocument,
   planReplicaSettingCorrections,
   planReplicaSettingOps,
@@ -177,6 +185,11 @@ import {
   type ReplicaSetting,
   type ReplicaSettingOp,
 } from '../dynamodb-replica-settings.js';
+import {
+  declaredStreamPolicyMember as declaredPolicyMember,
+  reverseMapStreamPolicy as reverseMapPolicyMember,
+  streamPolicyMatchesDeclared as policyMatchesDeclared,
+} from '../dynamodb-stream-members.js';
 
 /**
  * A DynamoDB table NAME (3-255 of `a-z A-Z 0-9 _ . -`), the physical id this
@@ -2031,6 +2044,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     properties: Record<string, unknown>,
     addedRegions: ReadonlySet<unknown>,
+    // `drift --revert`: the desired side is a read-back, which omits a
+    // replica's protection when its regional read failed (go-to-k/cdkd#5381)
+    // — an absence there is unknown, never "unprotect".
+    desiredFromReadback: boolean,
     warn: (message: string) => void,
     maskSecrets: SecretMasker
   ): Promise<void> {
@@ -2045,6 +2062,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
       const declared = readReplicaDeletionProtection(replica, region, warn);
       if (declared === UNUSABLE) continue;
+      if (declared === undefined && desiredFromReadback) continue;
       const previous = readReplicaDeletionProtection(
         localReplicaEntry(previousProperties, region),
         region
@@ -3289,6 +3307,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // template-path refusals below refuse or the warn arms downgrade.
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#5381: a `drift --revert` desired side omits a replica member
+    // it never recorded; that absence is not a removal.
+    if (context?.desiredFromAwsReadback === true) {
+      properties = keepUnreadReplicaMembers(properties, previousProperties);
+    }
     // ONE masked sink for every warning in this method (issue #1997), rather
     // than a `maskSecrets(...)` at each `this.logger.warn` call: a warning added
     // later is masked by construction instead of by the author remembering. It
@@ -5132,6 +5155,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         previousProperties,
         properties,
         addedReplicaRegions,
+        context?.desiredFromAwsReadback === true,
         warn,
         maskSecrets
       );
@@ -5170,8 +5194,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           asRecord(previousProperties['StreamSpecification'])?.['StreamViewType']
         ),
         context?.replayingState === true || context?.desiredFromAwsReadback === true,
-        // A read-back omits a member whose read failed, and never carries the
-        // policies: an absence there is no removal. A rollback replay must not
+        // A read-back omits a member whose read failed, and carries a policy
+        // only where one is declared: an absence there is no removal. A rollback replay must not
         // turn recovery off on a record whose update may never have sent it.
         new Set<ReplicaSetting>(
           context?.desiredFromAwsReadback === true
@@ -7426,12 +7450,23 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * happen in `readReplicaSubSpecs` below). Each cross-region call is
    * best-effort — a permissions gap in one region omits the offending
    * key rather than aborting the whole drift read.
+   *
+   * go-to-k/cdkd#5381: each replica entry also carries its
+   * `SSESpecification.KMSMasterKeyId`, `TableClass` and
+   * `DeletionProtectionEnabled` (the deploy region's included; none of them
+   * is emitted top-level any more), the declared `ResourcePolicy` /
+   * `ReplicaStreamSpecification.ResourcePolicy` (`readReplicaPolicies`), the
+   * PITR `RecoveryPeriodInDays` and a declared Contributor Insights `Mode`.
+   * `canonicalizeDriftPair` converts a baseline the older read-back wrote.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    _resourceType: string
+    _resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const afterOwnWrite = context?.afterOwnWrite === true;
     try {
       const resp = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: physicalId })
@@ -7481,12 +7516,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         result['SSESpecification'] = sse;
       }
 
-      if (table.TableClassSummary?.TableClass) {
-        result['TableClass'] = table.TableClassSummary.TableClass;
-      }
-      if (table.DeletionProtectionEnabled !== undefined) {
-        result['DeletionProtectionEnabled'] = table.DeletionProtectionEnabled;
-      }
+      // The local table's `TableClass` / `DeletionProtectionEnabled` (and its
+      // KMS key) are emitted on its `Replicas` entry below, where the CFn
+      // schema keeps them: it has no top-level member for either
+      // (go-to-k/cdkd#5381). A baseline written by the read-back that put them
+      // here is converted by `canonicalizeDriftPair`.
 
       // Replicas: always emit `[]` placeholder per PR #145 — a console-side
       // replica add on a previously single-region table must show as drift.
@@ -7528,10 +7562,31 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const replicas = await Promise.all(
         sdkReplicas.map(async (r) => {
           const entry: Record<string, unknown> = { Region: r.RegionName };
-          if (r.KMSMasterKeyId !== undefined) entry['KMSMasterKeyId'] = r.KMSMasterKeyId;
           if (!r.RegionName) return entry;
 
           const isLocal = r.RegionName === currentRegion;
+          // go-to-k/cdkd#5381: the replica's key, class and protection in the
+          // CFn spellings `create()` / `update()` read. The key used to be a
+          // flat `KMSMasterKeyId` (cross-region only), and the local table's
+          // class and protection went top-level.
+          const kmsKey = isLocal
+            ? table.SSEDescription?.Status === 'ENABLED'
+              ? table.SSEDescription.KMSMasterKeyArn
+              : undefined
+            : r.KMSMasterKeyId;
+          if (kmsKey !== undefined && kmsKey !== '') {
+            entry['SSESpecification'] = { KMSMasterKeyId: kmsKey };
+          }
+          // A replica without its own class summary inherits the source
+          // table's, and a table that never set one is STANDARD — the same
+          // reading `update()`'s class passes take.
+          entry['TableClass'] =
+            (isLocal ? undefined : r.ReplicaTableClassSummary?.TableClass) ??
+            table.TableClassSummary?.TableClass ??
+            'STANDARD';
+          const declaredReplica = properties
+            ? localReplicaEntry(properties, r.RegionName)
+            : undefined;
           const client = isLocal ? this.dynamoDBClient : this.getRegionalClient(r.RegionName);
           const regionLabel = r.RegionName;
           const replicaArn = isLocal
@@ -7544,8 +7599,53 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // Best-effort: errors per region per sub-spec omit the offending
           // key — a permissions gap in one region must NOT abort the
           // whole drift read.
-          const subs = await this.readReplicaSubSpecs(client, tableNameForSubs, regionLabel);
+          const subs = await this.readReplicaSubSpecs(
+            client,
+            tableNameForSubs,
+            regionLabel,
+            declaredReplica
+          );
           Object.assign(entry, subs);
+
+          // Protection, and the stream arn the stream policy lives on: the
+          // local table's are in hand; a cross-region replica's come from its
+          // own region (best-effort — a failed read omits the members, and
+          // `update()` never reads that absence as "unprotect").
+          let protection: boolean | undefined;
+          let streamArn: string | undefined;
+          if (isLocal) {
+            protection = table.DeletionProtectionEnabled;
+            streamArn = table.LatestStreamArn;
+          } else {
+            try {
+              const regional = await client.send(
+                new DescribeTableCommand({ TableName: tableNameForSubs })
+              );
+              protection = regional.Table?.DeletionProtectionEnabled;
+              streamArn = regional.Table?.LatestStreamArn;
+            } catch (err) {
+              if (err instanceof ResourceNotFoundException) {
+                this.logger.debug(
+                  safeMsg`Cross-region replica ${regionLabel} returned RNF on DescribeTable; omitting its protection and stream policy`
+                );
+              } else {
+                this.logger.debug(
+                  safeMsg`Could not read the ${regionLabel} replica of ${tableNameForSubs}: ${describeAwsFailure(err).detail}`
+                );
+              }
+            }
+          }
+          if (typeof protection === 'boolean') entry['DeletionProtectionEnabled'] = protection;
+          await this.readReplicaPolicies(
+            client,
+            tableNameForSubs,
+            regionLabel,
+            replicaArn,
+            streamArn,
+            declaredReplica,
+            afterOwnWrite,
+            entry
+          );
 
           // Per-replica Tags. CFn `GlobalTable` schema places Tags
           // inside `Replicas[]` (no top-level `Tags`), so they MUST be
@@ -7882,7 +7982,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private async readReplicaSubSpecs(
     client: DynamoDBClient,
     tableName: string,
-    regionLabel: string
+    regionLabel: string,
+    declaredReplica: Record<string, unknown> | undefined
   ): Promise<Record<string, unknown>> {
     const out: Record<string, unknown> = {};
 
@@ -7891,11 +7992,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const ci = await client.send(
         new DescribeContributorInsightsCommand({ TableName: tableName })
       );
-      if (ci.ContributorInsightsStatus) {
-        out['ContributorInsightsSpecification'] = {
-          Enabled: ci.ContributorInsightsStatus === 'ENABLED',
-        };
-      }
+      // go-to-k/cdkd#5381: `ENABLING` reads as enabled (the deploy that turned
+      // insights on captures its baseline moments later), and a DECLARED
+      // `Mode` is read back.
+      const block = reverseMapReplicaContributorInsights(
+        ci.ContributorInsightsStatus,
+        ci.ContributorInsightsMode,
+        declaredReplica?.['ContributorInsightsSpecification']
+      );
+      if (block !== undefined) out['ContributorInsightsSpecification'] = block;
     } catch (err) {
       this.logger.debug(
         `Could not read ContributorInsights for ${tableName} in ${regionLabel}: ${describeAwsFailure(err).detail}`
@@ -7907,14 +8012,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const pitr = await client.send(
         new DescribeContinuousBackupsCommand({ TableName: tableName })
       );
-      const pitrStatus =
-        pitr.ContinuousBackupsDescription?.PointInTimeRecoveryDescription
-          ?.PointInTimeRecoveryStatus;
-      if (pitrStatus) {
-        out['PointInTimeRecoverySpecification'] = {
-          PointInTimeRecoveryEnabled: pitrStatus === 'ENABLED',
-        };
-      }
+      const description = pitr.ContinuousBackupsDescription?.PointInTimeRecoveryDescription;
+      // go-to-k/cdkd#5381: `RecoveryPeriodInDays` is read back, so a
+      // `drift --revert` re-sends the recorded period instead of none (which
+      // `UpdateContinuousBackups` reads as DynamoDB's default), and a
+      // transient status reads as its target.
+      const block = reverseMapReplicaPitr(
+        description?.PointInTimeRecoveryStatus,
+        description?.RecoveryPeriodInDays,
+        declaredReplica?.['PointInTimeRecoverySpecification']
+      );
+      if (block !== undefined) out['PointInTimeRecoverySpecification'] = block;
     } catch (err) {
       this.logger.debug(
         `Could not read PointInTimeRecovery for ${tableName} in ${regionLabel}: ${describeAwsFailure(err).detail}`
@@ -7946,6 +8054,112 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
 
     return out;
+  }
+
+  /**
+   * How long a resource-policy read that does NOT match the declaration is
+   * re-asked before it is believed: one entry per extra attempt.
+   */
+  protected policyRereadDelaysMs: readonly number[] = [500, 1000, 2000];
+
+  /**
+   * Read a replica's `ResourcePolicy` (on its table arn) and
+   * `ReplicaStreamSpecification.ResourcePolicy` (on its stream arn) into
+   * `entry` (go-to-k/cdkd#5381), in the CFn `{ PolicyDocument }` shape and the
+   * declared spelling of the document.
+   *
+   * Each is GATED on the replica's DECLARED entry naming a usable policy — the
+   * reader the write plan runs. That keeps an undeclared policy out of a
+   * `Replicas` entry drift compares whole, and spends no call on a replica
+   * that declares none, as the sibling `AWS::DynamoDB::Table` read does.
+   *
+   * `GetResourcePolicy` is eventually consistent, and the deploy captures its
+   * baseline right after the put: on that capture (`afterOwnWrite`) an answer
+   * that differs from the declaration is re-asked a few times before it is
+   * believed. Any other read takes the first answer. `afterOwnWrite`: a policy
+   * still ABSENT then, or a read that failed transiently, keeps the declared
+   * member rather than freeze an absence the settled replica never shows.
+   * Every other read believes its answer, so a policy removed out of band is
+   * drift. Policy text is never logged.
+   */
+  private async readReplicaPolicies(
+    client: DynamoDBClient,
+    tableName: string,
+    regionLabel: string,
+    tableArn: string | undefined,
+    streamArn: string | undefined,
+    declaredReplica: Record<string, unknown> | undefined,
+    afterOwnWrite: boolean,
+    entry: Record<string, unknown>
+  ): Promise<void> {
+    if (declaredReplica === undefined) return;
+    const readOne = async (
+      what: string,
+      arn: string | undefined,
+      container: unknown
+    ): Promise<Record<string, unknown> | undefined> => {
+      if (arn === undefined || arn === '') return undefined;
+      const declaredMember = (): Record<string, unknown> | undefined =>
+        declaredPolicyMember(container);
+      let last: string | undefined;
+      const read = async (): Promise<string | undefined> => {
+        try {
+          const response = await client.send(new GetResourcePolicyCommand({ ResourceArn: arn }));
+          last = response.Policy;
+        } catch (err) {
+          if (!(err instanceof PolicyNotFoundException)) throw err;
+          last = undefined;
+        }
+        return last;
+      };
+      try {
+        let live = await read();
+        // Only the capture right after cdkd's own write can be lagging behind
+        // it; a drift read takes the first answer, so a real out-of-band
+        // change costs no re-reads.
+        for (const delayMs of afterOwnWrite ? this.policyRereadDelaysMs : []) {
+          if (policyMatchesDeclared(live, container)) break;
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          live = await read();
+        }
+        if (afterOwnWrite && (live === undefined || live === '')) {
+          this.logger.debug(
+            safeMsg`Kept the declared ${what} of the ${regionLabel} replica of ${tableName} in the baseline captured after its write: the read still found no policy`
+          );
+          return declaredMember();
+        }
+        return reverseMapPolicyMember(live, container);
+      } catch (err) {
+        this.logger.debug(
+          safeMsg`Could not read the ${what} of the ${regionLabel} replica of ${tableName}: ${describeAwsFailure(err).detail}`
+        );
+        if (afterOwnWrite && last !== undefined && last !== '') {
+          return reverseMapPolicyMember(last, container);
+        }
+        if (
+          afterOwnWrite &&
+          (isThrottlingError(err) ||
+            isTransientServerError(err) ||
+            isAmbiguousOutcomeError(err) ||
+            err instanceof ResourceNotFoundException)
+        ) {
+          return declaredMember();
+        }
+        return undefined;
+      }
+    };
+    if (readTablePolicy(declaredReplica).kind === 'usable') {
+      const member = await readOne('ResourcePolicy', tableArn, declaredReplica);
+      if (member !== undefined) entry['ResourcePolicy'] = member;
+    }
+    if (readStreamPolicy(declaredReplica).kind === 'usable') {
+      const member = await readOne(
+        'stream ResourcePolicy',
+        streamArn,
+        declaredReplica['ReplicaStreamSpecification']
+      );
+      if (member !== undefined) entry['ReplicaStreamSpecification'] = { ResourcePolicy: member };
+    }
   }
 
   /**
@@ -8301,7 +8515,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
-   * Complete a LEGACY drift baseline's missing local replica (issue #3573).
+   * Complete a LEGACY drift baseline's missing local replica (issue #3573),
+   * then bring a baseline the pre-#5381 read-back wrote to the current replica
+   * shape ({@link canonicalizePre5381ReplicaBaseline}; go-to-k/cdkd#5381).
+   * The rest of this comment is the #3573 half.
    *
    * Before #3573, `readCurrentState` left the deploy-region entry out of
    * `Replicas` on a multi-region table, so every `observedProperties` record a
@@ -8344,22 +8561,18 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     aws: Record<string, unknown>
   ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
     if (resourceType !== 'AWS::DynamoDB::GlobalTable') return { baseline, aws };
-    const key = 'Replicas';
-    const baselineReplicas = baseline[key];
-    const awsReplicas = aws[key];
-    if (!Array.isArray(baselineReplicas) || !Array.isArray(awsReplicas)) {
-      return { baseline, aws };
-    }
     const localRegion = (await this.dynamoDBClient.config.region()) ?? '';
-    if (!localRegion) return { baseline, aws };
-    const isLocal = (element: unknown): boolean => asRecord(element)?.['Region'] === localRegion;
-    if (baselineReplicas.some(isLocal)) return { baseline, aws };
-    const liveLocal = awsReplicas.find(isLocal);
-    if (liveLocal === undefined) return { baseline, aws };
-    return {
-      baseline: { ...baseline, [key]: [...baselineReplicas, structuredClone(liveLocal)] },
+    const completed = completeLegacyLocalReplica(baseline, aws, localRegion);
+    // go-to-k/cdkd#5381: a baseline the pre-#5381 read-back wrote (top-level
+    // class / protection, a flat replica key, none of the members #5381 reads)
+    // is brought to the current shape — see the helper. Identity otherwise.
+    const converted = canonicalizePre5381ReplicaBaseline(
+      completed,
       aws,
-    };
+      localRegion,
+      completed !== baseline
+    );
+    return converted === baseline ? { baseline, aws } : { baseline: converted, aws };
   }
 
   /**
@@ -8875,6 +9088,28 @@ function refuseMalformedReplicaTags(
     );
   });
   return tagsByReplica;
+}
+
+/**
+ * The #3573 half of {@link DynamoDBGlobalTableProvider.canonicalizeDriftPair}:
+ * a baseline whose `Replicas` has no entry for the local region gets the
+ * read-back's local entry. Identity when nothing applies.
+ */
+function completeLegacyLocalReplica(
+  baseline: Record<string, unknown>,
+  aws: Record<string, unknown>,
+  localRegion: string
+): Record<string, unknown> {
+  const key = 'Replicas';
+  const baselineReplicas = baseline[key];
+  const awsReplicas = aws[key];
+  if (!Array.isArray(baselineReplicas) || !Array.isArray(awsReplicas)) return baseline;
+  if (!localRegion) return baseline;
+  const isLocal = (element: unknown): boolean => asRecord(element)?.['Region'] === localRegion;
+  if (baselineReplicas.some(isLocal)) return baseline;
+  const liveLocal = awsReplicas.find(isLocal);
+  if (liveLocal === undefined) return baseline;
+  return { ...baseline, [key]: [...baselineReplicas, structuredClone(liveLocal)] };
 }
 
 /**

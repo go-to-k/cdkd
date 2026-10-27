@@ -2055,6 +2055,9 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(observed!['Replicas']).toEqual([
         {
           Region: 'us-east-1',
+          // go-to-k/cdkd#5381: a table that never set a class reads STANDARD,
+          // on its replica entry.
+          TableClass: 'STANDARD',
           ContributorInsightsSpecification: { Enabled: false },
           PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: false },
           Tags: [],
@@ -2143,13 +2146,18 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(observed!['SSESpecification']).toEqual({ SSEEnabled: true, SSEType: 'KMS' });
     });
 
-    it('round-trips DeletionProtectionEnabled boolean from DescribeTable', async () => {
+    it('round-trips DeletionProtectionEnabled boolean from DescribeTable onto the local replica entry', async () => {
       mockSend.mockResolvedValueOnce({
         Table: { TableArn: TABLE_ARN, DeletionProtectionEnabled: true, Replicas: [] },
       });
       queueReadCurrentStateTail({ localReplica: false });
       const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
-      expect(observed!['DeletionProtectionEnabled']).toBe(true);
+      // go-to-k/cdkd#5381: the CFn schema keeps it per replica, not top-level.
+      expect(observed).not.toHaveProperty('DeletionProtectionEnabled');
+      const replicas = observed!['Replicas'] as Array<Record<string, unknown>>;
+      expect(replicas.find((r) => r['Region'] === 'us-east-1')!['DeletionProtectionEnabled']).toBe(
+        true
+      );
     });
 
     it('surfaces TimeToLiveSpecification when AWS reports ENABLED with AttributeName', async () => {

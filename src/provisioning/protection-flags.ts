@@ -41,8 +41,9 @@ export const PROTECTION_PROPERTY_BY_TYPE: Record<string, ProtectionLocator> = {
   'AWS::Neptune::DBInstance': 'DeletionProtection',
   'AWS::DynamoDB::Table': 'DeletionProtectionEnabled',
   // CFn and CDK put the flag on each replica
-  // (`Replicas[].DeletionProtectionEnabled`); the provider's `readCurrentState`
-  // writes the local one top-level. Protected when the local table is (replica
+  // (`Replicas[].DeletionProtectionEnabled`), and so does the provider's
+  // `readCurrentState` since go-to-k/cdkd#5381 (an older `observedProperties`
+  // holds the local one top-level). Protected when the local table is (replica
   // first, top-level second, as `create()` reads it) or when any cross-region
   // replica is, since cdkd sets and `--remove-protection` clears that guard too
   // (go-to-k/cdkd#5355).
