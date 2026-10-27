@@ -218,7 +218,7 @@ const STAGE_CASE: TypeCase = {
         'update-remove:DefaultRouteSettings': apigwv2Kept('2391-2403', '#1160'),
         'update-remove:ClientCertificateId': apigwv2Kept('2434-2443', '#5004'),
         'update-remove:DeploymentId':
-          'DeploymentId has no "no deployment" sentinel, so a removed one is passed through and the live deployment stays (apigatewayv2-provider.ts:2444-2453)',
+          'DeploymentId has no "no deployment" sentinel, so a removed one is passed through and the live deployment stays (apigatewayv2-provider.ts:2444-2453); an API constraint, not a CloudFormation A/B measurement',
       },
       expectedRemovalThrows: {
         'create:ApiId': APIGWV2_REQUIRED(
