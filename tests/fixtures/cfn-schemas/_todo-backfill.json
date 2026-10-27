@@ -132,11 +132,6 @@
       "Ipv4NetmaskLength",
       "VpcEncryptionControl"
     ],
-    "AWS::EFS::MountTarget": [
-      "IpAddress",
-      "IpAddressType",
-      "Ipv6Address"
-    ],
     "AWS::ElastiCache::CacheCluster": [
       "SnapshotArns"
     ],
@@ -280,9 +275,6 @@
     ],
     "AWS::RDS::DBProxyEndpoint": [
       "EndpointNetworkType"
-    ],
-    "AWS::Route53::HostedZone": [
-      "DelegationSetId"
     ],
     "AWS::S3::Bucket": [
       "AbacStatus",

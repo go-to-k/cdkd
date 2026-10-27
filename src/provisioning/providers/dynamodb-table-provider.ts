@@ -45,6 +45,8 @@ import {
   type ProvisionedThroughputDescription,
   type GlobalSecondaryIndexDescription,
   type LocalSecondaryIndexDescription,
+  type SSEDescription,
+  type TableDescription,
 } from '@aws-sdk/client-dynamodb';
 import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
@@ -201,7 +203,7 @@ export function mapSSESpecification(
   const out: NonNullable<CreateTableCommandInput['SSESpecification']> = {};
   if (cfn.SSEEnabled !== undefined) {
     // CDK synthesizes a real boolean, but tolerate the stringified form.
-    out.Enabled = cfn.SSEEnabled === true || cfn.SSEEnabled === 'true';
+    out.Enabled = coerceCfnBoolean(cfn.SSEEnabled) === true;
   }
   if (typeof cfn.SSEType === 'string') {
     out.SSEType = cfn.SSEType as NonNullable<
@@ -212,6 +214,81 @@ export function mapSSESpecification(
     out.KMSMasterKeyId = cfn.KMSMasterKeyId;
   }
   return out;
+}
+
+/**
+ * The refusal sentence for an unusable CFn `SSESpecification` (go-to-k/cdkd#5412):
+ * an `SSEEnabled` that is no boolean, a block that is no object, or a declared
+ * `null` (which `configBooleanRefusal` treats as absent, and an absent block
+ * is a removal; CloudFormation rejects `null`). One predicate for `create()`
+ * and `update()`, so the two cannot disagree on a value.
+ */
+function sseSpecificationRefusal(value: unknown, logicalId: string): string | undefined {
+  const path = `AWS::DynamoDB::Table ${logicalId} SSESpecification`;
+  if (value === null) return `${path} must be an object (got null)`;
+  return configBooleanRefusal(value, 'SSEEnabled', path);
+}
+
+/**
+ * The SDK `SSESpecification` an update sends for a changed CFn
+ * `SSESpecification` (go-to-k/cdkd#5412), or `undefined` for none:
+ *
+ * - a declared block is mapped by {@link mapSSESpecification}. The caller
+ *   refuses one `configBooleanRefusal` refuses first (a redacted `***` or an
+ *   unresolved `{{resolve:` `SSEEnabled` would read as `false` and reset the
+ *   table's key);
+ * - a REMOVED block resets the table to the AWS owned key with
+ *   `{ Enabled: false }`, which is what CloudFormation does. As the
+ *   GlobalTable twin's removal arm (go-to-k/cdkd#5355), it is sent only when
+ *   encryption was on: by the LIVE `SSEDescription` when it reports a status,
+ *   else by the previous block's `SSEEnabled`, so a previous value that is no
+ *   boolean sends nothing.
+ *
+ * `{ Enabled: false }` is never sent to a table AWS reports on the AWS owned
+ * key already (`SSEDescription` absent, or `DISABLED` / `DISABLING`), nor a
+ * declared key ARN AWS already reports `ENABLED`: there is nothing to change.
+ * A declared `null` is not a removal and sends nothing (the caller refuses it).
+ * Exported for unit testing.
+ */
+export function sseSpecificationToSend(
+  desired: unknown,
+  previous: unknown,
+  liveSse: SSEDescription | undefined,
+  described: boolean
+): CreateTableCommandInput['SSESpecification'] | undefined {
+  const status = liveSse?.Status;
+  const liveOn = status === 'ENABLED' || status === 'ENABLING' || status === 'UPDATING';
+  const liveOff =
+    described && (liveSse === undefined || status === 'DISABLED' || status === 'DISABLING');
+  if (desired !== undefined) {
+    // A declared `null` maps to nothing: only an ABSENT block is a removal.
+    const mapped = mapSSESpecification(desired);
+    if (mapped === undefined || Object.keys(mapped).length === 0) return undefined;
+    if (mapped.Enabled === false && liveOff) return undefined;
+    // The same key AWS already reports needs no call (a rollback revert after
+    // a forward update failed before its SSE call). AWS reports a key ARN, so
+    // a declared key ARN or bare key id compares; an alias would need a KMS
+    // call to resolve and is sent as before.
+    const liveKeyArn = liveSse?.KMSMasterKeyArn;
+    if (
+      mapped.Enabled === true &&
+      status === 'ENABLED' &&
+      mapped.KMSMasterKeyId !== undefined &&
+      liveKeyArn?.includes(':key/') === true &&
+      (mapped.KMSMasterKeyId === liveKeyArn ||
+        mapped.KMSMasterKeyId === liveKeyArn.slice(liveKeyArn.lastIndexOf(':key/') + 5)) &&
+      (mapped.SSEType === undefined || mapped.SSEType === liveSse?.SSEType)
+    ) {
+      return undefined;
+    }
+    return mapped;
+  }
+  if (liveOff) return undefined;
+  const previousOn =
+    previous !== null && typeof previous === 'object'
+      ? coerceCfnBoolean((previous as Record<string, unknown>)['SSEEnabled']) === true
+      : false;
+  return liveOn || previousOn ? { Enabled: false } : undefined;
 }
 
 /**
@@ -1037,6 +1114,27 @@ const KINESIS_DESTINATION_SETTLE_POLL_MS = 2000;
  * answered `UPDATING`, and a read right after a write can lag it.
  */
 const KINESIS_PRECISION_STALE_READ_GRACE_POLLS = 5;
+/**
+ * Re-reads (x {@link KINESIS_DISABLE_SETTLE_POLL_MS}) after
+ * `DisableKinesisStreamingDestination` until the destination reads `DISABLED`
+ * or absent (go-to-k/cdkd#5423). The disable answered `DISABLING`, yet
+ * `DescribeKinesisStreamingDestination` read `ACTIVE` at about 1 s and
+ * `DISABLED` at about 2.5 s (measured us-east-1, 2026-10-28), so a short
+ * cadence keeps the wait near that; 60 s bounds a destination that never
+ * settles, after which the deploy goes on with a warning.
+ */
+const KINESIS_DISABLE_SETTLE_POLLS = 120;
+const KINESIS_DISABLE_SETTLE_POLL_MS = 500;
+/**
+ * The statuses a disabled destination may still read as: what
+ * `readKinesisStreamSpecification` reports as present, plus `DISABLING`.
+ */
+const KINESIS_DISABLE_PENDING_STATUSES: ReadonlySet<string> = new Set([
+  'ACTIVE',
+  'ENABLING',
+  'UPDATING',
+  'DISABLING',
+]);
 
 /**
  * Is this `WarmThroughput` VALUE one cdkd will actually put on the wire
@@ -2250,7 +2348,45 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // the SDK silently ignore the flag, so the table is created with
       // AWS-owned (default) encryption instead of the requested AWS-managed /
       // customer-managed KMS encryption. Map the field name explicitly.
-      const sse = mapSSESpecification(properties['SSESpecification']);
+      //
+      // An unusable block (`sseSpecificationRefusal`) is refused before
+      // `CreateTable`, with the predicate `update()` refuses it by
+      // (go-to-k/cdkd#5412): mapped, it reads as `false`. A state replay
+      // cannot edit the record from the template, so it warns and creates the
+      // table on the AWS owned key rather than send a block AWS may reject —
+      // unless the record names a key (`SSEType` / `KMSMasterKeyId`): that
+      // table was meant to be on it, so the replay refuses rather than quietly
+      // create it without, as `update()` leaves the key alone.
+      const sseCreateRefusal = sseSpecificationRefusal(properties['SSESpecification'], logicalId);
+      if (sseCreateRefusal !== undefined && context?.replayingState !== true) {
+        throw new ProvisioningError(
+          `${maskSecrets(sseCreateRefusal)}. Nothing was created; fix the template value`,
+          resourceType,
+          logicalId
+        );
+      }
+      const recordedSse = properties['SSESpecification'];
+      if (
+        sseCreateRefusal !== undefined &&
+        recordedSse !== null &&
+        typeof recordedSse === 'object' &&
+        ((recordedSse as Record<string, unknown>)['SSEType'] !== undefined ||
+          (recordedSse as Record<string, unknown>)['KMSMasterKeyId'] !== undefined)
+      ) {
+        throw new ProvisioningError(
+          `${maskSecrets(sseCreateRefusal)}, and the record names a key, so the table was not ` +
+            `created on the AWS owned key in its place. Nothing was created`,
+          resourceType,
+          logicalId
+        );
+      }
+      if (sseCreateRefusal !== undefined) {
+        warn(`${sseCreateRefusal}, so the table is created on the AWS owned key`);
+      }
+      const sse =
+        sseCreateRefusal === undefined
+          ? mapSSESpecification(properties['SSESpecification'])
+          : undefined;
       if (sse && Object.keys(sse).length > 0) {
         createParams.SSESpecification = sse;
       }
@@ -2628,6 +2764,29 @@ export class DynamoDBTableProvider implements ResourceProvider {
             physicalId
           );
         }
+      }
+
+      // go-to-k/cdkd#5412: a changed `SSESpecification.SSEEnabled` that is no
+      // boolean is REFUSED on the template path, before any call: read as
+      // `false` it would move the table to the AWS owned key. The state-borne
+      // callers warn and skip it (below).
+      const sseChanged =
+        JSON.stringify(properties['SSESpecification']) !==
+        JSON.stringify(previousProperties['SSESpecification']);
+      const sseRefusal = sseChanged
+        ? sseSpecificationRefusal(properties['SSESpecification'], logicalId)
+        : undefined;
+      if (
+        sseRefusal !== undefined &&
+        context?.replayingState !== true &&
+        context?.desiredFromAwsReadback !== true
+      ) {
+        throw new ProvisioningError(
+          `${maskSecrets(sseRefusal)}. Nothing was applied to the table; fix the template value`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
       }
 
       // Get current table description for attributes (also gives us the
@@ -3661,21 +3820,47 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // billing/throughput call above and the GSI calls below). Fire only when
       // the value changed, and wait for ACTIVE afterwards so the GSI block does
       // not race an UPDATING table. The same SSEEnabled->Enabled mapping the
-      // create path needs applies here. A removal (new absent, previous present)
-      // is a deliberate no-op: CFn has no clean "drop SSE back to AWS-owned"
-      // mapping and mapSSESpecification(undefined) returns undefined, so there
-      // is no spec to send (mirrors the WarmThroughput removal stance).
-      if (
-        JSON.stringify(properties['SSESpecification']) !==
-        JSON.stringify(previousProperties['SSESpecification'])
-      ) {
-        const sseUpdate = mapSSESpecification(properties['SSESpecification']);
-        if (sseUpdate && Object.keys(sseUpdate).length > 0) {
+      // create path needs applies here. A REMOVED block resets the table to the
+      // AWS owned key, as CloudFormation does (go-to-k/cdkd#5412, measured:
+      // `SSEDescription` absent once the stack update completed);
+      // `sseSpecificationToSend` decides it, as the GlobalTable twin's removal
+      // arm does (go-to-k/cdkd#5355).
+      if (sseRefusal !== undefined) {
+        // Only a state-borne caller reaches this: the template path refused
+        // the value above. Nothing is sent, since the value cannot say which
+        // key the table should be on.
+        warn(`${sseRefusal}, so the table's encryption was left as it is`);
+      } else if (sseChanged) {
+        // A table still switching keys (an earlier deploy's change, or one
+        // made outside cdkd) is waited out and read again first: DynamoDB
+        // takes one table update at a time, and the decision below reads the
+        // live key.
+        let liveTable = table;
+        const liveSseStatus = table?.SSEDescription?.Status;
+        if (
+          liveSseStatus === 'UPDATING' ||
+          liveSseStatus === 'ENABLING' ||
+          liveSseStatus === 'DISABLING'
+        ) {
+          liveTable = await this.waitForTableSseSettled(physicalId, maskSecrets);
+        }
+        const sseUpdate = sseSpecificationToSend(
+          properties['SSESpecification'],
+          previousProperties['SSESpecification'],
+          liveTable?.SSEDescription,
+          liveTable !== undefined
+        );
+        if (sseUpdate !== undefined) {
           await this.dynamoDBClient.send(
             new UpdateTableCommand({ TableName: physicalId, SSESpecification: sseUpdate })
           );
-          await this.waitForTableActiveAfterUpdate(physicalId);
-          this.logger.debug(`Updated SSESpecification on DynamoDB table ${physicalId}`);
+          await this.waitForTableSseSettled(physicalId, maskSecrets);
+          debug(
+            `Updated SSESpecification on DynamoDB table ${physicalId}` +
+              (properties['SSESpecification'] === undefined
+                ? ' (removed: reset to the AWS owned key)'
+                : '')
+          );
         }
       }
 
@@ -4981,11 +5166,16 @@ export class DynamoDBTableProvider implements ResourceProvider {
               StreamArn: prevArn,
             })
           ),
-        `disable Kinesis streaming on ${tableName}`
+        `disable Kinesis streaming on ${tableName}`,
+        undefined,
+        { maskSecrets }
       );
       this.logger.debug(
-        `Disabled Kinesis streaming destination ${prevArn} on DynamoDB table ${tableName}`
+        maskSecrets(
+          `Disabled Kinesis streaming destination ${prevArn} on DynamoDB table ${tableName}`
+        )
       );
+      await this.waitForKinesisDisableSettled(tableName, prevArn, maskSecrets);
     }
 
     // Enable streaming to the new stream when present.
@@ -5009,12 +5199,106 @@ export class DynamoDBTableProvider implements ResourceProvider {
                 : {}),
             })
           ),
-        `enable Kinesis streaming on ${tableName}`
+        `enable Kinesis streaming on ${tableName}`,
+        undefined,
+        { maskSecrets }
       );
       this.logger.debug(
-        `Enabled Kinesis streaming destination ${newArn} on DynamoDB table ${tableName}`
+        maskSecrets(
+          `Enabled Kinesis streaming destination ${newArn} on DynamoDB table ${tableName}`
+        )
       );
     }
+  }
+
+  /**
+   * After `DisableKinesisStreamingDestination`: poll until no destination for
+   * `streamArn` reads as {@link KINESIS_DISABLE_PENDING_STATUSES}
+   * (go-to-k/cdkd#5423).
+   * The read-back reports an `ACTIVE` / `ENABLING` / `UPDATING` destination as
+   * present, and `DescribeKinesisStreamingDestination` went on reading `ACTIVE`
+   * for about a second after the disable answered `DISABLING`, so the
+   * drift baseline captured right after this update recorded a destination
+   * AWS was removing, and every later `cdkd drift` reported it. `DISABLING`
+   * still counts as settling. It also runs before an ARN change's enable,
+   * whose read-back would otherwise find the old destination first.
+   *
+   * Best-effort, since AWS accepted the disable: a destination still
+   * reported after {@link KINESIS_DISABLE_SETTLE_POLLS} reads, a failed read,
+   * or the enclosing per-resource deadline expiring ends the wait with a
+   * warning rather than failing the deploy. Interruptible.
+   */
+  private async waitForKinesisDisableSettled(
+    tableName: string,
+    streamArn: string,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const watch = startInterruptWatch(
+      maskSecrets(`Kinesis streaming destination on ${tableName} disabling`)
+    );
+    const warnUnsettled = (state: string): void =>
+      this.logger.warn(
+        maskSecrets(
+          `The Kinesis streaming destination ${streamArn} disabled on DynamoDB table ` +
+            `${tableName} ${state}; \`cdkd drift\` may report it until AWS finishes disabling it`
+        )
+      );
+    let last: string | undefined;
+    try {
+      for (let poll = 1; poll <= KINESIS_DISABLE_SETTLE_POLLS; poll++) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        if (enclosingDeadlineRemainingMs() <= 0) {
+          warnUnsettled(`still read as ${last ?? 'unread'} when the resource timeout expired`);
+          return;
+        }
+        let destinations: KinesisDataStreamDestination[];
+        try {
+          const response = await this.retryOnTransientControlPlane(
+            () =>
+              this.dynamoDBClient.send(
+                new DescribeKinesisStreamingDestinationCommand({ TableName: tableName })
+              ),
+            `describe Kinesis streaming on ${tableName}`,
+            undefined,
+            { maskSecrets }
+          );
+          destinations = response?.KinesisDataStreamDestinations ?? [];
+        } catch (error) {
+          this.logger.debug(
+            maskSecrets(
+              `Could not read Kinesis streaming on ${tableName} after the disable: ` +
+                describeAwsFailure(error).detail
+            )
+          );
+          warnUnsettled('could not be read back');
+          return;
+        }
+        // Settled once no entry for the stream is one the read-back reports
+        // (ACTIVE / ENABLING / UPDATING) or DISABLING: DISABLED and
+        // ENABLE_FAILED history entries linger beside a live one.
+        const pending = destinations.find(
+          (d) =>
+            d.StreamArn === streamArn &&
+            d.DestinationStatus !== undefined &&
+            KINESIS_DISABLE_PENDING_STATUSES.has(d.DestinationStatus)
+        );
+        if (!pending) return;
+        last = pending.DestinationStatus ?? 'unknown';
+        if (poll === KINESIS_DISABLE_SETTLE_POLLS) break;
+        await new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.max(0, Math.min(KINESIS_DISABLE_SETTLE_POLL_MS, enclosingDeadlineRemainingMs()))
+          )
+        );
+      }
+    } finally {
+      watch.dispose();
+    }
+    warnUnsettled(
+      `still read as ${last ?? 'unread'} after ` +
+        `${(KINESIS_DISABLE_SETTLE_POLLS * KINESIS_DISABLE_SETTLE_POLL_MS) / 1000} seconds`
+    );
   }
 
   private extractKinesisStreamArn(spec: unknown): string | undefined {
@@ -5578,6 +5862,73 @@ export class DynamoDBTableProvider implements ResourceProvider {
     throw new Error(
       `Table ${tableName} did not reach ACTIVE status within ${wait.pollsRun} seconds after ` +
         `UpdateTable${wait.note()}`
+    );
+  }
+
+  /**
+   * After an `SSESpecification` `UpdateTable` (go-to-k/cdkd#5412): poll until
+   * the table is `ACTIVE` AND its `SSEDescription` has left `UPDATING` /
+   * `ENABLING` / `DISABLING`, so the next `UpdateTable` in the same `update()`
+   * does not land on a table still switching keys — the predicate the
+   * GlobalTable twin's settle wait uses. The key switch outlives `ACTIVE`, so
+   * the cap is the Kinesis settle wait's (10 minutes), interruptible and
+   * bounded by the enclosing per-resource deadline. Also run BEFORE the SSE
+   * call when the table is already switching keys. Returns the settled
+   * description.
+   */
+  private async waitForTableSseSettled(
+    tableName: string,
+    maskSecrets: SecretMasker
+  ): Promise<TableDescription | undefined> {
+    const watch = startInterruptWatch(maskSecrets(`DynamoDB table ${tableName} switching keys`));
+    let last: string | undefined;
+    try {
+      for (let poll = 1; poll <= KINESIS_DESTINATION_SETTLE_POLLS; poll++) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        if (enclosingDeadlineRemainingMs() <= 0) {
+          throw markNonRetryable(
+            new Error(
+              maskSecrets(
+                `The resource timeout expired while waiting for DynamoDB table ${tableName} ` +
+                  `to finish its encryption change (last status: ${last ?? 'none read'})`
+              )
+            )
+          );
+        }
+        const response = await this.dynamoDBClient.send(
+          new DescribeTableCommand({ TableName: tableName })
+        );
+        const table = response?.Table;
+        const sseStatus = table?.SSEDescription?.Status;
+        last = `${table?.TableStatus ?? 'unknown'} / SSE ${sseStatus ?? 'absent'}`;
+        if (
+          table?.TableStatus === 'ACTIVE' &&
+          sseStatus !== 'UPDATING' &&
+          sseStatus !== 'ENABLING' &&
+          sseStatus !== 'DISABLING'
+        ) {
+          return table;
+        }
+        if (poll === KINESIS_DESTINATION_SETTLE_POLLS) break;
+        await new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.max(
+              0,
+              Math.min(KINESIS_DESTINATION_SETTLE_POLL_MS, enclosingDeadlineRemainingMs())
+            )
+          )
+        );
+      }
+    } finally {
+      watch.dispose();
+    }
+    throw new Error(
+      maskSecrets(
+        `DynamoDB table ${tableName} was still ${last ?? 'unread'} ` +
+          `${(KINESIS_DESTINATION_SETTLE_POLLS * KINESIS_DESTINATION_SETTLE_POLL_MS) / 1000} ` +
+          `seconds after its encryption change`
+      )
     );
   }
 

@@ -25,6 +25,15 @@
 # redeploy (CDKD_TEST_DEPLOYMENT_DESCRIPTION_REMOVAL=true) removes the
 # Description and asserts it is cleared on the same deployment.
 #
+# Issue #5408: the CDKD_TEST_REMOVAL redeploy also switches a TOKEN authorizer
+# to COGNITO_USER_POOLS on a fixture user pool (dropping AuthorizerUri) and
+# changes a Cognito-authorized method's AuthorizationScopes; the Phase 1c
+# redeploy (CDKD_TEST_AUTHORIZER_POOL_SWAP=true) moves the authorizer to a
+# second pool, and Phase 1d (CDKD_TEST_AUTHORIZER_BACK_TO_TOKEN=true) switches
+# it back to TOKEN, dropping the pools. API Gateway refuses `replace` on both
+# lists. The authorizer keeps
+# its id and its authorizerUri, as CloudFormation keeps them (A/B, us-east-1).
+#
 # Then destroys and confirms a clean teardown.
 #
 # Required env vars:
@@ -72,6 +81,11 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
 API_NAME="cdkd-hello-api"
+# Exact names of the #5408 user pools (lib/apigateway-stack.ts).
+POOL_NAMES="cdkd-integ-apigateway-pool-a cdkd-integ-apigateway-pool-b"
+# This run's pool ARNs, recorded after Phase 1; empty until then.
+POOL_A_ARN=""
+POOL_B_ARN=""
 STAGE_NAME="prod"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
@@ -155,6 +169,22 @@ restore_account_role() {
 }
 # ---------------------------------------------------------------------------
 
+# Deletes a #5408 user pool by its exact fixture name (cleanup only).
+sweep_pools_by_name() {
+  # Paged by hand: --max-results is the API's page size, and an account with
+  # more pools than one page must not hide a leftover.
+  local token="" page pool_id
+  while :; do
+    page=$(aws cognito-idp list-user-pools --max-results 60 --region "${REGION}" --no-paginate \
+      ${token:+--next-token "${token}"} --output json 2>/dev/null) || return 1
+    for pool_id in $(echo "${page}" | jq -r --arg names "${POOL_NAMES}" '($names | split(" ")) as $n | .UserPools[] | select(.Name as $x | $n | index($x)) | .Id'); do
+      aws cognito-idp delete-user-pool --user-pool-id "${pool_id}" --region "${REGION}" >/dev/null 2>&1 || true
+    done
+    token=$(echo "${page}" | jq -r '.NextToken // empty')
+    [ -n "${token}" ] || break
+  done
+}
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   # `set +eu` so an early-exit (e.g. STATE_BUCKET unset) does not abort
@@ -162,11 +192,23 @@ cleanup() {
   # should run as much as it can with the env it has.
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
-    env -u CDKD_TEST_REMOVAL -u CDKD_TEST_DEPLOYMENT_DESCRIPTION_REMOVAL node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
+    env -u CDKD_TEST_REMOVAL -u CDKD_TEST_DEPLOYMENT_DESCRIPTION_REMOVAL -u CDKD_TEST_AUTHORIZER_POOL_SWAP -u CDKD_TEST_AUTHORIZER_BACK_TO_TOKEN node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   # After the destroy: it clears the account's CloudWatch role.
   if ! restore_account_role; then
     echo "WARN: could not restore the API Gateway account CloudWatch role in ${REGION} to '${PRE_ACCOUNT_ROLE}' (NONE = unset); set it by hand" >&2
+  fi
+  # The #5408 user pools are stack-managed; sweep one a failed destroy left.
+  # Once this run has recorded its pools, ONLY those ids are deleted. Before
+  # that (the pre-run cleanup, or a failure before Assertion 3c) a leftover is
+  # found by its EXACT fixture name, never a name prefix.
+  if [ -n "${POOL_A_ARN}${POOL_B_ARN}" ]; then
+    for pool_arn_left in "${POOL_A_ARN}" "${POOL_B_ARN}"; do
+      [ -n "${pool_arn_left}" ] || continue
+      aws cognito-idp delete-user-pool --user-pool-id "${pool_arn_left##*/}" --region "${REGION}" >/dev/null 2>&1 || true
+    done
+  else
+    sweep_pools_by_name
   fi
   # The {proxy+} ANY curl in Assertion 4 invokes the Lambda, which auto-creates a
   # /aws/lambda/${STACK}* log group that is not stack-managed (CFn leaves it too).
@@ -310,6 +352,36 @@ if [ -z "${DESCRIBED_DEPLOYMENT_ID}" ] || [ "$(printf '%s\n' "${DESCRIBED_DEPLOY
 fi
 echo "    OK: REQUEST authorizer ${AUTHORIZER_ID} and deployment ${DESCRIBED_DEPLOYMENT_ID} described 'cdkd-5391-v1' (baselines for #5391)"
 
+# --- Assertion 3c: baselines for the #5408 list updates in Phase 1b / 1c ---
+POOL_AUTHORIZER_ID=$(echo "${AUTHORIZERS}" | jq -r '.items[] | select(.name == "cdkd-pool-authorizer") | .id // empty')
+POOL_AUTHORIZER_TYPE=$(echo "${AUTHORIZERS}" | jq -r '.items[] | select(.name == "cdkd-pool-authorizer") | .type // empty')
+if [ -z "${POOL_AUTHORIZER_ID}" ] || [ "${POOL_AUTHORIZER_TYPE}" != "TOKEN" ]; then
+  echo "FAIL: Authorizer cdkd-pool-authorizer is id '${POOL_AUTHORIZER_ID}' type '${POOL_AUTHORIZER_TYPE}', expected a TOKEN authorizer" >&2
+  exit 1
+fi
+# The ARN of the fixture user pool whose state key starts with the given logical-id prefix.
+pool_arn() { # usage: pool_arn <logical-id-prefix>
+  local id
+  id=$(echo "${STATE}" | jq -r --arg k "$1" '.resources | to_entries[] | select(.value.resourceType == "AWS::Cognito::UserPool" and (.key | startswith($k))) | .value.physicalId // empty')
+  [ -n "${id}" ] || { echo "FAIL: no $1* AWS::Cognito::UserPool record in state" >&2; exit 1; }
+  aws cognito-idp describe-user-pool --user-pool-id "${id}" --region "${REGION}" --query UserPool.Arn --output text
+}
+POOL_A_ARN=$(pool_arn AuthorizerPoolA)
+POOL_B_ARN=$(pool_arn AuthorizerPoolB)
+SCOPED_RESOURCE_ID=$(aws apigateway get-resources --rest-api-id "${API_ID}" --region "${REGION}" \
+  --output json | jq -r '.items[] | select(.path == "/scoped") | .id')
+# The scoped method's AuthorizationScopes, sorted, comma-joined.
+scoped_scopes() {
+  aws apigateway get-method --rest-api-id "${API_ID}" --resource-id "${SCOPED_RESOURCE_ID}" \
+    --http-method GET --region "${REGION}" --output json | jq -r '(.authorizationScopes // []) | sort | join(",")'
+}
+SCOPES_BEFORE=$(scoped_scopes)
+if [ "${SCOPES_BEFORE}" != "cdkd/read" ]; then
+  echo "FAIL: GET /scoped authorizationScopes are '${SCOPES_BEFORE}', expected 'cdkd/read'" >&2
+  exit 1
+fi
+echo "    OK: TOKEN authorizer ${POOL_AUTHORIZER_ID} and GET /scoped scopes 'cdkd/read' (baselines for #5408)"
+
 # --- Assertion 4: {proxy+} ANY method routes to the Lambda ------------
 # The greedy proxy resource + ANY method (the LambdaRestApi proxy pattern). A
 # curl to an arbitrary sub-path must reach the Lambda — proving the {proxy+}
@@ -402,11 +474,34 @@ if [ "${DESCRIBED_AFTER}" != "cdkd-5391-v2" ]; then
 fi
 echo "    OK: deployment ${DESCRIBED_DEPLOYMENT_ID} description updated in place to 'cdkd-5391-v2' (issue #5391)"
 
+# --- Phase 1b (issue #5408): TOKEN -> COGNITO_USER_POOLS on pool A, in place.
+# Pre-fix, cdkd sent `replace /providerARNs`, which API Gateway refuses, and
+# the redeploy above failed. get-authorizer BY THE PHASE-1 ID proves the id kept.
+# The fields of the pool authorizer as `<type>|<sorted providerARNs>|<has uri>`.
+pool_authorizer() {
+  aws apigateway get-authorizer --rest-api-id "${API_ID}" --authorizer-id "${POOL_AUTHORIZER_ID}" \
+    --region "${REGION}" --output json \
+    | jq -r '"\(.type)|\((.providerARNs // []) | sort | join(","))|\(.authorizerUri != null)"'
+}
+POOL_AUTHORIZER_NOW=$(pool_authorizer)
+if [ "${POOL_AUTHORIZER_NOW}" != "COGNITO_USER_POOLS|${POOL_A_ARN}|true" ]; then
+  echo "FAIL: Authorizer ${POOL_AUTHORIZER_ID} is '${POOL_AUTHORIZER_NOW}', expected 'COGNITO_USER_POOLS|${POOL_A_ARN}|true' (type|providerARNs|authorizerUri kept; issue #5408)" >&2
+  exit 1
+fi
+echo "    OK: Authorizer ${POOL_AUTHORIZER_ID} switched TOKEN -> COGNITO_USER_POOLS on pool A in place, authorizerUri kept as CloudFormation keeps it (issue #5408)"
+
+SCOPES_AFTER=$(scoped_scopes)
+if [ "${SCOPES_AFTER}" != "cdkd/admin,cdkd/write" ]; then
+  echo "FAIL: GET /scoped authorizationScopes are '${SCOPES_AFTER}', expected 'cdkd/admin,cdkd/write' (issue #5408)" >&2
+  exit 1
+fi
+echo "    OK: GET /scoped authorizationScopes changed in place (issue #5408)"
+
 # --- Phase 1c (issue #5391): REMOVE the Deployment Description. CloudFormation
 # clears it (A/B, us-east-1: the field is then absent); cdkd sends
 # `replace /description ''`. Same deployment id.
-echo "==> Phase 1c: redeploy with CDKD_TEST_DEPLOYMENT_DESCRIPTION_REMOVAL=true (Deployment drops Description)"
-CDKD_TEST_REMOVAL=true CDKD_TEST_DEPLOYMENT_DESCRIPTION_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+echo "==> Phase 1c: redeploy with CDKD_TEST_DEPLOYMENT_DESCRIPTION_REMOVAL=true (Deployment drops Description) and CDKD_TEST_AUTHORIZER_POOL_SWAP=true (Authorizer moves to pool B)"
+CDKD_TEST_REMOVAL=true CDKD_TEST_DEPLOYMENT_DESCRIPTION_REMOVAL=true CDKD_TEST_AUTHORIZER_POOL_SWAP=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -419,9 +514,36 @@ if [ "${DESCRIBED_CLEARED}" != "None" ] && [ -n "${DESCRIBED_CLEARED}" ]; then
 fi
 echo "    OK: deployment ${DESCRIBED_DEPLOYMENT_ID} description cleared in place after removal (issue #5391)"
 
+# --- Phase 1c (issue #5408): the authorizer's only pool swapped A -> B. API
+# Gateway applies the ops in order and refuses one that empties the list, so
+# B must be added before A is removed.
+POOL_AUTHORIZER_SWAPPED=$(pool_authorizer)
+if [ "${POOL_AUTHORIZER_SWAPPED}" != "COGNITO_USER_POOLS|${POOL_B_ARN}|true" ]; then
+  echo "FAIL: Authorizer ${POOL_AUTHORIZER_ID} is '${POOL_AUTHORIZER_SWAPPED}', expected 'COGNITO_USER_POOLS|${POOL_B_ARN}|true' after the pool swap (issue #5408)" >&2
+  exit 1
+fi
+echo "    OK: Authorizer ${POOL_AUTHORIZER_ID} moved from pool A to pool B in place (issue #5408)"
+
+# --- Phase 1d (issue #5408): COGNITO_USER_POOLS -> TOKEN with ProviderARNs
+# dropped. CloudFormation clears the pools on this switch (A/B, us-east-1). AWS
+# refuses removing the last pool while the authorizer is still Cognito, so the
+# remove must follow the `/type` replace.
+echo "==> Phase 1d: redeploy with CDKD_TEST_AUTHORIZER_BACK_TO_TOKEN=true (Authorizer back to TOKEN)"
+CDKD_TEST_REMOVAL=true CDKD_TEST_DEPLOYMENT_DESCRIPTION_REMOVAL=true CDKD_TEST_AUTHORIZER_POOL_SWAP=true CDKD_TEST_AUTHORIZER_BACK_TO_TOKEN=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+POOL_AUTHORIZER_TOKEN=$(pool_authorizer)
+if [ "${POOL_AUTHORIZER_TOKEN}" != "TOKEN||true" ]; then
+  echo "FAIL: Authorizer ${POOL_AUTHORIZER_ID} is '${POOL_AUTHORIZER_TOKEN}', expected 'TOKEN||true' (no pools) after switching back to TOKEN (issue #5408)" >&2
+  exit 1
+fi
+echo "    OK: Authorizer ${POOL_AUTHORIZER_ID} switched COGNITO_USER_POOLS -> TOKEN in place, pools removed (issue #5408)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
-CDKD_TEST_REMOVAL=true CDKD_TEST_DEPLOYMENT_DESCRIPTION_REMOVAL=true node "${LOCAL_DIST}" destroy "${STACK}" \
+CDKD_TEST_REMOVAL=true CDKD_TEST_DEPLOYMENT_DESCRIPTION_REMOVAL=true CDKD_TEST_AUTHORIZER_POOL_SWAP=true CDKD_TEST_AUTHORIZER_BACK_TO_TOKEN=true node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -439,6 +561,11 @@ echo "    OK: state file is gone"
 
 assert_gone "account CloudWatch role ${ROLE_PATH}${ACCOUNT_ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${ACCOUNT_ROLE_NAME}"
 echo "    OK: account CloudWatch role is gone"
+
+for pool_arn_gone in "${POOL_A_ARN}" "${POOL_B_ARN}"; do
+  assert_gone "user pool ${pool_arn_gone} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${pool_arn_gone##*/}" --region "${REGION}"
+done
+echo "    OK: the #5408 user pools are gone"
 
 if ! restore_account_role; then
   echo "FAIL: could not restore the API Gateway account CloudWatch role in ${REGION} to '${PRE_ACCOUNT_ROLE}' (NONE = unset)" >&2

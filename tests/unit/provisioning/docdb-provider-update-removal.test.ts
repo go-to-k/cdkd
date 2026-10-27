@@ -91,6 +91,8 @@ describe('DocDBProvider removal semantics (issues #1160 / #5004)', () => {
           PreferredMaintenanceWindow: 'sun:05:00-sun:06:00',
           VpcSecurityGroupIds: ['sg-1'],
           MasterUserPassword: 'TempPass1234!',
+          // Already the default a removed Port resets to, so nothing is sent
+          // (a non-default one: docdb-provider-port-removal-1160.test.ts).
           Port: 27017,
         }
       );

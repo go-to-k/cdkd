@@ -1530,6 +1530,11 @@
       "scenarios": []
     },
     {
+      "name": "lambda-esm-documentdb",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "lambda-esm-self-managed-kafka",
       "annotated": false,
       "scenarios": []
@@ -1987,6 +1992,11 @@
       "scenarios": [
         "dynamic-reference-resolution"
       ]
+    },
+    {
+      "name": "nlb-quic-server-id",
+      "annotated": false,
+      "scenarios": []
     },
     {
       "name": "nlb-source-nat",
@@ -3561,6 +3571,7 @@
     "lambda-config-field-removal",
     "lambda-destinations",
     "lambda-env-removal",
+    "lambda-esm-documentdb",
     "lambda-esm-self-managed-kafka",
     "lambda-event-invoke-config-update",
     "lambda-fix-forward-orphan",
@@ -3594,6 +3605,7 @@
     "nested-stack-deep",
     "nested-stack-replace-guard",
     "nested-stack-rollback",
+    "nlb-quic-server-id",
     "nodejs-function",
     "noecho-named-producer",
     "noecho-parameter-masking",

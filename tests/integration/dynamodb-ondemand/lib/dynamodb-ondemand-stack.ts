@@ -3,6 +3,7 @@ import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as kinesis from 'aws-cdk-lib/aws-kinesis';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
 
 /**
  * DynamoDB backfill integ fixture (issue #609).
@@ -428,6 +429,66 @@ export class DynamodbOndemandStack extends cdk.Stack {
       value: ceilingRemovalTable.ref,
       description:
         'PAY_PER_REQUEST table whose TABLE-level and per-GSI OnDemandThroughput WRITE ceilings are REMOVED under CDKD_TEST_UPDATE=true, with the READ ceilings retained (issue go-to-k/cdkd#3373)',
+    });
+
+    // go-to-k/cdkd#5412: a table created on a customer managed key whose
+    // `SSESpecification` is REMOVED under CDKD_TEST_UPDATE=true. CloudFormation
+    // moves such a table back to the AWS owned key (`SSEDescription` absent
+    // after the update); cdkd used to send nothing and leave the CMK on. The
+    // key is fixture-owned: its alias carries the stack name and its tag lets
+    // verify.sh's cleanup find a key whose alias is already gone. The key
+    // itself stays in both modes, so only the table's block changes.
+    const sseKey = new kms.Key(this, 'SseRemovalKey', {
+      alias: `${this.stackName}-sse-removal`,
+      description: 'cdkd dynamodb-ondemand integ: SSESpecification removal (#5412)',
+      pendingWindow: cdk.Duration.days(7),
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    cdk.Tags.of(sseKey).add('cdkd-integ-sse-removal', this.stackName);
+    const sseRemovalTable = new dynamodb.CfnTable(this, 'SseRemovalTable', {
+      tableName: 'cdkd-ondemand-test-sse-removal-table',
+      billingMode: 'PAY_PER_REQUEST',
+      keySchema: [{ attributeName: 'id', keyType: 'HASH' }],
+      attributeDefinitions: [{ attributeName: 'id', attributeType: 'S' }],
+      ...(isUpdate
+        ? {}
+        : {
+            sseSpecification: {
+              sseEnabled: true,
+              sseType: 'KMS',
+              kmsMasterKeyId: sseKey.keyArn,
+            },
+          }),
+    });
+    sseRemovalTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    new cdk.CfnOutput(this, 'SseRemovalTableName', {
+      value: sseRemovalTable.ref,
+      description:
+        'PAY_PER_REQUEST table on a customer managed key whose SSESpecification is REMOVED under CDKD_TEST_UPDATE=true (issue go-to-k/cdkd#5412)',
+    });
+
+    // go-to-k/cdkd#5423: a table streaming to the fixture's Kinesis stream
+    // whose `KinesisStreamSpecification` is REMOVED under CDKD_TEST_UPDATE=true.
+    // `DescribeKinesisStreamingDestination` reads ACTIVE for about a second
+    // after the disable answers DISABLING, so a drift baseline captured right
+    // after the update kept the destination and `cdkd drift` reported it. A
+    // separate table, because the main table's destination carries the #5385
+    // precision change in the same deploy; DynamoDB lets both stream to one
+    // stream.
+    const kinesisRemovalTable = new dynamodb.CfnTable(this, 'KinesisRemovalTable', {
+      tableName: 'cdkd-ondemand-test-kinesis-removal-table',
+      billingMode: 'PAY_PER_REQUEST',
+      keySchema: [{ attributeName: 'id', keyType: 'HASH' }],
+      attributeDefinitions: [{ attributeName: 'id', attributeType: 'S' }],
+      ...(isUpdate ? {} : { kinesisStreamSpecification: { streamArn: stream.streamArn } }),
+    });
+    kinesisRemovalTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    new cdk.CfnOutput(this, 'KinesisRemovalTableName', {
+      value: kinesisRemovalTable.ref,
+      description:
+        'PAY_PER_REQUEST table whose KinesisStreamSpecification is REMOVED under CDKD_TEST_UPDATE=true (issue go-to-k/cdkd#5423)',
     });
   }
 }

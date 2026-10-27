@@ -1557,7 +1557,12 @@ Checklist when writing or reviewing an `update()`:
   and the explicit-declaration remedy (`warnOnUnremovablePoliciesSubKeys` in
   `cognito-provider.ts`): under both A/B answers the only wrong option is
   silence, because the user who deleted the sub-key believes a change (often
-  a TIGHTENING) landed.
+  a TIGHTENING) landed. The same UserPool A/B for its other members (issue
+  #1160): removal KEEPS `AccountRecoverySetting`, `SmsConfiguration`,
+  `UserPoolTier` and `DeletionProtection`, so `update()` sends nothing for
+  them and warns. When `MfaConfiguration` and every MFA factor property are
+  removed while MFA was on, MFA is set to `OFF`, with software-token MFA
+  disabled.
   `AWS::AutoScaling::AutoScalingGroup` is the per-type split (real
   CloudFormation A/B, issue #5004): removal RESETS `InstanceMaintenancePolicy`,
   `MaxInstanceLifetime`, `CapacityReservationSpecification` and

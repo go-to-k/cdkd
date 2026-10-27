@@ -2110,6 +2110,23 @@ describe('ApiGatewayProvider', () => {
         });
       });
 
+      it('sends a repeated AuthorizationScopes entry once (go-to-k/cdkd#5408)', async () => {
+        // PutMethod would store the repeat, while the update path diffs scopes
+        // as a set; deduplicating here keeps AWS a set.
+        mockSend.mockResolvedValueOnce({}); // PutMethodCommand
+
+        await provider.create('MyMethod', resourceType, {
+          RestApiId: 'api-id',
+          ResourceId: 'resource-id',
+          HttpMethod: 'GET',
+          AuthorizationType: 'COGNITO_USER_POOLS',
+          AuthorizerId: 'auth-1',
+          AuthorizationScopes: ['s/read', 's/write', 's/read'],
+        });
+
+        expect(mockSend.mock.calls[0][0].input.authorizationScopes).toEqual(['s/read', 's/write']);
+      });
+
       it('should forward Integration.ResponseTransferMode to PutIntegrationCommand (closes the AWS_PROXY streaming bug)', async () => {
         // CDK's LambdaIntegration({ responseTransferMode: STREAM }) emits
         // a streaming URI + ResponseTransferMode=STREAM. Pre-fix cdkd

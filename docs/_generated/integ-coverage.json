@@ -181,7 +181,8 @@
           "l1"
         ],
         "apigateway": [
-          "l1"
+          "l1",
+          "literal"
         ],
         "local-start-api": [
           "l2"
@@ -241,6 +242,7 @@
           "literal"
         ],
         "apigateway": [
+          "l1",
           "literal"
         ],
         "apigw-cloudwatch-role-redeploy": [
@@ -274,6 +276,7 @@
           "literal"
         ],
         "apigateway": [
+          "l1",
           "literal"
         ],
         "apigw-stage-throttling": [
@@ -1000,6 +1003,7 @@
       "resourceType": "AWS::Cognito::UserPool",
       "integs": [
         "api-cognito",
+        "apigateway",
         "appsync",
         "bedrock-agentcore",
         "cc-write-only-create-only",
@@ -1016,6 +1020,9 @@
       ],
       "signals": {
         "api-cognito": [
+          "l2"
+        ],
+        "apigateway": [
           "l2"
         ],
         "appsync": [
@@ -1078,7 +1085,8 @@
       "resourceType": "AWS::DocDB::DBCluster",
       "integs": [
         "docdb-fix-forward-orphan",
-        "docdb-neptune"
+        "docdb-neptune",
+        "lambda-esm-documentdb"
       ],
       "signals": {
         "docdb-fix-forward-orphan": [
@@ -1086,6 +1094,10 @@
         ],
         "docdb-neptune": [
           "l1"
+        ],
+        "lambda-esm-documentdb": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -1093,7 +1105,8 @@
       "resourceType": "AWS::DocDB::DBInstance",
       "integs": [
         "docdb-fix-forward-orphan",
-        "docdb-neptune"
+        "docdb-neptune",
+        "lambda-esm-documentdb"
       ],
       "signals": {
         "docdb-fix-forward-orphan": [
@@ -1101,6 +1114,10 @@
         ],
         "docdb-neptune": [
           "l1"
+        ],
+        "lambda-esm-documentdb": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -1108,13 +1125,17 @@
       "resourceType": "AWS::DocDB::DBSubnetGroup",
       "integs": [
         "docdb-fix-forward-orphan",
-        "docdb-neptune"
+        "docdb-neptune",
+        "lambda-esm-documentdb"
       ],
       "signals": {
         "docdb-fix-forward-orphan": [
           "l1"
         ],
         "docdb-neptune": [
+          "l1"
+        ],
+        "lambda-esm-documentdb": [
           "l1"
         ]
       }
@@ -1412,10 +1433,12 @@
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -1548,6 +1571,9 @@
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
+        "lambda-esm-documentdb": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -1559,6 +1585,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -1650,10 +1679,12 @@
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -1778,6 +1809,9 @@
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
+        "lambda-esm-documentdb": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -1788,6 +1822,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -1907,10 +1944,12 @@
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -2044,6 +2083,9 @@
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
+        "lambda-esm-documentdb": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -2055,6 +2097,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -2145,10 +2190,12 @@
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -2281,6 +2328,9 @@
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
+        "lambda-esm-documentdb": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -2292,6 +2342,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -2605,11 +2658,13 @@
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "partial-create-handback",
         "propagation-races-2",
@@ -2748,6 +2803,9 @@
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
+        "lambda-esm-documentdb": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -2763,6 +2821,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -2878,10 +2939,12 @@
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -3006,6 +3069,9 @@
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
+        "lambda-esm-documentdb": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -3017,6 +3083,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -3107,11 +3176,13 @@
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "partial-create-handback",
         "propagation-races-2",
@@ -3268,6 +3339,9 @@
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
+        "lambda-esm-documentdb": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -3283,6 +3357,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -3397,10 +3474,12 @@
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -3534,6 +3613,9 @@
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
+        "lambda-esm-documentdb": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -3545,6 +3627,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -4056,7 +4141,8 @@
         "generated-name-lifecycle",
         "local-engine-role-identity",
         "local-start-alb",
-        "local-start-alb-from-state"
+        "local-start-alb-from-state",
+        "nlb-quic-server-id"
       ],
       "signals": {
         "alb": [
@@ -4077,6 +4163,10 @@
         ],
         "local-start-alb-from-state": [
           "literal"
+        ],
+        "nlb-quic-server-id": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -4094,6 +4184,7 @@
         "local-engine-role-identity",
         "local-start-alb",
         "local-start-alb-from-state",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "partial-create-handback",
         "remove-protection",
@@ -4142,6 +4233,10 @@
           "l2",
           "literal"
         ],
+        "nlb-quic-server-id": [
+          "l1",
+          "literal"
+        ],
         "nlb-source-nat": [
           "l1",
           "literal"
@@ -4176,6 +4271,7 @@
         "local-engine-role-identity",
         "local-start-alb",
         "local-start-alb-from-state",
+        "nlb-quic-server-id",
         "partial-create-handback",
         "perf-cross-backend-check",
         "replacement-rename-onto-holder"
@@ -4209,6 +4305,10 @@
           "literal"
         ],
         "local-start-alb-from-state": [
+          "literal"
+        ],
+        "nlb-quic-server-id": [
+          "l1",
           "literal"
         ],
         "partial-create-handback": [
@@ -5256,6 +5356,7 @@
         "cross-backend-same-stack",
         "drift-revert",
         "dynamodb-globaltable-replica-settings",
+        "dynamodb-ondemand",
         "dynamodb-streams",
         "ecr-scanning",
         "eventbridge",
@@ -5283,6 +5384,9 @@
         "dynamodb-globaltable-replica-settings": [
           "l2",
           "literal"
+        ],
+        "dynamodb-ondemand": [
+          "l2"
         ],
         "dynamodb-streams": [
           "l2"
@@ -5444,6 +5548,7 @@
         "eventsourcemapping-race",
         "fifo-sqs-event-source",
         "import-attribute-readback",
+        "lambda-esm-documentdb",
         "lambda-esm-self-managed-kafka"
       ],
       "signals": {
@@ -5460,6 +5565,10 @@
           "literal"
         ],
         "import-attribute-readback": [
+          "l1",
+          "literal"
+        ],
+        "lambda-esm-documentdb": [
           "l1",
           "literal"
         ],
@@ -5526,6 +5635,7 @@
         "lambda-destinations",
         "lambda-durable-replacement",
         "lambda-env-removal",
+        "lambda-esm-documentdb",
         "lambda-esm-self-managed-kafka",
         "lambda-event-invoke-config-update",
         "lambda-fix-forward-orphan",
@@ -5776,6 +5886,9 @@
         "lambda-env-removal": [
           "l2",
           "literal"
+        ],
+        "lambda-esm-documentdb": [
+          "l2"
         ],
         "lambda-esm-self-managed-kafka": [
           "l2",
@@ -8153,6 +8266,7 @@
         "full-stack-demo",
         "iam-access-key",
         "import-secret-observed",
+        "lambda-esm-documentdb",
         "lambda-esm-self-managed-kafka",
         "local-invoke-from-state",
         "local-run-task-from-state",
@@ -8188,6 +8302,9 @@
         "import-secret-observed": [
           "l2",
           "literal"
+        ],
+        "lambda-esm-documentdb": [
+          "l2"
         ],
         "lambda-esm-self-managed-kafka": [
           "l2",
