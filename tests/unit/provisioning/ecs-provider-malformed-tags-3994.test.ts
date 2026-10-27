@@ -12,8 +12,8 @@ import {
 // go-to-k/cdkd#3994: the ECS Tags diff read a malformed side as empty, so a
 // malformed DESIRED Tags (a rollback / drift --revert desired bag) untagged
 // every recorded key. Cluster, TaskDefinition and Service all take a CFn
-// `[{ Key, Value }]` list; TaskDefinition's update is always refused as
-// replacement-only, so it has no update-path tag diff.
+// `[{ Key, Value }]` list. A TaskDefinition update applies a tags-only change
+// in place (go-to-k/cdkd#5392), so it takes the same update-path tag diff.
 
 const mockSend = vi.fn();
 const warn = vi.hoisted(() => vi.fn());
@@ -72,6 +72,7 @@ const DESIRED = [
 const UPDATE_TYPES: Array<[string, string, string, Record<string, unknown>]> = [
   ['AWS::ECS::Cluster', 'c', CLUSTER_ARN, {}],
   ['AWS::ECS::Service', SERVICE_ARN, SERVICE_ARN, { Cluster: 'c', ServiceName: 's' }],
+  ['AWS::ECS::TaskDefinition', TD_ARN, TD_ARN, { Family: 'f' }],
 ];
 const CREATE_TYPES = ['AWS::ECS::Cluster', 'AWS::ECS::TaskDefinition', 'AWS::ECS::Service'];
 
