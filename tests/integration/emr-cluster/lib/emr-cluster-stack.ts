@@ -43,6 +43,13 @@ import type { Construct } from 'constructs';
  *   - `Instances.AdditionalMasterSecurityGroups` gains a fixture-owned SG.
  *     CloudFormation replaces the cluster for that change, so cdkd must too:
  *     a new ClusterId, the old cluster terminated.
+ *   - The replacement also carries a core instance group (1x m5.xlarge), so
+ *     the IN-PLACE phase below has a group to resize.
+ *
+ * INSTANCES-IN-PLACE phase (CDKD_TEST_INSTANCES_REPLACE=true
+ * CDKD_TEST_INSTANCES_IN_PLACE=true, issue #5422): the core group's
+ * `InstanceCount` 1 -> 2 and `UnhealthyNodeReplacement: false` added. Both are
+ * changes CloudFormation applies in place, so the ClusterId must not change.
  *
  * NOTE: `VisibleToAllUsers` is intentionally NOT toggled/asserted here — AWS
  * deprecated it, so `SetVisibleToAllUsers(false)` is a no-op and the value
@@ -59,6 +66,9 @@ export class EmrClusterStack extends cdk.Stack {
     // `Instances.AdditionalMasterSecurityGroups` entry, which CloudFormation
     // answers by REPLACING the cluster.
     const isInstancesReplace = process.env.CDKD_TEST_INSTANCES_REPLACE === 'true';
+    // go-to-k/cdkd#5422: Phase 3d resizes the replacement's core group and
+    // sets UnhealthyNodeReplacement, both applied in place.
+    const isInstancesInPlace = isInstancesReplace && process.env.CDKD_TEST_INSTANCES_IN_PLACE === 'true';
 
     // VPC with 1 AZ, public subnet only, no NAT (cheapest legal shape).
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -174,9 +184,19 @@ export class EmrClusterStack extends cdk.Stack {
         ...(extraMasterSg && {
           additionalMasterSecurityGroups: [extraMasterSg.securityGroupId],
         }),
-        // Single-node cluster: master only, stays alive with no steps.
+        // Single-node cluster: master only, stays alive with no steps (the
+        // Phase 3c replacement adds a core group, see below).
         keepJobFlowAliveWhenNoSteps: true,
         terminationProtected: false,
+        ...(isInstancesInPlace && { unhealthyNodeReplacement: false }),
+        ...(isInstancesReplace && {
+          coreInstanceGroup: {
+            instanceCount: isInstancesInPlace ? 2 : 1,
+            instanceType: 'm5.xlarge',
+            market: 'ON_DEMAND',
+            name: 'Core',
+          },
+        }),
         masterInstanceGroup: {
           instanceCount: 1,
           instanceType: 'm5.xlarge',

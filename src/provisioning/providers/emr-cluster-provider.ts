@@ -15,6 +15,7 @@ import {
   RemoveManagedScalingPolicyCommand,
   PutAutoTerminationPolicyCommand,
   RemoveAutoTerminationPolicyCommand,
+  SetUnhealthyNodeReplacementCommand,
   InvalidRequestException,
   type Cluster,
   type ClusterState,
@@ -64,6 +65,8 @@ import {
   unchangedBehindSecretReference,
 } from '../secret-reference-immutable.js';
 import { emrClusterInstancesReplaced } from '../../analyzer/replacement-rules.js';
+import { EMRInstanceGroupConfigProvider } from './emr-instance-group-config-provider.js';
+import { EMRInstanceFleetConfigProvider } from './emr-instance-fleet-config-provider.js';
 import { createMaskedLogSinks, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import {
   collectOrphanIds,
@@ -126,7 +129,8 @@ const TERMINAL_STATES: ReadonlySet<ClusterState> = new Set<ClusterState>([
  * Top-level CFn properties that map to a MUTABLE EMR API surface. Every other
  * property is either registry-createOnly (routed through DELETE+CREATE by the
  * replacement-detection layer) or lives inside the `Instances` block (handled
- * specially in `update()` — only `TerminationProtected` is applied there).
+ * specially in `update()` — the members CloudFormation updates in place are
+ * applied there, go-to-k/cdkd#5422).
  */
 const MUTABLE_TOP_LEVEL_PROPS = new Set<string>([
   'Tags',
@@ -183,6 +187,115 @@ const toBoolean = (v: unknown): boolean | undefined => {
 };
 
 const jsonEqual = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * `next` with every position the record holds as a `{{resolve:...}}`
+ * reference, and `next` holds as that reference's resolved value, put back to
+ * the recorded reference (go-to-k/cdkd#5422). Anything else is `next`'s own.
+ */
+function withRecordedReferences(next: unknown, prev: unknown, mask: MaskerFn | undefined): unknown {
+  if (typeof prev === 'string' && typeof next === 'string') {
+    return next !== prev && onlySecretReferencesDiffer(next, prev, mask) ? prev : next;
+  }
+  if (Array.isArray(prev) && Array.isArray(next) && prev.length === next.length) {
+    return next.map((item, i) => withRecordedReferences(item, prev[i], mask));
+  }
+  if (isPlainObject(prev) && isPlainObject(next)) {
+    return Object.fromEntries(
+      Object.entries(next).map(([key, value]) => [
+        key,
+        withRecordedReferences(value, prev[key], mask),
+      ])
+    );
+  }
+  return next;
+}
+
+/** One CORE or TASK instance group or fleet whose in-place members moved. */
+interface InstancesResize {
+  readonly type: 'CORE' | 'TASK';
+  /** Its `Instances` path, for messages (`TaskInstanceGroups[1]`). */
+  readonly path: string;
+  readonly prev: Record<string, unknown>;
+  readonly next: Record<string, unknown>;
+}
+
+/**
+ * The `Instances` members CloudFormation updates in place that moved
+ * (go-to-k/cdkd#5418 measured which they are; `emrClusterInstancesReplaced`
+ * strips exactly these). Read off the RAW sides.
+ */
+interface InstancesInPlacePlan {
+  readonly terminationProtected: boolean;
+  readonly unhealthyNodeReplacement: boolean;
+  readonly groups: readonly InstancesResize[];
+  readonly fleets: readonly InstancesResize[];
+}
+
+const EMPTY_INSTANCES_PLAN: InstancesInPlacePlan = {
+  terminationProtected: false,
+  unhealthyNodeReplacement: false,
+  groups: [],
+  fleets: [],
+};
+
+/** A group's members `ModifyInstanceGroups` / `PutAutoScalingPolicy` apply. */
+const GROUP_IN_PLACE_MEMBERS = ['InstanceCount', 'AutoScalingPolicy'] as const;
+/** A fleet's members `ModifyInstanceFleet` applies. */
+const FLEET_IN_PLACE_MEMBERS = ['TargetOnDemandCapacity', 'TargetSpotCapacity'] as const;
+
+/**
+ * Plan the in-place `Instances` changes. Only called once the diff's
+ * predicate found no replacing member, so the groups and fleets on both sides
+ * are the same ones, in the same order, and only these members moved.
+ */
+function planInstancesInPlace(
+  prev: Record<string, unknown>,
+  next: Record<string, unknown>
+): InstancesInPlacePlan {
+  const moved = (a: unknown, b: unknown, keys: readonly string[]): boolean =>
+    keys.some(
+      (key) =>
+        !jsonEqual(isPlainObject(a) ? a[key] : undefined, isPlainObject(b) ? b[key] : undefined)
+    );
+  const asBag = (value: unknown): Record<string, unknown> => (isPlainObject(value) ? value : {});
+  const entries = (single: string, list: string, keys: readonly string[]): InstancesResize[] => {
+    const out: InstancesResize[] = [];
+    if (next[single] !== undefined && moved(prev[single], next[single], keys)) {
+      out.push({
+        type: 'CORE',
+        path: single,
+        prev: asBag(prev[single]),
+        next: asBag(next[single]),
+      });
+    }
+    const prevList = Array.isArray(prev[list]) ? (prev[list] as unknown[]) : [];
+    const nextList = Array.isArray(next[list]) ? (next[list] as unknown[]) : [];
+    nextList.forEach((entry, i) => {
+      if (moved(prevList[i], entry, keys)) {
+        out.push({
+          type: 'TASK',
+          path: list + '[' + String(i) + ']',
+          prev: asBag(prevList[i]),
+          next: asBag(entry),
+        });
+      }
+    });
+    return out;
+  };
+  return {
+    terminationProtected: !jsonEqual(prev['TerminationProtected'], next['TerminationProtected']),
+    unhealthyNodeReplacement: !jsonEqual(
+      prev['UnhealthyNodeReplacement'],
+      next['UnhealthyNodeReplacement']
+    ),
+    groups: entries('CoreInstanceGroup', 'TaskInstanceGroups', GROUP_IN_PLACE_MEMBERS),
+    fleets: entries('CoreInstanceFleet', 'TaskInstanceFleets', FLEET_IN_PLACE_MEMBERS),
+  };
+}
 
 /** Cluster states an orphan lookup reports: every state that still bills. */
 const LIVE_CLUSTER_STATES: ClusterState[] = ['STARTING', 'BOOTSTRAPPING', 'RUNNING', 'WAITING'];
@@ -272,9 +385,11 @@ export function emrClusterProtectionSite(
  *    termination policy APIs, and `AddTags`/`RemoveTags`. Applications,
  *    release label, ... are schema-createOnly and most `Instances` changes
  *    are a registry-rule replacement (issue #5418), so a change that reaches
- *    `update()` anyway is refused with a `--replace` pointer; an `Instances`
- *    member CloudFormation updates in place (a resize, ...) is refused with
- *    no such pointer (go-to-k/cdkd#5422).
+ *    `update()` anyway is refused with a `--replace` pointer. The `Instances`
+ *    members CloudFormation updates in place are applied (go-to-k/cdkd#5422):
+ *    `SetUnhealthyNodeReplacement`, and a core / task group's or fleet's
+ *    resize and auto-scaling policy through the instance group / fleet
+ *    providers' own `update()`, which wait for the resize to settle.
  *  - `delete` → `TerminateJobFlows` + poll until `TERMINATED`. Idempotent on
  *    an already-gone cluster (`assertRegionMatch` guards the region). Honors
  *    termination protection: under `--remove-protection` it flips
@@ -427,9 +542,11 @@ export class EMRClusterProvider implements ResourceProvider {
     [
       'AWS::EMR::Cluster',
       new Set([
-        // Create-only (a removal replaces), or `Instances`: required, and a
-        // removed sub-field is refused except `TerminationProtected`, which is
-        // sent as false.
+        // Create-only (a removal replaces), or `Instances`: required; a removed
+        // sub-field replaces, except the in-place ones update() handles:
+        // `TerminationProtected` is sent as false, `AutoScalingPolicy` is
+        // removed, a fleet capacity is sent as 0, and `UnhealthyNodeReplacement`
+        // is refused (CloudFormation fails that removal).
         ...[...(this.handledProperties.get('AWS::EMR::Cluster') ?? [])].filter(
           (key) => !MUTABLE_TOP_LEVEL_PROPS.has(key)
         ),
@@ -857,6 +974,95 @@ export class EMRClusterProvider implements ResourceProvider {
     return { IdleTimeout: toNumber(config['IdleTimeout']) };
   }
 
+  /**
+   * Apply the planned group and fleet changes (go-to-k/cdkd#5422) through the
+   * `AWS::EMR::InstanceGroupConfig` / `InstanceFleetConfig` providers' own
+   * `update()`, which issue `ModifyInstanceGroups` / `PutAutoScalingPolicy` /
+   * `RemoveAutoScalingPolicy` / `ModifyInstanceFleet` and wait for the resize to
+   * settle, so the two paths share one resize and one wait. Each group or
+   * fleet is found by its role, and a TASK one by its `Name` (CloudFormation
+   * tells them apart by name); one at a time, since EMR refuses a resize while
+   * another is in progress.
+   */
+  private async applyInstancesResizes(
+    logicalId: string,
+    clusterId: string,
+    plan: InstancesInPlacePlan,
+    mask: MaskerFn | undefined
+  ): Promise<void> {
+    if (plan.groups.length === 0 && plan.fleets.length === 0) return;
+    const options = { pollIntervalMs: this.pollIntervalMs, maxWaitMs: this.maxWaitMs };
+    const pick = <T extends { Name?: string | undefined }>(
+      candidates: T[],
+      resize: InstancesResize,
+      kind: string
+    ): T => {
+      const name = resize.next['Name'];
+      const matches =
+        resize.type === 'TASK' && typeof name === 'string'
+          ? candidates.filter((c) => c.Name === name)
+          : candidates;
+      if (matches.length !== 1) {
+        throw new ProvisioningError(
+          safeMsg`Cannot apply Instances.${resize.path} to EMR cluster ${clusterId}: found ${String(matches.length)} ${resize.type} instance ${kind}s${resize.type === 'TASK' && typeof name === 'string' ? safeMsg` named ${name}` : ''}, expected exactly one`,
+          'AWS::EMR::Cluster',
+          logicalId,
+          clusterId
+        );
+      }
+      return matches[0]!;
+    };
+    if (plan.groups.length > 0) {
+      const groups = await this.listInstanceGroups(clusterId);
+      const groupProvider = new EMRInstanceGroupConfigProvider(options);
+      for (const resize of plan.groups) {
+        const group = pick(
+          groups.filter((g) => g.InstanceGroupType === resize.type),
+          resize,
+          'group'
+        );
+        const bag = (side: Record<string, unknown>): Record<string, unknown> => ({
+          JobFlowId: clusterId,
+          InstanceCount: side['InstanceCount'],
+          AutoScalingPolicy: side['AutoScalingPolicy'],
+        });
+        await groupProvider.update(
+          logicalId,
+          group.Id!,
+          'AWS::EMR::InstanceGroupConfig',
+          bag(resize.next),
+          bag(resize.prev),
+          mask ? { maskSecrets: mask } : undefined
+        );
+      }
+    }
+    if (plan.fleets.length > 0) {
+      const fleets = await this.listInstanceFleets(clusterId);
+      const fleetProvider = new EMRInstanceFleetConfigProvider(options);
+      for (const resize of plan.fleets) {
+        const fleet = pick(
+          fleets.filter((f) => f.InstanceFleetType === resize.type),
+          resize,
+          'fleet'
+        );
+        const bag = (side: Record<string, unknown>): Record<string, unknown> => ({
+          ClusterId: clusterId,
+          InstanceFleetType: resize.type,
+          TargetOnDemandCapacity: side['TargetOnDemandCapacity'],
+          TargetSpotCapacity: side['TargetSpotCapacity'],
+        });
+        await fleetProvider.update(
+          logicalId,
+          fleet.Id!,
+          'AWS::EMR::InstanceFleetConfig',
+          bag(resize.next),
+          bag(resize.prev),
+          mask ? { maskSecrets: mask } : undefined
+        );
+      }
+    }
+  }
+
   // ─── UPDATE ────────────────────────────────────────────────────────
 
   async update(
@@ -874,9 +1080,9 @@ export class EMRClusterProvider implements ResourceProvider {
 
     // The deploy diff classifies an `Instances` change as a replacement unless
     // only members CloudFormation updates in place moved (go-to-k/cdkd#5418,
-    // `emrClusterInstancesReplaced`). Of those, this method applies
-    // `Instances.TerminationProtected`; it refuses the rest, and refuses a
-    // replacing member as defence in depth (the diff was bypassed).
+    // `emrClusterInstancesReplaced`). This method applies those members
+    // (go-to-k/cdkd#5422, `planInstancesInPlace`), and refuses a replacing
+    // member as defence in depth (the diff was bypassed).
     const nextInstances = (properties['Instances'] ?? {}) as Record<string, unknown>;
     const prevInstances = (previousProperties['Instances'] ?? {}) as Record<string, unknown>;
 
@@ -923,32 +1129,29 @@ export class EMRClusterProvider implements ResourceProvider {
           })
         : `Re-deploy with ${replaceFlags}, or destroy + redeploy the stack.`;
 
-    let terminationProtectedChanged = false;
+    let instancesPlan: InstancesInPlacePlan = EMPTY_INSTANCES_PLAN;
     if (changed('Instances')) {
-      // A member recorded as a `{{resolve:...}}` reference and handed here
-      // resolved is the same value, not a change -- as the top-level loop below
-      // treats one (go-to-k/cdkd#4275). Only for a member whose change would
-      // REPLACE: the diff compares the references as written, so a reference
-      // the template edited there was a replacement and never reaches this
-      // method. An in-place member has no such proof and stays a change.
+      // Whether a member's change REPLACES, judged on the deploy diff's own
+      // predicate, so the two never disagree. A position recorded as a
+      // `{{resolve:...}}` reference and handed here resolved reads as its
+      // recorded reference for this judgement only (as the top-level loop
+      // below exempts one, go-to-k/cdkd#4275): the diff compares references
+      // as written, so a reference the template EDITED in a replacing part was
+      // a replacement and never reaches this method. The in-place
+      // sub-members are planned below from the RAW sides, so an in-place edit
+      // is never dropped behind a reference that stood beside it.
+      const mask = context?.maskSecrets;
       const isReplacingMember = (key: string): boolean =>
-        emrClusterInstancesReplaced({ [key]: prevInstances[key] }, { [key]: nextInstances[key] });
+        emrClusterInstancesReplaced(
+          { [key]: prevInstances[key] },
+          { [key]: withRecordedReferences(nextInstances[key], prevInstances[key], mask) }
+        );
       const movedKeys = [
         ...new Set([...Object.keys(nextInstances), ...Object.keys(prevInstances)]),
-      ].filter(
-        (key) =>
-          !jsonEqual(nextInstances[key], prevInstances[key]) &&
-          !(
-            isReplacingMember(key) &&
-            onlySecretReferencesDiffer(nextInstances[key], prevInstances[key], context?.maskSecrets)
-          )
-      );
-      terminationProtectedChanged = movedKeys.includes('TerminationProtected');
-      // Whether CloudFormation would REPLACE the cluster for what moved: the
-      // deploy diff's own predicate, so the two never disagree. An ABSENT block
-      // reads as `{}` (as `nextInstances` / `prevInstances` do), so a lone
-      // `TerminationProtected` on one side is still applied; any other block
-      // that is not an object is compared whole.
+      ].filter((key) => !jsonEqual(nextInstances[key], prevInstances[key]));
+      // An ABSENT block reads as `{}` (as `nextInstances` / `prevInstances`
+      // do), so a lone in-place member on one side is still applied; any other
+      // block that is not an object is compared whole.
       const blockIsObject = (value: unknown): boolean =>
         value == null || (typeof value === 'object' && !Array.isArray(value));
       const blocksAreObjects =
@@ -956,15 +1159,11 @@ export class EMRClusterProvider implements ResourceProvider {
       const replacing = blocksAreObjects
         ? movedKeys.some(isReplacingMember)
         : emrClusterInstancesReplaced(previousProperties['Instances'], properties['Instances']);
-      // The members are stripped key by key, so the predicate on one key alone
-      // names a member that replaces, never an in-place one moved beside it.
-      // A block that is not an object is named whole.
-      const named = !blocksAreObjects
-        ? undefined
-        : replacing
-          ? movedKeys.find(isReplacingMember)
-          : movedKeys.find((key) => key !== 'TerminationProtected');
-      if (replacing || named !== undefined) {
+      if (replacing) {
+        // The members are judged key by key, so this names a member that
+        // replaces, never an in-place one moved beside it. A block that is not
+        // an object is named whole.
+        const named = blocksAreObjects ? movedKeys.find(isReplacingMember) : undefined;
         const subject =
           named === undefined
             ? safeMsg`AWS EMR Cluster's Instances block`
@@ -972,15 +1171,28 @@ export class EMRClusterProvider implements ResourceProvider {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          replacing
-            ? `${subject} cannot be updated in place — CloudFormation replaces the cluster for this change. ` +
-                replaceRemedy()
-            : // No replace remedy: CloudFormation keeps the cluster, and a
-              // replacement would terminate it and lose its local storage.
-              `${subject}: CloudFormation applies this change in place (an instance group's count or auto-scaling policy, a fleet's target capacity, unhealthy node replacement), which cdkd does not do yet (go-to-k/cdkd#5422). Revert it in the template to deploy.`
+          `${subject} cannot be updated in place — CloudFormation replaces the cluster for this change. ` +
+            replaceRemedy()
         );
       }
+      instancesPlan = planInstancesInPlace(prevInstances, nextInstances);
+      // REMOVING `UnhealthyNodeReplacement` has no value to send: CloudFormation
+      // fails that update ("Internal Failure", then a rollback; raw CFn A/B on
+      // go-to-k/cdkd#5422), so cdkd refuses it before any call. A rollback
+      // replay cannot edit the template, so it keeps the live value and warns.
+      if (
+        instancesPlan.unhealthyNodeReplacement &&
+        nextInstances['UnhealthyNodeReplacement'] === undefined
+      ) {
+        const removal = safeMsg`${logicalId} (AWS::EMR::Cluster): removing Instances.UnhealthyNodeReplacement fails under CloudFormation too (its update ends in Internal Failure and rolls back). Declare it explicitly instead (true is EMR's default).`;
+        if (!context?.replayingState) {
+          throw new ResourceUpdateNotSupportedError(resourceType, logicalId, removal);
+        }
+        this.logger.warn(safeMsg`${removal} The rollback leaves the live value in place.`);
+        instancesPlan = { ...instancesPlan, unhealthyNodeReplacement: false };
+      }
     }
+    const terminationProtectedChanged = instancesPlan.terminationProtected;
 
     // Any changed top-level property that is neither registry-createOnly
     // (which never reaches here) nor a known mutable one is refused. This
@@ -1045,6 +1257,9 @@ export class EMRClusterProvider implements ResourceProvider {
 
     if (
       !terminationProtectedChanged &&
+      !instancesPlan.unhealthyNodeReplacement &&
+      instancesPlan.groups.length === 0 &&
+      instancesPlan.fleets.length === 0 &&
       !visibleChanged &&
       !stepConcurrencyChanged &&
       !managedScalingChanged &&
@@ -1067,6 +1282,17 @@ export class EMRClusterProvider implements ResourceProvider {
           })
         );
       }
+
+      if (instancesPlan.unhealthyNodeReplacement) {
+        await this.getClient().send(
+          new SetUnhealthyNodeReplacementCommand({
+            JobFlowIds: [physicalId],
+            UnhealthyNodeReplacement: toBoolean(nextInstances['UnhealthyNodeReplacement']),
+          })
+        );
+      }
+
+      await this.applyInstancesResizes(logicalId, physicalId, instancesPlan, context?.maskSecrets);
 
       if (visibleChanged) {
         await this.getClient().send(
