@@ -26,6 +26,9 @@
 # CDKD_TEST_UPDATE=true flips its capacity (RCU 5->20 / WCU 5->10) and asserts
 # AWS reflects the new ProvisionedThroughput. Before the fix update() issued no
 # UpdateTable for ProvisionedThroughput, so the change was silently dropped.
+# The same re-deploy changes the table's Kinesis destination precision
+# MILLISECOND -> MICROSECOND on the same stream (issue go-to-k/cdkd#5385),
+# which before the fix was only warned about and never sent.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -258,6 +261,26 @@ if [ "${ACTUAL_STREAM_ARN}" != "${EXPECTED_STREAM_ARN}" ]; then
   exit 1
 fi
 echo "    OK: KinesisStreamSpecification.StreamArn reached AWS (silent-drop CLOSED by #609)"
+
+# go-to-k/cdkd#5385 BASELINE: the precision the Phase 1.5 deploy changes must
+# read MILLISECOND first, or the MICROSECOND assertion there passes vacuously
+# (MICROSECOND is AWS's default).
+read_kinesis_precision() {
+  aws dynamodb describe-kinesis-streaming-destination \
+    --table-name "${TABLE_NAME}" --region "${REGION}" --output json \
+    | jq -r --arg arn "${EXPECTED_STREAM_ARN}" '
+      [.KinesisDataStreamDestinations[]? | select(.StreamArn == $arn and .DestinationStatus != "DISABLED")][0]
+      | "\(.DestinationStatus // "absent") \(.ApproximateCreationDateTimePrecision // "unset")"'
+}
+KDS_PRECISION_BASE=$(read_kinesis_precision)
+case "${KDS_PRECISION_BASE}" in
+  "ACTIVE MILLISECOND" | "ENABLING MILLISECOND") ;;
+  *)
+    echo "FAIL (Phase 1, issue #5385): Kinesis destination reads '${KDS_PRECISION_BASE}', expected MILLISECOND before the precision change" >&2
+    exit 1
+    ;;
+esac
+echo "    OK (Phase 1): Kinesis destination precision is MILLISECOND before the change"
 
 # --- Assertion 4: ContributorInsightsSpecification reached AWS --------
 # DescribeContributorInsights returns the status + mode. ENABLING is a
@@ -493,6 +516,18 @@ if [ -z "${UPDATE_OK}" ]; then
 fi
 assert_provisioned_capacity "${PROV_UPDATED_READ}" "${PROV_UPDATED_WRITE}" "Phase 1.5"
 echo "    OK: ProvisionedThroughput in-place UPDATE reached AWS (silent-drop CLOSED)"
+
+# --- Phase 1.5 (issue #5385): same-stream precision change -------------
+# The same deploy changes the Kinesis destination's precision MILLISECOND ->
+# MICROSECOND on the SAME stream. cdkd waits for the destination to settle,
+# so it must read ACTIVE MICROSECOND as soon as the deploy returns; before the
+# fix the change was only warned about and AWS stayed MILLISECOND.
+KDS_PRECISION_UPDATED=$(read_kinesis_precision)
+if [ "${KDS_PRECISION_UPDATED}" != "ACTIVE MICROSECOND" ]; then
+  echo "FAIL (Phase 1.5, issue #5385): Kinesis destination reads '${KDS_PRECISION_UPDATED}' after the deploy, expected 'ACTIVE MICROSECOND' (precision change NOT sent)" >&2
+  exit 1
+fi
+echo "    OK (Phase 1.5): Kinesis destination precision changed in place to MICROSECOND (issue #5385)"
 
 # --- Phase 1.55: the per-GSI on-demand ceiling EDIT (issue #3287) ------
 # The headline shape: the same CDKD_TEST_UPDATE=true deploy changes NOTHING on
