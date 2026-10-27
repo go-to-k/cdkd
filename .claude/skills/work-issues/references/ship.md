@@ -24,13 +24,14 @@ unasked its ETA and queue. A subagent running a turn's integs, marker and
 ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
 it (#5245), so the `.live` Monitor below is the only progress signal. Its brief
 (the runner never reads this file) makes marker and ledger due once the last PID
-exits, bans attribution lines in the ledger commit (#5104), and STOPs on an
+exits, has it wait on ONE command exiting with that PID, never a per-line
+Monitor: each line resumes and re-ends it (#5413), bans attribution lines in the ledger commit (#5104), and STOPs on an
 unreadable state record, never purging (`/run-integ` step 7). A FAIL names
 the file EMITTING its message (`grep -rlF` a `${}`-free fragment over `src/`
 and the fixture): the PR is blamed when that file is in its diff, cleared when
 the grep hits only outside it, else UNATTRIBUTED (#4981). Size it for ONE
 context (§8-d probe alone, then fixture batches), each run's fixture,
-`pid=<N>` (bare digits: `pid=VPID=…` blinded the Monitor, #5248), log, state
+`pid=<N>` (bare digits, #5248), log, state
 prefix appended as a line to `<scratch>/integ-<PR>.live` at launch. BEFORE
 dispatching, the PARENT runs `/run-integ` step 4's live-lock check and lists
 open PRs touching each fixture: a held one gets a lock watcher, not a runner
