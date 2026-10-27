@@ -876,6 +876,7 @@ describe('EMRClusterProvider update', () => {
           .catch((e: unknown) => e);
         expect(err).toBeInstanceOf(ProvisioningError);
         expect((err as Error).message).toContain('the earlier resizes used the whole wait');
+        expect((err as Error).message).not.toContain('Failed to apply');
         expect(callsOf(ModifyInstanceGroupsCommand)).toHaveLength(0);
       } finally {
         spy.mockRestore();

@@ -1152,8 +1152,10 @@ export class EMRClusterProvider implements ResourceProvider {
         InstanceCount: side['InstanceCount'],
         AutoScalingPolicy: side['AutoScalingPolicy'],
       });
+      // Outside `restated`: a spent budget is the cluster's own refusal.
+      const delegateOptions = options(resize);
       await restated(resize, () =>
-        new EMRInstanceGroupConfigProvider(options(resize)).update(
+        new EMRInstanceGroupConfigProvider(delegateOptions).update(
           logicalId,
           id,
           'AWS::EMR::InstanceGroupConfig',
@@ -1170,8 +1172,10 @@ export class EMRClusterProvider implements ResourceProvider {
         TargetOnDemandCapacity: side['TargetOnDemandCapacity'],
         TargetSpotCapacity: side['TargetSpotCapacity'],
       });
+      // Outside `restated`: a spent budget is the cluster's own refusal.
+      const delegateOptions = options(resize);
       await restated(resize, () =>
-        new EMRInstanceFleetConfigProvider(options(resize)).update(
+        new EMRInstanceFleetConfigProvider(delegateOptions).update(
           logicalId,
           id,
           'AWS::EMR::InstanceFleetConfig',
