@@ -430,6 +430,20 @@ describe('EMRClusterProvider update', () => {
     });
   });
 
+  it('reads an absent Instances block as empty: a lone TerminationProtected is applied', async () => {
+    routeSend({ SetTerminationProtectionCommand: {}, DescribeClusterCommand: clusterOf('WAITING') });
+    const { Instances: _omitted, ...withoutInstances } = BASE_PROPS;
+    const result = await newProvider().update(
+      'MyCluster',
+      CLUSTER_ID,
+      RESOURCE_TYPE,
+      { ...withoutInstances, Instances: { TerminationProtected: true } },
+      withoutInstances
+    );
+    expect(result.wasReplaced).toBe(false);
+    expect(callsOf(SetTerminationProtectionCommand)[0]!.input['TerminationProtected']).toBe(true);
+  });
+
   it('names the Instances block whole when a side is not an object', async () => {
     const err = await newProvider()
       .update(

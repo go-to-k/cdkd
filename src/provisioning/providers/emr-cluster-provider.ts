@@ -945,10 +945,12 @@ export class EMRClusterProvider implements ResourceProvider {
       );
       terminationProtectedChanged = movedKeys.includes('TerminationProtected');
       // Whether CloudFormation would REPLACE the cluster for what moved: the
-      // deploy diff's own predicate, so the two never disagree. A block that
-      // is not an object is compared whole.
+      // deploy diff's own predicate, so the two never disagree. An ABSENT block
+      // reads as `{}` (as `nextInstances` / `prevInstances` do), so a lone
+      // `TerminationProtected` on one side is still applied; any other block
+      // that is not an object is compared whole.
       const blockIsObject = (value: unknown): boolean =>
-        value !== null && typeof value === 'object' && !Array.isArray(value);
+        value == null || (typeof value === 'object' && !Array.isArray(value));
       const blocksAreObjects =
         blockIsObject(properties['Instances']) && blockIsObject(previousProperties['Instances']);
       const replacing = blocksAreObjects
