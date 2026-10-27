@@ -404,7 +404,7 @@ Deleting one of these loses all data in it, whatever its state.
 | Encryption keys | `AWS::CloudHSM::Cluster`, `AWS::KMS::Key`, `AWS::KMS::ReplicaKey`, `AWS::Transfer::HostKey` |
 | Source control / artifacts | `AWS::CodeCommit::Repository`, `AWS::CodeArtifact::Repository`, `AWS::CodeArtifact::Domain` |
 | Metadata catalog | `AWS::Glue::Database`, `AWS::Glue::Table` |
-| Retained records | `AWS::IoTSiteWise::Workspace`, `AWS::AIOps::InvestigationGroup`, `AWS::SES::MailManagerArchive`, `AWS::Rbin::Rule` |
+| Retained records | `AWS::IoTSiteWise::Workspace`, `AWS::CloudWatch::Space`, `AWS::AIOps::InvestigationGroup`, `AWS::SES::MailManagerArchive`, `AWS::Rbin::Rule` |
 | Nested stacks | `AWS::CloudFormation::Stack` |
 | Edge / identifier immutability | `AWS::CloudFront::Distribution`, `AWS::SMSVOICE::PhoneNumber`, `AWS::SMSVOICE::SenderId` |
 

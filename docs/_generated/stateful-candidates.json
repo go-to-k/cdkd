@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-27T10:12:24.711Z",
+  "generatedAt": "2026-10-27T10:33:08.389Z",
   "summary": {
     "tier2Count": 1625,
     "schemasRead": 1625,
     "withCreateOnly": 1423,
     "schemasWithNoProperties": 0,
     "candidateCount": 117,
-    "guardedCount": 86,
-    "unguardedCount": 31,
+    "guardedCount": 87,
+    "unguardedCount": 30,
     "signalCounts": {
       "snapshot-or-backup": 16,
       "retention-window": 10,
@@ -249,7 +249,7 @@
       "signals": [
         "encryption-at-rest"
       ],
-      "guarded": false
+      "guarded": true
     },
     {
       "typeName": "AWS::CodeArtifact::Domain",
