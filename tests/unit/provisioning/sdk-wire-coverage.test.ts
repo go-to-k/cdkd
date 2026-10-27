@@ -33,6 +33,7 @@ import { CASES_9 } from './sdk-wire-cases-9.js';
 import { CASES_10 } from './sdk-wire-cases-10.js';
 import { CASES_11 } from './sdk-wire-cases-11.js';
 import { CASES_12 } from './sdk-wire-cases-12.js';
+import { CASES_13 } from './sdk-wire-cases-13.js';
 import { CASES_CLOUDMAP } from './sdk-wire-cases-cloudmap.js';
 import { CASES_NO_PROPERTIES } from './sdk-wire-cases-no-properties.js';
 
@@ -724,9 +725,7 @@ const CASES: TypeCase[] = [
  */
 const NOT_YET_COVERED = new Set([
   'AgentCoreEvaluatorProvider',
-  'ApiGatewayProvider',
   'CodeBuildProvider',
-  'CognitoUserPoolProvider',
   'DocDBProvider',
   'DocDBSubnetGroupProvider',
   'DynamoDBGlobalTableProvider',
@@ -738,12 +737,10 @@ const NOT_YET_COVERED = new Set([
   'KinesisStreamProvider',
   'LambdaEventSourceMappingProvider',
   'NeptuneProvider',
-  'NestedStackProvider',
   'RDSProvider',
   'Route53Provider',
-  'S3BucketProvider',
 ]);
-const MAX_UNCOVERED = 19;
+const MAX_UNCOVERED = 15;
 
 /**
  * Every case list, with the test file that runs it and the list's name there.
@@ -771,6 +768,7 @@ const CASE_LISTS: { cases: TypeCase[]; name: string; file: string }[] = [
   { cases: CASES_10, name: 'CASES_10', file: 'sdk-wire-coverage-10.test.ts' },
   { cases: CASES_11, name: 'CASES_11', file: 'sdk-wire-coverage-11.test.ts' },
   { cases: CASES_12, name: 'CASES_12', file: 'sdk-wire-coverage-12.test.ts' },
+  { cases: CASES_13, name: 'CASES_13', file: 'sdk-wire-coverage-13.test.ts' },
   {
     cases: CASES_CLOUDMAP,
     name: 'CASES_CLOUDMAP',
