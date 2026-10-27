@@ -3664,6 +3664,35 @@ describe('FSxFileSystemProvider Lustre LogConfiguration (#5430)', () => {
     });
   });
 
+  // A baseline captured before #5430 lacks LogConfiguration while the readback
+  // of a never-logging file system carries { Level: 'DISABLED' }.
+  it('drops a logging-off LogConfiguration from a drift comparison side', () => {
+    const bag = {
+      FileSystemType: 'LUSTRE',
+      LustreConfiguration: { DeploymentType: 'SCRATCH_2', LogConfiguration: { Level: 'DISABLED' } },
+    };
+    expect(newProvider().canonicalizeDriftProperties(RESOURCE_TYPE, bag)).toEqual({
+      FileSystemType: 'LUSTRE',
+      LustreConfiguration: { DeploymentType: 'SCRATCH_2' },
+    });
+    // The input is not mutated (the raw bag still feeds drift --revert).
+    expect(bag.LustreConfiguration).toHaveProperty('LogConfiguration');
+  });
+
+  it('keeps an enabled LogConfiguration, or one with a Destination, on a drift comparison side', () => {
+    const provider = newProvider();
+    for (const log of [
+      { Level: 'WARN_ERROR' },
+      { Level: 'DISABLED', Destination: LOG_GROUP_ARN },
+      { Level: 'ERROR_ONLY', Destination: LOG_GROUP_ARN },
+    ]) {
+      const bag = { LustreConfiguration: { LogConfiguration: log } };
+      expect(provider.canonicalizeDriftProperties(RESOURCE_TYPE, bag)).toBe(bag);
+    }
+    const other = { LustreConfiguration: { LogConfiguration: { Level: 'DISABLED' } } };
+    expect(provider.canonicalizeDriftProperties('AWS::EFS::FileSystem', other)).toBe(other);
+  });
+
   it('emits no LogConfiguration when AWS returns none', async () => {
     routeSend({
       DescribeFileSystemsCommand: {

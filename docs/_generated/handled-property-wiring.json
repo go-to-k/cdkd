@@ -11418,6 +11418,7 @@
             "element-read"
           ],
           "seededBy": [
+            "canonicalizeDriftProperties",
             "create"
           ]
         },
@@ -11550,7 +11551,8 @@
       "gaps": [],
       "blindSpots": [
         "computed key in detectVariantConfigKey()",
-        "computed key in update()"
+        "computed key in update()",
+        "object spread in canonicalizeDriftProperties()"
       ]
     },
     {

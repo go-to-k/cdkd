@@ -2455,6 +2455,38 @@ export class FSxFileSystemProvider implements ResourceProvider {
    * `OpenZFSConfiguration` entries are gone as of the variant reverse-mappers
    * — only the individually-unreadable leaves above stay unknown.
    */
+  /**
+   * Drop a logging-off `LustreConfiguration.LogConfiguration` (`Level`
+   * `DISABLED`, no `Destination`) from each drift comparison side
+   * (go-to-k/cdkd#5430). AWS reports that block on a Lustre file system that
+   * never enabled logging, and `readLustreConfiguration` started reading it
+   * back in #5430, so an `observedProperties` baseline captured by an earlier
+   * binary lacks the key while the readback carries it: `drift.ts` walks the
+   * key union on that baseline, and every existing Lustre file system would
+   * report `LogConfiguration` as drift until a `drift --accept`. Logging off
+   * and the key absent mean the same here, so both sides drop it; logging
+   * turned ON or OFF against the baseline still differs and is still reported.
+   */
+  canonicalizeDriftProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::FSx::FileSystem') return properties;
+    const lustre = properties['LustreConfiguration'];
+    if (typeof lustre !== 'object' || lustre === null || Array.isArray(lustre)) return properties;
+    const log = (lustre as Record<string, unknown>)['LogConfiguration'];
+    if (
+      typeof log !== 'object' ||
+      log === null ||
+      Array.isArray(log) ||
+      JSON.stringify(log) !== JSON.stringify({ Level: 'DISABLED' })
+    ) {
+      return properties;
+    }
+    const { LogConfiguration: _disabled, ...rest } = lustre as Record<string, unknown>;
+    return { ...properties, LustreConfiguration: rest };
+  }
+
   getDriftUnknownPaths(resourceType: string): string[] {
     if (resourceType !== 'AWS::FSx::FileSystem') return [];
     return [
