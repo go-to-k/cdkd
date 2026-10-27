@@ -67,12 +67,24 @@ const CACHE_DELETE_WAIT_MS = Math.max(
 );
 
 /**
- * How long an update that changes `CacheNodeType` waits for the cluster to
- * report the new type (issue #5438): a cache.t4g scale took about ten minutes
- * on both engines, past the 10-minute cap other modifies use. The engine's
- * `--resource-timeout` (30 minutes by default) is the outer bound.
+ * How long an update waits for the cluster to report its template
+ * `CacheNodeType` (issue #5438): a cache.t4g scale took about ten minutes on
+ * both engines, past the 10-minute cap other modifies use. The same 60-minute
+ * floor as the type's create and delete, so the engine's `--resource-timeout`
+ * (30 minutes by default) is what bounds the wait unless it is raised past it.
  */
-const NODE_TYPE_MODIFY_WAIT_MS = 30 * 60_000;
+const NODE_TYPE_MODIFY_WAIT_MS = Math.max(
+  60 * 60_000,
+  slowCcOperationTimeoutMs('AWS::ElastiCache::CacheCluster', 'UPDATE')
+);
+
+/**
+ * Polls after which an `available` cluster still on its old node type, with
+ * no node-type change pending, is a scale AWS dropped rather than one not yet
+ * started (AWS logged "Applying modification" about 20 seconds after the
+ * Modify in the #5438 measurements; this allows about two minutes).
+ */
+const NODE_TYPE_DROPPED_AFTER_POLLS = 12;
 
 /**
  * The members of `a` left after taking out one occurrence per member of `b`
@@ -698,11 +710,10 @@ export class ElastiCacheProvider implements ResourceProvider {
       // go-to-k/cdkd#5438 (real CloudFormation runs, us-east-1, redis and
       // memcached): a CacheNodeType change is an in-place ModifyCacheCluster
       // with ApplyImmediately for both engines, same cluster id. CloudFormation
-      // sends it on every update; it is sent here only when it changed, so an
-      // update that does not touch it never asks AWS to scale.
+      // sends it on every update, so a cluster whose live type drifted from
+      // the template is scaled back by the next update; an unchanged live type
+      // is a no-op for AWS.
       const desiredNodeType = properties['CacheNodeType'] as string | undefined;
-      const nodeTypeChanged =
-        desiredNodeType !== undefined && desiredNodeType !== previousProperties['CacheNodeType'];
       const placement = await this.newNodePlacement(physicalId, properties, previousProperties);
       this.warnNotAppliedInPlace(logicalId, properties, previousProperties, placement);
 
@@ -711,7 +722,7 @@ export class ElastiCacheProvider implements ResourceProvider {
           CacheClusterId: physicalId,
           NumCacheNodes:
             properties['NumCacheNodes'] != null ? Number(properties['NumCacheNodes']) : undefined,
-          ...(nodeTypeChanged && { CacheNodeType: desiredNodeType }),
+          ...(desiredNodeType !== undefined && { CacheNodeType: desiredNodeType }),
           ...(placement && {
             NewAvailabilityZones: placement.newAvailabilityZones,
             ...(placement.azMode !== undefined && { AZMode: placement.azMode }),
@@ -752,12 +763,11 @@ export class ElastiCacheProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully updated CacheCluster ${logicalId}`);
 
-      // Wait for cluster to become available after modification. A node-type
-      // change also waits until the cluster REPORTS the new type: the status
-      // can still read `available` right after the Modify returns, and the
-      // scale itself measured about 10 minutes on cache.t4g, so its cap is
-      // longer (the engine's --resource-timeout still bounds it).
-      if (nodeTypeChanged) {
+      // Wait for cluster to become available after modification, and until
+      // it REPORTS the template node type: the status can still read
+      // `available` right after the Modify returns, and a scale measured about
+      // ten minutes on cache.t4g, so this wait's cap is longer.
+      if (desiredNodeType !== undefined) {
         await this.waitForClusterAvailable(physicalId, NODE_TYPE_MODIFY_WAIT_MS, desiredNodeType);
       } else {
         await this.waitForClusterAvailable(physicalId);
@@ -1117,18 +1127,37 @@ export class ElastiCacheProvider implements ResourceProvider {
   ): Promise<void> {
     const startTime = Date.now();
     let delay = 10_000;
+    let polls = 0;
 
     while (Date.now() - startTime < maxWaitMs) {
       const cluster = await this.describeCacheCluster(cacheClusterId);
       const status = cluster?.CacheClusterStatus;
+      polls++;
 
       this.logger.debug(`CacheCluster ${cacheClusterId} status: ${status}`);
 
+      // A describe that names no node type (DescribeCacheClusters always
+      // does) cannot hold the wait open.
+      const liveNodeType = cluster?.CacheNodeType;
       if (
         status === 'available' &&
-        (expectedNodeType === undefined || cluster?.CacheNodeType === expectedNodeType)
+        (expectedNodeType === undefined ||
+          liveNodeType === undefined ||
+          liveNodeType === expectedNodeType)
       ) {
         return;
+      }
+      // A scale AWS accepted and then dropped leaves the cluster `available`
+      // on its old type with nothing pending: fail now, not at the cap.
+      if (
+        expectedNodeType !== undefined &&
+        status === 'available' &&
+        cluster?.PendingModifiedValues?.CacheNodeType === undefined &&
+        polls > NODE_TYPE_DROPPED_AFTER_POLLS
+      ) {
+        throw new Error(
+          safeMsg`CacheCluster ${cacheClusterId} is available with node type ${liveNodeType} and no node-type change pending; the change to ${expectedNodeType} was not applied. Check the cluster's events (aws elasticache describe-events) for the reason, then deploy again.`
+        );
       }
 
       await this.sleep(delay);
@@ -1138,7 +1167,7 @@ export class ElastiCacheProvider implements ResourceProvider {
     throw new Error(
       expectedNodeType === undefined
         ? `Timed out waiting for CacheCluster ${cacheClusterId} to become available`
-        : `Timed out waiting for CacheCluster ${cacheClusterId} to become available with node type ${expectedNodeType}`
+        : safeMsg`Timed out waiting for CacheCluster ${cacheClusterId} to become available with node type ${expectedNodeType}`
     );
   }
 

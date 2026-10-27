@@ -108,14 +108,19 @@ describe('ElastiCacheProvider CacheCluster in-place modify (issue #5438)', () =>
       expect(result.wasReplaced).toBe(false);
     });
 
-    it('does not send an unchanged CacheNodeType, and waits on status alone', async () => {
-      mockSend.mockImplementation((cmd: Sent) =>
-        Promise.resolve(
-          cmd.constructor.name === 'DescribeCacheClustersCommand'
-            ? { CacheClusters: [{ CacheClusterStatus: 'available', CacheNodeType: 'cache.t4g.micro' }] }
-            : {}
-        )
-      );
+    it('re-sends an unchanged CacheNodeType, as CloudFormation does, scaling a drifted cluster back', async () => {
+      // The live type drifted to micro; the template still says small.
+      const describes = [
+        { CacheClusterStatus: 'available', CacheNodeType: 'cache.t4g.micro' },
+        { CacheClusterStatus: 'available', CacheNodeType: 'cache.t4g.small' },
+      ];
+      mockSend.mockImplementation((cmd: Sent) => {
+        if (cmd.constructor.name === 'DescribeCacheClustersCommand') {
+          const next = describes.length > 1 ? describes.shift() : describes[0];
+          return Promise.resolve({ CacheClusters: [next] });
+        }
+        return Promise.resolve({});
+      });
 
       await provider.update(
         'Cache',
@@ -125,13 +130,61 @@ describe('ElastiCacheProvider CacheCluster in-place modify (issue #5438)', () =>
         { Engine: 'redis', CacheNodeType: 'cache.t4g.small', NumCacheNodes: 1 }
       );
 
-      expect(modifyInput()).not.toHaveProperty('CacheNodeType');
-      // The live type differs from the template here (drift); a waiter keyed
-      // on the template type would never settle. One waiter describe plus the
+      expect(modifyInput()).toMatchObject({ CacheNodeType: 'cache.t4g.small' });
+      // Two waiter describes (drifted type, then the template type) and the
       // final one.
       expect(
         sent().filter((c) => c.constructor.name === 'DescribeCacheClustersCommand')
-      ).toHaveLength(2);
+      ).toHaveLength(3);
+    });
+
+    it('fails fast when the cluster settles on its old type with no node-type change pending', async () => {
+      mockSend.mockImplementation((cmd: Sent) =>
+        Promise.resolve(
+          cmd.constructor.name === 'DescribeCacheClustersCommand'
+            ? { CacheClusters: [{ CacheClusterStatus: 'available', CacheNodeType: 'cache.t4g.micro' }] }
+            : {}
+        )
+      );
+
+      await expect(
+        provider.update(
+          'Cache',
+          'my-cluster',
+          TYPE,
+          { Engine: 'redis', CacheNodeType: 'cache.t4g.small', NumCacheNodes: 1 },
+          { Engine: 'redis', CacheNodeType: 'cache.t4g.micro', NumCacheNodes: 1 }
+        )
+      ).rejects.toThrow(/change to cache\.t4g\.small was not applied/);
+    });
+
+    it('keeps waiting while the node-type change is still pending', async () => {
+      mockSend.mockImplementation((cmd: Sent) =>
+        Promise.resolve(
+          cmd.constructor.name === 'DescribeCacheClustersCommand'
+            ? {
+                CacheClusters: [
+                  {
+                    CacheClusterStatus: 'available',
+                    CacheNodeType: 'cache.t4g.micro',
+                    PendingModifiedValues: { CacheNodeType: 'cache.t4g.small' },
+                  },
+                ],
+              }
+            : {}
+        )
+      );
+
+      // Never settles: the bounded sleep stub ends it, not the fail-fast.
+      await expect(
+        provider.update(
+          'Cache',
+          'my-cluster',
+          TYPE,
+          { Engine: 'redis', CacheNodeType: 'cache.t4g.small', NumCacheNodes: 1 },
+          { Engine: 'redis', CacheNodeType: 'cache.t4g.micro', NumCacheNodes: 1 }
+        )
+      ).rejects.toThrow(/waiter did not settle/);
     });
   });
 
