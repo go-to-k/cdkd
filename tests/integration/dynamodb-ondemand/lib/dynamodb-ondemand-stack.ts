@@ -64,6 +64,15 @@ export class DynamodbOndemandStack extends cdk.Stack {
       // KinesisStreamSpecification — synthesizes to the top-level CFn
       // property KinesisStreamSpecification.StreamArn.
       kinesisStream: stream,
+      // KinesisStreamSpecification.ApproximateCreationDateTimePrecision
+      // (go-to-k/cdkd#5385): MILLISECOND at create, MICROSECOND under
+      // CDKD_TEST_UPDATE=true. Same stream, so the change goes through
+      // UpdateKinesisStreamingDestination; before the fix it was only warned
+      // about and AWS stayed at MILLISECOND.
+      kinesisPrecisionTimestamp:
+        process.env.CDKD_TEST_UPDATE === 'true'
+          ? dynamodb.ApproximateCreationDateTimePrecision.MICROSECOND
+          : dynamodb.ApproximateCreationDateTimePrecision.MILLISECOND,
       // ContributorInsightsSpecification — synthesizes to
       // ContributorInsightsSpecification.Enabled (+ Mode).
       contributorInsightsSpecification: {

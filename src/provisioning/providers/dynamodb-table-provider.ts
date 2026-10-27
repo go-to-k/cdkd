@@ -23,6 +23,9 @@ import {
   UpdateContinuousBackupsCommand,
   type PointInTimeRecoverySpecification,
   UpdateTimeToLiveCommand,
+  UpdateKinesisStreamingDestinationCommand,
+  type ApproximateCreationDateTimePrecision,
+  type KinesisDataStreamDestination,
   PolicyNotFoundException,
   ResourceNotFoundException,
   type ContributorInsightsAction,
@@ -45,7 +48,7 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { clientDefaultsFor, type CredentialConfig } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
@@ -126,15 +129,18 @@ import {
 } from './dynamodb-delete-budget.js';
 import { type ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
 import { maskDeep, maskerOrIdentity } from '../masked-retry-logger.js';
+import { startInterruptWatch } from '../interrupt-watch.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import {
   isAmbiguousOutcomeError,
   isThrottlingError,
   isTransientServerError,
+  markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
+import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
 import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
 import type {
   ResourceProvider,
@@ -1008,6 +1014,29 @@ export const TABLE_ACTIVE_WAIT_ATTEMPTS = 60;
  * genuinely wedged capacity edit still fails in a minute rather than ten.
  */
 const BILLING_FLIP_ACTIVE_WAIT_ATTEMPTS = 600;
+
+/**
+ * Polls (x {@link KINESIS_DESTINATION_SETTLE_POLL_MS}) a Kinesis streaming
+ * destination gets to settle after an `ApproximateCreationDateTimePrecision`
+ * update (go-to-k/cdkd#5385). The update held the destination in `UPDATING`
+ * for about 3.5 minutes (measured us-east-1, 2026-10-27), and
+ * CloudFormation's own update of that member took about 2.5; 10 minutes
+ * leaves room without hiding a wedged destination for long.
+ *
+ * The wait BEFORE the update only covers a destination an earlier deploy left
+ * `ENABLING` / `UPDATING`, so it gets half that. Together the two can reach
+ * 15 minutes per update, and both stop at the enclosing per-resource
+ * deadline, which a billing-mode flip or GSI waits on the same update share.
+ */
+const KINESIS_DESTINATION_SETTLE_POLLS = 300;
+const KINESIS_DESTINATION_PRE_UPDATE_POLLS = 150;
+const KINESIS_DESTINATION_SETTLE_POLL_MS = 2000;
+/**
+ * Polls after an update during which an `ACTIVE` destination still at the OLD
+ * precision reads as "not started yet" rather than as a failure: the update
+ * answered `UPDATING`, and a read right after a write can lag it.
+ */
+const KINESIS_PRECISION_STALE_READ_GRACE_POLLS = 5;
 
 /**
  * Is this `WarmThroughput` VALUE one cdkd will actually put on the wire
@@ -4896,10 +4925,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * Called from both `create()` (after the table is ACTIVE) and `update()`
    * (only when the value changed). On `update()`-side removal — template drops
    * the block but it was present before — streaming is disabled to the PREVIOUS
-   * stream ARN. A same-ARN change of only the precision is a deliberate no-op
-   * (re-enabling against an already-enabled stream errors), matching the
-   * pre-existing WarmThroughput "no clean remap" stance; precision changes flow
-   * through on the create / first-enable path.
+   * stream ARN. A same-ARN change of only the precision goes through
+   * `UpdateKinesisStreamingDestination` (go-to-k/cdkd#5385), as CloudFormation
+   * does; a REMOVED precision leaves the live one as it is, which is what
+   * CloudFormation does too (measured us-east-1, 2026-10-27: a stack update
+   * dropping `MILLISECOND` from the template completed with AWS still reading
+   * `MILLISECOND`, while one setting `MICROSECOND` changed it in place).
    */
   private async applyKinesisStreamingDestination(
     tableName: string,
@@ -4918,30 +4949,25 @@ export class DynamoDBTableProvider implements ResourceProvider {
     const newArn = this.extractKinesisStreamArn(spec);
     const prevArn = this.extractKinesisStreamArn(previousSpec);
 
-    // No change in target stream ARN: nothing to do (enable is not idempotent
-    // against an already-enabled destination). A same-ARN change of ONLY the
-    // precision is a deliberate no-op — but warn so the user knows the
-    // precision edit did not reach AWS (UpdateKinesisStreamingDestination
-    // could carry it, but re-enabling against an already-enabled stream
-    // errors; deferred to a dedicated precision-update path).
+    // Same target stream ARN: enable is not idempotent against an
+    // already-enabled destination, so only a precision change has anything to
+    // send, and it goes through UpdateKinesisStreamingDestination.
     if (newArn === prevArn) {
-      if (
-        newArn &&
-        JSON.stringify(
-          (spec as Record<string, unknown> | undefined)?.['ApproximateCreationDateTimePrecision']
-        ) !==
-          JSON.stringify(
-            (previousSpec as Record<string, unknown> | undefined)?.[
-              'ApproximateCreationDateTimePrecision'
-            ]
-          )
-      ) {
-        this.logger.warn(
+      if (!newArn) return;
+      const precision = this.extractKinesisPrecision(spec);
+      const prevPrecision = this.extractKinesisPrecision(previousSpec);
+      if (precision === prevPrecision) return;
+      if (precision === undefined) {
+        // Removed from the template: CloudFormation leaves the live precision
+        // as it is (see the method doc), and so does cdkd.
+        this.logger.debug(
           maskSecrets(
-            `Kinesis streaming ApproximateCreationDateTimePrecision change on ${tableName} was not applied (same stream ARN; precision-only updates are not yet supported)`
+            `Kinesis streaming ApproximateCreationDateTimePrecision removed from ${tableName}; the live value is left as it is, as CloudFormation does`
           )
         );
+        return;
       }
+      await this.updateKinesisStreamingPrecision(tableName, newArn, precision, maskSecrets);
       return;
     }
 
@@ -4995,6 +5021,192 @@ export class DynamoDBTableProvider implements ResourceProvider {
     if (spec === undefined || spec === null) return undefined;
     const arn = (spec as Record<string, unknown>)['StreamArn'];
     return typeof arn === 'string' ? arn : undefined;
+  }
+
+  private extractKinesisPrecision(spec: unknown): ApproximateCreationDateTimePrecision | undefined {
+    if (spec === undefined || spec === null) return undefined;
+    const precision = (spec as Record<string, unknown>)['ApproximateCreationDateTimePrecision'];
+    return typeof precision === 'string'
+      ? (precision as ApproximateCreationDateTimePrecision)
+      : undefined;
+  }
+
+  /**
+   * Change the `ApproximateCreationDateTimePrecision` of an enabled Kinesis
+   * streaming destination in place (go-to-k/cdkd#5385).
+   *
+   * AWS accepts `UpdateKinesisStreamingDestination` only while the
+   * destination is `ACTIVE` — otherwise `ValidationException` "Kinesis
+   * streaming is not in ACTIVE state", which no retry here classifies as
+   * transient — so a destination the previous deploy left `ENABLING` is
+   * waited out first. The update then holds it in `UPDATING` for minutes, and
+   * the read-back only reports an `ACTIVE` / `ENABLING` destination, so the
+   * deploy waits for the new precision to read back `ACTIVE`, as
+   * CloudFormation does. A precision AWS already holds (changed out of band,
+   * or the default `MICROSECOND` named after it was omitted) is refused with
+   * "Precision is already set to the desired value", which is success here.
+   * "Not in ACTIVE state" after the ACTIVE wait means a retried call whose
+   * first attempt landed (the destination is now `UPDATING`), so it falls
+   * through to the settle wait, which still fails unless the destination ends
+   * `ACTIVE` at the new precision.
+   */
+  private async updateKinesisStreamingPrecision(
+    tableName: string,
+    streamArn: string,
+    precision: ApproximateCreationDateTimePrecision,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    await this.waitForKinesisDestinationSettled(
+      tableName,
+      streamArn,
+      undefined,
+      maskSecrets,
+      KINESIS_DESTINATION_PRE_UPDATE_POLLS
+    );
+    try {
+      await this.retryOnTransientControlPlane(
+        () =>
+          this.dynamoDBClient.send(
+            new UpdateKinesisStreamingDestinationCommand({
+              TableName: tableName,
+              StreamArn: streamArn,
+              UpdateKinesisStreamingConfiguration: {
+                ApproximateCreationDateTimePrecision: precision,
+              },
+            })
+          ),
+        `update Kinesis streaming precision on ${tableName}`,
+        undefined,
+        { maskSecrets }
+      );
+    } catch (error) {
+      if (!(error instanceof Error && error.name === 'ValidationException')) throw error;
+      const detail = describeAwsFailure(error).detail;
+      if (/already set to the desired value/i.test(detail)) {
+        this.logger.debug(
+          maskSecrets(
+            `Kinesis streaming ApproximateCreationDateTimePrecision on ${tableName} is already ${precision}`
+          )
+        );
+      } else if (/not in ACTIVE state/i.test(detail)) {
+        this.logger.debug(
+          maskSecrets(
+            `Kinesis streaming destination on ${tableName} left ACTIVE during the precision update; verifying the result`
+          )
+        );
+      } else {
+        throw error;
+      }
+    }
+    await this.waitForKinesisDestinationSettled(
+      tableName,
+      streamArn,
+      precision,
+      maskSecrets,
+      KINESIS_DESTINATION_SETTLE_POLLS
+    );
+    this.logger.debug(
+      maskSecrets(
+        `Updated Kinesis streaming ApproximateCreationDateTimePrecision on ${tableName} to ${precision}`
+      )
+    );
+  }
+
+  /**
+   * Poll `DescribeKinesisStreamingDestination` until the destination for
+   * `streamArn` leaves `ENABLING` / `UPDATING`. With `expectedPrecision`, the
+   * settled destination must also be `ACTIVE` at that precision, and any
+   * other settled state fails the deploy. Bounded by `maxPolls` and by the
+   * enclosing per-resource deadline (whose expiry it reports as its own,
+   * non-retryable error rather than the engine's generic timeout), and
+   * interruptible.
+   */
+  private async waitForKinesisDestinationSettled(
+    tableName: string,
+    streamArn: string,
+    expectedPrecision: ApproximateCreationDateTimePrecision | undefined,
+    maskSecrets: SecretMasker,
+    maxPolls: number
+  ): Promise<void> {
+    const watch = startInterruptWatch(
+      maskSecrets(`Kinesis streaming destination on ${tableName} settling`)
+    );
+    let last: KinesisDataStreamDestination | undefined;
+    const sleep = (): Promise<void> =>
+      new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.max(0, Math.min(KINESIS_DESTINATION_SETTLE_POLL_MS, enclosingDeadlineRemainingMs()))
+        )
+      );
+    try {
+      for (let poll = 1; poll <= maxPolls; poll++) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        // The engine's deadline does not cancel this update, so a wait that
+        // outlived it would keep polling with nobody waiting on it.
+        if (enclosingDeadlineRemainingMs() <= 0) {
+          throw markNonRetryable(
+            new Error(
+              maskSecrets(
+                `The resource timeout expired while waiting for Kinesis streaming destination ` +
+                  `${streamArn} on ${tableName} to settle (last status: ` +
+                  `${last?.DestinationStatus ?? 'none read'})`
+              )
+            )
+          );
+        }
+        const response = await this.retryOnTransientControlPlane(
+          () =>
+            this.dynamoDBClient.send(
+              new DescribeKinesisStreamingDestinationCommand({ TableName: tableName })
+            ),
+          `describe Kinesis streaming on ${tableName}`,
+          undefined,
+          { maskSecrets }
+        );
+        // DISABLED entries linger beside a re-enabled one for the same stream.
+        const matching = (response.KinesisDataStreamDestinations ?? []).filter(
+          (d) => d.StreamArn === streamArn
+        );
+        last = matching.find((d) => d.DestinationStatus !== 'DISABLED') ?? matching[0];
+        const status = last?.DestinationStatus;
+        if (status !== 'ENABLING' && status !== 'UPDATING') {
+          if (expectedPrecision === undefined) return;
+          if (status === 'ACTIVE') {
+            if (last?.ApproximateCreationDateTimePrecision === expectedPrecision) return;
+            if (poll <= KINESIS_PRECISION_STALE_READ_GRACE_POLLS) {
+              await sleep();
+              continue;
+            }
+          }
+          const head =
+            `Kinesis streaming destination ${streamArn} on ${tableName} settled as ` +
+            `${status ?? 'absent'} with ApproximateCreationDateTimePrecision ` +
+            `${last?.ApproximateCreationDateTimePrecision ?? 'unset'}, expected ACTIVE / ` +
+            `${expectedPrecision}`;
+          // AWS's DestinationStatusDescription can name the account (an
+          // access-denied reason quotes the caller's role ARN), so it goes to
+          // debug only and the thrown message carries the --verbose pointer
+          // (go-to-k/cdkd#2319's convention for a status reason).
+          const reason = describeAwsStatusReason(
+            { message: last?.DestinationStatusDescription },
+            ''
+          );
+          if (reason.redacted) this.logger.debug(maskSecrets(`${head}: ${reason.detail}`));
+          throw new Error(maskSecrets(reason.redacted ? `${head}. ${reason.summary}` : head));
+        }
+        await sleep();
+      }
+    } finally {
+      watch.dispose();
+    }
+    throw new Error(
+      maskSecrets(
+        `Kinesis streaming destination ${streamArn} on ${tableName} was still ` +
+          `${last?.DestinationStatus ?? 'absent'} after ` +
+          `${(maxPolls * KINESIS_DESTINATION_SETTLE_POLL_MS) / 1000} seconds`
+      )
+    );
   }
 
   /**
@@ -7759,9 +7971,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
 
   /**
    * `KinesisStreamSpecification` — separate DescribeKinesisStreamingDestination
-   * call. Emit-when-present: only surface the key when AWS reports an ACTIVE or
-   * ENABLING destination (DISABLED entries linger in the list, so a status
-   * filter avoids a stale placeholder). Surface only the user-set fields
+   * call. Emit-when-present: only surface the key when AWS reports an ACTIVE,
+   * ENABLING or UPDATING destination (DISABLED entries linger in the list, so a
+   * status filter avoids a stale placeholder; an UPDATING one is a precision
+   * change in flight, go-to-k/cdkd#5385, and still streams). Surface only the user-set fields
    * (StreamArn + precision) so the drift comparator can match the templated
    * value.
    */
@@ -7773,7 +7986,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
         new DescribeKinesisStreamingDestinationCommand({ TableName: physicalId })
       );
       const active = (kResp.KinesisDataStreamDestinations ?? []).find(
-        (d) => d.DestinationStatus === 'ACTIVE' || d.DestinationStatus === 'ENABLING'
+        (d) =>
+          d.DestinationStatus === 'ACTIVE' ||
+          d.DestinationStatus === 'ENABLING' ||
+          d.DestinationStatus === 'UPDATING'
       );
       if (!active?.StreamArn) return undefined;
       const kspec: Record<string, unknown> = { StreamArn: active.StreamArn };
