@@ -902,6 +902,41 @@ describe('LambdaEventSourceMappingProvider', () => {
       expect(getUpdateInput()['BisectBatchOnFunctionError']).toBe(false);
     });
 
+    it('sends BisectBatchOnFunctionError: false on a self-managed Kafka removal', async () => {
+      const kafka = {
+        FunctionName: 'fn',
+        SelfManagedEventSource: { Endpoints: { KafkaBootstrapServers: ['b:9092'] } },
+      };
+      await provider.update('L', UUID, 'AWS::Lambda::EventSourceMapping', kafka, {
+        ...kafka,
+        BisectBatchOnFunctionError: true,
+      });
+
+      expect(getUpdateInput()['BisectBatchOnFunctionError']).toBe(false);
+    });
+
+    it('warns and sends no BisectBatchOnFunctionError reset on a source it cannot classify', async () => {
+      const { getLogger } = await import('../../../src/utils/logger.js');
+      const warn = vi.mocked(getLogger().child('x').warn);
+      const arn = 'arn:aws:example:us-east-1:123:thing/t';
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: arn },
+        { FunctionName: 'fn', EventSourceArn: arn, BisectBatchOnFunctionError: true }
+      );
+
+      expect(getUpdateInput()['BisectBatchOnFunctionError']).toBeUndefined();
+      expect(
+        warn.mock.calls.filter((c) =>
+          String(c[0]).includes(
+            'L (AWS::Lambda::EventSourceMapping): BisectBatchOnFunctionError was removed from the template, but cdkd cannot tell'
+          )
+        )
+      ).toHaveLength(1);
+    });
+
     it('sends no BisectBatchOnFunctionError reset on a source that does not take it', async () => {
       await provider.update(
         'L',
@@ -912,6 +947,12 @@ describe('LambdaEventSourceMappingProvider', () => {
       );
 
       expect(getUpdateInput()['BisectBatchOnFunctionError']).toBeUndefined();
+      const { getLogger } = await import('../../../src/utils/logger.js');
+      expect(
+        vi
+          .mocked(getLogger().child('x').warn)
+          .mock.calls.filter((c) => String(c[0]).includes('BisectBatchOnFunctionError'))
+      ).toHaveLength(0);
     });
 
     it('warns and sends nothing when DocumentDBEventSourceConfig is removed', async () => {

@@ -101,10 +101,21 @@ esm_batch_size() {
     --query 'EventSourceMappings[0].BatchSize' --output text
 }
 
-# Reads the ESM's State (Enabled / Disabled / Enabling / ...). Not silenced.
+# Reads the ESM's State once it settles: cdkd does not wait on a mapping's
+# State, so a read right after a deploy can see Creating / Updating /
+# Enabling / Disabling. Polls up to 60 s, then prints the last State read.
+# A failed read is not silenced: it aborts under `set -e`.
 esm_state() {
-  aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" \
-    --query 'EventSourceMappings[0].State' --output text
+  local st=""
+  for _ in $(seq 1 30); do
+    st=$(aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" \
+      --query 'EventSourceMappings[0].State' --output text) || return 1
+    case "${st}" in
+      Creating|Updating|Enabling|Disabling) sleep 2 ;;
+      *) break ;;
+    esac
+  done
+  printf '%s\n' "${st}"
 }
 
 echo "==> Deploy (base: FilterCriteria + ScalingConfig set, mapping disabled)"
@@ -132,7 +143,7 @@ fi
 echo "    OK: base BatchSize == 5 on AWS"
 
 STATE=$(esm_state)
-if [ "${STATE}" != "Disabled" ] && [ "${STATE}" != "Disabling" ]; then
+if [ "${STATE}" != "Disabled" ]; then
   echo "FAIL: base mapping State is '${STATE}', expected Disabled (enabled: false silently dropped?)" >&2
   exit 1
 fi
@@ -166,9 +177,9 @@ fi
 echo "    OK: BatchSize RESET to 10 on AWS after removal"
 
 # Removal of `Enabled: false` must turn the mapping back on, as CloudFormation
-# does (it sends `Enabled: true`). `Enabling` is the transition to it.
+# does (it sends `Enabled: true`).
 STATE_AFTER=$(esm_state)
-if [ "${STATE_AFTER}" != "Enabled" ] && [ "${STATE_AFTER}" != "Enabling" ]; then
+if [ "${STATE_AFTER}" != "Enabled" ]; then
   echo "FAIL: after removal, mapping State is '${STATE_AFTER}', expected Enabled — the mapping stayed disabled (issue #1160)" >&2
   exit 1
 fi

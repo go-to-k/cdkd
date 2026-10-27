@@ -1156,8 +1156,15 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     // defaults. `Enabled` applies to every source kind. Bisect is accepted by
     // the stream kinds and Kafka only, so the reset is gated the same way.
     if (wasSet('Enabled')) updateParams.Enabled = true;
-    if (wasSet('BisectBatchOnFunctionError') && KINDS_WITH_BISECT.has(prevKind))
-      updateParams.BisectBatchOnFunctionError = false;
+    if (wasSet('BisectBatchOnFunctionError')) {
+      if (KINDS_WITH_BISECT.has(prevKind)) updateParams.BisectBatchOnFunctionError = false;
+      // A source cdkd cannot classify gets no reset (`false` may be refused
+      // there), so name the kept value rather than drop the removal silently.
+      else if (prevKind === 'unknown')
+        log.warn(
+          safeMsg`${logicalId} (${resourceType}): BisectBatchOnFunctionError was removed from the template, but cdkd cannot tell this mapping's source kind, so the current AWS value is kept. Declare BisectBatchOnFunctionError: false to turn it off.`
+        );
+    }
 
     // `DocumentDBEventSourceConfig` has no documented clear value (the block
     // names the database the mapping reads), and what CloudFormation sends on
@@ -1166,7 +1173,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     // nothing and says so, rather than report a removal that did not happen.
     if (wasSet('DocumentDBEventSourceConfig'))
       log.warn(
-        safeMsg`${logicalId} (${resourceType}): DocumentDBEventSourceConfig was removed from the template; the mapping keeps its current DocumentDB settings. Declare the block with the values you want instead.`
+        safeMsg`${logicalId} (${resourceType}): DocumentDBEventSourceConfig was removed from the template; the mapping keeps its current DocumentDB settings. Declare the block with the values you want instead; this is reported only on this deploy.`
       );
 
     const updateResp = await this.lambdaClient.send(

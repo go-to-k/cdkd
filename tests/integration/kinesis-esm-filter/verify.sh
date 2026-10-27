@@ -108,6 +108,17 @@ if [ "${BISECT}" != "True" ]; then
 fi
 echo "    OK: base BisectBatchOnFunctionError == True on AWS"
 
+# cdkd does not wait on a mapping's State, and an update sent while the new
+# mapping is still Creating can be refused as in use. Let it settle first.
+ESM_STATE=""
+for _ in $(seq 1 30); do
+  ESM_STATE=$(aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" \
+    --query 'EventSourceMappings[0].State' --output text)
+  [ "${ESM_STATE}" = "Enabled" ] && break
+  sleep 2
+done
+[ "${ESM_STATE}" = "Enabled" ] || { echo "FAIL: mapping State is '${ESM_STATE}' 60 s after the deploy, expected Enabled" >&2; exit 1; }
+
 echo "==> Deploy (UPDATE: bisectBatchOnError removed from template)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
