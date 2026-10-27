@@ -31,7 +31,12 @@
 #      #5357: update() never applied it, and the transition is asynchronous).
 #   3e. Redeploy with the block removed: encryption must read DISABLED, as a
 #      measured CloudFormation update leaves it.
-#   4. Destroy, assert both streams, both buckets, the role and the cdkd state
+#   3f. Redeploy changing BufferingHints, Prefix and CompressionFormat of the
+#      second delivery stream, whose destination is the legacy
+#      S3DestinationConfiguration (issue #5439: cdkd refused the update, while
+#      a measured CloudFormation change set updates it in place). The change
+#      must apply with the stream's CreateTimestamp unchanged.
+#   4. Destroy, assert the streams, both buckets, the role and the cdkd state
 #      file are gone -- immediately, with no polling.
 #
 # Required env vars:
@@ -85,6 +90,7 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 RUN_ID="$(date +%s)"
 export CDKD_SRD_RUN_ID="${RUN_ID}"
 NAME="cdkd-stream-redeploy-${RUN_ID}"
+LEGACY_NAME="cdkd-stream-redeploy-legacy-${RUN_ID}"
 ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
 BUCKET_A="cdkd-stream-redeploy-${ACCOUNT}-${RUN_ID}-a"
 BUCKET_B="cdkd-stream-redeploy-${ACCOUNT}-${RUN_ID}-b"
@@ -95,8 +101,10 @@ cleanup() {
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
-  aws firehose delete-delivery-stream --delivery-stream-name "${NAME}" \
-    --region "${REGION}" >/dev/null 2>&1 || true
+  for s in "${NAME}" "${LEGACY_NAME}"; do
+    aws firehose delete-delivery-stream --delivery-stream-name "${s}" \
+      --region "${REGION}" >/dev/null 2>&1 || true
+  done
   aws kinesis delete-stream --stream-name "${NAME}" --enforce-consumer-deletion \
     --region "${REGION}" >/dev/null 2>&1 || true
   for b in "${BUCKET_A}" "${BUCKET_B}"; do
@@ -194,6 +202,9 @@ echo "    destroy took $(( $(date +%s) - T0 ))s"
 STILL_PRESENT=""
 if ! gone_probe aws firehose describe-delivery-stream --delivery-stream-name "${NAME}" --region "${REGION}"; then
   STILL_PRESENT="${STILL_PRESENT} firehose($(firehose_status || echo gone-now))"
+fi
+if ! gone_probe aws firehose describe-delivery-stream --delivery-stream-name "${LEGACY_NAME}" --region "${REGION}"; then
+  STILL_PRESENT="${STILL_PRESENT} legacy-firehose"
 fi
 if ! gone_probe aws kinesis describe-stream-summary --stream-name "${NAME}" --region "${REGION}"; then
   STILL_PRESENT="${STILL_PRESENT} kinesis($(kinesis_status || echo gone-now))"
@@ -302,6 +313,46 @@ P3E_CREATED="$(firehose_created)"
 assert_eq "Firehose CreateTimestamp after Phase 3e (encryption must be removed in place)" "${PRE_CREATED}" "${P3E_CREATED}"
 echo "    encryption disabled in place (issue #5357)"
 
+# --- Phase 3f: an in-place legacy S3 destination update (issue #5439) ------
+# Every earlier phase's env is carried, so only the legacy stream differs.
+legacy_desc() { # usage: legacy_desc <DeliveryStreamDescription JMESPath>
+  aws firehose describe-delivery-stream --delivery-stream-name "${LEGACY_NAME}" --region "${REGION}" \
+    --query "DeliveryStreamDescription.$1" --output text
+}
+legacy_s3() { # usage: legacy_s3 <S3DestinationDescription field path>
+  legacy_desc "Destinations[0].S3DestinationDescription.$1"
+}
+# The ARN derives from the fixed name, so a delete + re-create keeps it;
+# CreateTimestamp is what tells an in-place update from a replacement.
+P3F_PRE_CREATED="$(legacy_desc CreateTimestamp)"
+if [ -z "${P3F_PRE_CREATED}" ] || [ "${P3F_PRE_CREATED}" = None ]; then
+  echo "FAIL: no CreateTimestamp for ${LEGACY_NAME} before Phase 3f (got '${P3F_PRE_CREATED}')" >&2
+  exit 1
+fi
+P3F_PRE_PREFIX="$(legacy_s3 Prefix)"
+assert_eq "legacy-S3 stream Prefix before Phase 3f" "legacy-a/" "${P3F_PRE_PREFIX}"
+P3F_PRE_COMP="$(legacy_s3 CompressionFormat)"
+assert_eq "legacy-S3 stream CompressionFormat before Phase 3f" "UNCOMPRESSED" "${P3F_PRE_COMP}"
+P3F_PRE_INTERVAL="$(legacy_s3 BufferingHints.IntervalInSeconds)"
+assert_eq "legacy-S3 stream BufferingHints.IntervalInSeconds before Phase 3f" "60" "${P3F_PRE_INTERVAL}"
+echo "==> Phase 3f: redeploy changing the legacy S3DestinationConfiguration (${LEGACY_NAME})"
+if ! CDKD_SRD_PHASE=b CDKD_SRD_TAG=updated CDKD_SRD_FILE_EXT=.ndjson CDKD_SRD_TRIM=1 CDKD_SRD_LEGACY_V2=1 \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes; then
+  echo "FAIL: the legacy S3DestinationConfiguration update failed to deploy (issue #5439: cdkd refused an update CloudFormation applies in place)" >&2
+  exit 1
+fi
+P3F_PREFIX="$(legacy_s3 Prefix)"
+assert_eq "legacy-S3 stream Prefix after Phase 3f (issue #5439)" "legacy-b/" "${P3F_PREFIX}"
+P3F_COMP="$(legacy_s3 CompressionFormat)"
+assert_eq "legacy-S3 stream CompressionFormat after Phase 3f (issue #5439)" "GZIP" "${P3F_COMP}"
+P3F_INTERVAL="$(legacy_s3 BufferingHints.IntervalInSeconds)"
+assert_eq "legacy-S3 stream BufferingHints.IntervalInSeconds after Phase 3f (issue #5439)" "120" "${P3F_INTERVAL}"
+P3F_SIZE="$(legacy_s3 BufferingHints.SizeInMBs)"
+assert_eq "legacy-S3 stream BufferingHints.SizeInMBs after Phase 3f (issue #5439)" "10" "${P3F_SIZE}"
+P3F_CREATED="$(legacy_desc CreateTimestamp)"
+assert_eq "legacy-S3 stream CreateTimestamp after Phase 3f (the update must apply in place, not replace the stream)" "${P3F_PRE_CREATED}" "${P3F_CREATED}"
+echo "    legacy S3 destination updated in place, CreateTimestamp unchanged (issue #5439)"
+
 # --- Phase 4: destroy, everything gone at once ---------------------------
 STREAM_ARN="$(stream_arn)"
 echo "==> Phase 4: destroy"
@@ -310,6 +361,8 @@ node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --regio
 # No polling: delete() now returns only once each stream is gone.
 assert_gone "Firehose delivery stream ${NAME} still exists after destroy" \
   aws firehose describe-delivery-stream --delivery-stream-name "${NAME}" --region "${REGION}"
+assert_gone "Firehose delivery stream ${LEGACY_NAME} still exists after destroy" \
+  aws firehose describe-delivery-stream --delivery-stream-name "${LEGACY_NAME}" --region "${REGION}"
 assert_gone "Kinesis stream ${NAME} still exists after destroy" \
   aws kinesis describe-stream-summary --stream-name "${NAME}" --region "${REGION}"
 assert_gone "Kinesis stream consumer ${NAME} still exists after destroy" \

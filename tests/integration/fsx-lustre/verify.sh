@@ -8,13 +8,16 @@
 # Phases:
 #   1. Deploy the Lustre file system (+ minimal VPC/SG). Assert via
 #      `aws fsx describe-file-systems` that it is AVAILABLE with the
-#      baseline config (SCRATCH_2, 1200 GiB, DataCompressionType NONE),
+#      baseline config (SCRATCH_2, 1200 GiB, DataCompressionType NONE,
+#      LogConfiguration WARN_ERROR to the stack's /aws/fsx log group),
 #      that the DNSName / LustreMountName outputs (Fn::GetAtt) match the
 #      AWS-side values, and that state routes it via the SDK provider
 #      (provisionedBy=sdk).
 #   2. Re-deploy with CDKD_TEST_UPDATE=true: DataCompressionType NONE ->
 #      LZ4 (UpdateFileSystem) + tag value change AND tag removal
-#      (TagResource / UntagResource). Assert the FileSystemId is UNCHANGED
+#      (TagResource / UntagResource) + LogConfiguration Level WARN_ERROR ->
+#      ERROR_ONLY (UpdateFileSystem, go-to-k/cdkd#5430). Assert the
+#      FileSystemId is UNCHANGED
 #      (in-place update, no replacement).
 #   2b. Re-deploy with CDKD_TEST_REMOVAL=true (issue #1160): DataCompressionType
 #      is DROPPED from the template while WeeklyMaintenanceStartTime is added.
@@ -90,6 +93,8 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 CLEANUP_TAG_KEY="cdkd-integ"
 CLEANUP_TAG_VALUE="fsx-lustre"
+# go-to-k/cdkd#5430: the Lustre log group the stack declares (and owns).
+LOG_GROUP_NAME="/aws/fsx/${STACK}"
 # Phase 2b (issue #1160): the provider's removal warning. The needle names the
 # removed sub-property; the sentinel is an independent substring of the same
 # line, so a reworded warning fails loudly instead of reading as "not fired".
@@ -246,6 +251,9 @@ cleanup() {
     done
     aws ec2 delete-vpc --vpc-id "${vpcid}" --region "${REGION}" >/dev/null 2>&1
   done
+  # The log group outlives the file systems only when a destroy failed; FSx
+  # writes into it, so it goes after they are gone.
+  aws logs delete-log-group --log-group-name "${LOG_GROUP_NAME}" --region "${REGION}" >/dev/null 2>&1
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -328,6 +336,30 @@ if [ "${COMPRESSION_P1}" != "NONE" ]; then
   exit 1
 fi
 echo "    file system is AVAILABLE (SCRATCH_2, 1200 GiB, compression NONE)"
+
+# go-to-k/cdkd#5430: LogConfiguration reached CreateFileSystem. Before the fix
+# cdkd dropped it, so FSx logged nothing (no WARN_ERROR, no Destination). FSx
+# reports Destination as the LOG-STREAM ARN it writes to
+# (`<log-group ARN>:log-stream:datarepo_fs-...`), so compare its log-group part.
+log_group_of() { # usage: log_group_of <destination ARN>
+  local arn="${1%%:log-stream:*}"
+  printf '%s' "${arn%:\*}"
+}
+LOG_DEST_OUT="$(output_value LogDestinationArn)"
+if [ -z "${LOG_DEST_OUT}" ]; then
+  echo "FAIL: LogDestinationArn output missing from cdkd state after Phase 1" >&2
+  exit 1
+fi
+read -r LOG_LEVEL_P1 LOG_DEST_P1 <<EOF
+$(aws fsx describe-file-systems --file-system-ids "${FS_ID_P1}" --region "${REGION}" \
+  --query 'FileSystems[0].[LustreConfiguration.LogConfiguration.Level,LustreConfiguration.LogConfiguration.Destination]' \
+  --output text)
+EOF
+if [ "${LOG_LEVEL_P1}" != "WARN_ERROR" ] || [ "$(log_group_of "${LOG_DEST_P1}")" != "${LOG_DEST_OUT}" ]; then
+  echo "FAIL: Phase 1 expected LogConfiguration WARN_ERROR -> ${LOG_DEST_OUT}, got '${LOG_LEVEL_P1}' -> '${LOG_DEST_P1}' (issue #5430: LogConfiguration not sent on CreateFileSystem)" >&2
+  exit 1
+fi
+echo "    LogConfiguration reached AWS on create (WARN_ERROR -> ${LOG_DEST_OUT})"
 
 # Fn::GetAtt outputs must match the AWS-side values.
 if [ "${DNS_OUT}" != "${DNS_AWS}" ] || [ -z "${DNS_OUT}" ]; then
@@ -426,7 +458,19 @@ if [ "${DROPME_P2}" != "None" ] && [ -n "${DROPME_P2}" ]; then
   echo "FAIL: Phase 2 expected tag 'dropme' to be REMOVED (UntagResource), still '${DROPME_P2}'" >&2
   exit 1
 fi
-echo "    update reached AWS (compression LZ4, env=changed, dropme removed)"
+# go-to-k/cdkd#5430: the Level change is an in-place UpdateFileSystem (CFn
+# "Update requires: No interruption"); the FileSystemId check above holds it
+# to the same file system.
+read -r LOG_LEVEL_P2 LOG_DEST_P2 <<EOF
+$(aws fsx describe-file-systems --file-system-ids "${FS_ID_P2}" --region "${REGION}" \
+  --query 'FileSystems[0].[LustreConfiguration.LogConfiguration.Level,LustreConfiguration.LogConfiguration.Destination]' \
+  --output text)
+EOF
+if [ "${LOG_LEVEL_P2}" != "ERROR_ONLY" ] || [ "$(log_group_of "${LOG_DEST_P2}")" != "${LOG_DEST_OUT}" ]; then
+  echo "FAIL: Phase 2 expected LogConfiguration ERROR_ONLY -> ${LOG_DEST_OUT} (issue #5430: an in-place UpdateFileSystem), got '${LOG_LEVEL_P2}' -> '${LOG_DEST_P2}'" >&2
+  exit 1
+fi
+echo "    update reached AWS (compression LZ4, env=changed, dropme removed, LogConfiguration ERROR_ONLY)"
 
 # --- Phase 2b: removal of a mutable sub-property (issue #1160) ----------
 # DataCompressionType leaves the template while its live value is LZ4 (AWS's
@@ -775,6 +819,9 @@ if [ -n "${LEFTOVERS}" ]; then
   exit 1
 fi
 echo "    no file system with the fixture tag remains"
+
+assert_gone "log group ${LOG_GROUP_NAME} still exists after destroy" aws logs describe-log-streams --log-group-name "${LOG_GROUP_NAME}" --region "${REGION}" --max-items 1
+echo "    log group deleted"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
