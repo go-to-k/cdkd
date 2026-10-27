@@ -117,8 +117,8 @@ deploys them with its SDK providers. Each has a one-hour timeout per resource.
 | `AWS::EMR::InstanceFleetConfig` | `TargetOnDemandCapacity`, `TargetSpotCapacity`, `ResizeSpecifications`, `InstanceTypeConfigs` | Removes the cdkd state record only |
 
 Any other property change replaces the resource, as CloudFormation does,
-including most changes inside a cluster's `Instances` (a subnet, a security
-group, an instance type, a task group added, `KeepJobFlowAliveWhenNoSteps`).
+including most changes inside a cluster's `Instances` (measured: a security
+group added, a task group added, `KeepJobFlowAliveWhenNoSteps` turned off).
 CloudFormation applies a few `Instances` changes in place: a core or task
 instance group's `InstanceCount` or `AutoScalingPolicy`, a core or task
 fleet's target capacities, and `UnhealthyNodeReplacement`. cdkd does not

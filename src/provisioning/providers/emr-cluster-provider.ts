@@ -266,10 +266,12 @@ export function emrClusterProtectionSite(
  *    (`Instances.TerminationProtected`), `SetVisibleToAllUsers`,
  *    `ModifyCluster` (`StepConcurrencyLevel`; a removal is warned about and
  *    left in place, issue #1160), managed-scaling / auto-
- *    termination policy APIs, and `AddTags`/`RemoveTags`. Everything else
- *    (instance topology, applications, release label, ...) is createOnly →
- *    replacement via the schema fallback; a change that reaches `update()`
- *    anyway is refused with a `--replace` pointer.
+ *    termination policy APIs, and `AddTags`/`RemoveTags`. Applications,
+ *    release label, ... are schema-createOnly and most `Instances` changes
+ *    are a registry-rule replacement (issue #5418), so a change that reaches
+ *    `update()` anyway is refused with a `--replace` pointer; an `Instances`
+ *    member CloudFormation updates in place (a resize, ...) is refused with
+ *    no such pointer (go-to-k/cdkd#5422).
  *  - `delete` → `TerminateJobFlows` + poll until `TERMINATED`. Idempotent on
  *    an already-gone cluster (`assertRegionMatch` guards the region). Honors
  *    termination protection: under `--remove-protection` it flips
@@ -926,19 +928,29 @@ export class EMRClusterProvider implements ResourceProvider {
         previousProperties['Instances'],
         properties['Instances']
       );
-      const instanceKeys = new Set([...Object.keys(nextInstances), ...Object.keys(prevInstances)]);
-      for (const key of instanceKeys) {
-        if (jsonEqual(nextInstances[key], prevInstances[key])) continue;
-        if (key === 'TerminationProtected') {
-          terminationProtectedChanged = true;
-          continue;
-        }
+      const movedKeys = [
+        ...new Set([...Object.keys(nextInstances), ...Object.keys(prevInstances)]),
+      ].filter((key) => !jsonEqual(nextInstances[key], prevInstances[key]));
+      terminationProtectedChanged = movedKeys.includes('TerminationProtected');
+      // The members are stripped key by key, so the predicate on one key alone
+      // names a member that replaces, never an in-place one moved beside it.
+      // A replacing block with no such key (e.g. a non-object side) still
+      // refuses, naming the whole block.
+      const named = replacing
+        ? (movedKeys.find((key) =>
+            emrClusterInstancesReplaced({ [key]: prevInstances[key] }, { [key]: nextInstances[key] })
+          ) ?? '*')
+        : movedKeys.find((key) => key !== 'TerminationProtected');
+      if (named !== undefined) {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
           replacing
-            ? `AWS EMR Cluster Instances.${key} cannot be updated in place — CloudFormation replaces the cluster for this change. ${replaceRemedy()}`
-            : `AWS EMR Cluster Instances.${key}: CloudFormation applies this change in place (an instance group's count or auto-scaling policy, a fleet's target capacity, unhealthy node replacement), which cdkd does not do yet. Revert it in the template, or replace the cluster: ${replaceRemedy()}`
+            ? safeMsg`AWS EMR Cluster Instances.${named} cannot be updated in place — CloudFormation replaces the cluster for this change. ` +
+                replaceRemedy()
+            : // No replace remedy: CloudFormation keeps the cluster, and a
+              // replacement would terminate it and lose its local storage.
+              safeMsg`AWS EMR Cluster Instances.${named}: CloudFormation applies this change in place (an instance group's count or auto-scaling policy, a fleet's target capacity, unhealthy node replacement), which cdkd does not do yet (go-to-k/cdkd#5422). Revert it in the template to deploy.`
         );
       }
     }
@@ -965,7 +977,8 @@ export class EMRClusterProvider implements ResourceProvider {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          `AWS EMR Cluster ${key} is immutable on AWS — it is fixed at cluster creation. ${replaceRemedy()}`
+          safeMsg`AWS EMR Cluster ${key} is immutable on AWS — it is fixed at cluster creation. ` +
+            replaceRemedy()
         );
       }
     }

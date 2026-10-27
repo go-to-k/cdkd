@@ -1274,10 +1274,10 @@ esac
 # The L2 SecurityGroup's logical id carries a hash suffix (ExtraMasterSg<hash>).
 EXTRA_SG="$(state_query 'Object.entries(st.resources).find(([id]) => id.startsWith("ExtraMasterSg"))?.[1]?.physicalId')"
 case "${EXTRA_SG}" in sg-*) ;; *) echo "FAIL [phase 3c]: state records ExtraMasterSg as '${EXTRA_SG}'" >&2; exit 1;; esac
-read -r P3C_NEW_STATE P3C_EXTRA_SGS <<EOF
-$(aws emr describe-cluster --cluster-id "${CID_P3C}" --region "${REGION}" \
-  --query "Cluster.[Status.State,join(',', Ec2InstanceAttributes.AdditionalMasterSecurityGroups || \`[]\`)]" --output text)
-EOF
+P3C_DESCRIBE="$(aws emr describe-cluster --cluster-id "${CID_P3C}" --region "${REGION}" \
+  --query "Cluster.[Status.State,join(',', Ec2InstanceAttributes.AdditionalMasterSecurityGroups || \`[]\`)]" --output text)" \
+  || { echo "FAIL [phase 3c]: DescribeCluster ${CID_P3C} failed" >&2; exit 1; }
+read -r P3C_NEW_STATE P3C_EXTRA_SGS <<<"${P3C_DESCRIBE}"
 if [ "${P3C_NEW_STATE}" != "WAITING" ] && [ "${P3C_NEW_STATE}" != "RUNNING" ]; then
   echo "FAIL [phase 3c]: the new cluster ${CID_P3C} is '${P3C_NEW_STATE}' (expected WAITING/RUNNING)" >&2
   exit 1
@@ -1314,10 +1314,14 @@ if [ "${FINAL_STATE}" != "TERMINATED" ] && [ "${FINAL_STATE}" != "TERMINATED_WIT
   echo "FAIL: the replacement EMR cluster ${CID_P3C} not terminated after destroy (state '${FINAL_STATE}')" >&2
   exit 1
 fi
-FINAL_STATE="$(strict_cluster_state "${CID_P3C_OLD}")" || { echo "FAIL: could not read the replaced cluster ${CID_P3C_OLD} after destroy (DescribeCluster failed)" >&2; exit 1; }
-if [ "${FINAL_STATE}" != "TERMINATED" ] && [ "${FINAL_STATE}" != "TERMINATED_WITH_ERRORS" ]; then
-  echo "FAIL: the cluster Phase 3c replaced, ${CID_P3C_OLD}, is '${FINAL_STATE}' after destroy" >&2
-  exit 1
+# Phase 3 re-adopts the same cluster, so the replaced one is normally CID_P2,
+# checked above; check it here only when it is another.
+if [ "${CID_P3C_OLD}" != "${CID_P2}" ]; then
+  FINAL_STATE="$(strict_cluster_state "${CID_P3C_OLD}")" || { echo "FAIL: could not read the replaced cluster ${CID_P3C_OLD} after destroy (DescribeCluster failed)" >&2; exit 1; }
+  if [ "${FINAL_STATE}" != "TERMINATED" ] && [ "${FINAL_STATE}" != "TERMINATED_WITH_ERRORS" ]; then
+    echo "FAIL: the cluster Phase 3c replaced, ${CID_P3C_OLD}, is '${FINAL_STATE}' after destroy" >&2
+    exit 1
+  fi
 fi
 assert_gone "security group ${EXTRA_SG} (ExtraMasterSg) still exists after destroy" \
   aws ec2 describe-security-groups --group-ids "${EXTRA_SG}" --region "${REGION}"

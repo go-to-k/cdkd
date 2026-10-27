@@ -557,7 +557,31 @@ describe('EMRClusterProvider update', () => {
       'Instances.CoreInstanceGroup: CloudFormation applies this change in place (an instance group'
     );
     expect(message).not.toContain('immutable');
+    // A replacement would terminate a cluster CloudFormation keeps.
+    expect(message).not.toContain('--replace');
+    expect(message).toContain('go-to-k/cdkd#5422');
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('names the replacing member, not an in-place one moved beside it', async () => {
+    const core = { InstanceCount: 1, InstanceType: 'm5.xlarge', Name: 'Core' };
+    const prev = { ...BASE_PROPS, Instances: { CoreInstanceGroup: core, ...BASE_PROPS.Instances } };
+    const next = {
+      ...BASE_PROPS,
+      Instances: {
+        CoreInstanceGroup: { ...core, InstanceCount: 2 },
+        ...BASE_PROPS.Instances,
+        AdditionalMasterSecurityGroups: ['sg-extra'],
+      },
+    };
+    const err = await newProvider()
+      .update('MyCluster', CLUSTER_ID, RESOURCE_TYPE, next, prev)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect((err as Error).message).toContain(
+      'Instances.AdditionalMasterSecurityGroups cannot be updated in place'
+    );
+    expect((err as Error).message).not.toContain('Instances.CoreInstanceGroup');
   });
 
   it('refuses an immutable top-level property change with a --replace pointer', async () => {
