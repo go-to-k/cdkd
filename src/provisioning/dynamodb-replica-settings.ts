@@ -239,10 +239,13 @@ function samePolicyDocument(left: string, right: string): boolean {
  * `StreamViewType` change), so a declared stream policy is put again. A
  * removed one is still deleted: the stream may not have been replaced after
  * all, and a delete against a fresh stream finds nothing (`PolicyNotFound`).
- * `keepRecovery` skips the point-in-time recovery DISABLE a removal would
- * send: `cdkd drift --revert` builds the desired side from a read-back that
- * omits the member when its read failed, and turning recovery off deletes
- * every recovery point.
+ * `keepOnRemoval` names settings whose REMOVAL arm is skipped (the disable or
+ * delete an absent desired block over a declared previous one sends). Two
+ * callers need it: `cdkd drift --revert`, whose desired side is a read-back
+ * that omits a member when its read failed and never carries the resource
+ * policies, so an absence there says nothing; and a rollback replay, which
+ * must not turn point-in-time recovery off (that deletes every recovery
+ * point) on the strength of a record whose update may never have sent it.
  *
  * An `unusable` desired block issues nothing for that setting and is reported
  * through `onUnusable` (only a state-borne caller reaches it: the template path
@@ -251,11 +254,17 @@ function samePolicyDocument(left: string, right: string): boolean {
 export function planReplicaSettingOps(
   desired: Record<string, unknown> | undefined,
   previous: Record<string, unknown> | undefined,
-  options: { fresh: boolean; streamReplaced?: boolean; keepRecovery?: boolean },
+  options: {
+    fresh: boolean;
+    streamReplaced?: boolean;
+    keepOnRemoval?: ReadonlySet<ReplicaSetting>;
+  },
   onUnusable: (reason: string) => void
 ): ReplicaSettingOp[] {
   const prev = options.fresh ? undefined : previous;
   const ops: ReplicaSettingOp[] = [];
+  const removes = (setting: ReplicaSetting): boolean =>
+    options.keepOnRemoval?.has(setting) !== true;
 
   // Point-in-time recovery.
   const pitr = readPitrSpec(desired?.[PITR_KEY]);
@@ -263,7 +272,7 @@ export function planReplicaSettingOps(
   if (pitr.kind === 'unusable') {
     onUnusable(pitr.reason);
   } else if (pitr.kind === 'absent') {
-    if (prevPitr.kind !== 'absent' && options.keepRecovery !== true) {
+    if (prevPitr.kind !== 'absent' && removes('pitr')) {
       ops.push({ kind: 'pitr', enabled: false });
     }
   } else {
@@ -283,13 +292,18 @@ export function planReplicaSettingOps(
   }
 
   // Contributor Insights: the shared table-level plan.
+  const desiredCi = readContributorInsightsSpec(desired?.[CONTRIBUTOR_INSIGHTS_KEY], CI_PATH);
   const ci = planContributorInsightsOp(
-    readContributorInsightsSpec(desired?.[CONTRIBUTOR_INSIGHTS_KEY], CI_PATH),
+    desiredCi,
     readContributorInsightsSpec(prev?.[CONTRIBUTOR_INSIGHTS_KEY], CI_PATH),
     onUnusable
   );
   // A new replica starts with Contributor Insights off.
-  if (ci !== undefined && !(options.fresh && ci.action === 'DISABLE')) {
+  if (
+    ci !== undefined &&
+    !(options.fresh && ci.action === 'DISABLE') &&
+    !(desiredCi.kind === 'absent' && !removes('contributorInsights'))
+  ) {
     ops.push(
       ci.mode === undefined
         ? { kind: 'contributorInsights', action: ci.action }
@@ -304,7 +318,7 @@ export function planReplicaSettingOps(
     onUnusable(kinesis.reason);
   } else if (kinesis.kind === 'absent') {
     // An unreadable previous block names no stream to stop streaming to.
-    if (prevKinesis.kind === 'usable') {
+    if (prevKinesis.kind === 'usable' && removes('kinesis')) {
       ops.push({ kind: 'kinesisDisable', streamArn: prevKinesis.streamArn });
     }
   } else if (prevKinesis.kind === 'usable' && prevKinesis.streamArn === kinesis.streamArn) {
@@ -332,14 +346,15 @@ export function planReplicaSettingOps(
     had: PolicyRead,
     replaced: boolean,
     put: (document: string) => ReplicaSettingOp,
-    del: ReplicaSettingOp
+    del: ReplicaSettingOp,
+    setting: ReplicaSetting
   ): void => {
     if (want.kind === 'unusable') {
       onUnusable(want.reason);
       return;
     }
     if (want.kind === 'absent') {
-      if (had.kind !== 'absent') ops.push(del);
+      if (had.kind !== 'absent' && removes(setting)) ops.push(del);
       return;
     }
     if (!replaced && had.kind === 'usable' && samePolicyDocument(had.document, want.document)) {
@@ -352,14 +367,16 @@ export function planReplicaSettingOps(
     readTablePolicy(prev),
     false,
     (document) => ({ kind: 'putTablePolicy', document }),
-    { kind: 'deleteTablePolicy' }
+    { kind: 'deleteTablePolicy' },
+    'tablePolicy'
   );
   policyOps(
     readStreamPolicy(desired),
     readStreamPolicy(prev),
     options.streamReplaced === true,
     (document) => ({ kind: 'putStreamPolicy', document }),
-    { kind: 'deleteStreamPolicy' }
+    { kind: 'deleteStreamPolicy' },
+    'streamPolicy'
   );
   return ops;
 }

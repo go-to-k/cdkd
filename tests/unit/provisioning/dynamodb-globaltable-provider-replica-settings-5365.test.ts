@@ -1031,4 +1031,101 @@ describe('DynamoDB GlobalTable replica settings writes (go-to-k/cdkd#5365)', () 
       ).toEqual([{ kind: 'pitr', enabled: true, recoveryPeriodInDays: 10 }]);
     });
   });
+
+  describe('parent review round', () => {
+    const withAll = base(
+      {},
+      {
+        PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+        ContributorInsightsSpecification: { Enabled: true },
+        KinesisStreamSpecification: { StreamArn: REMOTE_KS },
+        ResourcePolicy: { PolicyDocument: policy('dynamodb:GetItem') },
+        ReplicaStreamSpecification: { ResourcePolicy: { PolicyDocument: policy('dynamodb:GetRecords') } },
+      }
+    );
+
+    it('removes nothing on drift --revert for a member the read-back omitted', async () => {
+      setLive({}, { pitr: 'ENABLED', ci: 'ENABLED', kinesis: [REMOTE_KS], tablePolicy: true, streamPolicy: true });
+      await provider.update('T', TABLE, RESOURCE_TYPE, base({}, {}), withAll, {
+        desiredFromAwsReadback: true,
+      } as never);
+      expect(writes(regionalSend)).toEqual([]);
+    });
+
+    it('still applies an explicit disable the drift --revert read-back carries', async () => {
+      setLive({}, { ci: 'ENABLED' });
+      await provider.update(
+        'T',
+        TABLE,
+        RESOURCE_TYPE,
+        base({}, { ContributorInsightsSpecification: { Enabled: false } }),
+        base({}, { ContributorInsightsSpecification: { Enabled: true } }),
+        { desiredFromAwsReadback: true } as never
+      );
+      expect(sent(regionalSend, UpdateContributorInsightsCommand)).toEqual([
+        { TableName: TABLE, ContributorInsightsAction: 'DISABLE' },
+      ]);
+    });
+
+    it('never turns point-in-time recovery off on a rollback replay, but resets the rest', async () => {
+      setLive({}, { pitr: 'ENABLED', ci: 'ENABLED' });
+      await provider.update(
+        'T',
+        TABLE,
+        RESOURCE_TYPE,
+        base({}, {}),
+        base(
+          {},
+          {
+            PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+            ContributorInsightsSpecification: { Enabled: true },
+          }
+        ),
+        { replayingState: true } as never
+      );
+      expect(sent(regionalSend, UpdateContinuousBackupsCommand)).toEqual([]);
+      expect(sent(regionalSend, UpdateContributorInsightsCommand)).toEqual([
+        { TableName: TABLE, ContributorInsightsAction: 'DISABLE' },
+      ]);
+    });
+
+    it('deletes a removed stream policy from the stream a StreamViewType change retired', async () => {
+      const NEW_STREAM = `${LOCAL_ARN}/stream/2026-10-28T00:00:00.000`;
+      let current = LOCAL_STREAM;
+      mockSend.mockImplementation(async (command: Sent) => {
+        if (
+          command.constructor.name === UpdateTableCommand.name &&
+          command.input['StreamSpecification'] !== undefined
+        ) {
+          current = NEW_STREAM;
+        }
+        if (command.constructor.name === DeleteResourcePolicyCommand.name && command.input['ResourceArn'] === NEW_STREAM) {
+          throw new PolicyNotFoundException({ message: 'no policy', $metadata: {} });
+        }
+        return regionDouble(LOCAL_ARN, current, {}, [])(command);
+      });
+      const stream = { ResourcePolicy: { PolicyDocument: policy('dynamodb:GetRecords') } };
+      await provider.update(
+        'T',
+        TABLE,
+        RESOURCE_TYPE,
+        { ...base({}, null), StreamSpecification: { StreamViewType: 'NEW_IMAGE' } },
+        base({ ReplicaStreamSpecification: stream }, null)
+      );
+      expect(sent(mockSend, DeleteResourcePolicyCommand).map((i) => i['ResourceArn'])).toEqual([
+        NEW_STREAM,
+        LOCAL_STREAM,
+      ]);
+    });
+
+    it('names the whole table in the create-time refusal', () => {
+      expect(
+        replicaSettingsRefusal(
+          base({ ResourcePolicy: { PolicyDocument: policy('dynamodb:GetItem') } }, {}),
+          undefined,
+          'us-east-1'
+        )
+      ).toMatch(/Deploy the table and its replicas without it, then add the policy/);
+    });
+  });
 });

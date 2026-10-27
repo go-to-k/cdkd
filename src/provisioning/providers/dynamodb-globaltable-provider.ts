@@ -165,6 +165,7 @@ import {
 import { injectiveKey } from '../../state/record-keys.js';
 import {
   declaredReplicaSettings,
+  readStreamPolicy,
   planReplicaSettingCorrections,
   planReplicaSettingOps,
   replicaSettingRefusals,
@@ -1450,7 +1451,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         new Set(),
         false,
         replayWarn(log, context).onUnusable !== undefined,
-        false,
+        new Set(),
+        undefined,
         warn,
         maskSecrets
       );
@@ -2399,9 +2401,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // A state replay (no template to fix): a table policy refused on a replica
     // this operation created is reported rather than failing the replay.
     replaying: boolean,
-    // `cdkd drift --revert`: never turn point-in-time recovery off for a
-    // member its read-back omitted (see `planReplicaSettingOps`).
-    keepRecovery: boolean,
+    // Settings whose removal arm is skipped (see `planReplicaSettingOps`).
+    keepOnRemoval: ReadonlySet<ReplicaSetting>,
+    // The deploy region's stream arn BEFORE this operation, for a
+    // `StreamViewType` change: the old stream stays readable for 24 h, so a
+    // policy the template removed is deleted from it too.
+    previousLocalStreamArn: string | undefined,
     warn: (message: string) => void,
     maskSecrets: SecretMasker
   ): Promise<void> {
@@ -2420,7 +2425,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const ops = planReplicaSettingOps(
         replica,
         previous,
-        { fresh, streamReplaced, keepRecovery },
+        { fresh, streamReplaced, keepOnRemoval },
         (reason) =>
           warn(
             `The ${region} replica of ${tableName}: ${reason}, so that setting was left as it ` +
@@ -2486,6 +2491,26 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               `puts it.`
           );
         }
+      }
+
+      // A `StreamViewType` change leaves the OLD stream readable for 24 h
+      // under its old policy. When this deploy removes or changes that policy,
+      // the old stream loses it too — best-effort: it may already be gone.
+      if (
+        region === currentRegion &&
+        streamReplaced &&
+        previousLocalStreamArn !== undefined &&
+        readStreamPolicy(previous).kind !== 'absent' &&
+        ops.some((op) => op.kind === 'deleteStreamPolicy' || op.kind === 'putStreamPolicy') &&
+        (await describe()).streamArn !== previousLocalStreamArn
+      ) {
+        await this.deleteOldStreamPolicy(
+          client,
+          previousLocalStreamArn,
+          tableName,
+          warn,
+          maskSecrets
+        );
       }
 
       if (unchanged.size === 0) continue;
@@ -2616,6 +2641,37 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       });
     }
     return live;
+  }
+
+  /**
+   * Delete the resource policy of a stream a `StreamViewType` change retired.
+   * No policy, or no stream any more, is the goal; anything else is reported,
+   * since the deploy itself succeeded and the old stream expires in 24 h.
+   */
+  private async deleteOldStreamPolicy(
+    client: DynamoDBClient,
+    streamArn: string,
+    tableName: string,
+    warn: (message: string) => void,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    try {
+      await this.retrySettlingRefusal(
+        () => client.send(new DeleteResourcePolicyCommand({ ResourceArn: streamArn })),
+        `delete the policy of the retired stream of ${tableName}`,
+        maskSecrets
+      );
+    } catch (error) {
+      if (isInterruptedWaitError(error)) throw error;
+      if (error instanceof PolicyNotFoundException || error instanceof ResourceNotFoundException) {
+        return;
+      }
+      warn(
+        `The previous stream of ${tableName} (retired by the StreamViewType change) keeps its ` +
+          `old resource policy until it expires: deleting it failed ` +
+          `(${describeAwsFailure(error).summary}).`
+      );
+    }
   }
 
   /**
@@ -5082,7 +5138,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           asRecord(previousProperties['StreamSpecification'])?.['StreamViewType']
         ),
         context?.replayingState === true || context?.desiredFromAwsReadback === true,
-        context?.desiredFromAwsReadback === true,
+        // A read-back omits a member whose read failed, and never carries the
+        // policies: an absence there is no removal. A rollback replay must not
+        // turn recovery off on a record whose update may never have sent it.
+        new Set<ReplicaSetting>(
+          context?.desiredFromAwsReadback === true
+            ? ['pitr', 'contributorInsights', 'kinesis', 'tablePolicy', 'streamPolicy']
+            : context?.replayingState === true
+              ? ['pitr']
+              : []
+        ),
+        describeResp.Table?.LatestStreamArn,
         warn,
         maskSecrets
       );
@@ -8871,8 +8937,11 @@ export function replicaSettingsRefusal(
       return (
         `The ${region} replica: Replicas[].ResourcePolicy cannot be set in the deploy that ` +
         `creates the replica — CloudFormation refuses it ("A replica cannot be created in the ` +
-        `same stack update as putting a resource-based policy on that new replica"). Deploy the ` +
-        `replica without it, then add the policy in a later deploy`
+        `same stack update as putting a resource-based policy on that new replica"). ` +
+        (previousProperties === undefined
+          ? `Deploy the table and its replicas without it`
+          : `Deploy the replica without it`) +
+        `, then add the policy in a later deploy`
       );
     }
   }
