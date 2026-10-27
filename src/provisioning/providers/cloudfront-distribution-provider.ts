@@ -162,6 +162,12 @@ const CACHE_BEHAVIOR_QUANTITY_FIELDS = [
 ];
 
 /**
+ * The cache-behavior wrappers whose SDK shape carries a derived `Enabled`
+ * beside `{ Quantity, Items }` (issue #5393).
+ */
+const TRUSTED_SIGNER_FIELDS = ['TrustedSigners', 'TrustedKeyGroups'] as const;
+
+/**
  * SDK Provider for AWS::CloudFront::Distribution
  *
  * Uses the CloudFront SDK directly for reliable CRUD operations.
@@ -1447,6 +1453,25 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     }
 
     for (const fieldPath of CACHE_BEHAVIOR_QUANTITY_FIELDS) {
+      // A TrustedSigners / TrustedKeyGroups wrapper whose `Enabled` disagrees
+      // with its list (e.g. a signer restriction switched off out of band
+      // while the key groups stay listed) has no CFn spelling: keep the raw
+      // wrapper so drift reports it instead of reading back the bare list
+      // the template declares (issue #5393).
+      if ((TRUSTED_SIGNER_FIELDS as readonly string[]).includes(fieldPath)) {
+        const w = result[fieldPath];
+        if (w && typeof w === 'object' && !Array.isArray(w)) {
+          const obj = w as Record<string, unknown>;
+          const items = obj['Items'];
+          if (
+            Array.isArray(items) &&
+            typeof obj['Enabled'] === 'boolean' &&
+            obj['Enabled'] !== items.length > 0
+          ) {
+            continue;
+          }
+        }
+      }
       const parts = fieldPath.split('.');
       this.unwrapQuantityAtPath(result, parts);
     }
@@ -1542,6 +1567,32 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     for (const fieldPath of CACHE_BEHAVIOR_QUANTITY_FIELDS) {
       const parts = fieldPath.split('.');
       this.applyQuantityAtPath(result, parts);
+    }
+
+    // CFn declares `TrustedSigners` / `TrustedKeyGroups` as bare string lists,
+    // but the API's wrappers also REQUIRE `Enabled`: a `{ Quantity, Items }`
+    // without it is refused as MalformedXML ("Value null at
+    // '...trustedKeyGroups.enabled' ... must not be null"), measured against
+    // CreateDistribution 2026-10-27 (issue #5393). CFn derives it from the
+    // list: a non-empty list restricts viewer access (Enabled: true), an empty
+    // one does not (`Enabled: true` with an empty list is refused as
+    // InvalidArgument). The CFn schema has no `Enabled` member, so it is
+    // ALWAYS derived: a value smuggled in through a non-CFn object shape can
+    // neither lift a declared restriction nor enable an empty one.
+    for (const key of TRUSTED_SIGNER_FIELDS) {
+      const wrapper = result[key];
+      if (wrapper && typeof wrapper === 'object' && !Array.isArray(wrapper)) {
+        const w = wrapper as Record<string, unknown>;
+        // The listed entries decide, not a `Quantity` an object shape carried
+        // in (wrapWithQuantity keeps one already present) — and they set
+        // `Quantity` too, so the wrapper is never self-inconsistent.
+        const items = w['Items'];
+        if (Array.isArray(items)) {
+          result[key] = { ...w, Quantity: items.length, Enabled: items.length > 0 };
+        } else if (typeof w['Quantity'] === 'number') {
+          result[key] = { ...w, Enabled: w['Quantity'] > 0 };
+        }
+      }
     }
 
     // The CFn shape carries `AllowedMethods` and `CachedMethods` as SIBLING
