@@ -1589,13 +1589,16 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::EFS::MountTarget',
     {
-      handled: new Set<string>(['FileSystemId', 'SecurityGroups', 'SubnetId']),
-      silentDrop: new Map<string, string>([
-        ['IpAddress', 'not yet implemented by cdkd'],
-        ['IpAddressType', 'not yet implemented by cdkd'],
-        ['Ipv6Address', 'not yet implemented by cdkd'],
+      handled: new Set<string>([
+        'FileSystemId',
+        'IpAddress',
+        'IpAddressType',
+        'Ipv6Address',
+        'SecurityGroups',
+        'SubnetId',
       ]),
-      createOnlyDrops: new Set<string>(['IpAddress', 'IpAddressType', 'Ipv6Address']),
+      silentDrop: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: false,
     },
@@ -2953,6 +2956,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::Route53::HostedZone',
     {
       handled: new Set<string>([
+        'DelegationSetId',
         'HostedZoneConfig',
         'HostedZoneFeatures',
         'HostedZoneTags',
@@ -2960,8 +2964,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'QueryLoggingConfig',
         'VPCs',
       ]),
-      silentDrop: new Map<string, string>([['DelegationSetId', 'not yet implemented by cdkd']]),
-      createOnlyDrops: new Set<string>(['DelegationSetId']),
+      silentDrop: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id', 'NameServers']),
       ccRouteUnavailable: false,
     },

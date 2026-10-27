@@ -50,7 +50,7 @@ import {
   VALUE_NOT_SHOWN,
 } from '../import-helpers.js';
 import { commandHole } from '../../utils/pasteable-command.js';
-import { readConfigString } from '../config-shape.js';
+import { readConfigString, replayWarn, requireConfigString } from '../config-shape.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
 import {
   COMPOSITE_ID_SEPARATOR,
@@ -475,6 +475,7 @@ export class Route53Provider implements ResourceProvider {
         'VPCs',
         'QueryLoggingConfig',
         'HostedZoneFeatures',
+        'DelegationSetId',
       ]),
     ],
     [
@@ -521,7 +522,13 @@ export class Route53Provider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::Route53::HostedZone':
-        return this.createHostedZone(logicalId, resourceType, properties, context?.maskSecrets);
+        return this.createHostedZone(
+          logicalId,
+          resourceType,
+          properties,
+          context?.maskSecrets,
+          context
+        );
       case 'AWS::Route53::RecordSet':
         return this.createRecordSet(logicalId, resourceType, properties, context?.maskSecrets);
       default:
@@ -612,7 +619,8 @@ export class Route53Provider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    mask: ((text: string) => string) | undefined
+    mask: ((text: string) => string) | undefined,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Route 53 hosted zone ${logicalId}`);
 
@@ -622,6 +630,30 @@ export class Route53Provider implements ResourceProvider {
         `Name is required for hosted zone ${logicalId}`,
         resourceType,
         logicalId
+      );
+    }
+
+    // go-to-k/cdkd#2762: create-only (declaring it used to route the zone
+    // through Cloud Control). Sent as declared; Route 53 accepts both the bare
+    // id and its `/delegationset/` form (measured us-east-1, 2026-10-27). A
+    // non-string is refused, not dropped: dropping it would give the zone a
+    // fresh set of name servers, which cannot be changed afterwards.
+    let delegationSetId: string | undefined;
+    try {
+      delegationSetId =
+        requireConfigString(
+          properties['DelegationSetId'],
+          '',
+          'AWS::Route53::HostedZone DelegationSetId',
+          replayWarn(this.logger, context)
+        ) || undefined;
+    } catch (error) {
+      throw new ProvisioningError(
+        `Hosted zone ${logicalId}: ${describeAwsFailure(error).detail}`,
+        resourceType,
+        logicalId,
+        undefined,
+        error instanceof Error ? error : undefined
       );
     }
 
@@ -676,6 +708,7 @@ export class Route53Provider implements ResourceProvider {
         {
           Name: name,
           CallerReference: callerReferenceToken.value,
+          ...(delegationSetId !== undefined ? { DelegationSetId: delegationSetId } : {}),
           ...(createComment !== ''
             ? {
                 HostedZoneConfig: {
@@ -2733,7 +2766,7 @@ export class Route53Provider implements ResourceProvider {
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     switch (resourceType) {
       case 'AWS::Route53::HostedZone':
-        return this.readHostedZone(physicalId);
+        return this.readHostedZone(physicalId, properties);
       case 'AWS::Route53::RecordSet':
         return this.readRecordSet(physicalId, properties);
       default:
@@ -2742,7 +2775,8 @@ export class Route53Provider implements ResourceProvider {
   }
 
   private async readHostedZone(
-    physicalId: string
+    physicalId: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let resp;
     try {
@@ -2763,6 +2797,20 @@ export class Route53Provider implements ResourceProvider {
         cfg['PrivateZone'] = resp.HostedZone.Config.PrivateZone;
       }
       result['HostedZoneConfig'] = cfg;
+    }
+    // go-to-k/cdkd#2762: `DelegationSet.Id` is present only for a zone on a
+    // reusable delegation set, and always as `/delegationset/<id>` whichever
+    // form created it (measured us-east-1, 2026-10-27). Emitted bare, as Cloud
+    // Control reports it, unless the declaration spells this same id in the
+    // prefixed form: CreateHostedZone accepts both, and a record in the other
+    // spelling would never match the readback. Immutable on create, so no
+    // placeholder.
+    if (resp.DelegationSet?.Id !== undefined) {
+      const bare = resp.DelegationSet.Id.replace(/^\/delegationset\//, '');
+      result['DelegationSetId'] =
+        properties?.['DelegationSetId'] === `/delegationset/${bare}`
+          ? `/delegationset/${bare}`
+          : bare;
     }
     // `HostedZoneFeatures.AcceleratedRecoveryStatus`: emit-when-present
     // (gated on `!== undefined`, NOT a default-when-absent placeholder).
