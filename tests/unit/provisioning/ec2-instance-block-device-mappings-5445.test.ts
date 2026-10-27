@@ -179,6 +179,13 @@ describe('AWS::EC2::Instance BlockDeviceMappings mapping (issue #5445)', () => {
       { DeviceName: '/dev/sdc', NoDevice: '' },
     ]);
   });
+
+  it('treats NoDevice: null as absent', async () => {
+    const input = await createWith({
+      BlockDeviceMappings: [{ DeviceName: '/dev/sdc', NoDevice: null }],
+    });
+    expect(input['BlockDeviceMappings']).toStrictEqual([{ DeviceName: '/dev/sdc' }]);
+  });
 });
 
 describe('AWS::EC2::Instance NetworkInterfaces[].EnaSrdSpecification (issue #5445)', () => {
@@ -215,6 +222,22 @@ describe('AWS::EC2::Instance NetworkInterfaces[].EnaSrdSpecification (issue #544
     });
     const ni = (input['NetworkInterfaces'] as Array<Record<string, unknown>>)[0]!;
     expect(ni['EnaSrdSpecification']).toStrictEqual({ EnaSrdEnabled: false });
+  });
+
+  it('omits an EnaSrdSpecification that sets nothing', async () => {
+    const input = await createWith({
+      NetworkInterfaces: [
+        { DeviceIndex: '0', SubnetId: 'subnet-1', EnaSrdSpecification: {} },
+        {
+          DeviceIndex: '1',
+          SubnetId: 'subnet-1',
+          EnaSrdSpecification: { EnaSrdUdpSpecification: {} },
+        },
+      ],
+    });
+    for (const ni of input['NetworkInterfaces'] as Array<Record<string, unknown>>) {
+      expect(Object.prototype.hasOwnProperty.call(ni, 'EnaSrdSpecification')).toBe(false);
+    }
   });
 
   it('omits EnaSrdSpecification when the template does not set it', async () => {

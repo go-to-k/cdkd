@@ -451,6 +451,9 @@ fi
 # Capture the ids now so the cleanup trap can reach the instances from here on.
 INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.InstanceId // ""')
 PUBLIC_INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.PublicInstanceId // ""')
+# Issue #5445: the fixture CMK exists from this deploy on, so the trap's
+# schedule-key-deletion must be able to reach it from here too.
+EBS_KEY_ARN=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.EbsKeyArn // ""')
 if [ -z "${INSTANCE_ID}" ] || [ "${INSTANCE_ID}" = "null" ] || [ -z "${PUBLIC_INSTANCE_ID}" ] || [ "${PUBLIC_INSTANCE_ID}" = "null" ]; then
   echo "FAIL: could not resolve both instance ids from the --no-wait state" >&2
   echo "${NOWAIT_STATE}" | jq '.outputs'
