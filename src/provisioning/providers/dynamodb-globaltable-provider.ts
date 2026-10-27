@@ -5663,7 +5663,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
 
       // 7. TimeToLiveSpecification (separate API).
-      // AWS enforces a 4-hour rate limit on TTL changes per table
+      // AWS rate-limits TTL changes per table
       // ("Time to live has been modified multiple times within a fixed
       // interval"). Catch and rewrap with an actionable hint pointing
       // at the AWS-side limit, so a user redeploying a TTL-toggling
@@ -5687,7 +5687,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
                 (text) =>
                   new ProvisioningError(
                     `AWS rejected TimeToLive update on ${log.value(physicalId)}: ${sentence(text)} ` +
-                      `AWS enforces a ~4-hour rate limit on TTL changes per table; ` +
+                      `AWS rate-limits TTL changes per table (the interval can last up to about an hour); ` +
                       `wait and redeploy, or keep the previous TTL state in this deploy.`,
                     resourceType,
                     logicalId,

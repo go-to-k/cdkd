@@ -925,7 +925,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
     });
 
     it('TTL rate limit error: rewraps AWS "Time to live has been modified multiple times" with a friendly hint', async () => {
-      // AWS enforces a ~4-hour TTL change rate limit per table. The
+      // AWS rate-limits TTL changes per table. The
       // raw error message is correct but not actionable. cdkd
       // rewraps with a ProvisioningError that names the rate limit
       // and points at the workaround.
@@ -945,7 +945,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           },
           {}
         )
-      ).rejects.toThrow(/4-hour rate limit on TTL changes/);
+      ).rejects.toThrow(/rate-limits TTL changes per table/);
     });
 
     it('issues a separate UpdateTable for BillingMode flip (PAY_PER_REQUEST -> PROVISIONED with capacity)', async () => {
@@ -1638,9 +1638,9 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         expect(ttlUpdates()).toEqual([]);
       });
 
-      it('sends nothing when the template removes a spec recorded as disabled', async () => {
+      it('reads the live TTL, and sends nothing, when the template removes a spec recorded as disabled', async () => {
         // AWS refuses to disable a disabled TTL ("TimeToLive is already disabled").
-        routeSends();
+        routeSends({ TimeToLiveStatus: 'DISABLED', AttributeName: 'expiresAt' });
         await provider.update(
           'X',
           TABLE_NAME,
@@ -1648,8 +1648,22 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           {},
           { TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: false } }
         );
+        expect(ttlDescribes()).toBe(1);
         expect(ttlUpdates()).toEqual([]);
-        expect(ttlDescribes()).toBe(0);
+      });
+
+      it('repairs a record of a disabled spec that left TTL enabled', async () => {
+        routeSends({ TimeToLiveStatus: 'ENABLED', AttributeName: 'expiresAt' });
+        await provider.update(
+          'X',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          {},
+          { TimeToLiveSpecification: { Enabled: false } }
+        );
+        expect(ttlUpdates().map((c) => c.input.TimeToLiveSpecification)).toEqual([
+          { Enabled: false, AttributeName: 'expiresAt' },
+        ]);
       });
     });
   });

@@ -450,9 +450,9 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
         }
       );
 
-      it('sends nothing when the template removes a spec recorded as disabled', async () => {
+      it('reads the live TTL, and sends nothing, when the template removes a spec recorded as disabled', async () => {
         // AWS refuses to disable a disabled TTL ("TimeToLive is already disabled").
-        routeSends();
+        routeSends({ TimeToLiveStatus: 'DISABLED', AttributeName: 'expiresAt' });
         await provider.update(
           'L',
           TABLE_NAME,
@@ -460,8 +460,22 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
           {},
           { TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: false } }
         );
+        expect(findCalls(DescribeTimeToLiveCommand)).toHaveLength(1);
         expect(ttlSpecsSent()).toEqual([]);
-        expect(findCalls(DescribeTimeToLiveCommand)).toHaveLength(0);
+      });
+
+      it('repairs a pre-#5447 record of a name-less disable that left TTL enabled', async () => {
+        // The pre-fix deploy recorded `{ Enabled: false }` while sending nothing,
+        // so the record says disabled and AWS says enabled.
+        routeSends({ TimeToLiveStatus: 'ENABLED', AttributeName: 'expiresAt' });
+        await provider.update(
+          'L',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          { TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: false } },
+          { TimeToLiveSpecification: { Enabled: false } }
+        );
+        expect(ttlSpecsSent()).toEqual([{ Enabled: false, AttributeName: 'expiresAt' }]);
       });
 
       it('reports AWS refusing the disable within the TTL rate-limit interval', async () => {
@@ -492,8 +506,8 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
         expect(ttlSpecsSent()).toEqual([{ Enabled: false, AttributeName: 'expiresAt' }]);
       });
 
-      it('sends nothing when the AttributeName is dropped from a spec recorded as disabled', async () => {
-        routeSends();
+      it('reads the live TTL, and sends nothing, when the AttributeName is dropped from a spec recorded as disabled', async () => {
+        routeSends({ TimeToLiveStatus: 'DISABLED', AttributeName: 'expiresAt' });
         await provider.update(
           'L',
           TABLE_NAME,
@@ -501,8 +515,8 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
           { TimeToLiveSpecification: { Enabled: false } },
           { TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: false } }
         );
+        expect(findCalls(DescribeTimeToLiveCommand)).toHaveLength(1);
         expect(ttlSpecsSent()).toEqual([]);
-        expect(findCalls(DescribeTimeToLiveCommand)).toHaveLength(0);
       });
     });
 

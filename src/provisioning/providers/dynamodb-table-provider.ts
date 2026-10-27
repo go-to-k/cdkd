@@ -4990,8 +4990,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
     let attributeName: string;
     if (plan.kind === 'none') return;
     if (plan.kind === 'disable-live') {
-      const resp = await this.dynamoDBClient.send(
-        new DescribeTimeToLiveCommand({ TableName: tableName })
+      const resp = await this.retryOnTransientControlPlane(
+        () => this.dynamoDBClient.send(new DescribeTimeToLiveCommand({ TableName: tableName })),
+        `read TTL on ${tableName}`
       );
       const live = resp.TimeToLiveDescription;
       const status = live?.TimeToLiveStatus;

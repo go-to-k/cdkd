@@ -45,8 +45,8 @@ export function readTtlSpec(spec: unknown): {
  *
  * Disabling a TTL that is not enabled is refused by AWS ("TimeToLive is
  * already disabled"), so a desired-disabled spec sends nothing on create (a
- * new table starts with TTL disabled) nor when the recorded spec was already
- * disabled.
+ * new table starts with TTL disabled), and with no enabled spec recorded the
+ * live status decides.
  */
 export type TtlPlan =
   | { kind: 'none' }
@@ -64,9 +64,8 @@ export function planTimeToLive(
   previousSpec: unknown,
   mode: 'create' | 'update'
 ): TtlPlan {
-  const desiredPresent = spec !== undefined && spec !== null;
   const desired = readTtlSpec(spec);
-  if (desiredPresent && desired.enabled) {
+  if (spec !== undefined && spec !== null && desired.enabled) {
     // `Enabled: true` without a name is unsendable; nothing to do.
     return desired.attributeName
       ? { kind: 'enable', attributeName: desired.attributeName }
@@ -84,16 +83,8 @@ export function planTimeToLive(
     // recorded one, not a name the desired disabled spec may carry.
     return { kind: 'disable', attributeName: previous.attributeName };
   }
-  if (previousPresent && !previous.enabled) {
-    // Recorded as disabled already.
-    return { kind: 'none' };
-  }
-  if (!desiredPresent) {
-    // Removal of a block that never sent an enable (`Enabled: true` with no
-    // name): nothing was enabled by this template.
-    return { kind: 'none' };
-  }
-  // `Enabled: false` newly declared on a table whose template never enabled
-  // TTL: the live state is the only source of the attribute name.
+  // No enabled spec recorded: the live state is the only source of the
+  // attribute name. A spec recorded as disabled is not trusted either: before
+  // #5447 a name-less `Enabled: false` was recorded while TTL stayed enabled.
   return { kind: 'disable-live' };
 }
