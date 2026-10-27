@@ -129,6 +129,16 @@ describe('FirehoseProvider.update — a removed destination sub-field is kept, a
       desired: { BucketARN: BUCKET, RoleARN: ROLE, Prefix: 'data2/' },
       sent: { BucketARN: BUCKET, RoleARN: ROLE, Prefix: 'data2/' },
     },
+    // go-to-k/cdkd#5439: a CloudFormation change set removing Prefix and
+    // BufferingHints from a legacy S3DestinationConfiguration while adding
+    // ErrorOutputPrefix kept both live values.
+    {
+      destKey: 'S3DestinationConfiguration',
+      updateKey: 'S3DestinationUpdate',
+      previous: S3_FULL,
+      desired: { ...S3_BARE, CompressionFormat: 'UNCOMPRESSED' },
+      sent: { ...S3_BARE, CompressionFormat: 'UNCOMPRESSED' },
+    },
     {
       destKey: 'HttpEndpointDestinationConfiguration',
       updateKey: 'HttpEndpointDestinationUpdate',

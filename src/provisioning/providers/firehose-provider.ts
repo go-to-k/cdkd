@@ -191,27 +191,6 @@ function isReadableTagList(value: unknown): boolean {
 }
 
 /**
- * CFn destination property names that this provider can apply
- * in-place via UpdateDestinationCommand. Other destination types
- * still hard-reject in update() with a tightened error pointing at
- * the per-shape reverse-mapper follow-up issue (#549).
- *
- * Membership grows as each follow-up PR lands. Keep alphabetical
- * to minimize merge conflicts when multiple follow-ups race.
- */
-const SUPPORTED_UPDATE_DESTINATIONS: ReadonlySet<string> = new Set([
-  'AmazonOpenSearchServerlessDestinationConfiguration',
-  'AmazonopensearchserviceDestinationConfiguration',
-  'ElasticsearchDestinationConfiguration',
-  'ExtendedS3DestinationConfiguration',
-  'HttpEndpointDestinationConfiguration',
-  'IcebergDestinationConfiguration',
-  'RedshiftDestinationConfiguration',
-  'SnowflakeDestinationConfiguration',
-  'SplunkDestinationConfiguration',
-]);
-
-/**
  * The destinations whose `S3BackupMode` cannot change after the stream is
  * created (go-to-k/cdkd#5386), each with the `DescribeDeliveryStream`
  * description member that reports the live mode. Their `UpdateDestination`
@@ -863,12 +842,9 @@ export class FirehoseProvider implements ResourceProvider {
    *     waiting for the asynchronous transition; see
    *     {@link applyEncryptionUpdate}. Runs after the destination update.
    *
-   * The legacy `S3DestinationConfiguration` (deprecated by AWS in
-   * favor of `ExtendedS3DestinationConfiguration`) stays rejected
-   * with a tightened error — CDK constructs always emit Extended.
-   * Templates that still pin the legacy shape should migrate to
-   * Extended; in-place update of the deprecated shape isn't a
-   * priority follow-up.
+   *   - The legacy `S3DestinationConfiguration` (#5439) —
+   *     `S3DestinationUpdate` payload produced by
+   *     {@link mapS3ConfigToUpdate}; see {@link applyS3DestinationUpdate}.
    *
    * Destination-type SWITCHES (e.g. ExtendedS3 → Redshift) are immutable
    * on AWS; cdkd surfaces `ResourceUpdateNotSupportedError` so the caller
@@ -983,21 +959,9 @@ export class FirehoseProvider implements ResourceProvider {
       );
     }
 
+    // Every destination key findDestinationKey returns has an in-place
+    // UpdateDestination branch below.
     const activeDest = destKey ?? prevDestKey;
-    if (activeDest && !SUPPORTED_UPDATE_DESTINATIONS.has(activeDest)) {
-      // Some other destination type — check whether it actually changed,
-      // and reject only if it did. Tags-only diffs against e.g. a Splunk
-      // delivery stream should NOT throw.
-      const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
-      const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
-      if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
-        throw new ResourceUpdateNotSupportedError(
-          resourceType,
-          logicalId,
-          `In-place update for '${activeDest}' on AWS::KinesisFirehose::DeliveryStream is not yet implemented in cdkd (AWS exposes UpdateDestination for it). Re-deploy with cdkd deploy --replace.`
-        );
-      }
-    }
 
     // Now that destination validity is established, apply Tags
     // (TagDeliveryStream / UntagDeliveryStream is independent of
@@ -1036,6 +1000,14 @@ export class FirehoseProvider implements ResourceProvider {
       const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
       if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
         await this.applyExtendedS3DestinationUpdate(logicalId, physicalId, nextDest);
+      }
+    }
+
+    if (activeDest === 'S3DestinationConfiguration') {
+      const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
+      const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
+      if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
+        await this.applyS3DestinationUpdate(logicalId, physicalId, nextDest);
       }
     }
 
@@ -1241,6 +1213,44 @@ export class FirehoseProvider implements ResourceProvider {
         CurrentDeliveryStreamVersionId: currentVersionId,
         DestinationId: destinationId,
         ExtendedS3DestinationUpdate: this.mapExtendedS3ConfigToUpdate(nextConfig),
+      })
+    );
+  }
+
+  /**
+   * The legacy `S3DestinationConfiguration` (go-to-k/cdkd#5439):
+   * `UpdateDestination` with an `S3DestinationUpdate` payload from
+   * {@link mapS3ConfigToUpdate}, as CloudFormation does. Measured in
+   * us-east-1: a change set changing `BufferingHints` / `Prefix` /
+   * `CompressionFormat` planned `Replacement: False` and kept the stream ARN,
+   * and one removing `Prefix` and `BufferingHints` beside a sibling change
+   * kept both live values, so a removed sub-field is not sent (#1160).
+   */
+  private async applyS3DestinationUpdate(
+    logicalId: string,
+    physicalId: string,
+    nextConfig: Record<string, unknown>
+  ): Promise<void> {
+    const description = await this.getClient().send(
+      new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+    );
+    const desc = description.DeliveryStreamDescription;
+    const currentVersionId = desc?.VersionId;
+    const destinationId = desc?.Destinations?.[0]?.DestinationId;
+    if (!currentVersionId || !destinationId) {
+      throw new ProvisioningError(
+        `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
+        'AWS::KinesisFirehose::DeliveryStream',
+        logicalId,
+        physicalId
+      );
+    }
+    await this.getClient().send(
+      new UpdateDestinationCommand({
+        DeliveryStreamName: physicalId,
+        CurrentDeliveryStreamVersionId: currentVersionId,
+        DestinationId: destinationId,
+        S3DestinationUpdate: this.mapS3ConfigToUpdate(nextConfig),
       })
     );
   }
@@ -1533,11 +1543,7 @@ export class FirehoseProvider implements ResourceProvider {
       'SplunkDestinationConfiguration',
       'AmazonOpenSearchServerlessDestinationConfiguration',
       // Every destination key supports in-place update via UpdateDestination
-      // (#477 + #549 follow-ups), with the sole exception of the legacy
-      // `S3DestinationConfiguration` listed above — AWS deprecated that
-      // shape in favor of `ExtendedS3DestinationConfiguration`, CDK
-      // constructs always emit Extended, and the rejection branch in
-      // update() points users at that migration.
+      // (#477, #549 follow-ups, #5439 for the legacy S3 shape).
       'IcebergDestinationConfiguration',
       'SnowflakeDestinationConfiguration',
     ];
@@ -2654,8 +2660,9 @@ export class FirehoseProvider implements ResourceProvider {
 
   /**
    * Map CFn `S3DestinationConfiguration` to the `S3DestinationUpdate`
-   * shape used by AWS `UpdateDestinationCommand` (#477; consumed by
-   * {@link mapExtendedS3ConfigToUpdate} for the `S3BackupUpdate` field).
+   * shape used by AWS `UpdateDestinationCommand` (#477): the top-level
+   * legacy destination ({@link applyS3DestinationUpdate}, #5439) and every
+   * nested `S3Update` / `S3BackupUpdate` slot.
    * Every field optional — only present keys are forwarded.
    */
   private mapS3ConfigToUpdate(config: Record<string, unknown>): S3DestinationUpdate {

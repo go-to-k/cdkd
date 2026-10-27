@@ -1699,43 +1699,6 @@ const firehoseExtendedS3Full = () => ({
   CustomTimeZone: 'Asia/Tokyo',
 });
 
-/** The legacy destination: `update()` refuses any change to it (see below). */
-const FIREHOSE_LEGACY_S3_REFUSED: Throw = {
-  why: 'an in-place change to the legacy S3DestinationConfiguration is refused with ResourceUpdateNotSupportedError before any call (firehose-provider.ts:866-871, 986-1000): AWS deprecated the shape for ExtendedS3DestinationConfiguration, which CDK always emits. CloudFormation updates it in place: go-to-k/cdkd#5439',
-  says: /In-place update for 'S3DestinationConfiguration'/,
-};
-
-/**
- * A legacy-destination bag's expectations: every update probe under
- * `S3DestinationConfiguration` meets the refusal, so each add / remove throws
- * and each leaf's update-vary (whose `before` side throws too) is silent.
- * Its create probes observe delivery.
- */
-function firehoseLegacyS3(bag: Bag): Pick<BagCase, 'expectedSilent' | 'expectedRemovalThrows'> {
-  const under = paths(bag).filter((p) => p[0] === 'S3DestinationConfiguration');
-  const leaves = under.filter((p) => {
-    let node: unknown = bag;
-    for (const seg of p) node = (node as Record<string | number, unknown>)[seg];
-    return node === null || typeof node !== 'object';
-  });
-  return {
-    expectedRemovalThrows: Object.fromEntries(
-      under.flatMap((p) =>
-        ['update-add', 'update-remove'].map((d) => [
-          `${d}:${p.join('.')}`,
-          FIREHOSE_LEGACY_S3_REFUSED,
-        ])
-      )
-    ),
-    expectedSilent: Object.fromEntries(
-      leaves.map((p) => [
-        `update-vary:${p.join('.')}`,
-        'the legacy S3DestinationConfiguration cannot be updated in place: both sides of the vary are the refusal (firehose-provider.ts:866-871, 986-1000; go-to-k/cdkd#5439)',
-      ])
-    ),
-  };
-}
-
 const FIREHOSE_LEGACY_FULL_BAG: Bag = {
   DeliveryStreamName: FIREHOSE_STREAM,
   S3DestinationConfiguration: firehoseS3Full('legacy'),
@@ -1886,12 +1849,10 @@ const FIREHOSE_CASE: TypeCase = {
     {
       name: 'legacy S3, every member',
       bag: FIREHOSE_LEGACY_FULL_BAG,
-      ...firehoseLegacyS3(FIREHOSE_LEGACY_FULL_BAG),
     },
     {
       name: 'legacy S3, KMS-encrypted',
       bag: FIREHOSE_LEGACY_KMS_BAG,
-      ...firehoseLegacyS3(FIREHOSE_LEGACY_KMS_BAG),
     },
     {
       name: 'Redshift, every member but the Secrets Manager credential',
