@@ -13,8 +13,9 @@
 ### 8-b. Integ ordering vs review rounds and rebases
 
 **Run the integ LAST — after every reviewer RETURNS and the final edit to any
-`integ-destroy`-scoped file.** A lane runs no integ (its `triage.md` throwaway
-CFn change set is its own: never brief it down to read-only probes, #5401), so only the parent finds an AWS-side rejection:
+`integ-destroy`-scoped file.** A lane runs no integ (it still runs `triage.md`'s
+throwaway CFn change set itself: never brief it down to read-only probes,
+#5401), so only the parent finds an integ-time AWS-side rejection:
 run a NEW arm once EARLY too, as soon as the lane has written it, between review
 rounds (never during a `src` fix round); that run sets no marker and is no §8-d
 proof — a new arm's first AWS contact can reject its shape (#4618). Sequence:
@@ -77,7 +78,7 @@ tests passing is necessary but NOT sufficient:
   - **It changes what a command or gate DOES** → the verification IS that
     command (`.claude/hooks/run-tests.sh` for a hook, the workflow step's
     command for CI, `vp run check` for lint config, which lints `src/**` only).
-    Run it BEFORE and AFTER, building the BEFORE tree by §8-d's throwaway tree,
+    Run it BEFORE and AFTER, building the BEFORE tree in §8-d's throwaway tree,
     never `git checkout -- <path>` / `git restore`. Drive the FAILURE
     direction too, and guard the fix's SHAPE with a test under
     `tests/unit/scripts/` or a case in the hook's `<name>.test.sh`.
@@ -89,7 +90,7 @@ tests passing is necessary but NOT sufficient:
 ### 8-d. Integ arms owe a discrimination proof (mutation-probe on real AWS)
 
 BEFORE the final integ, revert the fix, rebuild, run, confirm the arm goes RED
-**at YOUR assertion — read which one fired**, then restore and rebuild. A red
+**at YOUR assertion — read which one fired**, then remove that tree. A red
 ELSEWHERE proves nothing: at the CREATE the shape is unreachable, so redo
 `triage.md`'s CFn premise (#5204); at an older step, harden it and re-run
 (#5218). A GREEN pre-fix run BLOCKS the merge: rework the arm so the symptom reaches AWS
@@ -106,11 +107,12 @@ redirect onto the file truncates it even when `git show` fails:
 ```bash
 git -C <MAIN_CHECKOUT> worktree add --detach <MAIN_CHECKOUT>/.claude/worktrees/probe-<PR> <final sha>
 bash -c 'P=<MAIN_CHECKOUT>/.claude/worktrees/probe-<PR>; B=$(git -C "$P" merge-base origin/main HEAD)
+[ -n "$B" ] || { echo "no merge base - nothing reverted"; exit 1; }
 for f in $(git -C "$P" diff --name-only --no-renames --diff-filter=M "$B" HEAD -- src/); do
   git -C "$P" show "$B:$f" > "$P/$f.pre" && mv "$P/$f.pre" "$P/$f"
-done; git -C "$P" status --short'
+done; git -C "$P" status --short'   # must list every ` M` src/ file of the diff
 # then in that tree: mise trust && mise install && vp install && vp run build,
-# run the fixture, and afterwards:
+# run the fixture (a hook / CI BEFORE tree runs that command), and afterwards:
 git -C <MAIN_CHECKOUT> worktree remove --force <MAIN_CHECKOUT>/.claude/worktrees/probe-<PR>
 ```
 
