@@ -81,6 +81,7 @@ import {
   type _InstanceType,
   type VolumeType,
   type BlockDeviceMapping,
+  type EnaSrdSpecificationRequest,
   type DescribeSecurityGroupRulesResult,
   type IpPermission,
   type SecurityGroupRule,
@@ -8176,6 +8177,27 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
+  /**
+   * Map the CFn `AWS::EC2::Instance.BlockDeviceMappings` list onto
+   * RunInstances' `BlockDeviceMappings` input. Every member CFn's schema
+   * declares is mapped (issue #5445: only DeviceName and
+   * Ebs.{VolumeSize,VolumeType,DeleteOnTermination} used to reach AWS, so a
+   * volume declared `Encrypted` / with a `KmsKeyId` was created unencrypted
+   * unless the account default said otherwise):
+   *
+   * - `Ebs.{DeleteOnTermination,Encrypted,Iops,KmsKeyId,SnapshotId,
+   *   VolumeSize,VolumeType}` -- CFn's `Ebs` definition is closed
+   *   (`additionalProperties: false`) and has no `Throughput`; CDK's L2
+   *   warns `throughputNotSupported` and `CfnInstance` never emits it.
+   * - `VirtualName` -- instance-store mappings (`ephemeralN`).
+   * - `NoDevice` -- an empty object `{}` in CFn; the SDK member is a string
+   *   whose presence suppresses the AMI's mapping, so any present value maps
+   *   to `""`.
+   *
+   * Booleans and integers may arrive stringly typed from an
+   * intrinsic-resolved value, so they are coerced at the wire boundary.
+   * `DeleteOnTermination` keeps its pre-#5445 default of `true` when absent.
+   */
   private buildBlockDeviceMappings(
     properties: Record<string, unknown>
   ): BlockDeviceMapping[] | undefined {
@@ -8184,17 +8206,30 @@ export class EC2Provider implements ResourceProvider {
       | undefined;
     if (!mappings || !Array.isArray(mappings)) return undefined;
 
-    return mappings.map((m) => {
+    return mappings.map((entry) => {
+      const m = (entry ?? {}) as Record<string, unknown>;
       const ebs = m['Ebs'] as Record<string, unknown> | undefined;
       const result: BlockDeviceMapping = {
         DeviceName: m['DeviceName'] as string,
       };
+      if (typeof m['VirtualName'] === 'string') {
+        result.VirtualName = m['VirtualName'];
+      }
+      if (m['NoDevice'] !== undefined && m['NoDevice'] !== null) {
+        result.NoDevice = '';
+      }
       if (ebs) {
         result.Ebs = {
-          VolumeSize: ebs['VolumeSize'] as number | undefined,
+          VolumeSize: this.coerceNumber(ebs['VolumeSize']),
           VolumeType: ebs['VolumeType'] as VolumeType | undefined,
-          DeleteOnTermination: (ebs['DeleteOnTermination'] as boolean) ?? true,
+          DeleteOnTermination: this.coerceBool(ebs['DeleteOnTermination']) ?? true,
         };
+        const encrypted = this.coerceBool(ebs['Encrypted']);
+        if (encrypted !== undefined) result.Ebs.Encrypted = encrypted;
+        const iops = this.coerceNumber(ebs['Iops']);
+        if (iops !== undefined) result.Ebs.Iops = iops;
+        if (typeof ebs['KmsKeyId'] === 'string') result.Ebs.KmsKeyId = ebs['KmsKeyId'];
+        if (typeof ebs['SnapshotId'] === 'string') result.Ebs.SnapshotId = ebs['SnapshotId'];
       }
       return result;
     });
@@ -8328,8 +8363,31 @@ export class EC2Provider implements ResourceProvider {
           : undefined,
         SecondaryPrivateIpAddressCount: this.coerceNumber(ni['SecondaryPrivateIpAddressCount']),
       };
+      const enaSrd = this.buildEnaSrdSpecification(ni['EnaSrdSpecification']);
+      if (enaSrd !== undefined) spec.EnaSrdSpecification = enaSrd;
       return spec;
     });
+  }
+
+  /**
+   * Map a CFn `NetworkInterfaces[].EnaSrdSpecification` (ENA Express) onto
+   * the RunInstances `EnaSrdSpecificationRequest` (issue #5445: it used to be
+   * dropped on create). Field names match; the booleans are coerced. Returns
+   * undefined when the block is absent or sets nothing.
+   */
+  private buildEnaSrdSpecification(raw: unknown): EnaSrdSpecificationRequest | undefined {
+    if (raw === null || typeof raw !== 'object') return undefined;
+    const spec = raw as Record<string, unknown>;
+    const result: EnaSrdSpecificationRequest = {};
+    const enabled = this.coerceBool(spec['EnaSrdEnabled']);
+    if (enabled !== undefined) result.EnaSrdEnabled = enabled;
+    const udp = spec['EnaSrdUdpSpecification'];
+    if (udp !== null && typeof udp === 'object') {
+      const udpEnabled = this.coerceBool((udp as Record<string, unknown>)['EnaSrdUdpEnabled']);
+      if (udpEnabled !== undefined)
+        result.EnaSrdUdpSpecification = { EnaSrdUdpEnabled: udpEnabled };
+    }
+    return Object.keys(result).length > 0 ? result : undefined;
   }
 
   /**

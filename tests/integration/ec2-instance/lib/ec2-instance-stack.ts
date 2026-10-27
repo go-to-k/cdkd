@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as kms from 'aws-cdk-lib/aws-kms';
 
 /**
  * EC2 Instance example stack
@@ -148,10 +149,40 @@ export class Ec2InstanceStack extends cdk.Stack {
     // AWS; verify.sh asserts the instance stays on the SDK path (before
     // #1281 the unhandled property routed it to Cloud Control) and that
     // the public IP the association asked for actually exists.
+    // Issue #5445: a fixture-owned customer managed key for the data volume
+    // below. DESTROY + the 7-day minimum window so the stack's destroy
+    // schedules it for deletion rather than retaining it.
+    const ebsKey = new kms.Key(this, 'EbsKey', {
+      description: 'cdkd ec2-instance integ (issue #5445): EBS data volume CMK',
+      pendingWindow: cdk.Duration.days(7),
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     const publicInstance = new ec2.CfnInstance(this, 'PublicInstance', {
       imageId: ami,
       instanceType: 't3.nano',
       availabilityZone: vpc.publicSubnets[0].availabilityZone,
+      // Issue #5445: before the fix only DeviceName and
+      // Ebs.{VolumeSize,VolumeType,DeleteOnTermination} reached RunInstances,
+      // so this volume launched without the CMK and at the gp3 baseline of
+      // 3000 IOPS. verify.sh reads it back with DescribeVolumes: KmsKeyId must
+      // be THIS key (an account's encryption-by-default would satisfy
+      // `Encrypted` alone, never the key) and Iops must be 3500, not the
+      // baseline. 8 GiB because gp3 caps IOPS at 500 per GiB. No Throughput:
+      // CloudFormation's AWS::EC2::Instance Ebs has none.
+      blockDeviceMappings: [
+        {
+          deviceName: '/dev/sdf',
+          ebs: {
+            encrypted: true,
+            kmsKeyId: ebsKey.keyArn,
+            volumeType: 'gp3',
+            volumeSize: 8,
+            iops: 3500,
+            deleteOnTermination: true,
+          },
+        },
+      ],
       networkInterfaces: [
         {
           deviceIndex: '0',
@@ -166,6 +197,11 @@ export class Ec2InstanceStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'PublicInstanceId', {
       value: publicInstance.ref,
       description: 'NetworkInterfaces-shaped EC2 Instance ID (issue #1281)',
+    });
+
+    new cdk.CfnOutput(this, 'EbsKeyArn', {
+      value: ebsKey.keyArn,
+      description: 'CMK the #5445 data volume must be encrypted with',
     });
 
     // Issue #3097: a RAW L1 security group declared with NO `vpcId`. AWS puts
