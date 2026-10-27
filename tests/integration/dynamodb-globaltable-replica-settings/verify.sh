@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd GlobalTable replica settings integ (issue #5355).
+# verify.sh — cdkd GlobalTable replica settings integ (issues #5355, #5365).
 #
 # A two-region `TableV2` renders its KMS key, table class and deletion
 # protection PER REPLICA. cdkd read the key and the class under names the CFn
@@ -9,22 +9,35 @@
 # replica's `DeletionProtectionEnabled`. Removing `SSESpecification` or a
 # `TableClass` reset nothing, where CloudFormation resets both.
 #
+# Issue #5365: a replica's point-in-time recovery, Contributor Insights,
+# Kinesis stream and the table / stream resource policies were never sent, for
+# the deploy region's table or the replica. Both replicas declare the first
+# four from Phase 1 (CloudFormation refuses a table resource policy in the
+# deploy that creates a replica, so that one arrives in Phase 2b).
+#
 # Phases:
 #   1. Deploy: customer managed keys (one per region), STANDARD_INFREQUENT_ACCESS,
 #      replica protected. Assert each region's table holds ITS key and the
 #      class, and the second region's table is protected (a pre-fix binary
-#      fails every one of these).
+#      fails every one of these). Assert each region holds point-in-time
+#      recovery (10 days), Contributor Insights, streaming to ITS region's
+#      Kinesis stream and a stream resource policy (#5365).
 #   2. Turn the replica's protection off out of band (a replica deployed by a
 #      pre-fix binary), then deploy an ordinary change (`tag`). Assert the
 #      unchanged `true` is converged back on, and that the replica's class and
-#      key, which already match, drew no corrective replica update.
+#      key, which already match, drew no corrective replica update. Point-in-
+#      time recovery is turned off out of band too, and must come back on
+#      (#5365), with no correction for the four settings AWS still holds.
+#  2b. `tag,policy`: a table resource policy on both replicas (#5365).
 #   3. `tag,rotated`: a second customer managed key per region. Assert each
 #      region holds its new key, sent as one every-region ReplicaUpdates call.
 #   4. `tag,managed`: customer managed keys -> the AWS managed key. Assert
 #      each region's table is on ITS region's AWS managed key, class kept.
-#   5. `tag,removed`: no key, no class, no protection. Assert both regions
-#      leave KMS encryption, read STANDARD, the replica is unprotected, and
-#      cdkd warned that it auto-disabled the replica's protection.
+#   5. `tag,removed`: no key, no class, no protection, none of the #5365
+#      settings. Assert both regions leave KMS encryption, read STANDARD, the
+#      replica is unprotected, cdkd warned that it auto-disabled the replica's
+#      protection, and every #5365 setting reset as CloudFormation resets it
+#      (measured): PITR and insights off, streaming disabled, both policies gone.
 #   6. `tag,removed,protect`: protect the replica again.
 #   7. `destroy --remove-protection`: assert the table is gone in BOTH regions
 #      (the replica's guard is turned off before its drop) and the state file
@@ -93,6 +106,10 @@ REPLICA_ALIAS="alias/${STACK}-replica"
 # Tag on the keys this script creates, so a key whose alias was never
 # created can still be found by a later run's sweep.
 KEY_TAG="cdkd-integ-fixture"
+# Kinesis streams (#5365): the deploy region's is stack-created, the second
+# region's is created here.
+LOCAL_KINESIS="${STACK}-local"
+REPLICA_KINESIS="${STACK}-replica"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 LOG_DIR="$(mktemp -d)"
 
@@ -140,6 +157,69 @@ await_settings() { # usage: await_settings <region> <regex> <failure message>
   done
   echo "FAIL: $3 ($1 reads '${got}')" >&2
   exit 1
+}
+
+# "present" / "absent" for the resource policy on ARN $2 in region $1, or
+# "error:..." when the read fails for any other reason (never matched).
+policy_state() { # usage: policy_state <region> <arn>
+  local out
+  if out="$(aws dynamodb get-resource-policy --resource-arn "$2" --region "$1" \
+    --query 'RevisionId' --output text 2>&1)"; then
+    echo present
+    return 0
+  fi
+  case "${out}" in
+    *PolicyNotFoundException*) echo absent ;;
+    *) echo "error:$(printf '%s' "${out}" | tr '\n\t' '  ')" ;;
+  esac
+}
+
+# "<PITR status> <period> <insights status> <ACTIVE Kinesis streams | none>
+# <table policy> <stream policy>" for the table in region $1 (issue #5365).
+replica_settings() {
+  local d arn sarn pitr ci ks
+  d="$(aws dynamodb describe-table --table-name "${TABLE}" --region "$1" \
+    --query '[Table.TableArn, Table.LatestStreamArn]' --output text)" || return 1
+  arn="$(printf '%s' "${d}" | cut -f1)"
+  sarn="$(printf '%s' "${d}" | cut -f2)"
+  pitr="$(aws dynamodb describe-continuous-backups --table-name "${TABLE}" --region "$1" \
+    --query 'ContinuousBackupsDescription.PointInTimeRecoveryDescription.[PointInTimeRecoveryStatus, RecoveryPeriodInDays]' \
+    --output text)" || return 1
+  ci="$(aws dynamodb describe-contributor-insights --table-name "${TABLE}" --region "$1" \
+    --query 'ContributorInsightsStatus' --output text)" || return 1
+  ks="$(aws dynamodb describe-kinesis-streaming-destination --table-name "${TABLE}" --region "$1" \
+    --query "join(',', KinesisDataStreamDestinations[?DestinationStatus=='ACTIVE'].StreamArn)" \
+    --output text)" || return 1
+  printf '%s\t%s\t%s\t%s\t%s\n' "${pitr}" "${ci}" "${ks:-none}" \
+    "$(policy_state "$1" "${arn}")" "$(policy_state "$1" "${sarn}")"
+}
+
+# Poll until region $1's #5365 settings match the extended regex $2 (insights
+# and streaming pass through ENABLING / DISABLING), then FAIL with $3.
+await_replica() { # usage: await_replica <region> <regex> <failure message>
+  local i got
+  for i in $(seq 1 60); do
+    got="$(replica_settings "$1")" || got="(read failed)"
+    if printf '%s' "${got}" | grep -qE "$2"; then
+      echo "    $1: ${got}"
+      return 0
+    fi
+    sleep 10
+  done
+  echo "FAIL: $3 ($1 reads '${got}')" >&2
+  exit 1
+}
+
+# Delete Kinesis stream $2 in region $1 if it exists.
+retire_stream() { # usage: retire_stream <region> <stream name>
+  local out
+  if ! out="$(aws kinesis delete-stream --stream-name "$2" --enforce-consumer-deletion \
+    --region "$1" 2>&1)"; then
+    case "${out}" in
+      *ResourceNotFoundException*) ;;
+      *) echo "WARN: cleanup could not delete Kinesis stream $2 in $1: ${out}" >&2 ;;
+    esac
+  fi
 }
 
 deploy() { # usage: deploy <CDKD_TEST_UPDATE modes> <log file>
@@ -226,6 +306,9 @@ cleanup() {
   retire_key "${REGION}" "${LOCAL_ALIAS}2"
   retire_key "${SECOND_REGION}" "${REPLICA_ALIAS}"
   retire_key "${SECOND_REGION}" "${REPLICA_ALIAS}2"
+  # After the table: a streaming destination names the stream.
+  retire_stream "${REGION}" "${LOCAL_KINESIS}"
+  retire_stream "${SECOND_REGION}" "${REPLICA_KINESIS}"
   for arn in "${REPLICA_KEY_ARN:-}" "${REPLICA_KEY2_ARN:-}"; do
     [ -n "${arn}" ] && aws kms schedule-key-deletion --key-id "${arn}" --pending-window-in-days 7 \
       --region "${SECOND_REGION}" >/dev/null 2>&1
@@ -280,6 +363,12 @@ sweep_previous_runs() {
       run_is_stale "${a}" || continue
       echo "    sweeping ${a} (${r})"
       retire_key "${r}" "${a}"
+    done
+    for k in $(aws kinesis list-streams --region "${r}" \
+      --query "StreamNames[?starts_with(@, '${BASE}-')]" --output text 2>/dev/null); do
+      run_is_stale "${k}" || continue
+      echo "    sweeping stream ${k} (${r})"
+      retire_stream "${r}" "${k}"
     done
     # Keys this script created whose alias never was (the run died between
     # create-key and create-alias): found by tag, aged by their description.
@@ -341,6 +430,15 @@ export CDKD_INTEG_REPLICA_KEY_ARN="${REPLICA_KEY_ARN}"
 export CDKD_INTEG_REPLICA_KEY2_ARN="${REPLICA_KEY2_ARN}"
 echo "    ${REPLICA_KEY_ARN} ${REPLICA_KEY2_ARN}"
 
+echo "==> Creating the ${SECOND_REGION} Kinesis stream (issue #5365)"
+aws kinesis create-stream --stream-name "${REPLICA_KINESIS}" \
+  --stream-mode-details StreamMode=ON_DEMAND --region "${SECOND_REGION}"
+aws kinesis wait stream-exists --stream-name "${REPLICA_KINESIS}" --region "${SECOND_REGION}"
+REPLICA_KINESIS_ARN="$(aws kinesis describe-stream-summary --stream-name "${REPLICA_KINESIS}" \
+  --region "${SECOND_REGION}" --query 'StreamDescriptionSummary.StreamARN' --output text)"
+export CDKD_INTEG_REPLICA_STREAM_ARN="${REPLICA_KINESIS_ARN}"
+echo "    ${REPLICA_KINESIS_ARN}"
+
 # --- Phase 1: deploy with every replica setting --------------------------
 echo "==> Phase 1: deploy (${REGION} + ${SECOND_REGION}): customer managed keys, STANDARD_INFREQUENT_ACCESS, replica protected"
 deploy "" "${LOG_DIR}/phase1.log"
@@ -353,6 +451,14 @@ await_settings "${REGION}" "^ENABLED	KMS	${LOCAL_KEY_ARN}	STANDARD_INFREQUENT_AC
   "Phase 1: the ${REGION} table is not on its customer managed key with STANDARD_INFREQUENT_ACCESS (issue #5355)"
 await_settings "${SECOND_REGION}" "^ENABLED	KMS	${REPLICA_KEY_ARN}	STANDARD_INFREQUENT_ACCESS	True$" \
   "Phase 1: the ${SECOND_REGION} replica is not on its customer managed key with STANDARD_INFREQUENT_ACCESS and deletion protection (issue #5355)"
+LOCAL_KINESIS_ARN="$(aws kinesis describe-stream-summary --stream-name "${LOCAL_KINESIS}" \
+  --region "${REGION}" --query 'StreamDescriptionSummary.StreamARN' --output text)"
+# A pre-fix binary sends none of these: PITR and insights read DISABLED, no
+# stream is ACTIVE, and the stream has no policy.
+await_replica "${REGION}" "^ENABLED	10	ENABLED	${LOCAL_KINESIS_ARN}	absent	present$" \
+  "Phase 1: the ${REGION} table lacks its point-in-time recovery, Contributor Insights, Kinesis stream or stream policy (issue #5365)"
+await_replica "${SECOND_REGION}" "^ENABLED	10	ENABLED	${REPLICA_KINESIS_ARN}	absent	present$" \
+  "Phase 1: the ${SECOND_REGION} replica lacks its point-in-time recovery, Contributor Insights, Kinesis stream or stream policy (issue #5365)"
 
 # --- Phase 2: an unchanged `true` is converged on the next update ---------
 echo "==> Phase 2: unprotect the replica out of band, then deploy an ordinary change"
@@ -377,6 +483,10 @@ if [ "${unprotected}" != "1" ]; then
 fi
 wait_settled
 await_settings "${SECOND_REGION}" "	False$" "Phase 2 premise: the out-of-band unprotect did not land"
+# A replica deployed by a pre-#5365 binary holds no point-in-time recovery.
+aws dynamodb update-continuous-backups --table-name "${TABLE}" --region "${SECOND_REGION}" \
+  --point-in-time-recovery-specification PointInTimeRecoveryEnabled=false >/dev/null
+await_replica "${SECOND_REGION}" "^DISABLED	" "Phase 2 premise: the out-of-band PITR disable did not land"
 deploy "tag" "${LOG_DIR}/phase2.log"
 wait_settled
 TABLE_ARN="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
@@ -399,8 +509,18 @@ for line in "The ${SECOND_REGION} replica of ${TABLE} already holds its declared
     exit 1
   fi
 done
-for line in "Bringing the ${SECOND_REGION} replica of ${TABLE} to its declared" \
-  "Setting the KMS key of every region of ${TABLE}"; do
+await_replica "${SECOND_REGION}" "^ENABLED	10	ENABLED	${REPLICA_KINESIS_ARN}	absent	present$" \
+  "Phase 2: the replica's unchanged point-in-time recovery was not converged back on (issue #5365)"
+if ! grep -qF "Bringing the ${SECOND_REGION} replica of ${TABLE} to its declared PointInTimeRecoverySpecification" "${LOG_DIR}/phase2.log"; then
+  echo "FAIL: Phase 2: missing the PITR correction debug line (issue #5365)" >&2
+  exit 1
+fi
+for line in "Bringing the ${SECOND_REGION} replica of ${TABLE} to its declared table class" \
+  "Setting the KMS key of every region of ${TABLE}" \
+  "Bringing the ${SECOND_REGION} replica of ${TABLE} to its declared ContributorInsightsSpecification" \
+  "Bringing the ${SECOND_REGION} replica of ${TABLE} to its declared KinesisStreamSpecification" \
+  "Bringing the ${SECOND_REGION} replica of ${TABLE} to its declared ReplicaStreamSpecification" \
+  "Bringing the ${REGION} replica of ${TABLE} to its declared"; do
   if grep -qF "${line}" "${LOG_DIR}/phase2.log"; then
     echo "FAIL: Phase 2: cdkd issued a corrective update for settings AWS already holds: '${line}' (issue #5355)" >&2
     exit 1
@@ -408,11 +528,20 @@ for line in "Bringing the ${SECOND_REGION} replica of ${TABLE} to its declared" 
 done
 echo "    no corrective replica update"
 
+# --- Phase 2b: a table resource policy on an existing replica (#5365) -----
+echo "==> Phase 2b: add a table resource policy to both replicas"
+deploy "tag,policy" "${LOG_DIR}/phase2b.log"
+wait_settled
+await_replica "${REGION}" "^ENABLED	10	ENABLED	${LOCAL_KINESIS_ARN}	present	present$" \
+  "Phase 2b: the ${REGION} table has no resource policy (issue #5365)"
+await_replica "${SECOND_REGION}" "^ENABLED	10	ENABLED	${REPLICA_KINESIS_ARN}	present	present$" \
+  "Phase 2b: the ${SECOND_REGION} replica has no resource policy (issue #5365)"
+
 # --- Phase 3: rotate to a second customer managed key in each region -------
 # DynamoDB takes this only as ONE ReplicaUpdates call naming every region's
 # key; SSESpecification and a one-replica Update are refused (measured).
 echo "==> Phase 3: rotate both regions to their second customer managed key"
-deploy "tag,rotated" "${LOG_DIR}/phase3.log"
+deploy "tag,policy,rotated" "${LOG_DIR}/phase3.log"
 wait_settled
 LOCAL_KEY2_ARN="$(aws kms describe-key --key-id "${LOCAL_ALIAS}2" --region "${REGION}" \
   --query 'KeyMetadata.Arn' --output text)"
@@ -427,7 +556,7 @@ fi
 
 # --- Phase 4: customer managed keys -> the AWS managed key -----------------
 echo "==> Phase 4: move both regions to the AWS managed key"
-deploy "tag,managed" "${LOG_DIR}/phase4.log"
+deploy "tag,policy,managed" "${LOG_DIR}/phase4.log"
 wait_settled
 LOCAL_MANAGED_ARN="$(aws kms describe-key --key-id alias/aws/dynamodb --region "${REGION}" \
   --query 'KeyMetadata.Arn' --output text)"
@@ -453,6 +582,11 @@ if ! grep -qF "Auto-disabling DeletionProtectionEnabled on the ${SECOND_REGION} 
   exit 1
 fi
 echo "    auto-disable warning printed"
+# CloudFormation's removal semantics (measured for #5365): everything off.
+await_replica "${REGION}" "^DISABLED	None	DISABLED	none	absent	absent$" \
+  "Phase 5: the ${REGION} table did not reset its point-in-time recovery, insights, Kinesis stream and policies (issue #5365)"
+await_replica "${SECOND_REGION}" "^DISABLED	None	DISABLED	none	absent	absent$" \
+  "Phase 5: the ${SECOND_REGION} replica did not reset its point-in-time recovery, insights, Kinesis stream and policies (issue #5365)"
 
 # --- Phase 6: protect the replica again ----------------------------------
 echo "==> Phase 6: protect the replica again"
@@ -487,4 +621,4 @@ for k in "${LOCAL_KEY_ARN}" "${LOCAL_KEY2_ARN}"; do
 done
 echo "    both stack keys pending deletion"
 
-echo "[verify] PASS — GlobalTable replica KMS key, table class and deletion protection reach AWS and reset on removal (issue #5355), all 7 phases passed"
+echo "[verify] PASS — GlobalTable replica KMS key, table class and deletion protection (issue #5355) and point-in-time recovery, Contributor Insights, Kinesis stream and resource policies (issue #5365) reach AWS and reset on removal, all phases passed"

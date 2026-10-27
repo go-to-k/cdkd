@@ -106,7 +106,7 @@ dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table 
 dynamodb-fix-forward-orphan	2026-10-19T10:52:49Z	PASS	170	verify.sh	rc ok, orph clean
 dynamodb-globaltable	2026-10-20T03:28:23Z	PASS	1478	verify.sh	deploy+destroy clean, 0 orphans
 dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc ok, orph clean (#4283 PR #4449)
-dynamodb-globaltable-replica-settings	2026-10-26T19:43:23Z	PASS	1022	verify.sh	rc ok, orph clean, 7 phases
+dynamodb-globaltable-replica-settings	2026-10-27T08:00:07Z	PASS	1042	verify.sh	rc ok, orph clean, 7 phases
 dynamodb-gsi-update	2026-10-24T19:26:15Z	PASS	1235	verify.sh	rc ok, orph clean, #5266 tail-c
 dynamodb-ondemand	2026-10-23T16:23:34Z	PASS	268	verify.sh	OnDemandThroughput/ceiling edits/backfills verified, clean destroy, orph clean
 dynamodb-sse	2026-10-16T08:15:12Z	PASS	45	verify.sh	rc ok, orph clean (#3341 slice 4995)

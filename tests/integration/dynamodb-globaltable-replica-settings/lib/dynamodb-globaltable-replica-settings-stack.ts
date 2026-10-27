@@ -1,6 +1,8 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ddb from 'aws-cdk-lib/aws-dynamodb';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kinesis from 'aws-cdk-lib/aws-kinesis';
 import * as kms from 'aws-cdk-lib/aws-kms';
 
 export interface DynamoDBGlobalTableReplicaSettingsStackProps extends cdk.StackProps {
@@ -10,6 +12,8 @@ export interface DynamoDBGlobalTableReplicaSettingsStackProps extends cdk.StackP
   readonly replicaKeyArn: string;
   /** A second customer managed key in `secondRegion`, for the `rotated` mode. */
   readonly replicaKey2Arn: string;
+  /** A Kinesis data stream in `secondRegion`, created by verify.sh (issue #5365). */
+  readonly replicaStreamArn: string;
 }
 
 /**
@@ -19,16 +23,23 @@ export interface DynamoDBGlobalTableReplicaSettingsStackProps extends cdk.StackP
  * the first two under names the CFn schema does not have and never sent the
  * third for a cross-region replica.
  *
- * covers: AWS::DynamoDB::GlobalTable, AWS::KMS::Key, AWS::KMS::Alias
+ * Issue #5365 adds the per-replica settings cdkd never sent: point-in-time
+ * recovery, Contributor Insights, a Kinesis stream and a stream resource policy
+ * on both replicas from the first deploy, and a table resource policy (which
+ * CloudFormation refuses in the deploy that creates a replica) under `policy`.
+ *
+ * covers: AWS::DynamoDB::GlobalTable, AWS::KMS::Key, AWS::KMS::Alias, AWS::Kinesis::Stream
  *
  * `CDKD_TEST_UPDATE` (comma-separated):
  *   - `tag`:     tag the table, an ordinary change that drives `update()`;
  *   - `rotated`: move both regions to a second customer managed key;
  *   - `managed`: move from the customer managed keys to the AWS managed key
  *                (`TableEncryptionV2.awsManagedKey()`), class kept;
+ *   - `policy`:  a table resource policy on both replicas (issue #5365);
  *   - `removed`: drop the customer managed key (no `encryption`), the
  *                `tableClass` and the replica's `deletionProtection` — the
- *                removals CloudFormation resets (measured for #5355);
+ *                removals CloudFormation resets (measured for #5355) — and
+ *                every #5365 setting, which CloudFormation resets too;
  *   - `protect`: with `removed`, protect the replica again (destroy then
  *                needs `--remove-protection`).
  *
@@ -54,6 +65,38 @@ export class DynamoDBGlobalTableReplicaSettingsStack extends cdk.Stack {
       pendingWindow: cdk.Duration.days(7),
     });
 
+    const localStream = new kinesis.Stream(this, 'LocalStream', {
+      streamName: `${this.stackName}-local`,
+      streamMode: kinesis.StreamMode.ON_DEMAND,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    // Account-root grants: valid, and inert for anyone outside the account.
+    const grant = (action: string): iam.PolicyDocument =>
+      new iam.PolicyDocument({
+        statements: [
+          new iam.PolicyStatement({
+            principals: [new iam.AccountRootPrincipal()],
+            actions: [action],
+            resources: ['*'],
+          }),
+        ],
+      });
+    // The same five settings on each replica (issue #5365), each in its own
+    // region; `removed` drops them all.
+    const settings = (stream: kinesis.IStream): ddb.TableOptionsV2 =>
+      removed
+        ? {}
+        : {
+            pointInTimeRecoverySpecification: {
+              pointInTimeRecoveryEnabled: true,
+              recoveryPeriodInDays: 10,
+            },
+            contributorInsightsSpecification: { enabled: true },
+            kinesisStream: stream,
+            streamResourcePolicy: grant('dynamodb:GetRecords'),
+            ...(modes.has('policy') && { resourcePolicy: grant('dynamodb:GetItem') }),
+          };
+
     const table = new ddb.TableV2(this, 'ReplicaSettingsTable', {
       tableName: `${this.stackName}-table`,
       partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
@@ -70,10 +113,12 @@ export class DynamoDBGlobalTableReplicaSettingsStack extends cdk.Stack {
               }),
         tableClass: ddb.TableClass.STANDARD_INFREQUENT_ACCESS,
       }),
+      ...settings(localStream),
       replicas: [
         {
           region: props.secondRegion,
           ...((!removed || modes.has('protect')) && { deletionProtection: true }),
+          ...settings(kinesis.Stream.fromStreamArn(this, 'ReplicaStream', props.replicaStreamArn)),
         },
       ],
     });

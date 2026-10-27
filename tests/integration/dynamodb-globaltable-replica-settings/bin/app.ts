@@ -9,7 +9,7 @@ const runId = process.env.CDKD_INTEG_RUN_ID;
 const stackName = `CdkdDynamoDBGlobalTableReplicaSettingsExample${runId ? `-${runId}` : ''}`;
 new DynamoDBGlobalTableReplicaSettingsStack(app, stackName, {
   description:
-    'cdkd GlobalTable replica KMS key, table class and deletion protection (issue #5355)',
+    'cdkd GlobalTable replica KMS key, table class, deletion protection (issue #5355) and PITR / insights / Kinesis / policies (issue #5365)',
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region,
@@ -24,4 +24,7 @@ new DynamoDBGlobalTableReplicaSettingsStack(app, stackName, {
   replicaKey2Arn:
     process.env.CDKD_INTEG_REPLICA_KEY2_ARN ??
     'arn:aws:kms:us-west-2:111111111111:key/00000000-0000-0000-0000-000000000001',
+  replicaStreamArn:
+    process.env.CDKD_INTEG_REPLICA_STREAM_ARN ??
+    'arn:aws:kinesis:us-west-2:111111111111:stream/placeholder',
 });

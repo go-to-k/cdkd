@@ -5928,6 +5928,7 @@
           ],
           "seededBy": [
             "applyReplicaKeys",
+            "applyReplicaSettings",
             "canonicalizeDesiredProperties",
             "convergeReplicaDeletionProtection",
             "convergeReplicaSettings",

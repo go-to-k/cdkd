@@ -5253,6 +5253,7 @@
         "cache-streaming",
         "cc-write-only-create-only",
         "destroy-nested-cross-region",
+        "dynamodb-globaltable-replica-settings",
         "dynamodb-ondemand",
         "kinesis-esm-filter",
         "kinesis-stream-mode-switch",
@@ -5273,6 +5274,10 @@
           "l2"
         ],
         "destroy-nested-cross-region": [
+          "l2",
+          "literal"
+        ],
+        "dynamodb-globaltable-replica-settings": [
           "l2",
           "literal"
         ],
