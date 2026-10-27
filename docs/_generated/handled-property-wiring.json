@@ -11310,6 +11310,8 @@
       "gaps": [],
       "blindSpots": [
         "computed key in applyUpdate()",
+        "computed key in unappliedS3BackupModeDestination()",
+        "computed key in warnUnappliedS3BackupMode()",
         "rest-destructure in withRecordedEncryption()"
       ]
     },

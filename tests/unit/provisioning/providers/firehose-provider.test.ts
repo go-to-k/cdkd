@@ -713,6 +713,181 @@ describe('FirehoseProvider', () => {
     });
   });
 
+  describe('update: S3BackupMode on an OpenSearch / Elasticsearch destination (#5386)', () => {
+    const DESCRIPTIONS: Record<string, string> = {
+      ElasticsearchDestinationConfiguration: 'ElasticsearchDestinationDescription',
+      AmazonopensearchserviceDestinationConfiguration:
+        'AmazonopensearchserviceDestinationDescription',
+      AmazonOpenSearchServerlessDestinationConfiguration:
+        'AmazonOpenSearchServerlessDestinationDescription',
+    };
+    const DEST = 'AmazonOpenSearchServerlessDestinationConfiguration';
+
+    /** Route each call by command; `failRead` rejects the Describe at that 1-based index. */
+    function mockStream(destKey: string, liveMode: string | undefined, failRead?: number): void {
+      let reads = 0;
+      mockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+        if (cmd.constructor.name !== 'DescribeDeliveryStreamCommand') return {};
+        reads += 1;
+        if (reads === failRead) throw new Error('throttled');
+        return {
+          DeliveryStreamDescription: {
+            DeliveryStreamARN: 'arn:aws:firehose:us-east-1:123456789012:deliverystream/s',
+            VersionId: '1',
+            Destinations: [
+              {
+                DestinationId: 'destinationId-000000000001',
+                [DESCRIPTIONS[destKey] ?? 'ExtendedS3DestinationDescription']: {
+                  ...(liveMode !== undefined && { S3BackupMode: liveMode }),
+                },
+              },
+            ],
+          },
+        };
+      });
+    }
+
+    function backupWarnings(): string[] {
+      const warn = getLogger().child('FirehoseProvider').warn as ReturnType<typeof vi.fn>;
+      return warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('S3BackupMode'));
+    }
+
+    function describeCount(): number {
+      return mockSend.mock.calls.filter(
+        (c) => (c[0] as { constructor: { name: string } }).constructor.name === 'DescribeDeliveryStreamCommand'
+      ).length;
+    }
+
+    const bag = (destKey: string, extra: Record<string, unknown>) => ({
+      [destKey]: { IndexName: 'idx', RoleARN: 'arn:aws:iam::123456789012:role/r', ...extra },
+    });
+
+    it.each(Object.keys(DESCRIPTIONS))(
+      '%s: a changed mode the stream does not hold is warned, and the declared value is recorded',
+      async (destKey) => {
+        mockStream(destKey, 'FailedDocumentsOnly');
+        const result = await provider.update(
+          'MyStream',
+          's',
+          'AWS::KinesisFirehose::DeliveryStream',
+          bag(destKey, { S3BackupMode: 'AllDocuments' }),
+          bag(destKey, { S3BackupMode: 'FailedDocumentsOnly' }),
+          { changedProperties: new Set([destKey]) }
+        );
+        const warnings = backupWarnings();
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain(`MyStream (AWS::KinesisFirehose::DeliveryStream): ${destKey}.S3BackupMode changed`);
+        expect(warnings[0]).toContain('keeps its current mode (FailedDocumentsOnly), as CloudFormation does');
+        expect(warnings[0]).toContain('new DeliveryStreamName or a new logical id');
+        // The update payload has no member for it, so nothing names the mode on the wire.
+        const update = mockSend.mock.calls.find(
+          (c) => (c[0] as { constructor: { name: string } }).constructor.name === 'UpdateDestinationCommand'
+        );
+        expect(JSON.stringify(update?.[0].input)).not.toContain('S3BackupMode');
+        // State records the declared value, as CloudFormation's stored template does.
+        expect(result.effectiveProperties).toBeUndefined();
+      }
+    );
+
+    it('no warning, and no extra read, when the mode is unchanged', async () => {
+      mockStream(DEST, 'FailedDocumentsOnly');
+      await provider.update(
+        'MyStream',
+        's',
+        'AWS::KinesisFirehose::DeliveryStream',
+        bag(DEST, { S3BackupMode: 'FailedDocumentsOnly', IndexName: 'idx2' }),
+        bag(DEST, { S3BackupMode: 'FailedDocumentsOnly' })
+      );
+      expect(backupWarnings()).toEqual([]);
+      // One read for UpdateDestination's version id, one for the result envelope.
+      expect(describeCount()).toBe(2);
+    });
+
+    it('no warning when the live stream already holds the declared mode', async () => {
+      mockStream(DEST, 'AllDocuments');
+      await provider.update(
+        'MyStream',
+        's',
+        'AWS::KinesisFirehose::DeliveryStream',
+        bag(DEST, { S3BackupMode: 'AllDocuments' }),
+        bag(DEST, { S3BackupMode: 'FailedDocumentsOnly' })
+      );
+      expect(backupWarnings()).toEqual([]);
+    });
+
+    it('a failed read-back still warns, without naming a live mode, and the update succeeds', async () => {
+      // Read 1: UpdateDestination's version id. Read 2: the confirmation.
+      mockStream(DEST, 'FailedDocumentsOnly', 2);
+      const result = await provider.update(
+        'MyStream',
+        's',
+        'AWS::KinesisFirehose::DeliveryStream',
+        bag(DEST, { S3BackupMode: 'AllDocuments' }),
+        bag(DEST, { S3BackupMode: 'FailedDocumentsOnly' })
+      );
+      expect(result.wasReplaced).toBe(false);
+      const warnings = backupWarnings();
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('keeps its current mode, as CloudFormation does');
+    });
+
+    it('no warning when the engine did not report the destination as changed', async () => {
+      mockStream(DEST, 'FailedDocumentsOnly');
+      await provider.update(
+        'MyStream',
+        's',
+        'AWS::KinesisFirehose::DeliveryStream',
+        { ...bag(DEST, { S3BackupMode: 'AllDocuments' }), Tags: [] },
+        { ...bag(DEST, { S3BackupMode: 'FailedDocumentsOnly' }), Tags: [] },
+        { changedProperties: new Set(['Tags']) }
+      );
+      expect(backupWarnings()).toEqual([]);
+    });
+
+    it('a removed mode compares against the FailedDocumentsOnly default', async () => {
+      mockStream(DEST, 'AllDocuments');
+      await provider.update(
+        'MyStream',
+        's',
+        'AWS::KinesisFirehose::DeliveryStream',
+        bag(DEST, {}),
+        bag(DEST, { S3BackupMode: 'AllDocuments' })
+      );
+      expect(backupWarnings()).toHaveLength(1);
+
+      vi.clearAllMocks();
+      mockStream(DEST, 'FailedDocumentsOnly');
+      await provider.update(
+        'MyStream',
+        's',
+        'AWS::KinesisFirehose::DeliveryStream',
+        bag(DEST, {}),
+        bag(DEST, { S3BackupMode: 'AllDocuments' })
+      );
+      expect(backupWarnings()).toEqual([]);
+    });
+
+    it('an ExtendedS3 S3BackupMode change is sent, not warned', async () => {
+      const destKey = 'ExtendedS3DestinationConfiguration';
+      mockStream(destKey, undefined);
+      const s3 = { BucketARN: 'arn:aws:s3:::b', RoleARN: 'arn:aws:iam::123456789012:role/r' };
+      await provider.update(
+        'MyStream',
+        's',
+        'AWS::KinesisFirehose::DeliveryStream',
+        { [destKey]: { ...s3, S3BackupMode: 'Enabled' } },
+        { [destKey]: { ...s3, S3BackupMode: 'Disabled' } }
+      );
+      expect(backupWarnings()).toEqual([]);
+      const update = mockSend.mock.calls.find(
+        (c) =>
+          (c[0] as { constructor: { name: string } }).constructor.name ===
+          'UpdateDestinationCommand'
+      );
+      expect(update?.[0].input.ExtendedS3DestinationUpdate.S3BackupMode).toBe('Enabled');
+    });
+  });
+
   describe('delete', () => {
     const notFound = () =>
       new ResourceNotFoundException({ $metadata: {}, message: 'Delivery stream not found' });
