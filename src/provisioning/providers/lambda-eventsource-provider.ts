@@ -1157,7 +1157,20 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     // the stream kinds and Kafka only, so the reset is gated the same way.
     if (wasSet('Enabled')) updateParams.Enabled = true;
     if (wasSet('BisectBatchOnFunctionError')) {
-      if (KINDS_WITH_BISECT.has(prevKind)) updateParams.BisectBatchOnFunctionError = false;
+      // Kafka / MSK take the Bisect / retry error-handling parameters in
+      // provisioned mode only (Lambda API reference; not measured by an A/B).
+      // When this update leaves provisioned mode (ProvisionedPollerConfig is
+      // no longer declared, so it is cleared above with `{}`), `false` could
+      // make AWS refuse the WHOLE call and take every other removal reset with
+      // it. So reset it only while provisioned mode stays declared.
+      const kafkaWithoutProvisionedMode =
+        prevKind === 'kafka' && properties['ProvisionedPollerConfig'] === undefined;
+      if (KINDS_WITH_BISECT.has(prevKind) && !kafkaWithoutProvisionedMode)
+        updateParams.BisectBatchOnFunctionError = false;
+      else if (kafkaWithoutProvisionedMode)
+        log.warn(
+          safeMsg`${logicalId} (${resourceType}): BisectBatchOnFunctionError was removed from the template while the Kafka mapping does not declare ProvisionedPollerConfig, so cdkd does not reset it (Kafka takes it in provisioned mode only) and the current AWS value is kept.`
+        );
       // A source cdkd cannot classify gets no reset (`false` may be refused
       // there), so name the kept value rather than drop the removal silently.
       else if (prevKind === 'unknown')
@@ -1173,7 +1186,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     // nothing and says so, rather than report a removal that did not happen.
     if (wasSet('DocumentDBEventSourceConfig'))
       log.warn(
-        safeMsg`${logicalId} (${resourceType}): DocumentDBEventSourceConfig was removed from the template; the mapping keeps its current DocumentDB settings. Declare the block with the values you want instead; this is reported only once.`
+        safeMsg`${logicalId} (${resourceType}): DocumentDBEventSourceConfig was removed from the template; the mapping keeps its current DocumentDB settings. Declare the block with the values you want instead.`
       );
 
     const updateResp = await this.lambdaClient.send(

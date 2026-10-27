@@ -889,7 +889,6 @@ describe('LambdaEventSourceMappingProvider', () => {
     it.each([
       ['DynamoDB', 'arn:aws:dynamodb:us-east-1:123:table/t/stream/2026-01-01T00:00:00.000'],
       ['Kinesis', 'arn:aws:kinesis:us-east-1:123:stream/s'],
-      ['MSK', KAFKA_ARN],
     ])('sends BisectBatchOnFunctionError: false on a %s removal', async (_kind, arn) => {
       await provider.update(
         'L',
@@ -902,18 +901,56 @@ describe('LambdaEventSourceMappingProvider', () => {
       expect(getUpdateInput()['BisectBatchOnFunctionError']).toBe(false);
     });
 
-    it('sends BisectBatchOnFunctionError: false on a self-managed Kafka removal', async () => {
-      const kafka = {
-        FunctionName: 'fn',
-        SelfManagedEventSource: { Endpoints: { KafkaBootstrapServers: ['b:9092'] } },
-      };
-      await provider.update('L', UUID, 'AWS::Lambda::EventSourceMapping', kafka, {
-        ...kafka,
-        BisectBatchOnFunctionError: true,
-      });
+    // Kafka / MSK take Bisect in provisioned mode only (Lambda API reference,
+    // unmeasured), so the reset is sent only while ProvisionedPollerConfig
+    // stays declared.
+    it.each([
+      ['self-managed Kafka', { SelfManagedEventSource: { Endpoints: { KafkaBootstrapServers: ['b:9092'] } } }],
+      ['MSK', { EventSourceArn: KAFKA_ARN }],
+    ])(
+      'sends BisectBatchOnFunctionError: false on a %s removal while provisioned mode stays declared',
+      async (_kind, source) => {
+        const kafka = {
+          FunctionName: 'fn',
+          ...source,
+          ProvisionedPollerConfig: { MinimumPollers: 1, MaximumPollers: 2 },
+        };
+        await provider.update('L', UUID, 'AWS::Lambda::EventSourceMapping', kafka, {
+          ...kafka,
+          BisectBatchOnFunctionError: true,
+        });
 
-      expect(getUpdateInput()['BisectBatchOnFunctionError']).toBe(false);
-    });
+        const input = getUpdateInput();
+        expect(input['BisectBatchOnFunctionError']).toBe(false);
+        expect(input['ProvisionedPollerConfig']).toEqual({ MinimumPollers: 1, MaximumPollers: 2 });
+      }
+    );
+
+    it.each([
+      ['removed in the same update', { ProvisionedPollerConfig: { MinimumPollers: 1, MaximumPollers: 2 } }],
+      ['never declared', {}],
+    ])(
+      'warns and sends no BisectBatchOnFunctionError on a Kafka removal when ProvisionedPollerConfig is %s',
+      async (_case, previousExtra) => {
+        const { getLogger } = await import('../../../src/utils/logger.js');
+        const warn = vi.mocked(getLogger().child('x').warn);
+        const kafka = { FunctionName: 'fn', EventSourceArn: KAFKA_ARN };
+        await provider.update('L', UUID, 'AWS::Lambda::EventSourceMapping', kafka, {
+          ...kafka,
+          ...previousExtra,
+          BisectBatchOnFunctionError: true,
+        });
+
+        expect(getUpdateInput()['BisectBatchOnFunctionError']).toBeUndefined();
+        expect(
+          warn.mock.calls.filter((c) =>
+            String(c[0]).includes(
+              'L (AWS::Lambda::EventSourceMapping): BisectBatchOnFunctionError was removed from the template while the Kafka mapping does not declare ProvisionedPollerConfig'
+            )
+          )
+        ).toHaveLength(1);
+      }
+    );
 
     it('warns and sends no BisectBatchOnFunctionError reset on a source it cannot classify', async () => {
       const { getLogger } = await import('../../../src/utils/logger.js');
