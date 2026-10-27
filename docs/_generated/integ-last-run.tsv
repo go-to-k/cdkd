@@ -13,11 +13,14 @@ alb-advanced	2026-10-17T17:48:47Z	PASS	160	standard	PR #5034 (#1160) 842d0d385; 
 api-cognito	2026-10-18T20:35:59Z	PASS	39	standard	PR #5073: CloudWatch role no longer retained; no ApiCognitoStack-* IAM role left, orph clean
 apigateway	2026-10-26T12:59:24Z	PASS	143	verify.sh	rc ok, orph clean
 apigatewayv2-update-removal	2026-10-27T12:05:27Z	PASS	205	verify.sh	PR #5402 (#5390) Api/Stage map Tags create+update+untag; probe red at Phase 1 tag assertion (Api/Stage None/None); us-east-1; rc ok, orph clean
+apigateway	2026-10-27T12:28:43Z	PASS	166	verify.sh	rc ok, orph clean; #5391 Authorizer Type + Deployment Description arms
+apigatewayv2-update-removal	2026-10-20T11:01:47Z	PASS	211	verify.sh	PR #5120 (#1160) IdentitySource clear + service-integ RequestParameters + IntegrationSubtype refusal; probes A/B/C red; us-east-1; rc ok, orph clean
 apigw-cloudwatch-role-redeploy	2026-10-20T02:29:40Z	PASS	335	verify.sh	deploy+destroy clean, 0 orphans
 apigw-gateway-response	2026-10-18T18:32:28Z	PASS	245	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 apigw-stage-props	2026-10-23T16:22:09Z	PASS	139	verify.sh	rc ok, orph clean, #5204 retracted-wiring head e776973
 apigw-stage-throttling	2026-10-21T05:40:40Z	PASS	150	verify.sh	rc ok, orph clean, phase3 REPLACE_FN (#5137) on #5139 2e10ff2da
 apigw-usage-plan-key	2026-10-19T01:54:58Z	PASS	70	verify.sh	PR #5081 CloudWatch-role fixture; us-east-1; rc ok, orph clean
+apigw-vpclink-integration-target	2026-10-27T12:28:43Z	PASS	326	verify.sh	rc ok, orph clean; new fixture, #5391 IntegrationTarget
 app-autoscaling-recreate	2026-10-08T03:35:50Z	PASS	0	verify.sh	#4706: an imported scalable target is recorded cc-api; --recreate-via-cc-api refused (also from a legacy sdk record), policy intact; destroy 0 errors, 0 orphans
 appconfig	2026-08-10T05:29:23Z	PASS	69	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
 appsync	2026-10-26T18:58:44Z	PASS	190	verify.sh	PR #5370 (#5359) d8019e0f; destroy 0 errors, orph clean, own ephemeral bucket swept
