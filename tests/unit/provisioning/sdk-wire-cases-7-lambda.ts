@@ -22,7 +22,8 @@ import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handle
  * PublishLayerVersion.
  *
  * `Code.ZipFile` is zipped with the current time in its header, so the suite
- * running these cases freezes `Date` (`sdk-wire-coverage-7.test.ts`).
+ * running these cases freezes `Date` around these cases alone (`sdk-wire-coverage-7.test.ts`), so the
+ * determinism guard still sees a wall-clock value in the other batch-7 cases.
  */
 
 const FN = 'fn';
@@ -122,6 +123,11 @@ const FUNCTION_FULL: Bag = {
     UpdateRuntimeOn: 'Manual',
     RuntimeVersionArn: `arn:aws:lambda:us-east-1::runtime:abc`,
   },
+  // Adding or removing the whole block replaces the function
+  // (`durableConfigPresenceToggled`, replacement-rules.ts), so its top-level
+  // update-add / update-remove probes model a transition the engine never
+  // routes to update(); it stays out of createOnly, which would skip the
+  // in-place nested probes too.
   DurableConfig: {
     ExecutionTimeout: 60,
     RetentionPeriodInDays: 7,

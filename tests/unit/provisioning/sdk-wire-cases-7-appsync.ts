@@ -6,6 +6,7 @@ import {
   createOnlyOf,
   record,
   setOutputOverrides,
+  wire,
   type Bag,
   type TypeCase,
 } from './sdk-wire-harness.js';
@@ -442,6 +443,8 @@ export function describeAppsyncExtras(): void {
       expect((outcome as { message: string }).message).toMatch(
         /GraphQLSchema\.ApiId cannot move a schema to another API in place/
       );
+      // Refused before any write: no StartSchemaCreation reaches either API.
+      expect(wire).toEqual([]);
     });
   });
 
