@@ -27,6 +27,8 @@ import {
   GetApisCommand,
   GetAuthorizersCommand,
   GetIntegrationsCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   NotFoundException,
   type CreateApiCommandOutput,
   type CreateAuthorizerCommandOutput,
@@ -72,6 +74,15 @@ import { withRemovalDefaults } from '../update-removal.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { markNotGone } from '../not-gone.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
+import {
+  planTagDiff,
+  readTagList,
+  refuseMalformedDesiredTags,
+  tagMapAsList,
+  tagPlanWarning,
+  type CfnTagEntry,
+} from '../tag-list.js';
 import {
   createMaskedLogSinks,
   maskDeep,
@@ -169,6 +180,18 @@ function stageSinks(
   pairs: ReadonlyArray<readonly [raw: unknown, name: string | undefined]>
 ): MaskedLogSinks {
   return withDerivedNameMasks(logger, createMaskedLogSinks(logger, context?.maskSecrets), pairs);
+}
+
+/** A planned `TagResource` / `UntagResource` pair for one Api or Stage (go-to-k/cdkd#5390). */
+interface TagChange {
+  set: Record<string, string>;
+  remove: string[];
+  changed: boolean;
+}
+
+/** The tagging ARN path of a stage: `TagResource` addresses it under its API. */
+function stageTagPath(apiId: string, stageName: string): string {
+  return `/apis/${apiId}/stages/${stageName}`;
 }
 
 /**
@@ -649,6 +672,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         logicalId
       );
     }
+    // go-to-k/cdkd#5390: a malformed Tags is refused before any call.
+    const tags = ApiGatewayV2Provider.desiredTags(properties['Tags'], resourceType, logicalId);
 
     try {
       // Issue #2080: after an earlier ambiguous attempt, name the API it may
@@ -717,7 +742,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
               | string
               | undefined,
             IpAddressType: properties['IpAddressType'] as IpAddressType | undefined,
-            Tags: this.cfnTagsToRecord(properties['Tags']),
+            Tags: ApiGatewayV2Provider.tagRecord(tags),
           })
         );
       } catch (error) {
@@ -916,6 +941,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         logicalId
       );
     }
+    // go-to-k/cdkd#5390: a malformed Tags is refused before any call.
+    const tags = ApiGatewayV2Provider.desiredTags(properties['Tags'], resourceType, logicalId);
 
     try {
       await this.getClient().send(
@@ -930,7 +957,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           ClientCertificateId: properties['ClientCertificateId'] as string | undefined,
           DeploymentId: properties['DeploymentId'] as string | undefined,
           RouteSettings: properties['RouteSettings'] as Record<string, RouteSettings> | undefined,
-          Tags: this.cfnTagsToRecord(properties['Tags']),
+          Tags: ApiGatewayV2Provider.tagRecord(tags),
         })
       );
 
@@ -1594,6 +1621,57 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     return [];
   }
 
+  /**
+   * Drift for an Api / Stage whose baseline predates go-to-k/cdkd#5390. Before
+   * it, CreateApi / CreateStage never sent a map-shaped `Tags`, `readApi`
+   * recorded tags as a `{Key,Value}` list and `readStage` recorded none. Such
+   * a LEGACY baseline (a list-shaped `Tags` on either type — a pre-fix Api
+   * readback, or a hand-written `{Key,Value}` list on the `properties`
+   * baseline — or a Stage baseline with no `Tags` while the template declares
+   * one) is completed with the template's
+   * declared tags in the map shape the readback now uses, so the tags a pre-fix
+   * deploy never applied show as drift and `cdkd drift --revert` tags them —
+   * a deploy cannot, as the record already equals the template. A current-shape
+   * baseline is compared as it is. No AWS call.
+   */
+  async canonicalizeDriftPair(
+    resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>,
+    properties: Record<string, unknown> = {}
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    if (resourceType !== 'AWS::ApiGatewayV2::Api' && resourceType !== 'AWS::ApiGatewayV2::Stage') {
+      return { baseline, aws };
+    }
+    // A list-shaped baseline `Tags` on either type (a pre-fix Api readback, or
+    // a hand-written `{Key,Value}` list on the `properties` baseline) would
+    // compare a list against the map readback.
+    const legacy =
+      Array.isArray(baseline['Tags']) ||
+      (resourceType === 'AWS::ApiGatewayV2::Stage' &&
+        !Object.hasOwn(baseline, 'Tags') &&
+        properties['Tags'] !== undefined &&
+        properties['Tags'] !== null);
+    if (!legacy) return { baseline, aws };
+    // The template's tags, else (an Api whose template declares none) the
+    // legacy list itself, re-shaped. A declared Tags cdkd cannot read is left
+    // alone: deploy refuses it.
+    const source = properties['Tags'] ?? baseline['Tags'];
+    // A dynamic reference or its mask ANYWHERE in the source leaves the pair
+    // alone: the recorded template holds the unresolved `{{resolve:...}}`, so a
+    // completed value would reach `TagResource` as that literal on
+    // `--revert`, and a dropped key would be untagged.
+    if (holdsSecretDerivedEntry(source)) return { baseline, aws };
+    const declared = tagMapAsList(source);
+    if (!Array.isArray(declared)) return { baseline, aws };
+    const read = readTagList(declared, 'recorded');
+    if (read.kind !== 'tags' || read.hidden > 0) return { baseline, aws };
+    const tags = Object.fromEntries(
+      read.tags.filter((t) => !t.Key.startsWith('aws:')).map((t) => [t.Key, t.Value])
+    );
+    return { baseline: { ...baseline, Tags: tags }, aws };
+  }
+
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
@@ -1662,9 +1740,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       if (resp.Version !== undefined) result['Version'] = resp.Version;
       if (resp.IpAddressType !== undefined) result['IpAddressType'] = resp.IpAddressType;
 
-      // Tags from the same GetApi response (returned as a tag-name → value map).
-      const tags = normalizeAwsTagsToCfn(resp.Tags);
-      result['Tags'] = tags;
+      // Tags from the same GetApi response, in the template's MAP shape
+      // (`AWS::ApiGatewayV2::Api.Tags` is a key -> value map), so drift compares
+      // like with like (go-to-k/cdkd#5390). `aws:` keys are dropped.
+      result['Tags'] = ApiGatewayV2Provider.observedTags(resp.Tags);
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
@@ -1716,6 +1795,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         result['DeploymentId'] = resp.DeploymentId;
       }
       if (resp.RouteSettings !== undefined) result['RouteSettings'] = resp.RouteSettings;
+      // Tags ride on GetStage as a map, the template's shape (go-to-k/cdkd#5390),
+      // with a `{}` placeholder like readApi's; `aws:` keys are dropped.
+      result['Tags'] = ApiGatewayV2Provider.observedTags(resp.Tags);
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
@@ -2001,6 +2083,15 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         'ProtocolType is immutable on AWS::ApiGatewayV2::Api; re-deploy with cdkd deploy --replace'
       );
     }
+    // Planned (and a malformed desired Tags refused) before any call.
+    const tagDiff = this.planTags(
+      properties,
+      previousProperties,
+      resourceType,
+      logicalId,
+      physicalId,
+      log
+    );
 
     const input: UpdateApiCommandInput = { ApiId: physicalId };
     let changed = false;
@@ -2088,7 +2179,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       changed = true;
     }
 
-    if (!changed && !corsRemoved) {
+    if (!changed && !corsRemoved && !tagDiff.changed) {
       log.debug(`No mutable Api fields changed for ${logicalId}; skipping UpdateApi`);
       return { physicalId, wasReplaced: false };
     }
@@ -2105,6 +2196,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         log.debug(`Clearing CORS configuration for Api ${logicalId}: ${physicalId}`);
         await this.getClient().send(new DeleteCorsConfigurationCommand({ ApiId: physicalId }));
       }
+      await this.applyTagDiff(`/apis/${physicalId}`, tagDiff);
       // HEAL. `ExecuteApiArn` is a NEW attribute, so no state record written by
       // an earlier binary carries it — every existing API is in that state, and
       // without re-recording here the fix would only ever help APIs created
@@ -2236,6 +2328,16 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       );
     }
 
+    // Planned (and a malformed desired Tags refused) before any call.
+    const tagDiff = this.planTags(
+      properties,
+      previousProperties,
+      resourceType,
+      logicalId,
+      physicalId,
+      log
+    );
+
     const input: UpdateStageCommandInput = { ApiId: apiId, StageName: physicalId };
     let changed = false;
 
@@ -2353,7 +2455,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     if (!changed) {
       // The out-of-band removals are their own API calls, so a template whose
       // ONLY change is dropping one of them still has work to do here.
-      if (accessLogRemoved || droppedRouteSettingKeys.length > 0) {
+      if (accessLogRemoved || droppedRouteSettingKeys.length > 0 || tagDiff.changed) {
         try {
           await this.applyStageRemovals(
             apiId,
@@ -2361,6 +2463,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
             accessLogRemoved,
             droppedRouteSettingKeys
           );
+          await this.applyTagDiff(stageTagPath(apiId, physicalId), tagDiff);
         } catch (error) {
           const cause = error instanceof Error ? error : undefined;
           throw this.wrapMaskedError(
@@ -2387,6 +2490,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     try {
       await this.getClient().send(new UpdateStageCommand(input));
       await this.applyStageRemovals(apiId, physicalId, accessLogRemoved, droppedRouteSettingKeys);
+      await this.applyTagDiff(stageTagPath(apiId, physicalId), tagDiff);
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -3654,15 +3758,98 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   }
 
   /**
-   * Convert CloudFormation Tags (Array<{Key, Value}>) to SDK Tags (Record<string, string>).
+   * Refuse a malformed desired `Tags` before any call and return it as a list.
+   * `AWS::ApiGatewayV2::Api.Tags` and `::Stage.Tags` are a key -> value MAP
+   * (`{ "Env": "prod" }`, aws-cdk-lib's `TagType.MAP`), converted with
+   * `tagMapAsList`; a `{Key,Value}[]` list (a hand-authored template, which
+   * this provider has always accepted) is read as it is. `aws:` keys are
+   * reserved — AWS rejects a write of one — so they are never sent
+   * (go-to-k/cdkd#5390).
    */
-  private cfnTagsToRecord(tags: unknown): Record<string, string> | undefined {
-    if (!tags || !Array.isArray(tags)) return undefined;
-    const result: Record<string, string> = {};
-    for (const tag of tags as Array<{ Key: string; Value: string }>) {
-      result[tag.Key] = tag.Value;
+  private static desiredTags(
+    raw: unknown,
+    resourceType: string,
+    logicalId: string,
+    physicalId?: string
+  ): CfnTagEntry[] {
+    return refuseMalformedDesiredTags(
+      tagMapAsList(raw),
+      resourceType,
+      logicalId,
+      physicalId,
+      'Tags',
+      'a map of tag keys to scalar values or a list of tags with a non-empty string Key and a scalar Value'
+    ).filter((t) => !t.Key.startsWith('aws:'));
+  }
+
+  /** A GetApi / GetStage tag map as the template's map, `aws:` keys dropped and keys sorted. */
+  private static observedTags(tags: Record<string, string> | undefined): Record<string, string> {
+    return Object.fromEntries(normalizeAwsTagsToCfn(tags).map((t) => [t.Key, t.Value]));
+  }
+
+  /** The SDK's tag map for `CreateApi` / `CreateStage`; absent when there is no tag. */
+  private static tagRecord(tags: CfnTagEntry[]): Record<string, string> | undefined {
+    return tags.length > 0 ? Object.fromEntries(tags.map((t) => [t.Key, t.Value])) : undefined;
+  }
+
+  /**
+   * Diff the recorded and desired `Tags` of an Api or Stage (go-to-k/cdkd#5390).
+   * `UpdateApi` / `UpdateStage` carry no tags, so a change is its own
+   * `TagResource` / `UntagResource`. Only new or changed tags are set and only
+   * keys the template dropped are untagged — removing the whole `Tags` block
+   * untags every recorded key, as CloudFormation does — so a tag added
+   * out-of-band is left alone on a deploy, while `cdkd drift --revert` (whose
+   * recorded side is the AWS readback) untags it. A recorded `Tags` cdkd cannot
+   * read untags nothing and warns.
+   */
+  private planTags(
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string,
+    log: MaskedLogSinks
+  ): TagChange {
+    // The refused-and-filtered desired list is what is diffed, so a warning's
+    // "applied N tag(s)" counts only tags that are sent (no `aws:` key).
+    const desired = ApiGatewayV2Provider.desiredTags(
+      properties['Tags'],
+      resourceType,
+      logicalId,
+      physicalId
+    );
+    const plan = planTagDiff(tagMapAsList(previousProperties['Tags']), desired);
+    const warning = tagPlanWarning(plan, resourceType, logicalId);
+    if (warning !== undefined) log.warn(warning);
+    const remove = plan.remove.filter((k) => !k.startsWith('aws:'));
+    return {
+      set: Object.fromEntries(plan.set),
+      remove,
+      changed: plan.set.size > 0 || remove.length > 0,
+    };
+  }
+
+  /**
+   * Send a planned tag change to the resource at `path` (`/apis/<id>` or
+   * `/apis/<id>/stages/<name>`); a no-op when nothing changed.
+   */
+  private async applyTagDiff(path: string, change: TagChange): Promise<void> {
+    if (!change.changed) return;
+    // The region comes from the client the calls go through, like
+    // `buildExecuteApiArn`'s, so the ARN names the region the resource is in.
+    const region = await this.getClient().config.region();
+    const { partition } = derivePartitionAndUrlSuffix(region);
+    const resourceArn = `arn:${partition}:apigateway:${canonicalizeRegion(region)}::${path}`;
+    if (change.remove.length > 0) {
+      await this.getClient().send(
+        new UntagResourceCommand({ ResourceArn: resourceArn, TagKeys: change.remove })
+      );
     }
-    return result;
+    if (Object.keys(change.set).length > 0) {
+      await this.getClient().send(
+        new TagResourceCommand({ ResourceArn: resourceArn, Tags: change.set })
+      );
+    }
   }
 
   /**

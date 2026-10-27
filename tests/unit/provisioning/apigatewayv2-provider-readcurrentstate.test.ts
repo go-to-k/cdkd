@@ -72,7 +72,7 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
       ProtocolType: 'HTTP',
       Description: 'a fancy API',
       CorsConfiguration: { AllowOrigins: ['*'] },
-      Tags: [],
+      Tags: {},
     });
   });
 
@@ -104,7 +104,21 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
       StageName: '$default',
       AutoDeploy: true,
       Description: 'default stage',
+      Tags: {},
     });
+  });
+
+  it('surfaces Stage Tags from GetStage as a map with aws:* filtered out (#5390)', async () => {
+    mockSend.mockResolvedValueOnce({
+      StageName: 'prod',
+      Tags: { Foo: 'Bar', 'aws:cloudformation:stack-name': 'S' },
+    });
+
+    const result = (await provider.readCurrentState('prod', 'StageLogical', 'AWS::ApiGatewayV2::Stage', {
+      ApiId: 'abcd1234',
+    })) as Record<string, unknown> | undefined;
+
+    expect(result?.Tags).toEqual({ Foo: 'Bar' });
   });
 
   it('returns Integration fields via GetIntegration using properties.ApiId', async () => {
@@ -512,7 +526,8 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
       'AWS::ApiGatewayV2::Api'
     )) as Record<string, unknown> | undefined;
 
-    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+    // The template's MAP shape (go-to-k/cdkd#5390), not a {Key,Value} list.
+    expect(result?.Tags).toEqual({ Foo: 'Bar' });
   });
 
   it('omits Tags when GetApi returns no user tags', async () => {
@@ -528,7 +543,7 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
       'AWS::ApiGatewayV2::Api'
     )) as Record<string, unknown> | undefined;
 
-    expect(result?.Tags).toEqual([]);
+    expect(result?.Tags).toEqual({});
   });
 
   // Structural regression test for the always-emit-placeholder convention
@@ -557,6 +572,6 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
     expect(result?.Description).toBe('');
     expect(result?.CorsConfiguration).toEqual({});
     expect(result?.ProtocolType).toBe('HTTP');
-    expect(result?.Tags).toEqual([]);
+    expect(result?.Tags).toEqual({});
   });
 });

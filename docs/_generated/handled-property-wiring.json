@@ -1951,9 +1951,14 @@
             "element-read"
           ],
           "seededBy": [
+            "canonicalizeDriftPair",
             "create",
             "createApi",
-            "createStage"
+            "createStage",
+            "planTags",
+            "update",
+            "updateApi",
+            "updateStage"
           ]
         },
         {

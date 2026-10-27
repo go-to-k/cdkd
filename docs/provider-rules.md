@@ -2196,6 +2196,7 @@ Use these placeholders consistently:
 | Optional string | `?? ''` | `result['Description'] = resp.Description ?? '';` |
 | Boolean / numeric scalar | `?? <semantic-default>` | `Status: resp.Status ?? 'Suspended'`, `BlockPublicAcls: cfg?.BlockPublicAcls ?? false` |
 | Tags map | `?? []` (already covered for Tags by PR #145) | `result['Tags'] = normalizeAwsTagsToCfn(...);` |
+| Tags a type declares as a key -> value MAP (`AWS::SSM::Parameter`, `AWS::ApiGatewayV2::Api` / `::Stage`) | `{}` | `result['Tags'] = Object.fromEntries(normalizeAwsTagsToCfn(...).map((t) => [t.Key, t.Value]));` — the template's shape, so drift never compares a list against a map (issue [#5390](https://github.com/go-to-k/cdkd/issues/5390)) |
 
 **When the guard is justified — keep it**:
 

@@ -15,14 +15,15 @@
 #   1. Deploy with Api Description/Cors/DisableExecuteApiEndpoint/IpAddressType,
 #      Integration Description/RequestParameters, Authorizer
 #      AuthorizerResultTtlInSeconds, Route OperationName, Stage StageVariables
-#      set; assert all live on AWS.
+#      and the map-shaped Api / Stage Tags (#5390) set; assert all live on AWS.
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (those fields removed). Assert AWS
 #      keeps what CloudFormation keeps (#5004: Api Description /
 #      DisableExecuteApiEndpoint / IpAddressType, Integration Description +
 #      RequestParameters, AuthorizerResultTtlInSeconds, Route OperationName,
 #      Stage StageVariables stay live) and resets CorsConfiguration (cleared via
 #      DeleteCorsConfiguration) and ClearAuthorizer's IdentitySource (#1160 A/B:
-#      CloudFormation clears it).
+#      CloudFormation clears it). Api Tags re-tag a changed key and untag a
+#      dropped one; the Stage's removed Tags block untags every key (#5390 A/B).
 #   2b. CDKD_TEST_REMOVAL=true: the delete-API-only members, plus (#1160) the
 #      WebSocket MOCK integration's and $default route's #609 fields, which
 #      CloudFormation keeps, and a Description-only change on the service
@@ -354,6 +355,16 @@ if [ "$(stage_field "${AID}" 'StageVariables.foo')" != "bar" ]; then
   echo "FAIL: Phase 1 Stage StageVariables.foo not set (got '$(stage_field "${AID}" 'StageVariables.foo')')" >&2
   exit 1
 fi
+# Issue #5390: the map-shaped Tags of the Api and the $default Stage reach AWS
+# on CREATE. A pre-fix cdkd read Tags only as a {Key,Value} list and sent none.
+# `|| true` so a failed probe reads as '' and fails the comparison loudly
+# instead of exiting silently under `set -e`.
+A_TAGS="$(api_field "${AID}" 'Tags.k1' || true)/$(api_field "${AID}" 'Tags.k2' || true)"
+S_TAGS="$(stage_field "${AID}" 'Tags.k1' || true)/$(stage_field "${AID}" 'Tags.k2' || true)"
+if [ "${A_TAGS}" != "v1/v2" ] || [ "${S_TAGS}" != "v1/v2" ]; then
+  echo "FAIL: Phase 1 map-shaped Tags not sent on create (issue #5390): Api='${A_TAGS}' Stage='${S_TAGS}'" >&2
+  exit 1
+fi
 
 # --- Phase 1 (issue #609): the WebSocket Route / Stage properties ------
 # All four Route properties below are documented WebSocket-only, which is why
@@ -614,6 +625,16 @@ if [ "${ON}" != "probeOp" ]; then echo "FAIL: Route OperationName not RETAINED (
 SV="$(stage_field "${AID}" 'StageVariables.foo')"
 # #5004: CloudFormation KEEPS a dropped stage variable.
 if [ "${SV}" != "bar" ]; then echo "FAIL: Stage StageVariables.foo not RETAINED (got '${SV}')" >&2; exit 1; fi
+# Issue #5390 (real CloudFormation A/B): a changed tag value is re-tagged, a
+# dropped key is untagged, and removing the whole Tags block untags every key.
+# A pre-fix cdkd never called TagResource / UntagResource on update. `None` is
+# an absent key; an empty read is a probe error, never "untagged".
+A_TAGS="$(api_field "${AID}" 'Tags.k1' || true)/$(api_field "${AID}" 'Tags.k2' || true)"
+S_TAGS="$(stage_field "${AID}" 'Tags.k1' || true)/$(stage_field "${AID}" 'Tags.k2' || true)"
+if [ "${A_TAGS}" != "v1x/None" ] || [ "${S_TAGS}" != "None/None" ]; then
+  echo "FAIL: Tags not updated / untagged (issue #5390): Api='${A_TAGS}' (want 'v1x/None') Stage='${S_TAGS}' (want 'None/None')" >&2
+  exit 1
+fi
 echo "    CFn-KEPT fields retained (#5004); Cors cleared via DeleteCorsConfiguration"
 
 # Issue #1602: drift must still be clean AFTER the update — the update path
