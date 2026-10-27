@@ -123,7 +123,8 @@ CloudFormation applies the `Instances` changes in the table in place, and so
 does cdkd: a resize waits until the group or fleet reaches its new size. A
 task group or fleet is found by its `Name`, or a task group without one by its
 instance type; cdkd refuses the update when that matches more or fewer than
-one, or when the `Name` is a `{{resolve:...}}` reference. A fleet capacity the
+one, or when the `Name` (or that instance type) is a `{{resolve:...}}`
+reference. A fleet capacity the
 template leaves out is sent as 0, since `ModifyInstanceFleet` needs both.
 Removing `UnhealthyNodeReplacement` is refused, because CloudFormation fails
 that update too. A create
