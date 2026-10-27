@@ -181,7 +181,8 @@
           "l1"
         ],
         "apigateway": [
-          "l1"
+          "l1",
+          "literal"
         ],
         "local-start-api": [
           "l2"
@@ -241,6 +242,7 @@
           "literal"
         ],
         "apigateway": [
+          "l1",
           "literal"
         ],
         "apigw-cloudwatch-role-redeploy": [
@@ -274,6 +276,7 @@
           "literal"
         ],
         "apigateway": [
+          "l1",
           "literal"
         ],
         "apigw-stage-throttling": [
@@ -1000,6 +1003,7 @@
       "resourceType": "AWS::Cognito::UserPool",
       "integs": [
         "api-cognito",
+        "apigateway",
         "appsync",
         "bedrock-agentcore",
         "cc-write-only-create-only",
@@ -1016,6 +1020,9 @@
       ],
       "signals": {
         "api-cognito": [
+          "l2"
+        ],
+        "apigateway": [
           "l2"
         ],
         "appsync": [
