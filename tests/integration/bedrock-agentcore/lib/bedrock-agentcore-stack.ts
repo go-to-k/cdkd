@@ -80,8 +80,12 @@ export class BedrockAgentcoreStack extends cdk.Stack {
           }),
     });
     // Issue #5433: user-keyed tag map under the authorizer's private endpoint.
+    // verify.sh pins the AZs by AZ ID (CDKD_AUTH_AZS, comma-separated names):
+    // AZ names map to different AZ IDs per account, and AgentCore / VPC
+    // Lattice serve only some AZ IDs.
+    const authAzs = process.env.CDKD_AUTH_AZS?.split(',').filter((az) => az !== '');
     const authVpc = new ec2.Vpc(this, 'AuthVpc', {
-      maxAzs: 2,
+      ...(authAzs && authAzs.length > 0 ? { availabilityZones: authAzs } : { maxAzs: 2 }),
       natGateways: 0,
       subnetConfiguration: [
         { name: 'isolated', subnetType: ec2.SubnetType.PRIVATE_ISOLATED, cidrMask: 24 },

@@ -61,10 +61,12 @@ DOCKER_RUNTIME_LOGICAL_ID="DockerRuntime395AC11E"
 AUTH_POOL_LOGICAL_ID="AuthPool6048658F"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+DRIFT_JSON="$(mktemp)"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  rm -f "${DRIFT_JSON}"
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
     env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -140,6 +142,18 @@ runtime_fields() { # usage: runtime_fields <runtime-id>
     --output json | jq -c -S .
 }
 
+# Issue #5433: pin the auth VPC to AZ IDs AgentCore serves (names differ per
+# account); other regions fall back to the first two AZs.
+if [ "${REGION}" = "us-east-1" ]; then
+  CDKD_AUTH_AZS=$(aws ec2 describe-availability-zones --region "${REGION}" --zone-ids use1-az1 use1-az2 \
+    --query 'sort_by(AvailabilityZones, &ZoneId)[].ZoneName' --output text | tr '\t' ',')
+  if [ -z "${CDKD_AUTH_AZS}" ]; then
+    echo "FAIL: could not resolve AZ names for use1-az1 / use1-az2" >&2
+    exit 1
+  fi
+  export CDKD_AUTH_AZS
+fi
+
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
 env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -184,7 +198,6 @@ echo "    OK: private endpoint tag keys sent verbatim (issue #5433)"
 
 # ...and read back verbatim: the camelCase -> PascalCase flip used to turn
 # `lowerKey` into `LowerKey`, a phantom drift on the code runtime.
-DRIFT_JSON=$(mktemp)
 set +e
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_JSON}"
 DRIFT_RC=$?
@@ -196,7 +209,6 @@ if [ "${RT_CLEAN}" != "1" ] || [ "${RT_DRIFTED}" != "0" ]; then
   cat "${DRIFT_JSON}" >&2
   exit 1
 fi
-rm -f "${DRIFT_JSON}"
 echo "    OK: code runtime reads back drift-clean, tag keys intact (issue #5433)"
 
 # --- Phase 2: REMOVAL drops the five fields (issue #1160) ---------------
@@ -219,6 +231,24 @@ if [ "${P2_FIELDS}" != "${P2_EXPECTED}" ]; then
   exit 1
 fi
 echo "    OK: removed fields cleared and the lifecycle back to 900 / 28800, in place (issue #1160)"
+
+# Issue #5433: removing the authorizer drops the service-managed Lattice
+# resource gateway; wait (bounded) until its ENIs leave the auth VPC, so the
+# destroy is not left with a VPC it cannot delete.
+enis="?"
+for _ in $(seq 1 60); do
+  enis=$(aws ec2 describe-network-interfaces --region "${REGION}" --filters "Name=vpc-id,Values=${AUTH_VPC_ID}" \
+    --query 'length(NetworkInterfaces)' --output text)
+  [ "${enis}" = "0" ] && break
+  sleep 10
+done
+if [ "${enis}" != "0" ]; then
+  echo "FAIL (issue #5433): ${enis} network interface(s) still in auth VPC ${AUTH_VPC_ID} 600s after the private endpoint was removed:" >&2
+  aws ec2 describe-network-interfaces --region "${REGION}" --filters "Name=vpc-id,Values=${AUTH_VPC_ID}" \
+    --query 'NetworkInterfaces[].[NetworkInterfaceId,InterfaceType,Description]' --output text >&2
+  exit 1
+fi
+echo "    OK: the managed private endpoint left no network interface in the auth VPC"
 
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"

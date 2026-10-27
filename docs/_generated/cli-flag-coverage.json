@@ -2662,6 +2662,7 @@
     "--ws",
     "--x-s3",
     "--zip-file",
+    "--zone-ids",
     "--zone-names"
   ]
 }
