@@ -64,6 +64,9 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
     const api = new apigwv2.CfnApi(this, 'Api', {
       name: `${this.stackName}-api`,
       protocolType: 'HTTP',
+      // Issue #5390: Tags is a MAP on this type. Phase 2 changes k1's value and
+      // drops k2; CloudFormation re-tags k1 and untags k2 (real A/B).
+      tags: update ? { k1: 'v1x' } : { k1: 'v1', k2: 'v2' },
       // Removed on UPDATE: CorsConfiguration is RESET (CloudFormation resets it);
       // Description / DisableExecuteApiEndpoint / IpAddressType are RETAINED
       // (CloudFormation keeps them, #5004).
@@ -380,7 +383,9 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
       stageName: '$default',
       autoDeploy: true,
       // Removed on UPDATE, RETAINED by CloudFormation (#5004): StageVariables.
-      ...(update ? {} : { stageVariables: { foo: 'bar' } }),
+      // Removed on UPDATE, UNTAGGED by CloudFormation (#5390 A/B): the whole
+      // map-shaped Tags block.
+      ...(update ? {} : { stageVariables: { foo: 'bar' }, tags: { k1: 'v1', k2: 'v2' } }),
     });
 
     new cdk.CfnOutput(this, 'ApiId', { value: api.ref });
