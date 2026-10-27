@@ -2368,9 +2368,11 @@ export class RDSProvider implements ResourceProvider {
     logicalId: string,
     change: string
   ): DBCluster {
+    // A deleted cluster usually throws DBClusterNotFoundFault from the describe
+    // itself; this arm covers an empty `DBClusters` list.
     if (cluster === undefined) {
       throw new Error(
-        `DescribeDBClusters returned no cluster for DBCluster ${logicalId} while waiting for its new ${change}`
+        safeMsg`DescribeDBClusters returned no cluster for DBCluster ${logicalId} while waiting for its new ${change}`
       );
     }
     if (isTerminalDbStatus(cluster.Status)) {
