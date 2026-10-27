@@ -570,10 +570,8 @@ export class EMRClusterProvider implements ResourceProvider {
         // Create-only (a removal replaces), or `Instances`: required; a removed
         // sub-field replaces, except the in-place ones update() handles:
         // `TerminationProtected` is sent as false, `AutoScalingPolicy` is
-        // removed, a fleet capacity is sent as 0 (the fleet provider's
-        // convention; CloudFormation's removal on this path is unmeasured), and
-        // `UnhealthyNodeReplacement` is refused (CloudFormation fails that
-        // removal).
+        // removed, and a fleet capacity or `UnhealthyNodeReplacement` is
+        // refused (CloudFormation fails both removals).
         ...[...(this.handledProperties.get('AWS::EMR::Cluster') ?? [])].filter(
           (key) => !MUTABLE_TOP_LEVEL_PROPS.has(key)
         ),
@@ -1379,18 +1377,34 @@ export class EMRClusterProvider implements ResourceProvider {
     // value on a rollback replay, an intrinsic left unresolved) would reach
     // the delegates as absent and be sent as 0, scaling a TASK group or fleet
     // away. Refused before any call; a replay keeps the live size and warns.
-    const notNumeric = (resize: InstancesResize, keys: readonly string[]): string | undefined =>
-      keys.find(
-        (key) => resize.next[key] !== undefined && toNumber(resize.next[key]) === undefined
-      );
+    // A fleet capacity REMOVED from the template has no value to send either:
+    // CloudFormation fails that update ("should have both targetOnDemandCapacity
+    // and targetSpotCapacity specified"; raw CFn A/B on go-to-k/cdkd#5422), so
+    // it is refused the same way rather than sent as 0.
+    const unusable = (
+      resize: InstancesResize,
+      keys: readonly string[],
+      refuseRemoval: boolean
+    ): string | undefined => {
+      for (const key of keys) {
+        if (resize.next[key] !== undefined && toNumber(resize.next[key]) === undefined) {
+          return safeMsg`Instances.${resize.path}.${key} is not a number, so cdkd cannot resize to it.`;
+        }
+        if (refuseRemoval && resize.next[key] === undefined && resize.prev[key] !== undefined) {
+          return safeMsg`removing Instances.${resize.path}.${key} fails under CloudFormation too (ModifyInstanceFleet needs both capacities). Declare it explicitly instead (0 for none).`;
+        }
+      }
+      return undefined;
+    };
     const keepNumeric = (
       resizes: readonly InstancesResize[],
-      keys: readonly string[]
+      keys: readonly string[],
+      refuseRemoval = false
     ): InstancesResize[] =>
       resizes.filter((resize) => {
-        const key = notNumeric(resize, keys);
-        if (key === undefined) return true;
-        const message = safeMsg`${logicalId} (AWS::EMR::Cluster): Instances.${resize.path}.${key} is not a number, so cdkd cannot resize to it.`;
+        const why = unusable(resize, keys, refuseRemoval);
+        if (why === undefined) return true;
+        const message = safeMsg`${logicalId} (AWS::EMR::Cluster): ` + why;
         if (!context?.replayingState) {
           throw new ResourceUpdateNotSupportedError(resourceType, logicalId, message);
         }
@@ -1400,7 +1414,7 @@ export class EMRClusterProvider implements ResourceProvider {
     instancesPlan = {
       ...instancesPlan,
       groups: keepNumeric(instancesPlan.groups, ['InstanceCount']),
-      fleets: keepNumeric(instancesPlan.fleets, FLEET_IN_PLACE_MEMBERS),
+      fleets: keepNumeric(instancesPlan.fleets, FLEET_IN_PLACE_MEMBERS, true),
     };
 
     // Every refusal above came first: now find what each resize addresses,

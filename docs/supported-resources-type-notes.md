@@ -125,9 +125,10 @@ task group or fleet is found by its `Name`, or a task group without one by its
 instance type; cdkd refuses the update when that matches more or fewer than
 one, or when the `Name` (or that instance type) is a `{{resolve:...}}`
 reference. A fleet capacity the
-template leaves out is sent as 0, since `ModifyInstanceFleet` needs both.
-Removing `UnhealthyNodeReplacement` is refused, because CloudFormation fails
-that update too. A create
+template never declared is sent as 0, since `ModifyInstanceFleet` needs both.
+Removing a fleet capacity, or `UnhealthyNodeReplacement`, is refused, because
+CloudFormation fails that update too; so is a count or capacity that is not a
+number. A create
 waits until a cluster is `WAITING` or `RUNNING`, and until a group or fleet is
 `RUNNING`.
 

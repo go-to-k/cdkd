@@ -900,6 +900,30 @@ describe('EMRClusterProvider update', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    // CloudFormation fails this removal (raw CFn A/B, go-to-k/cdkd#5422).
+    it('refuses removing a fleet capacity instead of sending 0', async () => {
+      const fleet = (spot?: number) => ({
+        Name: 'Core',
+        TargetOnDemandCapacity: 1,
+        ...(spot !== undefined && { TargetSpotCapacity: spot }),
+        InstanceTypeConfigs: [{ InstanceType: 'm5.xlarge' }],
+      });
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({ CoreInstanceFleet: fleet() }),
+          withInstances({ CoreInstanceFleet: fleet(1) })
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((err as Error).message).toContain(
+        'removing Instances.CoreInstanceFleet.TargetSpotCapacity fails under CloudFormation too'
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     it('keeps the live size on a rollback replay whose capacity is a masked value', async () => {
       routeSend({ DescribeClusterCommand: clusterOf('WAITING') });
       const fleet = (onDemand: unknown) => ({
