@@ -175,7 +175,7 @@ CloudFormation and Terraform do, for comparison.
 | `AWS::CertificateManager::Certificate` | Return while `PENDING_VALIDATION` | Wait for `ISSUED` | same as default | Waits | Does not wait (waiting is a separate `aws_acm_certificate_validation` resource) |
 | `AWS::RDS::DBCluster` / `DBInstance` | Return after the create or update call | Wait for `available` (5-10 min); an update waits for a changed cluster port or security groups to apply | same as default | Waits | Waits |
 | `AWS::DocDB::DBCluster` / `DBInstance` | Return after the create or update call | Wait for `available` (5-10 min); an update waits for a changed cluster port or security groups to apply | same as default | Waits | Waits |
-| `AWS::Neptune::DBCluster` / `DBInstance` | Return after the create call | Wait for `available` (5-10 min) | same as default | Waits | Waits |
+| `AWS::Neptune::DBCluster` / `DBInstance` | Return after the create or update call | Wait for `available` (5-10 min); an update waits for changed cluster security groups to apply | same as default | Waits | Waits |
 | `AWS::ElastiCache::CacheCluster` etc. | Return after the create call | Wait for `available` | same as default | Waits | Waits |
 | `AWS::EC2::NatGateway` | Return while `pending` | Wait for `available` (1-2 min) | same as default | Waits | Waits |
 | `AWS::EC2::Instance` | Return while `pending` | Wait for `running` (30-60 s) | same as default | Waits | Waits |
