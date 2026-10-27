@@ -244,12 +244,13 @@ const CLUSTER_TOP: Bag = fresh({
 });
 
 /**
- * Every `Instances` member but `TerminationProtected` is refused in place by
- * `update()`: a running cluster's topology and networking cannot change
- * (emr-cluster-provider.ts:869-934). The schema lists no create-only path
- * under `Instances`, so the case marks each such member create-only itself,
- * leaving `TerminationProtected` the one updatable path; the refusal itself
- * is pinned in `describeEmrRdsExtras`.
+ * `update()` refuses a change to every `Instances` member but
+ * `TerminationProtected` before any call (emr-cluster-provider.ts:869-934).
+ * The schema lists no create-only path under `Instances`, so the case marks
+ * each such member create-only itself, leaving `TerminationProtected` the one
+ * updatable path. Those marks skip every update probe under them, so
+ * `describeEmrRdsExtras` checks each member's refusal: a member `update()`
+ * starts applying in place fails there and leaves this list.
  */
 const INSTANCES_FIXED = [
   'AdditionalMasterSecurityGroups',
@@ -580,11 +581,12 @@ function armEndpoint(): void {
 
 /**
  * The schema lists no create-only `TargetRole`, but `ModifyDBProxyEndpoint`
- * takes no such member, so `update()` refuses a change to it before any call
- * (rds-dbproxy-endpoint-provider.ts:336-357).
+ * takes no such member: the engine's replacement rules replace on a change
+ * (src/analyzer/replacement-rules.ts:790-799), and `update()` refuses one
+ * before any call as defence in depth (rds-dbproxy-endpoint-provider.ts:336-357).
  */
 const TARGET_ROLE_REFUSED = REQUIRED(
-  'a TargetRole change is refused before any call: ModifyDBProxyEndpoint has no TargetRole member (rds-dbproxy-endpoint-provider.ts:336-357)',
+  'a TargetRole change is refused before any call: ModifyDBProxyEndpoint has no TargetRole member (rds-dbproxy-endpoint-provider.ts:336-357). The engine already replaces on a TargetRole change (src/analyzer/replacement-rules.ts:790-799), so this refusal is defence in depth',
   /TargetRole is immutable on AWS::RDS::DBProxyEndpoint/
 );
 
@@ -725,8 +727,19 @@ export const CASES_10: TypeCase[] = [
 /** Direct-call checks the bag probes cannot make. */
 export function describeEmrRdsExtras(): void {
   describe('AWS::EMR::Cluster update', () => {
-    it('refuses an in-place Instances change and sends nothing', async () => {
-      const bag = CLUSTER_CASE.bags[0]!.bag;
+    // Each member the case marks create-only, changed on the bag that carries
+    // it: `update()` must refuse it and send nothing.
+    const changed = (value: unknown): unknown => {
+      if (typeof value === 'string') return `${value}-alt`;
+      if (typeof value === 'boolean') return !value;
+      if (Array.isArray(value)) return value.slice(1);
+      const obj = value as Bag;
+      const key = Object.keys(obj).find((k) => typeof obj[k] === 'string')!;
+      return { ...obj, [key]: `${obj[key] as string}-alt` };
+    };
+    const members = INSTANCES_FIXED.map((path) => path.slice('Instances.'.length));
+    it.each(members)('refuses an in-place Instances.%s change and sends nothing', async (member) => {
+      const bag = CLUSTER_CASE.bags.map((b) => b.bag).find((b) => member in (b['Instances'] as Bag))!;
       const instances = bag['Instances'] as Bag;
       let thrown: unknown;
       armCluster();
@@ -736,7 +749,7 @@ export function describeEmrRdsExtras(): void {
             'L',
             CLUSTER_ID,
             'AWS::EMR::Cluster',
-            { ...bag, Instances: { ...instances, Ec2KeyName: 'other' } },
+            { ...bag, Instances: { ...instances, [member]: changed(instances[member]) } },
             bag
           );
         } catch (error) {
@@ -745,6 +758,7 @@ export function describeEmrRdsExtras(): void {
       });
       expect(outcome).toEqual({ threw: false, wire: '' });
       expect(thrown).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((thrown as Error).message).toContain(`Instances.${member} is immutable`);
     });
   });
 }
