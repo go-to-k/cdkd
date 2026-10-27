@@ -9826,8 +9826,8 @@ export const REPLICA_COPY_RELEASE_POLL_MS = 5000;
 export const DELETION_PROTECTION_REFLIP_MS = 16_000;
 
 /**
- * What the update wraps, which withhold AWS's text, restate of DynamoDB's
- * encryption-change quota (go-to-k/cdkd#5399's integ). A table takes 4
+ * Restates DynamoDB's encryption-change quota in the update's wraps, which
+ * withhold AWS's text (go-to-k/cdkd#5399's integ). A table takes 4
  * encryption changes in a 24-hour window and then one every 6 hours
  * (`LimitExceededException`: "Encryption mode changes are limited in the 24h
  * window ...", measured us-east-1, 2026-10-28); reduced to the class name, the
