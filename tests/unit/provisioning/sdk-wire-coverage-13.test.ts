@@ -3,6 +3,7 @@ import { APIGatewayClient } from '@aws-sdk/client-api-gateway';
 import { S3Client } from '@aws-sdk/client-s3';
 import { SNSClient } from '@aws-sdk/client-sns';
 import { describeWireCases } from './sdk-wire-harness.js';
+import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
 // The client classes the thirteenth batch reaches (`sdk-wire-cases-13.ts`),
 // wrapped as in `sdk-wire-coverage.test.ts`.
@@ -117,6 +118,12 @@ const clients = {
 vi.mock('../../../src/utils/aws-clients.js', () => ({ getAwsClients: () => clients }));
 
 import { CASES_13, describeCognitoExtras } from './sdk-wire-cases-13.js';
+
+// The S3 bucket's every-property bag probes every path of 19 nested
+// configurations, each through a create and both update directions: a
+// CPU-bound enumeration of ~4.5 s alone, past Vitest's 5 s default under a
+// loaded CI runner.
+vi.setConfig({ testTimeout: CONTENDED_CASE_TIMEOUT_MS });
 
 describe('SDK wire coverage (batch 13)', () => {
   describeWireCases(CASES_13);
