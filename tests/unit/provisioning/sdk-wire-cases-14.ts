@@ -153,6 +153,7 @@ const DOCUMENTDB_BAG: Bag = {
   FunctionName: 'fn',
   EventSourceArn: DOCDB_ARN,
   StartingPosition: 'LATEST',
+  BatchSize: 50,
   DocumentDBEventSourceConfig: {
     DatabaseName: 'db',
     CollectionName: 'coll',
