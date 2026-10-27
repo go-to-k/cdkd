@@ -4974,8 +4974,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * disabled spec on a new or already-disabled table sends nothing, since AWS
    * refuses to disable a TTL that is not enabled.
    *
-   * AWS also refuses a second `UpdateTimeToLive` within ~1 hour of the last
-   * one; that refusal is rethrown as a cdkd-authored error, since the AWS text
+   * AWS also refuses a second `UpdateTimeToLive` for a while after the last
+   * one (CloudFormation waits it out instead, #5451); that refusal is rethrown as a cdkd-authored error, since the AWS text
    * itself is redacted from the thrown message.
    */
   private async applyTimeToLive(
@@ -5024,8 +5024,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
       ) {
         throw new ProvisioningError(
           `DynamoDB table ${ids.logicalId}: AWS refused to ${enabled ? 'enable' : 'disable'} ` +
-            `TimeToLive because it was already modified within DynamoDB's rate-limit interval ` +
-            `(one UpdateTimeToLive per table per ~1 hour). Wait for the interval to pass, then redeploy.`,
+            `TimeToLive because it was already modified within DynamoDB's rate-limit interval. ` +
+            `Wait for the interval to pass (up to about an hour), then redeploy.`,
           ids.resourceType,
           ids.logicalId,
           tableName,

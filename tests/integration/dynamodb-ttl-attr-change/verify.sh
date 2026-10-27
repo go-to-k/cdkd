@@ -189,8 +189,9 @@ fi
 echo "    OK: AWS TTL still on ttlA — no partial UpdateTimeToLive happened"
 
 # --- Phase 2c: name-less TTL disable must reach AWS (issue #5447) ------
-# DynamoDB refuses a second UpdateTimeToLive within ~1h of the Phase 1 enable,
-# so a disabled status is not reachable here: the AWS refusal of the disable
+# DynamoDB refuses a second UpdateTimeToLive for a while after the Phase 1
+# enable (a raw CFn update waited ~30 min), so a disabled status is not
+# reachable here: the AWS refusal of the disable
 # is the observable proof the call was sent. Pre-fix cdkd sent nothing and the
 # deploy succeeded with TTL still ENABLED on ttlA.
 echo "==> Phase 2c: re-deploy declaring TimeToLiveSpecification {Enabled:false} without AttributeName"
