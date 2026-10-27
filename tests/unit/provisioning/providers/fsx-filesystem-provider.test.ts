@@ -3734,6 +3734,62 @@ describe('FSxFileSystemProvider Lustre LogConfiguration (#5430)', () => {
     expect(driftPaths(lustreBag(undefined), lustreBag({ Level: 'DISABLED' }))).toEqual([]);
   });
 
+  // Measured on go-to-k/cdkd#5430's integ: FSx reads the destination back as
+  // the LOG-STREAM ARN it writes to, not the declared log-group ARN.
+  const readLogBack = async (destination: string): Promise<Record<string, unknown>> => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          availableFs({
+            FileSystemType: 'LUSTRE',
+            LustreConfiguration: {
+              MountName: MOUNT_NAME,
+              DeploymentType: 'SCRATCH_2',
+              LogConfiguration: { Level: 'WARN_ERROR', Destination: destination },
+            },
+          }),
+        ],
+      },
+    });
+    return bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
+  };
+
+  it('reads a log-stream Destination back as its log-group ARN', async () => {
+    const state = await readLogBack(`${LOG_GROUP_ARN}:log-stream:datarepo_${FS_ID}`);
+    expect((state['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration']).toEqual({
+      Level: 'WARN_ERROR',
+      Destination: LOG_GROUP_ARN,
+    });
+  });
+
+  it('reads a Destination with the log group Arn suffix back without it', async () => {
+    const state = await readLogBack(`${LOG_GROUP_ARN}:*`);
+    expect(
+      ((state['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration'] as Record<
+        string,
+        unknown
+      >)['Destination']
+    ).toBe(LOG_GROUP_ARN);
+  });
+
+  it('reports no drift between a declared log-group ARN and the log-stream ARN AWS reads back', async () => {
+    const aws = await readLogBack(`${LOG_GROUP_ARN}:log-stream:datarepo_${FS_ID}`);
+    const declared = {
+      LustreConfiguration: {
+        DeploymentType: 'SCRATCH_2',
+        LogConfiguration: { Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN },
+      },
+    };
+    const provider = newProvider();
+    expect(
+      calculateResourceDrift(
+        provider.canonicalizeDriftProperties(RESOURCE_TYPE, declared),
+        provider.canonicalizeDriftProperties(RESOURCE_TYPE, aws),
+        { ignorePaths: provider.getDriftUnknownPaths(RESOURCE_TYPE) }
+      )
+    ).toEqual([]);
+  });
+
   it('emits no LogConfiguration when AWS returns none', async () => {
     routeSend({
       DescribeFileSystemsCommand: {

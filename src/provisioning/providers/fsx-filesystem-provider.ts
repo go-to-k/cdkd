@@ -493,6 +493,18 @@ const leftInPlaceWarning = (
     : safeMsg`${logicalId} (AWS::FSx::FileSystem): ${subject} ${names.join(', ')} ${verb} no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`;
 };
 
+/**
+ * The log-group ARN a Lustre `LogConfiguration.Destination` names. FSx reads
+ * the destination back as the LOG-STREAM ARN it writes to
+ * (`...:log-group:/aws/fsx/x:log-stream:datarepo_fs-...`, measured us-east-1
+ * on go-to-k/cdkd#5430), never the declared log-group ARN, and a declaration
+ * may carry the log group `Arn` attribute's `:*` suffix. Reading it back
+ * as-is would report drift on every file system with logging, so both forms
+ * fold to the log-group ARN a template declares.
+ */
+const toLogGroupArn = (destination: string | undefined): string | undefined =>
+  destination?.replace(/:log-stream:.*$/, '').replace(/:\*$/, '');
+
 const toNumber = (v: unknown): number | undefined => (v === undefined ? undefined : Number(v));
 
 const toBoolean = (v: unknown): boolean | undefined => {
@@ -2278,7 +2290,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
     if (lustre.LogConfiguration) {
       const log: Record<string, unknown> = {};
       putIfDefined(log, 'Level', lustre.LogConfiguration.Level);
-      putIfDefined(log, 'Destination', lustre.LogConfiguration.Destination);
+      putIfDefined(log, 'Destination', toLogGroupArn(lustre.LogConfiguration.Destination));
       if (Object.keys(log).length > 0) config['LogConfiguration'] = log;
     }
     // Data-repository fields live under DataRepositoryConfiguration on the
