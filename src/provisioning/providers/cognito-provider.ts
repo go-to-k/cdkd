@@ -8,6 +8,7 @@ import {
   SetUserPoolMfaConfigCommand,
   GetUserPoolMfaConfigCommand,
   AddCustomAttributesCommand,
+  UntagResourceCommand,
   ResourceNotFoundException,
   type VerifiedAttributeType,
   type UsernameAttributeType,
@@ -47,6 +48,7 @@ import {
   safeStringify,
 } from '../../utils/aws-failure-text.js';
 import { markNotGone } from '../not-gone.js';
+import { planTagDiff, readTagList, tagMapAsList } from '../tag-list.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import {
   isThrottlingError,
@@ -509,6 +511,57 @@ function isEmptyObjectPlaceholder(value: unknown): boolean {
     !Array.isArray(value) &&
     Object.keys(value as Record<string, unknown>).length === 0
   );
+}
+
+/**
+ * The members whose REMOVAL both `UpdateUserPool` and CloudFormation leave as
+ * a no-op (issue #1160; the measurement is at `warnOnKeptRemovedMembers`),
+ * each mapped to the value AWS reports for it when unset (`undefined` when
+ * that is an empty object, which {@link declaresMember} already skips).
+ */
+const KEPT_ON_REMOVAL_MEMBERS: Readonly<Record<string, string | undefined>> = {
+  AccountRecoverySetting: undefined,
+  SmsConfiguration: undefined,
+  UserPoolTier: 'ESSENTIALS',
+  DeletionProtection: 'INACTIVE',
+};
+
+/**
+ * Does `value` declare something for a {@link KEPT_ON_REMOVAL_MEMBERS} entry?
+ * Absent, `null`, `''`, `{}` and the member's `unset` value do not.
+ */
+function declaresMember(value: unknown, unset: string | undefined): boolean {
+  if (value === undefined || value === null || value === '') return false;
+  if (isEmptyObjectPlaceholder(value)) return false;
+  return unset === undefined || value !== unset;
+}
+
+/**
+ * Does `update()` put this {@link KEPT_ON_REMOVAL_MEMBERS} entry on the wire?
+ * The same truthiness gates the update builds `UpdateUserPool` with, so a
+ * desired `{}` that IS sent (`AccountRecoverySetting`) is not called a removal,
+ * while the `SmsConfiguration` placeholder that is skipped is.
+ */
+function sendsKeptMember(member: string, value: unknown): boolean {
+  if (!value) return false;
+  return member !== 'SmsConfiguration' || !isEmptyObjectPlaceholder(value);
+}
+
+/**
+ * The `MfaConfiguration` a previous property bag left the pool at, or `''`
+ * when it was OFF or unknown. An `EnabledMfas` factor without a declared
+ * value resolved to `OPTIONAL` (`buildMfaConfigRequest`).
+ */
+function previousMfaOn(previous: Record<string, unknown>): string {
+  const declared = previous['MfaConfiguration'];
+  if (declared === 'ON' || declared === 'OPTIONAL') return declared;
+  if (
+    (declared === undefined || declared === null || declared === '') &&
+    readEnabledMfas(previous).declaresFactor
+  ) {
+    return 'OPTIONAL';
+  }
+  return '';
 }
 
 /**
@@ -2652,6 +2705,13 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    *   `toSdkUserPoolPolicies`), so the update path ANNOUNCES the removal via
    *   `warnOnUnremovablePoliciesSubKeys` instead of resetting.
    *
+   * What CloudFormation does when the TEMPLATE removes a member (2026-10-27,
+   * issue #1160, one throwaway stack): `AccountRecoverySetting`,
+   * `SmsConfiguration`, `UserPoolTier` and `DeletionProtection` are kept
+   * (`warnOnKeptRemovedMembers`); `MfaConfiguration` with its factors goes
+   * OFF (`turnOffRemovedMfa`); a removed `UserPoolTags` key is untagged
+   * (`untagRemovedUserPoolTags`, from the type schema's tagging contract).
+   *
    * `SetUserPoolMfaConfig` — a DIFFERENT API with a DIFFERENT rule, kept in
    * its own section so neither list is read as evidence for the other:
    *
@@ -2972,6 +3032,74 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   }
 
   /**
+   * Announce a removed {@link KEPT_ON_REMOVAL_MEMBERS} property (issue #1160).
+   * `UpdateUserPool` keeps each one when the call omits it (issue #4066's
+   * ledger at `readLiveMfaConfiguration`), and CloudFormation keeps each one
+   * on the same template edit: MEASURED us-east-1 2026-10-27 on a throwaway
+   * stack (PLUS tier) whose update removed all four at once, beside a
+   * removed `AutoVerifiedAttributes` that DID reset (the control). Every
+   * value was unchanged right after `UPDATE_COMPLETE` and three minutes later.
+   * So cdkd sends no reset, as with `Policies`; only the silence was wrong.
+   *
+   * A previous value equal to what AWS reports for an unset member (the
+   * `readCurrentState` placeholders: `{}`, `INACTIVE`, `ESSENTIALS`) is not
+   * announced, since keeping it changes nothing.
+   */
+  private warnOnKeptRemovedMembers(
+    logicalId: string,
+    physicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): void {
+    for (const [member, unset] of Object.entries(KEPT_ON_REMOVAL_MEMBERS)) {
+      if (!declaresMember(previousProperties[member], unset)) continue;
+      if (sendsKeptMember(member, properties[member])) continue;
+      this.logger.warn(
+        safeMsg`Cognito User Pool ${logicalId} (${physicalId}): the template no longer declares ` +
+          safeMsg`${member}, and UpdateUserPool keeps a member it omits, so the pool keeps its ` +
+          safeMsg`current ${member}. CloudFormation keeps it on the same edit too, so cdkd sends ` +
+          safeMsg`no reset. To change it, declare ${member} with the value you want.`
+      );
+    }
+  }
+
+  /**
+   * Turn MFA off when the template stops declaring it (issue #1160).
+   *
+   * A template that drops `MfaConfiguration` and every MFA factor property
+   * sends no MFA member at all, and `UpdateUserPool` keeps `MfaConfiguration`
+   * when omitted, so the pool stayed `OPTIONAL` / `ON`. CloudFormation turns
+   * it OFF: MEASURED us-east-1 2026-10-27 on a throwaway stack whose pool went
+   * from `MfaConfiguration: OPTIONAL` + `EnabledMfas: [SMS_MFA,
+   * SOFTWARE_TOKEN_MFA]` to neither, the update read `MfaConfiguration: OFF`
+   * and no `SoftwareTokenMfaConfiguration` from `GetUserPoolMfaConfig`.
+   *
+   * Sent as `SetUserPoolMfaConfig` with `MfaConfiguration: OFF` and no factor
+   * block: the shape measured to be accepted and to leave the pool
+   * MFA-disabled (issue #1968, at `buildMfaConfigRequest`), where a factor
+   * block beside OFF is refused.
+   */
+  private async turnOffRemovedMfa(
+    logicalId: string,
+    physicalId: string,
+    previousMfaConfiguration: string
+  ): Promise<void> {
+    await this.retryOnTransientControlPlane(
+      () =>
+        this.getClient().send(
+          new SetUserPoolMfaConfigCommand({ UserPoolId: physicalId, MfaConfiguration: 'OFF' })
+        ),
+      `SetUserPoolMfaConfig(${physicalId})`
+    );
+    this.logger.warn(
+      safeMsg`Cognito User Pool ${logicalId} (${physicalId}): the template no longer declares ` +
+        safeMsg`MfaConfiguration or an MFA factor, so cdkd turned MFA OFF (it was ` +
+        safeMsg`${previousMfaConfiguration}), as CloudFormation does on the same edit. Declare ` +
+        safeMsg`MfaConfiguration and EnabledMfas to keep MFA on.`
+    );
+  }
+
+  /**
    * Update a Cognito User Pool
    *
    * `UserPoolName` is renamed in place: `UpdateUserPool` carries `PoolName`
@@ -3139,6 +3267,16 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     // announcement cannot be lost to an unrelated update failure, and so it is
     // adjacent to the other pre-call announcements above.
     this.warnOnUnremovablePoliciesSubKeys(physicalId, properties, previousProperties);
+    this.warnOnKeptRemovedMembers(logicalId, physicalId, properties, previousProperties);
+
+    // A template that drops `MfaConfiguration` and every factor property sends
+    // no MFA member, which leaves MFA on; CloudFormation turns it OFF (issue
+    // #1160, measured at `turnOffRemovedMfa`).
+    const removedMfa =
+      classifyDeclaredMfaConfiguration(properties['MfaConfiguration']) === 'absent' &&
+      !hasMfaConfigProps(properties)
+        ? previousMfaOn(previousProperties)
+        : '';
 
     // The call ORDER (issue #3562): `SetUserPoolMfaConfig` goes first only for
     // the one measured shape that needs it -- see
@@ -3203,6 +3341,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           'AccountRecoverySetting'
         ] as AccountRecoverySettingType;
       }
+      // Omitting `UserPoolTags` KEEPS the pool's tags, so a removed key is
+      // untagged after the call (`untagRemovedUserPoolTags`, issue #1160).
       if (properties['UserPoolTags']) {
         updateParams.UserPoolTags = properties['UserPoolTags'] as Record<string, string>;
       }
@@ -3339,15 +3479,28 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       if (!mfaFirstPrior) {
         await this.applyMfaConfig(physicalId, properties, mfaConfiguration, mfaOptions);
       }
-
-      this.logger.debug(`Successfully updated Cognito User Pool ${logicalId}`);
-
       // Describe the user pool to get updated attributes
       const describeResponse = await this.getClient().send(
         new DescribeUserPoolCommand({ UserPoolId: physicalId })
       );
 
       const userPool = describeResponse.UserPool;
+      await this.untagRemovedUserPoolTags(
+        logicalId,
+        physicalId,
+        resourceType,
+        userPool?.Arn,
+        properties['UserPoolTags'],
+        previousProperties['UserPoolTags']
+      );
+      // LAST, after the untag: a failed untag (a role without
+      // cognito-idp:UntagResource) then fails the update with MFA still on,
+      // rather than leaving a recorded MFA the pool no longer has.
+      if (removedMfa !== '') {
+        await this.turnOffRemovedMfa(logicalId, physicalId, removedMfa);
+      }
+
+      this.logger.debug(`Successfully updated Cognito User Pool ${logicalId}`);
       const region = await this.getClient().config.region();
       // Same derivation as the create path (issue #1745) — the two must agree or
       // an update would rewrite a correct suffix into a commercial-only one.
@@ -3401,6 +3554,70 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           )
       );
     }
+  }
+
+  /**
+   * Untag the `UserPoolTags` keys the previous side names and the desired side
+   * no longer does (go-to-k/cdkd#1160).
+   *
+   * `UpdateUserPool` KEEPS a pool's tags when the call omits `UserPoolTags`
+   * (measured, issue #4066; see {@link USER_POOL_KEPT_ON_OMISSION}), so a
+   * template that drops the property, or one key of it, left the tag on the
+   * pool while the deploy reported success. CloudFormation removes it: the
+   * type's schema marks `UserPoolTags` as its `tagUpdatable` tag property and
+   * grants its update handler `cognito-idp:UntagResource`. The untag is sent
+   * whether or not the update also carried `UserPoolTags`, since a key
+   * `UntagResource` does not hold is no error, and that keeps the removal
+   * independent of how `UpdateUserPool` treats a smaller map.
+   *
+   * `aws:` keys are never untagged (AWS reserves them, and the readback drops
+   * them). A desired side that is not a readable key -> value map untags
+   * nothing: `UpdateUserPool` above already sent it as declared. A previous
+   * side cdkd cannot read untags nothing and says so, and so does a recorded key cdkd cannot name.
+   */
+  private async untagRemovedUserPoolTags(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    poolArn: string | undefined,
+    desiredTags: unknown,
+    previousTags: unknown
+  ): Promise<void> {
+    if (previousTags === undefined || previousTags === null) return;
+    const desired = tagMapAsList(desiredTags ?? {});
+    if (readTagList(desired, 'desired').kind !== 'tags') return;
+    const plan = planTagDiff(tagMapAsList(previousTags), desired);
+    if (plan.recordedUnreadable) {
+      // Not the generic tag-list.ts text: UpdateUserPool applied the desired tags
+      // above, and this path only removes.
+      this.logger.warn(
+        safeMsg`The recorded UserPoolTags of ${resourceType} ${logicalId} is not a map cdkd can ` +
+          safeMsg`read, so cdkd removed no tag. Untag any key the template no longer names yourself.`
+      );
+      return;
+    }
+    if (plan.recordedHidden > 0) {
+      this.logger.warn(
+        safeMsg`The recorded UserPoolTags of ${resourceType} ${logicalId} holds ` +
+          safeMsg`${plan.recordedHidden} key(s) derived from a dynamic reference or its mask, which ` +
+          safeMsg`cdkd cannot name, so it removed none of them. Untag any such key the template no ` +
+          safeMsg`longer names yourself.`
+      );
+    }
+    const removed = plan.remove.filter((key) => !key.startsWith('aws:'));
+    if (removed.length === 0) return;
+    if (poolArn === undefined || poolArn === '') {
+      this.logger.warn(
+        safeMsg`Cognito User Pool ${logicalId} (${physicalId}): the template no longer declares ` +
+          safeMsg`${removed.length} UserPoolTags key(s), but DescribeUserPool returned no ARN to ` +
+          safeMsg`untag them with, so they stay on the pool. Remove them with ` +
+          safeMsg`aws cognito-idp untag-resource.`
+      );
+      return;
+    }
+    await this.getClient().send(
+      new UntagResourceCommand({ ResourceArn: poolArn, TagKeys: removed })
+    );
   }
 
   /**

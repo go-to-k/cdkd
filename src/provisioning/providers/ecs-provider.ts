@@ -85,6 +85,8 @@ import {
   type MonitoringConfiguration,
   type ThresholdConfiguration,
 } from '@aws-sdk/client-ecs';
+import { isDeepStrictEqual } from 'node:util';
+import { ecsServiceLaunchTypeSetOrChanged } from '../../analyzer/replacement-rules.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure, VERBOSE_POINTER } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
@@ -837,8 +839,21 @@ export class ECSProvider implements ResourceProvider {
           ])
         );
       case 'AWS::ECS::TaskDefinition':
-        // Refuses before any AWS call or log line, interpolating no bag value.
-        return this.updateTaskDefinition(logicalId, physicalId, resourceType, properties);
+        // A change outside `Tags` refuses before any AWS call or log line,
+        // interpolating no bag value. The physical id is the revision ARN,
+        // which embeds the family.
+        return this.updateTaskDefinition(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          this.operationSinks(context, [
+            [properties['Family'], familyOfTaskDefinitionArn(physicalId)],
+            [previousProperties['Family'], familyOfTaskDefinitionArn(physicalId)],
+          ]),
+          context?.maskSecrets
+        );
       case 'AWS::ECS::Service': {
         // A Service's physical id is its ARN, which embeds the service name
         // and (long format) the cluster name.
@@ -856,7 +871,8 @@ export class ECSProvider implements ResourceProvider {
             [properties['Cluster'], recordedCluster],
             [previousProperties['Cluster'], recordedCluster],
             [properties['Cluster'], clusterNameOfRef(properties['Cluster'])],
-          ])
+          ]),
+          context?.desiredFromAwsReadback === true
         );
       }
       default:
@@ -1287,27 +1303,94 @@ export class ECSProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * ECS TaskDefinitions are immutable revisioned resources: every property
+   * change but `Tags` registers a new revision whose `taskDefinitionArn`
+   * differs from the cdkd-state physicalId. Routing such a change through
+   * `cdkd drift --revert` would silently swap state's physicalId for a
+   * freshly-registered revision (and deregister the previous one) without the
+   * user's awareness, so it is refused; the deploy path replaces
+   * (CREATE→DELETE) on those properties instead.
+   *
+   * `Tags` is the one property the registry schema leaves updatable
+   * (`tagUpdatable`), and CloudFormation tags the SAME revision in place
+   * (measured for issue #5392: a tags-only change set said `Modify`,
+   * `Replacement: False`, and the revision kept its ARN). So a change whose
+   * only moved key is `Tags` is applied with `TagResource` / `UntagResource`.
+   *
+   * `maskSecrets` is the caller's `context?.maskSecrets`, the raw masker
+   * `unchangedBehindSecretReference` compares a recorded `{{resolve:...}}`
+   * leaf with (`log.mask` carries derived name needles it must not see).
+   */
   private async updateTaskDefinition(
     logicalId: string,
-    _physicalId: string,
-    _resourceType: string,
-    _properties: Record<string, unknown>
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks,
+    maskSecrets: UpdateContext['maskSecrets']
   ): Promise<ResourceUpdateResult> {
-    // ECS TaskDefinitions are immutable revisioned resources: every property
-    // change creates a new revision via RegisterTaskDefinition, and the new
-    // revision's `taskDefinitionArn` differs from the cdkd-state physicalId.
-    // Routing this through `cdkd drift --revert` would silently swap state's
-    // physicalId for a freshly-registered revision (and deregister the
-    // previous one) without the user's awareness — surface a clear error
-    // instead. The deploy code path uses Replace (CREATE→DELETE) for property
-    // changes, which is the correct semantics here.
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
+    // A key whose record keeps a secret-derived leaf as its `{{resolve:...}}`
+    // reference while the desired side holds the resolved value has not moved
+    // (go-to-k/cdkd#4275); every key here but Tags is create-only, which the
+    // helper's engine gate requires.
+    let movedOutsideTags = false;
+    for (const key of new Set([...Object.keys(properties), ...Object.keys(previousProperties)])) {
+      if (key === 'Tags' || isDeepStrictEqual(properties[key], previousProperties[key])) continue;
+      if (
+        await unchangedBehindSecretReference({
+          resourceType,
+          key,
+          desired: properties[key],
+          previous: previousProperties[key],
+          maskSecrets,
+        })
+      ) {
+        continue;
+      }
+      movedOutsideTags = true;
+      break;
+    }
+    if (movedOutsideTags) {
+      throw new ResourceUpdateNotSupportedError(
         'AWS::ECS::TaskDefinition',
         logicalId,
-        'ECS TaskDefinition revisions are immutable on AWS — there is no UpdateTaskDefinition API; every change registers a new revision via RegisterTaskDefinition. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.'
-      )
-    );
+        'ECS TaskDefinition revisions are immutable on AWS — there is no UpdateTaskDefinition API; every change but Tags registers a new revision via RegisterTaskDefinition. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.'
+      );
+    }
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    log.debug(`Updating tags of ECS task definition ${logicalId}: ${physicalId}`);
+    try {
+      await this.applyTagDiff(
+        physicalId,
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags'],
+        log
+      );
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapCaughtError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update ECS task definition ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+    }
+    return {
+      physicalId,
+      wasReplaced: false,
+      attributes: { TaskDefinitionArn: physicalId },
+    };
   }
 
   private async deleteTaskDefinition(
@@ -1793,7 +1876,9 @@ export class ECSProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    /** `cdkd drift --revert` (`UpdateContext.desiredFromAwsReadback`). */
+    desiredFromAwsReadback: boolean
   ): Promise<ResourceUpdateResult> {
     log.debug(`Updating ECS service ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -1823,6 +1908,35 @@ export class ECSProvider implements ResourceProvider {
         resourceType,
         logicalId,
         physicalId
+      );
+    }
+
+    // `UpdateService` has no `launchType` member: a changed LaunchType is a
+    // replacement (issue #5392, the registry's predicate), so one that still
+    // reaches here is refused rather than recorded while AWS keeps the old
+    // value. A removal keeps the live value, as CloudFormation does.
+    //
+    // An ADD: an ordinary deploy never brings one here, because the
+    // replacement rule replaces on an add first. Outside `cdkd drift
+    // --revert` the one caller that does is the rollback revert, restoring
+    // the value a removal left live, so the add passes and sends nothing.
+    // Under drift --revert the previous side is the AWS readback, which omits
+    // LaunchType for a service moved to a capacity provider strategy out of
+    // band; restoring it needs a replacement, so the add is refused too. Only
+    // `desiredFromAwsReadback` is read: every other caller passes.
+    const previousLaunchType = previousProperties['LaunchType'];
+    if (
+      (previousLaunchType != null || desiredFromAwsReadback) &&
+      ecsServiceLaunchTypeSetOrChanged(previousLaunchType, properties['LaunchType'])
+    ) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        desiredFromAwsReadback
+          ? // The template and state are unchanged, so `deploy --replace`
+            // would plan nothing here.
+            'UpdateService cannot change a service launch type, so drift --revert cannot restore it. Destroy + redeploy the stack to restore it, or run cdkd drift --accept to keep the live value'
+          : 'UpdateService cannot change a service launch type; CloudFormation replaces the service. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
       );
     }
 

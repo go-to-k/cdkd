@@ -1063,6 +1063,11 @@
       "scenarios": []
     },
     {
+      "name": "ecs-taskdef-tags-launch-type",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "efs-immutable-replacement",
       "annotated": false,
       "scenarios": []
@@ -3519,6 +3524,7 @@
     "ec2-route-targets",
     "ecr-scanning",
     "ecs-schedule-targets",
+    "ecs-taskdef-tags-launch-type",
     "efs-immutable-replacement",
     "elbv2-same-name-replacement",
     "eventbridge-api-destination",

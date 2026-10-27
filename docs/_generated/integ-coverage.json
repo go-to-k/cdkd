@@ -3665,6 +3665,7 @@
         "ecs-fargate",
         "ecs-schedule-targets",
         "ecs-service-update-props",
+        "ecs-taskdef-tags-launch-type",
         "local-ecs-service-connect",
         "local-engine-role-identity",
         "local-start-alb",
@@ -3690,6 +3691,10 @@
         ],
         "ecs-service-update-props": [
           "l2"
+        ],
+        "ecs-taskdef-tags-launch-type": [
+          "l1",
+          "literal"
         ],
         "local-ecs-service-connect": [
           "l1"
@@ -3731,6 +3736,7 @@
         "ecs-bluegreen",
         "ecs-fargate",
         "ecs-service-update-props",
+        "ecs-taskdef-tags-launch-type",
         "local-ecs-service-connect",
         "local-engine-role-identity",
         "local-start-alb",
@@ -3749,6 +3755,10 @@
         ],
         "ecs-service-update-props": [
           "l2",
+          "literal"
+        ],
+        "ecs-taskdef-tags-launch-type": [
+          "l1",
           "literal"
         ],
         "local-ecs-service-connect": [
@@ -3788,6 +3798,7 @@
         "ecs-fargate",
         "ecs-schedule-targets",
         "ecs-service-update-props",
+        "ecs-taskdef-tags-launch-type",
         "local-ecs-service-connect",
         "local-engine-role-identity",
         "local-run-task",
@@ -3814,6 +3825,10 @@
         ],
         "ecs-service-update-props": [
           "l2"
+        ],
+        "ecs-taskdef-tags-launch-type": [
+          "l1",
+          "literal"
         ],
         "local-ecs-service-connect": [
           "l1"

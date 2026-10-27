@@ -57,7 +57,7 @@ codebuild-project	2026-10-26T11:39:42Z	PASS	174	verify.sh	rc ok, orph clean
 codecommit	2026-10-25T00:07:44Z	PASS	125	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
 cognito	2026-10-24T19:26:15Z	PASS	214	verify.sh	rc ok, orph clean, #5266 tail-c
-cognito-custom-attribute-add	2026-10-26T16:25:53Z	PASS	78	verify.sh	PR #5374, rc ok, orph clean, rename+refusal arms
+cognito-custom-attribute-add	2026-10-27T13:14:59Z	PASS	80	verify.sh	rc ok, orph clean; #1160 tag/MFA/recovery arm; probe on origin/main provider red at tag-still-present
 cognito-identity-pool	2026-10-11T15:28:51Z	PASS	57	verify.sh	PR #4796, rc ok, orph clean
 cognito-lambda-triggers	2026-10-11T15:28:51Z	PASS	78	verify.sh	PR #4796, rc ok, orph clean
 cognito-resource-server	2026-10-16T08:15:12Z	PASS	96	verify.sh	rc ok, orph clean (#3341 slice 4995)
@@ -125,6 +125,7 @@ ecs-bluegreen	2026-10-11T09:33:22Z	PASS	230	verify.sh	PR #4720 (#4705) final c53
 ecs-fargate	2026-10-24T03:41:38Z	PASS	496	verify.sh	rc ok, orph clean; #5228 not-gone mark
 ecs-schedule-targets	2026-10-11T09:33:22Z	PASS	80	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 ecs-service-update-props	2026-10-22T19:00:38Z	PASS	132	verify.sh	rc ok, destroy 15 deleted 0 errors, orphans clean (PR#5169)
+ecs-taskdef-tags-launch-type	2026-10-27T12:49:28Z	PASS	65	verify.sh	rc ok, orph clean; #5392 probes red at TaskDef update / Svc LaunchType guard
 efs-immutable-replacement	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
 efs-standalone	2026-10-20T03:13:30Z	PASS	200	verify.sh	PR #5104 (#2319 EMR/FSx/EFS thrown-error wraps); rc 0, destroy clean, orph clean
