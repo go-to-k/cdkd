@@ -162,13 +162,97 @@ describe('DocDBProvider DBCluster Port removal (issue #1160)', () => {
     expect(mockSend).toHaveBeenCalledTimes(2);
   });
 
-  it('skips the port wait under --no-wait', async () => {
+  it('skips the port wait under --no-wait and records the port it sent, not the stale readback', async () => {
     process.env['CDKD_NO_WAIT'] = 'true';
     mockSend.mockResolvedValueOnce({}).mockResolvedValueOnce(cluster(27018, 'modifying'));
 
-    await provider.update('MyCluster', 'my-cluster', TYPE, {}, { Port: 27018 });
+    const result = await provider.update('MyCluster', 'my-cluster', TYPE, {}, { Port: 27018 });
 
     expect(mockSend.mock.calls[0][0].input.Port).toBe(27017);
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(result.attributes?.['Port']).toBe('27017');
+    expect(result.attributes?.['Endpoint.Port']).toBe('27017');
+  });
+
+  it('under --no-wait keeps the readback Port when the port did not change', async () => {
+    process.env['CDKD_NO_WAIT'] = 'true';
+    mockSend.mockResolvedValueOnce({}).mockResolvedValueOnce(cluster(27018));
+
+    const result = await provider.update(
+      'MyCluster',
+      'my-cluster',
+      TYPE,
+      { Port: 27018 },
+      { Port: 27018 }
+    );
+
+    expect(result.attributes?.['Port']).toBe('27018');
+  });
+
+  it('waits out member instances the port change moved to modifying / rebooting', async () => {
+    const withMember = {
+      DBClusters: [
+        {
+          DBClusterIdentifier: 'my-cluster',
+          Port: 27017,
+          Status: 'available',
+          DBClusterMembers: [{ DBInstanceIdentifier: 'member-1' }],
+        },
+      ],
+    };
+    mockSend
+      .mockResolvedValueOnce({}) // ModifyDBCluster
+      .mockResolvedValueOnce(withMember) // port wait: applied
+      .mockResolvedValueOnce(withMember) // final describe
+      .mockResolvedValueOnce({ DBInstances: [{ DBInstanceStatus: 'modifying' }] })
+      .mockResolvedValueOnce({ DBInstances: [{ DBInstanceStatus: 'rebooting' }] })
+      .mockResolvedValueOnce({ DBInstances: [{ DBInstanceStatus: 'available' }] });
+
+    await provider.update('MyCluster', 'my-cluster', TYPE, {}, { Port: 27018 });
+
+    expect(commandNames()).toEqual([
+      'ModifyDBClusterCommand',
+      'DescribeDBClustersCommand',
+      'DescribeDBClustersCommand',
+      'DescribeDBInstancesCommand',
+      'DescribeDBInstancesCommand',
+      'DescribeDBInstancesCommand',
+    ]);
+    expect(mockSend.mock.calls[3][0].input.DBInstanceIdentifier).toBe('member-1');
+  });
+
+  it('reads no member instance when the port did not change', async () => {
+    mockSend.mockResolvedValueOnce({}).mockResolvedValueOnce({
+      DBClusters: [
+        {
+          DBClusterIdentifier: 'my-cluster',
+          Port: 27018,
+          Status: 'available',
+          DBClusterMembers: [{ DBInstanceIdentifier: 'member-1' }],
+        },
+      ],
+    });
+
+    await provider.update('MyCluster', 'my-cluster', TYPE, { Port: 27018 }, { Port: 27018 });
+
+    expect(commandNames()).toEqual(['ModifyDBClusterCommand', 'DescribeDBClustersCommand']);
+  });
+
+  it('fails at once when the cluster enters a terminal status during the port wait', async () => {
+    mockSend.mockResolvedValueOnce({}).mockResolvedValueOnce(cluster(27018, 'incompatible-parameters'));
+
+    await expect(
+      provider.update('MyCluster', 'my-cluster', TYPE, {}, { Port: 27018 })
+    ).rejects.toThrow('entered status incompatible-parameters while applying its new port');
+    expect(mockSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails at once when DescribeDBClusters returns no cluster during the port wait', async () => {
+    mockSend.mockResolvedValueOnce({}).mockResolvedValueOnce({ DBClusters: [] });
+
+    await expect(
+      provider.update('MyCluster', 'my-cluster', TYPE, {}, { Port: 27018 })
+    ).rejects.toThrow('returned no cluster for DocDB DBCluster MyCluster while waiting for its new port');
     expect(mockSend).toHaveBeenCalledTimes(2);
   });
 

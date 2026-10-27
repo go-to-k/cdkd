@@ -51,6 +51,7 @@ import {
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
   deleteAfterProtectionFlipWithFinalSnapshot,
+  isTerminalDbStatus,
 } from './deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
@@ -106,6 +107,10 @@ function masterUserPasswordToSend(
  * back 27017 once the update completed.
  */
 const DOCDB_DEFAULT_PORT = 27017;
+
+/** Issue #1160: the member statuses a cluster change moves an instance through. */
+const SECURITY_GROUP_CHANGE_MEMBER_STATUSES: ReadonlySet<string> = new Set(['modifying']);
+const PORT_CHANGE_MEMBER_STATUSES: ReadonlySet<string> = new Set(['modifying', 'rebooting']);
 
 /** A template number (CFn numbers may arrive as strings), or `undefined` when absent. */
 function numberOrUndefined(value: unknown): number | undefined {
@@ -615,17 +620,30 @@ export class DocDBProvider implements ResourceProvider {
       // A changed Port (declared, or the default on removal) applies
       // asynchronously: the describe below could still read the old one, and a
       // same-deploy `Fn::GetAtt <cluster>.Port` would get it. CloudFormation
-      // reports the update once it has settled, so wait for the new port first.
-      // An unchanged port adds no call; `--no-wait` skips it.
-      if (
-        process.env['CDKD_NO_WAIT'] !== 'true' &&
-        portToSend !== undefined &&
-        portToSend !== numberOrUndefined(previousProperties['Port'])
-      ) {
+      // reports the update once it has settled, so wait for the new port first,
+      // then for the member instances it moved to `modifying` / `rebooting`, whose
+      // own Modify* in the same deploy would otherwise be refused. An unchanged
+      // port adds no call; `--no-wait` skips both.
+      const noWait = process.env['CDKD_NO_WAIT'] === 'true';
+      const portChanged =
+        portToSend !== undefined && portToSend !== numberOrUndefined(previousProperties['Port']);
+      if (!noWait && portChanged) {
         await this.waitForClusterPortApplied(physicalId, logicalId, portToSend);
       }
 
       const described = await this.describeDBCluster(physicalId);
+
+      if (!noWait && portChanged) {
+        for (const member of described?.DBClusterMembers ?? []) {
+          if (member.DBInstanceIdentifier) {
+            await this.waitForMemberAfterClusterChange(
+              member.DBInstanceIdentifier,
+              PORT_CHANGE_MEMBER_STATUSES,
+              'port'
+            );
+          }
+        }
+      }
 
       // A changed VpcSecurityGroupIds also moves every member instance to
       // `modifying` within about a second, and a member's own Modify* in the
@@ -648,7 +666,11 @@ export class DocDBProvider implements ResourceProvider {
         );
         for (const member of described?.DBClusterMembers ?? []) {
           if (member.DBInstanceIdentifier) {
-            await this.waitForMemberAfterSecurityGroupChange(member.DBInstanceIdentifier);
+            await this.waitForMemberAfterClusterChange(
+              member.DBInstanceIdentifier,
+              SECURITY_GROUP_CHANGE_MEMBER_STATUSES,
+              'VPC security groups'
+            );
           }
         }
       }
@@ -668,7 +690,13 @@ export class DocDBProvider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
-        attributes: clusterAttributes(described),
+        // Under `--no-wait` the describe can still read the OLD port; record the
+        // one sent, or a `Fn::GetAtt <cluster>.Port` consumer stays stale.
+        attributes: clusterAttributes(
+          noWait && portChanged && described !== undefined
+            ? { ...described, Port: portToSend }
+            : described
+        ),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -1239,14 +1267,16 @@ export class DocDBProvider implements ResourceProvider {
   }
 
   /**
-   * Issue #1160: wait out a member instance's `modifying` after its cluster's
-   * security groups changed. Only that transition is waited out: a member in
-   * a lasting state (maintenance, upgrading, storage-optimization, ...) or
-   * deleted out of band does not hold the update, as CloudFormation reports
-   * the cluster updated in those cases too.
+   * Issue #1160: wait out a member instance's transition (`transitional`) after
+   * its cluster's security groups or port changed. Only that transition is
+   * waited out: a member in a lasting state (maintenance, upgrading,
+   * storage-optimization, ...) or deleted out of band does not hold the update,
+   * as CloudFormation reports the cluster updated in those cases too.
    */
-  private async waitForMemberAfterSecurityGroupChange(
+  private async waitForMemberAfterClusterChange(
     dbInstanceIdentifier: string,
+    transitional: ReadonlySet<string>,
+    change: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
     const startTime = Date.now();
@@ -1259,12 +1289,12 @@ export class DocDBProvider implements ResourceProvider {
         if (isDocDBNotFoundError(error, 'DBInstanceNotFoundFault')) return;
         throw error;
       }
-      if (status !== 'modifying') return;
+      if (status === undefined || !transitional.has(status)) return;
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
     }
     throw new Error(
-      `Timed out waiting for a member instance of the cluster to finish applying its new VPC security groups`
+      `Timed out waiting for a member instance of the cluster to finish applying its new ${change}`
     );
   }
 
@@ -1283,7 +1313,18 @@ export class DocDBProvider implements ResourceProvider {
     let delay = 5_000;
     while (Date.now() - startTime < maxWaitMs) {
       const cluster = await this.describeDBCluster(dbClusterIdentifier);
-      if (cluster !== undefined && cluster.Status !== 'modifying' && cluster.Port === port) return;
+      // Neither ends within the budget: fail now rather than after 30 minutes.
+      if (cluster === undefined) {
+        throw new Error(
+          `DescribeDBClusters returned no cluster for DocDB DBCluster ${logicalId} while waiting for its new port`
+        );
+      }
+      if (isTerminalDbStatus(cluster.Status)) {
+        throw new Error(
+          safeMsg`DocDB DBCluster ${logicalId} entered status ${cluster.Status ?? ''} while applying its new port`
+        );
+      }
+      if (cluster.Status !== 'modifying' && cluster.Port === port) return;
       this.logger.debug(
         safeMsg`DocDB DBCluster ${logicalId} port not applied yet (status ${cluster?.Status ?? 'unknown'})`
       );
