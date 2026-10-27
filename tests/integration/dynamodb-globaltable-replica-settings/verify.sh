@@ -42,12 +42,14 @@
 #      replica is unprotected, cdkd warned that it auto-disabled the replica's
 #      protection, and every #5365 setting reset as CloudFormation resets it
 #      (measured): PITR and insights off, streaming disabled, both policies gone.
-#  5b. Drift is clean; then both regions move to their customer managed keys
-#      out of band (one every-region ReplicaUpdates call), drift reports
-#      SSESpecification leaving the AWS owned key, and `drift --revert`
-#      returns both regions to it (SSEDescription absent) and drift is clean
-#      again (#5399).
-#   6. `tag,removed,protect`: protect the replica again.
+#  5b. `tag,removed,ssetable`: a second two-region table on the AWS owned key
+#      (the first has used up its encryption switches). Drift is clean; then
+#      both its regions move to the customer managed keys out of band (one
+#      every-region ReplicaUpdates call), drift reports SSESpecification
+#      leaving the AWS owned key, and `drift --revert` returns both regions to
+#      it (SSEDescription absent) and drift is clean again (#5399).
+#   6. `tag,removed,protect,ssetable`: protect the replica again (the Phase 5b
+#      table is kept, so the destroy removes it).
 #   7. `destroy --remove-protection`: assert the table is gone in BOTH regions
 #      (the replica's guard is turned off before its drop) and the state file
 #      is removed.
@@ -110,6 +112,9 @@ if [ "${REGION}" = "us-west-2" ]; then SECOND_REGION="us-east-1"; else SECOND_RE
 export CDKD_INTEG_SECOND_REGION="${SECOND_REGION}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 TABLE="${STACK}-table"
+# Phase 5b's own table (issue #5399): ${TABLE} has switched encryption four
+# times by then, and DynamoDB refused a further switch on it.
+TABLE2="${STACK}-table2"
 LOCAL_ALIAS="alias/${STACK}-local"
 REPLICA_ALIAS="alias/${STACK}-replica"
 # Tag on the keys this script creates, so a key whose alias was never
@@ -123,9 +128,10 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 LOG_DIR="$(mktemp -d)"
 
 # "<SSE status> <SSE type> <key ARN> <table class> <deletion protection>" for
-# the table in region $1; absent members read as None.
+# the table in region $1; absent members read as None. `GT_TABLE`, when set,
+# names the table this and `wait_settled` read instead of `${TABLE}` (Phase 5b).
 table_settings() {
-  aws dynamodb describe-table --table-name "${TABLE}" --region "$1" \
+  aws dynamodb describe-table --table-name "${GT_TABLE:-${TABLE}}" --region "$1" \
     --query '[Table.SSEDescription.Status, Table.SSEDescription.SSEType, Table.SSEDescription.KMSMasterKeyArn, Table.TableClassSummary.TableClass, Table.DeletionProtectionEnabled]' \
     --output text
 }
@@ -136,11 +142,11 @@ table_settings() {
 wait_settled() {
   local i tbl reps second
   for i in $(seq 1 90); do
-    tbl="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
+    tbl="$(aws dynamodb describe-table --table-name "${GT_TABLE:-${TABLE}}" --region "${REGION}" \
       --query 'Table.TableStatus' --output text)" || return 1
-    reps="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
+    reps="$(aws dynamodb describe-table --table-name "${GT_TABLE:-${TABLE}}" --region "${REGION}" \
       --query "join(' ', Table.Replicas[].ReplicaStatus || \`[]\`)" --output text)" || return 1
-    second="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${SECOND_REGION}" \
+    second="$(aws dynamodb describe-table --table-name "${GT_TABLE:-${TABLE}}" --region "${SECOND_REGION}" \
       --query 'Table.TableStatus' --output text)" || return 1
     if [ "${tbl}" = "ACTIVE" ] && [ "${reps}" = "ACTIVE" ] && [ "${second}" = "ACTIVE" ]; then
       echo "    settled (table=${tbl} replicas=${reps} ${SECOND_REGION}=${second})"
@@ -308,6 +314,7 @@ cleanup() {
       --region "${REGION}" --yes --remove-protection >/dev/null 2>&1
   fi
   teardown_table "${TABLE}"
+  teardown_table "${TABLE2}"
   # The local keys (stack-managed) when the destroy did not schedule them,
   # and the replica keys this fixture creates — by ARN too, in case the
   # alias was never created.
@@ -688,20 +695,30 @@ await_replica "${SECOND_REGION}" "^DISABLED	None	DISABLED	none	absent	absent$" \
   "Phase 5: the ${SECOND_REGION} replica did not reset its point-in-time recovery, insights, Kinesis stream and policies (issue #5365)"
 
 # --- Phase 5b: drift --revert returns the AWS owned key (#5399) ----------
-# The Phase 5 deploy recorded the table on the AWS owned key: a baseline with
-# no top-level SSESpecification. Moved out of band to the customer managed keys,
-# drift used to report only the replicas' keys, and `drift --revert` kept the
-# live SSESpecification, so the table stayed on the keys.
-echo "==> Phase 5b: move both regions to their customer managed keys out of band, then drift --revert"
+# On its OWN table (`ssetable`): ${TABLE} has switched encryption four times
+# by now (keys, rotation, AWS managed, AWS owned), and DynamoDB refused a
+# further switch on it with LimitExceededException. The new table is created
+# on the AWS owned key, so its baseline has no top-level SSESpecification.
+# Moved out of band to the customer managed keys, drift used to report only
+# the replicas' keys, and `drift --revert` kept the live SSESpecification, so
+# the table stayed on the keys.
+echo "==> Phase 5b: a second table on the AWS owned key, moved to customer managed keys out of band, then drift --revert"
 PHASE5B="Phase 5b (issue #5399)"
+deploy "tag,removed,ssetable" "${LOG_DIR}/phase5b.log"
+GT_TABLE="${TABLE2}"
+wait_settled
+await_settings "${REGION}" "^None	None	None	STANDARD	False$" \
+  "${PHASE5B} premise: the ${TABLE2} table is not on the AWS owned key"
+await_settings "${SECOND_REGION}" "^None	None	None	STANDARD	False$" \
+  "${PHASE5B} premise: the ${TABLE2} replica is not on the AWS owned key"
 run_drift 0 "${PHASE5B}"
 if grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
-  echo "FAIL: ${PHASE5B}: drift reports the GlobalTable before the out-of-band change" >&2
+  echo "FAIL: ${PHASE5B}: drift reports a GlobalTable before the out-of-band change" >&2
   exit 1
 fi
 # DynamoDB takes a customer managed key on a table with replicas only as one
 # ReplicaUpdates call naming every region's key (measured, Phase 3).
-aws dynamodb update-table --table-name "${TABLE}" --region "${REGION}" --replica-updates \
+aws dynamodb update-table --table-name "${TABLE2}" --region "${REGION}" --replica-updates \
   "[{\"Update\":{\"RegionName\":\"${REGION}\",\"KMSMasterKeyId\":\"${LOCAL_KEY_ARN}\"}},{\"Update\":{\"RegionName\":\"${SECOND_REGION}\",\"KMSMasterKeyId\":\"${REPLICA_KEY_ARN}\"}}]" \
   >/dev/null
 wait_settled
@@ -731,16 +748,17 @@ await_settings "${SECOND_REGION}" "^None	None	None	STANDARD	False$" \
   "${PHASE5B}: drift --revert did not return the ${SECOND_REGION} replica to the AWS owned key"
 run_drift 0 "${PHASE5B}"
 if grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
-  echo "FAIL: ${PHASE5B}: the GlobalTable still drifts after --revert" >&2
+  echo "FAIL: ${PHASE5B}: a GlobalTable still drifts after --revert" >&2
   exit 1
 fi
+unset GT_TABLE
 echo "    OK: back on the AWS owned key, and clean after --revert"
 
 # --- Phase 6: protect the replica again ----------------------------------
 echo "==> Phase 6: protect the replica again"
 # DynamoDB refuses a second protection change on one table within 15 s.
 sleep 16
-deploy "tag,removed,protect" "${LOG_DIR}/phase6.log"
+deploy "tag,removed,protect,ssetable" "${LOG_DIR}/phase6.log"
 wait_settled
 await_settings "${SECOND_REGION}" "	True$" "Phase 6: the replica was not protected again (issue #5355)"
 
@@ -756,6 +774,14 @@ for _ in $(seq 1 30); do
 done
 assert_gone "replica ${TABLE} still exists in ${SECOND_REGION} after destroy" aws dynamodb describe-table --table-name "${TABLE}" --region "${SECOND_REGION}"
 echo "    table deleted in both regions"
+for r in "${REGION}" "${SECOND_REGION}"; do
+  for _ in $(seq 1 30); do
+    gone_probe aws dynamodb describe-table --table-name "${TABLE2}" --region "${r}" && break
+    sleep 10
+  done
+  assert_gone "table ${TABLE2} still exists in ${r} after destroy" aws dynamodb describe-table --table-name "${TABLE2}" --region "${r}"
+done
+echo "    the Phase 5b table deleted in both regions"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"

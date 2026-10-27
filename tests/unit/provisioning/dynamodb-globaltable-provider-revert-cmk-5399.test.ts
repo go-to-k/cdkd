@@ -6,6 +6,7 @@ import {
   DescribeTableCommand,
   DescribeTimeToLiveCommand,
   GetResourcePolicyCommand,
+  LimitExceededException,
   ListTagsOfResourceCommand,
   PolicyNotFoundException,
   UpdateTableCommand,
@@ -80,7 +81,10 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
-import { DynamoDBGlobalTableProvider } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
+import {
+  DynamoDBGlobalTableProvider,
+  relayedEncryptionChangeLimit,
+} from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 import {
   buildRevertNewProperties,
@@ -339,5 +343,54 @@ describe('getDriftAbsentMeansDefaultKeys (go-to-k/cdkd#5399)', () => {
       absentMeansDefault: driftAbsentMeansDefaultKeys(provider, RESOURCE_TYPE, onTemplate),
     });
     expect(sent['SSESpecification']).toEqual(aws['SSESpecification']);
+  });
+});
+
+describe('a refused encryption change names the quota (go-to-k/cdkd#5399 integ)', () => {
+  // AWS's text, as measured (us-east-1, 2026-10-28).
+  const QUOTA_TEXT =
+    'Subscriber limit exceeded: Encryption mode changes are limited in the 24h window ending at ' +
+    '2026-10-28T20:13:44.484Z. After the first 4 change, each subsequent change in the same window ' +
+    'can be performed at most once every 21600 seconds. Number of updates today: 4.';
+
+  it('relays the quota for its text only', () => {
+    expect(relayedEncryptionChangeLimit(QUOTA_TEXT)).toMatch(
+      /^ AWS limits a table to 4 encryption changes in 24 hours, then one every 6 hours/
+    );
+    expect(relayedEncryptionChangeLimit('Subscriber limit exceeded: too many tables')).toBe('');
+  });
+
+  it('a drift --revert refused by the quota says why, not just the class', async () => {
+    setLive(false);
+    const baseline = await read();
+    setLive(true);
+    const aws = await read();
+    const changes = await detect(baseline, aws);
+    const live = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation(async (command: Sent) => {
+      if (command.constructor.name === UpdateTableCommand.name && 'SSESpecification' in command.input) {
+        throw new LimitExceededException({ message: QUOTA_TEXT, $metadata: {} });
+      }
+      return live(command);
+    });
+
+    const err = await provider
+      .update(
+        'T',
+        TABLE,
+        RESOURCE_TYPE,
+        buildRevertNewProperties(changes, baseline, aws, {
+          absentMeansDefault: driftAbsentMeansDefaultKeys(provider, RESOURCE_TYPE, declared),
+        }),
+        aws,
+        { desiredFromAwsReadback: true } as never
+      )
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+
+    expect(err?.message).toContain('LimitExceededException');
+    expect(err?.message).toContain('AWS limits a table to 4 encryption changes in 24 hours');
   });
 });

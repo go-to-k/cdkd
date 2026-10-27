@@ -604,7 +604,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // as this resource.
     const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
     const wrapped = build(
-      `${log.mask(failure.summary)}${relay}${relayedIndexBusyDelete(failure.detail)}`
+      `${log.mask(failure.summary)}${relay}${relayedIndexBusyDelete(failure.detail)}` +
+        relayedEncryptionChangeLimit(failure.detail)
     );
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
@@ -3061,8 +3062,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       this.logger.warn(
         maskSecrets(
           `${tableName} does not hold its declared ${what}, and setting it failed ` +
-            `(${describeAwsFailure(error).summary}). The next deploy that updates this table ` +
-            `tries again.`
+            `(${describeAwsFailure(error).summary}).` +
+            relayedEncryptionChangeLimit(describeAwsFailure(error).detail) +
+            ` The next deploy that updates this table tries again.`
         )
       );
     }
@@ -9822,6 +9824,22 @@ export const REPLICA_COPY_RELEASE_POLL_MS = 5000;
  * second of margin (go-to-k/cdkd#5355).
  */
 export const DELETION_PROTECTION_REFLIP_MS = 16_000;
+
+/**
+ * What the update wraps, which withhold AWS's text, restate of DynamoDB's
+ * encryption-change quota (go-to-k/cdkd#5399's integ). A table takes 4
+ * encryption changes in a 24-hour window and then one every 6 hours
+ * (`LimitExceededException`: "Encryption mode changes are limited in the 24h
+ * window ...", measured us-east-1, 2026-10-28); reduced to the class name, the
+ * refusal told the operator nothing. Returns a leading space plus the
+ * sentence, or `''`.
+ */
+export function relayedEncryptionChangeLimit(withheldText: string): string {
+  return /Encryption mode changes are limited/i.test(withheldText)
+    ? ' AWS limits a table to 4 encryption changes in 24 hours, then one every 6 hours; ' +
+        'retry the change later (--verbose shows when AWS allows the next one).'
+    : '';
+}
 
 /**
  * The Kinesis destination statuses a disable has not settled from
