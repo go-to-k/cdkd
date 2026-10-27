@@ -98,6 +98,7 @@ import {
 } from '../dynamodb-warm-throughput.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
+import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
 import {
   isAmbiguousOutcomeError,
   isThrottlingError,
@@ -2744,23 +2745,25 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
-   * How long a Kinesis destination this update disabled may still read as
-   * `ACTIVE`: one entry per re-read. `DisableKinesisStreamingDestination`
-   * answers `DISABLING`, yet `DescribeKinesisStreamingDestination` went on
-   * reporting `ACTIVE` for about a second (measured us-east-1, 2026-10-28), so
-   * the deploy's drift-baseline capture right after the update recorded a
+   * The pauses between re-reads of a Kinesis destination this update
+   * disabled. `DisableKinesisStreamingDestination` answers `DISABLING`, and
+   * the first `DescribeKinesisStreamingDestination` after it read `ACTIVE` in
+   * one run and `DISABLING` in another, then `DISABLED` about a second later
+   * (measured us-east-1, 2026-10-28). The deploy captures its drift baseline
+   * right after the update, so a capture inside that window recorded a
    * destination AWS was removing, and every later `cdkd drift` reported it
    * (go-to-k/cdkd#5399's integ).
    */
   protected kinesisDisableSettleDelaysMs: readonly number[] = Array<number>(30).fill(2000);
 
   /**
-   * Wait until `streamArn` no longer reads as a destination of `tableName`
-   * (see {@link kinesisDisableSettleDelaysMs}). Best-effort: a failed read, or
-   * a destination still reported after every re-read, ends the wait with a
-   * debug line, since the disable itself was accepted.
+   * Wait until `streamArn` reads `DISABLED` or is gone from `tableName`'s
+   * destinations. `DISABLING` is still settling: a later read can flicker back
+   * to `ACTIVE` (above). Best-effort, since the disable itself was accepted: a
+   * failed read ends the wait with a debug line, and running out of re-reads
+   * or of the resource deadline ends it with a warning.
    */
-  private async waitForKinesisDisableVisible(
+  private async waitForKinesisDisableSettled(
     client: DynamoDBClient,
     tableName: string,
     streamArn: string,
@@ -2768,13 +2771,26 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     maskSecrets: SecretMasker
   ): Promise<void> {
     const watch = startInterruptWatch(maskSecrets(`Kinesis streaming disable on ${scope}`));
+    let last = 'none read';
     try {
       for (const delayMs of [0, ...this.kinesisDisableSettleDelaysMs]) {
-        if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+        // The engine's deadline does not cancel this update: a wait that
+        // outlived it would keep polling with nobody waiting on it.
+        if (enclosingDeadlineRemainingMs() <= 0) break;
+        if (delayMs > 0) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.max(0, Math.min(delayMs, enclosingDeadlineRemainingMs())))
+          );
+        }
         if (watch.isInterrupted()) throw watch.onInterrupted();
-        let active: Set<string>;
+        let status: string | undefined;
         try {
-          active = await this.activeKinesisStreamArns(client, tableName);
+          const out = await client.send(
+            new DescribeKinesisStreamingDestinationCommand({ TableName: tableName })
+          );
+          status = (out.KinesisDataStreamDestinations ?? []).find(
+            (d) => d.StreamArn === streamArn
+          )?.DestinationStatus;
         } catch (error) {
           this.logger.debug(
             maskSecrets(
@@ -2784,10 +2800,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           );
           return;
         }
-        if (!active.has(streamArn)) return;
+        if (status === undefined || status === 'DISABLED') return;
+        last = status;
       }
-      this.logger.debug(
-        maskSecrets(`The Kinesis streaming destination on ${scope} still reads as active`)
+      this.logger.warn(
+        maskSecrets(
+          `The Kinesis streaming destination on ${scope} had not settled to DISABLED ` +
+            `(last status: ${last}); 'cdkd drift' may report it on this replica until it does`
+        )
       );
     } finally {
       watch.dispose();
@@ -2919,7 +2939,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // Already off (a re-run, or an out-of-band disable) is the goal.
           if (await this.kinesisStreaming(client, tableName, op.streamArn, error)) throw error;
         }
-        await this.waitForKinesisDisableVisible(
+        await this.waitForKinesisDisableSettled(
           client,
           tableName,
           op.streamArn,
