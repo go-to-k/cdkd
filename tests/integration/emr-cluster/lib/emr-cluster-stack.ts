@@ -39,6 +39,11 @@ import type { Construct } from 'constructs';
  *   - A `removal` tag is ADDED in the same deploy, a companion change proving
  *     the update ran with the removal beside it.
  *
+ * INSTANCES-REPLACE phase (CDKD_TEST_INSTANCES_REPLACE=true, issue #5418):
+ *   - `Instances.AdditionalMasterSecurityGroups` gains a fixture-owned SG.
+ *     CloudFormation replaces the cluster for that change, so cdkd must too:
+ *     a new ClusterId, the old cluster terminated.
+ *
  * NOTE: `VisibleToAllUsers` is intentionally NOT toggled/asserted here — AWS
  * deprecated it, so `SetVisibleToAllUsers(false)` is a no-op and the value
  * stays `true` (the provider still issues the call; its unit tests cover the
@@ -50,6 +55,10 @@ export class EmrClusterStack extends cdk.Stack {
 
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
     const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
+    // go-to-k/cdkd#5418: Phase 3c of `verify.sh` adds an
+    // `Instances.AdditionalMasterSecurityGroups` entry, which CloudFormation
+    // answers by REPLACING the cluster.
+    const isInstancesReplace = process.env.CDKD_TEST_INSTANCES_REPLACE === 'true';
 
     // VPC with 1 AZ, public subnet only, no NAT (cheapest legal shape).
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -95,6 +104,17 @@ export class EmrClusterStack extends cdk.Stack {
       description: 'cdkd integ EMR managed SG (shared master/slave)',
       allowAllOutbound: true,
     });
+
+    // go-to-k/cdkd#5418: a fixture-owned additional master SG, present only in
+    // the Phase 3c template. EMR attaches it to the master node without adding
+    // rules to it, so it deletes cleanly after the clusters terminate.
+    const extraMasterSg = isInstancesReplace
+      ? new ec2.SecurityGroup(this, 'ExtraMasterSg', {
+          vpc,
+          description: 'cdkd integ EMR additional master SG (issue 5418)',
+          allowAllOutbound: true,
+        })
+      : undefined;
 
     const cluster = new emr.CfnCluster(this, 'Cluster', {
       name: 'cdkd-integ-emr',
@@ -151,6 +171,9 @@ export class EmrClusterStack extends cdk.Stack {
         // Provide the managed SG for both roles (see EmrSg comment above).
         emrManagedMasterSecurityGroup: emrSg.securityGroupId,
         emrManagedSlaveSecurityGroup: emrSg.securityGroupId,
+        ...(extraMasterSg && {
+          additionalMasterSecurityGroups: [extraMasterSg.securityGroupId],
+        }),
         // Single-node cluster: master only, stays alive with no steps.
         keepJobFlowAliveWhenNoSteps: true,
         terminationProtected: false,

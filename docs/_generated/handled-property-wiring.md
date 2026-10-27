@@ -15,7 +15,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **89**
-- Declared properties: **1181** (**1179** with read evidence)
+- Declared properties: **1185** (**1183** with read evidence)
 - Fully wired classes: **87**
 - Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **39**
@@ -41,7 +41,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | Provider class | Blind spot(s) |
 | --- | --- |
 | `ACMCertificateProvider` (acm-certificate-provider.ts) | `withRemovalDefaults(...) in update()` |
-| `ApiGatewayProvider` (apigateway-provider.ts) | `computed key in updateAuthorizer()`, `computed key in updateMethod()`, `withRemovalDefaults(...) in update()` |
+| `ApiGatewayProvider` (apigateway-provider.ts) | `computed key in updateAuthorizer()`, `computed key in updateMethod()`, `object spread in canonicalizeDriftProperties()`, `withRemovalDefaults(...) in update()` |
 | `ApiGatewayV2Provider` (apigatewayv2-provider.ts) | `object spread in updateIntegration()`, `withRemovalDefaults(...) in updateAuthorizer()` |
 | `AppSyncProvider` (appsync-provider.ts) | `computed key in applyGraphQLApiConfig()`, `computed key in refuseChangedMalformedGraphQLApiBlocks()`, `computed key in updateDataSource()`, `computed key in updateGraphQLApi()`, `computed key in updateResolver()`, `object spread in withEnvironmentVariablesRecord()` |
 | `ASGProvider` (asg-provider.ts) | `computed key in canonicalizeDriftProperties()`, `object spread in canonicalizeDriftProperties()`, `withRemovalDefaults(...) in update()` |
@@ -65,7 +65,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `KinesisStreamProvider` (kinesis-provider.ts) | `object spread in canonicalizeDesiredProperties()`, `object spread in effectiveMetricsProperties()` |
 | `KMSProvider` (kms-provider.ts) | `withRemovalDefaults(...) in updateKey()` |
 | `LambdaEventInvokeConfigProvider` (lambda-event-invoke-config-provider.ts) | `computed key in update()`, `object spread in canonicalizeDriftProperties()` |
-| `LambdaEventSourceMappingProvider` (lambda-eventsource-provider.ts) | `computed key in applyUpdate()` |
+| `LambdaEventSourceMappingProvider` (lambda-eventsource-provider.ts) | `computed key in applyUpdate()`, `object spread in applyUpdate()` |
 | `LambdaFunctionProvider` (lambda-function-provider.ts) | `walk(...) in jsonEscapedPairs()`, `withRemovalDefaults(...) in update()` |
 | `LambdaMicrovmImageProvider` (lambda-microvm-image-provider.ts) | `computed key in update()` |
 | `LambdaUrlProvider` (lambda-url-provider.ts) | `computed key in update()`, `object spread in update()` |
@@ -111,7 +111,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `EC2Provider` | ec2-provider.ts | wired | 73 | 73 |
 | `ECRProvider` | ecr-provider.ts | wired | 9 | 9 |
 | `ECSProvider` | ecs-provider.ts | wired | 48 | 48 |
-| `EFSProvider` | efs-provider.ts | wired | 18 | 18 |
+| `EFSProvider` | efs-provider.ts | wired | 21 | 21 |
 | `ElastiCacheProvider` | elasticache-provider.ts | wired | 26 | 26 |
 | `ELBv2Provider` | elbv2-provider.ts | wired | 38 | 38 |
 | `EMRClusterProvider` | emr-cluster-provider.ts | wired | 27 | 27 |
@@ -155,7 +155,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `RDSDBProxyProvider` | rds-dbproxy-provider.ts | wired | 10 | 10 |
 | `RDSDBProxyTargetGroupProvider` | rds-dbproxy-targetgroup-provider.ts | wired | 6 | 6 |
 | `RDSProvider` | rds-provider.ts | wired | 27 | 27 |
-| `Route53Provider` | route53-provider.ts | wired | 22 | 22 |
+| `Route53Provider` | route53-provider.ts | wired | 23 | 23 |
 | `S3BucketPolicyProvider` | s3-bucket-policy-provider.ts | wired | 2 | 2 |
 | `S3BucketProvider` | s3-bucket-provider.ts | wired | 19 | 19 |
 | `S3DirectoryBucketProvider` | s3-directory-bucket-provider.ts | wired | 4 | 4 |

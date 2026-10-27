@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 89,
-    "declaredProperties": 1181,
-    "wiredProperties": 1179,
+    "declaredProperties": 1185,
+    "wiredProperties": 1183,
     "wired": 87,
     "gap": 0,
     "allowListed": 2,
@@ -475,6 +475,7 @@
             "element-read"
           ],
           "seededBy": [
+            "canonicalizeDriftProperties",
             "create",
             "createMethod",
             "update",
@@ -1079,6 +1080,7 @@
       "blindSpots": [
         "computed key in updateAuthorizer()",
         "computed key in updateMethod()",
+        "object spread in canonicalizeDriftProperties()",
         "withRemovalDefaults(...) in update()"
       ]
     },
@@ -8763,7 +8765,7 @@
       "file": "efs-provider.ts",
       "className": "EFSProvider",
       "bucket": "wired",
-      "declaredCount": 18,
+      "declaredCount": 21,
       "properties": [
         {
           "name": "AccessPointTags",
@@ -8908,6 +8910,51 @@
           "seededBy": [
             "create",
             "createFileSystem"
+          ]
+        },
+        {
+          "name": "IpAddress",
+          "status": "wired",
+          "types": [
+            "AWS::EFS::MountTarget"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createMountTarget"
+          ]
+        },
+        {
+          "name": "IpAddressType",
+          "status": "wired",
+          "types": [
+            "AWS::EFS::MountTarget"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createMountTarget"
+          ]
+        },
+        {
+          "name": "Ipv6Address",
+          "status": "wired",
+          "types": [
+            "AWS::EFS::MountTarget"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createMountTarget"
           ]
         },
         {
@@ -14238,7 +14285,8 @@
       ],
       "gaps": [],
       "blindSpots": [
-        "computed key in applyUpdate()"
+        "computed key in applyUpdate()",
+        "object spread in applyUpdate()"
       ]
     },
     {
@@ -17122,7 +17170,7 @@
       "file": "route53-provider.ts",
       "className": "Route53Provider",
       "bucket": "wired",
-      "declaredCount": 22,
+      "declaredCount": 23,
       "properties": [
         {
           "name": "AliasTarget",
@@ -17179,6 +17227,23 @@
             "createRecordSet",
             "update",
             "updateRecordSet"
+          ]
+        },
+        {
+          "name": "DelegationSetId",
+          "status": "wired",
+          "types": [
+            "AWS::Route53::HostedZone"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "createHostedZone",
+            "readCurrentState",
+            "readHostedZone"
           ]
         },
         {

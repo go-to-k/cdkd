@@ -90,6 +90,9 @@ EXPECTED_GEO_REGION="us-east-1"
 SET_IDENTIFIER="geo-use1"
 CIDR_SET_IDENTIFIER="cidr-office"
 EXPECTED_CIDR_LOCATION="office"
+# Issue #2762: CallerReference prefix of the reusable delegation set this
+# fixture creates for the zone's DelegationSetId (cleanup() sweeps by it).
+DS_CALLER_PREFIX="cdkd-integ-route53-${ACCOUNT_ID}-"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -128,6 +131,23 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  # Issue #2762: the reusable delegation set(s) this fixture created, this
+  # run's and any an interrupted earlier run left. Only once the zone is gone:
+  # Route 53 refuses to delete a set a zone still uses.
+  if [ "${destroy_rc}" -eq 0 ]; then
+    # A leftover only once it is an hour old: a younger one can be a parallel
+    # run's set between its create and its first deploy.
+    local ds
+    for ds in $(aws route53 list-reusable-delegation-sets --output json 2>/dev/null \
+      | jq -r --arg p "${DS_CALLER_PREFIX}" --arg mine "${CDKD_TEST_DELEGATION_SET_ID:-}" \
+        --argjson cutoff "$(( $(date +%s) - 3600 ))" \
+        '.DelegationSets[]? | select(.CallerReference | startswith($p))
+          | select((.Id | sub("^/delegationset/"; "")) == $mine
+            or ((.CallerReference | ltrimstr($p) | tonumber? // 0) < $cutoff)) | .Id'); do
+      aws route53 delete-reusable-delegation-set --id "${ds##*/}" >/dev/null 2>&1 \
+        || echo "WARN: could not delete reusable delegation set ${ds}" >&2
+    done
+  fi
   set -eu
 }
 
@@ -152,6 +172,19 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+
+# Issue #2762: the zone's DelegationSetId (see the stack). Exported, so every
+# deploy below synthesizes the same value.
+DS_ID_RAW=$(aws route53 create-reusable-delegation-set \
+  --caller-reference "${DS_CALLER_PREFIX}$(date +%s)" \
+  --query 'DelegationSet.Id' --output text)
+CDKD_TEST_DELEGATION_SET_ID="${DS_ID_RAW##*/}"
+if [ -z "${CDKD_TEST_DELEGATION_SET_ID}" ] || [ "${CDKD_TEST_DELEGATION_SET_ID}" = "None" ]; then
+  echo "FAIL: create-reusable-delegation-set returned no id ('${DS_ID_RAW}')" >&2
+  exit 1
+fi
+export CDKD_TEST_DELEGATION_SET_ID
+echo "    Reusable delegation set: ${CDKD_TEST_DELEGATION_SET_ID}"
 
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
@@ -424,8 +457,22 @@ if [ "${PIPE_DRIFT_BUCKET}" != "clean" ]; then
   rm -f "${PIPE_DRIFT_JSON}"
   exit 1
 fi
+# Issue #2762: the same run reads the zone back, DelegationSetId included.
+DRIFT_ZONE_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[]
+  | select(.value.resourceType == "AWS::Route53::HostedZone") | .key] | if length == 1 then .[0] else empty end')
+ZONE_DRIFT_BUCKET=$(jq -r --arg id "${DRIFT_ZONE_ID}" '[.. | objects | to_entries[]
+  | select((.value | type) == "array") | .key as $bucket
+  | .value[]? | objects | select(.logicalId == $id) | $bucket] | join(",")' \
+  "${PIPE_DRIFT_JSON}" 2>/dev/null || true)
+if [ -z "${DRIFT_ZONE_ID}" ] || [ "${ZONE_DRIFT_BUCKET}" != "clean" ]; then
+  echo "FAIL: cdkd drift did not report hosted zone '${DRIFT_ZONE_ID}' clean (bucket '${ZONE_DRIFT_BUCKET}', rc=${PIPE_DRIFT_RC}) -- the DelegationSetId readback disagrees with its baseline (#2762):" >&2
+  cat "${PIPE_DRIFT_JSON}" >&2
+  rm -f "${PIPE_DRIFT_JSON}"
+  exit 1
+fi
 rm -f "${PIPE_DRIFT_JSON}"
 echo "    OK: cdkd drift read PipeRecord back and reported it clean"
+echo "    OK: cdkd drift reported hosted zone ${DRIFT_ZONE_ID} clean (#2762)"
 
 # --- Assertion: GeoProximityLocation reached AWS ----------------------
 # list-resource-record-sets returns every record; find the geoproximity
@@ -504,6 +551,24 @@ case "${ACCEL_RECOVERY}" in
     ;;
 esac
 echo "    OK: HostedZone.Features.AcceleratedRecoveryStatus == '${ACCEL_RECOVERY}' on AWS (silent-drop CLOSED by #609)"
+
+# --- Assertion: DelegationSetId on the SDK route (issue #2762) --------
+# Before the fix the SDK provider did not handle `DelegationSetId`, so
+# declaring it routed the zone through Cloud Control instead. GetHostedZone
+# reports `DelegationSet.Id` only for a zone on a reusable delegation set.
+ZONE_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources[] | select(.resourceType == "AWS::Route53::HostedZone")
+  | .provisionedBy // "<absent>"] | join(" ")')
+if [ "${ZONE_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: AWS::Route53::HostedZone routing layer is '${ZONE_PROVISIONED_BY}', expected 'sdk' (DelegationSetId still routes it to Cloud Control, #2762)" >&2
+  exit 1
+fi
+LIVE_DS_ID=$(aws route53 get-hosted-zone --id "${ZONE_ID}" \
+  --query 'DelegationSet.Id' --output text 2>/dev/null)
+if [ "${LIVE_DS_ID}" != "/delegationset/${CDKD_TEST_DELEGATION_SET_ID}" ]; then
+  echo "FAIL: hosted zone DelegationSet.Id is '${LIVE_DS_ID}', expected '/delegationset/${CDKD_TEST_DELEGATION_SET_ID}' (#2762)" >&2
+  exit 1
+fi
+echo "    OK: hosted zone is on reusable delegation set ${CDKD_TEST_DELEGATION_SET_ID} (#2762)"
 
 # --- Assertion: the baseline tags + query logging config are live -----
 # Both are the BASELINE half of the #1160 route53 removal checks below. Asserting
@@ -1159,5 +1224,11 @@ if [ "${LEFTOVER_LG}" != "0" ]; then
 fi
 echo "    OK: query-logging log group is gone"
 
+# Issue #2762: the delegation set is verify.sh's, not the stack's, so destroy
+# leaves it; delete it here so a leak is a FAIL rather than cleanup()'s WARN.
+aws route53 delete-reusable-delegation-set --id "${CDKD_TEST_DELEGATION_SET_ID}" >/dev/null
+assert_gone "reusable delegation set ${CDKD_TEST_DELEGATION_SET_ID} still exists" aws route53 get-reusable-delegation-set --id "${CDKD_TEST_DELEGATION_SET_ID}"
+echo "    OK: reusable delegation set is gone"
+
 echo ""
-echo "==> route53 test passed (HostedZoneFeatures + GeoProximityLocation + CidrRoutingConfig backfills closed + #1160 HostedZoneTags / QueryLoggingConfig removal resets + #3741 record renames + #3890 '|' in a record name + clean destroy)"
+echo "==> route53 test passed (HostedZoneFeatures + GeoProximityLocation + CidrRoutingConfig backfills closed + #1160 HostedZoneTags / QueryLoggingConfig removal resets + #3741 record renames + #3890 '|' in a record name + #2762 DelegationSetId + clean destroy)"

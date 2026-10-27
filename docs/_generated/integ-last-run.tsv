@@ -11,7 +11,7 @@ agentcore-tools	2026-10-19T17:48:11Z	PASS	75	verify.sh	rc ok, orph clean; #1160 
 alb	2026-10-20T08:55:09Z	PASS	589	verify.sh	PR #5116 (#1160) 0dbcced66; Phase 3.5 listener Port/Protocol removal warns CFn keep, values kept; probe (src reverted) RED at that assertion; run in own state bucket (peer v13 record blocked shared one); destroy 21 deleted 0 errors, orph clean
 alb-advanced	2026-10-17T17:48:47Z	PASS	160	standard	PR #5034 (#1160) 842d0d385; deploy rc=0, destroy 17 deleted 0 errors, orph clean
 api-cognito	2026-10-18T20:35:59Z	PASS	39	standard	PR #5073: CloudWatch role no longer retained; no ApiCognitoStack-* IAM role left, orph clean
-apigateway	2026-10-27T12:28:43Z	PASS	166	verify.sh	rc ok, orph clean; #5391 Authorizer Type + Deployment Description arms
+apigateway	2026-10-27T17:38:45Z	PASS	175	verify.sh	rc ok, orph clean; #5408 authorizer ProviderARNs + method scopes arms
 apigatewayv2-update-removal	2026-10-27T12:05:27Z	PASS	205	verify.sh	PR #5402 (#5390) Api/Stage map Tags create+update+untag; probe red at Phase 1 tag assertion (Api/Stage None/None); us-east-1; rc ok, orph clean
 apigw-cloudwatch-role-redeploy	2026-10-20T02:29:40Z	PASS	335	verify.sh	deploy+destroy clean, 0 orphans
 apigw-gateway-response	2026-10-18T18:32:28Z	PASS	245	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
@@ -109,7 +109,7 @@ dynamodb-globaltable	2026-10-20T03:28:23Z	PASS	1478	verify.sh	deploy+destroy cle
 dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-globaltable-replica-settings	2026-10-27T11:33:33Z	PASS	1207	verify.sh	rc ok, orph clean; #5381 phase 2c drift arm; pre-fix probe red at Phase 2c drift exit
 dynamodb-gsi-update	2026-10-24T19:26:15Z	PASS	1235	verify.sh	rc ok, orph clean, #5266 tail-c
-dynamodb-ondemand	2026-10-27T15:25:51Z	PASS	560	verify.sh	rc ok, orph clean, SseRemovalTable arm (#5412) green, pre-fix probe red at Phase 1.5
+dynamodb-ondemand	2026-10-27T17:47:12Z	PASS	560	verify.sh	rc ok, orph clean, KinesisRemovalTable arm (#5423) green, pre-fix probe red at Phase 1.5
 dynamodb-sse	2026-10-16T08:15:12Z	PASS	45	verify.sh	rc ok, orph clean (#3341 slice 4995)
 dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-streams	2026-10-13T02:41:29Z	PASS	235	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
@@ -128,10 +128,10 @@ ecs-service-update-props	2026-10-22T19:00:38Z	PASS	132	verify.sh	rc ok, destroy 
 ecs-taskdef-tags-launch-type	2026-10-27T12:49:28Z	PASS	65	verify.sh	rc ok, orph clean; #5392 probes red at TaskDef update / Svc LaunchType guard
 efs-immutable-replacement	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
-efs-standalone	2026-10-20T03:13:30Z	PASS	200	verify.sh	PR #5104 (#2319 EMR/FSx/EFS thrown-error wraps); rc 0, destroy clean, orph clean
+efs-standalone	2026-10-27T17:50:35Z	PASS	186	verify.sh	PR #5414 at a7985b789; us-east-1; own state bucket; rc=0, MountTarget DUAL_STACK 10.0.0.100 via SDK, GetAtt IpAddress, drift clean, 0 errors, 0 orphans; pre-fix probe RED at routing-layer cc-api (#2762)
 elasticache-replicationgroup-getatt	2026-10-21T13:56:47Z	PASS	604	verify.sh	rc ok, GetAtt PrimaryEndPoint verified, orph clean
 elbv2-same-name-replacement	2026-10-20T09:26:37Z	PASS	84	verify.sh	#5064 head re-run, clean
-emr-cluster	2026-10-20T15:35:16Z	PASS	1331	verify.sh	rc ok, 0 orph, phase2b new wording confirmed
+emr-cluster	2026-10-27T19:42:22Z	PASS	1649	verify.sh	rc ok, 0 orph, phase 3c on 33467d9a6 (absent Instances as {})
 emr-instance-configs	2026-10-22T14:33:44Z	PASS	1059	verify.sh	PR#5182/#5179: pre-fix repro'd NOTCOMPARED:readFailed (confirmed), post-fix PASS; rc ok, orph clean, cluster terminated
 emr-instance-fleets	2026-10-22T14:41:56Z	PASS	1423	verify.sh	PR#5182/#5179: pre-fix repro'd NOTCOMPARED:readFailed (confirmed), post-fix PASS; rc ok, orph clean, cluster terminated
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
@@ -206,7 +206,8 @@ lambda-config-field-removal	2026-10-02T01:44:21Z	PASS	110	verify.sh	PR #4378 rem
 lambda-destinations	2026-10-24T14:12:33Z	PASS	71	verify.sh	rc ok, orph clean
 lambda-durable-replacement	2026-10-20T06:12:01Z	PASS	170	verify.sh	deploy+destroy clean, 0 orphans
 lambda-env-removal	2026-10-01T04:01:28Z	PASS	110	verify.sh	rc ok, orph clean (#4241)
-lambda-esm-self-managed-kafka	2026-10-26T14:38:35Z	PASS	141	verify.sh	rc ok, orph clean; pre-fix probe RED at Value-less tag create
+lambda-esm-documentdb	2026-10-27T17:54:34Z	PASS	1048	verify.sh	rc ok, orph clean; #1160 ESM removal audit, DocDB update/removal arms
+lambda-esm-self-managed-kafka	2026-10-27T17:54:34Z	PASS	155	verify.sh	rc ok, orph clean; #1160 ESM removal audit
 lambda-event-invoke-config-update	2026-10-24T14:12:33Z	PASS	136	verify.sh	rc ok, orph clean
 lambda-fix-forward-orphan	2026-10-24T14:12:33Z	PASS	145	verify.sh	rc ok, orph clean
 lambda-layer-version-update	2026-10-26T11:08:47Z	PASS	126	verify.sh	rc ok, orph clean
@@ -298,7 +299,7 @@ pipes-fix-forward-orphan	2026-10-22T07:45:16Z	PASS	176	verify.sh	PR #5161 (#2319
 profile-region-default	2026-10-13T14:31:12Z	PASS	155	verify.sh	rc ok, orph clean, own state bucket, after §8-d probe; PR #4864 06b838511
 propagation-races-2	2026-10-22T21:44:19Z	PASS	130	verify.sh	PR #5187; ran alone after batch of 4; rc ok, destroy clean 0 errors, 0 orphans
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-10-26T06:49:55Z	PASS	5045	verify.sh	PR #5314 at 9d9b3bedd; us-east-1; own state bucket; rc=0, removal resets ok, final destroy 0 errors, 0 orphans
+rds-aurora	2026-10-27T20:46:09Z	PASS	5887	verify.sh	PR #5420 at 9c6a74eea; us-east-1; own state bucket; rc=0, phase 2 SecurityCluster Port removal reset to 5432 with the fail-fast port wait, final destroy 0 errors, 0 orphans (#5417)
 rds-dbinstance-backfill	2026-10-23T13:26:24Z	PASS	954	verify.sh	PR #5196 (#5194 helper): rc=0, 0 err 0 orph. One AWS automated backup snapshot lingered briefly post-destroy (DeleteAutomatedBackups async lag) and self-cleared within minutes — confirmed gone by re-poll, not a cdkd orphan. Full re-scan clean: 0 S3 state, 0 IAM, 0 DBInstances, 0 manual snapshots
 rds-fix-forward-orphan	2026-10-24T22:46:19Z	PASS	1031	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans
 rds-full-stack	2026-10-24T22:46:19Z	PASS	1011	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans
@@ -335,7 +336,7 @@ rollback-replay-cc-generated-name	2026-10-20T10:37:15Z	PASS	174	verify.sh	#5064 
 rollback-replay-effective-props	2026-10-20T10:42:05Z	PASS	264	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 rollback-same-id-recreate	2026-10-20T19:58:09Z	PASS	167	verify.sh	PR #5100 pre-merge run, own state bucket, rc ok, orph clean
 rollback-sqs-cooldown	2026-10-24T07:04:10Z	PASS	154	verify.sh	rc ok, orph clean
-route53	2026-10-19T08:51:28Z	PASS	470	verify.sh	rc ok, orph clean (#2319 PR 5087)
+route53	2026-10-27T17:54:00Z	PASS	391	verify.sh	PR #5414 at a7985b789; us-east-1; own state bucket; rc=0, HostedZone on reusable delegation set via SDK, drift clean, 0 errors, 0 orphans; pre-fix probe RED at routing-layer cc-api (#2762)
 s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 PR #4449)
 s3-cloudfront	2026-10-27T11:54:53Z	PASS	276	verify.sh	rc ok, orph clean; #5393 Enabled arm: pre-fix MalformedXML at Distribution CREATE, post-fix green
@@ -381,7 +382,7 @@ sns-sqs-event	2026-10-20T06:36:42Z	PASS	300	verify.sh	deploy+destroy clean, 0 or
 sns-subscription-filter	2026-10-24T03:05:49Z	PASS	275	verify.sh	PR 5234 rc0, destroy 0 errors, orph clean (2457d0149)
 sns-subscription-update	2026-10-24T03:05:49Z	PASS	115	verify.sh	PR 5234 rc0, destroy 0 errors, orph clean (2457d0149)
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
-sqs-esm-max-concurrency	2026-10-27T12:08:24Z	PASS	91	verify.sh	rc ok, orph clean; #1160 Enabled removal arm, probe-red on origin/main provider
+sqs-esm-max-concurrency	2026-10-27T17:54:34Z	PASS	85	verify.sh	rc ok, orph clean; #1160 ESM removal audit
 ssm-secure-dynamic-ref	2026-10-18T05:02:48Z	PASS	143	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 stack-copy-create-tokens	2026-10-25T02:23:30Z	PASS	1747	verify.sh	rc ok, orph clean
 stack-lock-renewal	2026-10-25T02:23:30Z	PASS	342	verify.sh	rc ok, orph clean

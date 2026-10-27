@@ -123,9 +123,17 @@ EMR clusters).
    as already `TERMINATED_WITH_ERRORS`), keep the new one, drop the journal
    and exit `0` (before #4606: a warning and exit `2`). A plain deploy then
    removes the new cluster.
-4. **Destroy** — runs **through the re-adopted state record**, so a broken
-   import surfaces here as a cluster that never terminates. Asserts the
-   cluster is `TERMINATED` and the VPC / state are gone. A leftover
+3c. **Instances replacement** (issue #5418) — `CDKD_TEST_INSTANCES_REPLACE=true`
+   adds `Instances.AdditionalMasterSecurityGroups` (a fixture-owned SG), which
+   CloudFormation answers by replacing the cluster. `cdkd diff` must mark
+   `Instances` `[requires replacement]`; a plain deploy is refused
+   (`STATEFUL_REPLACE_BLOCKED`, the type is in the stateful-recreate guard
+   set) and leaves the cluster running; `--force-stateful-recreation`
+   replaces it: a new ClusterId carrying the SG, and the re-adopted cluster
+   terminated through its imported state record (so a broken import surfaces
+   here as a cluster that never terminates).
+4. **Destroy** — terminates the Phase 3c replacement. Asserts both cluster
+   ids are `TERMINATED`, the Phase 3c SG and the VPC / state are gone. A leftover
    running EMR cluster is never acceptable (per instance-hour billing) —
    the phase asserts `aws emr list-clusters --active` reports no cluster
    carrying the fixture's constant tag (`cdkd-integ=emr-cluster`; scoped
@@ -176,6 +184,7 @@ round-trip (phase 3) adds only a handful of API calls against the
 already-running cluster — about a minute, no extra instance-hours.
 Phase 3b launches two more single-node clusters (one fails in bootstrap,
 one reaches `WAITING` and is then terminated): about 25 more minutes.
+Phase 3c launches one more (the replacement): about 10-15 more minutes.
 
 ## Run
 

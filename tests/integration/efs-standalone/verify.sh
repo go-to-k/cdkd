@@ -7,7 +7,9 @@
 #   - BackupPolicy         → PutBackupPolicy             (DescribeBackupPolicy)
 #   - FileSystemPolicy     → PutFileSystemPolicy         (DescribeFileSystemPolicy)
 #   - FileSystemProtection → UpdateFileSystemProtection  (DescribeFileSystems)
-# Each was a silent-drop before the backfill. Also asserts the destroy path
+# Each was a silent-drop before the backfill. Also asserts the MountTarget's
+# IpAddressType / IpAddress stay on the SDK route and reach AWS, with its
+# Fn::GetAtt IpAddress output (issue #2762). Also asserts the destroy path
 # cleans up the file system, mount target, access point, and state file.
 #
 # Required env vars:
@@ -184,6 +186,63 @@ if [ "${TM_P1}" != "provisioned" ]; then
 fi
 echo "    OK: baseline ThroughputMode == provisioned"
 
+# --- Assertion 6: MountTarget addressing on the SDK route (issue #2762) ----
+# The stack declares IpAddressType DUAL_STACK + IpAddress 10.0.0.100. Before
+# the fix the SDK provider did not handle either, so declaring them routed the
+# mount target through Cloud Control instead.
+EXPECTED_MT_IP="10.0.0.100"
+MT_ID=$(echo "${STATE}" | jq -r '.outputs.MountTargetId // empty')
+if [ -z "${MT_ID}" ]; then
+  echo "FAIL: MountTargetId output missing from deploy state" >&2
+  exit 1
+fi
+MT_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources[] | select(.resourceType == "AWS::EFS::MountTarget")
+  | .provisionedBy // "<absent>"] | join(" ")')
+if [ "${MT_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: AWS::EFS::MountTarget routing layer is '${MT_PROVISIONED_BY}', expected 'sdk' (IpAddress / IpAddressType still route it to Cloud Control, #2762)" >&2
+  exit 1
+fi
+echo "    OK: mount target provisioned by the SDK provider (#2762)"
+MT_JSON=$(aws efs describe-mount-targets --mount-target-id "${MT_ID}" --region "${REGION}" \
+  --query 'MountTargets[0]' --output json)
+MT_IP=$(echo "${MT_JSON}" | jq -r '.IpAddress // empty')
+MT_IPV6=$(echo "${MT_JSON}" | jq -r '.Ipv6Address // empty')
+if [ "${MT_IP}" != "${EXPECTED_MT_IP}" ] || [ -z "${MT_IPV6}" ]; then
+  echo "FAIL: mount target ${MT_ID} has IpAddress '${MT_IP}' / Ipv6Address '${MT_IPV6}', expected '${EXPECTED_MT_IP}' and an IPv6 address (DUAL_STACK) (#2762)" >&2
+  echo "${MT_JSON}" >&2
+  exit 1
+fi
+echo "    OK: mount target is DUAL_STACK at ${MT_IP} / ${MT_IPV6} (#2762)"
+
+# Fn::GetAtt [MountTarget, IpAddress]: the SDK provider records the attribute
+# (without it the resolver fell back to the mount target id).
+MT_IP_OUTPUT=$(echo "${STATE}" | jq -r '.outputs.MountTargetIpAddress // empty')
+if [ "${MT_IP_OUTPUT}" != "${EXPECTED_MT_IP}" ]; then
+  echo "FAIL: MountTargetIpAddress output is '${MT_IP_OUTPUT}', expected '${EXPECTED_MT_IP}' (Fn::GetAtt IpAddress, #2762)" >&2
+  exit 1
+fi
+echo "    OK: Fn::GetAtt [MountTarget, IpAddress] == ${MT_IP_OUTPUT} (#2762)"
+
+# The readback (IpAddress / Ipv6Address, and IpAddressType derived from them)
+# must agree with the baseline the deploy captured: cdkd drift reports the
+# mount target clean.
+MT_LOGICAL_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[]
+  | select(.value.resourceType == "AWS::EFS::MountTarget") | .key] | if length == 1 then .[0] else empty end')
+set +e
+DRIFT_JSON_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null)
+DRIFT_RC=$?
+set -e
+MT_DRIFT_BUCKET=$(printf '%s' "${DRIFT_JSON_OUT}" | jq -r --arg id "${MT_LOGICAL_ID}" '[.. | objects | to_entries[]
+  | select((.value | type) == "array") | .key as $bucket
+  | .value[]? | objects | select(.logicalId == $id) | $bucket] | join(",")' 2>/dev/null || true)
+if [ -z "${MT_LOGICAL_ID}" ] || [ "${MT_DRIFT_BUCKET}" != "clean" ]; then
+  echo "FAIL: cdkd drift did not report mount target '${MT_LOGICAL_ID}' clean (bucket '${MT_DRIFT_BUCKET}', rc=${DRIFT_RC}) (#2762):" >&2
+  printf '%s\n' "${DRIFT_JSON_OUT}" >&2
+  exit 1
+fi
+echo "    OK: cdkd drift reported mount target ${MT_LOGICAL_ID} clean (#2762)"
+
 # --- Phase 1b: throughput removal redeploy (issue #1160 efs batch) ----
 # The removal template drops ThroughputMode + ProvisionedThroughputInMibps.
 # EFS UpdateFileSystem merges (absent = "no change"), so pre-fix the live
@@ -219,6 +278,14 @@ if [ "${FS_ID_P2}" != "${FS_ID}" ]; then
   exit 1
 fi
 echo "    OK: ThroughputMode reset to bursting in place (removal silent-drop closed)"
+# Issue #2762: the mount target's addressing is unchanged, so the redeploy
+# must not replace it.
+MT_ID_P2=$(echo "${STATE_P2}" | jq -r '.outputs.MountTargetId // empty')
+if [ "${MT_ID_P2}" != "${MT_ID}" ]; then
+  echo "FAIL: MountTarget was REPLACED by the removal redeploy (${MT_ID} -> ${MT_ID_P2})" >&2
+  exit 1
+fi
+echo "    OK: mount target ${MT_ID} kept across the redeploy"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
@@ -234,4 +301,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> efs-standalone test passed (EFS::FileSystem #609 backfill closed + clean destroy)"
+echo "==> efs-standalone test passed (EFS::FileSystem #609 backfill closed + #2762 MountTarget addressing + clean destroy)"

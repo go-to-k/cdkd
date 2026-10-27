@@ -18,6 +18,7 @@ import {
   ListTagsForResourceCommand,
   AddTagsToResourceCommand,
   RemoveTagsFromResourceCommand,
+  type DBCluster,
 } from '@aws-sdk/client-rds';
 import { DescribeSecurityGroupsCommand, EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
@@ -65,6 +66,7 @@ import {
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
   deleteAfterProtectionFlipWithFinalSnapshot,
+  isTerminalDbStatus,
 } from './deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
@@ -208,6 +210,10 @@ const AURORA_DEFAULT_PORT: ReadonlyMap<string, number> = new Map([
 function numberOrUndefined(value: unknown): number | undefined {
   return value == null ? undefined : Number(value);
 }
+
+/** Issue #1160: the member statuses a cluster change moves an instance through. */
+const SECURITY_GROUP_CHANGE_MEMBER_STATUSES: ReadonlySet<string> = new Set(['modifying']);
+const PORT_CHANGE_MEMBER_STATUSES: ReadonlySet<string> = new Set(['modifying', 'rebooting']);
 
 /** The ModifyDBCluster `Port`: the declared one, or the engine default on removal. */
 function clusterPortToSend(
@@ -1176,17 +1182,31 @@ export class RDSProvider implements ResourceProvider {
       // asynchronously: the describe below could still read the old one, and a
       // same-deploy `Fn::GetAtt <cluster>.Endpoint.Port` would get it.
       // CloudFormation reports the update once it has settled, so wait for the
-      // new port first. An unchanged port adds no call; `--no-wait` skips it.
-      if (
-        process.env['CDKD_NO_WAIT'] !== 'true' &&
-        portToSend !== undefined &&
-        portToSend !== numberOrUndefined(previousProperties['Port'])
-      ) {
+      // new port first, then for the member instances it moved to `modifying` /
+      // `rebooting`, whose own Modify* in the same deploy would otherwise be
+      // refused. An unchanged port adds no call; `--no-wait` skips both.
+      const noWait = process.env['CDKD_NO_WAIT'] === 'true';
+      const portChanged =
+        portToSend !== undefined && portToSend !== numberOrUndefined(previousProperties['Port']);
+      if (!noWait && portChanged) {
         await this.waitForClusterPortApplied(physicalId, logicalId, portToSend);
       }
 
       // Describe to get updated attributes
       const described = await this.describeDBCluster(physicalId);
+
+      if (!noWait && portChanged) {
+        for (const member of described?.DBClusterMembers ?? []) {
+          if (member.DBInstanceIdentifier) {
+            await this.waitForMemberAfterClusterChange(
+              member.DBInstanceIdentifier,
+              logicalId,
+              PORT_CHANGE_MEMBER_STATUSES,
+              'port'
+            );
+          }
+        }
+      }
 
       // A changed VpcSecurityGroupIds also moves every member instance to
       // `modifying` within about a second, and a member's own Modify* in the
@@ -1196,13 +1216,18 @@ export class RDSProvider implements ResourceProvider {
       // an unchanged list (re-sent on every update) adds no time. `--no-wait`
       // skips it, exactly as create() skips waitForClusterAvailable.
       if (
-        process.env['CDKD_NO_WAIT'] !== 'true' &&
+        !noWait &&
         securityGroupListChanged(vpcSgIds, previousProperties['VpcSecurityGroupIds'])
       ) {
         await this.waitForSecurityGroupsApplied(physicalId, logicalId, vpcSgIds ?? []);
         for (const member of described?.DBClusterMembers ?? []) {
           if (member.DBInstanceIdentifier) {
-            await this.waitForMemberAfterSecurityGroupChange(member.DBInstanceIdentifier);
+            await this.waitForMemberAfterClusterChange(
+              member.DBInstanceIdentifier,
+              logicalId,
+              SECURITY_GROUP_CHANGE_MEMBER_STATUSES,
+              'VPC security groups'
+            );
           }
         }
       }
@@ -1223,7 +1248,12 @@ export class RDSProvider implements ResourceProvider {
         wasReplaced: false,
         attributes: definedAttributes({
           'Endpoint.Address': described?.Endpoint,
-          'Endpoint.Port': stringifyIfAssigned(described?.Port),
+          // Under `--no-wait` the describe can still read the OLD port; record
+          // the one sent, or a `Fn::GetAtt <cluster>.Endpoint.Port` consumer
+          // stays stale.
+          'Endpoint.Port': stringifyIfAssigned(
+            noWait && portChanged && described !== undefined ? portToSend : described?.Port
+          ),
           'ReadEndpoint.Address': described?.ReaderEndpoint,
           Arn: described?.DBClusterArn,
           DBClusterResourceId: described?.DbClusterResourceId,
@@ -2299,14 +2329,17 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
-   * Issue #1160: wait out a member instance's `modifying` after its cluster's
-   * security groups changed. Only that transition is waited out: a member in
-   * a lasting state (maintenance, upgrading, storage-optimization, ...) or
-   * deleted out of band does not hold the update, as CloudFormation reports
-   * the cluster updated in those cases too.
+   * Issue #1160: wait out a member instance's transition (`transitional`) after
+   * its cluster's security groups or port changed. Only that transition is
+   * waited out: a member in a lasting state (maintenance, upgrading,
+   * storage-optimization, ...) or deleted out of band does not hold the update,
+   * as CloudFormation reports the cluster updated in those cases too.
    */
-  private async waitForMemberAfterSecurityGroupChange(
+  private async waitForMemberAfterClusterChange(
     dbInstanceIdentifier: string,
+    clusterLogicalId: string,
+    transitional: ReadonlySet<string>,
+    change: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
     const startTime = Date.now();
@@ -2319,13 +2352,41 @@ export class RDSProvider implements ResourceProvider {
         if (this.isNotFoundError(error, 'DBInstanceNotFoundFault')) return;
         throw error;
       }
-      if (status !== 'modifying') return;
+      if (status === undefined || !transitional.has(status)) return;
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
     }
     throw new Error(
-      `Timed out waiting for a member instance of the cluster to finish applying its new VPC security groups`
+      // The member's identifier is another resource's physical id, which this
+      // cluster's masking does not cover (it can be secret-derived): name only
+      // the cluster.
+      safeMsg`Timed out waiting for a member instance of DBCluster ${clusterLogicalId} to finish applying its new ${change}`
     );
+  }
+
+  /**
+   * A cluster read inside an update wait (issue #5417). A vanished cluster or a
+   * terminal status (`isTerminalDbStatus`) never reaches the awaited state, so
+   * fail now rather than after the 30-minute budget.
+   */
+  private requireClusterWhileWaiting(
+    cluster: DBCluster | undefined,
+    logicalId: string,
+    change: string
+  ): DBCluster {
+    // A deleted cluster usually throws DBClusterNotFoundFault from the describe
+    // itself; this arm covers an empty `DBClusters` list.
+    if (cluster === undefined) {
+      throw new Error(
+        safeMsg`DescribeDBClusters returned no cluster for DBCluster ${logicalId} while waiting for its new ${change}`
+      );
+    }
+    if (isTerminalDbStatus(cluster.Status)) {
+      throw new Error(
+        safeMsg`DBCluster ${logicalId} entered status ${cluster.Status ?? ''} while applying its new ${change}`
+      );
+    }
+    return cluster;
   }
 
   /**
@@ -2342,10 +2403,14 @@ export class RDSProvider implements ResourceProvider {
     const startTime = Date.now();
     let delay = 5_000;
     while (Date.now() - startTime < maxWaitMs) {
-      const cluster = await this.describeDBCluster(dbClusterIdentifier);
-      if (cluster !== undefined && cluster.Status !== 'modifying' && cluster.Port === port) return;
+      const cluster = this.requireClusterWhileWaiting(
+        await this.describeDBCluster(dbClusterIdentifier),
+        logicalId,
+        'port'
+      );
+      if (cluster.Status !== 'modifying' && cluster.Port === port) return;
       this.logger.debug(
-        safeMsg`DBCluster ${logicalId} port not applied yet (status ${cluster?.Status ?? 'unknown'})`
+        safeMsg`DBCluster ${logicalId} port not applied yet (status ${cluster.Status ?? 'unknown'})`
       );
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
@@ -2368,8 +2433,12 @@ export class RDSProvider implements ResourceProvider {
     const startTime = Date.now();
     let delay = 5_000;
     while (Date.now() - startTime < maxWaitMs) {
-      const cluster = await this.describeDBCluster(dbClusterIdentifier);
-      const groups = cluster?.VpcSecurityGroups ?? [];
+      const cluster = this.requireClusterWhileWaiting(
+        await this.describeDBCluster(dbClusterIdentifier),
+        logicalId,
+        'VPC security groups'
+      );
+      const groups = cluster.VpcSecurityGroups ?? [];
       const ids = groups
         .map((group) => group.VpcSecurityGroupId ?? '')
         .sort()
@@ -2377,13 +2446,12 @@ export class RDSProvider implements ResourceProvider {
       // `modifying` is the swap's own transition; any lasting state (backing-up,
       // maintenance, ...) is not this change's to wait out.
       const settled =
-        cluster !== undefined &&
         cluster.Status !== 'modifying' &&
         groups.every((group) => group.Status === 'active') &&
         ids === want;
       if (settled) return;
       this.logger.debug(
-        safeMsg`DBCluster ${logicalId} security groups not settled yet (status ${cluster?.Status ?? 'unknown'})`
+        safeMsg`DBCluster ${logicalId} security groups not settled yet (status ${cluster.Status ?? 'unknown'})`
       );
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);

@@ -216,12 +216,12 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // ElastiCache entries above are on — an EMR cluster is often treated as
   // ephemeral compute over S3, but the local filesystem is real storage and
   // the replacement comes back empty either way. It is reachable on a PLAIN
-  // deploy with no flag: the type has no `ReplacementRulesRegistry` entry, so
-  // `create-only-properties.ts` resolves the registry schema at diff time and
-  // its createOnly set (`Name`, `ReleaseLabel`, `Applications`,
-  // `Configurations`, ... — checked in at
+  // deploy with no flag: `create-only-properties.ts` resolves the registry
+  // schema at diff time and its createOnly set (`Name`, `ReleaseLabel`,
+  // `Applications`, `Configurations`, ... — checked in at
   // `tests/fixtures/cfn-schemas/AWS-EMR-Cluster.json`) classifies a change to
-  // any of them as a replacement.
+  // any of them as a replacement, and the `ReplacementRulesRegistry` entry
+  // does the same for most `Instances` changes (issue #5418).
   'AWS::EMR::Cluster',
   // Streaming.
   'AWS::Kinesis::Stream',
