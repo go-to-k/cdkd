@@ -3,6 +3,7 @@ import { Construct } from 'constructs';
 import * as path from 'path';
 import { fileURLToPath } from 'node:url';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as agentcore from '@aws-cdk/aws-bedrock-agentcore-alpha';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -29,6 +30,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * CloudFormation A/B (us-east-1) cleared each one, the lifecycle back to the
  * service defaults 900 / 28800; cdkd's full-replace UpdateAgentRuntime does
  * the same.
+ *
+ * Issue #5433: Phase 1 also routes the JWT authorizer through a managed VPC
+ * Lattice private endpoint whose `ManagedVpcResource.Tags` carry keys a
+ * first-letter case flip would change (`Env`, `Cost-Center`) or the readback
+ * flip would (`lowerKey`); verify.sh reads them back from AWS and through
+ * `cdkd drift`. The VPC (isolated subnets, no NAT) stays in both phases so
+ * the removal phase only drops the endpoint with the authorizer.
  *
  * covers: AWS::BedrockAgentCore::Runtime
  */
@@ -71,6 +79,27 @@ export class BedrockAgentcoreStack extends cdk.Stack {
             environmentVariables: { CDKD_INTEG: 'bedrock-agentcore' },
           }),
     });
+    // Issue #5433: user-keyed tag map under the authorizer's private endpoint.
+    const authVpc = new ec2.Vpc(this, 'AuthVpc', {
+      maxAzs: 2,
+      natGateways: 0,
+      subnetConfiguration: [
+        { name: 'isolated', subnetType: ec2.SubnetType.PRIVATE_ISOLATED, cidrMask: 24 },
+      ],
+    });
+    if (!isRemoval) {
+      (codeRuntime.node.defaultChild as cdk.CfnResource).addPropertyOverride(
+        'AuthorizerConfiguration.CustomJWTAuthorizer.PrivateEndpoint',
+        {
+          ManagedVpcResource: {
+            VpcIdentifier: authVpc.vpcId,
+            SubnetIds: authVpc.isolatedSubnets.map((s) => s.subnetId),
+            EndpointIpAddressType: 'IPV4',
+            Tags: { Env: 'cdkd-integ', 'Cost-Center': '5433', lowerKey: 'v' },
+          },
+        }
+      );
+    }
     if (isRemoval) {
       // The L2 always renders these two; delete them so the keys are REMOVED.
       const cfnCodeRuntime = codeRuntime.node.defaultChild as cdk.CfnResource;

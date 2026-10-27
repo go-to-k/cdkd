@@ -7,17 +7,21 @@ This example demonstrates deploying an Amazon Bedrock AgentCore Runtime using cd
 - **AgentCore Runtime (Code)** - Runtime with S3 code asset source
 - **AgentCore Runtime (Docker)** - Runtime with ECR Docker asset source
 - **Cognito User Pool** - the OIDC issuer the code runtime's JWT authorizer points at
+- **VPC** (isolated subnets, no NAT) - the managed VPC Lattice private endpoint the JWT authorizer uses in Phase 1
 
 ## What `verify.sh` checks
 
 1. **Phase 1 (deploy)** - the code runtime carries a Description, a JWT
    AuthorizerConfiguration, ProtocolConfiguration `MCP`, a
-   LifecycleConfiguration (600 / 3600) and EnvironmentVariables.
+   LifecycleConfiguration (600 / 3600) and EnvironmentVariables. The
+   authorizer's `PrivateEndpoint.ManagedVpcResource.Tags` keys (`Env`,
+   `Cost-Center`, `lowerKey`) read back from AWS unchanged, and `cdkd drift`
+   reports the code runtime clean (issue #5433).
 2. **Phase 2 (REMOVAL, `CDKD_TEST_REMOVAL=true`)** - all five are removed from
    the template (issue #1160). A CloudFormation A/B cleared each one, the
    lifecycle back to the service defaults 900 / 28800, so the runtime must
    read back that way, in place.
-3. **Phase 3 (destroy)** - both runtimes, the user pool and the cdkd state file are gone.
+3. **Phase 3 (destroy)** - both runtimes, the user pool, the VPC and the cdkd state file are gone.
 
 ## Prerequisites
 

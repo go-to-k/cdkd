@@ -8,8 +8,9 @@
 # (us-east-1) cleared each removed field, the lifecycle back to the service
 # defaults 900 / 28800. UpdateAgentRuntime is a full replace, so cdkd omitting
 # a field is that reset; this run pins it against a regression to merge
-# semantics (filling an absent field from the previous template). Then
-# destroys clean.
+# semantics (filling an absent field from the previous template). Phase 1
+# also pins the authorizer private endpoint's tag keys, sent and read back
+# verbatim (issue #5433). Then destroys clean.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -149,6 +150,11 @@ env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
 RUNTIME_ID=$(physical_id "${CODE_RUNTIME_LOGICAL_ID}")
 DOCKER_RUNTIME_ID=$(physical_id "${DOCKER_RUNTIME_LOGICAL_ID}")
 AUTH_POOL_ID=$(physical_id "${AUTH_POOL_LOGICAL_ID}")
+AUTH_VPC_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::VPC") | .value.physicalId] | first // empty')
+if [ -z "${AUTH_VPC_ID}" ]; then
+  echo "FAIL: the auth VPC (issue #5433) is missing from state" >&2
+  exit 1
+fi
 if [ -z "${RUNTIME_ID}" ] || [ -z "${DOCKER_RUNTIME_ID}" ] || [ -z "${AUTH_POOL_ID}" ]; then
   echo "FAIL: physical ids missing from state: ${CODE_RUNTIME_LOGICAL_ID}='${RUNTIME_ID}' ${DOCKER_RUNTIME_LOGICAL_ID}='${DOCKER_RUNTIME_ID}' ${AUTH_POOL_LOGICAL_ID}='${AUTH_POOL_ID}'" >&2
   exit 1
@@ -163,6 +169,35 @@ if [ "${P1_FIELDS}" != "${P1_EXPECTED}" ]; then
   exit 1
 fi
 echo "    OK: baseline runtime ${RUNTIME_ID} carries all five fields"
+
+# Issue #5433: the private endpoint's tag keys reach AWS byte-identical. The
+# PascalCase -> camelCase flip used to rewrite them (`Env` -> `env`).
+P1_TAGS=$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "${RUNTIME_ID}" --region "${REGION}" \
+  --query 'authorizerConfiguration.customJWTAuthorizer.privateEndpoint.managedVpcResource.tags' \
+  --output json | jq -c -S .)
+P1_TAGS_EXPECTED='{"Cost-Center":"5433","Env":"cdkd-integ","lowerKey":"v"}'
+if [ "${P1_TAGS}" != "${P1_TAGS_EXPECTED}" ]; then
+  echo "FAIL (issue #5433): the authorizer private endpoint's tag keys were rewritten: expected ${P1_TAGS_EXPECTED}, got ${P1_TAGS}" >&2
+  exit 1
+fi
+echo "    OK: private endpoint tag keys sent verbatim (issue #5433)"
+
+# ...and read back verbatim: the camelCase -> PascalCase flip used to turn
+# `lowerKey` into `LowerKey`, a phantom drift on the code runtime.
+DRIFT_JSON=$(mktemp)
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_JSON}"
+DRIFT_RC=$?
+set -e
+RT_CLEAN=$(jq --arg l "${CODE_RUNTIME_LOGICAL_ID}" '[.[].clean[] | select(.logicalId == $l)] | length' "${DRIFT_JSON}" 2>/dev/null || echo "?")
+RT_DRIFTED=$(jq --arg l "${CODE_RUNTIME_LOGICAL_ID}" '[.[].drifted[] | select(.logicalId == $l)] | length' "${DRIFT_JSON}" 2>/dev/null || echo "?")
+if [ "${RT_CLEAN}" != "1" ] || [ "${RT_DRIFTED}" != "0" ]; then
+  echo "FAIL (issue #5433): expected the code runtime CLEAN in cdkd drift (clean=${RT_CLEAN} drifted=${RT_DRIFTED} rc=${DRIFT_RC}):" >&2
+  cat "${DRIFT_JSON}" >&2
+  exit 1
+fi
+rm -f "${DRIFT_JSON}"
+echo "    OK: code runtime reads back drift-clean, tag keys intact (issue #5433)"
 
 # --- Phase 2: REMOVAL drops the five fields (issue #1160) ---------------
 echo "==> Phase 2: removal (drop Description, AuthorizerConfiguration, ProtocolConfiguration, LifecycleConfiguration, EnvironmentVariables)"
@@ -211,6 +246,9 @@ echo "    OK: both runtimes are gone"
 
 assert_gone "user pool '${AUTH_POOL_ID}' still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${AUTH_POOL_ID}" --region "${REGION}"
 echo "    OK: auth user pool is gone"
+
+assert_gone "auth VPC '${AUTH_VPC_ID}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${AUTH_VPC_ID}" --region "${REGION}"
+echo "    OK: auth VPC is gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
