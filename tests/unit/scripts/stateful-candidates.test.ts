@@ -624,6 +624,57 @@ describe('the pure derivation functions', () => {
     expect(maxRetryInFlight).toBe(1);
   });
 
+  it('fetchSchemaDocuments bounds the serial pass: short backoff, skipped past the cap', async () => {
+    const throttle = () => Object.assign(new Error('Rate exceeded'), { name: 'Throttling' });
+
+    // The serial pass uses its own short backoff, not the first pass's.
+    const slept: number[] = [];
+    const unread = await fetchSchemaDocuments(
+      { send: async () => { throw throttle(); } },
+      ['AWS::Probe::Dead'],
+      () => {},
+      { sleep: async (ms) => { slept.push(ms); } }
+    );
+    expect(unread).toEqual(['AWS::Probe::Dead']);
+    expect(slept).toEqual([1000, 2000, 4000, 8000, 16000, 16000, 16000, 2000, 8000]);
+
+    // More misses than the cap: no serial re-read at all.
+    let calls = 0;
+    const skipped = await fetchSchemaDocuments(
+      {
+        send: async () => {
+          calls++;
+          throw throttle();
+        },
+      },
+      ['AWS::Probe::B', 'AWS::Probe::A'],
+      () => {},
+      { retryDelaysMs: [], serialRetryCap: 1 }
+    );
+    expect(skipped).toEqual(['AWS::Probe::A', 'AWS::Probe::B']);
+    expect(calls).toBe(2);
+  });
+
+  it('fetchSchemaDocuments does not treat a failed cache write as a failed read', async () => {
+    let calls = 0;
+    await expect(
+      fetchSchemaDocuments(
+        {
+          send: async () => {
+            calls++;
+            return { Schema: '{}' };
+          },
+        },
+        ['AWS::Probe::A'],
+        () => {
+          throw new Error('ENOSPC');
+        },
+        { retryDelaysMs: [] }
+      )
+    ).rejects.toThrow('ENOSPC');
+    expect(calls).toBe(1);
+  });
+
   it('fetchSchemaDocuments makes no second pass when the first one read everything', async () => {
     let calls = 0;
     const unread = await fetchSchemaDocuments(
