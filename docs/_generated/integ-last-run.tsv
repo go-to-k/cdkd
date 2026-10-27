@@ -280,6 +280,7 @@ nested-stack-deep	2026-10-23T21:03:40Z	PASS	130	verify.sh	rc ok, orph clean; re-
 nested-stack-replace-guard	2026-10-24T03:30:48Z	PASS	60	verify.sh	rc ok, orph clean; re-run on c53d626fd (#5240, #5238)
 nested-stack-rollback	2026-10-20T10:30:19Z	PASS	124	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 nested-stack-secret	2026-10-18T13:32:15Z	PASS	360	verify.sh	PR #5052 (stage2 RedactionContext refactor) b22bc1158; pnpm/mise shim used; rc 0, destroy 0 errors, 0 surviving state versions
+nlb-quic-server-id	2026-10-27T14:28:12Z	PASS	236	verify.sh	rc ok, orph clean; probes red at Phase1 create and Phase2 order
 nlb-source-nat	2026-10-14T14:46:11Z	PASS	370	verify.sh	PR #4915 (#1160) ce4ffaf68; rc 0, destroy 0 errors, orph clean
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
 noecho-named-producer	2026-10-17T02:35:06Z	PASS	120	verify.sh	rc ok, orph clean (SecretsRunState refactor #5023)
