@@ -1,20 +1,20 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-25T17:40:02.027Z",
+  "generatedAt": "2026-10-27T10:33:08.389Z",
   "summary": {
-    "tier2Count": 1622,
-    "schemasRead": 1622,
-    "withCreateOnly": 1420,
+    "tier2Count": 1625,
+    "schemasRead": 1625,
+    "withCreateOnly": 1423,
     "schemasWithNoProperties": 0,
-    "candidateCount": 116,
-    "guardedCount": 86,
+    "candidateCount": 117,
+    "guardedCount": 87,
     "unguardedCount": 30,
     "signalCounts": {
       "snapshot-or-backup": 16,
       "retention-window": 10,
       "storage-capacity": 20,
       "deletion-protection": 13,
-      "encryption-at-rest": 17,
+      "encryption-at-rest": 18,
       "data-store-noun": 68
     }
   },
@@ -236,6 +236,18 @@
       "signals": [
         "data-store-noun",
         "snapshot-or-backup"
+      ],
+      "guarded": true
+    },
+    {
+      "typeName": "AWS::CloudWatch::Space",
+      "createOnlyProperties": [
+        "/properties/AgentCoreEvaluationRoleArn",
+        "/properties/DataAccessRoleArn",
+        "/properties/DomainId"
+      ],
+      "signals": [
+        "encryption-at-rest"
       ],
       "guarded": true
     },

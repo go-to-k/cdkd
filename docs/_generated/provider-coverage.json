@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-25T17:26:58.930Z",
+  "generatedAt": "2026-10-27T09:59:04.452Z",
   "summary": {
     "tier1Count": 138,
-    "tier2Count": 1622,
+    "tier2Count": 1625,
     "tier3Count": 329,
-    "totalCount": 2089
+    "totalCount": 2092
   },
   "tier1": [
     "AWS::ApiGateway::Account",
@@ -437,6 +437,7 @@
     "AWS::CloudWatch::AlarmMuteRule",
     "AWS::CloudWatch::CompositeAlarm",
     "AWS::CloudWatch::Dashboard",
+    "AWS::CloudWatch::DomainAccessGrantForOrganization",
     "AWS::CloudWatch::DomainForOrganization",
     "AWS::CloudWatch::InsightRule",
     "AWS::CloudWatch::Integration",
@@ -445,6 +446,7 @@
     "AWS::CloudWatch::OTelEnrichment",
     "AWS::CloudWatch::OmniDashboard",
     "AWS::CloudWatch::ResourceMetricsConfiguration",
+    "AWS::CloudWatch::Space",
     "AWS::CloudWatch::View",
     "AWS::CodeArtifact::Domain",
     "AWS::CodeArtifact::PackageGroup",
@@ -1310,6 +1312,7 @@
     "AWS::Personalize::EventTracker",
     "AWS::Personalize::Filter",
     "AWS::Personalize::MetricAttribution",
+    "AWS::Personalize::Recommender",
     "AWS::Personalize::Schema",
     "AWS::Personalize::Solution",
     "AWS::Pinpoint::InAppTemplate",

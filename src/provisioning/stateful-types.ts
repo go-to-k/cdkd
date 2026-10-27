@@ -529,6 +529,13 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // `AWS::IoTSiteWise::Dataset` resources inside it is UNMEASURED. An
   // unprovable emptiness must not read as empty.
   'AWS::IoTSiteWise::Workspace',
+  // Guarded on the same FAIL-SAFE side as the workspace above. The registry
+  // schema says nothing about what a CloudWatch space holds, but it declares
+  // an `EncryptionConfiguration` (AWS-owned or customer-managed key), which
+  // is a statement that the space stores something at rest, and none of the
+  // write-off rule's (a) declared content, (b) pointer or (c) no content is
+  // provable from it. An unprovable emptiness must not read as empty.
+  'AWS::CloudWatch::Space',
   // A Recycle Bin retention rule is guarded on the FAIL-SAFE side of an open
   // question rather than on a proof, and the distinction is the whole reason
   // it is here: the rule's own content (`ResourceTags`, `RetentionPeriod`,
