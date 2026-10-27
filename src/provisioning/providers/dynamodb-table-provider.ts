@@ -5156,10 +5156,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
               StreamArn: prevArn,
             })
           ),
-        `disable Kinesis streaming on ${tableName}`
+        `disable Kinesis streaming on ${tableName}`,
+        undefined,
+        { maskSecrets }
       );
       this.logger.debug(
-        `Disabled Kinesis streaming destination ${prevArn} on DynamoDB table ${tableName}`
+        maskSecrets(
+          `Disabled Kinesis streaming destination ${prevArn} on DynamoDB table ${tableName}`
+        )
       );
       await this.waitForKinesisDisableSettled(tableName, prevArn, maskSecrets);
     }
@@ -5185,10 +5189,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
                 : {}),
             })
           ),
-        `enable Kinesis streaming on ${tableName}`
+        `enable Kinesis streaming on ${tableName}`,
+        undefined,
+        { maskSecrets }
       );
       this.logger.debug(
-        `Enabled Kinesis streaming destination ${newArn} on DynamoDB table ${tableName}`
+        maskSecrets(
+          `Enabled Kinesis streaming destination ${newArn} on DynamoDB table ${tableName}`
+        )
       );
     }
   }
