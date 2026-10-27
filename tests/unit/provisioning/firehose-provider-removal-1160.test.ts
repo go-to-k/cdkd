@@ -130,8 +130,8 @@ describe('FirehoseProvider.update — a removed destination sub-field is kept, a
       sent: { BucketARN: BUCKET, RoleARN: ROLE, Prefix: 'data2/' },
     },
     // go-to-k/cdkd#5439: a CloudFormation change set removing Prefix and
-    // BufferingHints from a legacy S3DestinationConfiguration beside a
-    // CompressionFormat change kept both live values.
+    // BufferingHints from a legacy S3DestinationConfiguration while adding
+    // ErrorOutputPrefix kept both live values.
     {
       destKey: 'S3DestinationConfiguration',
       updateKey: 'S3DestinationUpdate',

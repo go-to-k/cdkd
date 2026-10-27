@@ -35,7 +35,7 @@
 #      second delivery stream, whose destination is the legacy
 #      S3DestinationConfiguration (issue #5439: cdkd refused the update, while
 #      a measured CloudFormation change set updates it in place). The change
-#      must apply with the stream ARN unchanged.
+#      must apply with the stream's CreateTimestamp unchanged.
 #   4. Destroy, assert the streams, both buckets, the role and the cdkd state
 #      file are gone -- immediately, with no polling.
 #
@@ -203,6 +203,9 @@ STILL_PRESENT=""
 if ! gone_probe aws firehose describe-delivery-stream --delivery-stream-name "${NAME}" --region "${REGION}"; then
   STILL_PRESENT="${STILL_PRESENT} firehose($(firehose_status || echo gone-now))"
 fi
+if ! gone_probe aws firehose describe-delivery-stream --delivery-stream-name "${LEGACY_NAME}" --region "${REGION}"; then
+  STILL_PRESENT="${STILL_PRESENT} legacy-firehose"
+fi
 if ! gone_probe aws kinesis describe-stream-summary --stream-name "${NAME}" --region "${REGION}"; then
   STILL_PRESENT="${STILL_PRESENT} kinesis($(kinesis_status || echo gone-now))"
 fi
@@ -319,9 +322,11 @@ legacy_desc() { # usage: legacy_desc <DeliveryStreamDescription JMESPath>
 legacy_s3() { # usage: legacy_s3 <S3DestinationDescription field path>
   legacy_desc "Destinations[0].S3DestinationDescription.$1"
 }
-P3F_PRE_ARN="$(legacy_desc DeliveryStreamARN)"
-if [ -z "${P3F_PRE_ARN}" ] || [ "${P3F_PRE_ARN}" = None ]; then
-  echo "FAIL: no DeliveryStreamARN for ${LEGACY_NAME} before Phase 3f (got '${P3F_PRE_ARN}')" >&2
+# The ARN derives from the fixed name, so a delete + re-create keeps it;
+# CreateTimestamp is what tells an in-place update from a replacement.
+P3F_PRE_CREATED="$(legacy_desc CreateTimestamp)"
+if [ -z "${P3F_PRE_CREATED}" ] || [ "${P3F_PRE_CREATED}" = None ]; then
+  echo "FAIL: no CreateTimestamp for ${LEGACY_NAME} before Phase 3f (got '${P3F_PRE_CREATED}')" >&2
   exit 1
 fi
 P3F_PRE_PREFIX="$(legacy_s3 Prefix)"
@@ -344,9 +349,9 @@ P3F_INTERVAL="$(legacy_s3 BufferingHints.IntervalInSeconds)"
 assert_eq "legacy-S3 stream BufferingHints.IntervalInSeconds after Phase 3f (issue #5439)" "120" "${P3F_INTERVAL}"
 P3F_SIZE="$(legacy_s3 BufferingHints.SizeInMBs)"
 assert_eq "legacy-S3 stream BufferingHints.SizeInMBs after Phase 3f (issue #5439)" "10" "${P3F_SIZE}"
-P3F_ARN="$(legacy_desc DeliveryStreamARN)"
-assert_eq "legacy-S3 stream ARN after Phase 3f (the update must apply in place)" "${P3F_PRE_ARN}" "${P3F_ARN}"
-echo "    legacy S3 destination updated in place, stream ARN unchanged (issue #5439)"
+P3F_CREATED="$(legacy_desc CreateTimestamp)"
+assert_eq "legacy-S3 stream CreateTimestamp after Phase 3f (the update must apply in place, not replace the stream)" "${P3F_PRE_CREATED}" "${P3F_CREATED}"
+echo "    legacy S3 destination updated in place, CreateTimestamp unchanged (issue #5439)"
 
 # --- Phase 4: destroy, everything gone at once ---------------------------
 STREAM_ARN="$(stream_arn)"
