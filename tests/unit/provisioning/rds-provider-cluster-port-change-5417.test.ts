@@ -302,6 +302,36 @@ describe('RDSProvider DBCluster port change (issue #5417)', () => {
     expect(mockSend).toHaveBeenCalledTimes(3);
   });
 
+  it('passes each member id and the cluster logical id, in that order, from both call sites', async () => {
+    const memberWait = vi.spyOn(
+      provider as unknown as {
+        waitForMemberAfterClusterChange: (...args: unknown[]) => Promise<void>;
+      },
+      'waitForMemberAfterClusterChange'
+    );
+    const settled = cluster(5432, 'available', { groups: ['sg-2'], members: ['member-1'] });
+    mockSend
+      .mockResolvedValueOnce({}) // ModifyDBCluster
+      .mockResolvedValueOnce(settled) // port wait
+      .mockResolvedValueOnce(settled) // final describe
+      .mockResolvedValueOnce(instance('available')) // port member wait
+      .mockResolvedValueOnce(settled) // group wait
+      .mockResolvedValueOnce(instance('available')); // group member wait
+
+    await provider.update(
+      'MyCluster',
+      'my-cluster',
+      TYPE,
+      { Engine: ENGINE, VpcSecurityGroupIds: ['sg-2'] },
+      { Engine: ENGINE, Port: 5433, VpcSecurityGroupIds: ['sg-1'] }
+    );
+
+    expect(memberWait.mock.calls.map((call) => [call[0], call[1], call[3]])).toEqual([
+      ['member-1', 'MyCluster', 'port'],
+      ['member-1', 'MyCluster', 'VPC security groups'],
+    ]);
+  });
+
   it('times out naming the stalled member, its cluster and the change', async () => {
     mockSend.mockResolvedValue(instance('rebooting'));
     const waiter = provider as unknown as {
