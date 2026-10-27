@@ -52,6 +52,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../../../src/utils/error-handler.js';
 import { getLogger } from '../../../../src/utils/logger.js';
+import { calculateResourceDrift } from '../../../../src/analyzer/drift-calculator.js';
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../../src/types/resource.js';
 import { prepareRemovalForUpdate } from '../../../../src/provisioning/update-removal.js';
 import {
@@ -3691,6 +3692,46 @@ describe('FSxFileSystemProvider Lustre LogConfiguration (#5430)', () => {
     }
     const other = { LustreConfiguration: { LogConfiguration: { Level: 'DISABLED' } } };
     expect(provider.canonicalizeDriftProperties('AWS::EFS::FileSystem', other)).toBe(other);
+  });
+
+  // End to end through the comparison `cdkd drift` runs: each side through
+  // the provider's canonicalizer, then the calculator on an observed baseline.
+  const driftPaths = (
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>
+  ): string[] => {
+    const provider = newProvider();
+    return calculateResourceDrift(
+      provider.canonicalizeDriftProperties(RESOURCE_TYPE, baseline),
+      provider.canonicalizeDriftProperties(RESOURCE_TYPE, aws),
+      { unionWalkObjects: true, ignorePaths: provider.getDriftUnknownPaths(RESOURCE_TYPE) }
+    ).map((d) => d.path);
+  };
+  const lustreBag = (log: Record<string, unknown> | undefined): Record<string, unknown> => ({
+    FileSystemType: 'LUSTRE',
+    LustreConfiguration: {
+      DeploymentType: 'SCRATCH_2',
+      ...(log !== undefined && { LogConfiguration: log }),
+    },
+  });
+
+  it('reports logging turned OFF on AWS as drift (baseline WARN_ERROR, AWS DISABLED)', () => {
+    expect(
+      driftPaths(
+        lustreBag({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN }),
+        lustreBag({ Level: 'DISABLED' })
+      )
+    ).toEqual(['LustreConfiguration.LogConfiguration']);
+  });
+
+  it('reports logging turned ON on AWS as drift (pre-#5430 baseline without the key)', () => {
+    expect(
+      driftPaths(lustreBag(undefined), lustreBag({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN }))
+    ).toEqual(['LustreConfiguration.LogConfiguration']);
+  });
+
+  it('reports no drift for a never-logging file system against a pre-#5430 baseline', () => {
+    expect(driftPaths(lustreBag(undefined), lustreBag({ Level: 'DISABLED' }))).toEqual([]);
   });
 
   it('emits no LogConfiguration when AWS returns none', async () => {
