@@ -7269,6 +7269,11 @@ export class EC2Provider implements ResourceProvider {
       replayWarn(this.logger, context)
     );
 
+    // Built before any AWS call: it refuses an `Ebs.Encrypted` it cannot read
+    // as a boolean (issue #5445), which must stop the create, not launch an
+    // instance whose volume silently drops the declared encryption.
+    const blockDeviceMappings = this.buildBlockDeviceMappings(properties, logicalId);
+
     // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
     // terminate the instance this call launched.
     let leftBehindId: string | undefined;
@@ -7336,7 +7341,7 @@ export class EC2Provider implements ResourceProvider {
               IamInstanceProfile: iamInstanceProfile
                 ? { Arn: iamInstanceProfile.arn, Name: iamInstanceProfile.name }
                 : undefined,
-              BlockDeviceMappings: this.buildBlockDeviceMappings(properties),
+              BlockDeviceMappings: blockDeviceMappings,
               // Security-focused backfill (#609). These all ride on RunInstances
               // input so they take effect at launch (no post-create modify needed):
               //  - DisableApiTermination: termination protection (security: a
@@ -8197,16 +8202,25 @@ export class EC2Provider implements ResourceProvider {
    * Booleans and integers may arrive stringly typed from an
    * intrinsic-resolved value, so they are coerced at the wire boundary.
    * `DeleteOnTermination` keeps its pre-#5445 default of `true` when absent.
+   * An `Encrypted` that is present but reads as neither boolean (`"True"`,
+   * `"1"`, a masked value) is refused rather than omitted: omitting it would
+   * launch the volume under the account default, the very drop #5445 fixed.
+   *
+   * `Iops` is sent whatever the `VolumeType`, as CloudFormation does: a
+   * CloudFormation create with `gp2` + `Iops` fails with EC2's "The parameter
+   * iops is not supported for gp2 volumes" (measured for #5445), so cdkd
+   * surfaces the same rejection rather than dropping the value.
    */
   private buildBlockDeviceMappings(
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    logicalId: string
   ): BlockDeviceMapping[] | undefined {
     const mappings = properties['BlockDeviceMappings'] as
       | Array<Record<string, unknown>>
       | undefined;
     if (!mappings || !Array.isArray(mappings)) return undefined;
 
-    return mappings.map((entry) => {
+    return mappings.map((entry, index) => {
       const m = (entry ?? {}) as Record<string, unknown>;
       const ebs = m['Ebs'] as Record<string, unknown> | undefined;
       const result: BlockDeviceMapping = {
@@ -8224,7 +8238,18 @@ export class EC2Provider implements ResourceProvider {
           VolumeType: ebs['VolumeType'] as VolumeType | undefined,
           DeleteOnTermination: this.coerceBool(ebs['DeleteOnTermination']) ?? true,
         };
-        const encrypted = this.coerceBool(ebs['Encrypted']);
+        const rawEncrypted = ebs['Encrypted'];
+        const encrypted = this.coerceBool(rawEncrypted);
+        if (encrypted === undefined && rawEncrypted !== undefined && rawEncrypted !== null) {
+          // The value is not echoed: it is unreadable by construction and may
+          // be a masked or resolved value the user did not mean to print.
+          throw new ProvisioningError(
+            `EC2 Instance ${logicalId}: BlockDeviceMappings[${index}].Ebs.Encrypted is a ${typeof rawEncrypted} that is neither true nor false. ` +
+              `Set it to true or false (or the strings "true" / "false"); cdkd refuses to create the volume without the declared encryption setting.`,
+            'AWS::EC2::Instance',
+            logicalId
+          );
+        }
         if (encrypted !== undefined) result.Ebs.Encrypted = encrypted;
         const iops = this.coerceNumber(ebs['Iops']);
         if (iops !== undefined) result.Ebs.Iops = iops;

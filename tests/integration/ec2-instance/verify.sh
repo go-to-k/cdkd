@@ -1402,7 +1402,8 @@ fi
 EBS_KEY_STATE=$(aws kms describe-key \
   --key-id "${EBS_KEY_ARN}" \
   --region "${REGION}" \
-  --query KeyMetadata.KeyState --output text)
+  --query KeyMetadata.KeyState --output text 2>&1) \
+  || EBS_KEY_STATE="<describe-failed: $(sanitize_aws_output "${EBS_KEY_STATE}")>"
 if [ "${EBS_KEY_STATE}" != "PendingDeletion" ]; then
   echo "FAIL: issue #5445 -- fixture CMK ${EBS_KEY_ARN} is '${EBS_KEY_STATE}' after destroy, expected PendingDeletion" >&2
   exit 1

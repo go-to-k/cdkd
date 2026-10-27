@@ -180,6 +180,44 @@ describe('AWS::EC2::Instance BlockDeviceMappings mapping (issue #5445)', () => {
     ]);
   });
 
+  it.each([['True'], ['1'], ['***'], [1]])(
+    'refuses an Ebs.Encrypted it cannot read as a boolean (%j) before any AWS call',
+    async (value) => {
+      const err = await new EC2Provider()
+        .create('MyInstance', 'AWS::EC2::Instance', {
+          ImageId: 'ami-12345678',
+          InstanceType: 't3.micro',
+          BlockDeviceMappings: [
+            { DeviceName: '/dev/xvda', Ebs: { VolumeSize: 8 } },
+            { DeviceName: '/dev/sdf', Ebs: { Encrypted: value, VolumeSize: 8 } },
+          ],
+        })
+        .then(
+          () => undefined,
+          (e: unknown) => e as Error
+        );
+      expect(err).toBeInstanceOf(Error);
+      expect(err!.message).toContain('BlockDeviceMappings[1].Ebs.Encrypted');
+      expect(err!.message).toContain('neither true nor false');
+      expect(err!.message).not.toContain(`${String(value)} `);
+      expect(err!.message).not.toContain('***');
+      expect(mockSend.mock.calls.some((c) => c[0] instanceof RunInstancesCommand)).toBe(false);
+    }
+  );
+
+  it('sends Iops with a gp2 volume as CloudFormation does (AWS rejects it, not cdkd)', async () => {
+    const input = await createWith({
+      BlockDeviceMappings: [
+        { DeviceName: '/dev/sdf', Ebs: { VolumeType: 'gp2', VolumeSize: 8, Iops: 3000 } },
+      ],
+    });
+    const ebs = (input['BlockDeviceMappings'] as Array<Record<string, unknown>>)[0]!['Ebs'] as Record<
+      string,
+      unknown
+    >;
+    expect(ebs['Iops']).toBe(3000);
+  });
+
   it('treats NoDevice: null as absent', async () => {
     const input = await createWith({
       BlockDeviceMappings: [{ DeviceName: '/dev/sdc', NoDevice: null }],
