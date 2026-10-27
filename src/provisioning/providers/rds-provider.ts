@@ -1200,6 +1200,7 @@ export class RDSProvider implements ResourceProvider {
           if (member.DBInstanceIdentifier) {
             await this.waitForMemberAfterClusterChange(
               member.DBInstanceIdentifier,
+              logicalId,
               PORT_CHANGE_MEMBER_STATUSES,
               'port'
             );
@@ -1223,6 +1224,7 @@ export class RDSProvider implements ResourceProvider {
           if (member.DBInstanceIdentifier) {
             await this.waitForMemberAfterClusterChange(
               member.DBInstanceIdentifier,
+              logicalId,
               SECURITY_GROUP_CHANGE_MEMBER_STATUSES,
               'VPC security groups'
             );
@@ -2335,6 +2337,7 @@ export class RDSProvider implements ResourceProvider {
    */
   private async waitForMemberAfterClusterChange(
     dbInstanceIdentifier: string,
+    clusterLogicalId: string,
     transitional: ReadonlySet<string>,
     change: string,
     maxWaitMs = 1_800_000
@@ -2354,7 +2357,7 @@ export class RDSProvider implements ResourceProvider {
       delay = Math.min(delay * 2, 10_000);
     }
     throw new Error(
-      `Timed out waiting for a member instance of the cluster to finish applying its new ${change}`
+      safeMsg`Timed out waiting for member instance ${dbInstanceIdentifier} of DBCluster ${clusterLogicalId} to finish applying its new ${change}`
     );
   }
 

@@ -302,11 +302,12 @@ describe('RDSProvider DBCluster port change (issue #5417)', () => {
     expect(mockSend).toHaveBeenCalledTimes(3);
   });
 
-  it('times out naming the member change when a member never leaves rebooting', async () => {
+  it('times out naming the stalled member, its cluster and the change', async () => {
     mockSend.mockResolvedValue(instance('rebooting'));
     const waiter = provider as unknown as {
       waitForMemberAfterClusterChange: (
         id: string,
+        clusterLogicalId: string,
         transitional: ReadonlySet<string>,
         change: string,
         maxWaitMs: number
@@ -314,9 +315,42 @@ describe('RDSProvider DBCluster port change (issue #5417)', () => {
     };
 
     await expect(
-      waiter.waitForMemberAfterClusterChange('member-1', new Set(['rebooting']), 'port', 0)
+      waiter.waitForMemberAfterClusterChange(
+        'member-2',
+        'MyCluster',
+        new Set(['rebooting']),
+        'port',
+        0
+      )
     ).rejects.toThrow(
-      'Timed out waiting for a member instance of the cluster to finish applying its new port'
+      'Timed out waiting for member instance member-2 of DBCluster MyCluster to finish applying its new port'
     );
+  });
+
+  it('flattens a line break in the member id inside the timeout message', async () => {
+    mockSend.mockResolvedValue(instance('modifying'));
+    const waiter = provider as unknown as {
+      waitForMemberAfterClusterChange: (
+        id: string,
+        clusterLogicalId: string,
+        transitional: ReadonlySet<string>,
+        change: string,
+        maxWaitMs: number
+      ) => Promise<void>;
+    };
+
+    const error = await waiter
+      .waitForMemberAfterClusterChange(
+        'member\nforged',
+        'MyCluster',
+        new Set(['modifying']),
+        'VPC security groups',
+        0
+      )
+      .catch((e: unknown) => e as Error);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toContain('\n');
+    expect((error as Error).message).toContain('of DBCluster MyCluster to finish applying its new VPC security groups');
   });
 });
