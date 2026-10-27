@@ -86,6 +86,33 @@ export class S3CloudFrontStack extends cdk.Stack {
       fallbackStatusCodes: [500, 502, 503, 504],
     });
 
+    // A key group restricting `/private/*` to signed URLs synthesizes a
+    // bare `CacheBehaviors[*].TrustedKeyGroups` list, whose SDK wrapper
+    // REQUIRES `Enabled`. Before issue #5393 cdkd sent `{ Quantity, Items }`
+    // without it and CloudFront refused the distribution with MalformedXML
+    // (create, and the Phase 1.5 update re-sends it). The key is a throwaway
+    // public key whose private half was never kept. Both carry fixed
+    // stack-prefixed names so verify.sh's cleanup can sweep them by name
+    // after an interrupted run (as it does the `${stack}-oac` OAC).
+    const publicKey = new cloudfront.PublicKey(this, 'SignerPublicKey', {
+      publicKeyName: `${this.stackName}-signer-key`,
+      encodedKey: [
+        '-----BEGIN PUBLIC KEY-----',
+        'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA24jtt2xWany+KUl83Itj',
+        'dZiFPAvVbHlDxLlAUYIpj0SQi4QCBzkKb2EHj8uLeyJva/pmmiO6FJVqlyhOHZoT',
+        'v+oWtDX2n4nRaW6P1UqgHH4qbzhaik6AMmVgw0P6qDbzZYhtD90/Sxjb+Pf7hP8S',
+        '6LcmGuZW7N/lx9DFj9G1+a81SIrW1fXHzYH6UEkIN5r7lGgEeZSnSGIhwt6ZfyTV',
+        'whiDsODI1n++JVcpgfTkpWsRzorxSpzPMhjnBEK0hcjiOF6z43jPUNox1T3XTpu6',
+        'ICoNUU+fWM5PjKywLpC6XqYYX52b7JnQwQGx9e8NSDqnBNWPC45S5aW8AYeCaLHH',
+        '3wIDAQAB',
+        '-----END PUBLIC KEY-----',
+      ].join('\n'),
+    });
+    const keyGroup = new cloudfront.KeyGroup(this, 'SignerKeyGroup', {
+      keyGroupName: `${this.stackName}-signer-kg`,
+      items: [publicKey],
+    });
+
     // Create CloudFront Distribution. The geo allowlist synthesizes
     // `Restrictions.GeoRestriction.Locations`, exercising the CFn -> SDK
     // GeoRestriction shape conversion (issue #1370) on create AND update.
@@ -98,6 +125,13 @@ export class S3CloudFrontStack extends cdk.Stack {
       defaultBehavior: {
         origin: originGroup,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+      },
+      additionalBehaviors: {
+        '/private/*': {
+          origin: originGroup,
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          trustedKeyGroups: [keyGroup],
+        },
       },
       defaultRootObject: 'index.html',
       comment: isUpdate
