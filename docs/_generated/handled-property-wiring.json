@@ -9533,7 +9533,7 @@
             "createCacheCluster",
             "update",
             "updateCacheCluster",
-            "warnNotAppliedInPlace"
+            "warnTransitEncryptionNotApplied"
           ]
         },
         {

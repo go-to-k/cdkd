@@ -4,7 +4,7 @@
 // ModifyCacheCluster; a memcached scale-out sends NewAvailabilityZones (the
 // desired zones the live nodes do not cover) with AZMode; the rest complete
 // with the cluster unchanged.
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const { mockSend, warn } = vi.hoisted(() => ({ mockSend: vi.fn(), warn: vi.fn() }));
 
@@ -57,15 +57,22 @@ describe('ElastiCacheProvider CacheCluster in-place modify (issue #5438)', () =>
     vi.clearAllMocks();
     mockSend.mockReset();
     provider = new ElastiCacheProvider();
-    // Instant sleeps, bounded: a waiter that never settles fails the test
-    // instead of spinning until its wall-clock cap.
+    // Instant sleeps on a fake clock each sleep advances, bounded: a waiter
+    // that never settles fails the test instead of spinning until its cap.
+    let clock = Date.parse('2026-10-28T00:00:00Z');
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
     let sleeps = 0;
     vi.spyOn(
       provider as unknown as { sleep: (ms: number) => Promise<void> },
       'sleep'
-    ).mockImplementation(() =>
-      ++sleeps > 50 ? Promise.reject(new Error('waiter did not settle')) : Promise.resolve()
-    );
+    ).mockImplementation((ms: number) => {
+      clock += ms;
+      return ++sleeps > 50 ? Promise.reject(new Error('waiter did not settle')) : Promise.resolve();
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   describe('CacheNodeType', () => {
@@ -197,6 +204,7 @@ describe('ElastiCacheProvider CacheCluster in-place modify (issue #5438)', () =>
                 CacheClusters: [
                   {
                     CacheClusterStatus: 'available',
+                    CacheNodeType: 'cache.t4g.small',
                     CacheNodes: zones.map((az) => ({ CustomerAvailabilityZone: az })),
                   },
                 ],
@@ -302,7 +310,15 @@ describe('ElastiCacheProvider CacheCluster in-place modify (issue #5438)', () =>
       mockSend.mockImplementation((cmd: Sent) =>
         Promise.resolve(
           cmd.constructor.name === 'DescribeCacheClustersCommand'
-            ? { CacheClusters: [{ CacheClusterStatus: 'available' }] }
+            ? {
+                CacheClusters: [
+                  {
+                    CacheClusterStatus: 'available',
+                    CacheNodeType: 'cache.t4g.micro',
+                    TransitEncryptionEnabled: false,
+                  },
+                ],
+              }
             : {}
         )
       );
@@ -327,11 +343,65 @@ describe('ElastiCacheProvider CacheCluster in-place modify (issue #5438)', () =>
       const input = modifyInput();
       expect(input).not.toHaveProperty('TransitEncryptionEnabled');
       expect(input).not.toHaveProperty('PreferredAvailabilityZone');
-      expect(warn).toHaveBeenCalledTimes(1);
-      const text = warn.mock.calls[0][0] as string;
+      expect(warn).toHaveBeenCalledTimes(2);
+      const azText = warn.mock.calls[0][0] as string;
+      expect(azText).toContain('Cache');
+      expect(azText).toContain('the PreferredAvailabilityZone change is not applied');
+      expect(azText).toContain('replace the cluster');
+      // The encryption warning states the LIVE value the post-update
+      // describe reports, against the template's.
+      const text = warn.mock.calls[1][0] as string;
       expect(text).toContain('Cache');
-      expect(text).toContain('PreferredAvailabilityZone, TransitEncryptionEnabled');
+      expect(text).toContain('still has encryption in transit DISABLED');
+      expect(text).toContain('TransitEncryptionEnabled: true');
       expect(text).toContain('replace the cluster');
+    });
+
+    it('does not warn when TransitEncryptionEnabled: false is added (the create default)', async () => {
+      available();
+
+      await provider.update(
+        'Cache',
+        'my-cluster',
+        TYPE,
+        {
+          Engine: 'redis',
+          CacheNodeType: 'cache.t4g.micro',
+          NumCacheNodes: 1,
+          TransitEncryptionEnabled: false,
+        },
+        { Engine: 'redis', CacheNodeType: 'cache.t4g.micro', NumCacheNodes: 1 }
+      );
+
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('does not warn when the live cluster already has the template value', async () => {
+      mockSend.mockImplementation((cmd: Sent) =>
+        Promise.resolve(
+          cmd.constructor.name === 'DescribeCacheClustersCommand'
+            ? {
+                CacheClusters: [
+                  {
+                    CacheClusterStatus: 'available',
+                    CacheNodeType: 'cache.t4g.micro',
+                    TransitEncryptionEnabled: true,
+                  },
+                ],
+              }
+            : {}
+        )
+      );
+
+      await provider.update(
+        'Cache',
+        'my-cluster',
+        TYPE,
+        { Engine: 'redis', CacheNodeType: 'cache.t4g.micro', NumCacheNodes: 1, TransitEncryptionEnabled: true },
+        { Engine: 'redis', CacheNodeType: 'cache.t4g.micro', NumCacheNodes: 1 }
+      );
+
+      expect(warn).not.toHaveBeenCalled();
     });
 
     it('does not warn when they are unchanged or removed', async () => {

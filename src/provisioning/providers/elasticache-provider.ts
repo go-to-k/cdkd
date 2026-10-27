@@ -69,9 +69,10 @@ const CACHE_DELETE_WAIT_MS = Math.max(
 /**
  * How long an update waits for the cluster to report its template
  * `CacheNodeType` (issue #5438): a cache.t4g scale took about ten minutes on
- * both engines, past the 10-minute cap other modifies use. The same 60-minute
- * floor as the type's create and delete, so the engine's `--resource-timeout`
- * (30 minutes by default) is what bounds the wait unless it is raised past it.
+ * both engines, past the 10-minute cap other modifies use. It matches the
+ * type's UPDATE floor in `slow-cc-operation-timeouts.ts` (60 minutes), which
+ * also lifts the engine's update deadline for the type, so the engine does
+ * not give up on a scale this wait is still following.
  */
 const NODE_TYPE_MODIFY_WAIT_MS = Math.max(
   60 * 60_000,
@@ -79,12 +80,12 @@ const NODE_TYPE_MODIFY_WAIT_MS = Math.max(
 );
 
 /**
- * Polls after which an `available` cluster still on its old node type, with
- * no node-type change pending, is a scale AWS dropped rather than one not yet
- * started (AWS logged "Applying modification" about 20 seconds after the
- * Modify in the #5438 measurements; this allows about two minutes).
+ * How long after the Modify an `available` cluster still on its old node
+ * type, with no node-type change pending, counts as a scale AWS dropped
+ * rather than one not yet started (AWS logged "Applying modification" about
+ * 20 seconds after the Modify in the #5438 measurements).
  */
-const NODE_TYPE_DROPPED_AFTER_POLLS = 12;
+const NODE_TYPE_DROPPED_AFTER_MS = 2 * 60_000;
 
 /**
  * The members of `a` left after taking out one occurrence per member of `b`
@@ -775,6 +776,12 @@ export class ElastiCacheProvider implements ResourceProvider {
 
       // Describe to get updated attributes
       const described = await this.describeCacheCluster(physicalId);
+      this.warnTransitEncryptionNotApplied(
+        logicalId,
+        properties,
+        previousProperties,
+        described?.TransitEncryptionEnabled
+      );
 
       // Apply tag diff. ElastiCache uses ARN-keyed AddTagsToResource /
       // RemoveTagsFromResource.
@@ -913,6 +920,36 @@ export class ElastiCacheProvider implements ResourceProvider {
   // ─── Helpers ──────────────────────────────────────────────────────
 
   /**
+   * Warn when the template's `TransitEncryptionEnabled` changed and the
+   * cluster does not have it (issue #5438): ModifyCacheCluster has no such
+   * member, and a real CloudFormation update completed with encryption in
+   * transit still off. An absent previous value is the create default
+   * (`false`), so adding `false` is no change. `live` is the value the
+   * post-update describe reports; when it reports none, the previous
+   * template value stands in for it.
+   */
+  private warnTransitEncryptionNotApplied(
+    logicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    live: boolean | undefined
+  ): void {
+    const next = properties['TransitEncryptionEnabled'];
+    if (next === undefined) return;
+    const prev = previousProperties['TransitEncryptionEnabled'] ?? false;
+    if (isDeepStrictEqual(next, prev)) return;
+    const current = live ?? prev;
+    if (isDeepStrictEqual(next, current)) return;
+    const state = current === true ? 'ENABLED' : 'DISABLED';
+    this.logger.warn(
+      safeMsg`CacheCluster ${logicalId}: the cluster still has encryption in transit ${state} ` +
+        safeMsg`(the template now says TransitEncryptionEnabled: ${String(next)}). ` +
+        `ModifyCacheCluster cannot change it, and CloudFormation leaves it unchanged too; ` +
+        `to change it, replace the cluster, for example by changing its logical ID.`
+    );
+  }
+
+  /**
    * Where the nodes an update adds go (issue #5438). CloudFormation sends
    * `NewAvailabilityZones` -- the desired `PreferredAvailabilityZones` minus
    * the zones the live nodes already occupy -- with the desired `AZMode`, and
@@ -950,9 +987,10 @@ export class ElastiCacheProvider implements ResourceProvider {
 
   /**
    * Warn about template changes ModifyCacheCluster cannot carry (issue
-   * #5438). `PreferredAvailabilityZone` and `TransitEncryptionEnabled` have
-   * no ModifyCacheCluster member, and `AZMode` reaches AWS only beside zones for nodes
-   * to add. Real CloudFormation runs completed each such update with
+   * #5438). `PreferredAvailabilityZone` has no ModifyCacheCluster member, and
+   * `AZMode` reaches AWS only beside zones for nodes to add
+   * (`TransitEncryptionEnabled` is reported after the Modify, against the
+   * live value: `warnTransitEncryptionNotApplied`). Real CloudFormation runs completed each such update with
    * the cluster unchanged, so cdkd completes it too, but says so: the
    * template and the cluster now disagree until the cluster is replaced.
    */
@@ -972,14 +1010,6 @@ export class ElastiCacheProvider implements ResourceProvider {
       )
     ) {
       notApplied.push('PreferredAvailabilityZone');
-    }
-    if (
-      changed(
-        properties['TransitEncryptionEnabled'],
-        previousProperties['TransitEncryptionEnabled']
-      )
-    ) {
-      notApplied.push('TransitEncryptionEnabled');
     }
     if (
       placement?.azMode === undefined &&
@@ -1127,23 +1157,17 @@ export class ElastiCacheProvider implements ResourceProvider {
   ): Promise<void> {
     const startTime = Date.now();
     let delay = 10_000;
-    let polls = 0;
 
     while (Date.now() - startTime < maxWaitMs) {
       const cluster = await this.describeCacheCluster(cacheClusterId);
       const status = cluster?.CacheClusterStatus;
-      polls++;
 
       this.logger.debug(`CacheCluster ${cacheClusterId} status: ${status}`);
 
-      // A describe that names no node type (DescribeCacheClusters always
-      // does) cannot hold the wait open.
       const liveNodeType = cluster?.CacheNodeType;
       if (
         status === 'available' &&
-        (expectedNodeType === undefined ||
-          liveNodeType === undefined ||
-          liveNodeType === expectedNodeType)
+        (expectedNodeType === undefined || liveNodeType === expectedNodeType)
       ) {
         return;
       }
@@ -1153,7 +1177,7 @@ export class ElastiCacheProvider implements ResourceProvider {
         expectedNodeType !== undefined &&
         status === 'available' &&
         cluster?.PendingModifiedValues?.CacheNodeType === undefined &&
-        polls > NODE_TYPE_DROPPED_AFTER_POLLS
+        Date.now() - startTime > NODE_TYPE_DROPPED_AFTER_MS
       ) {
         throw new Error(
           safeMsg`CacheCluster ${cacheClusterId} is available with node type ${liveNodeType} and no node-type change pending; the change to ${expectedNodeType} was not applied. Check the cluster's events (aws elasticache describe-events) for the reason, then deploy again.`

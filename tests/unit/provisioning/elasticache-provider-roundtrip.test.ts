@@ -131,11 +131,11 @@ describe('ElastiCacheProvider read-update round-trip', () => {
     mockSend.mockResolvedValueOnce({});
     // waitForClusterAvailable: returns available immediately.
     mockSend.mockResolvedValueOnce({
-      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available' }],
+      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available', CacheNodeType: 'cache.t3.micro' }],
     });
     // Final describe for attributes.
     mockSend.mockResolvedValueOnce({
-      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available' }],
+      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available', CacheNodeType: 'cache.t3.micro' }],
     });
 
     await provider.update('L', CLUSTER_ID, 'AWS::ElastiCache::CacheCluster', observed, observed);
@@ -160,14 +160,14 @@ describe('ElastiCacheProvider read-update round-trip', () => {
     };
     mockSend.mockResolvedValueOnce({});
     mockSend.mockResolvedValueOnce({
-      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available' }],
+      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available', CacheNodeType: 'cache.t3.micro' }],
     });
     // Final describe: a node whose endpoint has an address but no port yet.
     mockSend.mockResolvedValueOnce({
       CacheClusters: [
         {
           CacheClusterId: CLUSTER_ID,
-          CacheClusterStatus: 'available',
+          CacheClusterStatus: 'available', CacheNodeType: 'cache.t3.micro',
           CacheNodes: [{ Endpoint: { Address: 'my-cluster.abc123.0001.use1.cache.amazonaws.com' } }],
         },
       ],
@@ -234,13 +234,13 @@ describe('ElastiCacheProvider read-update round-trip', () => {
     };
     mockSend.mockResolvedValueOnce({});
     mockSend.mockResolvedValueOnce({
-      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available' }],
+      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available', CacheNodeType: 'cache.t3.micro' }],
     });
     mockSend.mockResolvedValueOnce({
       CacheClusters: [
         {
           CacheClusterId: CLUSTER_ID,
-          CacheClusterStatus: 'available',
+          CacheClusterStatus: 'available', CacheNodeType: 'cache.t3.micro',
           ConfigurationEndpoint: { Address: 'my-cluster.abc123.cfg.use1.cache.amazonaws.com' },
         },
       ],
@@ -270,10 +270,10 @@ describe('ElastiCacheProvider read-update round-trip', () => {
 
     mockSend.mockResolvedValueOnce({});
     mockSend.mockResolvedValueOnce({
-      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available' }],
+      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available', CacheNodeType: 'cache.t3.micro' }],
     });
     mockSend.mockResolvedValueOnce({
-      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available' }],
+      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available', CacheNodeType: 'cache.t3.micro' }],
     });
 
     await provider.update('L', CLUSTER_ID, 'AWS::ElastiCache::CacheCluster', observed, observed);
@@ -297,10 +297,10 @@ describe('ElastiCacheProvider read-update round-trip', () => {
 
     mockSend.mockResolvedValueOnce({});
     mockSend.mockResolvedValueOnce({
-      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available' }],
+      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available', CacheNodeType: 'cache.t3.micro' }],
     });
     mockSend.mockResolvedValueOnce({
-      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available' }],
+      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available', CacheNodeType: 'cache.t3.micro' }],
     });
 
     await provider.update('L', CLUSTER_ID, 'AWS::ElastiCache::CacheCluster', observed, observed);
@@ -333,10 +333,10 @@ describe('ElastiCacheProvider read-update round-trip', () => {
 
     mockSend.mockResolvedValueOnce({});
     mockSend.mockResolvedValueOnce({
-      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available' }],
+      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available', CacheNodeType: 'cache.t3.micro' }],
     });
     mockSend.mockResolvedValueOnce({
-      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available' }],
+      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available', CacheNodeType: 'cache.t3.micro' }],
     });
 
     await provider.update('L', CLUSTER_ID, 'AWS::ElastiCache::CacheCluster', observed, observed);
