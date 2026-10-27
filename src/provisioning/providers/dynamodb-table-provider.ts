@@ -158,7 +158,7 @@ import type {
   ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
-import { planTimeToLive, readTtlSpec } from '../dynamodb-ttl.js';
+import { isTtlAlreadyDisabled, planTimeToLive, readTtlSpec } from '../dynamodb-ttl.js';
 
 /**
  * A DynamoDB table NAME (3-255 of `a-z A-Z 0-9 _ . -`), the physical id this
@@ -5020,6 +5020,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
         `${enabled ? 'set' : 'disable'} TTL on ${tableName}`
       );
     } catch (error) {
+      // A disable whose goal already holds (an earlier attempt that landed
+      // before a later step failed, or an out-of-band disable).
+      if (!enabled && isTtlAlreadyDisabled(describeAwsFailure(error).detail)) {
+        this.logger.debug(`TimeToLive already disabled on DynamoDB table ${tableName}`);
+        return;
+      }
       if (
         describeAwsFailure(error).detail.includes('Time to live has been modified multiple times')
       ) {

@@ -88,3 +88,12 @@ export function planTimeToLive(
   // #5447 a name-less `Enabled: false` was recorded while TTL stayed enabled.
   return { kind: 'disable-live' };
 }
+
+/**
+ * AWS's refusal of a disable whose goal already holds ("TimeToLive is already
+ * disabled", measured). A disable sent on the RECORDED name skips the live read,
+ * so a retry after a partial failure, or a table disabled out of band, meets it.
+ */
+export function isTtlAlreadyDisabled(awsDetail: string): boolean {
+  return /TimeToLive is already disabled/i.test(awsDetail);
+}

@@ -1638,6 +1638,72 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         expect(ttlUpdates()).toEqual([]);
       });
 
+      it.each([
+        ['treats AWS "already disabled" as done', 'TimeToLive is already disabled', true],
+        ['still fails on any other refusal of the disable', 'Some other refusal', false],
+      ])('%s for a disable on the recorded AttributeName', async (_label, text, resolves) => {
+        const refusal = Object.assign(new Error(text), {
+          name: 'ValidationException',
+          $fault: 'client',
+          $metadata: {},
+        });
+        mockSend.mockImplementation(async (cmd: unknown) => {
+          if (cmd instanceof UpdateTimeToLiveCommand) throw refusal;
+          return { Table: { TableStatus: 'ACTIVE', TableArn: TABLE_ARN } };
+        });
+        const run = provider.update(
+          'X',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          { TimeToLiveSpecification: { Enabled: false } },
+          { TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true } }
+        );
+        if (resolves) await expect(run).resolves.toBeDefined();
+        else await expect(run).rejects.toThrow();
+        expect(ttlUpdates().map((c) => c.input.TimeToLiveSpecification)).toEqual([
+          { Enabled: false, AttributeName: 'expiresAt' },
+        ]);
+      });
+
+      it('retries the live TTL read on a settling refusal', async () => {
+        vi.useFakeTimers();
+        try {
+          let describes = 0;
+          mockSend.mockImplementation(async (cmd: unknown) => {
+            if (cmd instanceof DescribeTimeToLiveCommand) {
+              describes += 1;
+              if (describes === 1) {
+                throw Object.assign(new Error('Table is being updated'), {
+                  name: 'ResourceInUseException',
+                  $fault: 'client',
+                  $metadata: {},
+                });
+              }
+              return { TimeToLiveDescription: { TimeToLiveStatus: 'ENABLED', AttributeName: 'liveTtl' } };
+            }
+            if (cmd instanceof DescribeTableCommand) {
+              return { Table: { TableStatus: 'ACTIVE', TableArn: TABLE_ARN } };
+            }
+            return {};
+          });
+          const run = provider.update(
+            'X',
+            TABLE_NAME,
+            RESOURCE_TYPE,
+            { TimeToLiveSpecification: { Enabled: false } },
+            {}
+          );
+          await vi.runAllTimersAsync();
+          await run;
+          expect(describes).toBe(2);
+          expect(ttlUpdates().map((c) => c.input.TimeToLiveSpecification)).toEqual([
+            { Enabled: false, AttributeName: 'liveTtl' },
+          ]);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
       it('reads the live TTL, and sends nothing, when the template removes a spec recorded as disabled', async () => {
         // AWS refuses to disable a disabled TTL ("TimeToLive is already disabled").
         routeSends({ TimeToLiveStatus: 'DISABLED', AttributeName: 'expiresAt' });

@@ -478,6 +478,33 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
         expect(ttlSpecsSent()).toEqual([{ Enabled: false, AttributeName: 'expiresAt' }]);
       });
 
+      it.each([
+        ['treats AWS "already disabled" as done', 'TimeToLive is already disabled', true],
+        ['still fails on any other refusal of the disable', 'Some other refusal', false],
+      ])('%s for a disable on the recorded AttributeName', async (_label, text, resolves) => {
+        // The recorded-name disable skips the live read, so a retry after a
+        // partial failure, or an out-of-band disable, meets this refusal.
+        const refusal = Object.assign(new Error(text), {
+          name: 'ValidationException',
+          $fault: 'client',
+          $metadata: {},
+        });
+        mockSend.mockImplementation(async (cmd: unknown) => {
+          if (cmd instanceof UpdateTimeToLiveCommand) throw refusal;
+          return { Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' } };
+        });
+        const run = provider.update(
+          'L',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          { TimeToLiveSpecification: { Enabled: false } },
+          { TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true } }
+        );
+        if (resolves) await expect(run).resolves.toBeDefined();
+        else await expect(run).rejects.toThrow();
+        expect(ttlSpecsSent()).toEqual([{ Enabled: false, AttributeName: 'expiresAt' }]);
+      });
+
       it('reports AWS refusing the disable within the TTL rate-limit interval', async () => {
         routeSends();
         const refusal = Object.assign(

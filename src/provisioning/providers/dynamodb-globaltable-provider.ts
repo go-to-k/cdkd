@@ -37,6 +37,7 @@ import {
   type ReplicaGlobalSecondaryIndex,
   type StreamSpecification,
   type Tag,
+  type TimeToLiveDescription,
   type ReplicationGroupUpdate,
   type CreateReplicationGroupMemberAction,
   type ReplicaDescription,
@@ -62,7 +63,7 @@ import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
-import { planTimeToLive } from '../dynamodb-ttl.js';
+import { isTtlAlreadyDisabled, planTimeToLive } from '../dynamodb-ttl.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { isRefusedByName, markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import {
@@ -5680,6 +5681,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             await this.dynamoDBClient.send(cmd);
           } catch (ttlErr) {
             const msg = describeAwsFailure(ttlErr).detail;
+            // A disable whose goal already holds (an earlier attempt that
+            // landed before a later step failed, or an out-of-band disable).
+            if (cmd.input.TimeToLiveSpecification?.Enabled === false && isTtlAlreadyDisabled(msg)) {
+              this.logger.debug(maskSecrets(`TimeToLive already disabled on ${physicalId}`));
+              return;
+            }
             if (msg.includes('Time to live has been modified multiple times')) {
               throw this.wrapMaskedError(
                 log,
@@ -5711,9 +5718,18 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         if (ttlPlan.kind === 'enable' || ttlPlan.kind === 'disable') {
           ttlTarget = { enabled: ttlPlan.kind === 'enable', attributeName: ttlPlan.attributeName };
         } else if (ttlPlan.kind === 'disable-live') {
-          const live = (
-            await this.dynamoDBClient.send(new DescribeTimeToLiveCommand({ TableName: physicalId }))
-          ).TimeToLiveDescription;
+          let live: TimeToLiveDescription | undefined;
+          await this.retrySettlingRefusal(
+            async () => {
+              live = (
+                await this.dynamoDBClient.send(
+                  new DescribeTimeToLiveCommand({ TableName: physicalId })
+                )
+              ).TimeToLiveDescription;
+            },
+            `TimeToLive read on ${physicalId}`,
+            maskSecrets
+          );
           const status = live?.TimeToLiveStatus;
           if ((status === 'ENABLED' || status === 'ENABLING') && live?.AttributeName) {
             ttlTarget = { enabled: false, attributeName: live.AttributeName };
