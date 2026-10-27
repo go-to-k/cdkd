@@ -191,6 +191,8 @@ interface Live {
    * Kinesis disable, before it is gone (go-to-k/cdkd#5399's integ).
    */
   kinesisAfterDisable?: string[];
+  /** A history entry for the disabled stream, listed first on every describe after the disable. */
+  kinesisHistoryStatus?: string;
   tablePolicy?: boolean;
   streamPolicy?: boolean;
 }
@@ -208,6 +210,8 @@ const regionDouble = (
   refuse: (name: string, input: Record<string, any>) => Error | undefined = () => undefined
 ) => {
   let pendingDisable: { streamArn: string; statuses: string[]; drop: () => void } | undefined;
+  // A history entry stays listed for good once its stream was disabled.
+  let historyStream: string | undefined;
   return async (command: Sent): Promise<unknown> => {
     const name = command.constructor.name;
     const refusal = refuse(name, command.input);
@@ -236,7 +240,11 @@ const regionDouble = (
           }
         }
         return {
-          KinesisDataStreamDestinations: (live.kinesis ?? []).flatMap((s) =>
+          KinesisDataStreamDestinations: [
+            ...(historyStream !== undefined && live.kinesisHistoryStatus !== undefined
+              ? [{ StreamArn: historyStream, DestinationStatus: live.kinesisHistoryStatus }]
+              : []),
+            ...(live.kinesis ?? []).flatMap((s) =>
             pending !== undefined && s === pending.streamArn && status === undefined
               ? []
               : [
@@ -246,7 +254,8 @@ const regionDouble = (
                       pending !== undefined && s === pending.streamArn ? status : 'ACTIVE',
                   },
                 ]
-          ),
+            ),
+          ],
         };
       }
       case GetResourcePolicyCommand.name: {
@@ -268,6 +277,7 @@ const regionDouble = (
           const drop = () => {
             live.kinesis = (live.kinesis ?? []).filter((s) => s !== off);
           };
+          historyStream = off;
           const statuses = [...(live.kinesisAfterDisable ?? [])];
           if (statuses.length === 0) drop();
           else pendingDisable = { streamArn: off, statuses, drop };
@@ -642,10 +652,14 @@ describe('DynamoDB GlobalTable replica settings writes (go-to-k/cdkd#5365)', () 
       // The first describe after an accepted disable read ACTIVE in one
       // measured run and DISABLING in another, then DISABLED; the deploy's
       // baseline capture right after the update recorded the destination.
-      const disable = async (statuses: string[], delays: number[]) => {
+      const disable = async (statuses: string[], delays: number[], history?: string) => {
         (provider as unknown as { kinesisDisableSettleDelaysMs: number[] }).kinesisDisableSettleDelaysMs =
           delays;
-        const remote: Live = { kinesis: [REMOTE_KS], kinesisAfterDisable: statuses };
+        const remote: Live = {
+          kinesis: [REMOTE_KS],
+          kinesisAfterDisable: statuses,
+          kinesisHistoryStatus: history,
+        };
         setLive({}, remote);
         kinesisDescribesAfterDisable = 0;
         const desired = base({}, {});
@@ -679,12 +693,26 @@ describe('DynamoDB GlobalTable replica settings writes (go-to-k/cdkd#5365)', () 
         expect(replica).not.toHaveProperty('KinesisStreamSpecification');
       });
 
+      it('keeps waiting past a DISABLED history entry for the same stream listed before the DISABLING one', async () => {
+        await disable(['DISABLING', 'DISABLING', 'DISABLED'], [0, 0, 0, 0], 'DISABLED');
+
+        expect(kinesisDescribesAfterDisable).toBe(3);
+        expect(kinesisWarns()).toEqual([]);
+      });
+
+      it('settles beside an ENABLE_FAILED history entry for the same stream', async () => {
+        await disable(['DISABLING', 'DISABLED'], [0, 0, 0, 0], 'ENABLE_FAILED');
+
+        expect(kinesisDescribesAfterDisable).toBe(2);
+        expect(kinesisWarns()).toEqual([]);
+      });
+
       it('warns, naming drift, when the destination never settles within its re-reads', async () => {
         await disable(['DISABLING', 'DISABLING', 'DISABLING', 'DISABLING'], [0, 0]);
 
         expect(kinesisDescribesAfterDisable).toBe(3);
         expect(kinesisWarns()).toEqual([
-          expect.stringMatching(/had not settled to DISABLED \(last status: DISABLING\); 'cdkd drift' may report it/),
+          expect.stringMatching(/had not settled \(last status: DISABLING\); 'cdkd drift' may report it/),
         ]);
       });
 

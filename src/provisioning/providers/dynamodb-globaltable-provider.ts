@@ -2757,9 +2757,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   protected kinesisDisableSettleDelaysMs: readonly number[] = Array<number>(30).fill(2000);
 
   /**
-   * Wait until `streamArn` reads `DISABLED` or is gone from `tableName`'s
-   * destinations. `DISABLING` is still settling: a later read can flicker back
-   * to `ACTIVE` (above). Best-effort, since the disable itself was accepted: a
+   * Wait until no entry for `streamArn` among `tableName`'s destinations is
+   * `ACTIVE`, `ENABLING`, `UPDATING` or `DISABLING` (the read-back's present
+   * set, plus `DISABLING`, which is still settling: a later read can flicker
+   * back to `ACTIVE`, above). Best-effort, since the disable itself was accepted: a
    * failed read ends the wait with a debug line, and running out of re-reads
    * or of the resource deadline ends it with a warning.
    */
@@ -2783,13 +2784,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           );
         }
         if (watch.isInterrupted()) throw watch.onInterrupted();
-        let status: string | undefined;
+        let unsettled: string | undefined;
         try {
           const out = await client.send(
             new DescribeKinesisStreamingDestinationCommand({ TableName: tableName })
           );
-          status = (out.KinesisDataStreamDestinations ?? []).find(
-            (d) => d.StreamArn === streamArn
+          // Judged across EVERY entry for the stream: history entries (a
+          // DISABLED or ENABLE_FAILED one) linger beside the current entry,
+          // and neither may decide the wait on its own.
+          unsettled = (out.KinesisDataStreamDestinations ?? []).find(
+            (d) =>
+              d.StreamArn === streamArn && KINESIS_DISABLE_UNSETTLED.has(d.DestinationStatus ?? '')
           )?.DestinationStatus;
         } catch (error) {
           this.logger.debug(
@@ -2800,12 +2805,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           );
           return;
         }
-        if (status === undefined || status === 'DISABLED') return;
-        last = status;
+        if (unsettled === undefined) return;
+        last = unsettled;
       }
       this.logger.warn(
         maskSecrets(
-          `The Kinesis streaming destination on ${scope} had not settled to DISABLED ` +
+          `The Kinesis streaming destination on ${scope} had not settled ` +
             `(last status: ${last}); 'cdkd drift' may report it on this replica until it does`
         )
       );
@@ -9823,6 +9828,17 @@ export const DELETION_PROTECTION_REFLIP_MS = 16_000;
  * 60 polls 5 s apart, five minutes against the ~30 s a replica's protection
  * change took to settle when measured (go-to-k/cdkd#5355).
  */
+/**
+ * The Kinesis destination statuses a disable has not settled from
+ * (go-to-k/cdkd#5399): the read-back's present set plus `DISABLING`.
+ */
+const KINESIS_DISABLE_UNSETTLED: ReadonlySet<string> = new Set([
+  'ACTIVE',
+  'ENABLING',
+  'UPDATING',
+  'DISABLING',
+]);
+
 export const REPLICA_PROTECTION_SETTLE_POLLS = 60;
 export const REPLICA_PROTECTION_SETTLE_POLL_MS = 5000;
 /**
