@@ -1326,7 +1326,7 @@ export class DocDBProvider implements ResourceProvider {
       }
       if (cluster.Status !== 'modifying' && cluster.Port === port) return;
       this.logger.debug(
-        safeMsg`DocDB DBCluster ${logicalId} port not applied yet (status ${cluster?.Status ?? 'unknown'})`
+        safeMsg`DocDB DBCluster ${logicalId} port not applied yet (status ${cluster.Status ?? 'unknown'})`
       );
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);

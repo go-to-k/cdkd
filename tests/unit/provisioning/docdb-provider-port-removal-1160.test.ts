@@ -221,6 +221,78 @@ describe('DocDBProvider DBCluster Port removal (issue #1160)', () => {
     expect(mockSend.mock.calls[3][0].input.DBInstanceIdentifier).toBe('member-1');
   });
 
+  function clusterWithMember(port: number, groups: string[]) {
+    return {
+      DBClusters: [
+        {
+          DBClusterIdentifier: 'my-cluster',
+          Port: port,
+          Status: 'available',
+          VpcSecurityGroups: groups.map((id) => ({ VpcSecurityGroupId: id, Status: 'active' })),
+          DBClusterMembers: [{ DBInstanceIdentifier: 'member-1' }],
+        },
+      ],
+    };
+  }
+
+  it('a security-group change waits out a modifying member but not a rebooting one', async () => {
+    // Port unchanged, groups changed: Modify, final describe, the group wait's
+    // describe, then the member reads.
+    mockSend
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce(clusterWithMember(27018, ['sg-2']))
+      .mockResolvedValueOnce(clusterWithMember(27018, ['sg-2']))
+      .mockResolvedValueOnce({ DBInstances: [{ DBInstanceStatus: 'modifying' }] })
+      .mockResolvedValueOnce({ DBInstances: [{ DBInstanceStatus: 'rebooting' }] });
+
+    await provider.update(
+      'MyCluster',
+      'my-cluster',
+      TYPE,
+      { Port: 27018, VpcSecurityGroupIds: ['sg-2'] },
+      { Port: 27018, VpcSecurityGroupIds: ['sg-1'] }
+    );
+
+    // `rebooting` is not the group change's transition, so the second read ends it.
+    expect(commandNames()).toEqual([
+      'ModifyDBClusterCommand',
+      'DescribeDBClustersCommand',
+      'DescribeDBClustersCommand',
+      'DescribeDBInstancesCommand',
+      'DescribeDBInstancesCommand',
+    ]);
+  });
+
+  it('a port and security-group change in one update runs both waits, the port first', async () => {
+    mockSend
+      .mockResolvedValueOnce({}) // ModifyDBCluster
+      .mockResolvedValueOnce(clusterWithMember(27017, ['sg-2'])) // port wait
+      .mockResolvedValueOnce(clusterWithMember(27017, ['sg-2'])) // final describe
+      .mockResolvedValueOnce({ DBInstances: [{ DBInstanceStatus: 'rebooting' }] }) // port member wait
+      .mockResolvedValueOnce({ DBInstances: [{ DBInstanceStatus: 'available' }] })
+      .mockResolvedValueOnce(clusterWithMember(27017, ['sg-2'])) // group wait
+      .mockResolvedValueOnce({ DBInstances: [{ DBInstanceStatus: 'available' }] }); // group member wait
+
+    await provider.update(
+      'MyCluster',
+      'my-cluster',
+      TYPE,
+      { VpcSecurityGroupIds: ['sg-2'] },
+      { Port: 27018, VpcSecurityGroupIds: ['sg-1'] }
+    );
+
+    expect(mockSend.mock.calls[0][0].input.Port).toBe(27017);
+    expect(commandNames()).toEqual([
+      'ModifyDBClusterCommand',
+      'DescribeDBClustersCommand',
+      'DescribeDBClustersCommand',
+      'DescribeDBInstancesCommand',
+      'DescribeDBInstancesCommand',
+      'DescribeDBClustersCommand',
+      'DescribeDBInstancesCommand',
+    ]);
+  });
+
   it('reads no member instance when the port did not change', async () => {
     mockSend.mockResolvedValueOnce({}).mockResolvedValueOnce({
       DBClusters: [
