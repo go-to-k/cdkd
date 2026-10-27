@@ -186,35 +186,112 @@ describe('FirehoseProvider', () => {
   });
 
   describe('update', () => {
-    // After #549's bundle PR closes the 7 follow-ups, every modern
-    // destination type has an in-place reverse-mapper. Only the legacy
-    // `S3DestinationConfiguration` (deprecated by AWS in favor of
-    // ExtendedS3) still hits the rejection path. Detailed roundtrip
-    // coverage for every supported destination lives in
-    // firehose-provider-roundtrip.test.ts; this test pins the residual
-    // rejection.
-    it('still rejects unsupported destination diffs with ResourceUpdateNotSupportedError', async () => {
+    const STREAM_ARN = 'arn:aws:firehose:us-east-1:111:deliverystream/test-stream';
+    const describeAnswer = {
+      DeliveryStreamDescription: {
+        DeliveryStreamARN: STREAM_ARN,
+        DeliveryStreamStatus: 'ACTIVE',
+        VersionId: '7',
+        Destinations: [{ DestinationId: 'destinationId-000000000001' }],
+      },
+    };
+    // clearAllMocks keeps a mockResolvedValue default; later blocks expect none.
+    afterEach(() => {
+      mockSend.mockReset();
+    });
+
+    // go-to-k/cdkd#5439: CloudFormation updates the legacy shape in place
+    // (change set `Replacement: False`, same stream ARN), so cdkd sends
+    // UpdateDestination with an S3DestinationUpdate instead of refusing.
+    it('updates a legacy S3DestinationConfiguration in place with S3DestinationUpdate', async () => {
+      mockSend.mockResolvedValue(describeAnswer);
+
+      const result = await provider.update(
+        'MyDeliveryStream',
+        'test-stream',
+        'AWS::KinesisFirehose::DeliveryStream',
+        {
+          DeliveryStreamName: 'test-stream',
+          S3DestinationConfiguration: {
+            BucketARN: 'arn:aws:s3:::bucket',
+            RoleARN: 'arn:aws:iam::111:role/firehose-role',
+            Prefix: 'b/',
+            CompressionFormat: 'GZIP',
+            BufferingHints: { IntervalInSeconds: 120, SizeInMBs: 10 },
+          },
+        },
+        {
+          DeliveryStreamName: 'test-stream',
+          S3DestinationConfiguration: {
+            BucketARN: 'arn:aws:s3:::bucket',
+            RoleARN: 'arn:aws:iam::111:role/firehose-role',
+            Prefix: 'a/',
+            CompressionFormat: 'UNCOMPRESSED',
+            BufferingHints: { IntervalInSeconds: 60, SizeInMBs: 5 },
+          },
+        }
+      );
+
+      const updates = mockSend.mock.calls
+        .map((c) => c[0] as { constructor: { name: string }; input: Record<string, unknown> })
+        .filter((c) => c.constructor.name === 'UpdateDestinationCommand');
+      expect(updates).toHaveLength(1);
+      expect(updates[0]!.input).toEqual({
+        DeliveryStreamName: 'test-stream',
+        CurrentDeliveryStreamVersionId: '7',
+        DestinationId: 'destinationId-000000000001',
+        S3DestinationUpdate: {
+          BucketARN: 'arn:aws:s3:::bucket',
+          RoleARN: 'arn:aws:iam::111:role/firehose-role',
+          Prefix: 'b/',
+          CompressionFormat: 'GZIP',
+          BufferingHints: { IntervalInSeconds: 120, SizeInMBs: 10 },
+        },
+      });
+      expect(result).toEqual({
+        physicalId: 'test-stream',
+        wasReplaced: false,
+        attributes: { Arn: STREAM_ARN },
+      });
+    });
+
+    it('sends no UpdateDestination when only the Tags of a legacy-S3 stream change', async () => {
+      mockSend.mockResolvedValue(describeAnswer);
+      const dest = {
+        BucketARN: 'arn:aws:s3:::bucket',
+        RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      };
+
+      await provider.update(
+        'MyDeliveryStream',
+        'test-stream',
+        'AWS::KinesisFirehose::DeliveryStream',
+        { S3DestinationConfiguration: dest, Tags: [{ Key: 'k', Value: 'v2' }] },
+        { S3DestinationConfiguration: dest, Tags: [{ Key: 'k', Value: 'v1' }] }
+      );
+
+      const names = mockSend.mock.calls.map(
+        (c) => (c[0] as { constructor: { name: string } }).constructor.name
+      );
+      expect(names).toContain('TagDeliveryStreamCommand');
+      expect(names).not.toContain('UpdateDestinationCommand');
+    });
+
+    it('still refuses switching from the legacy S3 shape to ExtendedS3 before any call', async () => {
+      const dest = {
+        BucketARN: 'arn:aws:s3:::bucket',
+        RoleARN: 'arn:aws:iam::111:role/firehose-role',
+      };
       await expect(
         provider.update(
           'MyDeliveryStream',
           'test-stream',
           'AWS::KinesisFirehose::DeliveryStream',
-          {
-            DeliveryStreamName: 'test-stream',
-            S3DestinationConfiguration: {
-              BucketARN: 'arn:aws:s3:::bucket-v2',
-              RoleARN: 'arn:aws:iam::111:role/firehose-role',
-            },
-          },
-          {
-            DeliveryStreamName: 'test-stream',
-            S3DestinationConfiguration: {
-              BucketARN: 'arn:aws:s3:::bucket-v1',
-              RoleARN: 'arn:aws:iam::111:role/firehose-role',
-            },
-          }
+          { ExtendedS3DestinationConfiguration: dest },
+          { S3DestinationConfiguration: dest }
         )
       ).rejects.toThrow(ResourceUpdateNotSupportedError);
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 
