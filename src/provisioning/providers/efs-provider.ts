@@ -36,10 +36,12 @@ import {
   type CreateAccessPointCommandInput,
   type PosixUser,
   type RootDirectory,
+  type IpAddressType,
 } from '@aws-sdk/client-efs';
 import { getLogger } from '../../utils/logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { definedAttributes } from '../attribute-map.js';
+import { replayWarn, requireConfigString } from '../config-shape.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
@@ -184,7 +186,17 @@ export class EFSProvider implements ResourceProvider {
         'FileSystemProtection',
       ]),
     ],
-    ['AWS::EFS::MountTarget', new Set(['FileSystemId', 'SubnetId', 'SecurityGroups'])],
+    [
+      'AWS::EFS::MountTarget',
+      new Set([
+        'FileSystemId',
+        'SubnetId',
+        'SecurityGroups',
+        'IpAddress',
+        'IpAddressType',
+        'Ipv6Address',
+      ]),
+    ],
     [
       'AWS::EFS::AccessPoint',
       new Set(['FileSystemId', 'PosixUser', 'RootDirectory', 'AccessPointTags']),
@@ -328,7 +340,7 @@ export class EFSProvider implements ResourceProvider {
       case 'AWS::EFS::FileSystem':
         return this.createFileSystem(logicalId, resourceType, properties, log);
       case 'AWS::EFS::MountTarget':
-        return this.createMountTarget(logicalId, resourceType, properties, log);
+        return this.createMountTarget(logicalId, resourceType, properties, log, context);
       case 'AWS::EFS::AccessPoint':
         return this.createAccessPoint(logicalId, resourceType, properties, log);
       default:
@@ -348,8 +360,8 @@ export class EFSProvider implements ResourceProvider {
    *    through DELETE+CREATE by the replacement-detection layer; if a
    *    diff somehow includes them, defensively reject.
    *  - `AWS::EFS::MountTarget` → `ModifyMountTargetSecurityGroups`
-   *    (SecurityGroups only). IpAddress / SubnetId / FileSystemId are
-   *    immutable.
+   *    (SecurityGroups only). IpAddress / IpAddressType / Ipv6Address /
+   *    SubnetId / FileSystemId are immutable.
    *  - `AWS::EFS::AccessPoint` → no mutable surface; AWS recreates on
    *    every change. Reject so `cdkd drift --revert` surfaces a clear
    *    "use --replace" hint.
@@ -561,8 +573,8 @@ export class EFSProvider implements ResourceProvider {
 
     const securityGroups = properties['SecurityGroups'] as string[] | undefined;
     if (securityGroups === undefined) {
-      // Nothing mutable to apply (IpAddress / SubnetId / FileSystemId are
-      // immutable on MountTarget). Silent success keeps `cdkd drift
+      // Nothing mutable to apply (IpAddress / IpAddressType / Ipv6Address /
+      // SubnetId / FileSystemId are immutable on MountTarget). Silent success keeps `cdkd drift
       // --revert` consistent with the wider provider convention when
       // only immutable fields differ.
       log.debug(`No mutable diff for EFS MountTarget ${logicalId}, skipping update`);
@@ -1262,7 +1274,8 @@ export class EFSProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     log.debug(`Creating EFS MountTarget ${logicalId}`);
 
@@ -1285,6 +1298,30 @@ export class EFSProvider implements ResourceProvider {
     }
 
     const securityGroups = properties['SecurityGroups'] as string[] | undefined;
+    // go-to-k/cdkd#2762: create-only addressing (declaring any of the three
+    // used to route the mount target through Cloud Control). Each is sent
+    // only when declared, so an undeclared one keeps AWS's default (an IPv4
+    // mount target at an address it picks). A non-string is refused, not
+    // dropped: dropping it would create the mount target at an address the
+    // template did not ask for, and none of the three can be changed later.
+    const ipAddress = this.optionalMountTargetString(
+      properties['IpAddress'],
+      'IpAddress',
+      logicalId,
+      context
+    );
+    const ipAddressType = this.optionalMountTargetString(
+      properties['IpAddressType'],
+      'IpAddressType',
+      logicalId,
+      context
+    );
+    const ipv6Address = this.optionalMountTargetString(
+      properties['Ipv6Address'],
+      'Ipv6Address',
+      logicalId,
+      context
+    );
 
     // go-to-k/cdkd#4583: set once CreateMountTarget returned; nothing below
     // deletes it, so a failed wait leaves it with no state record.
@@ -1295,6 +1332,9 @@ export class EFSProvider implements ResourceProvider {
           FileSystemId: fileSystemId,
           SubnetId: subnetId,
           SecurityGroups: securityGroups,
+          ...(ipAddress !== undefined ? { IpAddress: ipAddress } : {}),
+          ...(ipAddressType !== undefined ? { IpAddressType: ipAddressType as IpAddressType } : {}),
+          ...(ipv6Address !== undefined ? { Ipv6Address: ipv6Address } : {}),
         })
       );
 
@@ -1309,9 +1349,14 @@ export class EFSProvider implements ResourceProvider {
 
       log.debug(`Successfully created EFS MountTarget ${logicalId}: ${mountTargetId}`);
 
+      // `Fn::GetAtt [MountTarget, IpAddress]` (go-to-k/cdkd#2762): without it
+      // the resolver fell back to the mount target id. An IPv6-only mount
+      // target has no IPv4 address, so it records none, and its GetAtt still
+      // takes the resolver's unknown-attribute fallback (after one
+      // stale-attribute read through `import()`), as before this change.
       return {
         physicalId: mountTargetId,
-        attributes: {},
+        attributes: definedAttributes({ IpAddress: response.IpAddress }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -1335,6 +1380,37 @@ export class EFSProvider implements ResourceProvider {
       }
       throw thrown;
     }
+  }
+
+  /**
+   * A MountTarget string property, or `undefined` when undeclared (or blank).
+   * Anything else (a number, an unresolved intrinsic object) is refused, and
+   * only warned about when `create()` replays a state record.
+   */
+  private optionalMountTargetString(
+    value: unknown,
+    key: 'IpAddress' | 'IpAddressType' | 'Ipv6Address',
+    logicalId: string,
+    context: CreateContext | undefined
+  ): string | undefined {
+    let read: string;
+    try {
+      read = requireConfigString(
+        value,
+        '',
+        `AWS::EFS::MountTarget ${key}`,
+        replayWarn(this.logger, context)
+      );
+    } catch (error) {
+      throw new ProvisioningError(
+        `EFS MountTarget ${logicalId}: ${describeAwsFailure(error).detail}`,
+        'AWS::EFS::MountTarget',
+        logicalId,
+        undefined,
+        error instanceof Error ? error : undefined
+      );
+    }
+    return read === '' ? undefined : read;
   }
 
   private async waitForMountTargetAvailable(
@@ -2135,6 +2211,26 @@ export class EFSProvider implements ResourceProvider {
     const result: Record<string, unknown> = {};
     if (mt.FileSystemId !== undefined) result['FileSystemId'] = mt.FileSystemId;
     if (mt.SubnetId !== undefined) result['SubnetId'] = mt.SubnetId;
+    // go-to-k/cdkd#2762: the create-only addressing, emitted only when AWS
+    // reports it (immutable on create, so no placeholder). DescribeMountTargets
+    // carries no IpAddressType; it follows from which addresses the mount
+    // target holds (measured us-east-1, 2026-10-27: IPV4_ONLY in a dual-stack
+    // subnet holds only an IPv4 address, IPV6_ONLY only an IPv6 one, and
+    // DUAL_STACK both). The addresses come back as declared, not canonicalised:
+    // `Ipv6Address: 2600:1F18:...:0:0:0:50` reads back in that spelling (the
+    // ENI itself reports `...::50`), and a leading-zero IPv4 is refused at
+    // create (`invalid value for parameter address`), so neither needs a
+    // spelling normaliser (measured us-east-1, 2026-10-27).
+    if (mt.IpAddress !== undefined) result['IpAddress'] = mt.IpAddress;
+    if (mt.Ipv6Address !== undefined) result['Ipv6Address'] = mt.Ipv6Address;
+    if (mt.IpAddress !== undefined || mt.Ipv6Address !== undefined) {
+      result['IpAddressType'] =
+        mt.IpAddress === undefined
+          ? 'IPV6_ONLY'
+          : mt.Ipv6Address === undefined
+            ? 'IPV4_ONLY'
+            : 'DUAL_STACK';
+    }
 
     // SecurityGroups via DescribeMountTargetSecurityGroups. Always-emit
     // `[]` placeholder when AWS reports none so a console-side ADD on a
@@ -2174,10 +2270,7 @@ export class EFSProvider implements ResourceProvider {
       case 'AWS::EFS::AccessPoint':
         return this.importAccessPoint(input);
       case 'AWS::EFS::MountTarget':
-        if (input.knownPhysicalId) {
-          return { physicalId: input.knownPhysicalId, attributes: {} };
-        }
-        return null;
+        return this.importMountTarget(input);
       default:
         return null;
     }
@@ -2203,6 +2296,34 @@ export class EFSProvider implements ResourceProvider {
     // DescribeStackResources; a file system reaching here needs an explicit
     // `--resource` override.
     return null;
+  }
+
+  /**
+   * Override-only. Reads the mount target so `Fn::GetAtt [MountTarget,
+   * IpAddress]` resolves on an imported record and on one `create()` wrote
+   * before it recorded the attribute (the stale-attribute heal reads through
+   * here; go-to-k/cdkd#2762).
+   */
+  private async importMountTarget(
+    input: ResourceImportInput
+  ): Promise<ResourceImportResult | null> {
+    if (!input.knownPhysicalId) return null;
+    let resp;
+    try {
+      resp = await this.getClient().send(
+        new DescribeMountTargetsCommand({ MountTargetId: input.knownPhysicalId })
+      );
+    } catch (err) {
+      if (err instanceof MountTargetNotFound) return null;
+      throw err;
+    }
+    const mt = resp.MountTargets?.[0];
+    return mt?.MountTargetId
+      ? {
+          physicalId: mt.MountTargetId,
+          attributes: definedAttributes({ IpAddress: mt.IpAddress }),
+        }
+      : null;
   }
 
   private async importAccessPoint(

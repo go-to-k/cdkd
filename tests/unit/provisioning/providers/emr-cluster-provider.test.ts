@@ -378,6 +378,88 @@ describe('EMRClusterProvider update', () => {
     });
   });
 
+  // go-to-k/cdkd#5418: a replacing member recorded as its `{{resolve:...}}`
+  // reference and handed here resolved is unchanged, as at the top level.
+  describe('a secret-referenced Instances member beside a TerminationProtected toggle', () => {
+    const REF = '{{resolve:secretsmanager:emr-key:SecretString:name}}';
+    const prev = {
+      ...BASE_PROPS,
+      Instances: { ...BASE_PROPS.Instances, Ec2KeyName: REF, TerminationProtected: false },
+    };
+    const next = {
+      ...BASE_PROPS,
+      Instances: { ...BASE_PROPS.Instances, Ec2KeyName: 'resolved-key', TerminationProtected: true },
+    };
+    const maskSecrets = (text: string): string => text.split('resolved-key').join('***');
+
+    it('applies the toggle when the member only resolves its recorded reference', async () => {
+      routeSend({
+        SetTerminationProtectionCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const result = await newProvider().update('MyCluster', CLUSTER_ID, RESOURCE_TYPE, next, prev, {
+        maskSecrets,
+      });
+      expect(result.wasReplaced).toBe(false);
+      expect(callsOf(SetTerminationProtectionCommand)[0]!.input['TerminationProtected']).toBe(true);
+    });
+
+    it('still refuses when the value is not one the masker resolved', async () => {
+      const err = await newProvider()
+        .update('MyCluster', CLUSTER_ID, RESOURCE_TYPE, next, prev)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((err as Error).message).toContain('Instances.Ec2KeyName cannot be updated in place');
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('keeps an in-place member a change even when it only resolves a reference', async () => {
+      const core = (count: unknown) => ({ InstanceCount: count, InstanceType: 'm5.xlarge' });
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          { ...BASE_PROPS, Instances: { ...BASE_PROPS.Instances, CoreInstanceGroup: core('resolved-key') } },
+          { ...BASE_PROPS, Instances: { ...BASE_PROPS.Instances, CoreInstanceGroup: core(REF) } },
+          { maskSecrets }
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((err as Error).message).toContain('Instances.CoreInstanceGroup: CloudFormation applies');
+    });
+  });
+
+  it('reads an absent Instances block as empty: a lone TerminationProtected is applied', async () => {
+    routeSend({ SetTerminationProtectionCommand: {}, DescribeClusterCommand: clusterOf('WAITING') });
+    const { Instances: _omitted, ...withoutInstances } = BASE_PROPS;
+    const result = await newProvider().update(
+      'MyCluster',
+      CLUSTER_ID,
+      RESOURCE_TYPE,
+      { ...withoutInstances, Instances: { TerminationProtected: true } },
+      withoutInstances
+    );
+    expect(result.wasReplaced).toBe(false);
+    expect(callsOf(SetTerminationProtectionCommand)[0]!.input['TerminationProtected']).toBe(true);
+  });
+
+  it('names the Instances block whole when a side is not an object', async () => {
+    const err = await newProvider()
+      .update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        { ...BASE_PROPS, Instances: 'not-an-object' },
+        { ...BASE_PROPS }
+      )
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect((err as Error).message).toContain(
+      "AWS EMR Cluster's Instances block cannot be updated in place"
+    );
+  });
+
   it('sends SetVisibleToAllUsers on a VisibleToAllUsers change', async () => {
     routeSend({ SetVisibleToAllUsersCommand: {}, DescribeClusterCommand: clusterOf('WAITING') });
     await newProvider().update(
@@ -519,6 +601,69 @@ describe('EMRClusterProvider update', () => {
       newProvider().update('MyCluster', CLUSTER_ID, RESOURCE_TYPE, next, prev)
     ).rejects.toThrow(ResourceUpdateNotSupportedError);
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  // go-to-k/cdkd#5418: the diff replaces the cluster for a replacing member, so
+  // this refusal is defence in depth and says what CloudFormation does.
+  it('refuses a replacing Instances member as a CloudFormation replacement', async () => {
+    const next = {
+      ...BASE_PROPS,
+      Instances: { ...BASE_PROPS.Instances, AdditionalMasterSecurityGroups: ['sg-extra'] },
+    };
+    const err = await newProvider()
+      .update('MyCluster', CLUSTER_ID, RESOURCE_TYPE, next, { ...BASE_PROPS })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect((err as Error).message).toContain(
+      'Instances.AdditionalMasterSecurityGroups cannot be updated in place — CloudFormation replaces the cluster for this change.'
+    );
+    expect((err as Error).message).toContain('--replace --force-stateful-recreation');
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  // go-to-k/cdkd#5418: CloudFormation resizes a core group in place (measured),
+  // so the diff does not replace it; the provider cannot resize yet and says so.
+  it('refuses an in-place core group resize without calling it immutable', async () => {
+    const core = { InstanceCount: 1, InstanceType: 'm5.xlarge', Name: 'Core' };
+    const prev = { ...BASE_PROPS, Instances: { ...BASE_PROPS.Instances, CoreInstanceGroup: core } };
+    const next = {
+      ...BASE_PROPS,
+      Instances: { ...BASE_PROPS.Instances, CoreInstanceGroup: { ...core, InstanceCount: 2 } },
+    };
+    const err = await newProvider()
+      .update('MyCluster', CLUSTER_ID, RESOURCE_TYPE, next, prev)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    const message = (err as Error).message;
+    expect(message).toContain(
+      'Instances.CoreInstanceGroup: CloudFormation applies this change in place (an instance group'
+    );
+    expect(message).not.toContain('immutable');
+    // A replacement would terminate a cluster CloudFormation keeps.
+    expect(message).not.toContain('--replace');
+    expect(message).toContain('go-to-k/cdkd#5422');
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('names the replacing member, not an in-place one moved beside it', async () => {
+    const core = { InstanceCount: 1, InstanceType: 'm5.xlarge', Name: 'Core' };
+    const prev = { ...BASE_PROPS, Instances: { CoreInstanceGroup: core, ...BASE_PROPS.Instances } };
+    const next = {
+      ...BASE_PROPS,
+      Instances: {
+        CoreInstanceGroup: { ...core, InstanceCount: 2 },
+        ...BASE_PROPS.Instances,
+        AdditionalMasterSecurityGroups: ['sg-extra'],
+      },
+    };
+    const err = await newProvider()
+      .update('MyCluster', CLUSTER_ID, RESOURCE_TYPE, next, prev)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect((err as Error).message).toContain(
+      'Instances.AdditionalMasterSecurityGroups cannot be updated in place'
+    );
+    expect((err as Error).message).not.toContain('Instances.CoreInstanceGroup');
   });
 
   it('refuses an immutable top-level property change with a --replace pointer', async () => {

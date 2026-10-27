@@ -242,6 +242,92 @@ export function ecsServiceLaunchTypeSetOrChanged(oldValue: unknown, newValue: un
 }
 
 /**
+ * `Instances` members CloudFormation updates in place (go-to-k/cdkd#5418; the
+ * measurement is on {@link emrClusterInstancesReplaced}).
+ */
+const EMR_INSTANCES_IN_PLACE_MEMBERS = [
+  'TerminationProtected',
+  'UnhealthyNodeReplacement',
+] as const;
+/** Members of a CORE or TASK instance group CloudFormation updates in place. */
+const EMR_GROUP_IN_PLACE_MEMBERS = ['InstanceCount', 'AutoScalingPolicy'] as const;
+/** Members of a CORE or TASK instance fleet CloudFormation updates in place. */
+const EMR_FLEET_IN_PLACE_MEMBERS = ['TargetOnDemandCapacity', 'TargetSpotCapacity'] as const;
+
+/** A copy of a plain object without `keys`; anything else is returned as is. */
+function withoutKeys(value: unknown, keys: readonly string[]): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+  const copy: Record<string, unknown> = { ...(value as Record<string, unknown>) };
+  for (const key of keys) delete copy[key];
+  return copy;
+}
+
+/**
+ * `Instances` with every member CloudFormation updates in place removed.
+ * `TaskInstanceGroups` / `TaskInstanceFleets` are compared in list order, so a
+ * reorder of the same entries classifies as a replacement (unmeasured; a plain
+ * deploy then stops at the stateful-recreate guard's `STATEFUL_REPLACE_BLOCKED`).
+ */
+function emrInstancesReplacingPart(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+  const instances = withoutKeys(value, EMR_INSTANCES_IN_PLACE_MEMBERS) as Record<string, unknown>;
+  const strip = (key: string, keys: readonly string[]): void => {
+    if (!(key in instances)) return;
+    const member = instances[key];
+    instances[key] = Array.isArray(member)
+      ? member.map((entry) => withoutKeys(entry, keys))
+      : withoutKeys(member, keys);
+  };
+  strip('CoreInstanceGroup', EMR_GROUP_IN_PLACE_MEMBERS);
+  strip('TaskInstanceGroups', EMR_GROUP_IN_PLACE_MEMBERS);
+  strip('CoreInstanceFleet', EMR_FLEET_IN_PLACE_MEMBERS);
+  strip('TaskInstanceFleets', EMR_FLEET_IN_PLACE_MEMBERS);
+  return instances;
+}
+
+/**
+ * Conditional-replacement predicate for `AWS::EMR::Cluster.Instances` (issue
+ * [#5418](https://github.com/go-to-k/cdkd/issues/5418)).
+ *
+ * The registry schema marks no `Instances` path createOnly and the
+ * CloudFormation reference says "No interruption" for every member, yet
+ * CloudFormation REPLACES the cluster for most of them. MEASURED (raw
+ * CloudFormation change-set executions, us-east-1, 2026-10-27; every change set
+ * said `Replacement: Conditional` on `Instances`, so only the execution tells):
+ *
+ *  - REPLACED: `AdditionalMasterSecurityGroups` added, a task instance group
+ *    added, `KeepJobFlowAliveWhenNoSteps` true -> false.
+ *  - IN PLACE: `InstanceCount` of the core group and of a task group,
+ *    `AutoScalingPolicy` added to the core group, `TargetOnDemandCapacity` of
+ *    the core fleet and of a task fleet, `UnhealthyNodeReplacement` added.
+ *  - `TerminationProtected` is in place (`SetTerminationProtection`).
+ *
+ * The reference's notes on `TaskInstanceGroups` / `TaskInstanceFleets` agree:
+ * only `InstanceCount` and `AutoScalingPolicy` (groups) and the two target
+ * capacities (fleets) are mutable, anything else replaces. Neither covers the
+ * master group or fleet (unmeasured), whose every change is left to replace.
+ *
+ * So the members CloudFormation updates in place are removed from both sides
+ * and any remaining difference replaces. Compared strictly, as the diff
+ * compares the whole property: a value still unresolved there (an intrinsic
+ * object) differs from a concrete one and replaces, the conservative direction
+ * for a member AWS cannot update.
+ *
+ * A call with NO value on either side (`undefined`, `undefined`) is the
+ * diff's promoted-dependent probe: a resource the block references (a subnet,
+ * a security group) is being replaced, so its id WILL move, and CloudFormation
+ * replaces the cluster for that. It answers `true`; the engine lowers the
+ * ceiling, through this same predicate, when the resolved move is in place.
+ */
+export function emrClusterInstancesReplaced(oldValue: unknown, newValue: unknown): boolean {
+  if (oldValue === undefined && newValue === undefined) return true;
+  return !isDeepStrictEqual(
+    emrInstancesReplacingPart(oldValue),
+    emrInstancesReplacingPart(newValue)
+  );
+}
+
+/**
  * Replacement rules registry
  *
  * Maps resource types to their replacement rules
@@ -959,6 +1045,14 @@ export class ReplacementRulesRegistry {
     this.rules.set('AWS::ECS::Service', {
       replacementProperties: new Set(),
       conditionalReplacements: new Map([['LaunchType', ecsServiceLaunchTypeSetOrChanged]]),
+    });
+
+    // EMR Cluster — an `Instances` change replaces unless only members
+    // CloudFormation updates in place moved (issue #5418; see the predicate).
+    // Every other property stays with the schema fallback.
+    this.rules.set('AWS::EMR::Cluster', {
+      replacementProperties: new Set(),
+      conditionalReplacements: new Map([['Instances', emrClusterInstancesReplaced]]),
     });
 
     // ELBv2 ListenerRule — `ListenerArn` is create-only (and write-only). The

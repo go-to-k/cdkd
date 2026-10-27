@@ -13,7 +13,9 @@
 ### 8-b. Integ ordering vs review rounds and rebases
 
 **Run the integ LAST — after every reviewer RETURNS and the final edit to any
-`integ-destroy`-scoped file.** A lane cannot touch AWS, so only the parent finds an AWS-side rejection:
+`integ-destroy`-scoped file.** A lane runs no integ (it still runs `triage.md`'s
+throwaway CFn change set itself: never brief it down to read-only probes,
+#5401), so only the parent finds an integ-time AWS-side rejection:
 run a NEW arm once EARLY too, as soon as the lane has written it, between review
 rounds (never during a `src` fix round); that run sets no marker and is no §8-d
 proof — a new arm's first AWS contact can reject its shape (#4618). Sequence:
@@ -22,8 +24,7 @@ rebase → integ → marker. A UNIT-test-only fix round may overlap the parent's
 integ in the lane's tree. Brief the lane: no build, `/check` or `/verify-pr`
 there (a build rewrites the live fixture's `dist/`), no rebase or install, never
 the live fixture's directory, and stage only its own test files (the integ's
-ledger row lands there, #4302). A round overlapping the §8-d probe (clean tree;
-it restores `src` from `HEAD`) edits in scratch until the parent frees it. A
+ledger row lands there, #4302). A
 lane REPORTS `mise exec -- markgate status integ-destroy --explain`'s line,
 never "integ not needed": comment-only edits count (#3873).
 The gate's `hash: diff` stales on a rebase only when main changed a scoped
@@ -77,7 +78,7 @@ tests passing is necessary but NOT sufficient:
   - **It changes what a command or gate DOES** → the verification IS that
     command (`.claude/hooks/run-tests.sh` for a hook, the workflow step's
     command for CI, `vp run check` for lint config, which lints `src/**` only).
-    Run it BEFORE and AFTER, building the BEFORE tree by §8-d's copy-revert,
+    Run it BEFORE and AFTER, building the BEFORE tree in §8-d's throwaway tree,
     never `git checkout -- <path>` / `git restore`. Drive the FAILURE
     direction too, and guard the fix's SHAPE with a test under
     `tests/unit/scripts/` or a case in the hook's `<name>.test.sh`.
@@ -89,31 +90,34 @@ tests passing is necessary but NOT sufficient:
 ### 8-d. Integ arms owe a discrimination proof (mutation-probe on real AWS)
 
 BEFORE the final integ, revert the fix, rebuild, run, confirm the arm goes RED
-**at YOUR assertion — read which one fired**, then restore and rebuild. A red
+**at YOUR assertion — read which one fired**, then remove the throwaway tree (below). A red
 ELSEWHERE proves nothing: at the CREATE the shape is unreachable, so redo
 `triage.md`'s CFn premise (#5204); at an older step, harden it and re-run
 (#5218). A GREEN pre-fix run BLOCKS the merge: rework the arm so the symptom reaches AWS
 (#4927). A failure HINT's needle is
 copied from that red run, never reasoned (#4336); a refusal the
 log tail lacks is the failed resource's `error.message` / `awsErrorCode` in
-`s3://<bucket>/<prefix>/<Stack>/<region>/deployments/*.jsonl`. **Revert by
-COPY, from a COMMITTED, clean lane**, inside `bash -c` (zsh mangles `$B:src`), each copy written
-to scratch FIRST — a redirect onto the file truncates it even when `git show`
-fails:
+`s3://<bucket>/<prefix>/<Stack>/<region>/deployments/*.jsonl`. **Revert in a
+THROWAWAY detached tree at the PUSHED final sha, never the lane's** — there is
+nothing to restore, and a restore in the lane tree is refused by
+`dirty-path-restore-gate` and, as `cp`, by the classifier (#5401). Inside
+`bash -c` (zsh mangles `$B:src`), each copy written beside the file FIRST — a
+redirect onto the file truncates it even when `git show` fails:
 
 ```bash
-bash -c 'B=$(git merge-base origin/main HEAD); R=$B; S=<scratch>; mkdir -p "$S"
-[ "$R" = HEAD ] || [ -z "$(git -C <lane tree> status --porcelain)" ] \
-  || { echo "tree not clean - commit first"; exit 1; }
-for f in $(git diff --name-only --no-renames --diff-filter=M "$B" HEAD -- src/); do
-  k=${f//\//_}; git show "$R:$f" > "$S/$k" && cp "$S/$k" "$f"
-done'
+git -C <MAIN_CHECKOUT> worktree add --detach <MAIN_CHECKOUT>/.claude/worktrees/probe-<PR> <final sha>
+bash -c 'P=<MAIN_CHECKOUT>/.claude/worktrees/probe-<PR>; B=$(git -C "$P" merge-base origin/main HEAD)
+[ -n "$B" ] || { echo "no merge base - nothing reverted"; exit 1; }
+for f in $(git -C "$P" diff --name-only --no-renames --diff-filter=M "$B" HEAD -- src/); do
+  git -C "$P" show "$B:$f" > "$P/$f.pre" && mv "$P/$f.pre" "$P/$f"
+done; git -C "$P" status --short'   # must list every ` M` src/ file of the diff
+# then in that tree: mise trust && mise install && vp install && vp run build,
+# run the fixture (a hook / CI BEFORE tree runs that command), and afterwards:
+git -C <MAIN_CHECKOUT> worktree remove --force <MAIN_CHECKOUT>/.claude/worktrees/probe-<PR>
 ```
 
 Run it UNNARROWED on the FINAL diff: a lane's file list is a hint, stale after a
-fix round. `R=$B` reverts, refusing a tree with uncommitted edits (the restore
-reads `HEAD`, so it would destroy them); the same loop with `R=HEAD` restores —
-run it once; `git status --porcelain` must then be EMPTY. For §8-c's hook / CI
+fix round. For §8-c's hook / CI
 BEFORE tree, replace `src/` with the changed command's own paths. A file NEW in
 the PR stays, unimported by pre-fix code; one the fix DELETED or moved is
 restored by hand. The pre-fix run can mint resources the fixture's sweep cannot

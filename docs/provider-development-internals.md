@@ -548,7 +548,10 @@ The providers that take this shape:
 - Sub-resources scoped under a parent RestApi / HttpApi / GraphqlApi:
   `apigateway-provider.ts`, `apigatewayv2-provider.ts`, `appsync-provider.ts`.
 - Not taggable: `route53-provider.ts` (RecordSets), `efs-provider.ts`
-  (MountTargets).
+  (MountTargets). The MountTarget arm is still override-only but DESCRIBES the
+  given id, since it owes the `IpAddress` attribute `Fn::GetAtt` reads (issue
+  [#2762](https://github.com/go-to-k/cdkd/issues/2762)); it returns `null`
+  for a mount target that is gone.
 - No taggable identity tying it to a CDK construct: `elbv2-provider.ts`
   (Listeners).
 - Attachments, or identity returned by a handler: `sns-subscription-provider.ts`,

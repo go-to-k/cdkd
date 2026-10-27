@@ -4,14 +4,14 @@ HostedZone and DNS record deployment example for cdkd.
 
 ## Resources Created
 
-- **HostedZone** - Public hosted zone for `cdkd-integ-test.example.com`
-- **A Record** - Points `test.cdkd-integ-test.example.com` to `192.0.2.1` (TEST-NET-1)
+- **HostedZone** - Public hosted zone for `cdkd-test-<account>.internal`, on a reusable delegation set that `verify.sh` creates before the first deploy and deletes after destroy (`DelegationSetId`, issue #2762)
+- **A Record** - Points `test.cdkd-test-<account>.internal` to `192.0.2.1` (TEST-NET-1)
 
 Note: Creates a real hosted zone ($0.50/month if left running). Always destroy after testing.
 
 ## Demonstrates
 
-- Route53 HostedZone creation via Cloud Control API
+- Route53 HostedZone creation through the SDK provider
 - DNS A record management (RecordSet)
 - Resource dependencies (RecordSet depends on HostedZone)
 - RecordSet renames (`CDKD_TEST_RENAME`, issue #3741): a Name, a SetIdentifier and an A -> CNAME Type change each delete the old record

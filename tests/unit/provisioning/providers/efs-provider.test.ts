@@ -723,7 +723,10 @@ describe('EFSProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('MountTarget: explicit override returned as-is, no AWS calls', async () => {
+    it('MountTarget: explicit override is described for its IpAddress attribute (#2762)', async () => {
+      mockSend.mockResolvedValueOnce({
+        MountTargets: [{ MountTargetId: 'fsmt-123', IpAddress: '10.0.0.5' }],
+      });
       const result = await provider.import(
         makeInput({
           logicalId: 'MT',
@@ -731,8 +734,9 @@ describe('EFSProvider', () => {
           knownPhysicalId: 'fsmt-123',
         })
       );
-      expect(result).toEqual({ physicalId: 'fsmt-123', attributes: {} });
-      expect(mockSend).not.toHaveBeenCalled();
+      expect(result).toEqual({ physicalId: 'fsmt-123', attributes: { IpAddress: '10.0.0.5' } });
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeMountTargetsCommand);
     });
 
     it('MountTarget: returns null without explicit override', async () => {
