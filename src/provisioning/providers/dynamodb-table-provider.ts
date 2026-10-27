@@ -1125,6 +1125,16 @@ const KINESIS_PRECISION_STALE_READ_GRACE_POLLS = 5;
  */
 const KINESIS_DISABLE_SETTLE_POLLS = 120;
 const KINESIS_DISABLE_SETTLE_POLL_MS = 500;
+/**
+ * The statuses a disabled destination may still read as: what
+ * `readKinesisStreamSpecification` reports as present, plus `DISABLING`.
+ */
+const KINESIS_DISABLE_PENDING_STATUSES: ReadonlySet<string> = new Set([
+  'ACTIVE',
+  'ENABLING',
+  'UPDATING',
+  'DISABLING',
+]);
 
 /**
  * Is this `WarmThroughput` VALUE one cdkd will actually put on the wire
@@ -5202,8 +5212,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
   }
 
   /**
-   * After `DisableKinesisStreamingDestination`: poll until every destination
-   * for `streamArn` reads `DISABLED`, or none is listed (go-to-k/cdkd#5423).
+   * After `DisableKinesisStreamingDestination`: poll until no destination for
+   * `streamArn` reads as {@link KINESIS_DISABLE_PENDING_STATUSES}
+   * (go-to-k/cdkd#5423).
    * The read-back reports an `ACTIVE` / `ENABLING` / `UPDATING` destination as
    * present, and `DescribeKinesisStreamingDestination` went on reading `ACTIVE`
    * for about a second after the disable answered `DISABLING`, so the
@@ -5262,10 +5273,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
           warnUnsettled('could not be read back');
           return;
         }
-        // DISABLED entries linger beside a live one for the same stream, so
-        // the disable has settled only once no entry for it is anything else.
+        // Settled once no entry for the stream is one the read-back reports
+        // (ACTIVE / ENABLING / UPDATING) or DISABLING: DISABLED and
+        // ENABLE_FAILED history entries linger beside a live one.
         const pending = destinations.find(
-          (d) => d.StreamArn === streamArn && d.DestinationStatus !== 'DISABLED'
+          (d) =>
+            d.StreamArn === streamArn &&
+            d.DestinationStatus !== undefined &&
+            KINESIS_DISABLE_PENDING_STATUSES.has(d.DestinationStatus)
         );
         if (!pending) return;
         last = pending.DestinationStatus ?? 'unknown';

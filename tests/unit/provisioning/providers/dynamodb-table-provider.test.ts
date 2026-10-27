@@ -765,6 +765,22 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
         }
       });
 
+      it('does not wait on an ENABLE_FAILED history entry for the same stream', async () => {
+        route([
+          {
+            KinesisDataStreamDestinations: [
+              { StreamArn: OLD, DestinationStatus: 'ENABLE_FAILED' },
+              { StreamArn: OLD, DestinationStatus: 'DISABLED' },
+            ],
+          },
+        ]);
+
+        await runUpdate(OLD, undefined);
+
+        expect(order).toEqual(['disable', 'describe']);
+        expect(warn()).not.toHaveBeenCalled();
+      });
+
       it('ends the wait when the destination is no longer listed', async () => {
         route([{ KinesisDataStreamDestinations: [] }]);
 
