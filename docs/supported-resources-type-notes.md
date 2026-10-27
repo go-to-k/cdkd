@@ -116,7 +116,14 @@ deploys them with its SDK providers. Each has a one-hour timeout per resource.
 | `AWS::EMR::InstanceGroupConfig` | `InstanceCount`, `AutoScalingPolicy` | Removes the cdkd state record only |
 | `AWS::EMR::InstanceFleetConfig` | `TargetOnDemandCapacity`, `TargetSpotCapacity`, `ResizeSpecifications`, `InstanceTypeConfigs` | Removes the cdkd state record only |
 
-Any other property change replaces the resource. A create waits until a
+Any other property change replaces the resource, as CloudFormation does,
+including most changes inside a cluster's `Instances` (measured: a security
+group added, a task group added, `KeepJobFlowAliveWhenNoSteps` turned off).
+CloudFormation applies a few `Instances` changes in place: a core or task
+instance group's `InstanceCount` or `AutoScalingPolicy`, a core or task
+fleet's target capacities, and `UnhealthyNodeReplacement`. cdkd does not
+replace the cluster for those, but cannot apply them yet and refuses the
+update. A create waits until a
 cluster is `WAITING` or `RUNNING`, and until a group or fleet is `RUNNING`.
 
 Deleting an instance group or fleet does not remove it from AWS, because EMR

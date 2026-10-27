@@ -245,12 +245,15 @@ const CLUSTER_TOP: Bag = fresh({
 
 /**
  * `update()` refuses a change to every `Instances` member but
- * `TerminationProtected` before any call (emr-cluster-provider.ts:869-934).
- * The schema lists no create-only path under `Instances`, so the case marks
- * each such member create-only itself, leaving `TerminationProtected` the one
- * updatable path. Those marks skip every update probe under them, so
- * `describeEmrRdsExtras` checks each member's refusal: a member `update()`
- * starts applying in place fails there and leaves this list.
+ * `TerminationProtected` before any call. The deploy diff replaces the cluster
+ * for most of them (go-to-k/cdkd#5418, `emrClusterInstancesReplaced`), so the
+ * refusal is defence in depth; a member CloudFormation applies in place
+ * ({@link INSTANCES_IN_PLACE}) is refused too, since cdkd cannot apply it yet
+ * (go-to-k/cdkd#5422). The schema lists no create-only path under `Instances`,
+ * so the case marks each such member create-only itself, leaving
+ * `TerminationProtected` the one updatable path. Those marks skip every update
+ * probe under them, so `describeEmrRdsExtras` checks each member's refusal: a
+ * member `update()` starts applying in place fails there and leaves this list.
  */
 const INSTANCES_FIXED = [
   'AdditionalMasterSecurityGroups',
@@ -272,6 +275,13 @@ const INSTANCES_FIXED = [
   'TaskInstanceGroups',
   'UnhealthyNodeReplacement',
 ].map((member) => `Instances.${member}`);
+
+/**
+ * The {@link INSTANCES_FIXED} members whose change, as `describeEmrRdsExtras`
+ * varies it, CloudFormation applies in place: the refusal says so instead of
+ * naming a replacement.
+ */
+const INSTANCES_IN_PLACE = new Set(['UnhealthyNodeReplacement']);
 
 const CLUSTER_CASE: TypeCase = {
   resourceType: 'AWS::EMR::Cluster',
@@ -758,7 +768,11 @@ export function describeEmrRdsExtras(): void {
       });
       expect(outcome).toEqual({ threw: false, wire: '' });
       expect(thrown).toBeInstanceOf(ResourceUpdateNotSupportedError);
-      expect((thrown as Error).message).toContain(`Instances.${member} is immutable`);
+      expect((thrown as Error).message).toContain(
+        INSTANCES_IN_PLACE.has(member)
+          ? `Instances.${member}: CloudFormation applies this change in place`
+          : `Instances.${member} cannot be updated in place — CloudFormation replaces the cluster`
+      );
     });
   });
 }

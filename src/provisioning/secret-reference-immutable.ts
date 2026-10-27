@@ -111,8 +111,10 @@ async function engineReplacesOnAnyChange(resourceType: string, key: string): Pro
 }
 
 /**
- * The masker arm's comparison WITHOUT its engine gate, exported for the unit
- * tests only. A provider must call {@link unchangedBehindSecretReference}: on
+ * The masker arm's comparison WITHOUT its engine gate. A provider must call
+ * {@link unchangedBehindSecretReference}, or prove that gate itself for a
+ * NESTED member the engine replaces on (the EMR cluster's `Instances`
+ * members, go-to-k/cdkd#5418, through the registry's own predicate): on
  * its own this proves only that the desired value is still secret-derived,
  * not that it is the same reference or the same resource (a Scheduler
  * `GroupName` exemption built on it plus a live probe was withdrawn in
