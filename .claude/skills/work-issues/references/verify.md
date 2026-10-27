@@ -90,7 +90,7 @@ tests passing is necessary but NOT sufficient:
 ### 8-d. Integ arms owe a discrimination proof (mutation-probe on real AWS)
 
 BEFORE the final integ, revert the fix, rebuild, run, confirm the arm goes RED
-**at YOUR assertion — read which one fired**, then remove that tree. A red
+**at YOUR assertion — read which one fired**, then remove the throwaway tree (below). A red
 ELSEWHERE proves nothing: at the CREATE the shape is unreachable, so redo
 `triage.md`'s CFn premise (#5204); at an older step, harden it and re-run
 (#5218). A GREEN pre-fix run BLOCKS the merge: rework the arm so the symptom reaches AWS
