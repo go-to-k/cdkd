@@ -9141,7 +9141,11 @@
           ],
           "seededBy": [
             "create",
-            "createCacheCluster"
+            "createCacheCluster",
+            "newNodePlacement",
+            "update",
+            "updateCacheCluster",
+            "warnNotAppliedInPlace"
           ]
         },
         {
@@ -9156,7 +9160,9 @@
           ],
           "seededBy": [
             "create",
-            "createCacheCluster"
+            "createCacheCluster",
+            "update",
+            "updateCacheCluster"
           ]
         },
         {
@@ -9353,6 +9359,7 @@
           "seededBy": [
             "create",
             "createCacheCluster",
+            "newNodePlacement",
             "update",
             "updateCacheCluster"
           ]
@@ -9384,7 +9391,10 @@
           ],
           "seededBy": [
             "create",
-            "createCacheCluster"
+            "createCacheCluster",
+            "update",
+            "updateCacheCluster",
+            "warnNotAppliedInPlace"
           ]
         },
         {
@@ -9399,7 +9409,10 @@
           ],
           "seededBy": [
             "create",
-            "createCacheCluster"
+            "createCacheCluster",
+            "newNodePlacement",
+            "update",
+            "updateCacheCluster"
           ]
         },
         {
@@ -9517,7 +9530,10 @@
           ],
           "seededBy": [
             "create",
-            "createCacheCluster"
+            "createCacheCluster",
+            "update",
+            "updateCacheCluster",
+            "warnNotAppliedInPlace"
           ]
         },
         {

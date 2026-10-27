@@ -16,6 +16,7 @@ import {
   type NetworkType,
   type IpDiscovery,
 } from '@aws-sdk/client-elasticache';
+import { isDeepStrictEqual } from 'node:util';
 import { getLogger } from '../../utils/logger.js';
 import { markNotGone } from '../not-gone.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
@@ -64,6 +65,30 @@ const CACHE_DELETE_WAIT_MS = Math.max(
   600_000,
   slowCcOperationTimeoutMs('AWS::ElastiCache::CacheCluster', 'DELETE')
 );
+
+/**
+ * How long an update that changes `CacheNodeType` waits for the cluster to
+ * report the new type (issue #5438): a cache.t4g scale took about ten minutes
+ * on both engines, past the 10-minute cap other modifies use. The engine's
+ * `--resource-timeout` (30 minutes by default) is the outer bound.
+ */
+const NODE_TYPE_MODIFY_WAIT_MS = 30 * 60_000;
+
+/**
+ * The members of `a` left after taking out one occurrence per member of `b`
+ * (a multiset difference): the Availability Zones a desired
+ * `PreferredAvailabilityZones` list asks for that no live node occupies.
+ */
+function availabilityZonesNotCovered(a: readonly string[], b: readonly string[]): string[] {
+  const remaining = [...b];
+  const out: string[] = [];
+  for (const az of a) {
+    const i = remaining.indexOf(az);
+    if (i >= 0) remaining.splice(i, 1);
+    else out.push(az);
+  }
+  return out;
+}
 
 /**
  * AWS ElastiCache Provider
@@ -670,11 +695,27 @@ export class ElastiCacheProvider implements ResourceProvider {
       // LogDeliveryConfigurations (CloudFormation disables delivery), below.
       const notificationTopicArn = properties['NotificationTopicArn'] as string | undefined;
 
+      // go-to-k/cdkd#5438 (real CloudFormation runs, us-east-1, redis and
+      // memcached): a CacheNodeType change is an in-place ModifyCacheCluster
+      // with ApplyImmediately for both engines, same cluster id. CloudFormation
+      // sends it on every update; it is sent here only when it changed, so an
+      // update that does not touch it never asks AWS to scale.
+      const desiredNodeType = properties['CacheNodeType'] as string | undefined;
+      const nodeTypeChanged =
+        desiredNodeType !== undefined && desiredNodeType !== previousProperties['CacheNodeType'];
+      const placement = await this.newNodePlacement(physicalId, properties, previousProperties);
+      this.warnNotAppliedInPlace(logicalId, properties, previousProperties, placement);
+
       await this.getClient().send(
         new ModifyCacheClusterCommand({
           CacheClusterId: physicalId,
           NumCacheNodes:
             properties['NumCacheNodes'] != null ? Number(properties['NumCacheNodes']) : undefined,
+          ...(nodeTypeChanged && { CacheNodeType: desiredNodeType }),
+          ...(placement && {
+            NewAvailabilityZones: placement.newAvailabilityZones,
+            ...(placement.azMode !== undefined && { AZMode: placement.azMode }),
+          }),
           SecurityGroupIds: sgIds,
           CacheParameterGroupName: properties['CacheParameterGroupName'] as string | undefined,
           EngineVersion: properties['EngineVersion'] as string | undefined,
@@ -711,8 +752,16 @@ export class ElastiCacheProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully updated CacheCluster ${logicalId}`);
 
-      // Wait for cluster to become available after modification
-      await this.waitForClusterAvailable(physicalId);
+      // Wait for cluster to become available after modification. A node-type
+      // change also waits until the cluster REPORTS the new type: the status
+      // can still read `available` right after the Modify returns, and the
+      // scale itself measured about 10 minutes on cache.t4g, so its cap is
+      // longer (the engine's --resource-timeout still bounds it).
+      if (nodeTypeChanged) {
+        await this.waitForClusterAvailable(physicalId, NODE_TYPE_MODIFY_WAIT_MS, desiredNodeType);
+      } else {
+        await this.waitForClusterAvailable(physicalId);
+      }
 
       // Describe to get updated attributes
       const described = await this.describeCacheCluster(physicalId);
@@ -854,6 +903,89 @@ export class ElastiCacheProvider implements ResourceProvider {
   // ─── Helpers ──────────────────────────────────────────────────────
 
   /**
+   * Where the nodes an update adds go (issue #5438). CloudFormation sends
+   * `NewAvailabilityZones` -- the desired `PreferredAvailabilityZones` minus
+   * the zones the live nodes already occupy -- with the desired `AZMode`, and
+   * nothing when that difference is empty (real CloudFormation runs: a
+   * memcached scale-out from 1 node in us-east-1c to
+   * `[us-east-1c, us-east-1b]` sent `NewAvailabilityZones: [us-east-1b]`;
+   * an `AZMode` or `PreferredAvailabilityZones` change covering the live
+   * zones, or their removal, sent neither). A difference with no node added
+   * is sent as well, and AWS refuses it, as it refused CloudFormation's.
+   *
+   * The live zones need a describe, made only when the desired list or the
+   * node count changed from the previous template.
+   */
+  private async newNodePlacement(
+    physicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<{ newAvailabilityZones: string[]; azMode: AZMode | undefined } | undefined> {
+    const desired = properties['PreferredAvailabilityZones'];
+    if (!Array.isArray(desired) || desired.length === 0) return undefined;
+    if (
+      isDeepStrictEqual(desired, previousProperties['PreferredAvailabilityZones']) &&
+      String(properties['NumCacheNodes']) === String(previousProperties['NumCacheNodes'])
+    ) {
+      return undefined;
+    }
+    const live = await this.describeCacheCluster(physicalId);
+    const liveZones = (live?.CacheNodes ?? [])
+      .map((n) => n.CustomerAvailabilityZone)
+      .filter((az): az is string => typeof az === 'string');
+    const newAvailabilityZones = availabilityZonesNotCovered(desired as string[], liveZones);
+    if (newAvailabilityZones.length === 0) return undefined;
+    return { newAvailabilityZones, azMode: properties['AZMode'] as AZMode | undefined };
+  }
+
+  /**
+   * Warn about template changes ModifyCacheCluster cannot carry (issue
+   * #5438). `PreferredAvailabilityZone` and `TransitEncryptionEnabled` have
+   * no ModifyCacheCluster member, and `AZMode` reaches AWS only beside zones for nodes
+   * to add. Real CloudFormation runs completed each such update with
+   * the cluster unchanged, so cdkd completes it too, but says so: the
+   * template and the cluster now disagree until the cluster is replaced.
+   */
+  private warnNotAppliedInPlace(
+    logicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    placement: { azMode: AZMode | undefined } | undefined
+  ): void {
+    const changed = (next: unknown, prev: unknown): boolean =>
+      next !== undefined && !isDeepStrictEqual(next, prev);
+    const notApplied: string[] = [];
+    if (
+      changed(
+        properties['PreferredAvailabilityZone'],
+        previousProperties['PreferredAvailabilityZone']
+      )
+    ) {
+      notApplied.push('PreferredAvailabilityZone');
+    }
+    if (
+      changed(
+        properties['TransitEncryptionEnabled'],
+        previousProperties['TransitEncryptionEnabled']
+      )
+    ) {
+      notApplied.push('TransitEncryptionEnabled');
+    }
+    if (
+      placement?.azMode === undefined &&
+      changed(properties['AZMode'], previousProperties['AZMode'])
+    ) {
+      notApplied.push('AZMode');
+    }
+    if (notApplied.length === 0) return;
+    this.logger.warn(
+      safeMsg`CacheCluster ${logicalId}: the ${notApplied.join(', ')} change is not applied to the ` +
+        `existing cluster (ModifyCacheCluster cannot change it, and CloudFormation leaves it ` +
+        `unchanged too). To apply it, replace the cluster, for example by changing its logical ID.`
+    );
+  }
+
+  /**
    * Build the `LogDeliveryConfigurations` input for ModifyCacheCluster so a
    * log type REMOVED from the template is explicitly disabled (issue #1160).
    *
@@ -980,7 +1112,8 @@ export class ElastiCacheProvider implements ResourceProvider {
    */
   private async waitForClusterAvailable(
     cacheClusterId: string,
-    maxWaitMs = 600_000
+    maxWaitMs = 600_000,
+    expectedNodeType?: string
   ): Promise<void> {
     const startTime = Date.now();
     let delay = 10_000;
@@ -991,13 +1124,22 @@ export class ElastiCacheProvider implements ResourceProvider {
 
       this.logger.debug(`CacheCluster ${cacheClusterId} status: ${status}`);
 
-      if (status === 'available') return;
+      if (
+        status === 'available' &&
+        (expectedNodeType === undefined || cluster?.CacheNodeType === expectedNodeType)
+      ) {
+        return;
+      }
 
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
     }
 
-    throw new Error(`Timed out waiting for CacheCluster ${cacheClusterId} to become available`);
+    throw new Error(
+      expectedNodeType === undefined
+        ? `Timed out waiting for CacheCluster ${cacheClusterId} to become available`
+        : `Timed out waiting for CacheCluster ${cacheClusterId} to become available with node type ${expectedNodeType}`
+    );
   }
 
   /**
