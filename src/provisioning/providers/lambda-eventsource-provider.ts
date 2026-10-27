@@ -364,6 +364,73 @@ function kafkaConfigForUpdate(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/** The `DocumentDBEventSourceConfig` members AWS refuses on an update. */
+const DOCUMENTDB_CREATE_ONLY_KEYS = ['DatabaseName', 'CollectionName'] as const;
+
+/**
+ * What `UpdateEventSourceMapping` gets for `DocumentDBEventSourceConfig`
+ * (issue #1160). A CloudFormation A/B on a DocumentDB mapping (us-east-1,
+ * CloudTrail read of what CloudFormation sent) measured:
+ *
+ * - `UpdateEventSourceMapping` refuses `DatabaseName` and `CollectionName`,
+ *   even unchanged ("Invalid parameters: databaseName"), and an empty block
+ *   or a `FullDocument`-only block changes nothing else.
+ * - CloudFormation sends `{ FullDocument }` alone. A changed `CollectionName`
+ *   completes the stack update with the mapping still reading the old
+ *   collection, and a block that drops `FullDocument` (or the whole block)
+ *   sends no `DocumentDBEventSourceConfig`, so the live value stays.
+ *
+ * So cdkd sends `{ FullDocument }` when the template declares it, and reports
+ * a changed or removed `DatabaseName` / `CollectionName` (`unchangeable`) and
+ * a removed `FullDocument` (`fullDocumentKept`) for the caller to warn about.
+ * `recorded` is the declared block with each unchangeable member put back to
+ * its previous value, for `effectiveProperties`: state keeps what AWS still
+ * holds, so the next diff reports the change again instead of going quiet.
+ * A present-but-non-object block is sent as it is, for AWS to refuse.
+ */
+function documentDbConfigForUpdate(
+  desired: unknown,
+  previous: unknown
+): {
+  send: unknown;
+  unchangeable: readonly string[];
+  recorded: Record<string, unknown> | undefined;
+  fullDocumentKept: boolean;
+} {
+  const asObject = (v: unknown): Record<string, unknown> | undefined =>
+    typeof v === 'object' && v !== null && !Array.isArray(v)
+      ? (v as Record<string, unknown>)
+      : undefined;
+  const none = { unchangeable: [], recorded: undefined, fullDocumentKept: false };
+  const sendable = (want: Record<string, unknown>): unknown =>
+    want['FullDocument'] !== undefined ? { FullDocument: want['FullDocument'] } : undefined;
+  if (desired === undefined) return { send: undefined, ...none };
+  const want = asObject(desired);
+  if (want === undefined) return { send: desired, ...none };
+  // A recorded block that is absent, or present but not an object (a
+  // hand-edited or imported record), says nothing about what AWS holds, so
+  // nothing is reported or recorded against it.
+  const had = asObject(previous);
+  if (had === undefined) return { send: sendable(want), ...none };
+  const unchangeable = DOCUMENTDB_CREATE_ONLY_KEYS.filter(
+    (key) => JSON.stringify(want[key]) !== JSON.stringify(had[key])
+  );
+  let recorded: Record<string, unknown> | undefined;
+  if (unchangeable.length > 0) {
+    recorded = { ...want };
+    for (const key of unchangeable) {
+      if (had[key] === undefined) delete recorded[key];
+      else recorded[key] = had[key];
+    }
+  }
+  return {
+    send: sendable(want),
+    unchangeable,
+    recorded,
+    fullDocumentKept: want['FullDocument'] === undefined && had['FullDocument'] !== undefined,
+  };
+}
+
 const KINDS_WITH_FUNCTION_RESPONSE_TYPES: ReadonlySet<EventSourceKind> = new Set([
   'sqs',
   'kinesis',
@@ -402,6 +469,15 @@ const KINDS_WITH_STREAM_NUMERICS: ReadonlySet<EventSourceKind> = new Set(['kines
  * the reset to `false` on removal (issue #1160).
  */
 const KINDS_WITH_BISECT: ReadonlySet<EventSourceKind> = new Set(['kinesis', 'dynamodb', 'kafka']);
+/** How a removal warning names a classified source kind. */
+const EVENT_SOURCE_KIND_LABEL: Readonly<Record<Exclude<EventSourceKind, 'unknown'>, string>> = {
+  sqs: 'SQS',
+  kinesis: 'Kinesis',
+  dynamodb: 'DynamoDB stream',
+  kafka: 'Kafka',
+  mq: 'Amazon MQ',
+  documentdb: 'DocumentDB',
+};
 /**
  * The `BatchSize` a mapping falls back to when the template drops it — what
  * CloudFormation sends on that removal (issue #1160; see the restore in
@@ -466,6 +542,55 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         'Queues',
         'Topics',
         'StartingPositionTimestamp',
+      ]),
+    ],
+  ]);
+
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every property,
+   * audited for what `update()` does when the template drops it. None is left
+   * to the caller's shared line, which says CloudFormation would reset the
+   * value: where cdkd keeps a value CloudFormation was not measured to keep,
+   * `applyUpdate` names it in its own warning instead.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Lambda::EventSourceMapping',
+      new Set([
+        // Required, or create-only (a removal replaces the mapping).
+        'FunctionName',
+        'EventSourceArn',
+        'SelfManagedEventSource',
+        'StartingPosition',
+        'StartingPositionTimestamp',
+        // A removal is a change, which update() refuses (issue #5356).
+        'Queues',
+        'Topics',
+        // Diffed by their own calls.
+        'Tags',
+        'SelfManagedKafkaEventSourceConfig',
+        'AmazonManagedKafkaEventSourceConfig',
+        // Reset on every source kind.
+        'Enabled',
+        'FilterCriteria',
+        'ScalingConfig',
+        'DestinationConfig',
+        'MetricsConfig',
+        'KmsKeyArn',
+        // Reset where the source kind takes the value; otherwise kept, as
+        // CloudFormation keeps it (measured) or with applyUpdate's warning.
+        'BatchSize',
+        'MaximumBatchingWindowInSeconds',
+        'MaximumRetryAttempts',
+        'MaximumRecordAgeInSeconds',
+        'ParallelizationFactor',
+        'TumblingWindowInSeconds',
+        'BisectBatchOnFunctionError',
+        'FunctionResponseTypes',
+        'SourceAccessConfigurations',
+        'LoggingConfig',
+        'ProvisionedPollerConfig',
+        'DocumentDBEventSourceConfig',
       ]),
     ],
   ]);
@@ -965,6 +1090,12 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     restoring: boolean
   ): Promise<ResourceUpdateResult> {
     log.debug(`Updating event source mapping ${logicalId}: ${physicalId}`);
+    // A removal warning names the template, except where the desired bag is a
+    // restored record or readback: there the key is one the later state added.
+    const removed = (one = true): string =>
+      restoring
+        ? `${one ? 'is' : 'are'} absent from the configuration being restored`
+        : `${one ? 'was' : 'were'} removed from the template`;
 
     const updateParams: import('@aws-sdk/client-lambda').UpdateEventSourceMappingCommandInput = {
       UUID: physicalId,
@@ -1012,10 +1143,21 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       updateParams.ScalingConfig = properties[
         'ScalingConfig'
       ] as import('@aws-sdk/client-lambda').ScalingConfig;
-    if (properties['DocumentDBEventSourceConfig'] !== undefined)
-      updateParams.DocumentDBEventSourceConfig = properties[
-        'DocumentDBEventSourceConfig'
-      ] as import('@aws-sdk/client-lambda').DocumentDBEventSourceConfig;
+    const documentDb = documentDbConfigForUpdate(
+      properties['DocumentDBEventSourceConfig'],
+      previousProperties['DocumentDBEventSourceConfig']
+    );
+    if (documentDb.send !== undefined)
+      updateParams.DocumentDBEventSourceConfig =
+        documentDb.send as import('@aws-sdk/client-lambda').DocumentDBEventSourceConfig;
+    if (documentDb.unchangeable.length > 0)
+      log.warn(
+        safeMsg`${logicalId} (${resourceType}): DocumentDBEventSourceConfig.${documentDb.unchangeable.join(' / ')} cannot be changed on an existing event source mapping (UpdateEventSourceMapping refuses it, and CloudFormation leaves it as it is), so the mapping keeps reading its current ${documentDb.unchangeable.length === 1 ? 'value' : 'values'}. To read another database or collection, remove the mapping, deploy, then add it back.`
+      );
+    if (documentDb.fullDocumentKept)
+      log.warn(
+        safeMsg`${logicalId} (${resourceType}): DocumentDBEventSourceConfig.FullDocument ${removed()}; the mapping keeps its current value, as CloudFormation keeps it. Declare FullDocument: Default to turn the full-document lookup off.`
+      );
     // Kafka config blocks (issue #3851): only the members that changed, and the
     // documented reset for a removed SchemaRegistryConfig.
     for (const key of [
@@ -1169,24 +1311,69 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         updateParams.BisectBatchOnFunctionError = false;
       else if (kafkaWithoutProvisionedMode)
         log.warn(
-          safeMsg`${logicalId} (${resourceType}): BisectBatchOnFunctionError was removed from the template while the Kafka mapping does not declare ProvisionedPollerConfig, so cdkd does not reset it (Kafka takes it in provisioned mode only) and the current AWS value is kept.`
+          safeMsg`${logicalId} (${resourceType}): BisectBatchOnFunctionError ${removed()} while the Kafka mapping does not declare ProvisionedPollerConfig, so cdkd does not reset it (Kafka takes it in provisioned mode only) and the current AWS value is kept.`
         );
       // A source cdkd cannot classify gets no reset (`false` may be refused
       // there), so name the kept value rather than drop the removal silently.
       else if (prevKind === 'unknown')
         log.warn(
-          safeMsg`${logicalId} (${resourceType}): BisectBatchOnFunctionError was removed from the template, but cdkd cannot tell this mapping's source kind, so the current AWS value is kept. Declare BisectBatchOnFunctionError: false to turn it off.`
+          safeMsg`${logicalId} (${resourceType}): BisectBatchOnFunctionError ${removed()}, but cdkd cannot tell this mapping's source kind, so the current AWS value is kept. Declare BisectBatchOnFunctionError: false to turn it off.`
         );
     }
 
-    // `DocumentDBEventSourceConfig` has no documented clear value (the block
-    // names the database the mapping reads), and what CloudFormation sends on
-    // its removal was not measured (it needs a DocumentDB cluster). The Update
-    // API keeps the live block when the field is omitted, so cdkd sends
-    // nothing and says so, rather than report a removal that did not happen.
+    // Issue #1160 (the type is in `removalHandledInUpdate`, so the caller
+    // names no removal itself): every removal the arms above leave alone on a
+    // source kind where CloudFormation's answer was not measured. Kept
+    // silently only where the A/B showed CloudFormation keeps it too: an SQS
+    // mapping's ProvisionedPollerConfig and a Kafka mapping's batching window.
+    const kept: string[] = [];
+    if (wasSet('BatchSize') && !DEFAULT_BATCH_SIZE_BY_KIND.has(prevKind)) kept.push('BatchSize');
+    if (
+      wasSet('MaximumBatchingWindowInSeconds') &&
+      !KINDS_WITH_ZERO_BATCHING_WINDOW_DEFAULT.has(prevKind) &&
+      prevKind !== 'kafka'
+    )
+      kept.push('MaximumBatchingWindowInSeconds');
+    if (!KINDS_WITH_STREAM_NUMERICS.has(prevKind)) {
+      for (const key of [
+        'MaximumRetryAttempts',
+        'MaximumRecordAgeInSeconds',
+        'ParallelizationFactor',
+        'TumblingWindowInSeconds',
+      ]) {
+        if (wasSet(key)) kept.push(key);
+      }
+    }
+    if (wasSet('FunctionResponseTypes') && !KINDS_WITH_FUNCTION_RESPONSE_TYPES.has(prevKind))
+      kept.push('FunctionResponseTypes');
+    if (
+      wasSet('SourceAccessConfigurations') &&
+      !KINDS_WITH_SOURCE_ACCESS_CONFIGURATIONS.has(prevKind)
+    )
+      kept.push('SourceAccessConfigurations');
+    if (prevKind !== 'kafka') {
+      if (wasSet('LoggingConfig')) kept.push('LoggingConfig');
+      if (wasSet('ProvisionedPollerConfig') && prevKind !== 'sqs')
+        kept.push('ProvisionedPollerConfig');
+    }
+    if (kept.length > 0) {
+      const one = kept.length === 1;
+      const source =
+        prevKind === 'unknown'
+          ? 'a mapping whose source kind cdkd cannot tell'
+          : `this ${EVENT_SOURCE_KIND_LABEL[prevKind]} mapping`;
+      log.warn(
+        safeMsg`${logicalId} (${resourceType}): ${one ? 'property' : 'properties'} ${kept.join(', ')} ${removed(one)}; cdkd keeps the current AWS ${one ? 'value' : 'values'} on ${source}, since what CloudFormation resets there is not measured. Declare the ${one ? 'value' : 'values'} you want instead.`
+      );
+    }
+
+    // A removed `DocumentDBEventSourceConfig` keeps the live block: the A/B
+    // in `documentDbConfigForUpdate` saw CloudFormation send nothing for it.
+    // cdkd sends nothing either, and says so, since the user who dropped it
+    // may expect a change.
     if (wasSet('DocumentDBEventSourceConfig'))
       log.warn(
-        safeMsg`${logicalId} (${resourceType}): DocumentDBEventSourceConfig was removed from the template; the mapping keeps its current DocumentDB settings. Declare the block with the values you want instead.`
+        safeMsg`${logicalId} (${resourceType}): DocumentDBEventSourceConfig ${removed()}; the mapping keeps its current DocumentDB settings, as CloudFormation keeps them. Declare the block with the values you want instead.`
       );
 
     const updateResp = await this.lambdaClient.send(
@@ -1219,6 +1406,12 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         // already read above for the tag diff.
         EventSourceMappingArn: updateResp.EventSourceMappingArn,
       },
+      ...(documentDb.recorded !== undefined && {
+        effectiveProperties: {
+          ...properties,
+          DocumentDBEventSourceConfig: documentDb.recorded,
+        },
+      }),
     };
   }
 

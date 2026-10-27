@@ -1085,7 +1085,8 @@
       "resourceType": "AWS::DocDB::DBCluster",
       "integs": [
         "docdb-fix-forward-orphan",
-        "docdb-neptune"
+        "docdb-neptune",
+        "lambda-esm-documentdb"
       ],
       "signals": {
         "docdb-fix-forward-orphan": [
@@ -1093,6 +1094,10 @@
         ],
         "docdb-neptune": [
           "l1"
+        ],
+        "lambda-esm-documentdb": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -1100,7 +1105,8 @@
       "resourceType": "AWS::DocDB::DBInstance",
       "integs": [
         "docdb-fix-forward-orphan",
-        "docdb-neptune"
+        "docdb-neptune",
+        "lambda-esm-documentdb"
       ],
       "signals": {
         "docdb-fix-forward-orphan": [
@@ -1108,6 +1114,10 @@
         ],
         "docdb-neptune": [
           "l1"
+        ],
+        "lambda-esm-documentdb": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -1115,13 +1125,17 @@
       "resourceType": "AWS::DocDB::DBSubnetGroup",
       "integs": [
         "docdb-fix-forward-orphan",
-        "docdb-neptune"
+        "docdb-neptune",
+        "lambda-esm-documentdb"
       ],
       "signals": {
         "docdb-fix-forward-orphan": [
           "l1"
         ],
         "docdb-neptune": [
+          "l1"
+        ],
+        "lambda-esm-documentdb": [
           "l1"
         ]
       }
@@ -1419,6 +1433,7 @@
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -1556,6 +1571,9 @@
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
+        "lambda-esm-documentdb": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -1661,6 +1679,7 @@
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -1788,6 +1807,9 @@
           "l2"
         ],
         "lambda-capacity-provider-default-name": [
+          "l2"
+        ],
+        "lambda-esm-documentdb": [
           "l2"
         ],
         "launchtemplate-asg-inplace": [
@@ -1922,6 +1944,7 @@
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -2060,6 +2083,9 @@
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
+        "lambda-esm-documentdb": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -2164,6 +2190,7 @@
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -2299,6 +2326,9 @@
           "l2"
         ],
         "lambda-capacity-provider-default-name": [
+          "l2"
+        ],
+        "lambda-esm-documentdb": [
           "l2"
         ],
         "launchtemplate-asg-inplace": [
@@ -2628,6 +2658,7 @@
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "list-parameters",
         "local-start-alb-from-state",
@@ -2772,6 +2803,9 @@
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
+        "lambda-esm-documentdb": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -2905,6 +2939,7 @@
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -3034,6 +3069,9 @@
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
+        "lambda-esm-documentdb": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -3138,6 +3176,7 @@
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "list-parameters",
         "local-start-alb-from-state",
@@ -3300,6 +3339,9 @@
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
+        "lambda-esm-documentdb": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -3432,6 +3474,7 @@
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -3568,6 +3611,9 @@
           "l2"
         ],
         "lambda-capacity-provider-default-name": [
+          "l2"
+        ],
+        "lambda-esm-documentdb": [
           "l2"
         ],
         "launchtemplate-asg-inplace": [
@@ -5502,6 +5548,7 @@
         "eventsourcemapping-race",
         "fifo-sqs-event-source",
         "import-attribute-readback",
+        "lambda-esm-documentdb",
         "lambda-esm-self-managed-kafka"
       ],
       "signals": {
@@ -5518,6 +5565,10 @@
           "literal"
         ],
         "import-attribute-readback": [
+          "l1",
+          "literal"
+        ],
+        "lambda-esm-documentdb": [
           "l1",
           "literal"
         ],
@@ -5584,6 +5635,7 @@
         "lambda-destinations",
         "lambda-durable-replacement",
         "lambda-env-removal",
+        "lambda-esm-documentdb",
         "lambda-esm-self-managed-kafka",
         "lambda-event-invoke-config-update",
         "lambda-fix-forward-orphan",
@@ -5834,6 +5886,9 @@
         "lambda-env-removal": [
           "l2",
           "literal"
+        ],
+        "lambda-esm-documentdb": [
+          "l2"
         ],
         "lambda-esm-self-managed-kafka": [
           "l2",
@@ -8211,6 +8266,7 @@
         "full-stack-demo",
         "iam-access-key",
         "import-secret-observed",
+        "lambda-esm-documentdb",
         "lambda-esm-self-managed-kafka",
         "local-invoke-from-state",
         "local-run-task-from-state",
@@ -8246,6 +8302,9 @@
         "import-secret-observed": [
           "l2",
           "literal"
+        ],
+        "lambda-esm-documentdb": [
+          "l2"
         ],
         "lambda-esm-self-managed-kafka": [
           "l2",
