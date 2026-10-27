@@ -17805,7 +17805,8 @@
             "applyAllSubConfigsForCreate",
             "applySubConfigDiffs",
             "create",
-            "update"
+            "update",
+            "warnUnappliedBucketObjectLock"
           ]
         },
         {
@@ -17820,7 +17821,10 @@
           ],
           "seededBy": [
             "applyAllSubConfigsForCreate",
-            "create"
+            "applySubConfigDiffs",
+            "create",
+            "update",
+            "warnUnappliedBucketObjectLock"
           ]
         },
         {
@@ -17930,7 +17934,6 @@
         "computed key in canonicalizeItemList()",
         "computed key in versioningOrLoggingRefusal()",
         "hasCdkAutoDeleteTag(...) in delete()",
-        "hasObjectLock(...) in applySubConfigDiffs()",
         "object spread in applyEffectiveOverrides()",
         "object spread in canonicalizeItemList()",
         "S3BucketProvider.applyEffectiveOverrides(...) in create()",

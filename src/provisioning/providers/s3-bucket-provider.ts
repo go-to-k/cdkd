@@ -239,6 +239,23 @@ function declaresBucketObjectLock(properties: Record<string, unknown>): boolean 
   return properties['ObjectLockEnabled'] === true || properties['ObjectLockEnabled'] === 'true';
 }
 
+/**
+ * Whether the bag declares Object Lock through the NESTED
+ * `ObjectLockConfiguration.ObjectLockEnabled: Enabled`, which, unlike the
+ * top-level flag, is sent to an existing bucket (go-to-k/cdkd#5395). A
+ * `readObjectLock` snapshot spells a locked bucket this way too.
+ */
+function declaresNestedObjectLock(properties: Record<string, unknown>): boolean {
+  const cfg = properties['ObjectLockConfiguration'] as Record<string, unknown> | undefined;
+  return cfg?.['ObjectLockEnabled'] === 'Enabled';
+}
+
+/** The class name of a caught error, for a debug line; never its message. */
+function caughtErrorName(error: unknown): string {
+  const name = (error as { name?: unknown } | null)?.name;
+  return typeof name === 'string' && name !== '' ? name : 'unknown error';
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -5087,7 +5104,10 @@ export class S3BucketProvider implements ResourceProvider {
    * (issue #4639; no applier reaches it, but it is stubbed all the same) are
    * the ONLY clients this class holds and no applier reads a response field
    * back; a new client, or an applier that consumes a response, must be
-   * stubbed here too. A fresh object
+   * stubbed here too. One read does run on it: the versioning-suspend guard's
+   * `readObjectLock` (go-to-k/cdkd#5395), which sees `{}`, takes the bucket as
+   * unlocked and sends its suspend to this stub, which is harmless because the
+   * probe's outcome is discarded. A fresh object
    * per call (its prototype is `this`), so concurrent resources on this
    * singleton never see each other's stub.
    */
@@ -6200,12 +6220,32 @@ export class S3BucketProvider implements ResourceProvider {
       // (`!== undefined`) is true for EVERY bucket on the revert path and
       // would suppress every legitimate suspend, leaving the drift
       // unfixable and warning about object lock the bucket does not have.
-      const hasObjectLock = (p: Record<string, unknown>): boolean => {
-        if (p['ObjectLockEnabled'] === true || p['ObjectLockEnabled'] === 'true') return true;
-        const cfg = p['ObjectLockConfiguration'] as Record<string, unknown> | undefined;
-        return cfg?.['ObjectLockEnabled'] === 'Enabled';
-      };
-      if (hasObjectLock(properties) || hasObjectLock(previousProperties)) {
+      //
+      // The NESTED `ObjectLockEnabled: Enabled` is sent to the bucket, so either
+      // side declaring it means the bucket is locked. The TOP-LEVEL flag alone
+      // is not proof: it reaches S3 only through `CreateBucket`, so a flag added
+      // to an existing bucket was never applied (go-to-k/cdkd#5395, as in
+      // CloudFormation). That case reads the bucket back; a failed read keeps
+      // the conservative skip, since suspending a locked bucket is refused.
+      let hasObjectLock =
+        declaresNestedObjectLock(properties) || declaresNestedObjectLock(previousProperties);
+      let lockUnconfirmed = false;
+      if (
+        !hasObjectLock &&
+        (declaresBucketObjectLock(properties) || declaresBucketObjectLock(previousProperties))
+      ) {
+        const live = await this.isLiveObjectLocked(bucketName, '; treating it as locked');
+        hasObjectLock = live ?? true;
+        lockUnconfirmed = live === undefined;
+      }
+      if (hasObjectLock && lockUnconfirmed) {
+        this.logger.warn(
+          safeMsg`Bucket ${this.shown(bucketName)}: versioning would be suspended (VersioningConfiguration removed or set to Suspended), but ObjectLockEnabled is declared and the bucket's Object Lock configuration could not be read back to confirm it. ` +
+            'S3 does not allow suspending versioning on an Object Lock bucket, so versioning is ' +
+            'left enabled.'
+        );
+        retainPrevious('VersioningConfiguration');
+      } else if (hasObjectLock) {
         this.logger.warn(
           `Bucket ${this.shown(bucketName)}: versioning would be suspended (VersioningConfiguration removed ` +
             `or set to Suspended), but the bucket has Object Lock enabled and S3 does not allow ` +
@@ -7794,6 +7834,15 @@ export class S3BucketProvider implements ResourceProvider {
         properties['Tags']
       );
 
+      // go-to-k/cdkd#5395: named once every write above has succeeded.
+      await this.warnUnappliedBucketObjectLock(
+        logicalId,
+        physicalId,
+        properties,
+        previousProperties,
+        context
+      );
+
       const attributes = await this.buildAttributes(physicalId);
 
       this.logger.debug(`Successfully updated S3 bucket ${displaySafe(logicalId)}`);
@@ -7821,6 +7870,78 @@ export class S3BucketProvider implements ResourceProvider {
       };
     } catch (error) {
       throw this.wrapOperationError('update', logicalId, resourceType, physicalId, error);
+    }
+  }
+
+  /**
+   * Warn when the top-level `ObjectLockEnabled` changed on an existing bucket
+   * and S3 still holds the opposite (go-to-k/cdkd#5395). Nothing is written:
+   * the flag reaches S3 only through `CreateBucket`, and a CloudFormation A/B
+   * in us-east-1 on 2026-10-27 showed CloudFormation sends nothing either.
+   * Turning it on for an existing bucket (versioned or not) ends
+   * `UPDATE_COMPLETE` with the same bucket and no Object Lock; removing it from
+   * a locked bucket ends `UPDATE_COMPLETE` with Object Lock still on. Only the
+   * nested `ObjectLockConfiguration.ObjectLockEnabled: Enabled` enables it in
+   * place, which `applySubConfigDiffs` already sends. State records the
+   * declared value, as CloudFormation's stored template does.
+   *
+   * One `GetObjectLockConfiguration` confirms the live bucket before warning:
+   * a template-to-state difference alone also appears on a rollback revert, on
+   * `cdkd drift --revert`, or when the nested block enabled Object Lock in this
+   * same update. A failed read on a template-path update still warns, because
+   * the template changed the flag, but says the state could not be confirmed
+   * rather than asserting either one. On the state-borne callers
+   * (`replayingState`, `desiredFromAwsReadback`) the template did not change
+   * anything, so an unconfirmed difference is not reported.
+   */
+  private async warnUnappliedBucketObjectLock(
+    logicalId: string,
+    bucketName: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): Promise<void> {
+    // A nested `Enabled` in the desired bag was SENT by `applySubConfigDiffs`
+    // (or the update threw before here), so it is not a flag left unapplied.
+    const enabling =
+      declaresBucketObjectLock(properties) &&
+      !declaresBucketObjectLock(previousProperties) &&
+      !declaresNestedObjectLock(properties);
+    const disabling =
+      !declaresBucketObjectLock(properties) &&
+      !declaresNestedObjectLock(properties) &&
+      declaresBucketObjectLock(previousProperties);
+    if (!enabling && !disabling) return;
+
+    const liveEnabled = await this.isLiveObjectLocked(bucketName, '');
+    if (
+      liveEnabled === undefined &&
+      (context?.replayingState === true || context?.desiredFromAwsReadback === true)
+    ) {
+      return;
+    }
+
+    const bucket = this.shown(bucketName);
+    if (enabling && liveEnabled !== true) {
+      this.logger.warn(
+        safeMsg`${logicalId} (AWS::S3::Bucket): ObjectLockEnabled is now true, but the top-level ObjectLockEnabled is applied only when a bucket is created, so ` +
+          (liveEnabled === false
+            ? safeMsg`Object Lock was NOT enabled on the existing bucket ${bucket}, as in CloudFormation. `
+            : safeMsg`nothing was sent to enable Object Lock on the existing bucket ${bucket}, as in CloudFormation. ` +
+              'Its Object Lock configuration could not be read back, so this is not confirmed. ') +
+          'To enable it on this bucket, declare ObjectLockConfiguration.ObjectLockEnabled: ' +
+          'Enabled (the bucket must have versioning enabled). Object Lock cannot be disabled ' +
+          'once it is enabled.'
+      );
+    } else if (disabling && liveEnabled !== false) {
+      this.logger.warn(
+        liveEnabled === true
+          ? safeMsg`${logicalId} (AWS::S3::Bucket): ObjectLockEnabled is no longer true, but S3 cannot disable Object Lock on a bucket, so it stays enabled on bucket ${bucket}, as in CloudFormation. ` +
+              'Versioning cannot be suspended on it, and object versions stay protected by any ' +
+              'retention or legal hold already set.'
+          : safeMsg`${logicalId} (AWS::S3::Bucket): ObjectLockEnabled is no longer true. S3 cannot disable Object Lock on a bucket, so if bucket ${bucket} has it, it stays enabled, as in CloudFormation. ` +
+              'Its Object Lock configuration could not be read back, so this is not confirmed.'
+      );
     }
   }
 
@@ -8792,6 +8913,26 @@ export class S3BucketProvider implements ResourceProvider {
       const e = err as { name?: string };
       if (e.name === 'ReplicationConfigurationNotFoundError') return {};
       throw err;
+    }
+  }
+
+  /**
+   * Whether S3 reports Object Lock `Enabled` on the bucket: `true` / `false`,
+   * or `undefined` when the read fails (logged at debug with the error class,
+   * never its message). Each caller keeps its own failure policy
+   * (go-to-k/cdkd#5395).
+   */
+  private async isLiveObjectLocked(
+    bucketName: string,
+    unreadNote: '' | '; treating it as locked'
+  ): Promise<boolean | undefined> {
+    try {
+      return (await this.readObjectLock(bucketName))['ObjectLockEnabled'] === 'Enabled';
+    } catch (error) {
+      this.logger.debug(
+        safeMsg`Could not read the Object Lock configuration of bucket ${this.shown(bucketName)} back (${caughtErrorName(error)})${unreadNote}`
+      );
+      return undefined;
     }
   }
 
