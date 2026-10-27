@@ -11,6 +11,7 @@ import {
   TagDeliveryStreamCommand,
   UntagDeliveryStreamCommand,
   type CreateDeliveryStreamCommandInput,
+  type DeliveryStreamDescription,
   type DeliveryStreamEncryptionConfiguration,
   type S3DestinationConfiguration,
   type ExtendedS3DestinationConfiguration,
@@ -1116,23 +1117,23 @@ export class FirehoseProvider implements ResourceProvider {
       );
     }
 
-    // go-to-k/cdkd#5386: named once every write has succeeded, never before a
-    // call that could still fail.
-    await this.warnUnappliedS3BackupMode(
+    // Pull current AWS state for the result envelope.
+    const description = await this.getClient().send(
+      new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+    );
+    // go-to-k/cdkd#5386: named after the last call that could fail, so a
+    // failed update (and its retry) never prints it, and confirmed against
+    // this same read rather than a second one.
+    this.warnUnappliedS3BackupMode(
       logicalId,
-      physicalId,
       properties,
       unappliedS3BackupModeDestination(
         properties,
         previousProperties,
         destKey,
         context?.changedProperties
-      )
-    );
-
-    // Pull current AWS state for the result envelope.
-    const description = await this.getClient().send(
-      new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+      ),
+      description.DeliveryStreamDescription
     );
     const desc = description.DeliveryStreamDescription;
     return {
@@ -1153,37 +1154,35 @@ export class FirehoseProvider implements ResourceProvider {
 
   /**
    * Warn that the `S3BackupMode` change {@link unappliedS3BackupModeDestination}
-   * found was not applied (go-to-k/cdkd#5386), once the live stream confirms
-   * it still holds a different mode. The state records the declared value,
-   * never applied, so a template-to-state difference alone also fires on a
-   * rollback revert, on a template reverted to what AWS holds, and on a mode
-   * declared at the value AWS already has. A failed read keeps the warning: it
-   * cannot be confirmed either way, and the update itself has succeeded.
+   * found was not applied (go-to-k/cdkd#5386), unless the live stream already
+   * holds the declared mode. The state records the declared value, never
+   * applied, so a template-to-state difference alone also fires on a rollback
+   * revert, on a template reverted to what AWS holds, and on a mode declared at
+   * the value AWS already has. `live` is the update's own closing
+   * `DescribeDeliveryStream` answer. When it does not report the destination's
+   * mode, the warning is kept: it cannot be confirmed either way, and the
+   * update itself has succeeded.
    */
-  private async warnUnappliedS3BackupMode(
+  private warnUnappliedS3BackupMode(
     logicalId: string,
-    physicalId: string,
     properties: Record<string, unknown>,
-    destKey: string | undefined
-  ): Promise<void> {
+    destKey: string | undefined,
+    live: DeliveryStreamDescription | undefined
+  ): void {
     if (destKey === undefined) return;
     const declared = (properties[destKey] as Record<string, unknown>)['S3BackupMode'];
     const desired = declared ?? DEFAULT_OPENSEARCH_BACKUP_MODE;
-    let live: unknown;
-    try {
-      const description = await this.getClient().send(
-        new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
-      );
-      const member = FIXED_BACKUP_MODE_DESTINATIONS[destKey];
-      const dest = description.DeliveryStreamDescription?.Destinations?.[0];
-      live = member === undefined ? undefined : dest?.[member]?.S3BackupMode;
-      if (live !== undefined && live === desired) return;
-    } catch {
+    const member = FIXED_BACKUP_MODE_DESTINATIONS[destKey];
+    const liveMode: unknown =
+      member === undefined ? undefined : live?.Destinations?.[0]?.[member]?.S3BackupMode;
+    if (liveMode !== undefined && liveMode === desired) return;
+    if (liveMode === undefined) {
       this.logger.debug(
-        safeMsg`Could not read Firehose delivery stream ${logicalId} back to confirm its S3BackupMode; warning unconfirmed`
+        safeMsg`Firehose delivery stream ${logicalId} reported no S3BackupMode for ${destKey}; warning unconfirmed`
       );
     }
-    const kept = typeof live === 'string' ? `its current mode (${live})` : 'its current mode';
+    const kept =
+      typeof liveMode === 'string' ? `its current mode (${liveMode})` : 'its current mode';
     this.logger.warn(
       safeMsg`${logicalId} (AWS::KinesisFirehose::DeliveryStream): ${destKey}.S3BackupMode changed, but Firehose cannot change the backup mode of an existing delivery stream, so the stream keeps ${kept}, as CloudFormation does. To apply it, replace the stream, for example by giving it a new DeliveryStreamName or a new logical id.`
     );

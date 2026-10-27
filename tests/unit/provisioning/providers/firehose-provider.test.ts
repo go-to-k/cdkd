@@ -786,6 +786,8 @@ describe('FirehoseProvider', () => {
         expect(JSON.stringify(update?.[0].input)).not.toContain('S3BackupMode');
         // State records the declared value, as CloudFormation's stored template does.
         expect(result.effectiveProperties).toBeUndefined();
+        // Confirmed against the closing read: no read beyond the two an update makes.
+        expect(describeCount()).toBe(2);
       }
     );
 
@@ -815,9 +817,24 @@ describe('FirehoseProvider', () => {
       expect(backupWarnings()).toEqual([]);
     });
 
-    it('a failed read-back still warns, without naming a live mode, and the update succeeds', async () => {
-      // Read 1: UpdateDestination's version id. Read 2: the confirmation.
+    it('a failed closing read fails the update without printing the warning', async () => {
+      // Read 1: UpdateDestination's version id. Read 2: the closing read the
+      // warning is confirmed against.
       mockStream(DEST, 'FailedDocumentsOnly', 2);
+      await expect(
+        provider.update(
+          'MyStream',
+          's',
+          'AWS::KinesisFirehose::DeliveryStream',
+          bag(DEST, { S3BackupMode: 'AllDocuments' }),
+          bag(DEST, { S3BackupMode: 'FailedDocumentsOnly' })
+        )
+      ).rejects.toThrow('throttled');
+      expect(backupWarnings()).toEqual([]);
+    });
+
+    it('a closing read that reports no mode still warns, without naming one', async () => {
+      mockStream(DEST, undefined);
       const result = await provider.update(
         'MyStream',
         's',
