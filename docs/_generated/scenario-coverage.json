@@ -452,6 +452,11 @@
       "scenarios": []
     },
     {
+      "name": "apigw-vpclink-integration-target",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "app-autoscaling-recreate",
       "annotated": false,
       "scenarios": []
@@ -1984,6 +1989,11 @@
       ]
     },
     {
+      "name": "nlb-quic-server-id",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "nlb-source-nat",
       "annotated": true,
       "scenarios": []
@@ -3474,6 +3484,7 @@
     "apigw-stage-props",
     "apigw-stage-throttling",
     "apigw-usage-plan-key",
+    "apigw-vpclink-integration-target",
     "app-autoscaling-recreate",
     "appconfig",
     "aws-custom-resource",
@@ -3588,6 +3599,7 @@
     "nested-stack-deep",
     "nested-stack-replace-guard",
     "nested-stack-rollback",
+    "nlb-quic-server-id",
     "nodejs-function",
     "noecho-named-producer",
     "noecho-parameter-masking",
