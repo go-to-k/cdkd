@@ -3,6 +3,7 @@ import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 
 /**
  * API Gateway + Lambda example stack
@@ -48,7 +49,14 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  *   CloudWatchRoleArn is dropped under CDKD_TEST_REMOVAL=true; verify.sh
  *   asserts the account's role ARN is cleared, as CloudFormation clears it.
  *
+ * - Authorizer ProviderARNs / Method AuthorizationScopes (issue #5408): a
+ *   TOKEN authorizer switched to COGNITO_USER_POOLS (with AuthorizerUri
+ *   removed) and then moved to a second user pool, plus a Cognito-authorized
+ *   method whose scopes change. API Gateway patches both lists per element;
+ *   verify.sh reads the authorizer and the method back.
+ *
  * covers: AWS::ApiGateway::Account
+ * covers: AWS::ApiGateway::Authorizer
  * covers: AWS::ApiGateway::Method
  * covers: AWS::ApiGateway::Resource
  * covers: AWS::ApiGateway::Stage
@@ -157,6 +165,69 @@ exports.handler = async (event) => {
       identitySource: 'method.request.header.Authorization',
     });
 
+    // Issue #5408: two fixture-owned user pools and an authorizer that starts
+    // as TOKEN, switches to COGNITO_USER_POOLS on pool A under
+    // CDKD_TEST_REMOVAL=true (dropping AuthorizerUri), then moves to pool B
+    // under CDKD_TEST_AUTHORIZER_POOL_SWAP=true, then goes back to TOKEN
+    // (pools dropped) under CDKD_TEST_AUTHORIZER_BACK_TO_TOKEN=true, where
+    // the removes must follow the `/type` replace. API Gateway refuses
+    // `replace /providerARNs`; each pool is an `add` / `remove`, and the swap
+    // must add B before removing A (an empty list is refused). A CloudFormation
+    // A/B in us-east-1 kept the authorizer id through both updates, and kept
+    // the removed authorizerUri. Pools are DESTROY (an L2 UserPool defaults to
+    // RETAIN) and named so verify.sh can sweep a leftover.
+    const poolSwap = process.env.CDKD_TEST_AUTHORIZER_POOL_SWAP === 'true';
+    const backToToken = process.env.CDKD_TEST_AUTHORIZER_BACK_TO_TOKEN === 'true';
+    const poolA = new cognito.UserPool(this, 'AuthorizerPoolA', {
+      userPoolName: 'cdkd-integ-apigateway-pool-a',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    const poolB = new cognito.UserPool(this, 'AuthorizerPoolB', {
+      userPoolName: 'cdkd-integ-apigateway-pool-b',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    new apigateway.CfnAuthorizer(this, 'PoolAuthorizer', {
+      restApiId: api.restApiId,
+      name: 'cdkd-pool-authorizer',
+      identitySource: 'method.request.header.Authorization',
+      ...(!removal || backToToken
+        ? {
+            type: 'TOKEN',
+            authorizerUri: `arn:aws:apigateway:${this.region}:lambda:path/2015-03-31/functions/${handler.functionArn}/invocations`,
+          }
+        : {
+            type: 'COGNITO_USER_POOLS',
+            providerArns: [(poolSwap ? poolB : poolA).userPoolArn],
+          }),
+    });
+
+    // Issue #5408: a Cognito-authorized method whose AuthorizationScopes change
+    // under CDKD_TEST_REMOVAL=true. API Gateway refuses `replace
+    // /authorizationScopes`. L1 so the L2 deployment hash is untouched; the
+    // deployments depend on it so none is created before its integration.
+    const scopeAuthorizer = new apigateway.CfnAuthorizer(this, 'ScopeAuthorizer', {
+      restApiId: api.restApiId,
+      name: 'cdkd-scope-authorizer',
+      type: 'COGNITO_USER_POOLS',
+      providerArns: [poolA.userPoolArn],
+      identitySource: 'method.request.header.Authorization',
+    });
+    const scopedResource = new apigateway.CfnResource(this, 'ScopedResource', {
+      restApiId: api.restApiId,
+      parentId: api.restApiRootResourceId,
+      pathPart: 'scoped',
+    });
+    const scopedMethod = new apigateway.CfnMethod(this, 'ScopedMethod', {
+      restApiId: api.restApiId,
+      resourceId: scopedResource.ref,
+      httpMethod: 'GET',
+      authorizationType: 'COGNITO_USER_POOLS',
+      authorizerId: scopeAuthorizer.ref,
+      authorizationScopes: removal ? ['cdkd/write', 'cdkd/admin'] : ['cdkd/read'],
+      integration: { type: 'MOCK', requestTemplates: { 'application/json': '{"statusCode": 200}' } },
+    });
+    api.latestDeployment?.node.addDependency(scopedMethod);
+
     // Request validation: a Model (JSON schema) + a RequestValidator + a POST
     // method that references BOTH. Regression-covers the `Ref` resolution fix
     // for the two API Gateway child types that are Cloud-Control-provisioned
@@ -212,6 +283,7 @@ exports.handler = async (event) => {
           : 'cdkd-5391-v2',
     });
     for (const m of api.methods) describedDeployment.node.addDependency(m);
+    describedDeployment.node.addDependency(scopedMethod);
 
     // AWS::ApiGateway::Account removal (issue #1160). Declared as an L1 with
     // an explicit role, NOT through `cloudWatchRole: true` (see above): this

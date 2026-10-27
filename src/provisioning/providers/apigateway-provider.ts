@@ -498,7 +498,8 @@ export class ApiGatewayProvider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          log
+          log,
+          context?.desiredFromAwsReadback === true
         );
       default:
         throw new ProvisioningError(
@@ -957,13 +958,26 @@ export class ApiGatewayProvider implements ResourceProvider {
       );
     }
 
-    const patchOperations: Array<{ op: 'replace'; path: string; value: string }> = [];
+    // ProviderARNs is a list API Gateway patches only element by element:
+    // `replace /providerARNs` is refused (go-to-k/cdkd#5408). The adds go
+    // FIRST and the removes LAST because AWS applies the operations in
+    // order and refuses one that leaves a Cognito authorizer's list empty
+    // ("The list of providerARNs cannot be empty"), so swapping the only
+    // pool, and a TOKEN/REQUEST -> COGNITO_USER_POOLS switch, need the add
+    // before the `/type` replace, while a COGNITO_USER_POOLS ->
+    // TOKEN/REQUEST switch needs the remove after it.
+    const arnOps = listPatchOps(
+      '/providerARNs',
+      properties['ProviderARNs'] as string[] | undefined,
+      previousProperties['ProviderARNs'] as string[] | undefined
+    );
+    const patchOperations: Array<{
+      op: 'replace' | 'add' | 'remove';
+      path: string;
+      value: string;
+    }> = [...arnOps.adds];
 
     // Simple `replace` ops for primitive / single-value string fields.
-    // ProviderARNs and IdentitySource are passed as-is (AWS accepts them
-    // as comma-separated strings; CDK templates already produce the
-    // joined form when they are arrays). For ProviderARNs cdkd state
-    // holds an array, so we join with `,` to match the PATCH wire format.
     const primitiveFields: Array<{ key: string; path: string }> = [
       { key: 'Name', path: '/name' },
       { key: 'Type', path: '/type' },
@@ -979,6 +993,14 @@ export class ApiGatewayProvider implements ResourceProvider {
       const newVal = properties[key];
       const prevVal = previousProperties[key];
       if (newVal !== prevVal) {
+        // A REMOVED AuthorizerUri is left on the authorizer, as
+        // CloudFormation leaves it: a CFn A/B in us-east-1 kept the URI both
+        // when the property was dropped from a TOKEN authorizer and on a
+        // TOKEN -> COGNITO_USER_POOLS switch (go-to-k/cdkd#5408), and
+        // API Gateway refuses an empty URI on a TOKEN / REQUEST authorizer
+        // ("URI is a required field in an Authorizer"). An explicit `''`
+        // (a `cdkd drift --revert` placeholder) still clears it.
+        if (key === 'AuthorizerUri' && newVal === undefined) continue;
         // `!== undefined` gate (not truthy) — see method docstring.
         patchOperations.push({
           op: 'replace',
@@ -988,22 +1010,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
     }
 
-    // ProviderARNs is an array on the cdkd-state side. AWS accepts a
-    // comma-separated string for the `replace /providerARNs` op; an
-    // empty string clears the list (the same pattern Account / Stage
-    // use to clear a configured field).
-    const newArns = properties['ProviderARNs'] as string[] | undefined;
-    const prevArns = previousProperties['ProviderARNs'] as string[] | undefined;
-    const arnsChanged =
-      (newArns?.length ?? 0) !== (prevArns?.length ?? 0) ||
-      (newArns ?? []).some((a, i) => a !== prevArns?.[i]);
-    if (arnsChanged) {
-      patchOperations.push({
-        op: 'replace',
-        path: '/providerARNs',
-        value: (newArns ?? []).join(','),
-      });
-    }
+    patchOperations.push(...arnOps.removes);
 
     if (patchOperations.length === 0) {
       log.debug(`No changes detected for API Gateway Authorizer ${logicalId}`);
@@ -1011,6 +1018,9 @@ export class ApiGatewayProvider implements ResourceProvider {
     }
 
     try {
+      // Not idempotent: should the SDK retry a call AWS already applied, a
+      // repeated `add /providerARNs` appends a duplicate and a repeated
+      // `remove` fails with "doesn't contain the value".
       await this.apiGatewayClient.send(
         new UpdateAuthorizerCommand({
           restApiId,
@@ -2299,7 +2309,11 @@ export class ApiGatewayProvider implements ResourceProvider {
       | undefined;
     const requestModels = properties['RequestModels'] as Record<string, string> | undefined;
     const requestValidatorId = properties['RequestValidatorId'] as string | undefined;
-    const authorizationScopes = properties['AuthorizationScopes'] as string[] | undefined;
+    // Deduplicated: PutMethod stores a repeated scope twice, but the update
+    // path diffs scopes as a SET (see `updateMethod`), which is exact only
+    // while AWS holds no duplicate (go-to-k/cdkd#5408).
+    const declaredScopes = properties['AuthorizationScopes'] as string[] | undefined;
+    const authorizationScopes = declaredScopes ? [...new Set(declaredScopes)] : undefined;
 
     if (!restApiId || !resourceId || !httpMethod) {
       throw new ProvisioningError(
@@ -2569,9 +2583,9 @@ export class ApiGatewayProvider implements ResourceProvider {
    *   `/requestParameters/method.request.querystring.foo`
    *   `/requestModels/application~1json` (slashes escaped per RFC 6901).
    *
-   * `AuthorizationScopes` is an array — AWS accepts a comma-joined
-   * `replace /authorizationScopes` op (same pattern as Authorizer's
-   * `ProviderARNs`).
+   * `AuthorizationScopes` is a list, patched per element with `add` /
+   * `remove /authorizationScopes` ops (see {@link listPatchOps}; same as
+   * Authorizer's `ProviderARNs`).
    *
    * `HttpMethod`, `ResourceId`, `RestApiId` are immutable (replacement
    * layer handles them via DELETE + CREATE).
@@ -2591,7 +2605,8 @@ export class ApiGatewayProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    previousIsLiveReadback = false
   ): Promise<ResourceUpdateResult> {
     const parts = physicalId.split('|');
     // Issue #2177: the recorded ids came off a resolved bag, each masked RAW,
@@ -2649,22 +2664,23 @@ export class ApiGatewayProvider implements ResourceProvider {
       (previousProperties['RequestModels'] as Record<string, unknown> | undefined) ?? {}
     );
 
-    // AuthorizationScopes is an array on the cdkd-state side. AWS
-    // accepts a comma-separated string for the `replace
-    // /authorizationScopes` op (same pattern as Authorizer's
-    // ProviderARNs); an empty string clears the list.
-    const newScopes = properties['AuthorizationScopes'] as string[] | undefined;
-    const prevScopes = previousProperties['AuthorizationScopes'] as string[] | undefined;
-    const scopesChanged =
-      (newScopes?.length ?? 0) !== (prevScopes?.length ?? 0) ||
-      (newScopes ?? []).some((s, i) => s !== prevScopes?.[i]);
-    if (scopesChanged) {
-      patchOperations.push({
-        op: 'replace',
-        path: '/authorizationScopes',
-        value: (newScopes ?? []).join(','),
-      });
-    }
+    // AuthorizationScopes is a list API Gateway patches only element by
+    // element: `replace /authorizationScopes` is refused ("Must be one of:
+    // [add, remove]"; go-to-k/cdkd#5408). Diffed as a SET: an `add` of a scope
+    // already present is a no-op on AWS (measured), so an occurrence count
+    // would drift from what AWS holds, and a later remove could then take
+    // out a scope the template still declares. createMethod deduplicates.
+    // A dropped scope is removed once per occurrence AWS holds when the
+    // previous side IS the live readback (`cdkd drift --revert`), since a
+    // method created elsewhere can hold a repeat; a template previous side is
+    // a set on AWS, so one remove each.
+    const scopeOps = listPatchOps(
+      '/authorizationScopes',
+      properties['AuthorizationScopes'] as string[] | undefined,
+      previousProperties['AuthorizationScopes'] as string[] | undefined,
+      { asSet: true, removeEveryPrevOccurrence: previousIsLiveReadback }
+    );
+    patchOperations.push(...scopeOps.adds, ...scopeOps.removes);
 
     const ids = { restApiId: restApiId!, resourceId: resourceId!, httpMethod: httpMethod! };
     const childCalls = methodChildCalls(ids, properties, previousProperties);
@@ -2675,6 +2691,9 @@ export class ApiGatewayProvider implements ResourceProvider {
 
     try {
       if (patchOperations.length > 0) {
+        // Not idempotent: should the SDK retry a call AWS already applied, a
+        // repeated `remove /authorizationScopes` fails with "doesn't contain
+        // the value".
         await this.apiGatewayClient.send(
           new UpdateMethodCommand({
             restApiId,
@@ -2875,6 +2894,35 @@ export class ApiGatewayProvider implements ResourceProvider {
    */
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Authorizer `ProviderARNs` and Method `AuthorizationScopes` are unordered:
+   * the update path diffs them as multisets ({@link listPatchOps}) and sends
+   * nothing for a reorder, and AWS returns them in append order, so a
+   * template reorder would otherwise read as drift that `--revert` can never
+   * clear on the template-`properties` baseline (go-to-k/cdkd#5408).
+   */
+  /**
+   * Method `AuthorizationScopes` is a set on the update path (see
+   * `updateMethod`), so a repeated scope is compared once: a template
+   * declaring `['a', 'a']` against a live `['a']` is not drift
+   * (go-to-k/cdkd#5408). Pure; returns the input when nothing applies.
+   */
+  canonicalizeDriftProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::ApiGateway::Method') return properties;
+    const scopes = properties['AuthorizationScopes'];
+    if (!Array.isArray(scopes) || new Set(scopes).size === scopes.length) return properties;
+    return { ...properties, AuthorizationScopes: [...new Set(scopes)] };
+  }
+
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    if (resourceType === 'AWS::ApiGateway::Authorizer') return ['ProviderARNs'];
+    if (resourceType === 'AWS::ApiGateway::Method') return ['AuthorizationScopes'];
+    return [];
   }
 
   /**
@@ -3125,6 +3173,16 @@ export class ApiGatewayProvider implements ResourceProvider {
       const authType = resp.authorizationType;
       if (authType === 'CUSTOM' || authType === 'COGNITO_USER_POOLS') {
         result['AuthorizerId'] = resp.authorizerId ?? '';
+      }
+      // Same Class 1 gate: AWS refuses scopes on any other authorization
+      // type. Emitted (`[]` when none) so drift sees a console-side scope
+      // change and `--revert` diffs against the LIVE scopes rather than an
+      // absent key, which would `add` every recorded scope
+      // (go-to-k/cdkd#5408).
+      if (authType === 'COGNITO_USER_POOLS') {
+        result['AuthorizationScopes'] = resp.authorizationScopes
+          ? [...resp.authorizationScopes]
+          : [];
       }
       result['Integration'] = resp.methodIntegration ?? {};
       result['MethodResponses'] = resp.methodResponses ?? {};
@@ -3451,6 +3509,61 @@ function appendMapPatchOps(
       ops.push({ op: 'remove', path: `${basePath}/${escape(key)}` });
     }
   }
+}
+
+/**
+ * RFC 6902 patch operations turning the list `prev` into `next` for an API
+ * Gateway list field (Authorizer `ProviderARNs`, Method
+ * `AuthorizationScopes`). API Gateway takes neither `replace` nor a
+ * per-element path on these: each element is an `add` or `remove` against the
+ * list path itself, with the element as `value` (measured in us-east-1,
+ * go-to-k/cdkd#5408). A `remove` takes out ONE occurrence and fails the whole
+ * call when the element is absent. `ProviderARNs` keeps duplicates on `add`,
+ * so its diff counts occurrences; `AuthorizationScopes` ignores an `add` of a
+ * scope already present (PutMethod alone stores a repeat), so it passes
+ * `asSet`: membership is compared on deduplicated sides, and a dropped value
+ * is removed once, or once per `prev` occurrence with
+ * `removeEveryPrevOccurrence` (when `prev` is the live readback, which can
+ * hold a repeat). Order is not compared, since AWS appends. On a
+ * deploy `prev` is the last-deployed template, so an element already removed
+ * out-of-band and then dropped from the template fails the call (`Existing
+ * providerARNs list doesn't contain the value`) rather than being skipped.
+ */
+function listPatchOps(
+  path: string,
+  next: readonly string[] | undefined,
+  prev: readonly string[] | undefined,
+  options: { asSet?: boolean; removeEveryPrevOccurrence?: boolean } = {}
+): {
+  adds: Array<{ op: 'add'; path: string; value: string }>;
+  removes: Array<{ op: 'remove'; path: string; value: string }>;
+} {
+  if (options.asSet) {
+    const nextSet = new Set(next ?? []);
+    const prevSet = new Set(prev ?? []);
+    const dropped = options.removeEveryPrevOccurrence ? (prev ?? []) : [...prevSet];
+    return {
+      adds: [...nextSet]
+        .filter((v) => !prevSet.has(v))
+        .map((value) => ({ op: 'add', path, value })),
+      removes: dropped
+        .filter((v) => !nextSet.has(v))
+        .map((value) => ({ op: 'remove', path, value })),
+    };
+  }
+  const remaining = new Map<string, number>();
+  for (const value of prev ?? []) remaining.set(value, (remaining.get(value) ?? 0) + 1);
+  const adds: Array<{ op: 'add'; path: string; value: string }> = [];
+  for (const value of next ?? []) {
+    const count = remaining.get(value) ?? 0;
+    if (count > 0) remaining.set(value, count - 1);
+    else adds.push({ op: 'add', path, value });
+  }
+  const removes: Array<{ op: 'remove'; path: string; value: string }> = [];
+  for (const [value, count] of remaining) {
+    for (let i = 0; i < count; i++) removes.push({ op: 'remove', path, value });
+  }
+  return { adds, removes };
 }
 
 /** The three ids addressing one API Gateway method. */
