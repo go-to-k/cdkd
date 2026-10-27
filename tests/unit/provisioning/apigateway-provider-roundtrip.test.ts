@@ -50,7 +50,6 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ApiGatewayProvider } from '../../../src/provisioning/providers/apigateway-provider.js';
-import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
 /**
  * Read-update round-trip suite for ApiGatewayProvider.
@@ -701,16 +700,26 @@ describe('ApiGatewayProvider read-update round-trip', () => {
     expect(mockSend).toHaveBeenCalledTimes(1);
   });
 
-  // ─── Other immutable-update sub-resources (parity with Method) ──────
+  // ─── Other sub-resources ──────
 
-  it('Deployment update() throws ResourceUpdateNotSupportedError', async () => {
-    // Deployment.update is still intentionally
-    // ResourceUpdateNotSupportedError — UpdateDeployment's patch-op
-    // surface is narrow and not yet plumbed.
-    await expect(
-      provider.update('D', 'dep-1', 'AWS::ApiGateway::Deployment', {}, {})
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+  it('Deployment round-trip: readCurrentState → update() is a no-op', async () => {
+    // go-to-k/cdkd#5391: Deployment.update patches `/description`; the
+    // observed state handed back on both sides sends nothing.
+    mockSend.mockResolvedValueOnce({ id: 'dep-1', description: 'v1' });
+    const observed = await provider.readCurrentState('dep-1', 'D', 'AWS::ApiGateway::Deployment', {
+      RestApiId: 'api-1',
+    });
+    expect(observed).toEqual({ RestApiId: 'api-1', Description: 'v1' });
 
-    expect(mockSend).not.toHaveBeenCalled();
+    await provider.update(
+      'D',
+      'dep-1',
+      'AWS::ApiGateway::Deployment',
+      JSON.parse(JSON.stringify(observed)),
+      JSON.parse(JSON.stringify(observed))
+    );
+
+    // Only the GetDeployment read — no UpdateDeployment mutation.
+    expect(mockSend).toHaveBeenCalledTimes(1);
   });
 });

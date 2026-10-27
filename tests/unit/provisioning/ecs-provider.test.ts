@@ -35,6 +35,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ECSProvider } from '../../../src/provisioning/providers/ecs-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { createSecretMasker, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 
 describe('ECSProvider', () => {
   let provider: ECSProvider;
@@ -1066,6 +1067,134 @@ describe('ECSProvider', () => {
         // No spurious AWS calls — error fires before any send().
         expect(mockSend).not.toHaveBeenCalled();
       });
+
+      // Issue #5392: Tags is the one updatable property (schema
+      // `tagUpdatable`); CloudFormation tags the same revision in place.
+      const TD_ARN = 'arn:aws:ecs:us-east-1:123456789012:task-definition/my-task:3';
+      const BASE = {
+        Family: 'my-task',
+        ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+      };
+
+      it('tags the same revision in place when only Tags changed (#5392)', async () => {
+        mockSend.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+
+        const result = await provider.update(
+          'MyTask',
+          TD_ARN,
+          'AWS::ECS::TaskDefinition',
+          {
+            ...BASE,
+            Tags: [
+              { Key: 'keep', Value: 'v2' },
+              { Key: 'added', Value: 'a' },
+            ],
+          },
+          {
+            ...BASE,
+            Tags: [
+              { Key: 'keep', Value: 'v1' },
+              { Key: 'gone', Value: 'g' },
+            ],
+          }
+        );
+
+        expect(result).toEqual({
+          physicalId: TD_ARN,
+          wasReplaced: false,
+          attributes: { TaskDefinitionArn: TD_ARN },
+        });
+        const sent = mockSend.mock.calls.map((c) => [c[0].constructor.name, c[0].input]);
+        expect(sent).toEqual([
+          ['UntagResourceCommand', { resourceArn: TD_ARN, tagKeys: ['gone'] }],
+          [
+            'TagResourceCommand',
+            {
+              resourceArn: TD_ARN,
+              tags: [
+                { key: 'keep', value: 'v2' },
+                { key: 'added', value: 'a' },
+              ],
+            },
+          ],
+        ]);
+      });
+
+      it('untags every key when Tags is removed (#5392)', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update('MyTask', TD_ARN, 'AWS::ECS::TaskDefinition', BASE, {
+          ...BASE,
+          Tags: [{ Key: 'gone', Value: 'g' }],
+        });
+
+        const sent = mockSend.mock.calls.map((c) => [c[0].constructor.name, c[0].input]);
+        expect(sent).toEqual([
+          ['UntagResourceCommand', { resourceArn: TD_ARN, tagKeys: ['gone'] }],
+        ]);
+      });
+
+      it('still refuses a Tags change made beside another property (#5392)', async () => {
+        await expect(
+          provider.update(
+            'MyTask',
+            TD_ARN,
+            'AWS::ECS::TaskDefinition',
+            { ...BASE, Cpu: '512', Tags: [{ Key: 'k', Value: 'v2' }] },
+            { ...BASE, Tags: [{ Key: 'k', Value: 'v1' }] }
+          )
+        ).rejects.toMatchObject({ name: 'ResourceUpdateNotSupportedError' });
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('refuses the removal of a non-Tags key beside a Tags change (#5392)', async () => {
+        await expect(
+          provider.update(
+            'MyTask',
+            TD_ARN,
+            'AWS::ECS::TaskDefinition',
+            { ...BASE, Tags: [{ Key: 'k', Value: 'v2' }] },
+            { ...BASE, Cpu: '256', Tags: [{ Key: 'k', Value: 'v1' }] }
+          )
+        ).rejects.toMatchObject({ name: 'ResourceUpdateNotSupportedError' });
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('wraps a TagResource failure as a ProvisioningError, masking a secret-derived family (#5392)', async () => {
+        // Below the masker's substring floor: only the family needle the provider
+        // derives from the secret-derived Family masks it in the ARN echo.
+        const family = 'qx';
+        const arn = `arn:aws:ecs:us-east-1:123456789012:task-definition/${family}:3`;
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error(`User is not authorized to perform ecs:TagResource on ${arn}`), {
+            name: 'AccessDeniedException',
+          })
+        );
+        const maskSecrets = createSecretMasker(
+          new Map([[family, '{{resolve:secretsmanager:family}}']])
+        );
+
+        const err = await provider
+          .update(
+            'MyTask',
+            arn,
+            'AWS::ECS::TaskDefinition',
+            { ...BASE, Family: family, Tags: [{ Key: 'k', Value: 'v' }] },
+            { ...BASE, Family: family },
+            { maskSecrets }
+          )
+          .then(
+            () => undefined,
+            (e: unknown) => e
+          );
+
+        expect(err).toBeInstanceOf(ProvisioningError);
+        const message = (err as Error).message;
+        expect(message).toMatch(/^Failed to update ECS task definition MyTask: /);
+        expect(message).toContain('ecs:TagResource');
+        expect(message).toContain(SECRET_MASK);
+        expect(message).not.toContain(`task-definition/${family}:`);
+      });
     });
 
     describe('delete', () => {
@@ -1849,6 +1978,94 @@ describe('ECSProvider', () => {
             }
           )
         ).rejects.toThrow('Cannot update ServiceName');
+      });
+
+      // Issue #5392: UpdateService has no launchType member. CloudFormation
+      // replaces on a changed LaunchType, so update() refuses one before any
+      // call. An ADD is replaced by the deploy diff before update(); one that
+      // reaches here is a rollback restoring the value a removal left live.
+      it('refuses an added LaunchType under cdkd drift --revert (an AWS readback without one, #5392)', async () => {
+        // A service moved to a capacity provider strategy out of band reads
+        // back with no LaunchType; restoring it needs a replacement.
+        await expect(
+          provider.update(
+            'MyService',
+            'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+            'AWS::ECS::Service',
+            { Cluster: 'my-cluster', ServiceName: 'my-service', LaunchType: 'FARGATE' },
+            { Cluster: 'my-cluster', ServiceName: 'my-service' },
+            { desiredFromAwsReadback: true }
+          )
+        ).rejects.toMatchObject({
+          name: 'ResourceUpdateNotSupportedError',
+          message: expect.stringContaining(
+            'drift --revert cannot restore it. Destroy + redeploy the stack to restore it, or run cdkd drift --accept to keep the live value'
+          ),
+        });
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('refuses a changed LaunchType before any AWS call (#5392)', async () => {
+        await expect(
+          provider.update(
+            'MyService',
+            'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+            'AWS::ECS::Service',
+            { Cluster: 'my-cluster', ServiceName: 'my-service', LaunchType: 'EXTERNAL' },
+            { Cluster: 'my-cluster', ServiceName: 'my-service', LaunchType: 'EC2' }
+          )
+        ).rejects.toMatchObject({
+          name: 'ResourceUpdateNotSupportedError',
+          message: expect.stringContaining('Re-deploy with cdkd deploy --replace'),
+        });
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('lets an added LaunchType through without sending launchType when not a drift revert (#5392)', async () => {
+        mockSend.mockResolvedValueOnce({
+          service: {
+            serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+            serviceName: 'my-service',
+          },
+        });
+
+        await provider.update(
+          'MyService',
+          'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+          'AWS::ECS::Service',
+          { Cluster: 'my-cluster', ServiceName: 'my-service', LaunchType: 'EC2', DesiredCount: 1 },
+          { Cluster: 'my-cluster', ServiceName: 'my-service', DesiredCount: 2 }
+        );
+
+        const updates = mockSend.mock.calls.filter(
+          (c) => c[0].constructor.name === 'UpdateServiceCommand'
+        );
+        expect(updates).toHaveLength(1);
+        expect(updates[0]![0].input).not.toHaveProperty('launchType');
+        expect(updates[0]![0].input.desiredCount).toBe(1);
+      });
+
+      it('keeps the live LaunchType on a removal, sending no launchType (#5392)', async () => {
+        mockSend.mockResolvedValueOnce({
+          service: {
+            serviceArn: 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+            serviceName: 'my-service',
+          },
+        });
+
+        await provider.update(
+          'MyService',
+          'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+          'AWS::ECS::Service',
+          { Cluster: 'my-cluster', ServiceName: 'my-service' },
+          { Cluster: 'my-cluster', ServiceName: 'my-service', LaunchType: 'EXTERNAL' }
+        );
+
+        const updates = mockSend.mock.calls.filter(
+          (c) => c[0].constructor.name === 'UpdateServiceCommand'
+        );
+        expect(updates).toHaveLength(1);
+        expect(updates[0]![0].input).not.toHaveProperty('launchType');
       });
     });
 

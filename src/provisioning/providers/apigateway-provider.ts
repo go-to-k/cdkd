@@ -9,6 +9,7 @@ import {
   CreateDeploymentCommand,
   DeleteDeploymentCommand,
   GetDeploymentCommand,
+  UpdateDeploymentCommand,
   CreateStageCommand,
   UpdateStageCommand,
   DeleteStageCommand,
@@ -43,7 +44,7 @@ import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
-import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -463,7 +464,14 @@ export class ApiGatewayProvider implements ResourceProvider {
           log
         );
       case 'AWS::ApiGateway::Deployment':
-        return this.updateDeployment(logicalId, physicalId, resourceType);
+        return this.updateDeployment(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          log
+        );
       case 'AWS::ApiGateway::Stage':
         // The recorded name is the physical id. Either side's `StageName`
         // being secret-derived makes it a needle. The desired side covers the
@@ -912,13 +920,14 @@ export class ApiGatewayProvider implements ResourceProvider {
    * JSON Patch operations).
    *
    * Mutable fields (per AWS API Gateway PATCH operations docs):
-   *   `/name`, `/authType`, `/authorizerUri`, `/authorizerCredentials`,
+   *   `/name`, `/type`, `/authType`, `/authorizerUri`, `/authorizerCredentials`,
    *   `/identitySource`, `/identityValidationExpression`,
    *   `/authorizerResultTtlInSeconds`, `/providerARNs`.
    *
-   * `Type` and `RestApiId` are immutable (the deploy engine's replacement
-   * path handles those changes via DELETE + CREATE before this method is
-   * called).
+   * Only `RestApiId` is create-only (the deploy engine replaces the
+   * authorizer for that change before this method is called). A `Type`
+   * change is updated in place, as CloudFormation updates it
+   * (go-to-k/cdkd#5391).
    *
    * The `gate on !== undefined` pattern (NOT truthy) is load-bearing for
    * `cdkd drift --revert`: an empty placeholder coming from
@@ -957,6 +966,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     // holds an array, so we join with `,` to match the PATCH wire format.
     const primitiveFields: Array<{ key: string; path: string }> = [
       { key: 'Name', path: '/name' },
+      { key: 'Type', path: '/type' },
       { key: 'AuthType', path: '/authType' },
       { key: 'AuthorizerUri', path: '/authorizerUri' },
       { key: 'AuthorizerCredentials', path: '/authorizerCredentials' },
@@ -1460,24 +1470,75 @@ export class ApiGatewayProvider implements ResourceProvider {
   }
 
   /**
-   * Update an API Gateway Deployment.
+   * Update an API Gateway Deployment's `Description` in place with
+   * `UpdateDeployment` (`replace /description`), as CloudFormation does
+   * (go-to-k/cdkd#5391). `RestApiId` is create-only, so the deploy engine
+   * replaces the deployment for that change before this method is called;
+   * `Description` is the only other property this provider handles.
    *
-   * Deployments are immutable — every property change requires a fresh
-   * Deployment. `cdkd drift --revert` therefore throws
-   * `ResourceUpdateNotSupportedError` instead of silently no-op'ing.
+   * A removed `Description` is sent as `''`, which clears it, and is also
+   * what `readCurrentStateDeployment` reports for none, so a
+   * `cdkd drift --revert` of a console-side description clears it.
    */
-  private updateDeployment(
+  private async updateDeployment(
     logicalId: string,
-    _physicalId: string,
-    _resourceType: string
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
-        'AWS::ApiGateway::Deployment',
+    const restApiId = properties['RestApiId'] as string | undefined;
+    if (!restApiId) {
+      throw new ProvisioningError(
+        `RestApiId is required to update API Gateway Deployment ${logicalId}`,
+        resourceType,
         logicalId,
-        'API Gateway Deployment is immutable on AWS — there is no UpdateDeployment API for the deployment itself (UpdateStage is for the stage that points at the deployment); every change requires CreateDeployment to produce a new immutable deployment. Re-deploy with cdkd deploy --replace, or change the resource definition to create a new Deployment.'
-      )
-    );
+        physicalId
+      );
+    }
+
+    // `''` and absent are the same on AWS (no description), and
+    // `readCurrentStateDeployment` reports none as `''`, so they compare equal.
+    const newDesc = properties['Description'];
+    const prevDesc = previousProperties['Description'];
+    if ((newDesc ?? '') === (prevDesc ?? '')) {
+      log.debug(`No changes detected for API Gateway Deployment ${logicalId}`);
+      return { physicalId, wasReplaced: false };
+    }
+
+    log.debug(`Updating API Gateway Deployment ${logicalId}: ${physicalId}`);
+    try {
+      await this.apiGatewayClient.send(
+        new UpdateDeploymentCommand({
+          restApiId,
+          deploymentId: physicalId,
+          patchOperations: [
+            {
+              op: 'replace',
+              path: '/description',
+              value: newDesc !== undefined ? stringifyValue(newDesc) : '',
+            },
+          ],
+        })
+      );
+      log.debug(`Successfully updated API Gateway Deployment ${logicalId}`);
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update API Gateway Deployment ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+    }
   }
 
   /**
@@ -3058,10 +3119,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       // "Authorizer not found" when sent on AuthorizationType=NONE /
       // AWS_IAM. Emitting `''` as a placeholder on a NONE method would
       // make `cdkd drift --revert`'s round-trip push that empty value
-      // back, but Method.update currently throws
-      // ResourceUpdateNotSupportedError so the AWS-rejection path
-      // doesn't fire today; this gate is the structural defense for
-      // when Method.update gains a real implementation. Drift
+      // back as Method.update's `/authorizerId` patch. Drift
       // detection is not lost: a NONE method cannot legally have
       // AuthorizerId on AWS, so a console-side ADD is impossible.
       const authType = resp.authorizationType;
@@ -3441,6 +3499,9 @@ function putIntegrationInput(
       : undefined,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
     responseTransferMode: integration['ResponseTransferMode'] as any,
+    // The ALB / NLB ARN of a private integration through a VPC link
+    // (go-to-k/cdkd#5391).
+    integrationTarget: integration['IntegrationTarget'] as string | undefined,
   };
 }
 

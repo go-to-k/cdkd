@@ -452,6 +452,11 @@
       "scenarios": []
     },
     {
+      "name": "apigw-vpclink-integration-target",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "app-autoscaling-recreate",
       "annotated": false,
       "scenarios": []
@@ -1055,6 +1060,11 @@
     {
       "name": "ecs-service-update-props",
       "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "ecs-taskdef-tags-launch-type",
+      "annotated": false,
       "scenarios": []
     },
     {
@@ -3469,6 +3479,7 @@
     "apigw-stage-props",
     "apigw-stage-throttling",
     "apigw-usage-plan-key",
+    "apigw-vpclink-integration-target",
     "app-autoscaling-recreate",
     "appconfig",
     "aws-custom-resource",
@@ -3513,6 +3524,7 @@
     "ec2-route-targets",
     "ecr-scanning",
     "ecs-schedule-targets",
+    "ecs-taskdef-tags-launch-type",
     "efs-immutable-replacement",
     "elbv2-same-name-replacement",
     "eventbridge-api-destination",

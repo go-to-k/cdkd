@@ -690,6 +690,7 @@
             "createDeployment",
             "createStage",
             "update",
+            "updateDeployment",
             "updateStage"
           ]
         },
@@ -986,6 +987,7 @@
             "readCurrentStateStage",
             "update",
             "updateAuthorizer",
+            "updateDeployment",
             "updateResource",
             "updateStage"
           ]
@@ -4783,11 +4785,14 @@
             "AWS::Cognito::UserPool"
           ],
           "evidence": [
-            "element-read"
+            "delegated",
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
-            "update"
+            "update",
+            "warnOnKeptRemovedMembers"
           ]
         },
         {
@@ -4840,11 +4845,14 @@
             "AWS::Cognito::UserPool"
           ],
           "evidence": [
-            "element-read"
+            "delegated",
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
-            "update"
+            "update",
+            "warnOnKeptRemovedMembers"
           ]
         },
         {
@@ -5040,14 +5048,16 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "applyMfaConfig",
             "assertMfaCombinationApplicable",
             "canonicalizeDesiredProperties",
             "create",
-            "update"
+            "update",
+            "warnOnKeptRemovedMembers"
           ]
         },
         {
@@ -5157,11 +5167,14 @@
             "AWS::Cognito::UserPool"
           ],
           "evidence": [
-            "element-read"
+            "delegated",
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
-            "update"
+            "update",
+            "warnOnKeptRemovedMembers"
           ]
         },
         {
@@ -8256,7 +8269,8 @@
           ],
           "seededBy": [
             "create",
-            "createTaskDefinition"
+            "createTaskDefinition",
+            "update"
           ]
         },
         {
@@ -8319,7 +8333,9 @@
           ],
           "seededBy": [
             "create",
-            "createService"
+            "createService",
+            "update",
+            "updateService"
           ]
         },
         {
@@ -8650,7 +8666,8 @@
             "createTaskDefinition",
             "update",
             "updateCluster",
-            "updateService"
+            "updateService",
+            "updateTaskDefinition"
           ]
         },
         {
@@ -8737,6 +8754,8 @@
       ],
       "gaps": [],
       "blindSpots": [
+        "computed key in updateTaskDefinition()",
+        "Object.keys(...) in updateTaskDefinition()",
         "withRemovalDefaults(...) in update()"
       ]
     },

@@ -4,7 +4,8 @@
 # UPDATE phase (issue #976): removes FilterCriteria + ScalingConfig from the
 # template and asserts AWS actually CLEARS both (removal-on-UPDATE, not a
 # silent drop); it also removes BatchSize and asserts the SQS default 10
-# (issue #1160). Then destroys clean.
+# (issue #1160), and removes `Enabled: false` and asserts the mapping is
+# enabled again (issue #1160). Then destroys clean.
 
 set -euo pipefail
 
@@ -100,7 +101,24 @@ esm_batch_size() {
     --query 'EventSourceMappings[0].BatchSize' --output text
 }
 
-echo "==> Deploy (base: FilterCriteria + ScalingConfig set)"
+# Reads the ESM's State once it settles: cdkd does not wait on a mapping's
+# State, so a read right after a deploy can see Creating / Updating /
+# Enabling / Disabling. Polls up to 60 s, then prints the last State read.
+# A failed read is not silenced: it aborts under `set -e`.
+esm_state() {
+  local st=""
+  for _ in $(seq 1 30); do
+    st=$(aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" \
+      --query 'EventSourceMappings[0].State' --output text) || return 1
+    case "${st}" in
+      Creating|Updating|Enabling|Disabling) sleep 2 ;;
+      *) break ;;
+    esac
+  done
+  printf '%s\n' "${st}"
+}
+
+echo "==> Deploy (base: FilterCriteria + ScalingConfig set, mapping disabled)"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 MAXCONC=$(esm_maxconc)
@@ -124,7 +142,14 @@ if [ "${BATCH}" != "5" ]; then
 fi
 echo "    OK: base BatchSize == 5 on AWS"
 
-echo "==> Deploy (UPDATE: FilterCriteria + ScalingConfig + BatchSize removed from template)"
+STATE=$(esm_state)
+if [ "${STATE}" != "Disabled" ]; then
+  echo "FAIL: base mapping State is '${STATE}', expected Disabled (enabled: false silently dropped?)" >&2
+  exit 1
+fi
+echo "    OK: base mapping State == ${STATE} on AWS"
+
+echo "==> Deploy (UPDATE: FilterCriteria + ScalingConfig + BatchSize + Enabled removed from template)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 # Removal must CLEAR the cap on AWS — ScalingConfig.MaximumConcurrency gone.
@@ -150,6 +175,15 @@ if [ "${BATCH_AFTER}" != "10" ]; then
   exit 1
 fi
 echo "    OK: BatchSize RESET to 10 on AWS after removal"
+
+# Removal of `Enabled: false` must turn the mapping back on, as CloudFormation
+# does (it sends `Enabled: true`).
+STATE_AFTER=$(esm_state)
+if [ "${STATE_AFTER}" != "Enabled" ]; then
+  echo "FAIL: after removal, mapping State is '${STATE_AFTER}', expected Enabled — the mapping stayed disabled (issue #1160)" >&2
+  exit 1
+fi
+echo "    OK: mapping State == ${STATE_AFTER} on AWS after Enabled removal"
 
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force

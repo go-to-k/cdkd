@@ -850,6 +850,184 @@ describe('LambdaEventSourceMappingProvider', () => {
       expect(input['MetricsConfig']).toBeUndefined();
       expect(input['KMSKeyArn']).toBeUndefined();
       expect(input['MaximumRetryAttempts']).toBeUndefined();
+      expect(input['Enabled']).toBeUndefined();
+      expect(input['BisectBatchOnFunctionError']).toBeUndefined();
+    });
+
+    // Issue #1160, CloudFormation A/B (us-east-1, 2026-10-27): CloudFormation
+    // sent `enabled: true` when `Enabled: false` left an SQS mapping's
+    // template, and a DynamoDB-stream mapping read back
+    // `BisectBatchOnFunctionError: false` after that key left the template.
+    it.each([
+      ['SQS', SQS_ARN],
+      ['DynamoDB', 'arn:aws:dynamodb:us-east-1:123:table/t/stream/2026-01-01T00:00:00.000'],
+      ['Kafka', KAFKA_ARN],
+    ])('re-enables a %s mapping when Enabled: false is removed', async (_kind, arn) => {
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: arn },
+        { FunctionName: 'fn', EventSourceArn: arn, Enabled: false }
+      );
+
+      expect(getUpdateInput()['Enabled']).toBe(true);
+    });
+
+    it('forwards a still-declared Enabled: false instead of the reset', async () => {
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: SQS_ARN, Enabled: false },
+        { FunctionName: 'fn', EventSourceArn: SQS_ARN, Enabled: false, BatchSize: 5 }
+      );
+
+      expect(getUpdateInput()['Enabled']).toBe(false);
+    });
+
+    it.each([
+      ['DynamoDB', 'arn:aws:dynamodb:us-east-1:123:table/t/stream/2026-01-01T00:00:00.000'],
+      ['Kinesis', 'arn:aws:kinesis:us-east-1:123:stream/s'],
+    ])('sends BisectBatchOnFunctionError: false on a %s removal', async (_kind, arn) => {
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: arn },
+        { FunctionName: 'fn', EventSourceArn: arn, BisectBatchOnFunctionError: true }
+      );
+
+      expect(getUpdateInput()['BisectBatchOnFunctionError']).toBe(false);
+    });
+
+    // Kafka / MSK take Bisect in provisioned mode only (Lambda API reference,
+    // unmeasured), so the reset is sent only while ProvisionedPollerConfig
+    // stays declared.
+    it.each([
+      ['self-managed Kafka', { SelfManagedEventSource: { Endpoints: { KafkaBootstrapServers: ['b:9092'] } } }],
+      ['MSK', { EventSourceArn: KAFKA_ARN }],
+    ])(
+      'sends BisectBatchOnFunctionError: false on a %s removal while provisioned mode stays declared',
+      async (_kind, source) => {
+        const kafka = {
+          FunctionName: 'fn',
+          ...source,
+          ProvisionedPollerConfig: { MinimumPollers: 1, MaximumPollers: 2 },
+        };
+        await provider.update('L', UUID, 'AWS::Lambda::EventSourceMapping', kafka, {
+          ...kafka,
+          BisectBatchOnFunctionError: true,
+        });
+
+        const input = getUpdateInput();
+        expect(input['BisectBatchOnFunctionError']).toBe(false);
+        expect(input['ProvisionedPollerConfig']).toEqual({ MinimumPollers: 1, MaximumPollers: 2 });
+      }
+    );
+
+    it.each([
+      ['removed in the same update', { ProvisionedPollerConfig: { MinimumPollers: 1, MaximumPollers: 2 } }],
+      ['never declared', {}],
+    ])(
+      'warns and sends no BisectBatchOnFunctionError on a Kafka removal when ProvisionedPollerConfig is %s',
+      async (_case, previousExtra) => {
+        const { getLogger } = await import('../../../src/utils/logger.js');
+        const warn = vi.mocked(getLogger().child('x').warn);
+        const kafka = { FunctionName: 'fn', EventSourceArn: KAFKA_ARN };
+        await provider.update('L', UUID, 'AWS::Lambda::EventSourceMapping', kafka, {
+          ...kafka,
+          ...previousExtra,
+          BisectBatchOnFunctionError: true,
+        });
+
+        expect(getUpdateInput()['BisectBatchOnFunctionError']).toBeUndefined();
+        expect(
+          warn.mock.calls.filter((c) =>
+            String(c[0]).includes(
+              'L (AWS::Lambda::EventSourceMapping): BisectBatchOnFunctionError was removed from the template while the Kafka mapping does not declare ProvisionedPollerConfig'
+            )
+          )
+        ).toHaveLength(1);
+      }
+    );
+
+    it('warns and sends no BisectBatchOnFunctionError reset on a source it cannot classify', async () => {
+      const { getLogger } = await import('../../../src/utils/logger.js');
+      const warn = vi.mocked(getLogger().child('x').warn);
+      const arn = 'arn:aws:example:us-east-1:123:thing/t';
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: arn },
+        { FunctionName: 'fn', EventSourceArn: arn, BisectBatchOnFunctionError: true }
+      );
+
+      expect(getUpdateInput()['BisectBatchOnFunctionError']).toBeUndefined();
+      expect(
+        warn.mock.calls.filter((c) =>
+          String(c[0]).includes(
+            'L (AWS::Lambda::EventSourceMapping): BisectBatchOnFunctionError was removed from the template, but cdkd cannot tell'
+          )
+        )
+      ).toHaveLength(1);
+    });
+
+    it('sends no BisectBatchOnFunctionError reset on a source that does not take it', async () => {
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: SQS_ARN },
+        { FunctionName: 'fn', EventSourceArn: SQS_ARN, BisectBatchOnFunctionError: true }
+      );
+
+      expect(getUpdateInput()['BisectBatchOnFunctionError']).toBeUndefined();
+      const { getLogger } = await import('../../../src/utils/logger.js');
+      expect(
+        vi
+          .mocked(getLogger().child('x').warn)
+          .mock.calls.filter((c) => String(c[0]).includes('BisectBatchOnFunctionError'))
+      ).toHaveLength(0);
+    });
+
+    it('warns and sends nothing when DocumentDBEventSourceConfig is removed', async () => {
+      const { getLogger } = await import('../../../src/utils/logger.js');
+      const warn = vi.mocked(getLogger().child('x').warn);
+      const docdb = { FunctionName: 'fn', EventSourceArn: 'arn:aws:rds:us-east-1:123:cluster:c' };
+      await provider.update('L', UUID, 'AWS::Lambda::EventSourceMapping', docdb, {
+        ...docdb,
+        DocumentDBEventSourceConfig: { DatabaseName: 'db', CollectionName: 'c' },
+      });
+
+      expect(getUpdateInput()['DocumentDBEventSourceConfig']).toBeUndefined();
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(
+        lines.filter((l) =>
+          l.includes(
+            'L (AWS::Lambda::EventSourceMapping): DocumentDBEventSourceConfig was removed from the template; the mapping keeps its current DocumentDB settings.'
+          )
+        )
+      ).toHaveLength(1);
+    });
+
+    it('does not warn about DocumentDBEventSourceConfig while it is still declared', async () => {
+      const { getLogger } = await import('../../../src/utils/logger.js');
+      const warn = vi.mocked(getLogger().child('x').warn);
+      const docdb = {
+        FunctionName: 'fn',
+        EventSourceArn: 'arn:aws:rds:us-east-1:123:cluster:c',
+        DocumentDBEventSourceConfig: { DatabaseName: 'db' },
+      };
+      await provider.update('L', UUID, 'AWS::Lambda::EventSourceMapping', docdb, {
+        ...docdb,
+        BatchSize: 7,
+      });
+
+      expect(
+        warn.mock.calls.filter((c) => String(c[0]).includes('DocumentDBEventSourceConfig'))
+      ).toHaveLength(0);
     });
   });
 
