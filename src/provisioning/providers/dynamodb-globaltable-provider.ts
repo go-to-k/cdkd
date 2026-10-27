@@ -62,6 +62,7 @@ import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
+import { planTimeToLive } from './dynamodb-ttl.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { isRefusedByName, markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import {
@@ -1474,18 +1475,16 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
       // TTL is a separate API call (UpdateTimeToLive). Applied after
       // table + replicas are ACTIVE so the AWS-side request validates.
-      if (properties['TimeToLiveSpecification']) {
-        const ttl = properties['TimeToLiveSpecification'] as Record<string, unknown>;
-        const attributeName = ttl['AttributeName'] as string | undefined;
-        const enabled = ttl['Enabled'] !== undefined ? Boolean(ttl['Enabled']) : true;
-        if (attributeName) {
-          await this.dynamoDBClient.send(
-            new UpdateTimeToLiveCommand({
-              TableName: tableName,
-              TimeToLiveSpecification: { Enabled: enabled, AttributeName: attributeName },
-            })
-          );
-        }
+      // A disabled spec sends nothing: a new table starts with TTL disabled,
+      // and AWS refuses to disable it again (issue #5447).
+      const createTtl = planTimeToLive(properties['TimeToLiveSpecification'], undefined, 'create');
+      if (createTtl.kind === 'enable') {
+        await this.dynamoDBClient.send(
+          new UpdateTimeToLiveCommand({
+            TableName: tableName,
+            TimeToLiveSpecification: { Enabled: true, AttributeName: createTtl.attributeName },
+          })
+        );
       }
 
       // Application-autoscaling registration (Issue #1419). Before this,
@@ -5700,32 +5699,36 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             throw ttlErr;
           }
         };
-        const ttl = properties['TimeToLiveSpecification'] as Record<string, unknown> | undefined;
-        if (ttl?.['AttributeName']) {
+        // Issue #5447: `Enabled: false` needs no AttributeName in the
+        // template, but UpdateTimeToLive needs one even to disable — take the
+        // recorded enabled one, else the live one.
+        const ttlPlan = planTimeToLive(
+          properties['TimeToLiveSpecification'],
+          previousProperties['TimeToLiveSpecification'],
+          'update'
+        );
+        let ttlTarget: { enabled: boolean; attributeName: string } | undefined;
+        if (ttlPlan.kind === 'enable' || ttlPlan.kind === 'disable') {
+          ttlTarget = { enabled: ttlPlan.kind === 'enable', attributeName: ttlPlan.attributeName };
+        } else if (ttlPlan.kind === 'disable-live') {
+          const live = (
+            await this.dynamoDBClient.send(new DescribeTimeToLiveCommand({ TableName: physicalId }))
+          ).TimeToLiveDescription;
+          const status = live?.TimeToLiveStatus;
+          if ((status === 'ENABLED' || status === 'ENABLING') && live?.AttributeName) {
+            ttlTarget = { enabled: false, attributeName: live.AttributeName };
+          }
+        }
+        if (ttlTarget) {
           await sendTtl(
             new UpdateTimeToLiveCommand({
               TableName: physicalId,
               TimeToLiveSpecification: {
-                Enabled: ttl['Enabled'] !== undefined ? Boolean(ttl['Enabled']) : true,
-                AttributeName: ttl['AttributeName'] as string,
+                Enabled: ttlTarget.enabled,
+                AttributeName: ttlTarget.attributeName,
               },
             })
           );
-        } else if (previousProperties['TimeToLiveSpecification']) {
-          // TTL removed from template: AWS requires the previous
-          // AttributeName to disable it. Pull from old props.
-          const prevTtl = previousProperties['TimeToLiveSpecification'] as Record<string, unknown>;
-          if (prevTtl['AttributeName']) {
-            await sendTtl(
-              new UpdateTimeToLiveCommand({
-                TableName: physicalId,
-                TimeToLiveSpecification: {
-                  Enabled: false,
-                  AttributeName: prevTtl['AttributeName'] as string,
-                },
-              })
-            );
-          }
         }
       }
 

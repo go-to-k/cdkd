@@ -12,6 +12,13 @@
 # Phase 2   re-deploy (CDKD_TEST_UPDATE=true) requesting   -> MUST FAIL with the
 #           TTL on `ttlB`                                      actionable message;
 #           AWS TTL must still be on `ttlA` (guard fired before any API call).
+# Phase 2c  re-deploy (CDKD_TEST_TTL=disable) declaring    -> the disable must
+#           TimeToLiveSpecification {Enabled:false} with       REACH AWS (#5447):
+#           no AttributeName                                    TTL DISABLED/DISABLING,
+#                                                               or, since TTL was
+#           enabled minutes ago, cdkd's report of AWS's rate-limit refusal of
+#           the UpdateTimeToLive (which proves cdkd sent it). The pre-fix silent
+#           success with TTL still ENABLED on ttlA FAILS the run.
 # Phase 3   destroy                                        -> table + state gone.
 #
 # Required env vars:
@@ -181,6 +188,40 @@ if [ "${ATTR_AFTER}" != "ttlA" ]; then
 fi
 echo "    OK: AWS TTL still on ttlA — no partial UpdateTimeToLive happened"
 
+# --- Phase 2c: name-less TTL disable must reach AWS (issue #5447) ------
+# DynamoDB refuses a second UpdateTimeToLive within ~1h of the Phase 1 enable,
+# so a disabled status is not reachable here: the AWS refusal of the disable
+# is the observable proof the call was sent. Pre-fix cdkd sent nothing and the
+# deploy succeeded with TTL still ENABLED on ttlA.
+echo "==> Phase 2c: re-deploy declaring TimeToLiveSpecification {Enabled:false} without AttributeName"
+DISABLE_OUT="$(mktemp)"
+set +e
+CDKD_TEST_TTL=disable node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes >"${DISABLE_OUT}" 2>&1
+DISABLE_RC=$?
+set -e
+ST_AFTER=$(ttl_status)
+if [ "${DISABLE_RC}" -eq 0 ]; then
+  if [ "${ST_AFTER}" != "DISABLED" ] && [ "${ST_AFTER}" != "DISABLING" ]; then
+    echo "FAIL: the {Enabled:false} deploy succeeded but AWS TTL is still ${ST_AFTER} on $(ttl_attribute) — the disable was never sent (#5447)" >&2
+    cat "${DISABLE_OUT}" >&2
+    rm -f "${DISABLE_OUT}"
+    exit 1
+  fi
+  echo "    OK: TTL disabled by the name-less spec (${ST_AFTER})"
+else
+  if ! grep -q "AWS refused to disable TimeToLive because it was already modified" "${DISABLE_OUT}"; then
+    echo "FAIL: the {Enabled:false} deploy failed, but not with cdkd's report of AWS's TTL rate-limit refusal of the disable" >&2
+    cat "${DISABLE_OUT}" >&2
+    rm -f "${DISABLE_OUT}"
+    exit 1
+  fi
+  echo "    OK: cdkd sent the disable; AWS refused it within the post-enable interval (rc=${DISABLE_RC}, TTL ${ST_AFTER})"
+fi
+rm -f "${DISABLE_OUT}"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -206,4 +247,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> dynamodb-ttl-attr-change test passed (TTL AttributeName change rejected with actionable error; AWS TTL unchanged; clean destroy)"
+echo "==> dynamodb-ttl-attr-change test passed (TTL AttributeName change rejected with actionable error; AWS TTL unchanged; name-less disable reached AWS; clean destroy)"
