@@ -84,6 +84,7 @@ import pLimit from 'p-limit';
 // `scripts/audit-provider-coverage.ts`.
 import { getAwsClients } from '../src/utils/aws-clients.ts';
 import { STATEFUL_TYPES } from '../src/provisioning/stateful-types.ts';
+import { isRetryableDescribeTypeError } from './audit-provider-coverage.ts';
 import { escapeCell } from './markdown-table.ts';
 
 const SCHEMA_VERSION = 1;
@@ -905,14 +906,6 @@ export function schemaCachePath(typeName: string, dir: string = SCHEMA_CACHE_DIR
   return resolve(dir, `${typeName.replace(/::/g, '-')}.json`);
 }
 
-function isThrottlingError(err: unknown): boolean {
-  if (err instanceof Error) {
-    const name = err.name;
-    return name === 'Throttling' || name === 'ThrottlingException';
-  }
-  return false;
-}
-
 export type Sleep = (ms: number) => Promise<void>;
 const defaultSleep: Sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -923,10 +916,11 @@ export interface CfnClientLike {
 
 /**
  * `DescribeType` for one type, returning the raw `Schema` document string,
- * retrying throttle-shaped failures with exponential backoff. Mirrors
- * `describeTypeWithRetry` in `scripts/audit-provider-coverage.ts`; kept
- * separate because that one returns `ProvisioningType` and discards the schema
- * this derivation exists to read.
+ * retrying throttle- and transport-shaped failures with exponential backoff.
+ * Mirrors `describeTypeWithRetry` in `scripts/audit-provider-coverage.ts` and
+ * shares its classifier, so a `socket hang up` is retried here too (#2571);
+ * kept separate because that one returns `ProvisioningType` and discards the
+ * schema this derivation exists to read.
  */
 export async function describeSchemaWithRetry(
   client: CfnClientLike,
@@ -943,7 +937,7 @@ export async function describeSchemaWithRetry(
       );
       return resp.Schema;
     } catch (err) {
-      if (isThrottlingError(err) && attempt < delays.length) {
+      if (isRetryableDescribeTypeError(err) && attempt < delays.length) {
         const delayMs = delays[attempt] ?? 1000;
         await sleep(delayMs);
         attempt++;
@@ -1316,35 +1310,73 @@ async function fetchSchemas(tier2: readonly string[], refetch: boolean): Promise
       `(${tier2.length - pending.length} already cached)...`
   );
   const client = getAwsClients().cloudFormation;
-  const limit = pLimit(DEFAULT_CONCURRENCY);
-  let done = 0;
   try {
-    await Promise.all(
-      pending.map((typeName) =>
-        limit(async () => {
-          try {
-            const schema = await describeSchemaWithRetry(client, typeName);
-            if (schema !== undefined) {
-              // Write the raw document; the derivation parses it separately so
-              // a signal change never needs another AWS call.
-              atomicWriteFile(schemaCachePath(typeName), schema);
-            } else {
-              console.error(`[stateful-candidates] no Schema returned for ${typeName}`);
-            }
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.error(`[stateful-candidates] DescribeType failed for ${typeName}: ${msg}`);
-          }
-          done++;
-          if (done % 25 === 0 || done === pending.length) {
-            console.error(`[stateful-candidates] DescribeType: ${done}/${pending.length}`);
-          }
-        })
-      )
+    // Write the raw document; the derivation parses it separately so a signal
+    // change never needs another AWS call.
+    await fetchSchemaDocuments(client, pending, (typeName, schema) =>
+      atomicWriteFile(schemaCachePath(typeName), schema)
     );
   } finally {
     client.destroy();
   }
+}
+
+/**
+ * `DescribeType` every type in `pending` at {@link DEFAULT_CONCURRENCY}, then
+ * once more, ONE AT A TIME, for each type the first pass could not read, and
+ * return the types still unread. A type the walk drops lands in the report's
+ * `unreadable` list, which the daily refresh then opens as a PR whose only
+ * change is that transient miss (go-to-k/cdkd#5353: three `socket hang up`
+ * and one `Rate exceeded` past the whole backoff, every one readable minutes
+ * later). The serial pass runs after the parallel one has stopped calling, so
+ * the throttle that exhausted a type's budget is no longer competing with it.
+ */
+export async function fetchSchemaDocuments(
+  client: CfnClientLike,
+  pending: readonly string[],
+  onSchema: (typeName: string, schema: string) => void,
+  options: { retryDelaysMs?: readonly number[]; sleep?: Sleep } = {}
+): Promise<string[]> {
+  const fetchOne = async (typeName: string, logFailure: boolean): Promise<boolean> => {
+    try {
+      const schema = await describeSchemaWithRetry(client, typeName, options);
+      if (schema !== undefined) {
+        onSchema(typeName, schema);
+        return true;
+      }
+      if (logFailure) console.error(`[stateful-candidates] no Schema returned for ${typeName}`);
+    } catch (err) {
+      if (logFailure) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[stateful-candidates] DescribeType failed for ${typeName}: ${msg}`);
+      }
+    }
+    return false;
+  };
+
+  const limit = pLimit(DEFAULT_CONCURRENCY);
+  const missed: string[] = [];
+  let done = 0;
+  await Promise.all(
+    pending.map((typeName) =>
+      limit(async () => {
+        if (!(await fetchOne(typeName, false))) missed.push(typeName);
+        done++;
+        if (done % 25 === 0 || done === pending.length) {
+          console.error(`[stateful-candidates] DescribeType: ${done}/${pending.length}`);
+        }
+      })
+    )
+  );
+  if (missed.length === 0) return [];
+
+  missed.sort();
+  console.error(`[stateful-candidates] retrying ${missed.length} unread type(s) serially...`);
+  const unread: string[] = [];
+  for (const typeName of missed) {
+    if (!(await fetchOne(typeName, true))) unread.push(typeName);
+  }
+  return unread;
 }
 
 function writeReport(report: StatefulCandidateReport): void {

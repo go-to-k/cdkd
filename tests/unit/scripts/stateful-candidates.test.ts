@@ -43,6 +43,7 @@ import {
   coerceRegistrySchema,
   deriveReport,
   describeSchemaWithRetry,
+  fetchSchemaDocuments,
   floorViolations,
   lastTypeSegment,
   loadCachedReport,
@@ -562,6 +563,82 @@ describe('the pure derivation functions', () => {
       expect(slept).toEqual([1, 2]);
       expect(calls).toBe(3);
     })();
+  });
+
+  it('describeSchemaWithRetry retries a socket hang-up, which carries only its message', async () => {
+    // The measured shape from go-to-k/cdkd#5353: a plain `Error` named `Error`
+    // with no `code`. A throttle-only classifier rethrew it on the first call.
+    let calls = 0;
+    const slept: number[] = [];
+    const schema = await describeSchemaWithRetry(
+      {
+        send: async () => {
+          calls++;
+          if (calls < 2) throw new Error('socket hang up');
+          return { Schema: '{}' };
+        },
+      },
+      'AWS::Probe::Widget',
+      { retryDelaysMs: [1, 2], sleep: async (ms) => { slept.push(ms); } }
+    );
+    expect(schema).toBe('{}');
+    expect(slept).toEqual([1]);
+  });
+
+  it('fetchSchemaDocuments re-reads each type the first pass missed, serially, and returns the rest', async () => {
+    // An empty delay list makes every `describeSchemaWithRetry` a single
+    // attempt, so a failure in the first pass is exactly one thrown call.
+    const types = ['AWS::Probe::Ok', 'AWS::Probe::Flaky', 'AWS::Probe::Dead'];
+    const calls: string[] = [];
+    let inFlight = 0;
+    let maxRetryInFlight = 0;
+    const failsOnce = new Set(['AWS::Probe::Flaky']);
+    const written: string[] = [];
+    const client = {
+      send: async (cmd: { input: { TypeName?: string } }) => {
+        const t = cmd.input.TypeName ?? '';
+        calls.push(t);
+        inFlight++;
+        // Any call past the first `types.length` belongs to the retry pass.
+        if (calls.length > types.length) maxRetryInFlight = Math.max(maxRetryInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 1));
+        inFlight--;
+        if (t === 'AWS::Probe::Dead') throw new Error('Rate exceeded');
+        if (failsOnce.delete(t)) throw Object.assign(new Error('Rate exceeded'), { name: 'Throttling' });
+        return { Schema: `{"typeName":"${t}"}` };
+      },
+    };
+    const unread = await fetchSchemaDocuments(client, types, (t) => written.push(t), {
+      retryDelaysMs: [],
+    });
+
+    expect(unread).toEqual(['AWS::Probe::Dead']);
+    expect(written.sort()).toEqual(['AWS::Probe::Flaky', 'AWS::Probe::Ok']);
+    // Each missed type is read exactly twice; a type read the first time is
+    // never re-read.
+    expect(calls.filter((t) => t === 'AWS::Probe::Ok')).toHaveLength(1);
+    expect(calls.filter((t) => t === 'AWS::Probe::Flaky')).toHaveLength(2);
+    expect(calls.filter((t) => t === 'AWS::Probe::Dead')).toHaveLength(2);
+    // The retry pass starts after the first one: its calls are the tail.
+    expect(calls.slice(types.length).sort()).toEqual(['AWS::Probe::Dead', 'AWS::Probe::Flaky']);
+    expect(maxRetryInFlight).toBe(1);
+  });
+
+  it('fetchSchemaDocuments makes no second pass when the first one read everything', async () => {
+    let calls = 0;
+    const unread = await fetchSchemaDocuments(
+      {
+        send: async () => {
+          calls++;
+          return { Schema: '{}' };
+        },
+      },
+      ['AWS::Probe::A', 'AWS::Probe::B'],
+      () => {},
+      { retryDelaysMs: [] }
+    );
+    expect(unread).toEqual([]);
+    expect(calls).toBe(2);
   });
 
   it('renderMarkdown carries EVERY summary row, the signal counts and the guarded column', () => {
