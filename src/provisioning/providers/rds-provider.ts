@@ -2357,7 +2357,10 @@ export class RDSProvider implements ResourceProvider {
       delay = Math.min(delay * 2, 10_000);
     }
     throw new Error(
-      safeMsg`Timed out waiting for member instance ${dbInstanceIdentifier} of DBCluster ${clusterLogicalId} to finish applying its new ${change}`
+      // The member's identifier is another resource's physical id, which this
+      // cluster's masking does not cover (it can be secret-derived): name only
+      // the cluster.
+      safeMsg`Timed out waiting for a member instance of DBCluster ${clusterLogicalId} to finish applying its new ${change}`
     );
   }
 

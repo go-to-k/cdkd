@@ -332,47 +332,47 @@ describe('RDSProvider DBCluster port change (issue #5417)', () => {
     ]);
   });
 
-  it('times out naming the stalled member, its cluster and the change', async () => {
-    mockSend.mockResolvedValue(instance('rebooting'));
-    const waiter = provider as unknown as {
-      waitForMemberAfterClusterChange: (
-        id: string,
-        clusterLogicalId: string,
-        transitional: ReadonlySet<string>,
-        change: string,
-        maxWaitMs: number
-      ) => Promise<void>;
-    };
+  type MemberWaiter = {
+    waitForMemberAfterClusterChange: (
+      id: string,
+      clusterLogicalId: string,
+      transitional: ReadonlySet<string>,
+      change: string,
+      maxWaitMs: number
+    ) => Promise<void>;
+  };
 
-    await expect(
-      waiter.waitForMemberAfterClusterChange(
-        'member-2',
+  it('times out naming the cluster and the change, never the member identifier', async () => {
+    // The member id is another resource's physical id, outside this cluster's
+    // masking (it can be secret-derived), so it must not be printed.
+    mockSend.mockResolvedValue(instance('rebooting'));
+    const waiter = provider as unknown as MemberWaiter;
+
+    const error = await waiter
+      .waitForMemberAfterClusterChange(
+        'secret-derived-member-id',
         'MyCluster',
         new Set(['rebooting']),
         'port',
         0
       )
-    ).rejects.toThrow(
-      'Timed out waiting for member instance member-2 of DBCluster MyCluster to finish applying its new port'
+      .catch((e: unknown) => e as Error);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      'Timed out waiting for a member instance of DBCluster MyCluster to finish applying its new port'
     );
+    expect((error as Error).message).not.toContain('secret-derived-member-id');
   });
 
-  it('flattens a line break in the member id inside the timeout message', async () => {
+  it('flattens a line break in the cluster logical id inside the timeout message', async () => {
     mockSend.mockResolvedValue(instance('modifying'));
-    const waiter = provider as unknown as {
-      waitForMemberAfterClusterChange: (
-        id: string,
-        clusterLogicalId: string,
-        transitional: ReadonlySet<string>,
-        change: string,
-        maxWaitMs: number
-      ) => Promise<void>;
-    };
+    const waiter = provider as unknown as MemberWaiter;
 
     const error = await waiter
       .waitForMemberAfterClusterChange(
-        'member\nforged',
-        'MyCluster',
+        'member-1',
+        'My\nCluster',
         new Set(['modifying']),
         'VPC security groups',
         0
@@ -381,6 +381,6 @@ describe('RDSProvider DBCluster port change (issue #5417)', () => {
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).not.toContain('\n');
-    expect((error as Error).message).toContain('of DBCluster MyCluster to finish applying its new VPC security groups');
+    expect((error as Error).message).toContain('to finish applying its new VPC security groups');
   });
 });
