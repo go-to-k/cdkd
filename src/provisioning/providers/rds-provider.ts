@@ -66,7 +66,7 @@ import {
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
   deleteAfterProtectionFlipWithFinalSnapshot,
-  isTerminalDbStatus,
+  isTerminalDbWaitStatus,
 } from './deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
@@ -958,7 +958,7 @@ export class RDSProvider implements ResourceProvider {
       try {
         // Wait for cluster to become available (skip with --no-wait)
         if (process.env['CDKD_NO_WAIT'] !== 'true') {
-          await this.waitForClusterAvailable(dbClusterIdentifier);
+          await this.waitForClusterAvailable(logicalId, dbClusterIdentifier);
         }
 
         // Describe to get final attributes
@@ -1605,7 +1605,7 @@ export class RDSProvider implements ResourceProvider {
 
       // Wait for instance to become available (skip with --no-wait)
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
-        await this.waitForInstanceAvailable(dbInstanceIdentifier);
+        await this.waitForInstanceAvailable(logicalId, dbInstanceIdentifier);
       }
 
       // Describe to get final attributes
@@ -2366,7 +2366,7 @@ export class RDSProvider implements ResourceProvider {
 
   /**
    * A cluster read inside an update wait (issue #5417). A vanished cluster or a
-   * terminal status (`isTerminalDbStatus`) never reaches the awaited state, so
+   * terminal status (`isTerminalDbWaitStatus`) never reaches the awaited state, so
    * fail now rather than after the 30-minute budget.
    */
   private requireClusterWhileWaiting(
@@ -2381,7 +2381,7 @@ export class RDSProvider implements ResourceProvider {
         safeMsg`DescribeDBClusters returned no cluster for DBCluster ${logicalId} while waiting for its new ${change}`
       );
     }
-    if (isTerminalDbStatus(cluster.Status)) {
+    if (isTerminalDbWaitStatus(cluster.Status)) {
       throw new Error(
         safeMsg`DBCluster ${logicalId} entered status ${cluster.Status ?? ''} while applying its new ${change}`
       );
@@ -2518,9 +2518,12 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a DBCluster to become available
+   * Wait for a DBCluster to become available. A terminal status
+   * (`isTerminalDbWaitStatus`) fails at once rather than after the
+   * 30-minute budget (issue #5426).
    */
   private async waitForClusterAvailable(
+    logicalId: string,
     dbClusterIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -2534,6 +2537,12 @@ export class RDSProvider implements ResourceProvider {
       this.logger.debug(`DBCluster ${dbClusterIdentifier} status: ${status}`);
 
       if (status === 'available') return;
+      // Issue #5426: a terminal status never becomes 'available'.
+      if (isTerminalDbWaitStatus(status)) {
+        throw new Error(
+          safeMsg`DBCluster ${logicalId} entered status ${status ?? ''} while being created, which it does not leave on its own`
+        );
+      }
 
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
@@ -2576,9 +2585,12 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a DBInstance to become available
+   * Wait for a DBInstance to become available. A terminal status
+   * (`isTerminalDbWaitStatus`) fails at once rather than after the
+   * 30-minute budget (issue #5426).
    */
   private async waitForInstanceAvailable(
+    logicalId: string,
     dbInstanceIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -2592,6 +2604,12 @@ export class RDSProvider implements ResourceProvider {
       this.logger.debug(`DBInstance ${dbInstanceIdentifier} status: ${status}`);
 
       if (status === 'available') return;
+      // Issue #5426: a terminal status never becomes 'available'.
+      if (isTerminalDbWaitStatus(status)) {
+        throw new Error(
+          safeMsg`DBInstance ${logicalId} entered status ${status ?? ''} while being created, which it does not leave on its own`
+        );
+      }
 
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);

@@ -60,7 +60,7 @@ import {
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
   deleteAfterProtectionFlipWithFinalSnapshot,
-  isTerminalDbStatus,
+  isTerminalDbWaitStatus,
 } from './deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
@@ -612,7 +612,7 @@ export class NeptuneProvider implements ResourceProvider {
 
       // Wait for cluster to become available (skip with --no-wait)
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
-        await this.waitForClusterAvailable(dbClusterIdentifier);
+        await this.waitForClusterAvailable(logicalId, dbClusterIdentifier);
       }
 
       const described = await this.describeDBCluster(dbClusterIdentifier);
@@ -1007,7 +1007,7 @@ export class NeptuneProvider implements ResourceProvider {
 
       // Wait for instance to become available (skip with --no-wait)
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
-        await this.waitForInstanceAvailable(dbInstanceIdentifier);
+        await this.waitForInstanceAvailable(logicalId, dbInstanceIdentifier);
       }
 
       const described = await this.describeDBInstance(dbInstanceIdentifier);
@@ -1650,7 +1650,7 @@ export class NeptuneProvider implements ResourceProvider {
 
   /**
    * A cluster read inside the security-group wait (issue #5419). A vanished
-   * cluster or a terminal status (`isTerminalDbStatus`) never reaches the
+   * cluster or a terminal status (`isTerminalDbWaitStatus`) never reaches the
    * awaited state, so fail now rather than after the 30-minute budget.
    */
   private requireClusterWhileWaiting(cluster: DBCluster | undefined, logicalId: string): DBCluster {
@@ -1661,7 +1661,7 @@ export class NeptuneProvider implements ResourceProvider {
         safeMsg`DescribeDBClusters returned no cluster for Neptune DBCluster ${logicalId} while waiting for its new VPC security groups`
       );
     }
-    if (isTerminalDbStatus(cluster.Status)) {
+    if (isTerminalDbWaitStatus(cluster.Status)) {
       throw new Error(
         safeMsg`Neptune DBCluster ${logicalId} entered status ${cluster.Status ?? ''} while applying its new VPC security groups`
       );
@@ -1741,9 +1741,12 @@ export class NeptuneProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a DBCluster to become available (no SDK waiter — manual poll).
+   * Wait for a Neptune DBCluster to become available. A terminal status
+   * (`isTerminalDbWaitStatus`) fails at once rather than after the
+   * 30-minute budget (issue #5426).
    */
   private async waitForClusterAvailable(
+    logicalId: string,
     dbClusterIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -1757,6 +1760,12 @@ export class NeptuneProvider implements ResourceProvider {
       this.logger.debug(`Neptune DBCluster ${dbClusterIdentifier} status: ${status}`);
 
       if (status === 'available') return;
+      // Issue #5426: a terminal status never becomes 'available'.
+      if (isTerminalDbWaitStatus(status)) {
+        throw new Error(
+          safeMsg`Neptune DBCluster ${logicalId} entered status ${status ?? ''} while being created, which it does not leave on its own`
+        );
+      }
 
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
@@ -1801,9 +1810,12 @@ export class NeptuneProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a DBInstance to become available (manual poll).
+   * Wait for a Neptune DBInstance to become available. A terminal status
+   * (`isTerminalDbWaitStatus`) fails at once rather than after the
+   * 30-minute budget (issue #5426).
    */
   private async waitForInstanceAvailable(
+    logicalId: string,
     dbInstanceIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -1817,6 +1829,12 @@ export class NeptuneProvider implements ResourceProvider {
       this.logger.debug(`Neptune DBInstance ${dbInstanceIdentifier} status: ${status}`);
 
       if (status === 'available') return;
+      // Issue #5426: a terminal status never becomes 'available'.
+      if (isTerminalDbWaitStatus(status)) {
+        throw new Error(
+          safeMsg`Neptune DBInstance ${logicalId} entered status ${status ?? ''} while being created, which it does not leave on its own`
+        );
+      }
 
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
