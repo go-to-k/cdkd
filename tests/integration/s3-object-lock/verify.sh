@@ -7,13 +7,21 @@
 #   - CREATE with ObjectLockEnabled + default retention (GOVERNANCE, 1 day)
 #   - an in-place retention UPDATE (Days 1 -> 5) that must NOT replace the bucket
 #   - DefaultRetention.DefaultEventHold reaching AWS on both (PR #3002)
+#   - go-to-k/cdkd#5395: the top-level ObjectLockEnabled turned on for an
+#     existing bucket (LateFlagBucket) is not applied, as in CloudFormation,
+#     and the deploy warns about it
 #
 # Phases:
 #   1. Deploy; assert ObjectLockEnabled + GOVERNANCE retention Days=1 and
 #      DefaultEventHold.Days=1.
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (Days 1 -> 5, hold 1 -> 3). Assert
 #      both new values reached AWS and the bucket was not replaced (same
-#      CreationDate).
+#      CreationDate). LateFlagBucket gains the top-level ObjectLockEnabled:
+#      the deploy must warn, and the bucket must keep its CreationDate and
+#      still have no Object Lock configuration.
+#   2b. Re-deploy with CDKD_TEST_SUSPEND=true as well: LateFlagBucket's
+#      versioning goes Suspended while the never-applied flag stays declared.
+#      The bucket has no Object Lock, so the suspend must reach S3 (#5395).
 #   3. Destroy; assert the bucket is gone and the state file is removed.
 #
 # Required env vars:
@@ -83,6 +91,8 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 BUCKET_NAME="cdkd-objectlock-test-${ACCOUNT_ID}"
+LATE_BUCKET_NAME="cdkd-objectlock-late-${ACCOUNT_ID}"
+PHASE2_LOG="$(mktemp -t cdkd-s3-object-lock-p2.XXXXXX)"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -96,6 +106,8 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   aws s3api delete-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws s3api delete-bucket --bucket "${LATE_BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  rm -f "${PHASE2_LOG}"
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -152,10 +164,22 @@ CREATION_P1="$(aws s3api list-buckets \
   --query "Buckets[?Name=='${BUCKET_NAME}'].CreationDate | [0]" --output text)"
 echo "    baseline bucket CreationDate=${CREATION_P1}"
 
+LATE_CREATION_P1="$(aws s3api list-buckets \
+  --query "Buckets[?Name=='${LATE_BUCKET_NAME}'].CreationDate | [0]" --output text)"
+if [ -z "${LATE_CREATION_P1}" ] || [ "${LATE_CREATION_P1}" = "None" ]; then
+  echo "FAIL: ${LATE_BUCKET_NAME} was not created in Phase 1" >&2
+  exit 1
+fi
+if ! gone_probe aws s3api get-object-lock-configuration --bucket "${LATE_BUCKET_NAME}" --region "${REGION}"; then
+  echo "FAIL: ${LATE_BUCKET_NAME} has Object Lock after Phase 1; the #5395 arm needs a bucket without it" >&2
+  exit 1
+fi
+echo "    ${LATE_BUCKET_NAME}: no Object Lock (CreationDate=${LATE_CREATION_P1})"
+
 # --- Phase 2: raise retention 1 -> 5 days (in-place) ------------------
 echo "==> Phase 2: re-deploy raising default retention 1 -> 5 days"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${PHASE2_LOG}"
 
 DAYS_P2="$(aws s3api get-object-lock-configuration --bucket "${BUCKET_NAME}" --region "${REGION}" \
   --query 'ObjectLockConfiguration.Rule.DefaultRetention.Days' --output text)"
@@ -181,12 +205,47 @@ if [ "${CREATION_P1}" != "${CREATION_P2}" ]; then
 fi
 echo "    bucket identity preserved (CreationDate unchanged) — no replacement"
 
+# go-to-k/cdkd#5395: the top-level flag on an existing bucket is not applied
+# (CloudFormation does not apply it either), and the deploy says so.
+if ! sed $'s/\x1b\\[[0-9;]*m//g' "${PHASE2_LOG}" | grep -qF "Object Lock was NOT enabled on the existing bucket ${LATE_BUCKET_NAME}"; then
+  echo "FAIL: Phase 2 did not warn that the top-level ObjectLockEnabled was not applied to ${LATE_BUCKET_NAME} (#5395)" >&2
+  exit 1
+fi
+echo "    Phase 2 warned that ObjectLockEnabled was not applied to ${LATE_BUCKET_NAME}"
+LATE_CREATION_P2="$(aws s3api list-buckets \
+  --query "Buckets[?Name=='${LATE_BUCKET_NAME}'].CreationDate | [0]" --output text)"
+if [ "${LATE_CREATION_P1}" != "${LATE_CREATION_P2}" ]; then
+  echo "FAIL: ${LATE_BUCKET_NAME} was REPLACED (CreationDate ${LATE_CREATION_P1} -> ${LATE_CREATION_P2})" >&2
+  exit 1
+fi
+if ! gone_probe aws s3api get-object-lock-configuration --bucket "${LATE_BUCKET_NAME}" --region "${REGION}"; then
+  echo "FAIL: ${LATE_BUCKET_NAME} gained Object Lock in Phase 2; CloudFormation leaves it off (#5395)" >&2
+  exit 1
+fi
+echo "    ${LATE_BUCKET_NAME}: same bucket, still no Object Lock"
+
+# --- Phase 2b: suspend versioning beside the never-applied flag ---------
+echo "==> Phase 2b: suspend ${LATE_BUCKET_NAME} versioning with ObjectLockEnabled still declared"
+CDKD_TEST_UPDATE=true CDKD_TEST_SUSPEND=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+LATE_VERSIONING="$(aws s3api get-bucket-versioning --bucket "${LATE_BUCKET_NAME}" --region "${REGION}" \
+  --query 'Status' --output text)"
+if [ "${LATE_VERSIONING}" != "Suspended" ]; then
+  echo "FAIL: ${LATE_BUCKET_NAME} versioning is '${LATE_VERSIONING}', expected Suspended: the top-level" >&2
+  echo "      ObjectLockEnabled was never applied, so it must not block the suspend (#5395)" >&2
+  exit 1
+fi
+echo "    ${LATE_BUCKET_NAME}: versioning Suspended (no Object Lock blocked it)"
+
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 assert_gone "bucket ${BUCKET_NAME} still exists after destroy" aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}"
 echo "    bucket deleted"
+assert_gone "bucket ${LATE_BUCKET_NAME} still exists after destroy" aws s3api head-bucket --bucket "${LATE_BUCKET_NAME}" --region "${REGION}"
+echo "    ${LATE_BUCKET_NAME} deleted"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"

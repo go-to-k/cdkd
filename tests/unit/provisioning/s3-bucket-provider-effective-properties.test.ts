@@ -104,6 +104,22 @@ function sendAnsweringNoBucket(cmd: unknown): Promise<unknown> {
   return Promise.resolve({});
 }
 
+/**
+ * A bucket that really holds Object Lock: `GetObjectLockConfiguration` answers
+ * `Enabled`. The top-level `ObjectLockEnabled` alone no longer proves a lock to
+ * the versioning-suspend guard (go-to-k/cdkd#5395: a flag added to an existing
+ * bucket is never applied), so it reads the bucket back.
+ */
+function sendAnsweringLocked(cmd: unknown): Promise<unknown> {
+  if (
+    (cmd as { constructor: { name: string } }).constructor.name ===
+    'GetObjectLockConfigurationCommand'
+  ) {
+    return Promise.resolve({ ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled' } });
+  }
+  return sendAnsweringNoBucket(cmd);
+}
+
 const RESOURCE_TYPE = 'AWS::S3::Bucket';
 const BUCKET = 'effective-properties-bucket';
 
@@ -236,6 +252,7 @@ describe('UPDATE: a skipped WHOLE-Put records the PREVIOUS value', () => {
   });
 
   it('versioning: Object Lock blocking a suspend records the still-Enabled previous block', async () => {
+    mockSend.mockImplementation(sendAnsweringLocked);
     // A warn-and-skip arm reached by a structural AWS constraint rather than a
     // malformed value — same state consequence, so the same remedy.
     const previousProperties = {

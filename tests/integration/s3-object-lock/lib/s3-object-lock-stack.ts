@@ -21,6 +21,17 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  * in today, so the fixture exercises the real one. Declared in BOTH phases on
  * purpose: gating it on the UPDATE token would make the Phase-2 template DROP
  * it and turn the arm into a removal test (.claude/rules/testing.md).
+ *
+ * go-to-k/cdkd#5395: `LateFlagBucket` is a versioned bucket without Object
+ * Lock in Phase 1 and declares only the top-level `ObjectLockEnabled: true` in
+ * Phase 2 (what CDK's `objectLockEnabled: true` synthesizes). The flag reaches
+ * S3 only through `CreateBucket`, and CloudFormation (A/B on the issue)
+ * finishes that update in place without enabling Object Lock. cdkd does the
+ * same and warns; the bucket must keep its identity and stay without Object
+ * Lock. It holds no objects, so it deletes like any empty versioned bucket.
+ * Phase 2b (`CDKD_TEST_SUSPEND=true`, on top of the UPDATE token) suspends its
+ * versioning while the never-applied flag stays declared: the bucket has no
+ * Object Lock, so the suspend must reach S3, as in CloudFormation.
  */
 export class S3ObjectLockStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -55,5 +66,15 @@ export class S3ObjectLockStack extends cdk.Stack {
     bucket.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     new cdk.CfnOutput(this, 'BucketName', { value: bucket.ref });
+
+    // go-to-k/cdkd#5395 Phase 2: the top-level flag alone, on an existing bucket.
+    const lateFlagBucket = new s3.CfnBucket(this, 'LateFlagBucket', {
+      bucketName: `cdkd-objectlock-late-${cdk.Stack.of(this).account}`,
+      versioningConfiguration: {
+        status: process.env.CDKD_TEST_SUSPEND === 'true' ? 'Suspended' : 'Enabled',
+      },
+      ...(isUpdate ? { objectLockEnabled: true } : {}),
+    });
+    lateFlagBucket.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
   }
 }
