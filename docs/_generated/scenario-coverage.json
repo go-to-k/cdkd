@@ -1989,6 +1989,11 @@
       ]
     },
     {
+      "name": "nlb-quic-server-id",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "nlb-source-nat",
       "annotated": true,
       "scenarios": []
@@ -3594,6 +3599,7 @@
     "nested-stack-deep",
     "nested-stack-replace-guard",
     "nested-stack-rollback",
+    "nlb-quic-server-id",
     "nodejs-function",
     "noecho-named-producer",
     "noecho-parameter-masking",

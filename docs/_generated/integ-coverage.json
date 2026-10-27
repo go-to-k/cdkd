@@ -1416,6 +1416,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -1561,6 +1562,9 @@
         "neptune-fix-forward-orphan": [
           "l2"
         ],
+        "nlb-quic-server-id": [
+          "l2"
+        ],
         "nlb-source-nat": [
           "l2"
         ],
@@ -1654,6 +1658,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -1788,6 +1793,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -1911,6 +1919,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -2057,6 +2066,9 @@
         "neptune-fix-forward-orphan": [
           "l2"
         ],
+        "nlb-quic-server-id": [
+          "l2"
+        ],
         "nlb-source-nat": [
           "l2"
         ],
@@ -2149,6 +2161,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -2292,6 +2305,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -2610,6 +2626,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "partial-create-handback",
         "propagation-races-2",
@@ -2765,6 +2782,9 @@
         "neptune-fix-forward-orphan": [
           "l2"
         ],
+        "nlb-quic-server-id": [
+          "l2"
+        ],
         "nlb-source-nat": [
           "l2"
         ],
@@ -2882,6 +2902,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -3019,6 +3040,9 @@
         "neptune-fix-forward-orphan": [
           "l2"
         ],
+        "nlb-quic-server-id": [
+          "l2"
+        ],
         "nlb-source-nat": [
           "l2"
         ],
@@ -3112,6 +3136,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "partial-create-handback",
         "propagation-races-2",
@@ -3285,6 +3310,9 @@
         "neptune-fix-forward-orphan": [
           "l2"
         ],
+        "nlb-quic-server-id": [
+          "l2"
+        ],
         "nlb-source-nat": [
           "l2"
         ],
@@ -3401,6 +3429,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -3545,6 +3574,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -4056,7 +4088,8 @@
         "generated-name-lifecycle",
         "local-engine-role-identity",
         "local-start-alb",
-        "local-start-alb-from-state"
+        "local-start-alb-from-state",
+        "nlb-quic-server-id"
       ],
       "signals": {
         "alb": [
@@ -4077,6 +4110,10 @@
         ],
         "local-start-alb-from-state": [
           "literal"
+        ],
+        "nlb-quic-server-id": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -4094,6 +4131,7 @@
         "local-engine-role-identity",
         "local-start-alb",
         "local-start-alb-from-state",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "partial-create-handback",
         "remove-protection",
@@ -4142,6 +4180,10 @@
           "l2",
           "literal"
         ],
+        "nlb-quic-server-id": [
+          "l1",
+          "literal"
+        ],
         "nlb-source-nat": [
           "l1",
           "literal"
@@ -4176,6 +4218,7 @@
         "local-engine-role-identity",
         "local-start-alb",
         "local-start-alb-from-state",
+        "nlb-quic-server-id",
         "partial-create-handback",
         "perf-cross-backend-check",
         "replacement-rename-onto-holder"
@@ -4209,6 +4252,10 @@
           "literal"
         ],
         "local-start-alb-from-state": [
+          "literal"
+        ],
+        "nlb-quic-server-id": [
+          "l1",
           "literal"
         ],
         "partial-create-handback": [
@@ -5256,6 +5303,7 @@
         "cross-backend-same-stack",
         "drift-revert",
         "dynamodb-globaltable-replica-settings",
+        "dynamodb-ondemand",
         "dynamodb-streams",
         "ecr-scanning",
         "eventbridge",
@@ -5283,6 +5331,9 @@
         "dynamodb-globaltable-replica-settings": [
           "l2",
           "literal"
+        ],
+        "dynamodb-ondemand": [
+          "l2"
         ],
         "dynamodb-streams": [
           "l2"
