@@ -1,7 +1,8 @@
 // issue #5419: the DocDB and Neptune DBCluster security-group waits (#1160)
 // fail at once when the cluster enters a terminal status or DescribeDBClusters
 // returns no cluster, instead of spinning for the 30-minute budget. Their
-// member-instance waits time out naming the member and the cluster.
+// member-instance waits time out naming the cluster logical id, never the
+// member identifier (another resource's physical id, outside the cluster's masking bag).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const dbSend = vi.fn();
@@ -190,7 +191,7 @@ describe.each(cases)('$label DBCluster security-group wait fail-fast (issue #541
   });
 });
 
-describe('member-instance wait timeout names the member and the cluster (issue #5419)', () => {
+describe('member-instance wait timeout names the cluster, never the member (issue #5419)', () => {
   beforeEach(() => {
     dbSend.mockReset();
     dbSend.mockResolvedValue({ DBInstances: [{ DBInstanceStatus: 'modifying' }] });
@@ -218,7 +219,7 @@ describe('member-instance wait timeout names the member and the cluster (issue #
         0
       )
     ).rejects.toThrow(
-      'Timed out waiting for member instance member-1 of DocDB DBCluster MyCluster to finish applying its new VPC security groups'
+      'Timed out waiting for a member instance of DocDB DBCluster MyCluster to finish applying its new VPC security groups'
     );
   });
 
@@ -236,7 +237,7 @@ describe('member-instance wait timeout names the member and the cluster (issue #
     await expect(
       waiter.waitForMemberAfterSecurityGroupChange('member-1', 'MyCluster', 0)
     ).rejects.toThrow(
-      'Timed out waiting for member instance member-1 of Neptune DBCluster MyCluster to finish applying its new VPC security groups'
+      'Timed out waiting for a member instance of Neptune DBCluster MyCluster to finish applying its new VPC security groups'
     );
   });
 
@@ -266,15 +267,22 @@ describe('member-instance wait timeout names the member and the cluster (issue #
       return { DBInstances: [{ DBInstanceStatus: 'modifying' }] };
     });
 
-    await expect(
-      provider.update(
+    const error = await provider
+      .update(
         'MyCluster',
         'my-cluster',
         c.type,
         { VpcSecurityGroupIds: ['sg-2'] },
         { VpcSecurityGroupIds: ['sg-1'] }
       )
-    ).rejects.toThrow(`member instance member-1 of ${c.label} DBCluster MyCluster`);
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+    expect(error?.message).toContain(`a member instance of ${c.label} DBCluster MyCluster`);
+    // The member's identifier is another resource's physical id, outside this
+    // cluster's masking bag: it must not reach the message.
+    expect(error?.message).not.toContain('member-1');
   });
 
   it('DocDB update() passes the cluster logicalId to the port-change member wait', async () => {
@@ -299,7 +307,7 @@ describe('member-instance wait timeout names the member and the cluster (issue #
     await expect(
       provider.update('MyCluster', 'my-cluster', 'AWS::DocDB::DBCluster', {}, { Port: 27018 })
     ).rejects.toThrow(
-      'member instance member-1 of DocDB DBCluster MyCluster to finish applying its new port'
+      'a member instance of DocDB DBCluster MyCluster to finish applying its new port'
     );
   });
 });

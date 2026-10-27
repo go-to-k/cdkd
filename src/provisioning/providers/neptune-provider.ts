@@ -1640,8 +1640,11 @@ export class NeptuneProvider implements ResourceProvider {
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
     }
+    // The member's identifier is the physical id of ANOTHER resource, which
+    // this cluster's masking bag does not cover (it can be secret-derived), so
+    // only the cluster's logical id is named.
     throw new Error(
-      safeMsg`Timed out waiting for member instance ${dbInstanceIdentifier} of Neptune DBCluster ${clusterLogicalId} to finish applying its new VPC security groups`
+      safeMsg`Timed out waiting for a member instance of Neptune DBCluster ${clusterLogicalId} to finish applying its new VPC security groups`
     );
   }
 
@@ -1667,9 +1670,10 @@ export class NeptuneProvider implements ResourceProvider {
   }
 
   /**
-   * Wait until the cluster is `available` AND reports exactly `expected` as its
-   * VPC security groups, all `active` (issue #1160). `available` alone can still
-   * read before the group swap has started; the group statuses cannot.
+   * Wait until the cluster is out of `modifying` AND reports exactly `expected` as
+   * its VPC security groups, all `active` (issue #1160). Being out of
+   * `modifying` alone can still read before the group swap has started; the
+   * group statuses cannot.
    */
   private async waitForSecurityGroupsApplied(
     dbClusterIdentifier: string,
