@@ -1173,7 +1173,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     // nothing and says so, rather than report a removal that did not happen.
     if (wasSet('DocumentDBEventSourceConfig'))
       log.warn(
-        safeMsg`${logicalId} (${resourceType}): DocumentDBEventSourceConfig was removed from the template; the mapping keeps its current DocumentDB settings. Declare the block with the values you want instead; this is reported only on this deploy.`
+        safeMsg`${logicalId} (${resourceType}): DocumentDBEventSourceConfig was removed from the template; the mapping keeps its current DocumentDB settings. Declare the block with the values you want instead; this is reported only once.`
       );
 
     const updateResp = await this.lambdaClient.send(
