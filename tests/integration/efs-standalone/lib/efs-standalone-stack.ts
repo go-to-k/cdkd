@@ -4,6 +4,9 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as efs from 'aws-cdk-lib/aws-efs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 
+/** The mount target's declared IPv4 address (issue #2762); verify.sh asserts it. */
+const MOUNT_TARGET_IP = '10.0.0.100';
+
 /**
  * EFS Standalone example stack
  *
@@ -12,18 +15,20 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * - AWS::EC2::SecurityGroup
  * - AWS::EFS::FileSystem (with #609 backfilled props: LifecyclePolicies,
  *   BackupPolicy, FileSystemPolicy, FileSystemProtection)
- * - AWS::EFS::MountTarget
+ * - AWS::EFS::MountTarget (DUAL_STACK at a declared IpAddress, #2762)
  * - AWS::EFS::AccessPoint
- * - CfnOutputs for filesystem ID, access point ID
+ * - CfnOutputs for filesystem ID, access point ID, mount target id + IpAddress
  */
 export class EfsStandaloneStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // VPC with 1 AZ, public subnet only, no NAT
+    // VPC with 1 AZ, public subnet only, no NAT. Dual-stack so the mount
+    // target can be DUAL_STACK (issue #2762, below).
     const vpc = new ec2.Vpc(this, 'Vpc', {
       maxAzs: 1,
       natGateways: 0,
+      ipProtocol: ec2.IpProtocol.DUAL_STACK,
       subnetConfiguration: [
         {
           cidrMask: 24,
@@ -70,6 +75,22 @@ export class EfsStandaloneStack extends cdk.Stack {
       }),
     });
 
+    // Issue #2762: the mount target's create-only addressing, which used to
+    // route it through Cloud Control (the SDK provider did not handle it).
+    // The L2 exposes neither, so reach its one CfnMountTarget. The
+    // same values in every phase: a change would replace the mount target.
+    // 10.0.0.100 sits in the only subnet (10.0.0.0/24: the default
+    // 10.0.0.0/16 VPC CIDR, one /24 public subnet).
+    const mountTargets = fs.node
+      .findAll()
+      .filter((c): c is efs.CfnMountTarget => c instanceof efs.CfnMountTarget);
+    if (mountTargets.length !== 1) {
+      throw new Error(`expected 1 CfnMountTarget, found ${mountTargets.length}`);
+    }
+    const mountTarget = mountTargets[0]!;
+    mountTarget.addPropertyOverride('IpAddressType', 'DUAL_STACK');
+    mountTarget.addPropertyOverride('IpAddress', MOUNT_TARGET_IP);
+
     // EFS AccessPoint
     const ap = fs.addAccessPoint('AP', {
       path: '/data',
@@ -94,5 +115,10 @@ export class EfsStandaloneStack extends cdk.Stack {
       value: ap.accessPointId,
       description: 'EFS AccessPoint ID',
     });
+
+    // Issue #2762: `Fn::GetAtt [MountTarget, IpAddress]`, which resolved to
+    // the mount target id before the SDK provider recorded the attribute.
+    new cdk.CfnOutput(this, 'MountTargetId', { value: mountTarget.ref });
+    new cdk.CfnOutput(this, 'MountTargetIpAddress', { value: mountTarget.attrIpAddress });
   }
 }

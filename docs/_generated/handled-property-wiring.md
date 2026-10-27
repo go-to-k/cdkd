@@ -15,7 +15,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **89**
-- Declared properties: **1181** (**1179** with read evidence)
+- Declared properties: **1185** (**1183** with read evidence)
 - Fully wired classes: **87**
 - Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **39**
@@ -111,7 +111,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `EC2Provider` | ec2-provider.ts | wired | 73 | 73 |
 | `ECRProvider` | ecr-provider.ts | wired | 9 | 9 |
 | `ECSProvider` | ecs-provider.ts | wired | 48 | 48 |
-| `EFSProvider` | efs-provider.ts | wired | 18 | 18 |
+| `EFSProvider` | efs-provider.ts | wired | 21 | 21 |
 | `ElastiCacheProvider` | elasticache-provider.ts | wired | 26 | 26 |
 | `ELBv2Provider` | elbv2-provider.ts | wired | 38 | 38 |
 | `EMRClusterProvider` | emr-cluster-provider.ts | wired | 27 | 27 |
@@ -155,7 +155,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `RDSDBProxyProvider` | rds-dbproxy-provider.ts | wired | 10 | 10 |
 | `RDSDBProxyTargetGroupProvider` | rds-dbproxy-targetgroup-provider.ts | wired | 6 | 6 |
 | `RDSProvider` | rds-provider.ts | wired | 27 | 27 |
-| `Route53Provider` | route53-provider.ts | wired | 22 | 22 |
+| `Route53Provider` | route53-provider.ts | wired | 23 | 23 |
 | `S3BucketPolicyProvider` | s3-bucket-policy-provider.ts | wired | 2 | 2 |
 | `S3BucketProvider` | s3-bucket-provider.ts | wired | 19 | 19 |
 | `S3DirectoryBucketProvider` | s3-directory-bucket-provider.ts | wired | 4 | 4 |
