@@ -339,7 +339,12 @@ echo "    file system is AVAILABLE (SCRATCH_2, 1200 GiB, compression NONE)"
 
 # go-to-k/cdkd#5430: LogConfiguration reached CreateFileSystem. Before the fix
 # cdkd dropped it, so FSx logged nothing (no WARN_ERROR, no Destination). FSx
-# may report the ARN with or without the `:*` suffix; compare it without.
+# reports Destination as the LOG-STREAM ARN it writes to
+# (`<log-group ARN>:log-stream:datarepo_fs-...`), so compare its log-group part.
+log_group_of() { # usage: log_group_of <destination ARN>
+  local arn="${1%%:log-stream:*}"
+  printf '%s' "${arn%:\*}"
+}
 LOG_DEST_OUT="$(output_value LogDestinationArn)"
 if [ -z "${LOG_DEST_OUT}" ]; then
   echo "FAIL: LogDestinationArn output missing from cdkd state after Phase 1" >&2
@@ -350,7 +355,7 @@ $(aws fsx describe-file-systems --file-system-ids "${FS_ID_P1}" --region "${REGI
   --query 'FileSystems[0].[LustreConfiguration.LogConfiguration.Level,LustreConfiguration.LogConfiguration.Destination]' \
   --output text)
 EOF
-if [ "${LOG_LEVEL_P1}" != "WARN_ERROR" ] || [ "${LOG_DEST_P1%:\*}" != "${LOG_DEST_OUT}" ]; then
+if [ "${LOG_LEVEL_P1}" != "WARN_ERROR" ] || [ "$(log_group_of "${LOG_DEST_P1}")" != "${LOG_DEST_OUT}" ]; then
   echo "FAIL: Phase 1 expected LogConfiguration WARN_ERROR -> ${LOG_DEST_OUT}, got '${LOG_LEVEL_P1}' -> '${LOG_DEST_P1}' (issue #5430: LogConfiguration not sent on CreateFileSystem)" >&2
   exit 1
 fi
@@ -461,7 +466,7 @@ $(aws fsx describe-file-systems --file-system-ids "${FS_ID_P2}" --region "${REGI
   --query 'FileSystems[0].[LustreConfiguration.LogConfiguration.Level,LustreConfiguration.LogConfiguration.Destination]' \
   --output text)
 EOF
-if [ "${LOG_LEVEL_P2}" != "ERROR_ONLY" ] || [ "${LOG_DEST_P2%:\*}" != "${LOG_DEST_OUT}" ]; then
+if [ "${LOG_LEVEL_P2}" != "ERROR_ONLY" ] || [ "$(log_group_of "${LOG_DEST_P2}")" != "${LOG_DEST_OUT}" ]; then
   echo "FAIL: Phase 2 expected LogConfiguration ERROR_ONLY -> ${LOG_DEST_OUT} (issue #5430: an in-place UpdateFileSystem), got '${LOG_LEVEL_P2}' -> '${LOG_DEST_P2}'" >&2
   exit 1
 fi
