@@ -335,7 +335,7 @@ rollback-sqs-cooldown	2026-10-24T07:04:10Z	PASS	154	verify.sh	rc ok, orph clean
 route53	2026-10-19T08:51:28Z	PASS	470	verify.sh	rc ok, orph clean (#2319 PR 5087)
 s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 PR #4449)
-s3-cloudfront	2026-10-23T23:55:45Z	PASS	235	verify.sh	rc ok, orph clean
+s3-cloudfront	2026-10-27T11:54:53Z	PASS	276	verify.sh	rc ok, orph clean; #5393 Enabled arm: pre-fix MalformedXML at Distribution CREATE, post-fix green
 s3-directory-bucket	2026-10-20T06:32:13Z	PASS	221	verify.sh	deploy+destroy clean, 0 orphans
 s3-event-notification	2026-10-25T13:14:00Z	PASS	95	verify.sh	us-east-1; PR #5262 a4722aee6; rc ok, orph clean
 s3-fix-forward-orphan	2026-10-15T19:17:17Z	PASS	281	verify.sh	PR #4966 (#3252) d92a5794e; us-west-2; own state bucket; rc ok, destroy clean, orph clean
