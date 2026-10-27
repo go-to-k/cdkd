@@ -1006,7 +1006,7 @@ describe('LambdaEventSourceMappingProvider', () => {
       expect(
         lines.filter((l) =>
           l.includes(
-            'L (AWS::Lambda::EventSourceMapping): DocumentDBEventSourceConfig was removed from the template; the mapping keeps its current DocumentDB settings.'
+            'L (AWS::Lambda::EventSourceMapping): DocumentDBEventSourceConfig was removed from the template; the mapping keeps its current DocumentDB settings, as CloudFormation keeps them.'
           )
         )
       ).toHaveLength(1);

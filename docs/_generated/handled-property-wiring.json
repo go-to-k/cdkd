@@ -14238,7 +14238,8 @@
       ],
       "gaps": [],
       "blindSpots": [
-        "computed key in applyUpdate()"
+        "computed key in applyUpdate()",
+        "object spread in applyUpdate()"
       ]
     },
     {
