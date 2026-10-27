@@ -95,7 +95,7 @@ const DATABASE_CASE: TypeCase = {
   // block and for the AWS-authored `Parameters` keys the read-merge-write
   // keeps, a key live but declared by neither side, which the arm (live = the
   // previous bag) never holds.
-  wholeFromNext: { keys: () => true, reason: WHOLE_FROM_NEXT },
+  wholeFromNext: { keys: (key) => key === 'DatabaseInput', reason: WHOLE_FROM_NEXT },
   exempt: {},
   targets: [
     // The read-merge-write must not resurrect a key the template dropped: it
@@ -126,6 +126,8 @@ const DATABASE_CASE: TypeCase = {
         },
       },
       expectedSilent: {
+        'update-remove:CatalogId':
+          'update() sends updateCatalogId(next) and never reads the recorded CatalogId for the call (glue-provider.ts:1374, 1441), so a removal compares two requests that both omit it; the recorded side reaches only the catalog-move check',
         'update-vary:CatalogId':
           'a changed CatalogId moves the database to another catalog, which update() refuses before any call (refuseCatalogMove, glue-provider.ts:1360-1372)',
       },
@@ -479,9 +481,14 @@ const WORKFLOW_CASE: TypeCase = {
 
 /**
  * A security configuration has no update API: `update()` always refuses
- * (glue-provider.ts:3811-3845), so every change replaces it, and the case
- * marks `EncryptionConfiguration` create-only beside the schema's `Name` (the
- * schema lists only `Name`, but no in-place path exists for the rest). The
+ * (glue-provider.ts:3811-3845), and the case marks `EncryptionConfiguration`
+ * create-only beside the schema's `Name` (the schema lists only `Name`, but no
+ * in-place path exists for the rest). The refusal is CloudFormation parity,
+ * measured by a CFn A/B (us-east-1): an `EncryptionConfiguration` change shows
+ * `Replacement: False` in the change set, then fails `UPDATE_FAILED` ("cannot
+ * update a stack when a custom-named resource requires replacing") and rolls
+ * back, and `Name` is required for this type, so CloudFormation always fails
+ * there too. The
  * bag probes then skip every update comparison; only the harness's no-op
  * `settled` update would reach `update()`, which this provider answers in
  * place, and `describeGlueExtras` pins the real refusal with nothing on the
