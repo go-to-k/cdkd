@@ -218,6 +218,30 @@ export function natZoneAddressesAddedToAutomaticGateway(
 }
 
 /**
+ * Conditional-replacement predicate for `AWS::ECS::Service.LaunchType` (issue
+ * [#5392](https://github.com/go-to-k/cdkd/issues/5392)).
+ *
+ * `UpdateService` has no `launchType` member, and the registry schema does not
+ * mark the property createOnly, so without this rule a change diffs as an
+ * in-place update that AWS never sees. MEASURED against CloudFormation
+ * (us-east-1, 2026-10-27; every change set said `Replacement: Conditional`):
+ *
+ *  - VARY (`EC2` -> `EXTERNAL`) and ADD (absent -> `EC2`) REPLACE the service,
+ *    the add even when the live launch type already was `EC2`.
+ *  - REMOVE (`EXTERNAL` -> absent) updates in place and the service KEEPS
+ *    `EXTERNAL`, so an in-place update sending nothing is parity (the provider
+ *    has no removal default for it).
+ *
+ * So a replacement is planned exactly when the new value is present and
+ * differs. The deploy diff resolves intrinsics before asking; only a value
+ * still unresolved there (an intrinsic object on one side) compares unequal
+ * and replaces, the conservative direction for a value AWS cannot update.
+ */
+export function ecsServiceLaunchTypeSetOrChanged(oldValue: unknown, newValue: unknown): boolean {
+  return newValue != null && !isDeepStrictEqual(oldValue, newValue);
+}
+
+/**
  * Replacement rules registry
  *
  * Maps resource types to their replacement rules
@@ -927,6 +951,14 @@ export class ReplacementRulesRegistry {
         'TaskRoleArn',
         'Volumes',
       ]),
+    });
+
+    // ECS Service — `LaunchType` replaces when set or changed, and stays in
+    // place when removed (issue #5392; see the predicate). Every other
+    // property stays with the schema fallback.
+    this.rules.set('AWS::ECS::Service', {
+      replacementProperties: new Set(),
+      conditionalReplacements: new Map([['LaunchType', ecsServiceLaunchTypeSetOrChanged]]),
     });
 
     // ELBv2 ListenerRule — `ListenerArn` is create-only (and write-only). The

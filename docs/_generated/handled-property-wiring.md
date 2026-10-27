@@ -51,7 +51,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `DynamoDBTableProvider` (dynamodb-table-provider.ts) | `computed key in canonicalizeDriftPair()`, `object spread in canonicalizeDriftProperties()` |
 | `EC2Provider` (ec2-provider.ts) | `Array.isArray(...) in isPlainRecord()`, `computed key in comparableIngressIdentity()`, `computed key in ingressRuleIdentity()`, `computed key in narrowRouteDestinations()`, `computed key in recordedGatewayIdOf()`, `computed key in updateRoute()`, `identity(...) in readSgIngressByIdentity()`, `object spread in canonicalizeSgInlineRuleProtocols()`, `object spread in createSecurityGroupIngress()`, `object spread in narrowIngressIpProtocol()`, `object spread in narrowRouteDestinations()`, `object spread in updateSecurityGroupIngress()`, `withRemovalDefaults(...) in update()` |
 | `ECRProvider` (ecr-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
-| `ECSProvider` (ecs-provider.ts) | `withRemovalDefaults(...) in update()` |
+| `ECSProvider` (ecs-provider.ts) | `computed key in updateTaskDefinition()`, `Object.keys(...) in updateTaskDefinition()`, `withRemovalDefaults(...) in update()` |
 | `EFSProvider` (efs-provider.ts) | `computed key in updateFileSystem()` |
 | `ELBv2Provider` (elbv2-provider.ts) | `computed key in canonicalizeDriftPair()`, `computed key in updateListener()`, `computed key in updateLoadBalancer()`, `computed key in updateTargetGroup()`, `Object.keys(...) in updateLoadBalancer()` |
 | `EMRClusterProvider` (emr-cluster-provider.ts) | `computed key in update()`, `object spread in update()` |

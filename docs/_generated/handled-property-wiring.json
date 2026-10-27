@@ -8256,7 +8256,8 @@
           ],
           "seededBy": [
             "create",
-            "createTaskDefinition"
+            "createTaskDefinition",
+            "update"
           ]
         },
         {
@@ -8319,7 +8320,9 @@
           ],
           "seededBy": [
             "create",
-            "createService"
+            "createService",
+            "update",
+            "updateService"
           ]
         },
         {
@@ -8650,7 +8653,8 @@
             "createTaskDefinition",
             "update",
             "updateCluster",
-            "updateService"
+            "updateService",
+            "updateTaskDefinition"
           ]
         },
         {
@@ -8737,6 +8741,8 @@
       ],
       "gaps": [],
       "blindSpots": [
+        "computed key in updateTaskDefinition()",
+        "Object.keys(...) in updateTaskDefinition()",
         "withRemovalDefaults(...) in update()"
       ]
     },
