@@ -276,4 +276,30 @@ describe('member-instance wait timeout names the member and the cluster (issue #
       )
     ).rejects.toThrow(`member instance member-1 of ${c.label} DBCluster MyCluster`);
   });
+
+  it('DocDB update() passes the cluster logicalId to the port-change member wait', async () => {
+    const provider = new DocDBProvider();
+    (provider as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async () => {};
+    const p = provider as unknown as Record<string, (...args: unknown[]) => Promise<void>>;
+    const original = p['waitForMemberAfterClusterChange'].bind(provider);
+    p['waitForMemberAfterClusterChange'] = (...args: unknown[]) =>
+      original(args[0], args[1], args[2], args[3], 0);
+    dbSend.mockReset();
+    dbSend.mockImplementation(async (command: object) => {
+      const name = command.constructor.name;
+      if (name === 'ModifyDBClusterCommand') return {};
+      if (name === 'DescribeDBClustersCommand') {
+        return { DBClusters: [{ ...cluster('available'), Port: 27017 }] };
+      }
+      return { DBInstances: [{ DBInstanceStatus: 'rebooting' }] };
+    });
+
+    // A removed Port 27018 resets to 27017 (#1160): the port wait settles, then
+    // the member wait times out with the template logical id.
+    await expect(
+      provider.update('MyCluster', 'my-cluster', 'AWS::DocDB::DBCluster', {}, { Port: 27018 })
+    ).rejects.toThrow(
+      'member instance member-1 of DocDB DBCluster MyCluster to finish applying its new port'
+    );
+  });
 });
