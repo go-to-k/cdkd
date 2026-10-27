@@ -38,6 +38,10 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  * `CDKD_SRD_ENC=1` adds `DeliveryStreamEncryptionConfigurationInput` with an
  * AWS-owned key; dropping it again is a removal, which CloudFormation answers
  * with `StopDeliveryStreamEncryption` (issue #5357).
+ *
+ * A second delivery stream uses the legacy `S3DestinationConfiguration`.
+ * `CDKD_SRD_LEGACY_V2=1` changes its BufferingHints, Prefix and
+ * CompressionFormat, which CloudFormation applies in place (issue #5439).
  */
 export class StreamDeleteRedeployStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -88,5 +92,26 @@ export class StreamDeleteRedeployStack extends cdk.Stack {
     });
     // The role's grant policy must exist before Firehose validates the role.
     deliveryStream.node.addDependency(role);
+
+    const legacyV2 = process.env.CDKD_SRD_LEGACY_V2 === '1';
+    const legacyStream = new firehose.CfnDeliveryStream(this, 'LegacyS3DeliveryStream', {
+      deliveryStreamName: `cdkd-stream-redeploy-legacy-${runId}`,
+      s3DestinationConfiguration: {
+        bucketArn: bucket.bucketArn,
+        roleArn: role.roleArn,
+        ...(legacyV2
+          ? {
+              prefix: 'legacy-b/',
+              compressionFormat: 'GZIP',
+              bufferingHints: { intervalInSeconds: 120, sizeInMBs: 10 },
+            }
+          : {
+              prefix: 'legacy-a/',
+              compressionFormat: 'UNCOMPRESSED',
+              bufferingHints: { intervalInSeconds: 60, sizeInMBs: 5 },
+            }),
+      },
+    });
+    legacyStream.node.addDependency(role);
   }
 }
