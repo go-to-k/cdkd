@@ -50,7 +50,6 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ApiGatewayProvider } from '../../../src/provisioning/providers/apigateway-provider.js';
-import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
@@ -632,16 +631,15 @@ describe('ApiGatewayProvider', () => {
     });
 
     describe('update', () => {
-      it('should reject with ResourceUpdateNotSupportedError (deployments are immutable)', async () => {
-        await expect(
-          provider.update(
-            'MyDeployment',
-            'deploy-123',
-            resourceType,
-            { RestApiId: 'api-id' },
-            { RestApiId: 'api-id' }
-          )
-        ).rejects.toThrow(ResourceUpdateNotSupportedError);
+      it('sends nothing when Description is unchanged', async () => {
+        const result = await provider.update(
+          'MyDeployment',
+          'deploy-123',
+          resourceType,
+          { RestApiId: 'api-id', Description: 'same' },
+          { RestApiId: 'api-id', Description: 'same' }
+        );
+        expect(result).toEqual({ physicalId: 'deploy-123', wasReplaced: false });
         expect(mockSend).not.toHaveBeenCalled();
       });
     });

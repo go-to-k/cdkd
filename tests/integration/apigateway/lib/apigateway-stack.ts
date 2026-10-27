@@ -135,16 +135,22 @@ exports.handler = async (event) => {
       anyMethod: true,
     });
 
+    const removal = process.env.CDKD_TEST_REMOVAL === 'true';
+
     // Standalone REQUEST authorizer (not attached to any method - no IAM
     // role / lambda permission needed since it is never invoked). It exists
-    // solely to exercise the #609 Authorizer `authType` backfill — a
+    // to exercise the #609 Authorizer `authType` backfill — a
     // customer-defined free-form label used by OpenAPI import/export
     // tooling with no functional impact on the deployed authorizer. The
     // verify.sh asserts `aws apigateway get-authorizer --query 'authType'`
     // returns 'custom' post-deploy.
+    //
+    // Issue #5391: CDKD_TEST_REMOVAL=true changes its `Type` to TOKEN. A
+    // CloudFormation A/B in us-east-1 updated the type in place (same
+    // authorizer id); pre-fix cdkd sent nothing and reported success.
     new apigateway.CfnAuthorizer(this, 'RequestAuthorizer', {
       restApiId: api.restApiId,
-      type: 'REQUEST',
+      type: removal ? 'TOKEN' : 'REQUEST',
       name: 'cdkd-request-authorizer',
       authType: 'custom',
       authorizerUri: `arn:aws:apigateway:${this.region}:lambda:path/2015-03-31/functions/${handler.functionArn}/invocations`,
@@ -188,6 +194,25 @@ exports.handler = async (event) => {
       requestModels: { 'application/json': petModel },
     });
 
+    // Issue #5391: a standalone Deployment whose `Description` changes under
+    // CDKD_TEST_REMOVAL=true. CloudFormation updates it in place (same
+    // deployment id, A/B in us-east-1); pre-fix cdkd refused every Deployment
+    // update and failed the redeploy. No stage points at it. A deployment
+    // needs every method's integration in place before it is created (a
+    // method is PutMethod then PutIntegration), hence the dependencies, as
+    // CDK's own L2 Deployment declares them.
+    const describedDeployment = new apigateway.CfnDeployment(this, 'DescribedDeployment', {
+      restApiId: api.restApiId,
+      // CDKD_TEST_DEPLOYMENT_DESCRIPTION_REMOVAL=true (with CDKD_TEST_REMOVAL)
+      // drops the description: CloudFormation clears it (A/B, us-east-1).
+      description: !removal
+        ? 'cdkd-5391-v1'
+        : process.env.CDKD_TEST_DEPLOYMENT_DESCRIPTION_REMOVAL === 'true'
+          ? undefined
+          : 'cdkd-5391-v2',
+    });
+    for (const m of api.methods) describedDeployment.node.addDependency(m);
+
     // AWS::ApiGateway::Account removal (issue #1160). Declared as an L1 with
     // an explicit role, NOT through `cloudWatchRole: true` (see above): this
     // Account and Role carry the default `DeletionPolicy: Delete`, and the
@@ -212,7 +237,6 @@ exports.handler = async (event) => {
         ),
       ],
     });
-    const removal = process.env.CDKD_TEST_REMOVAL === 'true';
     new apigateway.CfnAccount(this, 'Account', {
       ...(removal ? {} : { cloudWatchRoleArn: accountRole.roleArn }),
     });

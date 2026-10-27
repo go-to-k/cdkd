@@ -690,6 +690,7 @@
             "createDeployment",
             "createStage",
             "update",
+            "updateDeployment",
             "updateStage"
           ]
         },
@@ -986,6 +987,7 @@
             "readCurrentStateStage",
             "update",
             "updateAuthorizer",
+            "updateDeployment",
             "updateResource",
             "updateStage"
           ]

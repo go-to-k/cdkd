@@ -196,13 +196,15 @@
         "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-stage-props",
-        "apigw-stage-throttling"
+        "apigw-stage-throttling",
+        "apigw-vpclink-integration-target"
       ],
       "signals": {
         "api-cognito": [
           "literal"
         ],
         "apigateway": [
+          "l1",
           "literal"
         ],
         "apigw-cloudwatch-role-redeploy": [
@@ -217,6 +219,9 @@
         ],
         "apigw-stage-throttling": [
           "literal"
+        ],
+        "apigw-vpclink-integration-target": [
+          "l1"
         ]
       }
     },
@@ -228,7 +233,8 @@
         "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-stage-props",
-        "apigw-stage-throttling"
+        "apigw-stage-throttling",
+        "apigw-vpclink-integration-target"
       ],
       "signals": {
         "api-cognito": [
@@ -248,6 +254,10 @@
           "literal"
         ],
         "apigw-stage-throttling": [
+          "literal"
+        ],
+        "apigw-vpclink-integration-target": [
+          "l1",
           "literal"
         ]
       }
@@ -279,7 +289,8 @@
         "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-stage-props",
-        "apigw-stage-throttling"
+        "apigw-stage-throttling",
+        "apigw-vpclink-integration-target"
       ],
       "signals": {
         "api-cognito": [
@@ -300,6 +311,9 @@
         ],
         "apigw-stage-throttling": [
           "literal"
+        ],
+        "apigw-vpclink-integration-target": [
+          "l1"
         ]
       }
     },
@@ -1362,6 +1376,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
@@ -1423,6 +1438,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "apigw-vpclink-integration-target": [
           "l2"
         ],
         "batch": [
@@ -1598,6 +1616,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
@@ -1655,6 +1674,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "apigw-vpclink-integration-target": [
           "l2"
         ],
         "batch": [
@@ -1849,6 +1871,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
@@ -1909,6 +1932,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "apigw-vpclink-integration-target": [
           "l2"
         ],
         "batch": [
@@ -2083,6 +2109,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
@@ -2144,6 +2171,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "apigw-vpclink-integration-target": [
           "l2"
         ],
         "batch": [
@@ -2319,6 +2349,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
@@ -2364,6 +2395,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "apigw-vpclink-integration-target": [
           "l2"
         ],
         "batch": [
@@ -2534,6 +2568,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
@@ -2600,6 +2635,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "apigw-vpclink-integration-target": [
           "l2"
         ],
         "batch": [
@@ -2806,6 +2844,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
@@ -2863,6 +2902,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "apigw-vpclink-integration-target": [
           "l2"
         ],
         "batch": [
@@ -3026,6 +3068,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
@@ -3096,6 +3139,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "apigw-vpclink-integration-target": [
           "l2"
         ],
         "batch": [
@@ -3315,6 +3361,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
@@ -3375,6 +3422,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "apigw-vpclink-integration-target": [
           "l2"
         ],
         "batch": [
@@ -4035,6 +4085,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "deletion-ordering-complex",
         "drift-revert-vpc",
         "ecs-bluegreen",
@@ -4056,6 +4107,9 @@
           "literal"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "apigw-vpclink-integration-target": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -8319,6 +8373,7 @@
     "AWS::ApiGateway::RequestValidator",
     "AWS::ApiGateway::RestApi",
     "AWS::ApiGateway::UsagePlanKey",
+    "AWS::ApiGatewayV2::VpcLink",
     "AWS::AppConfig::Application",
     "AWS::AppConfig::ConfigurationProfile",
     "AWS::AppConfig::Deployment",
