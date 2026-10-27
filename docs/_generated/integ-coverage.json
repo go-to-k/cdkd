@@ -6308,6 +6308,7 @@
         "ecs-fargate",
         "ecs-service-update-props",
         "fallback-recreate-children",
+        "fsx-lustre",
         "full-stack-demo",
         "generated-name-lifecycle",
         "glue-update-hardening",
@@ -6383,6 +6384,10 @@
         ],
         "fallback-recreate-children": [
           "l1",
+          "literal"
+        ],
+        "fsx-lustre": [
+          "l2",
           "literal"
         ],
         "full-stack-demo": [

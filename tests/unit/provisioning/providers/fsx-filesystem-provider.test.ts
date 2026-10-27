@@ -1996,6 +1996,7 @@ const SUBPROP_SAMPLE_VALUE: Record<string, unknown> = {
   PerUnitStorageThroughput: 125,
   MetadataConfiguration: { Mode: 'USER_PROVISIONED', Iops: 6000 },
   DataReadCacheConfiguration: { SizingMode: 'USER_PROVISIONED', SizeGiB: 128 },
+  LogConfiguration: { Level: 'WARN_ERROR' },
   ThroughputCapacity: 256,
   ThroughputCapacityPerHAPair: 256,
   HAPairs: 2,
@@ -3489,5 +3490,189 @@ describe('FSxFileSystemProvider OPENZFS variant', () => {
 
     const value = await newProvider().getAttribute(FS_ID, RESOURCE_TYPE, 'RootVolumeId');
     expect(value).toBe('fsvol-xyz');
+  });
+});
+
+// go-to-k/cdkd#5430: LustreConfiguration.LogConfiguration (Level, Destination)
+// is sent on create, updated in place (CFn "Update requires: No interruption"),
+// and read back for drift.
+describe('FSxFileSystemProvider Lustre LogConfiguration (#5430)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const LOG_GROUP_ARN = 'arn:aws:logs:us-east-1:123456789012:log-group:/aws/fsx/cdkd-5430';
+  const withLog = (log: Record<string, unknown> | undefined): Record<string, unknown> => ({
+    ...LUSTRE_PROPS,
+    LustreConfiguration: {
+      ...LUSTRE_PROPS.LustreConfiguration,
+      ...(log !== undefined && { LogConfiguration: log }),
+    },
+  });
+  const warnings = (): string[] => childLogger.warn.mock.calls.map((c) => String(c[0]));
+
+  it('sends Level and Destination on CreateFileSystem', async () => {
+    routeSend({
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().create(
+      'MyFs',
+      RESOURCE_TYPE,
+      withLog({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN })
+    );
+
+    const [create] = callsOf(CreateFileSystemCommand);
+    expect((create.input['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration']).toEqual(
+      { Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN }
+    );
+  });
+
+  it('sends no LogConfiguration on CreateFileSystem when none is declared', async () => {
+    routeSend({
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().create('MyFs', RESOURCE_TYPE, withLog(undefined));
+
+    const [create] = callsOf(CreateFileSystemCommand);
+    expect(
+      (create.input['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration']
+    ).toBeUndefined();
+  });
+
+  it('sends a changed LogConfiguration on UpdateFileSystem, in place', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const result = await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      withLog({ Level: 'ERROR_ONLY', Destination: LOG_GROUP_ARN }),
+      withLog({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN })
+    );
+
+    expect(result).toMatchObject({ physicalId: FS_ID, wasReplaced: false });
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      LustreConfiguration: {
+        LogConfiguration: { Level: 'ERROR_ONLY', Destination: LOG_GROUP_ARN },
+      },
+    });
+  });
+
+  it('sends a newly added LogConfiguration on UpdateFileSystem', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      withLog({ Level: 'WARN_ONLY' }),
+      withLog(undefined)
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      LustreConfiguration: { LogConfiguration: { Level: 'WARN_ONLY' } },
+    });
+  });
+
+  it('sends no UpdateFileSystem when LogConfiguration is unchanged', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+
+    const props = withLog({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN });
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, props, props);
+
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+  });
+
+  it('leaves a removed LogConfiguration in place with the line that claims nothing about CloudFormation', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      withLog(undefined),
+      withLog({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN })
+    );
+
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): property LustreConfiguration.LogConfiguration is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.',
+    ]);
+  });
+
+  it('reads LogConfiguration back for drift', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          availableFs({
+            FileSystemType: 'LUSTRE',
+            LustreConfiguration: {
+              MountName: MOUNT_NAME,
+              DeploymentType: 'SCRATCH_2',
+              LogConfiguration: { Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN },
+            },
+          }),
+        ],
+      },
+    });
+
+    const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
+
+    expect((state['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration']).toEqual({
+      Level: 'WARN_ERROR',
+      Destination: LOG_GROUP_ARN,
+    });
+  });
+
+  it('reads back a DISABLED LogConfiguration without inventing a Destination', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          availableFs({
+            FileSystemType: 'LUSTRE',
+            LustreConfiguration: {
+              MountName: MOUNT_NAME,
+              DeploymentType: 'SCRATCH_2',
+              LogConfiguration: { Level: 'DISABLED' },
+            },
+          }),
+        ],
+      },
+    });
+
+    const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
+
+    expect((state['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration']).toEqual({
+      Level: 'DISABLED',
+    });
+  });
+
+  it('emits no LogConfiguration when AWS returns none', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [availableFs({ FileSystemType: 'LUSTRE' })],
+      },
+    });
+
+    const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
+
+    expect(state['LustreConfiguration']).not.toHaveProperty('LogConfiguration');
   });
 });

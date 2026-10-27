@@ -25,6 +25,7 @@ import {
   type OpenZFSUserOrGroupQuota,
   type OpenZFSReadCacheConfiguration,
   type LustreFileSystemConfiguration,
+  type LustreLogCreateConfiguration,
   type WindowsFileSystemConfiguration,
   type OntapFileSystemConfiguration,
   type OpenZFSFileSystemConfiguration,
@@ -101,6 +102,11 @@ const LUSTRE_MUTABLE_SUBPROPS = new Set<string>([
   'MetadataConfiguration',
   'ThroughputCapacity',
   'DataReadCacheConfiguration',
+  // CFn "Update requires: No interruption"; UpdateFileSystemLustreConfiguration
+  // carries it (go-to-k/cdkd#5430). Its removal is left in place like the
+  // others (issue #1160); what CloudFormation does there is unmeasured, so it
+  // is not in CFN_KEEPS_ON_REMOVAL.
+  'LogConfiguration',
 ]);
 
 /**
@@ -990,8 +996,25 @@ export class FSxFileSystemProvider implements ResourceProvider {
             SizeGiB: toNumber(readCache['SizeGiB']),
           }
         : undefined,
+      LogConfiguration: this.toLustreLogConfiguration(
+        config['LogConfiguration'] as Record<string, unknown> | undefined
+      ),
     };
     return out;
+  }
+
+  /**
+   * Map the CFn `LustreConfiguration.LogConfiguration` block to the SDK shape
+   * `CreateFileSystem` and `UpdateFileSystem` both take (go-to-k/cdkd#5430).
+   */
+  private toLustreLogConfiguration(
+    config: Record<string, unknown> | undefined
+  ): LustreLogCreateConfiguration | undefined {
+    if (!config) return undefined;
+    return {
+      Level: config['Level'] as LustreLogCreateConfiguration['Level'],
+      Destination: config['Destination'] as string | undefined,
+    };
   }
 
   /** Map the CFn `WindowsConfiguration` block to the SDK create shape. */
@@ -1611,6 +1634,11 @@ export class FSxFileSystemProvider implements ResourceProvider {
           : undefined;
         break;
       }
+      case 'LogConfiguration':
+        out.LogConfiguration = this.toLustreLogConfiguration(
+          next as Record<string, unknown> | undefined
+        );
+        break;
       default:
         this.unmappedMutableSubprop(ctx, key);
     }
@@ -2246,6 +2274,12 @@ export class FSxFileSystemProvider implements ResourceProvider {
       putIfDefined(readCache, 'SizingMode', lustre.DataReadCacheConfiguration.SizingMode);
       putIfDefined(readCache, 'SizeGiB', lustre.DataReadCacheConfiguration.SizeGiB);
       if (Object.keys(readCache).length > 0) config['DataReadCacheConfiguration'] = readCache;
+    }
+    if (lustre.LogConfiguration) {
+      const log: Record<string, unknown> = {};
+      putIfDefined(log, 'Level', lustre.LogConfiguration.Level);
+      putIfDefined(log, 'Destination', lustre.LogConfiguration.Destination);
+      if (Object.keys(log).length > 0) config['LogConfiguration'] = log;
     }
     // Data-repository fields live under DataRepositoryConfiguration on the
     // read side but are flat LustreConfiguration inputs in CFn.
