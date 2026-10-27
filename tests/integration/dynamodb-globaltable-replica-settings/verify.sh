@@ -129,7 +129,8 @@ LOG_DIR="$(mktemp -d)"
 
 # "<SSE status> <SSE type> <key ARN> <table class> <deletion protection>" for
 # the table in region $1; absent members read as None. `GT_TABLE`, when set,
-# names the table this and `wait_settled` read instead of `${TABLE}` (Phase 5b).
+# names the table this and `wait_settled` read instead of `${TABLE}` (Phase 5b,
+# whose table declares no table class, so its class reads as None).
 table_settings() {
   aws dynamodb describe-table --table-name "${GT_TABLE:-${TABLE}}" --region "$1" \
     --query '[Table.SSEDescription.Status, Table.SSEDescription.SSEType, Table.SSEDescription.KMSMasterKeyArn, Table.TableClassSummary.TableClass, Table.DeletionProtectionEnabled]' \
@@ -315,6 +316,22 @@ cleanup() {
   fi
   teardown_table "${TABLE}"
   teardown_table "${TABLE2}"
+  # Keys LAST, once every table is gone: a table still DELETING on a customer
+  # managed key whose deletion is scheduled stays stuck until the key is
+  # enabled again (bounded: 15 min per table and region).
+  local t r out
+  for t in "${TABLE}" "${TABLE2}"; do
+    for r in "${REGION}" "${SECOND_REGION}"; do
+      for _ in $(seq 1 90); do
+        # Only a not-found answer is "gone"; any other failure retries.
+        if ! out="$(aws dynamodb describe-table --table-name "${t}" --region "${r}" 2>&1)" &&
+          printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+          break
+        fi
+        sleep 10
+      done
+    done
+  done
   # The local keys (stack-managed) when the destroy did not schedule them,
   # and the replica keys this fixture creates — by ARN too, in case the
   # alias was never created.
@@ -707,9 +724,9 @@ PHASE5B="Phase 5b (issue #5399)"
 deploy "tag,removed,ssetable" "${LOG_DIR}/phase5b.log"
 GT_TABLE="${TABLE2}"
 wait_settled
-await_settings "${REGION}" "^None	None	None	STANDARD	False$" \
+await_settings "${REGION}" "^None	None	None	None	False$" \
   "${PHASE5B} premise: the ${TABLE2} table is not on the AWS owned key"
-await_settings "${SECOND_REGION}" "^None	None	None	STANDARD	False$" \
+await_settings "${SECOND_REGION}" "^None	None	None	None	False$" \
   "${PHASE5B} premise: the ${TABLE2} replica is not on the AWS owned key"
 run_drift 0 "${PHASE5B}"
 if grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
@@ -722,9 +739,9 @@ aws dynamodb update-table --table-name "${TABLE2}" --region "${REGION}" --replic
   "[{\"Update\":{\"RegionName\":\"${REGION}\",\"KMSMasterKeyId\":\"${LOCAL_KEY_ARN}\"}},{\"Update\":{\"RegionName\":\"${SECOND_REGION}\",\"KMSMasterKeyId\":\"${REPLICA_KEY_ARN}\"}}]" \
   >/dev/null
 wait_settled
-await_settings "${REGION}" "^ENABLED	KMS	${LOCAL_KEY_ARN}	STANDARD	False$" \
+await_settings "${REGION}" "^ENABLED	KMS	${LOCAL_KEY_ARN}	None	False$" \
   "${PHASE5B} premise: the out-of-band move to the customer managed key did not land"
-await_settings "${SECOND_REGION}" "^ENABLED	KMS	${REPLICA_KEY_ARN}	STANDARD	False$" \
+await_settings "${SECOND_REGION}" "^ENABLED	KMS	${REPLICA_KEY_ARN}	None	False$" \
   "${PHASE5B} premise: the out-of-band move did not reach the replica"
 run_drift 1 "${PHASE5B}"
 if ! grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
@@ -742,9 +759,9 @@ node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region 
   --revert --yes 2>&1 | tee "${LOG_DIR}/phase5b-revert.log"
 wait_settled
 # An AWS owned key reads back as no SSEDescription (None), as in Phase 5.
-await_settings "${REGION}" "^None	None	None	STANDARD	False$" \
+await_settings "${REGION}" "^None	None	None	None	False$" \
   "${PHASE5B}: drift --revert did not return the ${REGION} table to the AWS owned key"
-await_settings "${SECOND_REGION}" "^None	None	None	STANDARD	False$" \
+await_settings "${SECOND_REGION}" "^None	None	None	None	False$" \
   "${PHASE5B}: drift --revert did not return the ${SECOND_REGION} replica to the AWS owned key"
 run_drift 0 "${PHASE5B}"
 if grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
