@@ -147,7 +147,7 @@ export	2026-10-24T06:38:32Z	PASS	226	verify.sh	final #5242 round after 7a30f8edb
 export-nested-stack	2026-10-20T04:25:11Z	PASS	195	verify.sh	deploy+destroy clean, 0 orphans
 fallback-recreate-children	2026-10-17T05:11:06Z	PASS	115	verify.sh	rc ok, orph clean (ReplacementRunState refactor #5024)
 fifo-sqs-event-source	2026-10-16T16:36:24Z	PASS	105	verify.sh	PR #5012 (#5004) re-run on 5c17a4e7a (post-rebase, comment-only commits); rc ok, orph clean; scope/limit retained, CBD reset
-fsx-lustre	2026-10-25T15:24:34Z	PASS	2517	verify.sh	PR #5277: #1160 persistent/Intelligent-Tiering removal warning; rc 0, destroy 11 deleted 0 errors, FSx+VPC+S3 clean, no backups
+fsx-lustre	2026-10-27T21:43:55Z	PASS	2661	verify.sh	#5430 LogConfiguration create/update; rc ok, orph clean, probe red pre-fix
 fsx-ontap	2026-10-02T10:50:28Z	PASS	1613	verify.sh	#1160 PR #4398; rc ok, orph clean, no final backup
 fsx-openzfs	2026-10-23T21:58:56Z	PASS	1333	verify.sh	rc ok, destroy 0 errors, orph clean, final backup deleted
 fsx-windows	2026-10-02T10:50:28Z	PASS	4588	verify.sh	#1160 PR #4398; AD-joined rc ok, orph clean, no final backup
