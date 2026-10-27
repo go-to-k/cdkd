@@ -234,11 +234,13 @@ echo "    OK: removed fields cleared and the lifecycle back to 900 / 28800, in p
 
 # Issue #5433: removing the authorizer drops the service-managed Lattice
 # resource gateway; wait (bounded) until its ENIs leave the auth VPC, so the
-# destroy is not left with a VPC it cannot delete.
+# destroy is not left with a VPC it cannot delete. ASSUMPTION, unconfirmed
+# until the first live run: the service drops the gateway when the
+# authorizer goes, not only when the runtime is deleted.
 enis="?"
 for _ in $(seq 1 60); do
   enis=$(aws ec2 describe-network-interfaces --region "${REGION}" --filters "Name=vpc-id,Values=${AUTH_VPC_ID}" \
-    --query 'length(NetworkInterfaces)' --output text)
+    --query 'length(NetworkInterfaces)' --output text) || enis="?"
   [ "${enis}" = "0" ] && break
   sleep 10
 done
