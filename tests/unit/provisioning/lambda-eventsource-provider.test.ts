@@ -850,6 +850,106 @@ describe('LambdaEventSourceMappingProvider', () => {
       expect(input['MetricsConfig']).toBeUndefined();
       expect(input['KMSKeyArn']).toBeUndefined();
       expect(input['MaximumRetryAttempts']).toBeUndefined();
+      expect(input['Enabled']).toBeUndefined();
+      expect(input['BisectBatchOnFunctionError']).toBeUndefined();
+    });
+
+    // Issue #1160, CloudFormation A/B (us-east-1, 2026-10-27): CloudFormation
+    // sent `enabled: true` when `Enabled: false` left an SQS mapping's
+    // template, and a DynamoDB-stream mapping read back
+    // `BisectBatchOnFunctionError: false` after that key left the template.
+    it.each([
+      ['SQS', SQS_ARN],
+      ['DynamoDB', 'arn:aws:dynamodb:us-east-1:123:table/t/stream/2026-01-01T00:00:00.000'],
+      ['Kafka', KAFKA_ARN],
+    ])('re-enables a %s mapping when Enabled: false is removed', async (_kind, arn) => {
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: arn },
+        { FunctionName: 'fn', EventSourceArn: arn, Enabled: false }
+      );
+
+      expect(getUpdateInput()['Enabled']).toBe(true);
+    });
+
+    it('forwards a still-declared Enabled: false instead of the reset', async () => {
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: SQS_ARN, Enabled: false },
+        { FunctionName: 'fn', EventSourceArn: SQS_ARN, Enabled: false, BatchSize: 5 }
+      );
+
+      expect(getUpdateInput()['Enabled']).toBe(false);
+    });
+
+    it.each([
+      ['DynamoDB', 'arn:aws:dynamodb:us-east-1:123:table/t/stream/2026-01-01T00:00:00.000'],
+      ['Kinesis', 'arn:aws:kinesis:us-east-1:123:stream/s'],
+      ['MSK', KAFKA_ARN],
+    ])('sends BisectBatchOnFunctionError: false on a %s removal', async (_kind, arn) => {
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: arn },
+        { FunctionName: 'fn', EventSourceArn: arn, BisectBatchOnFunctionError: true }
+      );
+
+      expect(getUpdateInput()['BisectBatchOnFunctionError']).toBe(false);
+    });
+
+    it('sends no BisectBatchOnFunctionError reset on a source that does not take it', async () => {
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: SQS_ARN },
+        { FunctionName: 'fn', EventSourceArn: SQS_ARN, BisectBatchOnFunctionError: true }
+      );
+
+      expect(getUpdateInput()['BisectBatchOnFunctionError']).toBeUndefined();
+    });
+
+    it('warns and sends nothing when DocumentDBEventSourceConfig is removed', async () => {
+      const { getLogger } = await import('../../../src/utils/logger.js');
+      const warn = vi.mocked(getLogger().child('x').warn);
+      const docdb = { FunctionName: 'fn', EventSourceArn: 'arn:aws:rds:us-east-1:123:cluster:c' };
+      await provider.update('L', UUID, 'AWS::Lambda::EventSourceMapping', docdb, {
+        ...docdb,
+        DocumentDBEventSourceConfig: { DatabaseName: 'db', CollectionName: 'c' },
+      });
+
+      expect(getUpdateInput()['DocumentDBEventSourceConfig']).toBeUndefined();
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(
+        lines.filter((l) =>
+          l.includes(
+            'L (AWS::Lambda::EventSourceMapping): DocumentDBEventSourceConfig was removed from the template; the mapping keeps its current DocumentDB settings.'
+          )
+        )
+      ).toHaveLength(1);
+    });
+
+    it('does not warn about DocumentDBEventSourceConfig while it is still declared', async () => {
+      const { getLogger } = await import('../../../src/utils/logger.js');
+      const warn = vi.mocked(getLogger().child('x').warn);
+      const docdb = {
+        FunctionName: 'fn',
+        EventSourceArn: 'arn:aws:rds:us-east-1:123:cluster:c',
+        DocumentDBEventSourceConfig: { DatabaseName: 'db' },
+      };
+      await provider.update('L', UUID, 'AWS::Lambda::EventSourceMapping', docdb, {
+        ...docdb,
+        BatchSize: 7,
+      });
+
+      expect(
+        warn.mock.calls.filter((c) => String(c[0]).includes('DocumentDBEventSourceConfig'))
+      ).toHaveLength(0);
     });
   });
 

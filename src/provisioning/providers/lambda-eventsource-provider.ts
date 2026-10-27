@@ -397,6 +397,12 @@ const KINDS_WITH_ZERO_BATCHING_WINDOW_DEFAULT: ReadonlySet<EventSourceKind> = ne
  */
 const KINDS_WITH_STREAM_NUMERICS: ReadonlySet<EventSourceKind> = new Set(['kinesis', 'dynamodb']);
 /**
+ * Source kinds that accept `BisectBatchOnFunctionError` (Lambda API
+ * reference: Kinesis, DynamoDB Streams, MSK and self-managed Kafka). Gates
+ * the reset to `false` on removal (issue #1160).
+ */
+const KINDS_WITH_BISECT: ReadonlySet<EventSourceKind> = new Set(['kinesis', 'dynamodb', 'kafka']);
+/**
  * The `BatchSize` a mapping falls back to when the template drops it — what
  * CloudFormation sends on that removal (issue #1160; see the restore in
  * `update()`). `unknown` has no entry, so nothing is sent for it.
@@ -1142,6 +1148,26 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       if (wasSet('LoggingConfig')) updateParams.LoggingConfig = {};
       if (wasSet('ProvisionedPollerConfig')) updateParams.ProvisionedPollerConfig = {};
     }
+
+    // Issue #1160, second CloudFormation A/B (us-east-1, 2026-10-27): removing
+    // `Enabled: false` from an SQS mapping turned it back on (State
+    // `Enabled`), and removing `BisectBatchOnFunctionError: true` from a
+    // DynamoDB-stream mapping read back `false`. Both are the documented
+    // defaults. `Enabled` applies to every source kind. Bisect is accepted by
+    // the stream kinds and Kafka only, so the reset is gated the same way.
+    if (wasSet('Enabled')) updateParams.Enabled = true;
+    if (wasSet('BisectBatchOnFunctionError') && KINDS_WITH_BISECT.has(prevKind))
+      updateParams.BisectBatchOnFunctionError = false;
+
+    // `DocumentDBEventSourceConfig` has no documented clear value (the block
+    // names the database the mapping reads), and what CloudFormation sends on
+    // its removal was not measured (it needs a DocumentDB cluster). The Update
+    // API keeps the live block when the field is omitted, so cdkd sends
+    // nothing and says so, rather than report a removal that did not happen.
+    if (wasSet('DocumentDBEventSourceConfig'))
+      log.warn(
+        safeMsg`${logicalId} (${resourceType}): DocumentDBEventSourceConfig was removed from the template; the mapping keeps its current DocumentDB settings. Declare the block with the values you want instead.`
+      );
 
     const updateResp = await this.lambdaClient.send(
       new UpdateEventSourceMappingCommand(updateParams)
