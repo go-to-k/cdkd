@@ -2743,6 +2743,57 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * How long a Kinesis destination this update disabled may still read as
+   * `ACTIVE`: one entry per re-read. `DisableKinesisStreamingDestination`
+   * answers `DISABLING`, yet `DescribeKinesisStreamingDestination` went on
+   * reporting `ACTIVE` for about a second (measured us-east-1, 2026-10-28), so
+   * the deploy's drift-baseline capture right after the update recorded a
+   * destination AWS was removing, and every later `cdkd drift` reported it
+   * (go-to-k/cdkd#5399's integ).
+   */
+  protected kinesisDisableSettleDelaysMs: readonly number[] = Array<number>(30).fill(2000);
+
+  /**
+   * Wait until `streamArn` no longer reads as a destination of `tableName`
+   * (see {@link kinesisDisableSettleDelaysMs}). Best-effort: a failed read, or
+   * a destination still reported after every re-read, ends the wait with a
+   * debug line, since the disable itself was accepted.
+   */
+  private async waitForKinesisDisableVisible(
+    client: DynamoDBClient,
+    tableName: string,
+    streamArn: string,
+    scope: string,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const watch = startInterruptWatch(maskSecrets(`Kinesis streaming disable on ${scope}`));
+    try {
+      for (const delayMs of [0, ...this.kinesisDisableSettleDelaysMs]) {
+        if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        let active: Set<string>;
+        try {
+          active = await this.activeKinesisStreamArns(client, tableName);
+        } catch (error) {
+          this.logger.debug(
+            maskSecrets(
+              `Could not confirm the Kinesis streaming disable on ${scope}: ` +
+                describeAwsFailure(error).detail
+            )
+          );
+          return;
+        }
+        if (!active.has(streamArn)) return;
+      }
+      this.logger.debug(
+        maskSecrets(`The Kinesis streaming destination on ${scope} still reads as active`)
+      );
+    } finally {
+      watch.dispose();
+    }
+  }
+
   /** The Kinesis streams a table streams to (`ACTIVE` or `ENABLING`). */
   private async activeKinesisStreamArns(
     client: DynamoDBClient,
@@ -2868,6 +2919,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // Already off (a re-run, or an out-of-band disable) is the goal.
           if (await this.kinesisStreaming(client, tableName, op.streamArn, error)) throw error;
         }
+        await this.waitForKinesisDisableVisible(
+          client,
+          tableName,
+          op.streamArn,
+          scope,
+          maskSecrets
+        );
         break;
       case 'kinesisPrecision':
         await send(() =>

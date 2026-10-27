@@ -171,11 +171,15 @@ const writes = (fn: ReturnType<typeof vi.fn>): Array<[string, Record<string, any
     .filter((c) => WRITES.includes(c.constructor.name))
     .map((c) => [c.constructor.name, c.input]);
 
+let kinesisDescribesAfterDisable = 0;
+
 interface Live {
   pitr?: 'ENABLED' | 'DISABLED';
   period?: number;
   ci?: 'ENABLED' | 'DISABLED';
   kinesis?: string[];
+  /** Describes after a Kinesis disable that still report the stream (go-to-k/cdkd#5399's integ). */
+  kinesisStaleReads?: number;
   tablePolicy?: boolean;
   streamPolicy?: boolean;
 }
@@ -192,6 +196,7 @@ const regionDouble = (
   replicas: string[] | undefined,
   refuse: (name: string, input: Record<string, any>) => Error | undefined = () => undefined
 ) => {
+  let pendingDisable: (() => void) | undefined;
   return async (command: Sent): Promise<unknown> => {
     const name = command.constructor.name;
     const refusal = refuse(name, command.input);
@@ -208,13 +213,22 @@ const regionDouble = (
         };
       case DescribeContributorInsightsCommand.name:
         return { ContributorInsightsStatus: live.ci ?? 'DISABLED' };
-      case DescribeKinesisStreamingDestinationCommand.name:
-        return {
+      case DescribeKinesisStreamingDestinationCommand.name: {
+        const answer = {
           KinesisDataStreamDestinations: (live.kinesis ?? []).map((s) => ({
             StreamArn: s,
             DestinationStatus: 'ACTIVE',
           })),
         };
+        if (pendingDisable !== undefined) {
+          kinesisDescribesAfterDisable++;
+          if (--live.kinesisStaleReads! <= 0) {
+            pendingDisable();
+            pendingDisable = undefined;
+          }
+        }
+        return answer;
+      }
       case GetResourcePolicyCommand.name: {
         const has =
           command.input['ResourceArn'] === stream ? live.streamPolicy : live.tablePolicy;
@@ -227,6 +241,15 @@ const regionDouble = (
           if (dropped !== undefined && replicas !== undefined) {
             replicas = replicas.filter((r) => r !== dropped);
           }
+          return {};
+        }
+        if (name === DisableKinesisStreamingDestinationCommand.name) {
+          const off = command.input['StreamArn'];
+          const drop = () => {
+            live.kinesis = (live.kinesis ?? []).filter((s) => s !== off);
+          };
+          if ((live.kinesisStaleReads ?? 0) === 0) drop();
+          else pendingDisable = drop;
           return {};
         }
         if (WRITES.includes(name)) return {};
@@ -592,6 +615,29 @@ describe('DynamoDB GlobalTable replica settings writes (go-to-k/cdkd#5365)', () 
         [DeleteResourcePolicyCommand.name, { ResourceArn: REMOTE_STREAM }],
       ]);
       expect(writes(mockSend)).toEqual([]);
+    });
+
+    it('returns from a Kinesis disable only once the destination stops reading as active (go-to-k/cdkd#5399)', async () => {
+      // DescribeKinesisStreamingDestination kept reporting ACTIVE for about a
+      // second after the disable was accepted (measured), and the deploy's
+      // baseline capture right after the update recorded the destination.
+      (provider as unknown as { kinesisDisableSettleDelaysMs: number[] }).kinesisDisableSettleDelaysMs =
+        [0, 0, 0, 0];
+      const remote: Live = { kinesis: [REMOTE_KS], kinesisStaleReads: 2 };
+      setLive({}, remote);
+      kinesisDescribesAfterDisable = 0;
+      const desired = base({}, {});
+      await provider.update('T', TABLE, RESOURCE_TYPE, desired, base({}, { KinesisStreamSpecification: { StreamArn: REMOTE_KS } }));
+
+      expect(kinesisDescribesAfterDisable).toBe(2);
+      expect(remote.kinesis).toEqual([]);
+      const captured = (await provider.readCurrentState(TABLE, 'T', RESOURCE_TYPE, desired, {
+        afterOwnWrite: true,
+      } as never)) as Record<string, unknown>;
+      const replica = (captured['Replicas'] as Array<Record<string, unknown>>).find(
+        (r) => r['Region'] === 'eu-west-1'
+      );
+      expect(replica).not.toHaveProperty('KinesisStreamSpecification');
     });
 
     it('sends the local table its settings through the source client', async () => {
