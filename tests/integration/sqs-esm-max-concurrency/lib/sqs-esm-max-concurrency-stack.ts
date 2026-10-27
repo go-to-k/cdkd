@@ -15,7 +15,9 @@ import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
  * `FilterCriteria` + `ScalingConfig.MaximumConcurrency`; the UPDATE phase
  * (`CDKD_TEST_UPDATE=true`) REMOVES both from the template, and `batchSize`
  * with them (issue #1160: CloudFormation resets a removed SQS `BatchSize` to
- * 10, which cdkd used to leave at 5). Before the fix, `LambdaEventSourceMappingProvider.update()`
+ * 10, which cdkd used to leave at 5) and `enabled: false` (issue #1160:
+ * CloudFormation sends `Enabled: true` on that removal, re-enabling the
+ * mapping, which cdkd used to leave disabled). Before the fix, `LambdaEventSourceMappingProvider.update()`
  * omitted the removed properties from `UpdateEventSourceMapping` and AWS
  * silently kept filtering + kept the concurrency cap; the fix sends the
  * documented clear sentinels (`FilterCriteria: {}` / `ScalingConfig: {}`) so
@@ -28,7 +30,7 @@ export class SqsEsmMaxConcurrencyStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // UPDATE phase removes FilterCriteria + ScalingConfig + batchSize.
+    // UPDATE phase removes FilterCriteria + ScalingConfig + batchSize + enabled.
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
 
     const queue = new sqs.Queue(this, 'Queue', {
@@ -46,6 +48,8 @@ export class SqsEsmMaxConcurrencyStack extends cdk.Stack {
       new SqsEventSource(queue, {
         // UPDATE phase: removed, so AWS must fall back to the SQS default 10.
         batchSize: isUpdate ? undefined : 5,
+        // UPDATE phase: removed, so the mapping must be turned back on.
+        enabled: isUpdate ? undefined : false,
         // Base phase: filter + concurrency cap set. UPDATE phase: both removed
         // (undefined) so the template no longer carries them — the removal
         // path must send the documented clear sentinels to AWS.
