@@ -34,13 +34,31 @@ export class CognitoCustomAttributeAddStack extends cdk.Stack {
       customAttributes['region'] = new cognito.StringAttribute({ mutable: true });
     }
 
-    new cognito.UserPool(this, 'Pool', {
+    // Issue #1160: Phase 1 also declares a tag, OPTIONAL software-token MFA and
+    // an ADMIN_ONLY account recovery; Phase 2 removes all three. CloudFormation
+    // untags the key, turns MFA OFF, and keeps the account recovery setting.
+    const pool = new cognito.UserPool(this, 'Pool', {
       userPoolName: addAttr ? 'cdkd-cognito-attr-add-test-renamed' : 'cdkd-cognito-attr-add-test',
       selfSignUpEnabled: true,
       signInAliases: { email: true },
       customAttributes,
       ...(usernameChange ? { signInCaseSensitive: false } : {}),
+      ...(addAttr
+        ? {}
+        : {
+            mfa: cognito.Mfa.OPTIONAL,
+            mfaSecondFactor: { sms: false, otp: true },
+            accountRecovery: cognito.AccountRecovery.NONE,
+          }),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
+    if (addAttr) {
+      // The L2 always synthesizes AccountRecoverySetting, so remove it by hand.
+      (pool.node.defaultChild as cognito.CfnUserPool).addPropertyDeletionOverride(
+        'AccountRecoverySetting'
+      );
+    } else {
+      cdk.Tags.of(pool).add('cdkd-1160-removed', 'phase1');
+    }
   }
 }

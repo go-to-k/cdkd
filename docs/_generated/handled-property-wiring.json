@@ -4783,11 +4783,14 @@
             "AWS::Cognito::UserPool"
           ],
           "evidence": [
-            "element-read"
+            "delegated",
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
-            "update"
+            "update",
+            "warnOnKeptRemovedMembers"
           ]
         },
         {
@@ -4840,11 +4843,14 @@
             "AWS::Cognito::UserPool"
           ],
           "evidence": [
-            "element-read"
+            "delegated",
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
-            "update"
+            "update",
+            "warnOnKeptRemovedMembers"
           ]
         },
         {
@@ -5040,14 +5046,16 @@
           ],
           "evidence": [
             "delegated",
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "applyMfaConfig",
             "assertMfaCombinationApplicable",
             "canonicalizeDesiredProperties",
             "create",
-            "update"
+            "update",
+            "warnOnKeptRemovedMembers"
           ]
         },
         {
@@ -5157,11 +5165,14 @@
             "AWS::Cognito::UserPool"
           ],
           "evidence": [
-            "element-read"
+            "delegated",
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
-            "update"
+            "update",
+            "warnOnKeptRemovedMembers"
           ]
         },
         {
