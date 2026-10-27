@@ -171,7 +171,7 @@ describe('TargetGroup update — a malformed DESIRED Targets is refused before a
         { Port: 80, Targets: [{ Id: '10.0.0.1' }] }
       )
     );
-    expect(err.message).toContain('an Id holds a dynamic reference or its mask');
+    expect(err.message).toContain('an Id or QuicServerId holds a dynamic reference or its mask');
     expect(err.message).not.toContain('secretsmanager');
     expect(mockSend).not.toHaveBeenCalled();
   });
@@ -424,7 +424,7 @@ describe('TargetGroup create — a malformed Targets is refused before CreateTar
     const err = await rejection(
       provider.create('Tg', TG_TYPE, { Name: 'issue3989', Port: 80, Targets: [{ Id: id }] })
     );
-    expect(err.message).toContain('an Id holds a dynamic reference or its mask');
+    expect(err.message).toContain('an Id or QuicServerId holds a dynamic reference or its mask');
     expect(err.message).toContain('the target group was not created');
     expect(err.message).not.toContain('secretsmanager');
     expect(mockSend).not.toHaveBeenCalled();
