@@ -165,6 +165,7 @@ import {
 import { injectiveKey } from '../../state/record-keys.js';
 import {
   declaredReplicaSettings,
+  readPitrSpec,
   readStreamPolicy,
   samePolicyDocument,
   planReplicaSettingCorrections,
@@ -2440,12 +2441,16 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         !fresh &&
         keepOnRemoval.has('pitr') &&
         replica?.['PointInTimeRecoverySpecification'] == null &&
-        previous?.['PointInTimeRecoverySpecification'] != null
+        (() => {
+          const prior = readPitrSpec(previous?.['PointInTimeRecoverySpecification']);
+          return prior.kind === 'usable' && prior.enabled;
+        })()
       ) {
         warn(
-          `The ${region} replica of ${tableName}: point-in-time recovery was left on, although ` +
-            `the record being restored declares none — turning it off would delete every ` +
-            `recovery point. Turn it off by hand if that is intended.`
+          `The ${region} replica of ${tableName}: point-in-time recovery was not turned off, ` +
+            `although the properties being applied (a rollback's recorded state, or a drift ` +
+            `--revert read-back) declare none — turning it off would delete every recovery ` +
+            `point. Turn it off by hand if that is intended.`
         );
       }
       // What the template did not change but declares: checked against AWS.

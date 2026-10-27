@@ -1157,8 +1157,20 @@ describe('DynamoDB GlobalTable replica settings writes (go-to-k/cdkd#5365)', () 
         { replayingState: true } as never
       );
       expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringMatching(/eu-west-1 replica of gt-5365: point-in-time recovery was left on/)
+        expect.stringMatching(/eu-west-1 replica of gt-5365: point-in-time recovery was not turned off/)
       );
+    });
+
+    it('does not warn about recovery the record declared off', async () => {
+      await provider.update(
+        'T',
+        TABLE,
+        RESOURCE_TYPE,
+        base({}, {}),
+        base({}, { PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: false } }),
+        { replayingState: true } as never
+      );
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringMatching(/point-in-time recovery/));
     });
 
     it('names the whole table in the create-time refusal', () => {
