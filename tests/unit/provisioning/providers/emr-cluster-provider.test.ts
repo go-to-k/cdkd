@@ -378,6 +378,74 @@ describe('EMRClusterProvider update', () => {
     });
   });
 
+  // go-to-k/cdkd#5418: a replacing member recorded as its `{{resolve:...}}`
+  // reference and handed here resolved is unchanged, as at the top level.
+  describe('a secret-referenced Instances member beside a TerminationProtected toggle', () => {
+    const REF = '{{resolve:secretsmanager:emr-key:SecretString:name}}';
+    const prev = {
+      ...BASE_PROPS,
+      Instances: { ...BASE_PROPS.Instances, Ec2KeyName: REF, TerminationProtected: false },
+    };
+    const next = {
+      ...BASE_PROPS,
+      Instances: { ...BASE_PROPS.Instances, Ec2KeyName: 'resolved-key', TerminationProtected: true },
+    };
+    const maskSecrets = (text: string): string => text.split('resolved-key').join('***');
+
+    it('applies the toggle when the member only resolves its recorded reference', async () => {
+      routeSend({
+        SetTerminationProtectionCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const result = await newProvider().update('MyCluster', CLUSTER_ID, RESOURCE_TYPE, next, prev, {
+        maskSecrets,
+      });
+      expect(result.wasReplaced).toBe(false);
+      expect(callsOf(SetTerminationProtectionCommand)[0]!.input['TerminationProtected']).toBe(true);
+    });
+
+    it('still refuses when the value is not one the masker resolved', async () => {
+      const err = await newProvider()
+        .update('MyCluster', CLUSTER_ID, RESOURCE_TYPE, next, prev)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((err as Error).message).toContain('Instances.Ec2KeyName cannot be updated in place');
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('keeps an in-place member a change even when it only resolves a reference', async () => {
+      const core = (count: unknown) => ({ InstanceCount: count, InstanceType: 'm5.xlarge' });
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          { ...BASE_PROPS, Instances: { ...BASE_PROPS.Instances, CoreInstanceGroup: core('resolved-key') } },
+          { ...BASE_PROPS, Instances: { ...BASE_PROPS.Instances, CoreInstanceGroup: core(REF) } },
+          { maskSecrets }
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((err as Error).message).toContain('Instances.CoreInstanceGroup: CloudFormation applies');
+    });
+  });
+
+  it('names the Instances block whole when a side is not an object', async () => {
+    const err = await newProvider()
+      .update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        { ...BASE_PROPS, Instances: 'not-an-object' },
+        { ...BASE_PROPS }
+      )
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect((err as Error).message).toContain(
+      "AWS EMR Cluster's Instances block cannot be updated in place"
+    );
+  });
+
   it('sends SetVisibleToAllUsers on a VisibleToAllUsers change', async () => {
     routeSend({ SetVisibleToAllUsersCommand: {}, DescribeClusterCommand: clusterOf('WAITING') });
     await newProvider().update(

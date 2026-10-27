@@ -59,7 +59,10 @@ import {
   toSdkInstanceTypeConfigs,
   toSdkStepConfigs,
 } from '../emr-configuration.js';
-import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
+import {
+  onlySecretReferencesDiffer,
+  unchangedBehindSecretReference,
+} from '../secret-reference-immutable.js';
 import { emrClusterInstancesReplaced } from '../../analyzer/replacement-rules.js';
 import { createMaskedLogSinks, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import {
@@ -922,38 +925,57 @@ export class EMRClusterProvider implements ResourceProvider {
 
     let terminationProtectedChanged = false;
     if (changed('Instances')) {
-      // Whether CloudFormation would REPLACE the cluster for this change: the
-      // deploy diff's own predicate, so the two never disagree.
-      const replacing = emrClusterInstancesReplaced(
-        previousProperties['Instances'],
-        properties['Instances']
-      );
+      // A member recorded as a `{{resolve:...}}` reference and handed here
+      // resolved is the same value, not a change -- as the top-level loop below
+      // treats one (go-to-k/cdkd#4275). Only for a member whose change would
+      // REPLACE: the diff compares the references as written, so a reference
+      // the template edited there was a replacement and never reaches this
+      // method. An in-place member has no such proof and stays a change.
+      const isReplacingMember = (key: string): boolean =>
+        emrClusterInstancesReplaced({ [key]: prevInstances[key] }, { [key]: nextInstances[key] });
       const movedKeys = [
         ...new Set([...Object.keys(nextInstances), ...Object.keys(prevInstances)]),
-      ].filter((key) => !jsonEqual(nextInstances[key], prevInstances[key]));
+      ].filter(
+        (key) =>
+          !jsonEqual(nextInstances[key], prevInstances[key]) &&
+          !(
+            isReplacingMember(key) &&
+            onlySecretReferencesDiffer(nextInstances[key], prevInstances[key], context?.maskSecrets)
+          )
+      );
       terminationProtectedChanged = movedKeys.includes('TerminationProtected');
+      // Whether CloudFormation would REPLACE the cluster for what moved: the
+      // deploy diff's own predicate, so the two never disagree. A block that
+      // is not an object is compared whole.
+      const blockIsObject = (value: unknown): boolean =>
+        value !== null && typeof value === 'object' && !Array.isArray(value);
+      const blocksAreObjects =
+        blockIsObject(properties['Instances']) && blockIsObject(previousProperties['Instances']);
+      const replacing = blocksAreObjects
+        ? movedKeys.some(isReplacingMember)
+        : emrClusterInstancesReplaced(previousProperties['Instances'], properties['Instances']);
       // The members are stripped key by key, so the predicate on one key alone
       // names a member that replaces, never an in-place one moved beside it.
-      // A replacing block with no such key (e.g. a non-object side) still
-      // refuses, naming the whole block.
-      const named = replacing
-        ? (movedKeys.find((key) =>
-            emrClusterInstancesReplaced(
-              { [key]: prevInstances[key] },
-              { [key]: nextInstances[key] }
-            )
-          ) ?? '*')
-        : movedKeys.find((key) => key !== 'TerminationProtected');
-      if (named !== undefined) {
+      // A block that is not an object is named whole.
+      const named = !blocksAreObjects
+        ? undefined
+        : replacing
+          ? movedKeys.find(isReplacingMember)
+          : movedKeys.find((key) => key !== 'TerminationProtected');
+      if (replacing || named !== undefined) {
+        const subject =
+          named === undefined
+            ? safeMsg`AWS EMR Cluster's Instances block`
+            : safeMsg`AWS EMR Cluster Instances.${named}`;
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
           replacing
-            ? safeMsg`AWS EMR Cluster Instances.${named} cannot be updated in place — CloudFormation replaces the cluster for this change. ` +
+            ? `${subject} cannot be updated in place — CloudFormation replaces the cluster for this change. ` +
                 replaceRemedy()
             : // No replace remedy: CloudFormation keeps the cluster, and a
               // replacement would terminate it and lose its local storage.
-              safeMsg`AWS EMR Cluster Instances.${named}: CloudFormation applies this change in place (an instance group's count or auto-scaling policy, a fleet's target capacity, unhealthy node replacement), which cdkd does not do yet (go-to-k/cdkd#5422). Revert it in the template to deploy.`
+              `${subject}: CloudFormation applies this change in place (an instance group's count or auto-scaling policy, a fleet's target capacity, unhealthy node replacement), which cdkd does not do yet (go-to-k/cdkd#5422). Revert it in the template to deploy.`
         );
       }
     }

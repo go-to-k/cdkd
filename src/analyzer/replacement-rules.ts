@@ -262,7 +262,12 @@ function withoutKeys(value: unknown, keys: readonly string[]): unknown {
   return copy;
 }
 
-/** `Instances` with every member CloudFormation updates in place removed. */
+/**
+ * `Instances` with every member CloudFormation updates in place removed.
+ * `TaskInstanceGroups` / `TaskInstanceFleets` are compared in list order, so a
+ * reorder of the same entries classifies as a replacement (unmeasured; a plain
+ * deploy then stops at the stateful-recreate guard's `STATEFUL_REPLACE_BLOCKED`).
+ */
 function emrInstancesReplacingPart(value: unknown): unknown {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
   const instances = withoutKeys(value, EMR_INSTANCES_IN_PLACE_MEMBERS) as Record<string, unknown>;
