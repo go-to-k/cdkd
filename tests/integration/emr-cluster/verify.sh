@@ -1271,7 +1271,8 @@ case "${P3C_STATE}" in
   TERMINATING|TERMINATED) ;;
   *) echo "FAIL [phase 3c]: the replaced cluster ${CID_P3C_OLD} is '${P3C_STATE}' (expected TERMINATING/TERMINATED)" >&2; exit 1;;
 esac
-EXTRA_SG="$(state_query 'st.resources["ExtraMasterSg"]?.physicalId')"
+# The L2 SecurityGroup's logical id carries a hash suffix (ExtraMasterSg<hash>).
+EXTRA_SG="$(state_query 'Object.entries(st.resources).find(([id]) => id.startsWith("ExtraMasterSg"))?.[1]?.physicalId')"
 case "${EXTRA_SG}" in sg-*) ;; *) echo "FAIL [phase 3c]: state records ExtraMasterSg as '${EXTRA_SG}'" >&2; exit 1;; esac
 read -r P3C_NEW_STATE P3C_EXTRA_SGS <<EOF
 $(aws emr describe-cluster --cluster-id "${CID_P3C}" --region "${REGION}" \
