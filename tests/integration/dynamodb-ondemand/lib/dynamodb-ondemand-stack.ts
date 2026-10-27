@@ -467,5 +467,28 @@ export class DynamodbOndemandStack extends cdk.Stack {
       description:
         'PAY_PER_REQUEST table on a customer managed key whose SSESpecification is REMOVED under CDKD_TEST_UPDATE=true (issue go-to-k/cdkd#5412)',
     });
+
+    // go-to-k/cdkd#5423: a table streaming to the fixture's Kinesis stream
+    // whose `KinesisStreamSpecification` is REMOVED under CDKD_TEST_UPDATE=true.
+    // `DescribeKinesisStreamingDestination` reads ACTIVE for about a second
+    // after the disable answers DISABLING, so a drift baseline captured right
+    // after the update kept the destination and `cdkd drift` reported it. A
+    // separate table, because the main table's destination carries the #5385
+    // precision change in the same deploy; DynamoDB lets both stream to one
+    // stream.
+    const kinesisRemovalTable = new dynamodb.CfnTable(this, 'KinesisRemovalTable', {
+      tableName: 'cdkd-ondemand-test-kinesis-removal-table',
+      billingMode: 'PAY_PER_REQUEST',
+      keySchema: [{ attributeName: 'id', keyType: 'HASH' }],
+      attributeDefinitions: [{ attributeName: 'id', attributeType: 'S' }],
+      ...(isUpdate ? {} : { kinesisStreamSpecification: { streamArn: stream.streamArn } }),
+    });
+    kinesisRemovalTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    new cdk.CfnOutput(this, 'KinesisRemovalTableName', {
+      value: kinesisRemovalTable.ref,
+      description:
+        'PAY_PER_REQUEST table whose KinesisStreamSpecification is REMOVED under CDKD_TEST_UPDATE=true (issue go-to-k/cdkd#5423)',
+    });
   }
 }

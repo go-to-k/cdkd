@@ -28,7 +28,9 @@
 # UpdateTable for ProvisionedThroughput, so the change was silently dropped.
 # The same re-deploy changes the table's Kinesis destination precision
 # MILLISECOND -> MICROSECOND on the same stream (issue go-to-k/cdkd#5385),
-# which before the fix was only warned about and never sent.
+# which before the fix was only warned about and never sent, and removes a
+# separate table's KinesisStreamSpecification, after which `cdkd drift` must
+# read that table clean (issue go-to-k/cdkd#5423).
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -121,6 +123,10 @@ SSE_REMOVAL_TABLE="cdkd-ondemand-test-sse-removal-table"
 SSE_REMOVAL_LOGICAL_ID="SseRemovalTable"
 SSE_KEY_ALIAS="alias/${STACK}-sse-removal"
 SSE_KEY_TAG="cdkd-integ-sse-removal"
+# issue go-to-k/cdkd#5423: the table whose KinesisStreamSpecification the UPDATE
+# phase REMOVES (it streams to STREAM_NAME until then).
+KINESIS_REMOVAL_TABLE="cdkd-ondemand-test-kinesis-removal-table"
+KINESIS_REMOVAL_LOGICAL_ID="KinesisRemovalTable"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -144,6 +150,7 @@ cleanup() {
   aws dynamodb delete-table --table-name "${PITR_REFUSED_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
   aws dynamodb delete-table --table-name "${CEILING_REFUSED_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
   aws dynamodb delete-table --table-name "${SSE_REMOVAL_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws dynamodb delete-table --table-name "${KINESIS_REMOVAL_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
   aws kinesis delete-stream --stream-name "${STREAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   # issue go-to-k/cdkd#5412: the fixture-owned key -- by alias (alias first,
   # so a re-run can create it again), then by tag for one whose alias is gone.
@@ -534,6 +541,30 @@ SSE_BASE_ID=$(aws dynamodb describe-table --table-name "${SSE_REMOVAL_TABLE}" --
   --query 'Table.TableId' --output text)
 echo "    OK (Phase 1): ${SSE_REMOVAL_TABLE} is on the fixture's customer managed key"
 
+# --- issue go-to-k/cdkd#5423 BASELINE: the table streams to the stream ----
+# Asserted LIVE (and waited to ACTIVE, the state a real removal disables from)
+# before the removal phase, or "no live destination" afterwards would also pass
+# for a destination that never reached AWS.
+read_kinesis_removal_status() {
+  aws dynamodb describe-kinesis-streaming-destination \
+    --table-name "${KINESIS_REMOVAL_TABLE}" --region "${REGION}" --output json |
+    jq -r --arg arn "${EXPECTED_STREAM_ARN}" '
+      [.KinesisDataStreamDestinations[]? | select(.StreamArn == $arn and .DestinationStatus != "DISABLED")][0].DestinationStatus // "none"'
+}
+KR_BASE=""
+for _ in $(seq 1 36); do
+  KR_BASE=$(read_kinesis_removal_status)
+  [ "${KR_BASE}" = "ACTIVE" ] && break
+  sleep 5
+done
+if [ "${KR_BASE}" != "ACTIVE" ]; then
+  echo "FAIL (issue go-to-k/cdkd#5423): ${KINESIS_REMOVAL_TABLE} Kinesis destination reads '${KR_BASE}' ~3min after the deploy, expected ACTIVE before the removal" >&2
+  exit 1
+fi
+KR_BASE_ID=$(aws dynamodb describe-table --table-name "${KINESIS_REMOVAL_TABLE}" --region "${REGION}" \
+  --query 'Table.TableId' --output text)
+echo "    OK (Phase 1): ${KINESIS_REMOVAL_TABLE} streams to ${STREAM_NAME} (ACTIVE)"
+
 echo "==> Phase 1.5: re-deploy with CDKD_TEST_UPDATE=true (BillingMode/ProvisionedThroughput in-place update)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -615,6 +646,45 @@ if [ "${SSE_CLEAN}" != "1" ] || [ "${SSE_DRIFTED}" != "0" ]; then
 fi
 rm -f "${SSE_DRIFT_JSON}" "${SSE_DRIFT_ERR}"
 echo "    OK (Phase 1.5): removing SSESpecification moved ${SSE_REMOVAL_TABLE} to the AWS owned key in place, and drift reads it clean (issue go-to-k/cdkd#5412)"
+
+# --- Phase 1.5 (issue go-to-k/cdkd#5423): KinesisStreamSpecification REMOVAL --
+# The same deploy drops the table's KinesisStreamSpecification. cdkd waits for
+# the destination to read DISABLED; the table must have no live destination
+# and must read CLEAN in `cdkd drift`. Before the fix the drift baseline was
+# captured while AWS still read the destination ACTIVE, so drift reported a
+# KinesisStreamSpecification AWS no longer has: the drift check is the
+# assertion that discriminates the fix, the status check that the removal was
+# sent at all.
+KR_NOW=$(read_kinesis_removal_status)
+if [ "${KR_NOW}" != "none" ]; then
+  echo "FAIL (issue go-to-k/cdkd#5423): ${KINESIS_REMOVAL_TABLE} Kinesis destination reads '${KR_NOW}' after the removal deploy, expected DISABLED or absent" >&2
+  exit 1
+fi
+KR_ID_AFTER=$(aws dynamodb describe-table --table-name "${KINESIS_REMOVAL_TABLE}" --region "${REGION}" \
+  --query 'Table.TableId' --output text)
+if [ "${KR_ID_AFTER}" != "${KR_BASE_ID}" ]; then
+  echo "FAIL (issue go-to-k/cdkd#5423): ${KINESIS_REMOVAL_TABLE} was REPLACED (TableId ${KR_BASE_ID} -> ${KR_ID_AFTER}), not updated in place" >&2
+  exit 1
+fi
+KR_DRIFT_JSON=$(mktemp)
+KR_DRIFT_ERR=$(mktemp)
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json >"${KR_DRIFT_JSON}" 2>"${KR_DRIFT_ERR}"
+KR_DRIFT_RC=$?
+set -e
+KR_CLEAN=$(jq --arg id "${KINESIS_REMOVAL_LOGICAL_ID}" \
+  '[.[].clean[]? | select(.logicalId == $id)] | length' "${KR_DRIFT_JSON}" 2>/dev/null || echo unparsable)
+KR_DRIFTED=$(jq --arg id "${KINESIS_REMOVAL_LOGICAL_ID}" \
+  '[.[].drifted[]? | select(.logicalId == $id)] | length' "${KR_DRIFT_JSON}" 2>/dev/null || echo unparsable)
+if [ "${KR_CLEAN}" != "1" ] || [ "${KR_DRIFTED}" != "0" ]; then
+  echo "FAIL (issue go-to-k/cdkd#5423): expected ${KINESIS_REMOVAL_LOGICAL_ID} CLEAN in cdkd drift after the KinesisStreamSpecification removal (clean=${KR_CLEAN} drifted=${KR_DRIFTED} rc=${KR_DRIFT_RC}) -- the drift baseline kept the disabled destination:" >&2
+  cat "${KR_DRIFT_JSON}" "${KR_DRIFT_ERR}" >&2
+  rm -f "${KR_DRIFT_JSON}" "${KR_DRIFT_ERR}"
+  exit 1
+fi
+rm -f "${KR_DRIFT_JSON}" "${KR_DRIFT_ERR}"
+echo "    OK (Phase 1.5): removing KinesisStreamSpecification disabled ${KINESIS_REMOVAL_TABLE}'s destination, and drift reads it clean (issue go-to-k/cdkd#5423)"
 
 # --- Phase 1.55: the per-GSI on-demand ceiling EDIT (issue #3287) ------
 # The headline shape: the same CDKD_TEST_UPDATE=true deploy changes NOTHING on
@@ -1033,6 +1103,19 @@ if [ -z "${SSE_REMOVAL_TABLE_GONE}" ]; then
   echo "FAIL: DynamoDB table ${SSE_REMOVAL_TABLE} still exists ~2min after destroy" >&2
   exit 1
 fi
+# ...and so is the issue go-to-k/cdkd#5423 Kinesis-removal table.
+KINESIS_REMOVAL_TABLE_GONE=""
+for _ in $(seq 1 24); do
+  if gone_probe aws dynamodb describe-table --table-name "${KINESIS_REMOVAL_TABLE}" --region "${REGION}"; then
+    KINESIS_REMOVAL_TABLE_GONE=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${KINESIS_REMOVAL_TABLE_GONE}" ]; then
+  echo "FAIL: DynamoDB table ${KINESIS_REMOVAL_TABLE} still exists ~2min after destroy" >&2
+  exit 1
+fi
 assert_gone "KMS alias ${SSE_KEY_ALIAS} still exists after destroy" \
   aws kms describe-key --key-id "${SSE_KEY_ALIAS}" --region "${REGION}"
 SSE_KEY_STATE=$(aws kms describe-key --key-id "${SSE_KEY_ARN}" --region "${REGION}" \
@@ -1062,4 +1145,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> dynamodb-ondemand test passed (OnDemandThroughput + ResourcePolicy + KinesisStreamSpecification + ContributorInsightsSpecification backfill closed + BillingMode/ProvisionedThroughput in-place UPDATE + per-GSI ceiling edit + rejected ceiling member dropped + per-member ceiling REMOVAL at both positions + malformed RecoveryPeriodInDays refused on create and update + SSESpecification removal reset to the AWS owned key + clean destroy)"
+echo "==> dynamodb-ondemand test passed (OnDemandThroughput + ResourcePolicy + KinesisStreamSpecification + ContributorInsightsSpecification backfill closed + BillingMode/ProvisionedThroughput in-place UPDATE + per-GSI ceiling edit + rejected ceiling member dropped + per-member ceiling REMOVAL at both positions + malformed RecoveryPeriodInDays refused on create and update + SSESpecification removal reset to the AWS owned key + KinesisStreamSpecification removal drift-clean + clean destroy)"
