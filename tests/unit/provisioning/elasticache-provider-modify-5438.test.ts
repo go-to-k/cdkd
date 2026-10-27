@@ -57,8 +57,14 @@ describe('ElastiCacheProvider CacheCluster in-place modify (issue #5438)', () =>
     vi.clearAllMocks();
     mockSend.mockReset();
     provider = new ElastiCacheProvider();
-    vi.spyOn(provider as unknown as { sleep: (ms: number) => Promise<void> }, 'sleep').mockResolvedValue(
-      undefined
+    // Instant sleeps, bounded: a waiter that never settles fails the test
+    // instead of spinning until its wall-clock cap.
+    let sleeps = 0;
+    vi.spyOn(
+      provider as unknown as { sleep: (ms: number) => Promise<void> },
+      'sleep'
+    ).mockImplementation(() =>
+      ++sleeps > 50 ? Promise.reject(new Error('waiter did not settle')) : Promise.resolve()
     );
   });
 
