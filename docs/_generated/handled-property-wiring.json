@@ -6459,9 +6459,13 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "buildBlockDeviceMappings",
             "create",
-            "createInstance"
+            "createInstance",
+            "planInstanceMemberUpdates",
+            "update",
+            "updateInstance"
           ]
         },
         {
@@ -6927,8 +6931,12 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createInstance"
+            "createInstance",
+            "planInstanceMemberUpdates",
+            "update",
+            "updateInstance"
           ]
         },
         {
@@ -7014,8 +7022,12 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createInstance"
+            "createInstance",
+            "planInstanceMemberUpdates",
+            "update",
+            "updateInstance"
           ]
         },
         {
@@ -7469,8 +7481,12 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createInstance"
+            "createInstance",
+            "planInstanceMemberUpdates",
+            "update",
+            "updateInstance"
           ]
         },
         {
@@ -7710,8 +7726,12 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createInstance"
+            "createInstance",
+            "planInstanceMemberUpdates",
+            "update",
+            "updateInstance"
           ]
         },
         {
@@ -7807,6 +7827,7 @@
         "computed key in comparableIngressIdentity()",
         "computed key in ingressRuleIdentity()",
         "computed key in narrowRouteDestinations()",
+        "computed key in planInstanceMemberUpdates()",
         "computed key in recordedGatewayIdOf()",
         "computed key in updateRoute()",
         "identity(...) in readSgIngressByIdentity()",

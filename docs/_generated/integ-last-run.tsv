@@ -115,7 +115,7 @@ dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean 
 dynamodb-streams	2026-10-13T02:41:29Z	PASS	235	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 dynamodb-tableclass-switch	2026-10-03T04:27:40Z	PASS	67	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-ttl-attr-change	2026-10-27T23:45:06Z	PASS	65	verify.sh	rc ok, orph clean; Phase 2c rate-limit path; pre-fix probe RED at 2c (#5447)
-ec2-instance	2026-10-27T23:43:03Z	PASS	250	verify.sh	rc ok, orph clean; #5445 Ebs members; probe red at Encrypted
+ec2-instance	2026-10-28T05:14:33Z	PASS	265	verify.sh	rc ok, orph clean; #5446 in-place update; probes red at t3.small and reader
 ec2-instance-fanout	2026-10-19T00:17:40Z	PASS	90	verify.sh	rc ok, orph clean (#5077)
 ec2-route-targets	2026-10-23T21:25:44Z	PASS	651	verify.sh	rc ok, orph clean, VGW attachment sdk record + Phase 2 swap to 2nd VGW (DetachVpnGateway=1 AttachVpnGateway=1); pre-fix probe RED at sdk-record assertion
 ec2-vpc	2026-10-20T12:02:38Z	PASS	133	verify.sh	PR#5127 1160 route53 hostedzone VPCs kept; pre-fix probe RED at exactly-one-warning (found 0); destroy 0 errors 0 orphans
