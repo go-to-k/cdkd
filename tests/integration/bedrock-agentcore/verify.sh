@@ -118,7 +118,7 @@ physical_id() { # usage: physical_id <logical-id>
 # asynchronous, and a read while UPDATING can still show the old version.
 wait_ready() { # usage: wait_ready <runtime-id>
   local status=""
-  for _ in $(seq 1 36); do
+  for _ in $(seq 1 120); do
     status=$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "$1" \
       --region "${REGION}" --query status --output text) || return 1
     case "${status}" in
@@ -130,7 +130,7 @@ wait_ready() { # usage: wait_ready <runtime-id>
     esac
     sleep 5
   done
-  echo "FAIL: runtime $1 did not reach READY within 180s (last status '${status}')" >&2
+  echo "FAIL: runtime $1 did not reach READY within 600s (last status '${status}')" >&2
   exit 1
 }
 
