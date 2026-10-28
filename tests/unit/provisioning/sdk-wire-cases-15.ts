@@ -94,6 +94,9 @@ const VARIANT_REFUSED: Record<string, readonly string[]> = {
     'ImportPath',
     'ImportedFileChunkSize',
   ],
+  // go-to-k/cdkd#5469: ActiveDirectoryId, Aliases and PreferredSubnetId are a
+  // known-wrong pin — CloudFormation documents them "No interruption"; the fix
+  // moves them out of this list and turns the refusal tests red.
   WindowsConfiguration: [
     'ActiveDirectoryId',
     'Aliases',
@@ -302,7 +305,7 @@ const blockVary = (block: string, keys: readonly string[]): Record<string, strin
   Object.fromEntries(
     keys.map((k) => [
       `update-vary:${block}.${k}`,
-      `the varied update's previous side lacks the whole ${block}, so its update-refused members (${VARIANT_REFUSED[block]!.join(', ')}) change as well and update() refuses both sides before any call (${SRC}:1570-1576); the value is observed by update-add and create-vary`,
+      `the varied update's previous side lacks the whole ${block}, so whichever of its update-refused members (${VARIANT_REFUSED[block]!.join(', ')}) the bag declares change as well and update() refuses both sides before any call (${SRC}:1570-1576); the value is observed by update-add and create-vary`,
     ])
   );
 
@@ -685,8 +688,7 @@ const NEPTUNE_CLUSTER_CASE: TypeCase = {
         'update-add:Port': PORT_SHADOWED,
         'update-remove:Port': PORT_SHADOWED,
         'update-vary:Port': PORT_SHADOWED,
-        // Removing DBPort falls back to the declared Port, sent from next.
-        'update-remove:DBPort': PORT_KEPT,
+        'update-remove:DBPort': `removing DBPort falls back to the declared Port, which update() sends from next (${NEPTUNE_SRC}:722-727), so no DBPort reset is due`,
       },
     },
     {
