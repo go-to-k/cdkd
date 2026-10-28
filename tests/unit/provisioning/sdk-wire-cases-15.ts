@@ -119,6 +119,10 @@ const COMMON = {
   KmsKeyId: KMS_KEY,
 };
 
+/**
+ * A union of every Lustre member, so not a shape AWS accepts: SSD storage beside
+ * the INTELLIGENT_TIERING-only ThroughputCapacity and DataReadCacheConfiguration.
+ */
 const LUSTRE_BAG: Bag = {
   FileSystemType: 'LUSTRE',
   ...fresh(COMMON),
@@ -214,6 +218,10 @@ const ONTAP_BAG: Bag = {
   },
 };
 
+/**
+ * A union of every OpenZFS member, so not a shape AWS accepts: SSD storage beside
+ * the INTELLIGENT_TIERING-only ReadCacheConfiguration.
+ */
 const OPENZFS_BAG: Bag = {
   FileSystemType: 'OPENZFS',
   ...fresh(COMMON),
@@ -267,7 +275,9 @@ const FROM_BACKUP_BAG: Bag = {
 const LEFT_IN_PLACE = (name: string, measured: string): string =>
   `left in place with a warning naming ${name} (issue #1160, ${SRC}:254-270, 1296-1301, 1356-1361, 1577-1580): ${measured}`;
 const CFN_KEEPS = `CloudFormation keeps the value too (CFn A/B, ${SRC}:272-330)`;
-const CFN_KEEPS_SHAPE = `CloudFormation keeps the value on the measured shape (CFn A/B, ${SRC}:368-431)`;
+/** Measured kept by CloudFormation only on `shape` (${SRC}:368-431); a union bag is not that shape, so `update()` warns with the unmeasured line (${SRC}:492-494). */
+const CFN_KEEPS_OTHER_SHAPE = (shape: string): string =>
+  `CloudFormation keeps the value only on the measured shape (${shape}; CFn A/B, ${SRC}:368-431); this bag is not that shape, so the warning claims nothing about CloudFormation (${SRC}:492-494)`;
 const CFN_UNMEASURED = `CFn unmeasured, so the warning claims nothing about CloudFormation (${SRC}:293-296, 492-494)`;
 
 const leftInPlace = (
@@ -332,8 +342,8 @@ const FSX_CASE: TypeCase = {
           'LustreConfiguration.AutoImportPolicy': CFN_KEEPS,
           'LustreConfiguration.DataCompressionType': CFN_KEEPS,
           'LustreConfiguration.MetadataConfiguration': CFN_KEEPS,
-          'LustreConfiguration.ThroughputCapacity': CFN_KEEPS_SHAPE,
-          'LustreConfiguration.DataReadCacheConfiguration': CFN_KEEPS_SHAPE,
+          'LustreConfiguration.ThroughputCapacity': CFN_KEEPS_OTHER_SHAPE('INTELLIGENT_TIERING storage on both sides'),
+          'LustreConfiguration.DataReadCacheConfiguration': CFN_KEEPS_OTHER_SHAPE('INTELLIGENT_TIERING storage on both sides'),
           'LustreConfiguration.LogConfiguration': `${CFN_UNMEASURED}; go-to-k/cdkd#5430 (${SRC}:106-110)`,
         }),
         ...blockVary('LustreConfiguration', [
@@ -427,16 +437,16 @@ const FSX_CASE: TypeCase = {
         ...leftInPlace({
           StorageCapacity: CFN_KEEPS,
           StorageType: CFN_KEEPS,
-          NetworkType: `${CFN_KEEPS}; on MULTI_AZ_1 with EndpointIpv6AddressRange still declared CloudFormation refuses it instead (${SRC}:433-443)`,
-          'OpenZFSConfiguration.EndpointIpv6AddressRange': CFN_KEEPS_SHAPE,
-          'OpenZFSConfiguration.ThroughputCapacity': CFN_KEEPS_SHAPE,
+          NetworkType: `CloudFormation refuses this removal on this bag's shape (MULTI_AZ_1 with EndpointIpv6AddressRange still declared, ${SRC}:433-443); cdkd leaves it in place`,
+          'OpenZFSConfiguration.EndpointIpv6AddressRange': CFN_KEEPS_OTHER_SHAPE('NetworkType removed in the same deploy'),
+          'OpenZFSConfiguration.ThroughputCapacity': CFN_KEEPS_OTHER_SHAPE('a NetworkType other than DUAL'),
           'OpenZFSConfiguration.AutomaticBackupRetentionDays': CFN_KEEPS,
           'OpenZFSConfiguration.CopyTagsToBackups': CFN_KEEPS,
           'OpenZFSConfiguration.CopyTagsToVolumes': CFN_KEEPS,
           'OpenZFSConfiguration.DailyAutomaticBackupStartTime': CFN_KEEPS,
           'OpenZFSConfiguration.WeeklyMaintenanceStartTime': CFN_KEEPS,
           'OpenZFSConfiguration.DiskIopsConfiguration': CFN_KEEPS,
-          'OpenZFSConfiguration.ReadCacheConfiguration': CFN_KEEPS_SHAPE,
+          'OpenZFSConfiguration.ReadCacheConfiguration': CFN_KEEPS_OTHER_SHAPE('INTELLIGENT_TIERING storage'),
         }),
         ...blockVary('OpenZFSConfiguration', [
           'AutomaticBackupRetentionDays',
