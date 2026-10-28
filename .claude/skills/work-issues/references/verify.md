@@ -91,9 +91,10 @@ tests passing is necessary but NOT sufficient:
 
 BEFORE the final integ, revert the fix, rebuild, run, confirm the arm goes RED
 **at YOUR assertion — read which one fired**, then remove the throwaway tree (below). A red
-ELSEWHERE proves nothing: at the CREATE the shape is unreachable, so redo
-`triage.md`'s CFn premise (#5204); at an older step, harden it and re-run
-(#5218). A GREEN pre-fix run BLOCKS the merge: rework the arm so the symptom reaches AWS
+ELSEWHERE proves nothing: at the CREATE, a refusal of the shape under test
+means it is unreachable, so redo `triage.md`'s CFn premise (#5204), while an
+UNRELATED pre-fix limitation is dropped in the throwaway tree only, never the
+PR, and re-run (#5414); at an older step, harden it and re-run (#5218). A GREEN pre-fix run BLOCKS the merge: rework the arm so the symptom reaches AWS
 (#4927). A failure HINT's needle is
 copied from that red run, never reasoned (#4336); a refusal the
 log tail lacks is the failed resource's `error.message` / `awsErrorCode` in
