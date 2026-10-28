@@ -1400,6 +1400,7 @@
         "alb-advanced",
         "apigw-vpclink-integration-target",
         "batch",
+        "bedrock-agentcore",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
@@ -1468,6 +1469,9 @@
           "l2"
         ],
         "batch": [
+          "l2"
+        ],
+        "bedrock-agentcore": [
           "l2"
         ],
         "bench-cdk-sample": [
@@ -1648,6 +1652,7 @@
         "alb-advanced",
         "apigw-vpclink-integration-target",
         "batch",
+        "bedrock-agentcore",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
@@ -1712,6 +1717,9 @@
           "l2"
         ],
         "batch": [
+          "l2"
+        ],
+        "bedrock-agentcore": [
           "l2"
         ],
         "bench-cdk-sample": [
@@ -1911,6 +1919,7 @@
         "alb-advanced",
         "apigw-vpclink-integration-target",
         "batch",
+        "bedrock-agentcore",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
@@ -1978,6 +1987,9 @@
           "l2"
         ],
         "batch": [
+          "l2"
+        ],
+        "bedrock-agentcore": [
           "l2"
         ],
         "bench-cdk-sample": [
@@ -2157,6 +2169,7 @@
         "alb-advanced",
         "apigw-vpclink-integration-target",
         "batch",
+        "bedrock-agentcore",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
@@ -2225,6 +2238,9 @@
           "l2"
         ],
         "batch": [
+          "l2"
+        ],
+        "bedrock-agentcore": [
           "l2"
         ],
         "bench-cdk-sample": [
@@ -2624,6 +2640,7 @@
         "alb-advanced",
         "apigw-vpclink-integration-target",
         "batch",
+        "bedrock-agentcore",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
@@ -2697,6 +2714,9 @@
           "l2"
         ],
         "batch": [
+          "l2"
+        ],
+        "bedrock-agentcore": [
           "l2"
         ],
         "bench-cdk-sample": [
@@ -2908,6 +2928,7 @@
         "alb-advanced",
         "apigw-vpclink-integration-target",
         "batch",
+        "bedrock-agentcore",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
@@ -2972,6 +2993,9 @@
           "l2"
         ],
         "batch": [
+          "l2"
+        ],
+        "bedrock-agentcore": [
           "l2"
         ],
         "bench-cdk-sample": [
@@ -3140,6 +3164,7 @@
         "alb-advanced",
         "apigw-vpclink-integration-target",
         "batch",
+        "bedrock-agentcore",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
@@ -3217,6 +3242,9 @@
           "l2"
         ],
         "batch": [
+          "l2"
+        ],
+        "bedrock-agentcore": [
           "l2"
         ],
         "bench-cdk-sample": [
@@ -3441,6 +3469,7 @@
         "alb-advanced",
         "apigw-vpclink-integration-target",
         "batch",
+        "bedrock-agentcore",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
@@ -3508,6 +3537,9 @@
           "l2"
         ],
         "batch": [
+          "l2"
+        ],
+        "bedrock-agentcore": [
           "l2"
         ],
         "bench-cdk-sample": [

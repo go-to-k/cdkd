@@ -1,8 +1,7 @@
 /**
  * PascalCase <-> camelCase key conversion helpers shared by the
  * BedrockAgentCore SDK Providers (`agentcore-runtime-provider.ts`,
- * `agentcore-browser-provider.ts`, `agentcore-code-interpreter-provider.ts`,
- * `agentcore-evaluator-provider.ts`).
+ * `agentcore-evaluator-provider.ts`) and `ecs-provider.ts`.
  *
  * CloudFormation templates carry PascalCase property keys while the
  * `bedrock-agentcore-control` SDK expects camelCase input shapes (and
@@ -16,7 +15,9 @@
  * for free-form JSON document properties whose inner keys are user-defined
  * model/request fields, NOT CFn property names — e.g. the Evaluator's
  * `AdditionalModelRequestFields` (model-specific request fields like
- * `top_k` that must reach the service byte-identical).
+ * `top_k` that must reach the service byte-identical) — and for user-keyed
+ * maps such as the Runtime's `ManagedVpcResource.Tags`, whose keys are tag
+ * keys (issue #5433).
  */
 
 /**

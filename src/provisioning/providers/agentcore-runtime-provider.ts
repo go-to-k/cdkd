@@ -50,6 +50,22 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 
 /**
+ * The members whose VALUE is a user-keyed string map, so the case flip must
+ * stop at the member name: its keys are tag keys / scope names, not shape
+ * fields (issue #5433 — a `ManagedVpcResource.Tags` key `Env` went out as
+ * `env`). Listed by name rather than derived from the schema: the cdkd
+ * schema digest does not tell a map apart from an unexpanded struct, and the
+ * names below are maps wherever they occur in the Runtime shapes.
+ * `Tags`: `AuthorizerConfiguration.CustomJWTAuthorizer.PrivateEndpoint` and
+ * `.PrivateEndpointOverrides[].PrivateEndpoint` `ManagedVpcResource.Tags`.
+ * `AdvertisedScopeMapping`: `CustomJWTAuthorizer` in the SDK shape (not yet
+ * in the CFn schema, but `GetAgentRuntime` returns it). `EnvironmentVariables`
+ * is a top-level map passed through verbatim, never converted.
+ */
+const CFN_MAP_KEYS: ReadonlySet<string> = new Set(['Tags', 'AdvertisedScopeMapping']);
+const SDK_MAP_KEYS: ReadonlySet<string> = new Set(['tags', 'advertisedScopeMapping']);
+
+/**
  * AWS BedrockAgentCore Runtime Provider
  *
  * Implements resource provisioning for AWS::BedrockAgentCore::Runtime using the
@@ -146,17 +162,24 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       };
 
       if (properties['AgentRuntimeArtifact'] !== undefined) {
-        input['agentRuntimeArtifact'] = pascalToCamelCaseKeys(properties['AgentRuntimeArtifact']);
+        input['agentRuntimeArtifact'] = pascalToCamelCaseKeys(
+          properties['AgentRuntimeArtifact'],
+          CFN_MAP_KEYS
+        );
       }
       if (properties['NetworkConfiguration'] !== undefined) {
-        input['networkConfiguration'] = pascalToCamelCaseKeys(properties['NetworkConfiguration']);
+        input['networkConfiguration'] = pascalToCamelCaseKeys(
+          properties['NetworkConfiguration'],
+          CFN_MAP_KEYS
+        );
       }
       if (properties['Description'] !== undefined) {
         input['description'] = properties['Description'];
       }
       if (properties['AuthorizerConfiguration'] !== undefined) {
         input['authorizerConfiguration'] = pascalToCamelCaseKeys(
-          properties['AuthorizerConfiguration']
+          properties['AuthorizerConfiguration'],
+          CFN_MAP_KEYS
         );
       }
       if (properties['ProtocolConfiguration'] !== undefined) {
@@ -166,7 +189,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
         if (typeof proto === 'string') {
           input['protocolConfiguration'] = { serverProtocol: proto };
         } else {
-          input['protocolConfiguration'] = pascalToCamelCaseKeys(proto);
+          input['protocolConfiguration'] = pascalToCamelCaseKeys(proto, CFN_MAP_KEYS);
         }
       }
       // Skip empty LifecycleConfiguration (CFn template may have {} which SDK rejects)
@@ -177,7 +200,8 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
         Object.keys(properties['LifecycleConfiguration'] as Record<string, unknown>).length > 0
       ) {
         input['lifecycleConfiguration'] = pascalToCamelCaseKeys(
-          properties['LifecycleConfiguration']
+          properties['LifecycleConfiguration'],
+          CFN_MAP_KEYS
         );
       }
       if (properties['EnvironmentVariables'] !== undefined) {
@@ -272,17 +296,24 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       };
 
       if (properties['AgentRuntimeArtifact'] !== undefined) {
-        input['agentRuntimeArtifact'] = pascalToCamelCaseKeys(properties['AgentRuntimeArtifact']);
+        input['agentRuntimeArtifact'] = pascalToCamelCaseKeys(
+          properties['AgentRuntimeArtifact'],
+          CFN_MAP_KEYS
+        );
       }
       if (properties['NetworkConfiguration'] !== undefined) {
-        input['networkConfiguration'] = pascalToCamelCaseKeys(properties['NetworkConfiguration']);
+        input['networkConfiguration'] = pascalToCamelCaseKeys(
+          properties['NetworkConfiguration'],
+          CFN_MAP_KEYS
+        );
       }
       if (properties['Description'] !== undefined) {
         input['description'] = properties['Description'];
       }
       if (properties['AuthorizerConfiguration'] !== undefined) {
         input['authorizerConfiguration'] = pascalToCamelCaseKeys(
-          properties['AuthorizerConfiguration']
+          properties['AuthorizerConfiguration'],
+          CFN_MAP_KEYS
         );
       }
       if (properties['ProtocolConfiguration'] !== undefined) {
@@ -290,7 +321,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
         if (typeof proto === 'string') {
           input['protocolConfiguration'] = { serverProtocol: proto };
         } else {
-          input['protocolConfiguration'] = pascalToCamelCaseKeys(proto);
+          input['protocolConfiguration'] = pascalToCamelCaseKeys(proto, CFN_MAP_KEYS);
         }
       }
       if (
@@ -300,7 +331,8 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
         Object.keys(properties['LifecycleConfiguration'] as Record<string, unknown>).length > 0
       ) {
         input['lifecycleConfiguration'] = pascalToCamelCaseKeys(
-          properties['LifecycleConfiguration']
+          properties['LifecycleConfiguration'],
+          CFN_MAP_KEYS
         );
       }
       if (properties['EnvironmentVariables'] !== undefined) {
@@ -441,7 +473,8 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
     }
     if (response.workloadIdentityDetails !== undefined) {
       attributes['WorkloadIdentityDetails'] = camelToPascalCaseKeys(
-        response.workloadIdentityDetails
+        response.workloadIdentityDetails,
+        SDK_MAP_KEYS
       );
     }
     return attributes;
@@ -544,14 +577,23 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
     }
     if (resp.roleArn !== undefined) result['RoleArn'] = resp.roleArn;
     if (resp.agentRuntimeArtifact !== undefined) {
-      result['AgentRuntimeArtifact'] = camelToPascalCaseKeys(resp.agentRuntimeArtifact);
+      result['AgentRuntimeArtifact'] = camelToPascalCaseKeys(
+        resp.agentRuntimeArtifact,
+        SDK_MAP_KEYS
+      );
     }
     if (resp.networkConfiguration !== undefined) {
-      result['NetworkConfiguration'] = camelToPascalCaseKeys(resp.networkConfiguration);
+      result['NetworkConfiguration'] = camelToPascalCaseKeys(
+        resp.networkConfiguration,
+        SDK_MAP_KEYS
+      );
     }
     result['Description'] = resp.description ?? '';
     if (resp.authorizerConfiguration !== undefined) {
-      result['AuthorizerConfiguration'] = camelToPascalCaseKeys(resp.authorizerConfiguration);
+      result['AuthorizerConfiguration'] = camelToPascalCaseKeys(
+        resp.authorizerConfiguration,
+        SDK_MAP_KEYS
+      );
     }
     if (resp.protocolConfiguration !== undefined) {
       // SDK returns `{serverProtocol: "HTTP"}` for the single-field case.
@@ -567,11 +609,17 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       ) {
         result['ProtocolConfiguration'] = proto['serverProtocol'];
       } else {
-        result['ProtocolConfiguration'] = camelToPascalCaseKeys(resp.protocolConfiguration);
+        result['ProtocolConfiguration'] = camelToPascalCaseKeys(
+          resp.protocolConfiguration,
+          SDK_MAP_KEYS
+        );
       }
     }
     if (resp.lifecycleConfiguration !== undefined) {
-      result['LifecycleConfiguration'] = camelToPascalCaseKeys(resp.lifecycleConfiguration);
+      result['LifecycleConfiguration'] = camelToPascalCaseKeys(
+        resp.lifecycleConfiguration,
+        SDK_MAP_KEYS
+      );
     }
     if (resp.environmentVariables !== undefined) {
       result['EnvironmentVariables'] = resp.environmentVariables;

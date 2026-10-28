@@ -8,8 +8,9 @@
 # (us-east-1) cleared each removed field, the lifecycle back to the service
 # defaults 900 / 28800. UpdateAgentRuntime is a full replace, so cdkd omitting
 # a field is that reset; this run pins it against a regression to merge
-# semantics (filling an absent field from the previous template). Then
-# destroys clean.
+# semantics (filling an absent field from the previous template). Phase 1
+# also pins the authorizer private endpoint's tag keys, sent and read back
+# verbatim (issue #5433). Then destroys clean.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -60,10 +61,12 @@ DOCKER_RUNTIME_LOGICAL_ID="DockerRuntime395AC11E"
 AUTH_POOL_LOGICAL_ID="AuthPool6048658F"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+DRIFT_JSON="$(mktemp)"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  rm -f "${DRIFT_JSON}"
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
     env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -115,7 +118,7 @@ physical_id() { # usage: physical_id <logical-id>
 # asynchronous, and a read while UPDATING can still show the old version.
 wait_ready() { # usage: wait_ready <runtime-id>
   local status=""
-  for _ in $(seq 1 36); do
+  for _ in $(seq 1 120); do
     status=$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "$1" \
       --region "${REGION}" --query status --output text) || return 1
     case "${status}" in
@@ -127,7 +130,7 @@ wait_ready() { # usage: wait_ready <runtime-id>
     esac
     sleep 5
   done
-  echo "FAIL: runtime $1 did not reach READY within 180s (last status '${status}')" >&2
+  echo "FAIL: runtime $1 did not reach READY within 600s (last status '${status}')" >&2
   exit 1
 }
 
@@ -139,6 +142,20 @@ runtime_fields() { # usage: runtime_fields <runtime-id>
     --output json | jq -c -S .
 }
 
+# Issue #5433: pin the auth VPC to AZ IDs AgentCore serves (names differ per
+# account); other regions fall back to the first two AZs.
+if [ "${REGION}" = "us-east-1" ]; then
+  CDKD_AUTH_AZS=$(aws ec2 describe-availability-zones --region "${REGION}" --zone-ids use1-az1 use1-az2 \
+    --query 'sort_by(AvailabilityZones, &ZoneId)[].ZoneName' --output text | tr '\t' ',')
+  if [ -z "${CDKD_AUTH_AZS}" ]; then
+    echo "FAIL: could not resolve AZ names for use1-az1 / use1-az2" >&2
+    exit 1
+  fi
+  export CDKD_AUTH_AZS
+else
+  echo "    WARN (issue #5433): auth VPC AZs are UNPINNED outside us-east-1 (the first two AZ names); AgentCore / VPC Lattice may not serve them"
+fi
+
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
 env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -149,6 +166,11 @@ env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
 RUNTIME_ID=$(physical_id "${CODE_RUNTIME_LOGICAL_ID}")
 DOCKER_RUNTIME_ID=$(physical_id "${DOCKER_RUNTIME_LOGICAL_ID}")
 AUTH_POOL_ID=$(physical_id "${AUTH_POOL_LOGICAL_ID}")
+AUTH_VPC_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::VPC") | .value.physicalId] | first // empty')
+if [ -z "${AUTH_VPC_ID}" ]; then
+  echo "FAIL: the auth VPC (issue #5433) is missing from state" >&2
+  exit 1
+fi
 if [ -z "${RUNTIME_ID}" ] || [ -z "${DOCKER_RUNTIME_ID}" ] || [ -z "${AUTH_POOL_ID}" ]; then
   echo "FAIL: physical ids missing from state: ${CODE_RUNTIME_LOGICAL_ID}='${RUNTIME_ID}' ${DOCKER_RUNTIME_LOGICAL_ID}='${DOCKER_RUNTIME_ID}' ${AUTH_POOL_LOGICAL_ID}='${AUTH_POOL_ID}'" >&2
   exit 1
@@ -163,6 +185,33 @@ if [ "${P1_FIELDS}" != "${P1_EXPECTED}" ]; then
   exit 1
 fi
 echo "    OK: baseline runtime ${RUNTIME_ID} carries all five fields"
+
+# Issue #5433: the private endpoint's tag keys reach AWS byte-identical. The
+# PascalCase -> camelCase flip used to rewrite them (`Env` -> `env`).
+P1_TAGS=$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "${RUNTIME_ID}" --region "${REGION}" \
+  --query 'authorizerConfiguration.customJWTAuthorizer.privateEndpoint.managedVpcResource.tags' \
+  --output json | jq -c -S .)
+P1_TAGS_EXPECTED='{"Cost-Center":"5433","Env":"cdkd-integ","lowerKey":"v"}'
+if [ "${P1_TAGS}" != "${P1_TAGS_EXPECTED}" ]; then
+  echo "FAIL (issue #5433): the authorizer private endpoint's tag keys were rewritten: expected ${P1_TAGS_EXPECTED}, got ${P1_TAGS}" >&2
+  exit 1
+fi
+echo "    OK: private endpoint tag keys sent verbatim (issue #5433)"
+
+# ...and read back verbatim: the camelCase -> PascalCase flip used to turn
+# `lowerKey` into `LowerKey`, a phantom drift on the code runtime.
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_JSON}"
+DRIFT_RC=$?
+set -e
+RT_CLEAN=$(jq --arg l "${CODE_RUNTIME_LOGICAL_ID}" '[.[].clean[] | select(.logicalId == $l)] | length' "${DRIFT_JSON}" 2>/dev/null || echo "?")
+RT_DRIFTED=$(jq --arg l "${CODE_RUNTIME_LOGICAL_ID}" '[.[].drifted[] | select(.logicalId == $l)] | length' "${DRIFT_JSON}" 2>/dev/null || echo "?")
+if [ "${RT_CLEAN}" != "1" ] || [ "${RT_DRIFTED}" != "0" ]; then
+  echo "FAIL (issue #5433): expected the code runtime CLEAN in cdkd drift (clean=${RT_CLEAN} drifted=${RT_DRIFTED} rc=${DRIFT_RC}):" >&2
+  cat "${DRIFT_JSON}" >&2
+  exit 1
+fi
+echo "    OK: code runtime reads back drift-clean, tag keys intact (issue #5433)"
 
 # --- Phase 2: REMOVAL drops the five fields (issue #1160) ---------------
 echo "==> Phase 2: removal (drop Description, AuthorizerConfiguration, ProtocolConfiguration, LifecycleConfiguration, EnvironmentVariables)"
@@ -184,6 +233,17 @@ if [ "${P2_FIELDS}" != "${P2_EXPECTED}" ]; then
   exit 1
 fi
 echo "    OK: removed fields cleared and the lifecycle back to 900 / 28800, in place (issue #1160)"
+
+# Issue #5433, LOG-ONLY: AgentCore keeps the managed Lattice resource gateway
+# after the authorizer is removed and deletes it with the runtime (measured
+# with CloudFormation in us-east-1: still ACTIVE 10 min after the removal,
+# gone about 1 min into the runtime's delete). Recorded, never a failure;
+# Phase 3's VPC-gone assertion is the gate, and the stack orders the
+# runtime's delete before the VPC's. A probe ERROR still fails loudly.
+enis=$(aws ec2 describe-network-interfaces --region "${REGION}" --filters "Name=vpc-id,Values=${AUTH_VPC_ID}" "Name=description,Values=Resource Gateway Interface*" \
+  --query 'length(NetworkInterfaces)' --output text) \
+  || { echo "FAIL (issue #5433): the ENI probe on auth VPC ${AUTH_VPC_ID} failed" >&2; exit 1; }
+echo "    NOTE (issue #5433): ${enis} resource gateway interface(s) in auth VPC ${AUTH_VPC_ID} after the private endpoint was removed (expected: kept until the runtime is deleted)"
 
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
@@ -211,6 +271,9 @@ echo "    OK: both runtimes are gone"
 
 assert_gone "user pool '${AUTH_POOL_ID}' still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${AUTH_POOL_ID}" --region "${REGION}"
 echo "    OK: auth user pool is gone"
+
+assert_gone "auth VPC '${AUTH_VPC_ID}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${AUTH_VPC_ID}" --region "${REGION}"
+echo "    OK: auth VPC is gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
