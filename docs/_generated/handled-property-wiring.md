@@ -66,7 +66,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `KMSProvider` (kms-provider.ts) | `withRemovalDefaults(...) in updateKey()` |
 | `LambdaEventInvokeConfigProvider` (lambda-event-invoke-config-provider.ts) | `computed key in update()`, `object spread in canonicalizeDriftProperties()` |
 | `LambdaEventSourceMappingProvider` (lambda-eventsource-provider.ts) | `computed key in applyUpdate()`, `object spread in applyUpdate()` |
-| `LambdaFunctionProvider` (lambda-function-provider.ts) | `walk(...) in jsonEscapedPairs()`, `withRemovalDefaults(...) in update()` |
+| `LambdaFunctionProvider` (lambda-function-provider.ts) | `computed key in update()`, `walk(...) in jsonEscapedPairs()`, `withRemovalDefaults(...) in update()` |
 | `LambdaMicrovmImageProvider` (lambda-microvm-image-provider.ts) | `computed key in update()` |
 | `LambdaUrlProvider` (lambda-url-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `NestedStackProvider` (nested-stack-provider.ts) | `withoutSilentDropProperties(...) in recordWithPendingChildDeletes()` |

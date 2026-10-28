@@ -59,6 +59,7 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { waitForGoneAfterDelete } from '../delete-gone-wait.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
+import { previousWithLiveUnsettled } from '../unsettled-previous.js';
 
 /**
  * Class 1/2 sanitize for `StreamEncryption` placeholder.
@@ -765,6 +766,31 @@ export class KinesisStreamProvider implements ResourceProvider {
           `${physicalId} is left as it is rather than refusing the restore`
       );
     }
+    // go-to-k/cdkd#5487: a key an earlier failed update left unsettled is
+    // compared with what the stream holds now, so the per-key checks below send
+    // only what AWS lacks (Kinesis refuses most same-value calls). The live
+    // `ShardCount` is the OPEN shards: `readCurrentState` counts closed ones too.
+    try {
+      previousProperties = await previousWithLiveUnsettled(
+        previousProperties,
+        context,
+        () => this.readCurrentState(physicalId, logicalId, resourceType),
+        { resourceType, logicalId, physicalId },
+        { ShardCount: () => this.getOpenShardCount(physicalId) }
+      );
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      throw new ProvisioningError(
+        `${logicalId} (${resourceType}): could not read the resource to converge what an earlier failed update left unsettled — nothing was updated`,
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      );
+    }
+    // Before each call that changes the stream: a failure from there on leaves
+    // the key unsettled for the next deploy to converge.
+    const markUnsettled = (key: string): void => context?.markUnsettled?.(key);
     const previousRetention = readRetentionHours(previousProperties['RetentionPeriodHours'], mask);
 
     try {
@@ -803,6 +829,7 @@ export class KinesisStreamProvider implements ResourceProvider {
         this.logger.debug(
           `Switching stream mode for ${physicalId}: from ${oldStreamMode} to ${streamMode}`
         );
+        markUnsettled('StreamModeDetails');
         await this.getClient().send(
           new UpdateStreamModeCommand({
             StreamARN: streamArn,
@@ -830,6 +857,7 @@ export class KinesisStreamProvider implements ResourceProvider {
             `Updating shard count for ${physicalId}: from ${oldShardCount} to ${newShardCount}`
           );
 
+          markUnsettled('ShardCount');
           await this.getClient().send(
             new UpdateShardCountCommand({
               StreamName: physicalId,
@@ -852,6 +880,7 @@ export class KinesisStreamProvider implements ResourceProvider {
         this.logger.debug(
           `Updating retention period for ${physicalId}: from ${effectiveOldRetention} to ${effectiveNewRetention}`
         );
+        markUnsettled('RetentionPeriodHours');
         if (effectiveNewRetention > effectiveOldRetention) {
           await this.getClient().send(
             new IncreaseStreamRetentionPeriodCommand({
@@ -872,6 +901,9 @@ export class KinesisStreamProvider implements ResourceProvider {
 
       // Apply tag diff. Kinesis uses AddTagsToStream (map shape) and
       // RemoveTagsFromStream (TagKeys list).
+      if (JSON.stringify(previousProperties['Tags']) !== JSON.stringify(properties['Tags'])) {
+        markUnsettled('Tags');
+      }
       await this.applyTagDiff(
         physicalId,
         resourceType,
@@ -903,6 +935,7 @@ export class KinesisStreamProvider implements ResourceProvider {
       const oldKeyId = oldIsKms ? (oldEncryption!['KeyId'] as string | undefined) : undefined;
       const newKeyId = newIsKms ? (newEncryption!['KeyId'] as string | undefined) : undefined;
       if (oldIsKms !== newIsKms || (oldIsKms && newIsKms && oldKeyId !== newKeyId)) {
+        markUnsettled('StreamEncryption');
         // Remove old encryption only when it WAS KMS-encrypted.
         if (oldIsKms) {
           await this.getClient().send(
@@ -967,6 +1000,7 @@ export class KinesisStreamProvider implements ResourceProvider {
         this.logger.debug(
           `Updating max record size for ${physicalId}: from ${recordedMaxRecordSize ?? 'no value'} to ${newMaxRecordSize}`
         );
+        markUnsettled('MaxRecordSizeInKiB');
         await this.getClient().send(
           new UpdateMaxRecordSizeCommand({
             StreamARN: await this.resolveStreamArn(physicalId),
@@ -982,7 +1016,8 @@ export class KinesisStreamProvider implements ResourceProvider {
         properties,
         previousProperties,
         mask,
-        warn
+        warn,
+        markUnsettled
       );
 
       // Reconcile DesiredShardLevelMetrics. There is no "set" API — enhanced
@@ -1013,6 +1048,7 @@ export class KinesisStreamProvider implements ResourceProvider {
         const previousSet = previousMetricNames(previousProperties['DesiredShardLevelMetrics']);
         const toDisable = previousSet.filter((m) => !desiredSet.includes(m));
         const toEnable = desiredSet.filter((m) => !previousSet.includes(m));
+        if (toDisable.length > 0 || toEnable.length > 0) markUnsettled('DesiredShardLevelMetrics');
         if (toDisable.length > 0) {
           this.logger.debug(`Disabling ${toDisable.length} shard-level metric(s) on ${physicalId}`);
           await this.getClient().send(
@@ -1304,7 +1340,8 @@ export class KinesisStreamProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
     mask: MaskerFn,
-    warn: (message: string) => void
+    warn: (message: string) => void,
+    markUnsettled: (key: string) => void
   ): Promise<void> {
     const desired = readDistributionStrategy(properties['RecordDistributionStrategy'], mask);
     if (desired.kind === 'unusable') {
@@ -1333,6 +1370,7 @@ export class KinesisStreamProvider implements ResourceProvider {
         safeMsg`Updating record distribution strategy for ${physicalId}: from ${recorded ?? 'no value'} to ${target}`
       )
     );
+    markUnsettled('RecordDistributionStrategy');
     await this.getClient().send(
       new UpdateStreamRecordDistributionStrategyCommand({
         StreamARN: await this.resolveStreamArn(physicalId),
@@ -1439,6 +1477,30 @@ export class KinesisStreamProvider implements ResourceProvider {
    *  1. `--resource <id>=<name>` override or `Properties.Name` → verify
    *     with `DescribeStream`.
    */
+  /**
+   * go-to-k/cdkd#5487: while the stream reads UPDATING (a shard-count, mode,
+   * retention, encryption, record-size, distribution or metrics change still
+   * running), every unsettled key but `Tags` is still changing. A failed read
+   * keeps every name, which only costs the next deploy a re-send.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>> {
+    try {
+      const resp = await this.getClient().send(
+        new DescribeStreamSummaryCommand({ StreamName: physicalId })
+      );
+      const status = resp.StreamDescriptionSummary?.StreamStatus;
+      if (status !== 'UPDATING' && status !== 'CREATING') return new Set();
+      return new Set([...names].filter((name) => name !== 'Tags'));
+    } catch {
+      return names;
+    }
+  }
+
   /**
    * Read the AWS-current Kinesis stream configuration in CFn-property shape.
    *

@@ -1483,7 +1483,10 @@ desired value with what AWS holds (not with `previousProperties`) and send
 only what differs. A rollback revert hands the set too. If its
 `readCurrentState` reports an in-progress transition as a value, it also
 implements `unsettledInTransition`, so `cdkd drift --accept` / `--revert`
-keep a key AWS is still changing.
+keep a key AWS is still changing. A provider that decides per key by comparing the two
+bags converges through `previousWithLiveUnsettled`
+(`src/provisioning/unsettled-previous.ts`), which swaps the live readback in
+for the unsettled keys of the previous side before that comparison (#5487).
 
 Checklist when writing or reviewing an `update()`:
 
