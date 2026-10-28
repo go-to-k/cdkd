@@ -244,16 +244,18 @@ const CLUSTER_TOP: Bag = fresh({
 });
 
 /**
- * `update()` refuses a change to every `Instances` member but
- * `TerminationProtected` before any call. The deploy diff replaces the cluster
- * for most of them (go-to-k/cdkd#5418, `emrClusterInstancesReplaced`), so the
- * refusal is defence in depth; a member CloudFormation applies in place
- * ({@link INSTANCES_IN_PLACE}) is refused too, since cdkd cannot apply it yet
- * (go-to-k/cdkd#5422). The schema lists no create-only path under `Instances`,
- * so the case marks each such member create-only itself, leaving
- * `TerminationProtected` the one updatable path. Those marks skip every update
- * probe under them, so `describeEmrRdsExtras` checks each member's refusal: a
- * member `update()` starts applying in place fails there and leaves this list.
+ * The `Instances` members whose change, as `describeEmrRdsExtras` varies it
+ * (a string member renamed, a boolean flipped, a list shortened), the deploy
+ * diff REPLACES the cluster for (go-to-k/cdkd#5418,
+ * `emrClusterInstancesReplaced`): `update()` refuses each before any call, as
+ * defence in depth. The schema lists no create-only path under `Instances`,
+ * so the case marks each create-only itself, leaving `TerminationProtected`
+ * and `UnhealthyNodeReplacement` the updatable paths. Those marks skip every
+ * update probe under them, so `describeEmrRdsExtras` checks each member's
+ * refusal. A group's or fleet's in-place members (`InstanceCount`,
+ * `AutoScalingPolicy`, the target capacities; go-to-k/cdkd#5422) cannot be
+ * probed here (the update-vary base drops the whole group, a replacement), so
+ * the provider's unit tests cover them.
  */
 const INSTANCES_FIXED = [
   'AdditionalMasterSecurityGroups',
@@ -273,15 +275,16 @@ const INSTANCES_FIXED = [
   'ServiceAccessSecurityGroup',
   'TaskInstanceFleets',
   'TaskInstanceGroups',
-  'UnhealthyNodeReplacement',
 ].map((member) => `Instances.${member}`);
 
 /**
- * The {@link INSTANCES_FIXED} members whose change, as `describeEmrRdsExtras`
- * varies it, CloudFormation applies in place: the refusal says so instead of
- * naming a replacement.
+ * Removing `UnhealthyNodeReplacement` is refused before any call: CloudFormation
+ * fails that update too (go-to-k/cdkd#5422).
  */
-const INSTANCES_IN_PLACE = new Set(['UnhealthyNodeReplacement']);
+const UNHEALTHY_REMOVAL_REFUSED: Throw = {
+  why: 'removing UnhealthyNodeReplacement fails under CloudFormation too, so update() refuses it (go-to-k/cdkd#5422)',
+  says: /removing Instances\.UnhealthyNodeReplacement fails under CloudFormation/,
+};
 
 const CLUSTER_CASE: TypeCase = {
   resourceType: 'AWS::EMR::Cluster',
@@ -307,10 +310,15 @@ const CLUSTER_CASE: TypeCase = {
         },
       },
       expectedSilent: {
+        'update-vary:Instances.UnhealthyNodeReplacement':
+          "the vary probe's base drops all of Instances, a replacing change refused before any call; the 'unhealthy node replacement' bag varies it alone",
         'update-remove:StepConcurrencyLevel':
           'left in place on removal: ModifyCluster keeps a setting it is not sent, and CloudFormation keeps it too (CFn A/B, emr-cluster-provider.ts:136-144)',
       },
-      expectedRemovalThrows: TAG_THROWS(ALL_DIRECTIONS, 2),
+      expectedRemovalThrows: {
+        ...TAG_THROWS(ALL_DIRECTIONS, 2),
+        'update-remove:Instances.UnhealthyNodeReplacement': UNHEALTHY_REMOVAL_REFUSED,
+      },
     },
     {
       name: 'instance fleets',
@@ -330,6 +338,15 @@ const CLUSTER_CASE: TypeCase = {
       // change, not the SetTerminationProtection under test.
       name: 'termination protection',
       bag: { Name: 'cluster', Instances: { TerminationProtected: true } },
+    },
+    {
+      // Alone in `Instances` for the same reason (go-to-k/cdkd#5422).
+      name: 'unhealthy node replacement',
+      bag: { Name: 'cluster', Instances: { UnhealthyNodeReplacement: false } },
+      expectedRemovalThrows: {
+        'update-remove:Instances': UNHEALTHY_REMOVAL_REFUSED,
+        'update-remove:Instances.UnhealthyNodeReplacement': UNHEALTHY_REMOVAL_REFUSED,
+      },
     },
   ],
 };
@@ -769,9 +786,7 @@ export function describeEmrRdsExtras(): void {
       expect(outcome).toEqual({ threw: false, wire: '' });
       expect(thrown).toBeInstanceOf(ResourceUpdateNotSupportedError);
       expect((thrown as Error).message).toContain(
-        INSTANCES_IN_PLACE.has(member)
-          ? `Instances.${member}: CloudFormation applies this change in place`
-          : `Instances.${member} cannot be updated in place — CloudFormation replaces the cluster`
+        `Instances.${member} cannot be updated in place — CloudFormation replaces the cluster`
       );
     });
   });

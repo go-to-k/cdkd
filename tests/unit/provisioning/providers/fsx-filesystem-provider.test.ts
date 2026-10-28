@@ -52,6 +52,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../../../src/utils/error-handler.js';
 import { getLogger } from '../../../../src/utils/logger.js';
+import { calculateResourceDrift } from '../../../../src/analyzer/drift-calculator.js';
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../../src/types/resource.js';
 import { prepareRemovalForUpdate } from '../../../../src/provisioning/update-removal.js';
 import {
@@ -1996,6 +1997,7 @@ const SUBPROP_SAMPLE_VALUE: Record<string, unknown> = {
   PerUnitStorageThroughput: 125,
   MetadataConfiguration: { Mode: 'USER_PROVISIONED', Iops: 6000 },
   DataReadCacheConfiguration: { SizingMode: 'USER_PROVISIONED', SizeGiB: 128 },
+  LogConfiguration: { Level: 'WARN_ERROR' },
   ThroughputCapacity: 256,
   ThroughputCapacityPerHAPair: 256,
   HAPairs: 2,
@@ -3489,5 +3491,314 @@ describe('FSxFileSystemProvider OPENZFS variant', () => {
 
     const value = await newProvider().getAttribute(FS_ID, RESOURCE_TYPE, 'RootVolumeId');
     expect(value).toBe('fsvol-xyz');
+  });
+});
+
+// go-to-k/cdkd#5430: LustreConfiguration.LogConfiguration (Level, Destination)
+// is sent on create, updated in place (CFn "Update requires: No interruption"),
+// and read back for drift.
+describe('FSxFileSystemProvider Lustre LogConfiguration (#5430)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const LOG_GROUP_ARN = 'arn:aws:logs:us-east-1:123456789012:log-group:/aws/fsx/cdkd-5430';
+  const withLog = (log: Record<string, unknown> | undefined): Record<string, unknown> => ({
+    ...LUSTRE_PROPS,
+    LustreConfiguration: {
+      ...LUSTRE_PROPS.LustreConfiguration,
+      ...(log !== undefined && { LogConfiguration: log }),
+    },
+  });
+  const warnings = (): string[] => childLogger.warn.mock.calls.map((c) => String(c[0]));
+
+  it('sends Level and Destination on CreateFileSystem', async () => {
+    routeSend({
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().create(
+      'MyFs',
+      RESOURCE_TYPE,
+      withLog({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN })
+    );
+
+    const [create] = callsOf(CreateFileSystemCommand);
+    expect((create.input['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration']).toEqual(
+      { Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN }
+    );
+  });
+
+  it('sends no LogConfiguration on CreateFileSystem when none is declared', async () => {
+    routeSend({
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().create('MyFs', RESOURCE_TYPE, withLog(undefined));
+
+    const [create] = callsOf(CreateFileSystemCommand);
+    expect(
+      (create.input['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration']
+    ).toBeUndefined();
+  });
+
+  it('sends a changed LogConfiguration on UpdateFileSystem, in place', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const result = await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      withLog({ Level: 'ERROR_ONLY', Destination: LOG_GROUP_ARN }),
+      withLog({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN })
+    );
+
+    expect(result).toMatchObject({ physicalId: FS_ID, wasReplaced: false });
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      LustreConfiguration: {
+        LogConfiguration: { Level: 'ERROR_ONLY', Destination: LOG_GROUP_ARN },
+      },
+    });
+  });
+
+  it('sends a newly added LogConfiguration on UpdateFileSystem', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      withLog({ Level: 'WARN_ONLY' }),
+      withLog(undefined)
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      LustreConfiguration: { LogConfiguration: { Level: 'WARN_ONLY' } },
+    });
+  });
+
+  it('sends no UpdateFileSystem when LogConfiguration is unchanged', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+
+    const props = withLog({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN });
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, props, props);
+
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+  });
+
+  it('leaves a removed LogConfiguration in place with the line that claims nothing about CloudFormation', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      withLog(undefined),
+      withLog({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN })
+    );
+
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): property LustreConfiguration.LogConfiguration is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.',
+    ]);
+  });
+
+  it('reads LogConfiguration back for drift', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          availableFs({
+            FileSystemType: 'LUSTRE',
+            LustreConfiguration: {
+              MountName: MOUNT_NAME,
+              DeploymentType: 'SCRATCH_2',
+              LogConfiguration: { Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN },
+            },
+          }),
+        ],
+      },
+    });
+
+    const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
+
+    expect((state['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration']).toEqual({
+      Level: 'WARN_ERROR',
+      Destination: LOG_GROUP_ARN,
+    });
+  });
+
+  it('reads back a DISABLED LogConfiguration without inventing a Destination', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          availableFs({
+            FileSystemType: 'LUSTRE',
+            LustreConfiguration: {
+              MountName: MOUNT_NAME,
+              DeploymentType: 'SCRATCH_2',
+              LogConfiguration: { Level: 'DISABLED' },
+            },
+          }),
+        ],
+      },
+    });
+
+    const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
+
+    expect((state['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration']).toEqual({
+      Level: 'DISABLED',
+    });
+  });
+
+  // A baseline captured before #5430 lacks LogConfiguration while the readback
+  // of a never-logging file system carries { Level: 'DISABLED' }.
+  it('drops a logging-off LogConfiguration from a drift comparison side', () => {
+    const bag = {
+      FileSystemType: 'LUSTRE',
+      LustreConfiguration: { DeploymentType: 'SCRATCH_2', LogConfiguration: { Level: 'DISABLED' } },
+    };
+    expect(newProvider().canonicalizeDriftProperties(RESOURCE_TYPE, bag)).toEqual({
+      FileSystemType: 'LUSTRE',
+      LustreConfiguration: { DeploymentType: 'SCRATCH_2' },
+    });
+    // The input is not mutated (the raw bag still feeds drift --revert).
+    expect(bag.LustreConfiguration).toHaveProperty('LogConfiguration');
+  });
+
+  it('keeps an enabled LogConfiguration, or one with a Destination, on a drift comparison side', () => {
+    const provider = newProvider();
+    for (const log of [
+      { Level: 'WARN_ERROR' },
+      { Level: 'DISABLED', Destination: LOG_GROUP_ARN },
+      { Level: 'ERROR_ONLY', Destination: LOG_GROUP_ARN },
+    ]) {
+      const bag = { LustreConfiguration: { LogConfiguration: log } };
+      expect(provider.canonicalizeDriftProperties(RESOURCE_TYPE, bag)).toBe(bag);
+    }
+    const other = { LustreConfiguration: { LogConfiguration: { Level: 'DISABLED' } } };
+    expect(provider.canonicalizeDriftProperties('AWS::EFS::FileSystem', other)).toBe(other);
+  });
+
+  // End to end through the comparison `cdkd drift` runs: each side through
+  // the provider's canonicalizer, then the calculator on an observed baseline.
+  const driftPaths = (
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>
+  ): string[] => {
+    const provider = newProvider();
+    return calculateResourceDrift(
+      provider.canonicalizeDriftProperties(RESOURCE_TYPE, baseline),
+      provider.canonicalizeDriftProperties(RESOURCE_TYPE, aws),
+      { unionWalkObjects: true, ignorePaths: provider.getDriftUnknownPaths(RESOURCE_TYPE) }
+    ).map((d) => d.path);
+  };
+  const lustreBag = (log: Record<string, unknown> | undefined): Record<string, unknown> => ({
+    FileSystemType: 'LUSTRE',
+    LustreConfiguration: {
+      DeploymentType: 'SCRATCH_2',
+      ...(log !== undefined && { LogConfiguration: log }),
+    },
+  });
+
+  it('reports logging turned OFF on AWS as drift (baseline WARN_ERROR, AWS DISABLED)', () => {
+    expect(
+      driftPaths(
+        lustreBag({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN }),
+        lustreBag({ Level: 'DISABLED' })
+      )
+    ).toEqual(['LustreConfiguration.LogConfiguration']);
+  });
+
+  it('reports logging turned ON on AWS as drift (pre-#5430 baseline without the key)', () => {
+    expect(
+      driftPaths(lustreBag(undefined), lustreBag({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN }))
+    ).toEqual(['LustreConfiguration.LogConfiguration']);
+  });
+
+  it('reports no drift for a never-logging file system against a pre-#5430 baseline', () => {
+    expect(driftPaths(lustreBag(undefined), lustreBag({ Level: 'DISABLED' }))).toEqual([]);
+  });
+
+  // Measured on go-to-k/cdkd#5430's integ: FSx reads the destination back as
+  // the LOG-STREAM ARN it writes to, not the declared log-group ARN.
+  const readLogBack = async (destination: string): Promise<Record<string, unknown>> => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          availableFs({
+            FileSystemType: 'LUSTRE',
+            LustreConfiguration: {
+              MountName: MOUNT_NAME,
+              DeploymentType: 'SCRATCH_2',
+              LogConfiguration: { Level: 'WARN_ERROR', Destination: destination },
+            },
+          }),
+        ],
+      },
+    });
+    return bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
+  };
+
+  it('reads a log-stream Destination back as its log-group ARN', async () => {
+    const state = await readLogBack(`${LOG_GROUP_ARN}:log-stream:datarepo_${FS_ID}`);
+    expect((state['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration']).toEqual({
+      Level: 'WARN_ERROR',
+      Destination: LOG_GROUP_ARN,
+    });
+  });
+
+  it('reads a Destination with the log group Arn suffix back without it', async () => {
+    const state = await readLogBack(`${LOG_GROUP_ARN}:*`);
+    expect(
+      ((state['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration'] as Record<
+        string,
+        unknown
+      >)['Destination']
+    ).toBe(LOG_GROUP_ARN);
+  });
+
+  it('reports no drift between a declared log-group ARN and the log-stream ARN AWS reads back', async () => {
+    const aws = await readLogBack(`${LOG_GROUP_ARN}:log-stream:datarepo_${FS_ID}`);
+    const declared = {
+      LustreConfiguration: {
+        DeploymentType: 'SCRATCH_2',
+        LogConfiguration: { Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN },
+      },
+    };
+    const provider = newProvider();
+    expect(
+      calculateResourceDrift(
+        provider.canonicalizeDriftProperties(RESOURCE_TYPE, declared),
+        provider.canonicalizeDriftProperties(RESOURCE_TYPE, aws),
+        { ignorePaths: provider.getDriftUnknownPaths(RESOURCE_TYPE) }
+      )
+    ).toEqual([]);
+  });
+
+  it('emits no LogConfiguration when AWS returns none', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [availableFs({ FileSystemType: 'LUSTRE' })],
+      },
+    });
+
+    const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
+
+    expect(state['LustreConfiguration']).not.toHaveProperty('LogConfiguration');
   });
 });

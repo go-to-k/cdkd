@@ -33,8 +33,13 @@ describe('slowCcOperationTimeoutMs', () => {
     }
   });
 
+  it('lifts ElastiCache CacheCluster UPDATE to 60 min: a node-type scale is an in-place update (#5438)', () => {
+    expect(slowCcOperationTimeoutMs('AWS::ElastiCache::CacheCluster', 'UPDATE')).toBe(HOUR_MS);
+  });
+
   it('does not lift UPDATE for the cluster types that only declare create/delete', () => {
-    // Only the domain types declare an update floor; a cluster UPDATE falls
+    // Only the domain types and the ElastiCache CacheCluster (#5438) declare
+    // an update floor; another cluster UPDATE falls
     // back to the generic default (0), so an in-place cluster modify is not
     // silently given an hour.
     expect(slowCcOperationTimeoutMs('AWS::Redshift::Cluster', 'UPDATE')).toBe(0);

@@ -268,6 +268,36 @@ if [ "${CACHE_ID_AFTER}" != "${CACHE_ID}" ]; then
 fi
 echo "    OK: removal was an in-place update"
 
+echo "==> Step 4d: NODE TYPE deploy (issue #5438) -- CacheNodeType cache.t3.micro -> cache.t3.small"
+# CDKD_TEST_NODETYPE=true changes only CacheNodeType (CDKD_TEST_REMOVAL stays
+# set, so the #5004 phase's template is otherwise unchanged). Real
+# CloudFormation scales the node in place (same cluster id, ApplyImmediately).
+# Before #5438 cdkd's ModifyCacheCluster omitted CacheNodeType: the deploy
+# succeeded and the cluster stayed cache.t3.micro.
+assert_cc "pre-scale CacheNodeType" 'CacheNodeType' "cache.t3.micro"
+set +e
+CDKD_TEST_REMOVAL=true CDKD_TEST_NODETYPE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+NODETYPE_RC=$?
+set -e
+if [ "${NODETYPE_RC}" -ne 0 ]; then
+  echo "FAIL: node-type deploy exited ${NODETYPE_RC}" >&2
+  tail -60 "${DEPLOY_LOG}" >&2
+  exit 1
+fi
+echo "    OK: node-type deploy exited 0"
+# The deploy waits for the scale to finish, so the new type is live as soon as
+# it returns (assert_cc's 60s poll only absorbs read-after-write lag).
+assert_cc "SCALED CacheNodeType (#5438)" 'CacheNodeType' "cache.t3.small"
+assert_cc "post-scale CacheClusterStatus" 'CacheClusterStatus' "available"
+CACHE_ID_SCALED=$(aws elasticache describe-cache-clusters --region "${REGION}" \
+  --query "CacheClusters[?CacheSubnetGroupName=='${SUBNET_GROUP}'].CacheClusterId | [0]" --output text)
+if [ "${CACHE_ID_SCALED}" != "${CACHE_ID}" ]; then
+  echo "FAIL: cache cluster was REPLACED by the node-type deploy (${CACHE_ID} -> ${CACHE_ID_SCALED})" >&2
+  exit 1
+fi
+echo "    OK: node-type change was an in-place update"
+
 echo "==> Step 5: destroy"
 set +e
 node "${LOCAL_DIST}" destroy "${STACK}" \

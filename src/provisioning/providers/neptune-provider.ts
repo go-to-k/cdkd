@@ -15,6 +15,7 @@ import {
   ListTagsForResourceCommand,
   AddTagsToResourceCommand,
   RemoveTagsFromResourceCommand,
+  type DBCluster,
 } from '@aws-sdk/client-neptune';
 import { DescribeSecurityGroupsCommand, EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
@@ -59,6 +60,7 @@ import {
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
   deleteAfterProtectionFlipWithFinalSnapshot,
+  isTerminalDbStatus,
 } from './deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
@@ -745,7 +747,10 @@ export class NeptuneProvider implements ResourceProvider {
         await this.waitForSecurityGroupsApplied(physicalId, logicalId, vpcSgIds ?? []);
         for (const member of described?.DBClusterMembers ?? []) {
           if (member.DBInstanceIdentifier) {
-            await this.waitForMemberAfterSecurityGroupChange(member.DBInstanceIdentifier);
+            await this.waitForMemberAfterSecurityGroupChange(
+              member.DBInstanceIdentifier,
+              logicalId
+            );
           }
         }
       }
@@ -1618,6 +1623,7 @@ export class NeptuneProvider implements ResourceProvider {
    */
   private async waitForMemberAfterSecurityGroupChange(
     dbInstanceIdentifier: string,
+    clusterLogicalId: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
     const startTime = Date.now();
@@ -1634,15 +1640,40 @@ export class NeptuneProvider implements ResourceProvider {
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
     }
+    // The member's identifier is the physical id of ANOTHER resource, which
+    // this cluster's masking bag does not cover (it can be secret-derived), so
+    // only the cluster's logical id is named.
     throw new Error(
-      `Timed out waiting for a member instance of the cluster to finish applying its new VPC security groups`
+      safeMsg`Timed out waiting for a member instance of Neptune DBCluster ${clusterLogicalId} to finish applying its new VPC security groups`
     );
   }
 
   /**
-   * Wait until the cluster is `available` AND reports exactly `expected` as its
-   * VPC security groups, all `active` (issue #1160). `available` alone can still
-   * read before the group swap has started; the group statuses cannot.
+   * A cluster read inside the security-group wait (issue #5419). A vanished
+   * cluster or a terminal status (`isTerminalDbStatus`) never reaches the
+   * awaited state, so fail now rather than after the 30-minute budget.
+   */
+  private requireClusterWhileWaiting(cluster: DBCluster | undefined, logicalId: string): DBCluster {
+    // A deleted cluster usually throws DBClusterNotFoundFault from the describe
+    // itself; this arm covers an empty `DBClusters` list.
+    if (cluster === undefined) {
+      throw new Error(
+        safeMsg`DescribeDBClusters returned no cluster for Neptune DBCluster ${logicalId} while waiting for its new VPC security groups`
+      );
+    }
+    if (isTerminalDbStatus(cluster.Status)) {
+      throw new Error(
+        safeMsg`Neptune DBCluster ${logicalId} entered status ${cluster.Status ?? ''} while applying its new VPC security groups`
+      );
+    }
+    return cluster;
+  }
+
+  /**
+   * Wait until the cluster is out of `modifying` AND reports exactly `expected` as
+   * its VPC security groups, all `active` (issue #1160). Being out of
+   * `modifying` alone can still read before the group swap has started; the
+   * group statuses cannot.
    */
   private async waitForSecurityGroupsApplied(
     dbClusterIdentifier: string,
@@ -1654,8 +1685,11 @@ export class NeptuneProvider implements ResourceProvider {
     const startTime = Date.now();
     let delay = 5_000;
     while (Date.now() - startTime < maxWaitMs) {
-      const cluster = await this.describeDBCluster(dbClusterIdentifier);
-      const groups = cluster?.VpcSecurityGroups ?? [];
+      const cluster = this.requireClusterWhileWaiting(
+        await this.describeDBCluster(dbClusterIdentifier),
+        logicalId
+      );
+      const groups = cluster.VpcSecurityGroups ?? [];
       const ids = groups
         .map((group) => group.VpcSecurityGroupId ?? '')
         .sort()
@@ -1663,13 +1697,12 @@ export class NeptuneProvider implements ResourceProvider {
       // `modifying` is the swap's own transition; any lasting state (backing-up,
       // maintenance, ...) is not this change's to wait out.
       const settled =
-        cluster !== undefined &&
         cluster.Status !== 'modifying' &&
         groups.every((group) => group.Status === 'active') &&
         ids === want;
       if (settled) return;
       this.logger.debug(
-        safeMsg`Neptune DBCluster ${logicalId} security groups not settled yet (status ${cluster?.Status ?? 'unknown'})`
+        safeMsg`Neptune DBCluster ${logicalId} security groups not settled yet (status ${cluster.Status ?? 'unknown'})`
       );
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);

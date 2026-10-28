@@ -22,6 +22,8 @@ import * as sns from 'aws-cdk-lib/aws-sns';
  * - CDKD_TEST_REMOVAL=true: the cluster template LACKS SnapshotRetentionLimit,
  *   AutoMinorVersionUpgrade, NotificationTopicArn and LogDeliveryConfigurations
  *   (issue #5004 -- see the cluster comment below)
+ * - CDKD_TEST_NODETYPE=true: the cluster's CacheNodeType moves cache.t3.micro
+ *   -> cache.t3.small, an in-place ModifyCacheCluster (issue #5438)
  */
 export class CacheStreamingStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -78,6 +80,9 @@ export class CacheStreamingStack extends cdk.Stack {
     // disabled). The topic and log group are NOT mode-gated: only scalar
     // cluster properties change, so no later deploy deletes a resource.
     const removal = process.env.CDKD_TEST_REMOVAL === 'true';
+    // CDKD_TEST_NODETYPE (issue #5438): a node-type scale-up. Real
+    // CloudFormation applies it in place (same cluster id, ApplyImmediately).
+    const nodeTypeChange = process.env.CDKD_TEST_NODETYPE === 'true';
     const topic = new sns.Topic(this, 'CacheNotifications');
     topic.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     const slowLogGroup = new logs.LogGroup(this, 'RedisSlowLog', {
@@ -87,7 +92,7 @@ export class CacheStreamingStack extends cdk.Stack {
 
     // ElastiCache Redis cluster (L1 construct)
     const redis = new elasticache.CfnCacheCluster(this, 'RedisCluster', {
-      cacheNodeType: 'cache.t3.micro',
+      cacheNodeType: nodeTypeChange ? 'cache.t3.small' : 'cache.t3.micro',
       engine: 'redis',
       engineVersion: '7.1',
       numCacheNodes: 1,

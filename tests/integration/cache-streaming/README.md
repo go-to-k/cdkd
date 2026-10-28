@@ -48,5 +48,10 @@ AWS_REGION=us-east-1 STATE_BUCKET=cdkd-state-<accountId> bash verify.sh
 - the Kinesis Data Stream is `ACTIVE`,
 - an ElastiCache cluster exists on the stack's subnet group,
 - the Lambda has an event source mapping wired to the Kinesis stream,
+- the `CDKD_TEST_REMOVAL=true` redeploy keeps or resets the removed cluster
+  properties as CloudFormation does (issue #5004),
+- the `CDKD_TEST_NODETYPE=true` redeploy scales the cluster from
+  `cache.t3.micro` to `cache.t3.small` in place: the same cluster id reports
+  the new node type once the deploy returns (issue #5438),
 - after destroy: state file, Kinesis stream, Lambda, and ElastiCache cluster
   are all gone (0 orphans).
