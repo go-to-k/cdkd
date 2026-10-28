@@ -78,7 +78,10 @@ import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handle
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors/marks.js';
 import type { UpdateContext } from '../../../src/types/resource.js';
 
-const ID = 'i-0123456789abcdef0';
+// A fresh id per test: the provider remembers, per process, an instance it
+// left stopped, so a shared id would carry one test's outcome into the next.
+let idSeq = 0;
+let ID = 'i-0123456789abcdef0';
 const MUTATING = [
   StopInstancesCommand,
   StartInstancesCommand,
@@ -181,6 +184,7 @@ async function update(
 }
 
 beforeEach(() => {
+  ID = `i-0${(++idSeq).toString(16).padStart(16, '0')}`;
   vi.clearAllMocks();
   deadline.remainingMs = Number.POSITIVE_INFINITY;
   deadline.expired = false;
@@ -649,5 +653,30 @@ describe('fix round (#5457 review)', () => {
         },
       },
     ]);
+  });
+});
+
+describe('fix round 2 (#5457 re-review)', () => {
+  it('a stopped that persists after the start fails the wait even with no pending seen', async () => {
+    world.states = ['running', 'running', 'stopped']; // stays stopped after the start
+    await expect(update({ ...BASE, InstanceType: 't3.micro' })).rejects.toThrow(
+      /stopped again right after it was started/
+    );
+    expect(logs.warn.mock.calls.flat().join('\n')).toContain('aws ec2 start-instances');
+  });
+
+  it('a rollback with no stop member still starts an instance cdkd left stopped', async () => {
+    world.states = ['running', 'running', 'stopped'];
+    world.failStart = 1;
+    await expect(update({ ...BASE, InstanceType: 't3.micro' })).rejects.toThrow();
+    mockSend.mockClear();
+    world.states = ['stopped'];
+    // The rollback's InstanceType is a stand-in (skipped), so no stop member.
+    await update(
+      { ...BASE, InstanceType: '***' },
+      { ...BASE, InstanceType: 't3.micro' },
+      { replayingState: true }
+    );
+    expect(mutatingCalls().map((c) => c.name)).toEqual(['StartInstancesCommand']);
   });
 });

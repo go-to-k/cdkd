@@ -730,3 +730,33 @@ describe('refuseStatefulReplacedReaders (go-to-k/cdkd#4383)', () => {
     expect(readers.map((r) => r.logicalId)).toContain('Volume');
   });
 });
+
+describe('an instance reading a recreated security group (issue #5446)', () => {
+  const run = async (subnet: Record<string, unknown>) => {
+    const inst = {
+      ImageId: 'ami-1',
+      InstanceType: 't3.nano',
+      ...subnet,
+      SecurityGroupIds: [{ 'Fn::GetAtt': ['Sg', 'GroupId'] }],
+    };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Sg: { Type: 'AWS::EC2::SecurityGroup', Properties: { GroupDescription: 'g' } },
+        Inst: { Type: 'AWS::EC2::Instance', Properties: inst },
+      },
+    };
+    const state = stateOf({
+      Sg: record('AWS::EC2::SecurityGroup', { GroupDescription: 'g' }),
+      Inst: record('AWS::EC2::Instance', { ...inst, SecurityGroupIds: ['sg-1'] }),
+    });
+    return findReplacedReadersOfRecreateTargets({ template, state, targetIds: ['Sg'] });
+  };
+
+  it('replaces it without a SubnetId, as CloudFormation does', async () => {
+    expect((await run({})).map((r) => r.logicalId)).toEqual(['Inst']);
+  });
+
+  it('leaves it to an in-place update with a SubnetId', async () => {
+    expect((await run({ SubnetId: 'subnet-1' })).map((r) => r.logicalId)).toEqual([]);
+  });
+});

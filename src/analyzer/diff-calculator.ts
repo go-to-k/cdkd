@@ -250,11 +250,12 @@ export type NoEchoCompareFn = (input: {
 function siblingsOf(change: {
   currentProperties?: Record<string, unknown> | undefined;
   desiredProperties?: Record<string, unknown> | undefined;
-}): ReplacementSiblings {
-  return {
-    oldProperties: change.currentProperties ?? {},
-    newProperties: change.desiredProperties ?? {},
-  };
+}): ReplacementSiblings | undefined {
+  // Without the bags a predicate answers its non-destructive default.
+  if (change.currentProperties === undefined || change.desiredProperties === undefined) {
+    return undefined;
+  }
+  return { oldProperties: change.currentProperties, newProperties: change.desiredProperties };
 }
 
 /**

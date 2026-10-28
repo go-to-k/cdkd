@@ -262,6 +262,12 @@ const VPN_GATEWAY_ATTACHMENT_WAIT_MS = 10 * 60 * 1000;
  */
 const INSTANCE_STATE_WAIT_CAP_MS = 15 * 60 * 1000;
 const INSTANCE_STATE_POLL_MS = 5000;
+/**
+ * Consecutive `stopped` reads after a StartInstances that count as AWS undoing
+ * the start (issue #5446): StartInstances answers `pending` at once, so a
+ * `stopped` that outlives three polls is not a lagging read.
+ */
+const STOPPED_AFTER_START_READS = 3;
 /** The states a stop -> modify -> start can begin from (issue #5446). */
 const STOPPABLE_INSTANCE_STATES = new Set(['pending', 'running', 'stopping', 'stopped']);
 /**
@@ -8411,7 +8417,15 @@ export class EC2Provider implements ResourceProvider {
       );
     }
 
-    if (plan.instanceType === undefined && plan.userData === undefined) return;
+    if (plan.instanceType === undefined && plan.userData === undefined) {
+      // An instance cdkd stopped and could not start again earlier in this
+      // process (a rollback whose only stop member was skipped) is started.
+      if (instancesLeftStoppedByCdkd.has(physicalId)) {
+        await this.ec2Client.send(new StartInstancesCommand({ InstanceIds: [physicalId] }));
+        instancesLeftStoppedByCdkd.delete(physicalId);
+      }
+      return;
+    }
 
     let state = await this.readInstanceState(physicalId);
     if (state === 'pending') {
@@ -8547,6 +8561,7 @@ export class EC2Provider implements ResourceProvider {
     const watch = startInterruptWatch(`EC2 Instance ${logicalId} ${target} wait`);
     const capAt = Date.now() + INSTANCE_STATE_WAIT_CAP_MS;
     let last: string | undefined;
+    let stoppedReads = 0;
     try {
       for (;;) {
         if (watch.isInterrupted()) throw watch.onInterrupted();
@@ -8564,9 +8579,15 @@ export class EC2Provider implements ResourceProvider {
         const previous = last;
         last = await this.readInstanceState(physicalId);
         if (last === target) return last;
+        stoppedReads = last === 'stopped' ? stoppedReads + 1 : 0;
         // After a start: `pending` back to `stopped` is AWS undoing the start
-        // (capacity, a type the AMI cannot run), not progress.
-        if (opts.stoppedIsTerminal === true && last === 'stopped' && previous === 'pending') {
+        // (capacity, a type the AMI cannot run), not progress; so is a
+        // `stopped` that persists, for an undo that fell between two polls.
+        if (
+          opts.stoppedIsTerminal === true &&
+          last === 'stopped' &&
+          (previous === 'pending' || stoppedReads >= STOPPED_AFTER_START_READS)
+        ) {
           const stopped = markNonRetryable(
             new ProvisioningError(
               `${logicalId} (${resourceType}): instance ${physicalId} stopped again right after it was started; run \`aws ec2 describe-instances --instance-ids ${physicalId}\` and read StateReason for AWS's cause`,
