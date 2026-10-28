@@ -211,3 +211,82 @@ describe('ElastiCacheProvider CacheCluster NumCacheNodes decrease (issue #5441)'
     expect(sent().some((c) => c.constructor.name === 'ModifyCacheClusterCommand')).toBe(false);
   });
 });
+
+describe('ElastiCacheProvider CacheCluster node removal guards (issue #5441 review)', () => {
+  let provider: ElastiCacheProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockReset();
+    provider = new ElastiCacheProvider();
+    let clock = Date.parse('2026-10-28T00:00:00Z');
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    let sleeps = 0;
+    vi.spyOn(
+      provider as unknown as { sleep: (ms: number) => Promise<void> },
+      'sleep'
+    ).mockImplementation((ms: number) => {
+      clock += ms;
+      return ++sleeps > 50 ? Promise.reject(new Error('waiter did not settle')) : Promise.resolve();
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const liveAbc = (after: [string, string][] = [['0001', 'us-east-1a'], ['0002', 'us-east-1b'], ['0003', 'us-east-1c']]) => {
+    const queue = [
+      [['0001', 'us-east-1a'], ['0002', 'us-east-1b'], ['0003', 'us-east-1c']],
+      after,
+    ].map((nodes) => ({
+      CacheClusterStatus: 'available',
+      CacheNodeType: 'cache.t4g.micro',
+      CacheNodes: nodes.map(([id, az]) => ({ CacheNodeId: id, CustomerAvailabilityZone: az })),
+    }));
+    mockSend.mockImplementation((cmd: Sent) => {
+      if (cmd.constructor.name === 'DescribeCacheClustersCommand') {
+        const next = queue.length > 1 ? queue.shift() : queue[0];
+        return Promise.resolve({ CacheClusters: [next] });
+      }
+      return Promise.resolve({});
+    });
+  };
+  const base = { Engine: 'memcached', CacheNodeType: 'cache.t4g.micro' };
+
+  it('never trims live nodes when the template count did not go down', async () => {
+    // Three live nodes, the template says 2 before and after (a zone change):
+    // the extra live node is AWS's to refuse, not cdkd's to delete.
+    liveAbc();
+
+    await provider.update(
+      'Cache',
+      'my-cluster',
+      TYPE,
+      { ...base, NumCacheNodes: 2, PreferredAvailabilityZones: ['us-east-1a', 'us-east-1c'] },
+      { ...base, NumCacheNodes: 2, PreferredAvailabilityZones: ['us-east-1a', 'us-east-1b'] }
+    );
+
+    expect(modifyInput()).not.toHaveProperty('CacheNodeIdsToRemove');
+  });
+
+  it('sends no NewAvailabilityZones beside a removal', async () => {
+    // [a, b, c] kept as the zone list while the count drops to 2: the two
+    // highest ids stay, and the uncovered zone a is not re-added in the same
+    // Modify (AWS refuses a removal and an addition together).
+    liveAbc([['0002', 'us-east-1b'], ['0003', 'us-east-1c']]);
+    const zones = ['us-east-1a', 'us-east-1b', 'us-east-1c'];
+
+    await provider.update(
+      'Cache',
+      'my-cluster',
+      TYPE,
+      { ...base, NumCacheNodes: 2, PreferredAvailabilityZones: zones },
+      { ...base, NumCacheNodes: 3, PreferredAvailabilityZones: zones }
+    );
+
+    const input = modifyInput();
+    expect(input['CacheNodeIdsToRemove']).toEqual(['0001']);
+    expect(input).not.toHaveProperty('NewAvailabilityZones');
+  });
+});

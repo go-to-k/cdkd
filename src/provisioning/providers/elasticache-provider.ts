@@ -1068,8 +1068,14 @@ export class ElastiCacheProvider implements ResourceProvider {
     const desiredCount =
       properties['NumCacheNodes'] != null ? Number(properties['NumCacheNodes']) : undefined;
 
+    // Nodes are removed only when the TEMPLATE lowered the count (every
+    // measured CloudFormation removal was one): a live count above an
+    // unchanged or raised template count is left for AWS to refuse, never
+    // silently trimmed.
+    const templateLowered =
+      Number(properties['NumCacheNodes']) < Number(previousProperties['NumCacheNodes']);
     let removeIds: string[] = [];
-    if (desiredCount !== undefined && desiredCount < liveNodes.length) {
+    if (templateLowered && desiredCount !== undefined && desiredCount < liveNodes.length) {
       const plan = nodesToRemove(liveNodes, desiredCount, zones);
       if (plan === undefined) {
         throw new ProvisioningError(
@@ -1084,10 +1090,15 @@ export class ElastiCacheProvider implements ResourceProvider {
         );
       }
       removeIds = plan;
+      this.logger.info(
+        safeMsg`CacheCluster ${logicalId}: NumCacheNodes ${String(previousProperties['NumCacheNodes'])} -> ${String(desiredCount)}, removing cache nodes ${removeIds.join(', ')}`
+      );
     }
 
+    // A removal and an addition cannot share one Modify (AWS refuses it), so
+    // a decrease sends no new zones.
     const newAvailabilityZones =
-      zones === undefined
+      zones === undefined || removeIds.length > 0
         ? []
         : availabilityZonesNotCovered(
             zones,
@@ -1319,11 +1330,13 @@ export class ElastiCacheProvider implements ResourceProvider {
     }
 
     throw new Error(
-      removedNodeIds.length > 0
-        ? safeMsg`Timed out waiting for CacheCluster ${cacheClusterId} to remove cache nodes ${removedNodeIds.join(', ')}`
-        : expectedNodeType === undefined
-          ? `Timed out waiting for CacheCluster ${cacheClusterId} to become available`
-          : safeMsg`Timed out waiting for CacheCluster ${cacheClusterId} to become available with node type ${expectedNodeType}`
+      expectedNodeType === undefined && removedNodeIds.length === 0
+        ? `Timed out waiting for CacheCluster ${cacheClusterId} to become available`
+        : safeMsg`Timed out waiting for CacheCluster ${cacheClusterId} to become available` +
+            (expectedNodeType === undefined ? '' : safeMsg` with node type ${expectedNodeType}`) +
+            (removedNodeIds.length === 0
+              ? ''
+              : safeMsg` without cache nodes ${removedNodeIds.join(', ')}`)
     );
   }
 
