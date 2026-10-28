@@ -4,8 +4,12 @@
  * CreateTable / UpdateTable: it is the separate `UpdateTimeToLive` API, which
  * needs an `AttributeName` even to DISABLE TTL, while the CFn schema requires
  * only `Enabled`. Each provider sends the planned call through its own
- * retry / error wrapping.
+ * retry / error wrapping, inside {@link sendTtlWaitingOutRateLimit}.
  */
+
+import { enclosingDeadlineRemainingMs } from '../deployment/resource-deadline.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { startInterruptWatch } from './interrupt-watch.js';
 
 /** Normalize a `TimeToLiveSpecification` value into `{ enabled, attributeName }`. */
 export function readTtlSpec(spec: unknown): {
@@ -96,4 +100,76 @@ export function planTimeToLive(
  */
 export function isTtlAlreadyDisabled(awsDetail: string): boolean {
   return /TimeToLive is already disabled/i.test(awsDetail);
+}
+
+/**
+ * AWS's refusal of an `UpdateTimeToLive` sent too soon after the previous TTL
+ * change on the table (measured wording; issue #5451).
+ */
+export function isTtlRateLimited(awsDetail: string): boolean {
+  return /Time to live has been modified multiple times/i.test(awsDetail);
+}
+
+/** How often a rate-limited `UpdateTimeToLive` is re-sent. */
+export const TTL_RATE_LIMIT_RETRY_MS = 60_000;
+/** Slice of the retry sleep between Ctrl-C checks. */
+const TTL_RATE_LIMIT_SLICE_MS = 1_000;
+
+/**
+ * Send an `UpdateTimeToLive`, waiting out DynamoDB's TTL rate-limit interval
+ * the way CloudFormation does (issue #5451): AWS refuses a second TTL change
+ * for a while after the previous one (about half an hour measured after an
+ * enable; AWS documents up to an hour), and CloudFormation re-sends until it
+ * is accepted, where cdkd used to fail the deploy.
+ *
+ * Re-sends every {@link TTL_RATE_LIMIT_RETRY_MS} while the refusal repeats,
+ * bounded by the enclosing per-resource deadline (`--resource-timeout`): once
+ * that runs out, the last refusal is rethrown for the caller to report, and
+ * nothing is sent after it. A path with no enclosing deadline (a rollback,
+ * `cdkd drift --revert`) waits until AWS accepts, as CloudFormation's rollback
+ * does. Ctrl-C ends the wait. Any other failure is rethrown at once.
+ *
+ * `announce` is called once, on the first refusal, so the user knows why the
+ * deploy sits there; the caller masks it.
+ */
+export async function sendTtlWaitingOutRateLimit(
+  send: () => Promise<unknown>,
+  options: {
+    what: string;
+    announce: () => void;
+    retryMs?: number;
+  }
+): Promise<void> {
+  const retryMs = options.retryMs ?? TTL_RATE_LIMIT_RETRY_MS;
+  const watch = startInterruptWatch(options.what);
+  let announced = false;
+  try {
+    for (;;) {
+      try {
+        await send();
+        return;
+      } catch (error) {
+        if (!isTtlRateLimited(describeAwsFailure(error).detail)) throw error;
+        if (enclosingDeadlineRemainingMs() <= 0) throw error;
+        if (!announced) {
+          options.announce();
+          announced = true;
+        }
+        const until = Date.now() + Math.min(retryMs, enclosingDeadlineRemainingMs());
+        while (Date.now() < until) {
+          if (watch.isInterrupted()) throw watch.onInterrupted();
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.min(TTL_RATE_LIMIT_SLICE_MS, until - Date.now()))
+          );
+        }
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        // The sleep ends AT the deadline when less than a minute was left: a
+        // send now could land after the resource was already reported failed,
+        // changing TTL on AWS while state keeps the old spec.
+        if (enclosingDeadlineRemainingMs() <= 0) throw error;
+      }
+    }
+  } finally {
+    watch.dispose();
+  }
 }

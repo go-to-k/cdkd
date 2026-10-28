@@ -63,7 +63,12 @@ import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
-import { isTtlAlreadyDisabled, planTimeToLive } from '../dynamodb-ttl.js';
+import {
+  isTtlAlreadyDisabled,
+  isTtlRateLimited,
+  planTimeToLive,
+  sendTtlWaitingOutRateLimit,
+} from '../dynamodb-ttl.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { isRefusedByName, markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import {
@@ -5749,12 +5754,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
 
       // 7. TimeToLiveSpecification (separate API).
-      // AWS rate-limits TTL changes per table
-      // ("Time to live has been modified multiple times within a fixed
-      // interval"). Catch and rewrap with an actionable hint pointing
-      // at the AWS-side limit, so a user redeploying a TTL-toggling
-      // stack twice in tight succession sees what's happening instead
-      // of a raw AWS error.
+      // AWS rate-limits TTL changes per table ("Time to live has been
+      // modified multiple times within a fixed interval"). Like
+      // CloudFormation, the call is re-sent until AWS accepts it, within the
+      // resource timeout (#5451); a refusal still standing then is rewrapped
+      // with the remedy.
       if (
         !deepEqual(
           properties['TimeToLiveSpecification'],
@@ -5763,7 +5767,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       ) {
         const sendTtl = async (cmd: UpdateTimeToLiveCommand): Promise<void> => {
           try {
-            await this.dynamoDBClient.send(cmd);
+            await sendTtlWaitingOutRateLimit(() => this.dynamoDBClient.send(cmd), {
+              what: maskSecrets(`DynamoDB TimeToLive rate-limit wait on ${physicalId}`),
+              announce: () =>
+                this.logger.info(
+                  maskSecrets(
+                    `DynamoDB global table ${logicalId}: TimeToLive was changed recently, and AWS ` +
+                      `refuses another change until its rate-limit interval passes (up to about ` +
+                      `an hour). Retrying every minute, like CloudFormation, within the resource timeout.`
+                  )
+                ),
+            });
           } catch (ttlErr) {
             const msg = describeAwsFailure(ttlErr).detail;
             // A disable whose goal already holds (an earlier attempt that
@@ -5772,15 +5786,16 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               this.logger.debug(maskSecrets(`TimeToLive already disabled on ${physicalId}`));
               return;
             }
-            if (msg.includes('Time to live has been modified multiple times')) {
+            if (isTtlRateLimited(msg)) {
               throw this.wrapMaskedError(
                 log,
                 ttlErr,
                 (text) =>
                   new ProvisioningError(
                     `AWS rejected TimeToLive update on ${log.value(physicalId)}: ${sentence(text)} ` +
-                      `AWS rate-limits TTL changes per table (the interval can last up to about an hour); ` +
-                      `wait and redeploy, or keep the previous TTL state in this deploy.`,
+                      `AWS rate-limits TTL changes per table, and kept refusing until the resource ` +
+                      `timeout ran out; redeploy once the interval has passed (up to about an hour), ` +
+                      `or raise --resource-timeout.`,
                     resourceType,
                     logicalId,
                     physicalId,

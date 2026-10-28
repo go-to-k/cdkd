@@ -44,6 +44,14 @@ const {
   warnSpy: vi.fn(),
 }));
 
+// Issue #5451: a rate-limited UpdateTimeToLive is re-sent until the enclosing
+// resource deadline runs out. 0 = already out, so a refusal is final at once.
+const ttlDeadline = vi.hoisted(() => ({ remainingMs: 0 }));
+vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/deployment/resource-deadline.js')>()),
+  enclosingDeadlineRemainingMs: () => ttlDeadline.remainingMs,
+}));
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     dynamoDB: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
@@ -1663,6 +1671,40 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         expect(ttlUpdates().map((c) => c.input.TimeToLiveSpecification)).toEqual([
           { Enabled: false, AttributeName: 'expiresAt' },
         ]);
+      });
+
+      it('waits out the TTL rate-limit interval and re-sends until AWS accepts (#5451)', async () => {
+        ttlDeadline.remainingMs = Infinity;
+        vi.useFakeTimers();
+        try {
+          let ttlSends = 0;
+          mockSend.mockImplementation(async (cmd: unknown) => {
+            if (cmd instanceof UpdateTimeToLiveCommand) {
+              ttlSends += 1;
+              if (ttlSends <= 2) {
+                throw Object.assign(
+                  new Error('Time to live has been modified multiple times within a fixed interval'),
+                  { name: 'ValidationException', $fault: 'client', $metadata: {} }
+                );
+              }
+              return {};
+            }
+            return { Table: { TableStatus: 'ACTIVE', TableArn: TABLE_ARN } };
+          });
+          const run = provider.update(
+            'X',
+            TABLE_NAME,
+            RESOURCE_TYPE,
+            { TimeToLiveSpecification: { Enabled: false } },
+            { TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true } }
+          );
+          await vi.runAllTimersAsync();
+          await expect(run).resolves.toBeDefined();
+          expect(ttlSends).toBe(3);
+        } finally {
+          vi.useRealTimers();
+          ttlDeadline.remainingMs = 0;
+        }
       });
 
       it('retries the live TTL read on a settling refusal', async () => {

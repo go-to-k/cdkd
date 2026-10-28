@@ -158,7 +158,13 @@ import type {
   ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
-import { isTtlAlreadyDisabled, planTimeToLive, readTtlSpec } from '../dynamodb-ttl.js';
+import {
+  isTtlAlreadyDisabled,
+  isTtlRateLimited,
+  planTimeToLive,
+  readTtlSpec,
+  sendTtlWaitingOutRateLimit,
+} from '../dynamodb-ttl.js';
 
 /**
  * A DynamoDB table NAME (3-255 of `a-z A-Z 0-9 _ . -`), the physical id this
@@ -2471,7 +2477,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         properties['TimeToLiveSpecification'],
         undefined,
         'create',
-        { logicalId, resourceType }
+        { logicalId, resourceType, maskSecrets }
       );
 
       // KinesisStreamSpecification and ContributorInsightsSpecification are
@@ -4105,7 +4111,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
           properties['TimeToLiveSpecification'],
           previousProperties['TimeToLiveSpecification'],
           'update',
-          { logicalId, resourceType }
+          { logicalId, resourceType, maskSecrets }
         );
       }
 
@@ -4891,6 +4897,11 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // Masks the retry line, whose AWS message can quote the target's arn —
       // and with it the table name, a RESOLVED template value.
       maskSecrets?: SecretMasker;
+      // Send no retry once the enclosing resource deadline has run out: the
+      // resource is already reported failed, and a mutation landing after
+      // that (a TTL enable after the rollback's disable, #5451) leaves AWS
+      // disagreeing with state. The last failure is rethrown instead.
+      stopAtDeadline?: boolean;
     } = {}
   ): Promise<T> {
     let delayMs = 2000;
@@ -4912,6 +4923,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         const retryLine = `Transient error on "${label}" (attempt ${attempt}/${maxAttempts}): ${msg} — retrying in ${delayMs}ms`;
         this.logger.debug(options.maskSecrets ? options.maskSecrets(retryLine) : retryLine);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (options.stopAtDeadline && enclosingDeadlineRemainingMs() <= 0) throw error;
         delayMs = Math.min(delayMs * 2, 30000);
       }
     }
@@ -4975,15 +4987,17 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * refuses to disable a TTL that is not enabled.
    *
    * AWS also refuses a second `UpdateTimeToLive` for a while after the last
-   * one (CloudFormation waits it out instead, #5451); that refusal is rethrown as a cdkd-authored error, since the AWS text
-   * itself is redacted from the thrown message.
+   * one; like CloudFormation, the call is re-sent until AWS accepts it, within
+   * the resource timeout (#5451). A refusal still standing when that runs out
+   * is rethrown as a cdkd-authored error, since the AWS text itself is
+   * redacted from the thrown message.
    */
   private async applyTimeToLive(
     tableName: string,
     spec: unknown,
     previousSpec: unknown,
     mode: 'create' | 'update',
-    ids: { logicalId: string; resourceType: string }
+    ids: { logicalId: string; resourceType: string; maskSecrets: SecretMasker }
   ): Promise<void> {
     const plan = planTimeToLive(spec, previousSpec, mode);
     let enabled: boolean;
@@ -4992,13 +5006,17 @@ export class DynamoDBTableProvider implements ResourceProvider {
     if (plan.kind === 'disable-live') {
       const resp = await this.retryOnTransientControlPlane(
         () => this.dynamoDBClient.send(new DescribeTimeToLiveCommand({ TableName: tableName })),
-        `read TTL on ${tableName}`
+        `read TTL on ${tableName}`,
+        undefined,
+        { maskSecrets: ids.maskSecrets }
       );
       const live = resp.TimeToLiveDescription;
       const status = live?.TimeToLiveStatus;
       if ((status !== 'ENABLED' && status !== 'ENABLING') || !live?.AttributeName) {
         this.logger.debug(
-          `TimeToLive already ${status ?? 'DISABLED'} on DynamoDB table ${tableName}; nothing to disable`
+          ids.maskSecrets(
+            `TimeToLive already ${status ?? 'DISABLED'} on DynamoDB table ${tableName}; nothing to disable`
+          )
         );
         return;
       }
@@ -5009,30 +5027,47 @@ export class DynamoDBTableProvider implements ResourceProvider {
       attributeName = plan.attributeName;
     }
     try {
-      await this.retryOnTransientControlPlane(
+      await sendTtlWaitingOutRateLimit(
         () =>
-          this.dynamoDBClient.send(
-            new UpdateTimeToLiveCommand({
-              TableName: tableName,
-              TimeToLiveSpecification: { Enabled: enabled, AttributeName: attributeName },
-            })
+          this.retryOnTransientControlPlane(
+            () =>
+              this.dynamoDBClient.send(
+                new UpdateTimeToLiveCommand({
+                  TableName: tableName,
+                  TimeToLiveSpecification: { Enabled: enabled, AttributeName: attributeName },
+                })
+              ),
+            `${enabled ? 'set' : 'disable'} TTL on ${tableName}`,
+            undefined,
+            { maskSecrets: ids.maskSecrets, stopAtDeadline: true }
           ),
-        `${enabled ? 'set' : 'disable'} TTL on ${tableName}`
+        {
+          what: ids.maskSecrets(`DynamoDB TimeToLive rate-limit wait on ${tableName}`),
+          announce: () =>
+            this.logger.info(
+              ids.maskSecrets(
+                `DynamoDB table ${ids.logicalId}: TimeToLive was changed recently, and AWS ` +
+                  `refuses another change until its rate-limit interval passes (up to about an ` +
+                  `hour). Retrying every minute, like CloudFormation, within the resource timeout.`
+              )
+            ),
+        }
       );
     } catch (error) {
       // A disable whose goal already holds (an earlier attempt that landed
       // before a later step failed, or an out-of-band disable).
       if (!enabled && isTtlAlreadyDisabled(describeAwsFailure(error).detail)) {
-        this.logger.debug(`TimeToLive already disabled on DynamoDB table ${tableName}`);
+        this.logger.debug(
+          ids.maskSecrets(`TimeToLive already disabled on DynamoDB table ${tableName}`)
+        );
         return;
       }
-      if (
-        describeAwsFailure(error).detail.includes('Time to live has been modified multiple times')
-      ) {
+      if (isTtlRateLimited(describeAwsFailure(error).detail)) {
         throw new ProvisioningError(
           `DynamoDB table ${ids.logicalId}: AWS refused to ${enabled ? 'enable' : 'disable'} ` +
-            `TimeToLive because it was already modified within DynamoDB's rate-limit interval. ` +
-            `Wait for the interval to pass (up to about an hour), then redeploy.`,
+            `TimeToLive because it was already modified within DynamoDB's rate-limit interval, ` +
+            `and kept refusing until the resource timeout ran out. Redeploy once the interval ` +
+            `has passed (up to about an hour), or raise --resource-timeout.`,
           ids.resourceType,
           ids.logicalId,
           tableName,
@@ -5042,7 +5077,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
       throw error;
     }
     this.logger.debug(
-      `Set TimeToLive Enabled=${enabled} AttributeName=${attributeName} on DynamoDB table ${tableName}`
+      ids.maskSecrets(
+        `Set TimeToLive Enabled=${enabled} AttributeName=${attributeName} on DynamoDB table ${tableName}`
+      )
     );
   }
 
