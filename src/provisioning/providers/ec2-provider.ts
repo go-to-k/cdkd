@@ -5984,7 +5984,7 @@ export class EC2Provider implements ResourceProvider {
     await this.ec2Client.send(
       new AuthorizeSecurityGroupIngressCommand({
         GroupId: groupId,
-        IpPermissions: ingressRules.map((rule) => this.buildIpPermission(rule)),
+        IpPermissions: ingressRules.map((rule) => this.buildIpPermission(rule, 'ingress', true)),
       })
     );
   }
@@ -9324,14 +9324,27 @@ export class EC2Provider implements ResourceProvider {
    */
   private buildIpPermission(
     properties: Record<string, unknown>,
-    direction: 'ingress' | 'egress' = 'ingress'
+    direction: 'ingress' | 'egress' = 'ingress',
+    /**
+     * An inline `AWS::EC2::SecurityGroup` rule. Only it sends
+     * `SourceSecurityGroupName` (go-to-k/cdkd#5478): CloudFormation refuses the
+     * member on a standalone `AWS::EC2::SecurityGroupIngress` ("Exactly one of
+     * CidrIp, CidrIpv6, SourceSecurityGroupId, and SourcePrefixListId must be
+     * specified"), which `unhandledByDesign` declares.
+     */
+    inline = false
   ): {
     IpProtocol: string;
     FromPort?: number;
     ToPort?: number;
     IpRanges?: Array<{ CidrIp: string; Description?: string }>;
     Ipv6Ranges?: Array<{ CidrIpv6: string; Description?: string }>;
-    UserIdGroupPairs?: Array<{ GroupId: string; UserId?: string; Description?: string }>;
+    UserIdGroupPairs?: Array<{
+      GroupId?: string;
+      GroupName?: string;
+      UserId?: string;
+      Description?: string;
+    }>;
     PrefixListIds?: Array<{ PrefixListId: string; Description?: string }>;
   } {
     const ipProtocol = (properties['IpProtocol'] as string) ?? '-1';
@@ -9344,7 +9357,12 @@ export class EC2Provider implements ResourceProvider {
       ToPort?: number;
       IpRanges?: Array<{ CidrIp: string; Description?: string }>;
       Ipv6Ranges?: Array<{ CidrIpv6: string; Description?: string }>;
-      UserIdGroupPairs?: Array<{ GroupId: string; UserId?: string; Description?: string }>;
+      UserIdGroupPairs?: Array<{
+        GroupId?: string;
+        GroupName?: string;
+        UserId?: string;
+        Description?: string;
+      }>;
       PrefixListIds?: Array<{ PrefixListId: string; Description?: string }>;
     } = { IpProtocol: ipProtocol };
 
@@ -9371,10 +9389,21 @@ export class EC2Provider implements ResourceProvider {
       direction === 'egress'
         ? (properties['DestinationSecurityGroupId'] as string | undefined)
         : (properties['SourceSecurityGroupId'] as string | undefined);
-    if (peerGroupId) {
-      const groupPair: { GroupId: string; UserId?: string; Description?: string } = {
-        GroupId: peerGroupId,
-      };
+    // go-to-k/cdkd#5478: an ingress peer named by `SourceSecurityGroupName` (a
+    // default-VPC group) goes out as `UserIdGroupPairs[].GroupName`, as
+    // CloudFormation sends it (measured in a default VPC: the rule was created
+    // with the named group as its peer). An id, when both are given, wins.
+    const peerGroupName =
+      inline && direction === 'ingress' && !peerGroupId
+        ? (properties['SourceSecurityGroupName'] as string | undefined)
+        : undefined;
+    if (peerGroupId || peerGroupName) {
+      const groupPair: {
+        GroupId?: string;
+        GroupName?: string;
+        UserId?: string;
+        Description?: string;
+      } = peerGroupId ? { GroupId: peerGroupId } : { GroupName: peerGroupName as string };
       // Cross-account peer reference: CFn supports SourceSecurityGroupOwnerId on
       // ingress rules to point at a security group in another AWS account. Map
       // it to the UserIdGroupPairs[].UserId field on the EC2 API. CFn does not
@@ -9435,6 +9464,11 @@ export class EC2Provider implements ResourceProvider {
         direction === 'ingress'
           ? (rule['SourceSecurityGroupOwnerId'] as string | undefined)
           : undefined;
+      // go-to-k/cdkd#5478: a peer named by group name is a rule of its own.
+      const peerName =
+        direction === 'ingress'
+          ? (rule['SourceSecurityGroupName'] as string | undefined)
+          : undefined;
       return JSON.stringify({
         // Same canonicalization as `sgRuleKey` (issue #1643) — the two keys
         // MUST agree, which is what this function's sibling JSDoc promises.
@@ -9448,6 +9482,7 @@ export class EC2Provider implements ResourceProvider {
         c4: rule['CidrIp'] ?? null,
         c6: rule['CidrIpv6'] ?? null,
         peer: peerKey ?? null,
+        peerName: peerName ?? null,
         peerOwner: peerOwner ?? null,
         pl: prefixKey ?? null,
         d: rule['Description'] ?? null,
@@ -9498,7 +9533,7 @@ export class EC2Provider implements ResourceProvider {
           await this.ec2Client.send(
             new RevokeSecurityGroupIngressCommand({
               GroupId: groupId,
-              IpPermissions: [this.buildIpPermission(rule, 'ingress')],
+              IpPermissions: [this.buildIpPermission(rule, 'ingress', true)],
             })
           );
         }
@@ -9520,7 +9555,7 @@ export class EC2Provider implements ResourceProvider {
           await this.ec2Client.send(
             new AuthorizeSecurityGroupIngressCommand({
               GroupId: groupId,
-              IpPermissions: [this.buildIpPermission(rule, 'ingress')],
+              IpPermissions: [this.buildIpPermission(rule, 'ingress', true)],
             })
           );
         }
