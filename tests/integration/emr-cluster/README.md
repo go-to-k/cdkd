@@ -129,9 +129,17 @@ EMR clusters).
    `Instances` `[requires replacement]`; a plain deploy is refused
    (`STATEFUL_REPLACE_BLOCKED`, the type is in the stateful-recreate guard
    set) and leaves the cluster running; `--force-stateful-recreation`
-   replaces it: a new ClusterId carrying the SG, and the re-adopted cluster
+   replaces it: a new ClusterId carrying the SG (and a one-node core group,
+   for Phase 3d; the core group is added in the same deploy, so the SG change
+   replacing ON ITS OWN is pinned by the `emrClusterInstancesReplaced` unit
+   test, not here), and the re-adopted cluster
    terminated through its imported state record (so a broken import surfaces
    here as a cluster that never terminates).
+3d. **In-place Instances changes** (issue #5422) —
+   `CDKD_TEST_INSTANCES_IN_PLACE=true` resizes the replacement's core group
+   1 -> 2 and adds `UnhealthyNodeReplacement: false`, both of which
+   CloudFormation applies in place: the ClusterId must not change, the core
+   group must read 2/2 `RUNNING` and the flag `False`.
 4. **Destroy** — terminates the Phase 3c replacement. Asserts both cluster
    ids are `TERMINATED`, the Phase 3c SG and the VPC / state are gone. A leftover
    running EMR cluster is never acceptable (per instance-hour billing) —
@@ -184,7 +192,8 @@ round-trip (phase 3) adds only a handful of API calls against the
 already-running cluster — about a minute, no extra instance-hours.
 Phase 3b launches two more single-node clusters (one fails in bootstrap,
 one reaches `WAITING` and is then terminated): about 25 more minutes.
-Phase 3c launches one more (the replacement): about 10-15 more minutes.
+Phase 3c launches one more (the replacement, with a core node): about 10-15
+more minutes. Phase 3d adds a second core node to it: about 5 more minutes.
 
 ## Run
 
