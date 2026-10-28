@@ -63,7 +63,9 @@ Windows-managed-AD / multi-AZ-ONTAP integ is an optional cost-gated follow-up.
    volume with the CLI, outside the stack. FSx refuses to delete a file system
    with child volumes unless `DeleteFileSystem` carries the `Options` above, so
    the destroy below succeeds only when cdkd sends it, and the child volume
-   must be gone afterwards.
+   must be gone afterwards. The destroy's final backup (the `DeleteFileSystem`
+   default) is billed, so the run deletes every backup of the file system and
+   asserts none remains; the cleanup trap sweeps them too.
 3. **Destroy** and assert the file system + VPC are gone from AWS and the
    cdkd state file is removed. A leftover FSx file system is never acceptable
    (per-hour billing) — the cleanup trap force-deletes any file system

@@ -130,10 +130,10 @@ tagged_fs_ids() {
     --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d'
 }
 
-wait_fs_gone() {
+wait_fs_gone() { # usage: wait_fs_gone <fs-id> [max-seconds, default 1800]
   local fs_id="$1"
   local out
-  local deadline=$((SECONDS + 1800))
+  local deadline=$((SECONDS + ${2:-1800}))
   while [ ${SECONDS} -lt ${deadline} ]; do
     if ! out="$(aws fsx describe-file-systems --file-system-ids "${fs_id}" \
       --region "${REGION}" 2>&1)"; then
@@ -148,6 +148,48 @@ wait_fs_gone() {
   return 1
 }
 
+# The FINAL BACKUP DeleteFileSystem takes by default (the API default cdkd
+# keeps, as CloudFormation does) outlives the file system and is billed. Delete
+# every backup of the given file system, waiting for one still CREATING /
+# TRANSFERRING. Returns 1 when one is still there at the deadline.
+# Backup id + lifecycle rows of one file system; returns 1 when the probe fails.
+fs_backup_rows() { # usage: fs_backup_rows <fs-id>
+  local out
+  out="$(aws fsx describe-backups --region "${REGION}" \
+    --filters "Name=file-system-id,Values=$1" \
+    --query 'Backups[].[BackupId,Lifecycle]' --output text 2>/dev/null)" || return 1
+  printf '%s\n' "${out}"
+}
+
+sweep_fs_backups() { # usage: sweep_fs_backups <fs-id> [max-seconds, default 900]
+  local fs_id="$1"
+  local deadline=$((SECONDS + ${2:-900}))
+  local rows id lifecycle pending
+  while :; do
+    if ! rows="$(fs_backup_rows "${fs_id}")"; then
+      # The probe failed (throttle, auth): undetermined, so keep waiting.
+      pending=1
+    else
+      pending=0
+      while read -r id lifecycle; do
+        [ -z "${id}" ] && continue
+        case "${lifecycle}" in
+          DELETED) ;;
+          AVAILABLE | FAILED)
+            echo "    deleting FSx backup ${id} of ${fs_id} (${lifecycle})"
+            aws fsx delete-backup --backup-id "${id}" --region "${REGION}" >/dev/null 2>&1
+            pending=1
+            ;;
+          *) pending=1 ;;
+        esac
+      done <<<"${rows}"
+    fi
+    [ "${pending}" -eq 0 ] && return 0
+    [ ${SECONDS} -ge ${deadline} ] && return 1
+    sleep 15
+  done
+}
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
@@ -155,10 +197,6 @@ cleanup() {
   [ -n "${PHASE2B_LOG:-}" ] && rm -f "${PHASE2B_LOG}"
   [ -n "${PHASE2C_LOG:-}" ] && rm -f "${PHASE2C_LOG}"
   [ -n "${DESTROY_LOG:-}" ] && rm -f "${DESTROY_LOG}"
-  if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
-      --stack-region "${REGION}" --yes >/dev/null 2>&1
-  fi
   # A child volume still CREATING (a run interrupted in Phase 2d) makes FSx
   # refuse the file system delete below, so let it settle first (#5431).
   if [ -n "${CHILD_VOLUME_ID:-}" ]; then
@@ -176,11 +214,35 @@ cleanup() {
     # Phase 2d's child volume goes with it (go-to-k/cdkd#5431).
     aws fsx delete-file-system --file-system-id "${fsid}" --region "${REGION}" \
       --open-zfs-configuration 'Options=DELETE_CHILD_VOLUMES_AND_SNAPSHOTS' >/dev/null 2>&1
-    if ! wait_fs_gone "${fsid}"; then
+    if ! wait_fs_gone "${fsid}" 1200; then
       # e.g. a child volume still CREATING when an interrupted run got here
       echo "    WARNING: FSx file system ${fsid} is still present after cleanup; it bills per hour, delete it by hand" >&2
     fi
+    CLEANUP_FS_IDS="${CLEANUP_FS_IDS:-} ${fsid}"
   done
+  # Final backups of every file system this run made (go-to-k/cdkd#5431).
+  for fsid in ${FS_ID_P1:-} ${CLEANUP_FS_IDS:-}; do
+    if ! sweep_fs_backups "${fsid}" 600; then
+      echo "    WARNING: an FSx backup of ${fsid} is still present after cleanup; it is billed, delete it by hand" >&2
+    fi
+  done
+  # The file system is gone (or reported) by now, so `state destroy` no longer
+  # waits on subnets its ENIs hold. Bounded all the same: a mutated binary
+  # (the pre-fix probe) must not stall the trap.
+  if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
+      --stack-region "${REGION}" --yes >/dev/null 2>&1 &
+    local sd_pid=$!
+    local sd_deadline=$((SECONDS + 600))
+    while kill -0 "${sd_pid}" 2>/dev/null && [ ${SECONDS} -lt ${sd_deadline} ]; do
+      sleep 5
+    done
+    if kill -0 "${sd_pid}" 2>/dev/null; then
+      echo "    WARNING: cdkd state destroy did not finish in 600s; stopped it" >&2
+      kill "${sd_pid}" 2>/dev/null
+    fi
+    wait "${sd_pid}" 2>/dev/null
+  fi
   # Best-effort teardown of the fixture VPC (found via the CDK Name tag).
   for vpcid in $(aws ec2 describe-vpcs --region "${REGION}" \
     --filters "Name=tag:Name,Values=${STACK}/Vpc" \
@@ -560,7 +622,11 @@ node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --regio
 DESTROY_RC=${PIPESTATUS[0]}
 set -e
 if [ "${DESTROY_RC}" -ne 0 ]; then
-  if sed 's/\x1b\[[0-9;]*m//g' "${DESTROY_LOG}" | grep -qiE 'child volume'; then
+  # Copied from the pre-fix probe's red run. AWS's own body ("Unable to
+  # delete the file system because the file system root volume has child
+  # volumes ... DELETE_CHILD_VOLUMES_AND_SNAPSHOTS option has been provided.")
+  # shows only under --verbose; cdkd prints the error class.
+  if sed 's/\x1b\[[0-9;]*m//g' "${DESTROY_LOG}" | grep -qF "Failed to delete FSx FileSystem Fs: BadRequest"; then
     echo "FAIL [phase 3]: FSx refused to delete the file system with child volume ${CHILD_VOLUME_ID} present (issue #5431: DeleteFileSystem must carry the recorded OpenZFSConfiguration.Options)" >&2
   else
     echo "FAIL [phase 3]: destroy exited ${DESTROY_RC}" >&2
@@ -572,6 +638,15 @@ assert_gone "FSx file system ${FS_ID_P2} still exists after destroy" aws fsx des
 echo "    file system deleted (by id)"
 assert_gone "child volume ${CHILD_VOLUME_ID} still exists after destroy" aws fsx describe-volumes --volume-ids "${CHILD_VOLUME_ID}" --region "${REGION}"
 echo "    child volume deleted with it"
+
+# DeleteFileSystem keeps the API's final-backup default, as CloudFormation
+# does, so a final backup of the file system is expected; it is billed, so the
+# run deletes it and asserts none remains (go-to-k/cdkd#5431).
+if ! sweep_fs_backups "${FS_ID_P2}" 900; then
+  echo "FAIL [phase 3]: an FSx backup of ${FS_ID_P2} is still present after the sweep" >&2
+  exit 1
+fi
+echo "    no backup of ${FS_ID_P2} remains"
 
 LEFTOVERS="$(tagged_fs_ids)"
 if [ -n "${LEFTOVERS}" ]; then
