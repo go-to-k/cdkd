@@ -38,8 +38,8 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  * The judge evaluator's `RatingScale.MultiDimensional` (go-to-k/cdkd#5432)
  * carries two dimensions in Phase 1 and three from Phase 2 on: both the
  * `CreateEvaluator` and the `UpdateEvaluator` must deliver them. Before the
- * SDK bump the client's serializer dropped the member, so the live evaluator
- * had no `multiDimensional` at all.
+ * SDK bump the client's serializer dropped the member, and AWS refused the
+ * create's empty `RatingScale` (measured on 3.1152.0).
  */
 export class AgentcoreToolsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

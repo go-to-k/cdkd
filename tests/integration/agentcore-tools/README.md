@@ -40,9 +40,10 @@ cdkd's raw-CFn template path.
    Across Phases 1-2 the judge evaluator's `RatingScale.MultiDimensional` must
    read back as `accuracy tone`, then `accuracy tone brevity`, same evaluator
    id. Before the `@aws-sdk/client-bedrock-agentcore-control` 3.1157.0 bump
-   cdkd's client dropped the member, so the read was empty (RED on Phase 1).
+   cdkd's client dropped the member and AWS refused the create's empty
+   `RatingScale` (RED on Phase 1, named as #5432 by `verify.sh`).
    The read goes through the repo's own SDK client, not the AWS CLI (an older
-   CLI drops the member too); pinned back to 3.1152.0, that read is empty.
+   CLI drops the member too).
 4. **Phase 4 (destroy)** — the evaluator is deleted; the AWS-managed default
    browser / code interpreter still exist (`READY`) — the adopt-only providers'
    no-op delete must never touch them; the cdkd state file is removed.

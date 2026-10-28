@@ -144,8 +144,9 @@ fi
 # version cdkd ships), NOT the AWS CLI: a CLI whose model predates
 # RatingScale.multiDimensional drops the member from its output, which would
 # read as an empty scale and demand a CLI upgrade of every contributor. With
-# the SDK pinned back to 3.1152.0 this read drops the member too, so Phase 1
-# still fails (empty dimensions) -- the readback cannot mask the bug it checks.
+# the SDK pinned back to 3.1152.0 this read would drop the member too, but
+# Phase 1 fails before it: the create itself is refused ("RatingScale must
+# contain at least one non-empty scale definition", classified above).
 REPO_ROOT="$(cd "${PWD}/../../.." && pwd)"
 judge_dimensions() {
   local id out
@@ -182,17 +183,20 @@ cleanup
 
 # --- Phase 1: deploy baseline (evaluator at TRACE) ---------------------
 echo "==> Phase 1: deploy AgentCore tools stack"
-# A failed judge-evaluator create is NOT the #5432 symptom (that was a create
-# that SUCCEEDED without the scale), so it is named apart: the usual cause is
-# the account's Bedrock model access (AccessDenied / Validation).
+# A failed judge-evaluator create is classified. "RatingScale must contain"
+# IS the #5432 symptom: an SDK without the multiDimensional member sends an
+# empty RatingScale, which AWS refuses (measured on 3.1152.0). An
+# access refusal is the account's Bedrock model access, not #5432.
 P1_LOG="$(mktemp)"
 if ! env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${P1_LOG}"; then
   if grep -q "Failed to create BedrockAgentCore Evaluator JudgeEvaluator" "${P1_LOG}"; then
-    if grep -qE "AccessDenied|ValidationException|[Mm]odel" "${P1_LOG}"; then
+    if grep -q "RatingScale must contain" "${P1_LOG}"; then
+      echo "FAIL: the judge evaluator's MultiDimensional rating scale was dropped by the SDK before CreateEvaluator (#5432): AWS received an empty RatingScale" >&2
+    elif grep -qE "AccessDenied|[Mm]odel access|access to the model" "${P1_LOG}"; then
       echo "FAIL: the judge evaluator's CreateEvaluator was refused -- model access, not #5432 (check Bedrock model access for the ModelId in ${REGION}; re-run with --verbose for AWS's text)" >&2
     else
-      echo "FAIL: the judge evaluator's CreateEvaluator failed -- not the #5432 symptom (that create succeeds without the scale); see the error above" >&2
+      echo "FAIL: the judge evaluator's CreateEvaluator failed; see the error above" >&2
     fi
   fi
   rm -f "${P1_LOG}"
