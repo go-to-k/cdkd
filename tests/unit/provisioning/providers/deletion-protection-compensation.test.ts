@@ -11,6 +11,7 @@ import {
   isFinalSnapshotNotAvailableRefusal,
   isProceedDbStatus,
   isTerminalDbStatus,
+  isTerminalDbWaitStatus,
   waitForFlipToSettleBeforeFinalSnapshot,
   type FlipSettleReading,
 } from '../../../../src/provisioning/providers/deletion-protection-compensation.js';
@@ -423,6 +424,22 @@ describe('deleteAfterProtectionFlipWithFinalSnapshot (#5184)', () => {
     expect(reads).toBe(3);
   });
 
+  it('keeps -recoverable terminal after a refusal: rethrows at once (#5426)', async () => {
+    const { error, sends, reads } = await runDelete(
+      [
+        OFF('modifying'),
+        OFF('available'),
+        OFF('inaccessible-encryption-credentials-recoverable'),
+        OFF('available'),
+      ],
+      [CLUSTER_NOT_AVAILABLE, undefined]
+    );
+
+    expect(error).toBe(CLUSTER_NOT_AVAILABLE);
+    expect(sends).toBe(1);
+    expect(reads).toBe(3);
+  });
+
   it('rethrows at once when the guard reads ON again after the refusal', async () => {
     const { error, sends, reads } = await runDelete(
       [OFF('modifying'), OFF('available'), ON('available')],
@@ -482,5 +499,59 @@ describe('deleteAfterProtectionFlipWithFinalSnapshot (#5184)', () => {
     expect(error).toBeUndefined();
     expect(sends).toBe(2);
     expect(reads).toBe(3);
+  });
+});
+
+describe('isTerminalDbWaitStatus (#5426)', () => {
+  it('is isTerminalDbStatus except for inaccessible-encryption-credentials-recoverable', () => {
+    expect(isTerminalDbWaitStatus('inaccessible-encryption-credentials-recoverable')).toBe(false);
+    for (const status of [
+      'deleting',
+      'failed',
+      'stopped',
+      'storage-full',
+      'insufficient-capacity',
+      'restore-error',
+      'inaccessible-encryption-credentials',
+      'incompatible-parameters',
+      'incompatible-network',
+      'cloning-failed',
+    ]) {
+      expect(isTerminalDbWaitStatus(status), status).toBe(true);
+    }
+    for (const status of ['available', 'creating', 'modifying', 'backing-up', undefined]) {
+      expect(isTerminalDbWaitStatus(status), String(status)).toBe(false);
+    }
+  });
+});
+
+describe('the final-snapshot settle keeps -recoverable terminal (#5426)', () => {
+  beforeEach(() => {
+    clock = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('sends the delete at once on -recoverable with the guard off', async () => {
+    const { error, reads, sleeps } = await run([
+      OFF('inaccessible-encryption-credentials-recoverable'),
+      OFF('available'),
+    ]);
+    expect(error).toBeUndefined();
+    expect(reads).toHaveLength(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it('fails closed at once on -recoverable with the guard still on', async () => {
+    const { error, reads } = await run([
+      ON('inaccessible-encryption-credentials-recoverable'),
+      OFF('available'),
+    ]);
+    expect(error?.message).toContain(
+      "still reads it ON in status 'inaccessible-encryption-credentials-recoverable'"
+    );
+    expect(reads).toHaveLength(1);
   });
 });

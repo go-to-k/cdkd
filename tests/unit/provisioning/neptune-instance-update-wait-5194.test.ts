@@ -174,6 +174,26 @@ describe('modifyDbInstanceWhenAvailable (#5194)', () => {
     expect(readStatus).toHaveBeenCalledTimes(1);
   });
 
+  it('waits out inaccessible-encryption-credentials-recoverable instead of failing (#5426)', async () => {
+    const send = vi.fn().mockRejectedValueOnce(refusal()).mockResolvedValueOnce({});
+    const { promise, readStatus } = run(send, [
+      'inaccessible-encryption-credentials-recoverable',
+      'available',
+    ]);
+    await promise;
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(readStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('still fails at once on the non-recoverable inaccessible-encryption-credentials (#5426)', async () => {
+    const send = vi.fn().mockRejectedValue(refusal());
+    const { promise, readStatus } = run(send, ['inaccessible-encryption-credentials', 'available']);
+    await expect(promise).rejects.toThrow(
+      "reads status 'inaccessible-encryption-credentials', which does not end on its own"
+    );
+    expect(readStatus).toHaveBeenCalledTimes(1);
+  });
+
   it('rethrows any other failure as-is, without reading or resending', async () => {
     const other = awsError('InvalidDBInstanceStateFault', 'The instance is a read replica');
     const send = vi.fn().mockRejectedValue(other);
