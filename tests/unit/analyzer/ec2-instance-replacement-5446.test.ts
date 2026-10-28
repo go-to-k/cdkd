@@ -35,6 +35,7 @@ import {
   blockDeviceMappingsDifferOnlyInDeleteOnTermination,
 } from '../../../src/analyzer/replacement-rules.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import { maskedPropertyFingerprint } from '../../../src/deployment/masked-property-fingerprints.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -225,5 +226,58 @@ describe('DiffCalculator.conditionalReplacementVerdict forwards the siblings (is
       });
     expect(verdict({})).toBe(true);
     expect(verdict({ SubnetId: 'subnet-1' })).toBe(false);
+  });
+});
+
+describe('a masked SecurityGroupIds edit asks the predicate with the siblings (issue #5446)', () => {
+  // State records the groups as `***` with the fingerprint of the old template
+  // text; the template moved, and the compared desired side is masked too, so
+  // only the masked-edit path reports the change.
+  const run = async (subnet: Record<string, unknown>) => {
+    const base = { ImageId: 'ami-1', InstanceType: 't3.nano', ...subnet };
+    const state = {
+      version: 3,
+      region: 'us-east-1',
+      stackName: 's',
+      resources: {
+        Inst: {
+          physicalId: 'i-1',
+          resourceType: TYPE,
+          properties: { ...base, SecurityGroupIds: '***' },
+          maskedPropertyFingerprints: { SecurityGroupIds: maskedPropertyFingerprint(['sg-a']) },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    } as unknown as StackState;
+    const template = {
+      Resources: { Inst: { Type: TYPE, Properties: { ...base, SecurityGroupIds: ['sg-b'] } } },
+    } as unknown as CloudFormationTemplate;
+    const changes = await new DiffCalculator().calculateDiff(
+      state,
+      template,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      ({ desired, current }) => ({ desired: { ...desired, SecurityGroupIds: '***' }, current })
+    );
+    const pc = changes.get('Inst')?.propertyChanges?.find((p) => p.path === 'SecurityGroupIds');
+    expect(pc?.maskedExpressionChanged).toBe(true);
+    return pc;
+  };
+
+  it('replaces without a SubnetId', async () => {
+    expect((await run({}))?.requiresReplacement).toBe(true);
+  });
+
+  it('stays in place with a SubnetId', async () => {
+    expect((await run({ SubnetId: 'subnet-1' }))?.requiresReplacement).toBe(false);
   });
 });

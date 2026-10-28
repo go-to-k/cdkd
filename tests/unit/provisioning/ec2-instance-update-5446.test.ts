@@ -75,6 +75,7 @@ vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) =
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 import { isInterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors/marks.js';
 import type { UpdateContext } from '../../../src/types/resource.js';
 
 const ID = 'i-0123456789abcdef0';
@@ -441,6 +442,8 @@ describe('what counts as a change', () => {
     const rec = { ...BASE, UserData: '***' };
     await update(rec, rec, { removedProperties: new Set(), replayingState: true });
     expect(mutatingCalls()).toEqual([]);
+    // No change at all, so not even the stand-in warning.
+    expect(logs.warn).not.toHaveBeenCalled();
   });
 
   it('a key both sides lack is never cleared (drift --revert readback)', async () => {
@@ -584,7 +587,11 @@ describe('fix round (#5457 review)', () => {
       update({ ...rest, Tags: [{ Key: 'k', Value: 'v' }] }, BASE, {
         removedProperties: new Set(['SecurityGroupIds']),
       })
-    ).rejects.toThrow(/default security group .* could not be found/);
+    ).rejects.toSatisfy(
+      (e: unknown) =>
+        /default security group .* could not be found/.test((e as Error).message) &&
+        isMarkedNonRetryable(e)
+    );
     expect(mutatingCalls()).toEqual([]);
   });
 
