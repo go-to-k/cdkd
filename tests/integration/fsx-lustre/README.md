@@ -16,19 +16,25 @@ the SDK provider, built on the CDK L2 (`aws-fsx.LustreFileSystem`).
 - `AWS::FSx::FileSystem` `PersistentFs` — `PERSISTENT_2` SSD at 1200 GiB,
   125 MB/s/TiB, in the same subnet and security group. It carries the
   persistent-only settings Phase 2b removes (issue #1160).
+- `AWS::Logs::LogGroup` `/aws/fsx/CdkdFsxLustreExample` — the destination
+  of the baseline file system's `LustreConfiguration.LogConfiguration`
+  (issue #5430; FSx requires the `/aws/fsx` prefix).
 
 ## Phases (verify.sh)
 
 1. **Deploy** the baseline file system and assert via
    `aws fsx describe-file-systems` that it is `AVAILABLE` with the
-   templated config (SCRATCH_2, 1200 GiB, `DataCompressionType: NONE`),
+   templated config (SCRATCH_2, 1200 GiB, `DataCompressionType: NONE`,
+   `LogConfiguration` `WARN_ERROR` to the stack's log group),
    that the `DNSName` / `LustreMountName` outputs (`Fn::GetAtt`) match
    the AWS-side values, and that state routes the resource via the SDK
    provider (`provisionedBy=sdk`).
 2. **Update** (`CDKD_TEST_UPDATE=true`): `DataCompressionType` `NONE ->
    LZ4` (`UpdateFileSystem` — a mutable Lustre sub-property), tag value
-   change AND tag removal (`TagResource` / `UntagResource`). Asserts the
-   FileSystemId is unchanged (in-place, no replacement).
+   change AND tag removal (`TagResource` / `UntagResource`), and
+   `LogConfiguration` `Level` `WARN_ERROR -> ERROR_ONLY` (`UpdateFileSystem`,
+   issue #5430). Asserts the FileSystemId is unchanged (in-place, no
+   replacement).
    - **Removal** (`CDKD_TEST_REMOVAL=true`, issue #1160):
      `DataCompressionType` is dropped from the template while its live
      value is `LZ4`, and `WeeklyMaintenanceStartTime` is added in the same
@@ -64,7 +70,7 @@ the SDK provider, built on the CDK L2 (`aws-fsx.LustreFileSystem`).
      `DeleteRolePolicy` / `DeleteRole` / `ListRoles` / `ListRoleTags` and
      `sts:AssumeRole` on the role, whose trust policy expires 2 hours after
      it is created.
-3. **Destroy** and assert the file system + VPC are gone from AWS and
+3. **Destroy** and assert the file system, VPC and log group are gone from AWS and
    the cdkd state file is removed. A leftover FSx file system is never
    acceptable (per-hour billing) — the cleanup trap force-deletes any
    file system carrying the fixture's constant tag

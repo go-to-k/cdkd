@@ -10,6 +10,7 @@ Minimal EC2 Instance deployment example for cdkd.
 - **Route Table** - Public route table with internet gateway route
 - **Security Group** - Allows inbound SSH (port 22) from anywhere
 - **EC2 Instance** - t3.micro with Amazon Linux 2023
+- **KMS Key** - customer managed key for an EBS data volume (issue #5445)
 
 ## Demonstrates
 
@@ -25,6 +26,10 @@ Minimal EC2 Instance deployment example for cdkd.
   `network-same-resource-probe.mjs` against the stack's resources, a throwaway VPC / subnet /
   security group it creates, the default VPC and never-existed ids, then the settle's delete
   of the throwaways and the reads once they are gone
+- `BlockDeviceMappings` Ebs members (issue #5445): the NetworkInterfaces-shaped instance declares a
+  gp3 data volume encrypted with a fixture-owned KMS key and 3500 IOPS; `verify.sh` reads the volume
+  back with `DescribeVolumes` and asserts the key and the IOPS, then that destroy leaves the key
+  pending deletion
 - Removing the in-place security properties (issue #1160). `verify.sh` Phase 1d redeploys with
   `CDKD_TEST_REMOVAL=true`, which drops `MetadataOptions`, `Monitoring` and `CreditSpecification`.
   As in CloudFormation, detailed monitoring is turned off and the other two keep their values.
