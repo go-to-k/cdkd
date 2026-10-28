@@ -44,7 +44,9 @@
 #   4. Re-deploy with CDKD_TEST_UPDATE=true: WeeklyMaintenanceStartTime
 #      1:05:00 -> 2:06:00 (an UpdateFileSystem-mutable
 #      WindowsConfiguration sub-property) + tag value change AND tag
-#      removal. Assert the FileSystemId is UNCHANGED.
+#      removal + an Aliases swap (go-to-k/cdkd#5469: drop one, add one,
+#      re-case the kept one). Assert the FileSystemId is UNCHANGED and
+#      the aliases read back as declared.
 #   5. Re-deploy with FSX_AD_ID unset -> the file system is no longer in
 #      the template, so cdkd DELETEs it while the VPC stands. Assert the
 #      file system is GONE (by id AND by the fixture's constant tag).
@@ -526,6 +528,17 @@ fs_field() {
     --query "FileSystems[0].$2" --output text
 }
 
+# go-to-k/cdkd#5469: the file system's DNS aliases as one comparable line,
+# "<name>=<Lifecycle>" pairs lowercased and sorted (order-insensitive and
+# case-normalized), e.g. "add.x=available,keep.x=available". Empty on no
+# alias; the caller guards that, and maps a failed AWS call to empty too so
+# the FAIL line (or Phase 3's next poll) runs instead of a bare set -e exit.
+fs_aliases() {
+  aws fsx describe-file-system-aliases --file-system-id "$1" --region "${REGION}" \
+    --query 'Aliases[].[Name,Lifecycle]' --output text \
+    | awk 'NF == 2 { print tolower($1) "=" tolower($2) }' | sort | paste -sd, -
+}
+
 # --- Phase 1: deploy the VPC the directory needs ------------------------
 echo "==> Phase 1: deploy the VPC only (FSX_AD_ID unset)"
 env -u CDKD_TEST_UPDATE -u FSX_AD_ID node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -721,6 +734,21 @@ if [ "${ENV_TAG_P3}" != "test" ] || [ "${DROPME_P3}" != "yes" ]; then
 fi
 echo "    baseline tags reached AWS (env=test, dropme=yes)"
 
+# Baseline DNS aliases reached AWS (create path; go-to-k/cdkd#5469 Phase 4
+# changes them). The create wait does not wait for aliases, so poll briefly.
+ALIASES_EXPECTED_P3="drop.corp.cdkd-integ.com=available,keep.corp.cdkd-integ.com=available"
+ALIASES_P3=""
+for _ in $(seq 1 20); do
+  ALIASES_P3="$(fs_aliases "${FS_ID_P3}")" || ALIASES_P3=""
+  [ "${ALIASES_P3}" = "${ALIASES_EXPECTED_P3}" ] && break
+  sleep 15
+done
+if [ -z "${ALIASES_P3}" ] || [ "${ALIASES_P3}" != "${ALIASES_EXPECTED_P3}" ]; then
+  echo "FAIL: Phase 3 expected aliases '${ALIASES_EXPECTED_P3}', got '${ALIASES_P3}'" >&2
+  exit 1
+fi
+echo "    baseline DNS aliases reached AWS (${ALIASES_P3})"
+
 # The file system must route via the SDK provider (catch a routing flip).
 PROVISIONED_BY="$(state_json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const r=j.state.resources;const k=Object.keys(r).find(x=>r[x].resourceType==="AWS::FSx::FileSystem");process.stdout.write((r[k]&&r[k].provisionedBy)||"sdk")})')"
 if [ "${PROVISIONED_BY}" != "sdk" ]; then
@@ -764,6 +792,18 @@ if [ "${AD_ID_P4}" != "${DIRECTORY_ID}" ]; then
   exit 1
 fi
 echo "    update reached AWS (WeeklyMaintenanceStartTime 2:06:00, env=changed, dropme removed, AD binding intact)"
+
+# go-to-k/cdkd#5469: the alias swap applied in place. cdkd waits for the
+# alias actions before the deploy returns, so read once, no poll: a lagging
+# alias is the bug. Pre-fix, cdkd refused the change and Phase 4's deploy
+# failed with a --replace pointer.
+ALIASES_EXPECTED_P4="add.corp.cdkd-integ.com=available,keep.corp.cdkd-integ.com=available"
+ALIASES_P4="$(fs_aliases "${FS_ID_P4}")" || ALIASES_P4=""
+if [ -z "${ALIASES_P4}" ] || [ "${ALIASES_P4}" != "${ALIASES_EXPECTED_P4}" ]; then
+  echo "FAIL: Phase 4 expected aliases '${ALIASES_EXPECTED_P4}' (drop disassociated, add associated, keep untouched), got '${ALIASES_P4}'" >&2
+  exit 1
+fi
+echo "    DNS aliases updated in place (${ALIASES_P4})"
 
 # --- Phase 5: delete the file system through cdkd -----------------------
 # Dropping FSX_AD_ID takes the file system out of the template, so cdkd

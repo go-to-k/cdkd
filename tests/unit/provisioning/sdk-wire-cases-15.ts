@@ -38,6 +38,8 @@ import { DocDBSubnetGroupProvider } from '../../../src/provisioning/providers/do
 const fresh = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 const SRC = 'fsx-filesystem-provider.ts';
+/** The Windows bag's DNS aliases, which the armed file system holds (go-to-k/cdkd#5469). */
+const WINDOWS_ALIASES = ['fs1.example.com', 'fs2.example.com'];
 const FS_ID = 'fs-0123456789abcdef0';
 const FS_ARN = `arn:aws:fsx:us-east-1:${ACCOUNT}:file-system/${FS_ID}`;
 const TYPE = 'AWS::FSx::FileSystem';
@@ -60,7 +62,30 @@ function armFs(): void {
   const created = () => ({
     FileSystem: { FileSystemId: FS_ID, CreationTime: new Date(Date.now() + 3_600_000) },
   });
+  // The file system's DNS aliases (go-to-k/cdkd#5469), holding the Windows
+  // bag's: an associate settles AVAILABLE and a disassociate removes the name
+  // at once, so update()'s alias waits settle on their first read. As on AWS,
+  // disassociating a name that is not associated is a 400.
+  const aliases = new Set<string>(WINDOWS_ALIASES);
+  const names = (input: Record<string, unknown>): string[] => input['Aliases'] as string[];
   setOutputOverrides({
+    AssociateFileSystemAliasesCommand: (input) => {
+      names(input).forEach((n) => aliases.add(n));
+      return {};
+    },
+    DisassociateFileSystemAliasesCommand: (input) => {
+      const absent = names(input).filter((n) => !aliases.has(n));
+      if (absent.length > 0) {
+        throw Object.assign(new Error(`aliases not associated: ${absent.join(', ')}`), {
+          name: 'BadRequest',
+        });
+      }
+      names(input).forEach((n) => aliases.delete(n));
+      return {};
+    },
+    DescribeFileSystemAliasesCommand: () => ({
+      Aliases: [...aliases].map((Name) => ({ Name, Lifecycle: 'AVAILABLE' })),
+    }),
     CreateFileSystemCommand: created,
     CreateFileSystemFromBackupCommand: created,
     DescribeFileSystemsCommand: () => ({
@@ -94,12 +119,12 @@ const VARIANT_REFUSED: Record<string, readonly string[]> = {
     'ImportPath',
     'ImportedFileChunkSize',
   ],
-  // go-to-k/cdkd#5469: ActiveDirectoryId, Aliases and PreferredSubnetId are a
-  // known-wrong pin — CloudFormation documents them "No interruption"; the fix
-  // moves them out of this list and turns the refusal tests red.
+  // go-to-k/cdkd#5469: CloudFormation documents ActiveDirectoryId and
+  // PreferredSubnetId "No interruption", but no FSx API changes either, so
+  // they stay refused. Aliases is not here: it changes in place through
+  // Associate/DisassociateFileSystemAliases.
   WindowsConfiguration: [
     'ActiveDirectoryId',
-    'Aliases',
     'CopyTagsToBackups',
     'DeploymentType',
     'PreferredSubnetId',
@@ -171,7 +196,7 @@ const WINDOWS_MANAGED_AD_BAG: Bag = {
     DailyAutomaticBackupStartTime: '05:00',
     AutomaticBackupRetentionDays: 7,
     CopyTagsToBackups: true,
-    Aliases: ['fs1.example.com', 'fs2.example.com'],
+    Aliases: [...WINDOWS_ALIASES],
     AuditLogConfiguration: {
       FileAccessAuditLogLevel: 'SUCCESS_AND_FAILURE',
       FileShareAccessAuditLogLevel: 'FAILURE_ONLY',
@@ -386,6 +411,12 @@ const FSX_CASE: TypeCase = {
           'ThroughputCapacity',
           'WeeklyMaintenanceStartTime',
         ]),
+        ...Object.fromEntries(
+          ['Aliases', 'Aliases.0', 'Aliases.1'].map((p) => [
+            `update-add:WindowsConfiguration.${p}`,
+            `the armed file system already holds the bag's aliases (WINDOWS_ALIASES), and update() reconciles its Associate against the live aliases (go-to-k/cdkd#5469), so re-adding one sends nothing; a NEW name reaches AssociateFileSystemAliases through update-vary:WindowsConfiguration.Aliases.N and on create through create-vary`,
+          ])
+        ),
       },
       expectedRemovalThrows: { 'create:FileSystemType': UNSUPPORTED_TYPE },
     },
