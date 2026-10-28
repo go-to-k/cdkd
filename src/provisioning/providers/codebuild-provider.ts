@@ -61,6 +61,13 @@ import { generatedNameFor } from '../resource-name.js';
 const DEFAULT_PROJECT_VISIBILITY = 'PRIVATE';
 
 /**
+ * CodeBuild's default artifact encryption key, and what CloudFormation resets a
+ * removed `EncryptionKey` to (go-to-k/cdkd#1160, CFn A/B): the AWS managed S3
+ * key. `UpdateProject` refuses `''`, and omitting the member keeps the old key.
+ */
+const DEFAULT_ENCRYPTION_KEY = 'alias/aws/s3';
+
+/**
  * `Visibility` + `ResourceAccessRole` as `UpdateProjectVisibility` sends them
  * (go-to-k/cdkd#2762). Both ride that one call, `CreateProject` /
  * `UpdateProject` carry neither, and `projectVisibility` is REQUIRED there, so
@@ -698,6 +705,28 @@ export class CodeBuildProvider implements ResourceProvider {
         properties['BuildBatchConfig'] == null && previousProperties['BuildBatchConfig'] != null;
       if (buildBatchConfigRemoved) {
         input.buildBatchConfig = {};
+      }
+
+      // go-to-k/cdkd#1160, CFn A/B (us-east-1, a CODECOMMIT-source project):
+      // CloudFormation's UpdateProject carried `encryptionKey` and `tags` after
+      // both were removed, and the project read back the AWS managed key
+      // (`alias/aws/s3`, CodeBuild's documented default) and no user tag. A
+      // direct probe showed the clear shapes: `encryptionKey: 'alias/aws/s3'`
+      // reads back exactly as CFn's reset did (`''` is refused, min length
+      // 1), and `tags: []` removes every tag (UpdateProject replaces the
+      // list). `SourceVersion` is the opposite: CFn omitted it and the live
+      // value was KEPT, so the merge pass-through is parity and it is not
+      // reset. A `''` on either side is the `readCurrentState` placeholder for
+      // "no key", never a declared one, so it counts as absent.
+      const declaredKey = (value: unknown): boolean => value != null && value !== '';
+      if (
+        !declaredKey(properties['EncryptionKey']) &&
+        declaredKey(previousProperties['EncryptionKey'])
+      ) {
+        input.encryptionKey = DEFAULT_ENCRYPTION_KEY;
+      }
+      if (properties['Tags'] == null && previousProperties['Tags'] != null) {
+        input.tags = [];
       }
 
       const updated = await this.getClient().send(new UpdateProjectCommand(input));

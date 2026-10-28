@@ -16,7 +16,9 @@
 #
 # Phase 1 also declares `Visibility: PUBLIC_READ` + `ResourceAccessRole`
 # (go-to-k/cdkd#2762), sent through UpdateProjectVisibility; Phase 2 drops both
-# and asserts the PRIVATE / no-role reset CloudFormation applies.
+# and asserts the PRIVATE / no-role reset CloudFormation applies. It also
+# declares `EncryptionKey` + `Tags`, and Phase 2 asserts the managed-key reset
+# and the tag removal CloudFormation applies (go-to-k/cdkd#1160).
 #
 # Then destroys and confirms a clean teardown.
 #
@@ -156,6 +158,17 @@ assert_field() { # usage: assert_field <description> <jq-path> <expected>
   echo "    ok: ${desc} = ${got}"
 }
 
+# go-to-k/cdkd#1160: Phase 1 declares the AWS managed S3 key by its KEY ARN,
+# which reads back as that ARN; the removal reset reads back as the ALIAS ARN.
+# DescribeKey on an AWS managed alias creates the key if the account lacks it.
+CDKD_INTEG_CB_KEY_ARN="$(aws kms describe-key --key-id alias/aws/s3 --region "${REGION}" \
+  --query 'KeyMetadata.Arn' --output text)"
+case "${CDKD_INTEG_CB_KEY_ARN}" in
+  arn:aws*:kms:*:key/?*) ;;
+  *) echo "FAIL: could not resolve the aws/s3 managed key ARN (got '${CDKD_INTEG_CB_KEY_ARN}')" >&2; exit 1 ;;
+esac
+export CDKD_INTEG_CB_KEY_ARN
+
 # --- Phase 0: issue #3866 pre-flight refusal --------------------------
 # AWS::CodeBuild::Project is NON_PROVISIONABLE (Cloud Control has no handlers),
 # so a property its SDK provider does not handle must stop the deploy BEFORE
@@ -217,6 +230,9 @@ assert_field "concurrentBuildLimit"            '.concurrentBuildLimit'   '2'
 assert_field "autoRetryLimit"                  '.autoRetryLimit'         '3'
 assert_field "cache.type"                      '.cache.type'             'LOCAL'
 assert_field "logsConfig.cloudWatchLogs.status" '.logsConfig.cloudWatchLogs.status' 'DISABLED'
+# go-to-k/cdkd#1160 baselines, so the Phase 2 resets cannot pass vacuously.
+assert_field "encryptionKey (the managed key's KEY ARN)" '.encryptionKey' "${CDKD_INTEG_CB_KEY_ARN}"
+assert_field "user tags"                       '[.tags[]? | select(.key | startswith("aws:") | not) | "\(.key)=\(.value)"] | join(",")' 'cdkd-integ-tag=phase1'
 # go-to-k/cdkd#2762: the UpdateProjectVisibility pair after CreateProject.
 assert_field "projectVisibility"               '.projectVisibility'      'PUBLIC_READ'
 ROLE_ARN_P1="$(project_field '.serviceRole')"
@@ -300,6 +316,13 @@ assert_field "buildBatchConfig cleared on removal" '.buildBatchConfig' 'null'
 # clears a removed ResourceAccessRole (CFn A/B); so must cdkd.
 assert_field "projectVisibility reset on removal" '.projectVisibility'  'PRIVATE'
 assert_field "resourceAccessRole cleared on removal" '.resourceAccessRole' 'null'
+# go-to-k/cdkd#1160: CloudFormation resets a removed EncryptionKey to the AWS
+# managed S3 key and removes every tag when Tags is removed (CFn A/B). Pre-fix,
+# UpdateProject merged both absent members and the old values stayed.
+assert_field "encryptionKey reset to the managed key on removal" \
+  '(.encryptionKey // "") | test(":alias/aws/s3$")' 'true'
+assert_field "user tags removed on removal" \
+  '[.tags[]? | select(.key | startswith("aws:") | not)] | length' '0'
 
 echo "==> Phase 2: the seven fields CFn RETAINS must be unchanged"
 # These are the CFn-parity pins. If a future change "fixes" them into resets,
