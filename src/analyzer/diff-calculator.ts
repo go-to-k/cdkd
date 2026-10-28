@@ -38,6 +38,7 @@ import { safeMsg } from '../utils/display-safe.js';
 import type { LockRecoveryContext } from '../state/lock-contention-message.js';
 import { isPlainReferenceTo } from '../deployment/recreate-target-readers.js';
 import { isKnownTokenFreeState } from '../state/token-free-state.js';
+import { unsettledPropertiesOf } from '../state/unsettled-properties.js';
 import {
   readProvenancePromotions,
   type ReadProvenanceSources,
@@ -745,6 +746,24 @@ export class DiffCalculator {
           });
           this.logger.debug(
             safeMsg`${logicalId}: ${key} is recorded masked and its template expression or a resolved input changed`
+          );
+        }
+        // go-to-k/cdkd#5380: a key an earlier failed update left unsettled
+        // may hold either side in AWS, so it is an in-place change even when
+        // the template and the record agree: the deploy re-sends it and the
+        // provider converges it against AWS.
+        const listed = new Set(propertyChanges.map((pc) => pc.path));
+        for (const key of unsettledPropertiesOf(currentResource)) {
+          if (listed.has(key)) continue;
+          propertyChanges.push({
+            path: key,
+            oldValue: currentCompared[key],
+            newValue: desiredCompared[key],
+            requiresReplacement: false,
+            unsettled: true,
+          });
+          this.logger.debug(
+            safeMsg`${logicalId}: ${key} is unsettled after a failed update and is sent again`
           );
         }
 

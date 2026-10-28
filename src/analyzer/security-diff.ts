@@ -61,13 +61,17 @@ export interface SecurityDiffTemplates {
 /**
  * A synthetic property change the diff added for a value that did not change
  * in the template: a reference to a replaced or updated resource, or a `NoEcho`
- * parameter that may have moved. The CDK CLI's template diff does not see these
- * (its replacement propagation runs after the IAM changes are taken), so they
- * are left out here too.
+ * parameter that may have moved, or a property a failed update left unsettled
+ * (go-to-k/cdkd#5380). The CDK CLI's template diff does not see these (its
+ * replacement propagation runs after the IAM changes are taken), so they are
+ * left out here too.
  */
 function isSyntheticChange(pc: PropertyChange): boolean {
   return (
-    pc.replacementPropagated === true || pc.inPlacePropagated === true || pc.noEchoPromoted === true
+    pc.replacementPropagated === true ||
+    pc.inPlacePropagated === true ||
+    pc.noEchoPromoted === true ||
+    pc.unsettled === true
   );
 }
 

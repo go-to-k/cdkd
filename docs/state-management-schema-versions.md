@@ -5,7 +5,7 @@ description: "How cdkd handles state records written by older and newer versions
 
 # Schema versions and upgrades
 
-Every state record carries a schema `version`, and the current one is `13`.
+Every state record carries a schema `version`, and the current one is `14`.
 A newer cdkd reads every older version, so upgrading cdkd needs no migration
 step. An older cdkd cannot read a record that a newer one has written.
 
@@ -31,7 +31,7 @@ An older cdkd refuses a record written in a version it does not know, and
 exits:
 
 ```text
-Unsupported state schema version 13 for stack MyStack. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12. Upgrade cdkd to a version that supports schema 13.
+Unsupported state schema version 14 for stack MyStack. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13. Upgrade cdkd to a version that supports schema 14.
 ```
 
 cdkd writes the current version on every record it saves. So once a newer
@@ -55,6 +55,7 @@ Upgrade every machine and CI job that deploys a stack at the same time.
 | 11 | `NoEcho` values stored as `***` |
 | 12 | `referenceProvenance`, `outputReferenceProvenance`: where each stored secret reference was resolved, and at which secret version |
 | 13 | `stackInstanceId`: the id of the stack's current lifetime, recorded when the stack is first written; `nameGeneration`, `nameGenerationHigh` and `retiredNameGenerations`: which generated name each resource holds |
+| 14 | `unsettledProperties`: the properties a failed update had started changing, which the next deploy sends again |
 
 [What a state record contains](state-management.md#what-a-state-record-contains)
 says what each field means. The contributor page

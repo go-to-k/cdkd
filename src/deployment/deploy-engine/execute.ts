@@ -76,6 +76,7 @@ import { orphanNeedsIdentity, readResourceIdentity } from '../rollback-executor/
 import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
 import { resolveOutputs } from './outputs.js';
 import { provisionResource } from './provision.js';
+import { withUnsettledProperties } from '../../state/unsettled-properties.js';
 import {
   retiredAfterRollback,
   type RolledBackCreate,
@@ -412,6 +413,10 @@ export async function executeDeployment(
           // until their own polling timeouts fire.
           engine.interrupted = true;
           engine.interruptCause ??= 'sibling-failure';
+          // go-to-k/cdkd#5380: before any later save, so a sibling's
+          // per-resource save already persists what this update left
+          // unsettled. Only the in-place UPDATE path marks.
+          if (change.changeType === 'UPDATE') recordUnsettledMarks(engine, newResources, logicalId);
           // #1198: journal the failed op's pre-op state + attempted
           // properties so `cdkd rollback --revert-failed` can act on it.
           //
@@ -868,6 +873,10 @@ export async function executeDeployment(
       });
     }
   } catch (error) {
+    // go-to-k/cdkd#5380: again here, for a mark a provider made after its
+    // resource's own failure was recorded (the per-resource deadline abandons
+    // the call, which may still reach its irreversible write).
+    recordUnsettledMarks(engine, newResources);
     warnUnretriedReplacedDeletes(
       engine.replacementRun,
       engine.replacementDeps(),
@@ -1274,6 +1283,8 @@ export async function executeDeployment(
     // Save state after rollback (reflects rolled-back resource state).
     // This is critical: if rollback deleted resources, the state must reflect
     // that. Otherwise, next deploy will think deleted resources still exist.
+    // go-to-k/cdkd#5380: a mark a provider made while the rollback ran.
+    recordUnsettledMarks(engine, newResources);
     try {
       const postRollbackState: StackState = {
         version: STATE_SCHEMA_VERSION_CURRENT,
@@ -1339,6 +1350,7 @@ export async function executeDeployment(
       try {
         const freshState = await engine.stateBackend.getState(stackName, engine.stackRegion);
         const freshEtag = freshState?.etag;
+        recordUnsettledMarks(engine, newResources);
         const postRollbackState: StackState = {
           version: STATE_SCHEMA_VERSION_CURRENT,
           region: engine.stackRegion,
@@ -1643,4 +1655,26 @@ function journaledOrphanPolicy(
     policy === 'RetainExceptOnCreate'
     ? policy
     : 'Retain';
+}
+
+/**
+ * Record what a failed in-place update left unsettled (go-to-k/cdkd#5380) on
+ * the record the failure save writes: the marks its provider made through
+ * `UpdateContext.markUnsettled`, unioned with the record's own. `only` limits
+ * it to one logical id (the failed row, before its siblings' saves); without
+ * it every pending mark is recorded, which catches one a provider made after
+ * the engine had already given up on its call. A successful update and the
+ * replacement fallback delete their entry first, so an entry here is a failed
+ * update's.
+ */
+function recordUnsettledMarks(
+  engine: DeployEngine,
+  newResources: Record<string, ResourceState>,
+  only?: string
+): void {
+  for (const [logicalId, marks] of engine.unsettledMarks) {
+    if (only !== undefined && logicalId !== only) continue;
+    if (marks.size === 0 || !Object.hasOwn(newResources, logicalId)) continue;
+    newResources[logicalId] = withUnsettledProperties(newResources[logicalId]!, marks);
+  }
 }

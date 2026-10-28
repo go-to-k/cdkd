@@ -1,5 +1,5 @@
 ---
-description: cdkd S3 state schema - StackState v1-v13 and per-field semantics
+description: cdkd S3 state schema - StackState v1-v14 and per-field semantics
 paths:
   - 'src/state/**'
   - 'src/types/state.ts'
@@ -11,7 +11,7 @@ The S3 state record is the user contract: **migration must be transparent** — 
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | ... | 13;      // each bump is its fields' `vN+`
+  version: 1 | 2 | ... | 14;      // each bump is its fields' `vN+`
   stackName: string;
   region?: string;      // required on v2+ (the S3 key); on READ the KEY wins and a disagreeing body warns
   resources: Record<string, ResourceState>;
@@ -62,6 +62,7 @@ interface ResourceState {
   maskedPropertyInputFingerprints?: Record<string, string>; // no bump: non-secret inputs resolved, bound to that hash (#4543)
   nameGeneration?: number;                  // v13+: absent = 0
   nameGenerationHigh?: number;              // v13+: set by a rollback
+  unsettledProperties?: string[];           // v14+: names a failed update had started changing (#5380)
 }
 ```
 
@@ -132,6 +133,10 @@ Written at every deploy save by `applyNoEchoPersist` (`src/deployment/deploy-eng
 ## `referenceProvenance` / `outputReferenceProvenance` (v12+)
 
 Per `{{resolve:` token: region, version ids (never a value), READ-route `readVersions` (the upstream record's `versions`). Absent = not known (v11 path), `{}` = known; read via `reference-provenance-record.ts` only (malformed = absent) by `recorded-reference-routes.ts` (#4847; a pinned plaintext is never `recordResolvedPair`ed) and #4852's `read-provenance-promotion.ts` / `read-provenance-moved.ts` (`readVersions` ⊄ upstream `versions`; none = no verdict). A WRITTEN record takes this pass's entries (in place, a create-only token unions previous `versions`, cap 8); an unwritten one keeps its field unwalked (`perResourceSecrets` outlives skips). v11 records gain it once (`provenance-capture.ts`). Token-free: O(1), `token-free-state.ts`.
+
+## `unsettledProperties` (v14+, #5380)
+
+Top-level property NAMES only, read via `unsettledPropertiesOf` (malformed = none). Written only by the deploy's failure path from `UpdateContext.markUnsettled` marks (`execute.ts`), unioned. The next deploy forces each name changed (diff, both no-change skips, `changedProperties`) and hands it as `UpdateContext.unsettledProperties`; the update's rebuilt record clears it, as do `recordAfterRollbackUpdate` (whose two rollback callers pass the names as `unsettledProperties`) and `drift --accept` / `--revert`, which keep a name `ResourceProvider.unsettledInTransition` reports still changing. Spreading writers carry it.
 
 ## `observedProperties` (v3+)
 
