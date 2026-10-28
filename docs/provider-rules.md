@@ -1628,6 +1628,11 @@ Checklist when writing or reviewing an `update()`:
   removed `EncryptionKey` RESETS to the AWS managed S3 key (cdkd sends
   `alias/aws/s3`), a removed `Tags` removes every tag (cdkd sends `[]`), and a
   removed `SourceVersion` is KEPT.
+  Real CloudFormation A/B, go-to-k/cdkd#5492: on an `AWS::CodeBuild::Project`
+  a removed `VpcConfig`, `FileSystemLocations`, `SecondarySources`,
+  `SecondaryArtifacts`, `SecondarySourceVersions` or `BadgeEnabled` is KEPT
+  (CloudFormation's `UpdateProject` omits it, alone or beside another change),
+  so cdkd sends nothing for it either.
   `AWS::EC2::NatGateway` `AvailabilityZoneAddresses` (real CloudFormation A/B,
   go-to-k/cdkd#2762): on a gateway created with it, a change updates in place
   and REMOVING it FAILS, so `EC2Provider` refuses the removal; ADDING it to an

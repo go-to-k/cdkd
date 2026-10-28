@@ -275,7 +275,7 @@ const PROJECT_CASE: TypeCase = {
             'BadgeEnabled',
           ].map((k) => [
             `update-remove:${k}`,
-            `SUSPECTED GAP: a removed ${k} sends nothing and UpdateProject merges, so the live value stays; unverified against CloudFormation, tracked in go-to-k/cdkd#5492`,
+            `a removed ${k} sends nothing and UpdateProject merges, so the live value stays: what CloudFormation does (CFn A/B on go-to-k/cdkd#5492, alone and beside a Description change: CFn's UpdateProject omitted it and the value was kept, ${CODEBUILD_SRC}:732-739)`,
           ])
         ),
       },

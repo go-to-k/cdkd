@@ -1,11 +1,15 @@
 import * as cdk from 'aws-cdk-lib';
 import * as codebuild from 'aws-cdk-lib/aws-codebuild';
+import * as codecommit from 'aws-cdk-lib/aws-codecommit';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import type { Construct } from 'constructs';
 
 /**
  * cdkd integration fixture: AWS::CodeBuild::Project.
  *
- * Phase 1 (default) deploys a NO_SOURCE project carrying every optional
+ * Phase 1 (default) deploys a project carrying every optional
  * UpdateProject field the #1160 umbrella flagged, with `BuildBatchConfig`
  * as the one that matters.
  *
@@ -18,6 +22,14 @@ import type { Construct } from 'constructs';
  * just as well against an over-eager provider that reset everything.
  * Phase 2 also drops `EncryptionKey` and `Tags`, which CFn resets
  * (go-to-k/cdkd#1160).
+ *
+ * Phase 1 also declares `VpcConfig`, `FileSystemLocations`,
+ * `SecondarySources`, `SecondarySourceVersions`, `SecondaryArtifacts` and
+ * `BadgeEnabled`, and Phase 2 drops all six. A CFn A/B (go-to-k/cdkd#5492)
+ * showed CloudFormation KEEPS every one of them, so Phase 2 asserts they are
+ * still live. A badge needs a real source type, so the project's primary
+ * source is a CODECOMMIT clone URL in both phases; the repository is never
+ * created because the project never runs a build.
  */
 export class CodeBuildProjectStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -25,8 +37,33 @@ export class CodeBuildProjectStack extends cdk.Stack {
 
     const removalPhase = process.env['CDKD_TEST_REMOVAL'] === 'true';
 
+    // go-to-k/cdkd#5492 scaffolding, kept in BOTH phases so that Phase 2 drops
+    // only the project's references to it: a VPC with one subnet and a
+    // security group for `VpcConfig`, and a bucket for the secondary artifact
+    // (CreateProject refuses a bucket that does not exist). No build runs, so
+    // nothing is attached to the subnet and the bucket stays empty.
+    const cfnVpc = new ec2.CfnVPC(this, 'Vpc', { cidrBlock: '10.92.0.0/16' });
+    const cfnSubnet = new ec2.CfnSubnet(this, 'Subnet', {
+      vpcId: cfnVpc.ref,
+      cidrBlock: '10.92.0.0/24',
+      availabilityZone: cdk.Fn.select(0, cdk.Fn.getAzs()),
+    });
+    const cfnSg = new ec2.CfnSecurityGroup(this, 'Sg', {
+      vpcId: cfnVpc.ref,
+      groupDescription: 'cdkd-integ codebuild-project (go-to-k/cdkd#5492)',
+    });
+    const artifactBucket = new s3.Bucket(this, 'SecondaryArtifactBucket', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    // CODECOMMIT clone URLs of repositories that are never created. The
+    // secondary source must name a different location from the primary one
+    // (CreateProject refuses "conflicting source locations").
+    const primaryRepo = codecommit.Repository.fromRepositoryName(this, 'PrimaryRepo', 'cdkd-integ-none');
+    const secondaryRepo = codecommit.Repository.fromRepositoryName(this, 'SecondaryRepo', 'cdkd-integ-none-2');
+
     const project = new codebuild.Project(this, 'BatchProject', {
       projectName: `${cdk.Stack.of(this).stackName}-batch`,
+      source: codebuild.Source.codeCommit({ repository: primaryRepo }),
       buildSpec: codebuild.BuildSpec.fromObject({
         version: '0.2',
         phases: { build: { commands: ['echo cdkd-integ'] } },
@@ -34,7 +71,47 @@ export class CodeBuildProjectStack extends cdk.Stack {
       environment: {
         buildImage: codebuild.LinuxBuildImage.AMAZON_LINUX_2_5,
         computeType: codebuild.ComputeType.SMALL,
+        // CreateProject requires privileged mode on a project with file system
+        // locations. Set in both phases, so Phase 2 changes nothing about it.
+        privileged: true,
       },
+      // go-to-k/cdkd#5492: the six fields CloudFormation KEEPS when the
+      // template drops them (CFn A/B). Set in Phase 1 only, asserted still
+      // live after Phase 2.
+      ...(removalPhase
+        ? {}
+        : {
+            vpc: ec2.Vpc.fromVpcAttributes(this, 'VpcRef', {
+              vpcId: cfnVpc.ref,
+              availabilityZones: [cfnSubnet.attrAvailabilityZone],
+              privateSubnetIds: [cfnSubnet.ref],
+            }),
+            securityGroups: [ec2.SecurityGroup.fromSecurityGroupId(this, 'SgRef', cfnSg.attrGroupId)],
+            fileSystemLocations: [
+              codebuild.FileSystemLocation.efs({
+                identifier: 'efs1',
+                location: `fs-0123456789abcdef0.efs.${cdk.Aws.REGION}.amazonaws.com:/`,
+                mountPoint: '/mnt/efs',
+              }),
+            ],
+            secondarySources: [
+              // `branchOrRef` renders the SecondarySourceVersions entry.
+              codebuild.Source.codeCommit({
+                repository: secondaryRepo,
+                identifier: 'src2',
+                branchOrRef: 'refs/heads/main',
+              }),
+            ],
+            secondaryArtifacts: [
+              codebuild.Artifacts.s3({
+                bucket: artifactBucket,
+                identifier: 'art2',
+                name: 'out',
+                packageZip: false,
+              }),
+            ],
+            badge: true,
+          }),
       // The seven CFn-RETAINS fields. Set in BOTH phases would prove
       // nothing, so they are set in phase 1 and dropped in phase 2 — the
       // live assertion is that AWS still reports the phase-1 values.
@@ -51,6 +128,25 @@ export class CodeBuildProjectStack extends cdk.Stack {
     });
 
     const cfnProject = project.node.defaultChild as codebuild.CfnProject;
+
+    // go-to-k/cdkd#5492: CreateProject / UpdateProject check a project's VPC
+    // config with the service role (observed: "Not authorized to perform
+    // DescribeSecurityGroups"). Phase 1's `vpc` adds those reads through its
+    // own policy, which Phase 2 deletes while the kept VPC config stays live,
+    // so the role carries them in BOTH phases and the Phase 2 UpdateProject
+    // does not depend on the order of that delete.
+    project.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          'ec2:DescribeSecurityGroups',
+          'ec2:DescribeSubnets',
+          'ec2:DescribeVpcs',
+          'ec2:DescribeNetworkInterfaces',
+          'ec2:DescribeDhcpOptions',
+        ],
+        resources: ['*'],
+      })
+    );
 
     // `AutoRetryLimit` has no L2 property, and `BuildBatchConfig` via the L2
     // (`enableBatchBuilds()`) does not accept a timeout / combineArtifacts,
