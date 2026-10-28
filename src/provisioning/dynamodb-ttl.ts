@@ -124,8 +124,10 @@ const TTL_RATE_LIMIT_SLICE_MS = 1_000;
  *
  * Re-sends every {@link TTL_RATE_LIMIT_RETRY_MS} while the refusal repeats,
  * bounded by the enclosing per-resource deadline (`--resource-timeout`): once
- * that runs out, the last refusal is rethrown for the caller to report.
- * Ctrl-C ends the wait. Any other failure is rethrown at once.
+ * that runs out, the last refusal is rethrown for the caller to report, and
+ * nothing is sent after it. A path with no enclosing deadline (a rollback,
+ * `cdkd drift --revert`) waits until AWS accepts, as CloudFormation's rollback
+ * does. Ctrl-C ends the wait. Any other failure is rethrown at once.
  *
  * `announce` is called once, on the first refusal, so the user knows why the
  * deploy sits there; the caller masks it.
@@ -161,6 +163,10 @@ export async function sendTtlWaitingOutRateLimit(
           );
         }
         if (watch.isInterrupted()) throw watch.onInterrupted();
+        // The sleep ends AT the deadline when less than a minute was left: a
+        // send now could land after the resource was already reported failed,
+        // changing TTL on AWS while state keeps the old spec.
+        if (enclosingDeadlineRemainingMs() <= 0) throw error;
       }
     }
   } finally {

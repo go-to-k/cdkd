@@ -550,6 +550,48 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
         }
       });
 
+      it('passes the rate-limit announcement and debug lines through the masker (#5451)', async () => {
+        ttlDeadline.remainingMs = 20;
+        try {
+          let ttlSends = 0;
+          mockSend.mockImplementation(async (cmd: unknown) => {
+            if (cmd instanceof UpdateTimeToLiveCommand) {
+              ttlSends += 1;
+              if (ttlSends === 1) {
+                throw Object.assign(
+                  new Error('Time to live has been modified multiple times within a fixed interval'),
+                  { name: 'ValidationException', $fault: 'client', $metadata: {} }
+                );
+              }
+              return {};
+            }
+            return { Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' } };
+          });
+          const { getLogger } = await import('../../../src/utils/logger.js');
+          const child = getLogger().child('x') as unknown as {
+            info: ReturnType<typeof vi.fn>;
+            debug: ReturnType<typeof vi.fn>;
+          };
+          await provider.update(
+            'L',
+            TABLE_NAME,
+            RESOURCE_TYPE,
+            { TimeToLiveSpecification: { Enabled: false } },
+            { TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true } },
+            { maskSecrets: (text: string) => text.replaceAll(TABLE_NAME, '***') }
+          );
+          expect(ttlSends).toBe(2);
+          const lines = [...child.info.mock.calls, ...child.debug.mock.calls].map((c) =>
+            String(c[0])
+          );
+          expect(lines.some((l) => l.includes('TimeToLive was changed recently'))).toBe(true);
+          expect(lines.some((l) => l.includes('Set TimeToLive Enabled=false'))).toBe(true);
+          expect(lines.filter((l) => l.includes(TABLE_NAME))).toEqual([]);
+        } finally {
+          ttlDeadline.remainingMs = 0;
+        }
+      });
+
       it('reports AWS refusing the disable within the TTL rate-limit interval', async () => {
         routeSends();
         const refusal = Object.assign(

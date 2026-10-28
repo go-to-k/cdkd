@@ -545,6 +545,36 @@ describe('DynamoDBGlobalTableProvider masked log sinks (issue #2177)', () => {
       expect(hasRedactedCause(failure)).toBe(true);
     });
 
+    it('the TTL rate-limit wait masks its announcement and its Ctrl-C label (#5451)', async () => {
+      ttlDeadline.remainingMs = 20;
+      try {
+        let ttlSends = 0;
+        mockSend.mockImplementation(async (command: unknown) => {
+          const n = commandName(command);
+          if (n === 'UpdateTimeToLiveCommand') {
+            ttlSends += 1;
+            if (ttlSends === 1) {
+              throw new Error(`Time to live has been modified multiple times on ${TINY}`);
+            }
+            return {};
+          }
+          if (n === 'DescribeTableCommand') return activeTable(TINY);
+          return {};
+        });
+        const desired = autoscaledProps(TINY);
+        desired['TimeToLiveSpecification'] = { AttributeName: 'ttl', Enabled: true };
+        await provider.update('Gt', TINY, RESOURCE_TYPE, desired, autoscaledProps(TINY), {
+          maskSecrets: createSecretMasker(bagOf(TINY)),
+        });
+        expect(ttlSends).toBe(2);
+        expect(watchLabels).toContain(`DynamoDB TimeToLive rate-limit wait on ${SECRET_MASK}`);
+        const announced = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(announced).toContain('TimeToLive was changed recently');
+      } finally {
+        ttlDeadline.remainingMs = 0;
+      }
+    });
+
     it('the replica-removal wait gets the masker, and its timeout names the table masked', async () => {
       const wait = vi
         .spyOn(

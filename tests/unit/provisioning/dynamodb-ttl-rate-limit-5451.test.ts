@@ -104,23 +104,32 @@ describe('sendTtlWaitingOutRateLimit (issue #5451)', () => {
     expect(s.calls()).toBe(1);
   });
 
-  it('rethrows the refusal once the deadline runs out mid-wait', async () => {
-    // First refusal: time left; after the sleep the deadline is gone.
+  it('sends nothing once the deadline runs out during the sleep', async () => {
+    // First refusal: time left; the sleep ends at the deadline.
     ctl.remaining = [Infinity, Infinity, 0];
-    const s = sender(['refuse', 'refuse', 'ok']);
+    const s = sender(['refuse', 'ok']);
     await expect(
       sendTtlWaitingOutRateLimit(s.send, { what: 'w', announce: vi.fn(), retryMs: 5 })
     ).rejects.toThrow(RATE_LIMITED);
-    expect(s.calls()).toBe(2);
+    expect(s.calls()).toBe(1);
     expect(ctl.disposed).toBe(1);
   });
 
-  it('sleeps no longer than the deadline leaves', async () => {
-    ctl.remaining = [20];
+  it('sleeps no longer than the deadline leaves, then stops', async () => {
+    ctl.remaining = [20, 20, 0];
     const s = sender(['refuse', 'ok']);
     const started = Date.now();
-    await sendTtlWaitingOutRateLimit(s.send, { what: 'w', announce: vi.fn(), retryMs: 60_000 });
+    await expect(
+      sendTtlWaitingOutRateLimit(s.send, { what: 'w', announce: vi.fn(), retryMs: 60_000 })
+    ).rejects.toThrow(RATE_LIMITED);
     expect(Date.now() - started).toBeLessThan(5_000);
+    expect(s.calls()).toBe(1);
+  });
+
+  it('re-sends after a sleep the deadline outlasts', async () => {
+    ctl.remaining = [20];
+    const s = sender(['refuse', 'ok']);
+    await sendTtlWaitingOutRateLimit(s.send, { what: 'w', announce: vi.fn(), retryMs: 60_000 });
     expect(s.calls()).toBe(2);
   });
 

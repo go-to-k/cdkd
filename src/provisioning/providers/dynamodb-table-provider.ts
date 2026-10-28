@@ -5000,13 +5000,17 @@ export class DynamoDBTableProvider implements ResourceProvider {
     if (plan.kind === 'disable-live') {
       const resp = await this.retryOnTransientControlPlane(
         () => this.dynamoDBClient.send(new DescribeTimeToLiveCommand({ TableName: tableName })),
-        `read TTL on ${tableName}`
+        `read TTL on ${tableName}`,
+        undefined,
+        { maskSecrets: ids.maskSecrets }
       );
       const live = resp.TimeToLiveDescription;
       const status = live?.TimeToLiveStatus;
       if ((status !== 'ENABLED' && status !== 'ENABLING') || !live?.AttributeName) {
         this.logger.debug(
-          `TimeToLive already ${status ?? 'DISABLED'} on DynamoDB table ${tableName}; nothing to disable`
+          ids.maskSecrets(
+            `TimeToLive already ${status ?? 'DISABLED'} on DynamoDB table ${tableName}; nothing to disable`
+          )
         );
         return;
       }
@@ -5027,7 +5031,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
                   TimeToLiveSpecification: { Enabled: enabled, AttributeName: attributeName },
                 })
               ),
-            `${enabled ? 'set' : 'disable'} TTL on ${tableName}`
+            `${enabled ? 'set' : 'disable'} TTL on ${tableName}`,
+            undefined,
+            { maskSecrets: ids.maskSecrets }
           ),
         {
           what: ids.maskSecrets(`DynamoDB TimeToLive rate-limit wait on ${tableName}`),
@@ -5045,7 +5051,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // A disable whose goal already holds (an earlier attempt that landed
       // before a later step failed, or an out-of-band disable).
       if (!enabled && isTtlAlreadyDisabled(describeAwsFailure(error).detail)) {
-        this.logger.debug(`TimeToLive already disabled on DynamoDB table ${tableName}`);
+        this.logger.debug(
+          ids.maskSecrets(`TimeToLive already disabled on DynamoDB table ${tableName}`)
+        );
         return;
       }
       if (isTtlRateLimited(describeAwsFailure(error).detail)) {
@@ -5063,7 +5071,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
       throw error;
     }
     this.logger.debug(
-      `Set TimeToLive Enabled=${enabled} AttributeName=${attributeName} on DynamoDB table ${tableName}`
+      ids.maskSecrets(
+        `Set TimeToLive Enabled=${enabled} AttributeName=${attributeName} on DynamoDB table ${tableName}`
+      )
     );
   }
 

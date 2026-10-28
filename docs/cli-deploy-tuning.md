@@ -123,7 +123,8 @@ The minimums exist for these reasons:
   allowance. A table update can wait out DynamoDB's TimeToLive rate limit:
   AWS refuses a second TTL change for up to an hour after the previous one,
   and cdkd, like CloudFormation, retries the change every minute until AWS
-  accepts it.
+  accepts it. A rollback or `cdkd drift --revert`, which run without a
+  resource timeout, wait until AWS accepts.
 - Deleting one of the slow types routinely takes 15 to 30 minutes.
 - Changing an ElastiCache cache cluster's node type is an in-place update
   that cdkd waits out, and a large node can scale for longer than 30 minutes.
