@@ -5507,7 +5507,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         await this.sendReplicationMode(physicalId, logicalId, modeUpdate, maskSecrets);
       } else {
         // A declared mode the template did not change, which a pre-fix deploy
-        // never sent: checked against what AWS reports, and set best-effort.
+        // never sent: compared with the mode update()'s first DescribeTable
+        // reported (no extra read, so a failure of that read fails the update
+        // as before), and the corrective UpdateTable is best-effort — a failed
+        // SEND is reported, not thrown.
         const correction = replicationModeCorrection(
           properties,
           previousProperties,
