@@ -25,6 +25,7 @@ import {
   type OpenZFSUserOrGroupQuota,
   type OpenZFSReadCacheConfiguration,
   type LustreFileSystemConfiguration,
+  type DeleteFileSystemOpenZFSOption,
   type LustreLogCreateConfiguration,
   type WindowsFileSystemConfiguration,
   type OntapFileSystemConfiguration,
@@ -1562,6 +1563,10 @@ export class FSxFileSystemProvider implements ResourceProvider {
       const nextVal = next[key];
       const prevVal = prev[key];
       if (JSON.stringify(nextVal) === JSON.stringify(prevVal)) continue;
+      // go-to-k/cdkd#5431: OpenZFS `Options` is a DeleteFileSystem option
+      // (CFn "Update requires: No interruption"): nothing on AWS to update,
+      // so a change or removal only lands in the record delete() reads.
+      if (configKey === 'OpenZFSConfiguration' && key === 'Options') continue;
       if (!mutable.has(key)) {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
@@ -1826,17 +1831,26 @@ export class FSxFileSystemProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting FSx FileSystem ${logicalId}: ${physicalId}`);
 
     try {
-      // No delete-time configuration: matches CloudFormation, which calls
-      // DeleteFileSystem with API defaults (SCRATCH Lustre deployments have
-      // no final backup; PERSISTENT deployments take the API-default final
-      // backup).
-      await this.getClient().send(new DeleteFileSystemCommand({ FileSystemId: physicalId }));
+      // The final backup keeps the API defaults, as CloudFormation does
+      // (SCRATCH Lustre deployments have no final backup; PERSISTENT
+      // deployments take the API-default one): the CFn schema has no
+      // SkipFinalBackup / FinalBackupTags property. The one delete-time
+      // property it has is OpenZFSConfiguration.Options, which CFn documents
+      // as the way to delete a file system with child volumes
+      // (DELETE_CHILD_VOLUMES_AND_SNAPSHOTS; go-to-k/cdkd#5431).
+      const openZfsOptions = this.toDeleteOpenZFSOptions(properties);
+      await this.getClient().send(
+        new DeleteFileSystemCommand({
+          FileSystemId: physicalId,
+          ...(openZfsOptions && { OpenZFSConfiguration: { Options: openZfsOptions } }),
+        })
+      );
     } catch (error) {
       if (error instanceof FileSystemNotFound) {
         const clientRegion = await this.getClient().config.region();
@@ -1885,6 +1899,22 @@ export class FSxFileSystemProvider implements ResourceProvider {
     await this.waitForFileSystemDeleted(physicalId, logicalId, resourceType, context?.maskSecrets);
 
     this.logger.debug(`Successfully deleted FSx FileSystem ${logicalId}`);
+  }
+
+  /**
+   * The recorded `OpenZFSConfiguration.Options` to send on DeleteFileSystem
+   * (go-to-k/cdkd#5431), or undefined when none is declared. A record from
+   * before the option existed, or a non-OpenZFS file system, sends none.
+   */
+  private toDeleteOpenZFSOptions(
+    properties: Record<string, unknown> | undefined
+  ): DeleteFileSystemOpenZFSOption[] | undefined {
+    if (properties?.['FileSystemType'] !== 'OPENZFS') return undefined;
+    const config = properties['OpenZFSConfiguration'];
+    if (typeof config !== 'object' || config === null || Array.isArray(config)) return undefined;
+    const options = (config as Record<string, unknown>)['Options'];
+    if (!Array.isArray(options) || options.length === 0) return undefined;
+    return options.map((o) => String(o)) as DeleteFileSystemOpenZFSOption[];
   }
 
   // ─── Identity (go-to-k/cdkd#4606) ──────────────────────────────────
@@ -2494,6 +2524,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
    *    root VOLUME, not the file system; `DescribeFileSystems` returns only
    *    `RootVolumeId`, so reading it back would need a separate
    *    `DescribeVolumes` call (out of scope here).
+   *  - `OpenZFSConfiguration.Options` — a `DeleteFileSystem` option
+   *    (go-to-k/cdkd#5431), never stored on the file system.
    *
    * The whole-block `WindowsConfiguration` / `OntapConfiguration` /
    * `OpenZFSConfiguration` entries are gone as of the variant reverse-mappers
@@ -2507,6 +2539,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
       'WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.Password',
       'OntapConfiguration.FsxAdminPassword',
       'OpenZFSConfiguration.RootVolumeConfiguration',
+      'OpenZFSConfiguration.Options',
     ];
   }
 
