@@ -858,6 +858,14 @@ const NOT_A_MESSAGE_FACTORY: ReadonlyMap<string, string> = new Map([
     "resolveSecretDerivedPrincipals' error masker (#4150): its argument is an EXISTING error, returned as a clone with its chain masked, never a message",
   ],
   [
+    'markRefusedBeforeApplying',
+    'stamps an EXISTING error object refused-before-applying (#4355); its argument is that error, never a message',
+  ],
+  [
+    'refusedBeforeApplying',
+    "ec2-provider's markNonRetryable + markRefusedBeforeApplying (#5446); its argument is an EXISTING error, never a message",
+  ],
+  [
     'onInterrupted',
     "the interrupt watch's own error builder; it takes no caller-supplied message",
   ],
