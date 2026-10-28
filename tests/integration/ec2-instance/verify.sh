@@ -56,6 +56,11 @@
 # `false` is applied (1f), and `true` again (1g, for the destroy arm). See the
 # phases' comment.
 #
+# Also the issue #5445 arm: the #1281 instance declares a /dev/sdf gp3 data
+# volume Encrypted with a fixture-owned CMK and 3500 IOPS; DescribeVolumes must
+# show that key and those IOPS (pre-#5445 both were dropped on create), and the
+# destroy must leave the CMK PendingDeletion.
+#
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
 # fixture stack doc.
@@ -262,6 +267,15 @@ cleanup() {
       fi
     done
   fi
+  if [ -n "${EBS_KEY_ARN:-}" ]; then
+    # Issue #5445: the fixture CMK, in case state destroy could not reach it.
+    # A key already PendingDeletion refuses a second schedule; that is the
+    # normal case after a clean destroy, hence `|| true`.
+    aws kms schedule-key-deletion \
+      --key-id "${EBS_KEY_ARN}" \
+      --pending-window-in-days 7 \
+      --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -437,6 +451,9 @@ fi
 # Capture the ids now so the cleanup trap can reach the instances from here on.
 INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.InstanceId // ""')
 PUBLIC_INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.PublicInstanceId // ""')
+# Issue #5445: the fixture CMK exists from this deploy on, so the trap's
+# schedule-key-deletion must be able to reach it from here too.
+EBS_KEY_ARN=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.EbsKeyArn // ""')
 if [ -z "${INSTANCE_ID}" ] || [ "${INSTANCE_ID}" = "null" ] || [ -z "${PUBLIC_INSTANCE_ID}" ] || [ "${PUBLIC_INSTANCE_ID}" = "null" ]; then
   echo "FAIL: could not resolve both instance ids from the --no-wait state" >&2
   echo "${NOWAIT_STATE}" | jq '.outputs'
@@ -756,6 +773,59 @@ if [ -z "${NI_GROUP}" ]; then
   exit 1
 fi
 echo "    OK: #1281 instance ${PUBLIC_INSTANCE_ID} has public IP ${PUBLIC_IP} and ENI group ${NI_GROUP}"
+
+# --- Assertions: the #5445 BlockDeviceMappings Ebs members reached AWS -------
+# The #1281 instance also declares a /dev/sdf gp3 data volume, Encrypted with
+# the fixture-owned CMK and 3500 IOPS. Before #5445 only VolumeSize /
+# VolumeType / DeleteOnTermination were sent, so the volume launched without
+# the CMK (unencrypted, or under the account's default key) and at the gp3
+# baseline of 3000 IOPS. KmsKeyId is the discriminating half for encryption:
+# an account with EBS encryption-by-default passes `Encrypted` on its own.
+EBS_KEY_ARN=$(echo "${STATE}" | jq -r '.outputs.EbsKeyArn // ""')
+case "${EBS_KEY_ARN}" in
+  arn:aws*:kms:*:key/*) ;;
+  *)
+    echo "FAIL: issue #5445 -- .outputs.EbsKeyArn is '${EBS_KEY_ARN}', expected a KMS key ARN" >&2
+    echo "${STATE}" | jq '.outputs'
+    exit 1
+    ;;
+esac
+SDF_VOLUME_ID=$(echo "${PUBLIC_INSTANCE}" | jq -r '[.BlockDeviceMappings[]? | select(.DeviceName == "/dev/sdf") | .Ebs.VolumeId] | first // ""')
+if [ -z "${SDF_VOLUME_ID}" ]; then
+  echo "FAIL: issue #5445 -- instance ${PUBLIC_INSTANCE_ID} has no /dev/sdf volume; the BlockDeviceMappings entry did not reach RunInstances" >&2
+  echo "${PUBLIC_INSTANCE}" | jq '{BlockDeviceMappings}'
+  exit 1
+fi
+SDF_VOLUME=$(aws ec2 describe-volumes \
+  --volume-ids "${SDF_VOLUME_ID}" \
+  --region "${REGION}" \
+  --query 'Volumes[0]' --output json)
+SDF_ENCRYPTED=$(echo "${SDF_VOLUME}" | jq -r 'if has("Encrypted") then .Encrypted | tostring else "null" end')
+SDF_KMS_KEY=$(echo "${SDF_VOLUME}" | jq -r '.KmsKeyId // "<absent>"')
+SDF_IOPS=$(echo "${SDF_VOLUME}" | jq -r '.Iops // "<absent>"')
+SDF_TYPE=$(echo "${SDF_VOLUME}" | jq -r '.VolumeType // "<absent>"')
+SDF_SIZE=$(echo "${SDF_VOLUME}" | jq -r '.Size // "<absent>"')
+if [ "${SDF_ENCRYPTED}" != "true" ]; then
+  echo "FAIL: issue #5445 -- /dev/sdf volume ${SDF_VOLUME_ID} Encrypted is '${SDF_ENCRYPTED}', expected true; Ebs.Encrypted was dropped on create" >&2
+  echo "${SDF_VOLUME}" | jq '{Encrypted, KmsKeyId, Iops, VolumeType, Size}'
+  exit 1
+fi
+if [ "${SDF_KMS_KEY}" != "${EBS_KEY_ARN}" ]; then
+  echo "FAIL: issue #5445 -- /dev/sdf volume ${SDF_VOLUME_ID} KmsKeyId is '${SDF_KMS_KEY}', expected the fixture CMK ${EBS_KEY_ARN}; Ebs.KmsKeyId was dropped on create" >&2
+  echo "${SDF_VOLUME}" | jq '{Encrypted, KmsKeyId, Iops, VolumeType, Size}'
+  exit 1
+fi
+if [ "${SDF_IOPS}" != "3500" ]; then
+  echo "FAIL: issue #5445 -- /dev/sdf volume ${SDF_VOLUME_ID} Iops is '${SDF_IOPS}', expected 3500 (the gp3 baseline is 3000); Ebs.Iops was dropped on create" >&2
+  echo "${SDF_VOLUME}" | jq '{Encrypted, KmsKeyId, Iops, VolumeType, Size}'
+  exit 1
+fi
+# Controls: members the pre-#5445 mapper already sent.
+if [ "${SDF_TYPE}" != "gp3" ] || [ "${SDF_SIZE}" != "8" ]; then
+  echo "FAIL: issue #5445 control -- /dev/sdf volume ${SDF_VOLUME_ID} is ${SDF_TYPE} / ${SDF_SIZE} GiB, expected gp3 / 8 GiB" >&2
+  exit 1
+fi
+echo "    OK: #5445 /dev/sdf volume ${SDF_VOLUME_ID} is Encrypted with the fixture CMK ${EBS_KEY_ARN}, Iops 3500, gp3 / 8 GiB"
 
 # --- Assertions: each backfilled prop reached AWS ---------------------
 INSTANCE=$(aws ec2 describe-instances \
@@ -1327,5 +1397,19 @@ else
   exit 1
 fi
 
+# Issue #5445: the fixture CMK must be scheduled for deletion by the destroy
+# (RemovalPolicy.DESTROY), never left Enabled.
+EBS_KEY_STATE=$(aws kms describe-key \
+  --key-id "${EBS_KEY_ARN}" \
+  --region "${REGION}" \
+  --query KeyMetadata.KeyState --output text 2>&1) \
+  || EBS_KEY_STATE="<describe-failed: $(sanitize_aws_output "${EBS_KEY_STATE}")>"
+if [ "${EBS_KEY_STATE}" != "PendingDeletion" ]; then
+  echo "FAIL: issue #5445 -- fixture CMK ${EBS_KEY_ARN} is '${EBS_KEY_STATE}' after destroy, expected PendingDeletion" >&2
+  exit 1
+fi
+echo "    OK: #5445 fixture CMK is PendingDeletion"
+EBS_KEY_ARN=""
+
 echo ""
-echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces + #4606 identity reads + #1160 removal) ==="
+echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces + #5445 Ebs members + #4606 identity reads + #1160 removal) ==="

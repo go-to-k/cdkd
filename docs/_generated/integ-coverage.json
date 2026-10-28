@@ -1371,7 +1371,8 @@
           "l2"
         ],
         "ec2-instance": [
-          "l1"
+          "l1",
+          "literal"
         ],
         "ec2-instance-fanout": [
           "l1"
@@ -5358,6 +5359,7 @@
         "dynamodb-globaltable-replica-settings",
         "dynamodb-ondemand",
         "dynamodb-streams",
+        "ec2-instance",
         "ecr-scanning",
         "eventbridge",
         "infra-security",
@@ -5389,6 +5391,9 @@
           "l2"
         ],
         "dynamodb-streams": [
+          "l2"
+        ],
+        "ec2-instance": [
           "l2"
         ],
         "ecr-scanning": [
