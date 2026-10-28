@@ -78,8 +78,8 @@ const RESPONSE = {
   ],
   DBSubnetGroup: { DBSubnetGroupName: 'r', DBSubnetGroupArn: ARN },
   DBSubnetGroups: [{ DBSubnetGroupName: 'r', DBSubnetGroupArn: ARN }],
-  CacheCluster: { CacheClusterId: 'r', ARN, CacheClusterStatus: 'available' },
-  CacheClusters: [{ CacheClusterId: 'r', ARN, CacheClusterStatus: 'available' }],
+  CacheCluster: { CacheClusterId: 'r', ARN, CacheClusterStatus: 'available', CacheNodeType: 'cache.t3.micro' },
+  CacheClusters: [{ CacheClusterId: 'r', ARN, CacheClusterStatus: 'available', CacheNodeType: 'cache.t3.micro' }],
   CacheSubnetGroup: { CacheSubnetGroupName: 'r', ARN },
   MetricAlarms: [{ AlarmName: 'r', AlarmArn: ARN }],
 };

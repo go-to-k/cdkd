@@ -27,7 +27,9 @@
  * flat default and this floor, so it can only ever grow a slow type's budget.
  *
  * Entries are per-operation because the slow phase differs by type (every one
- * below is slow to CREATE and DELETE; only the domains are slow to UPDATE).
+ * below is slow to CREATE and DELETE; the domains and the ElastiCache
+ * CacheCluster, whose node-type scale is an in-place UPDATE, are slow to
+ * UPDATE too -- issue #5438).
  */
 export type ResourceOperation = 'CREATE' | 'UPDATE' | 'DELETE';
 
@@ -67,6 +69,10 @@ const SLOW_CC_OPERATION_TIMEOUTS: Record<string, SlowOperationTimeouts> = {
   },
   'AWS::ElastiCache::CacheCluster': {
     create: 60 * MINUTE_MS,
+    // A CacheNodeType change is an in-place modify the update waits out
+    // (issue #5438); a cache.t4g scale took about ten minutes, and a larger
+    // node can pass the generic 30-minute deadline while AWS keeps scaling.
+    update: 60 * MINUTE_MS,
     delete: 60 * MINUTE_MS,
   },
   'AWS::RDS::DBInstance': {
