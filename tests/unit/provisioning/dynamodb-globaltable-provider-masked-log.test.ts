@@ -40,6 +40,14 @@ const { mockSend, mockAutoScalingSend, warnSpy, debugSpy, infoSpy, watchLabels }
   infoSpy: vi.fn(),
 }));
 
+// Issue #5451: a rate-limited UpdateTimeToLive is re-sent until the enclosing
+// resource deadline runs out. 0 = already out, so a refusal is final at once.
+const ttlDeadline = vi.hoisted(() => ({ remainingMs: 0 }));
+vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/deployment/resource-deadline.js')>()),
+  enclosingDeadlineRemainingMs: () => ttlDeadline.remainingMs,
+}));
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     dynamoDB: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },

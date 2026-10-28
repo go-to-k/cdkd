@@ -13,6 +13,14 @@ import {
 
 const mockSend = vi.fn();
 
+// Issue #5451: a rate-limited UpdateTimeToLive is re-sent until the enclosing
+// resource deadline runs out. 0 = already out, so a refusal is final at once.
+const ttlDeadline = vi.hoisted(() => ({ remainingMs: 0 }));
+vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/deployment/resource-deadline.js')>()),
+  enclosingDeadlineRemainingMs: () => ttlDeadline.remainingMs,
+}));
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     dynamoDB: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
@@ -505,6 +513,43 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
         expect(ttlSpecsSent()).toEqual([{ Enabled: false, AttributeName: 'expiresAt' }]);
       });
 
+      it('waits out the TTL rate-limit interval and re-sends until AWS accepts, like CloudFormation (#5451)', async () => {
+        ttlDeadline.remainingMs = Infinity;
+        vi.useFakeTimers();
+        try {
+          let ttlSends = 0;
+          mockSend.mockImplementation(async (cmd: unknown) => {
+            if (cmd instanceof UpdateTimeToLiveCommand) {
+              ttlSends += 1;
+              if (ttlSends <= 2) {
+                throw Object.assign(
+                  new Error('Time to live has been modified multiple times within a fixed interval'),
+                  { name: 'ValidationException', $fault: 'client', $metadata: {} }
+                );
+              }
+              return {};
+            }
+            return { Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' } };
+          });
+          const run = provider.update(
+            'L',
+            TABLE_NAME,
+            RESOURCE_TYPE,
+            { TimeToLiveSpecification: { Enabled: false } },
+            { TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true } }
+          );
+          await vi.runAllTimersAsync();
+          await expect(run).resolves.toBeDefined();
+          expect(ttlSends).toBe(3);
+          expect(ttlSpecsSent()).toEqual(
+            Array(3).fill({ Enabled: false, AttributeName: 'expiresAt' })
+          );
+        } finally {
+          vi.useRealTimers();
+          ttlDeadline.remainingMs = 0;
+        }
+      });
+
       it('reports AWS refusing the disable within the TTL rate-limit interval', async () => {
         routeSends();
         const refusal = Object.assign(
@@ -530,6 +575,7 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
         expect(err?.message).toContain(
           'DynamoDB table L: AWS refused to disable TimeToLive because it was already modified'
         );
+        expect(err?.message).toContain('kept refusing until the resource timeout ran out');
         expect(ttlSpecsSent()).toEqual([{ Enabled: false, AttributeName: 'expiresAt' }]);
       });
 

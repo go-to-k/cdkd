@@ -27,9 +27,10 @@
  * flat default and this floor, so it can only ever grow a slow type's budget.
  *
  * Entries are per-operation because the slow phase differs by type (every one
- * below is slow to CREATE and DELETE; the domains and the ElastiCache
- * CacheCluster, whose node-type scale is an in-place UPDATE, are slow to
- * UPDATE too -- issue #5438).
+ * below except the DynamoDB tables is slow to CREATE and DELETE; the domains
+ * and the ElastiCache CacheCluster, whose node-type scale is an in-place
+ * UPDATE, are slow to UPDATE too -- issue #5438 -- and the DynamoDB tables
+ * only to UPDATE, through the TTL rate-limit wait -- issue #5451).
  */
 export type ResourceOperation = 'CREATE' | 'UPDATE' | 'DELETE';
 
@@ -82,6 +83,16 @@ const SLOW_CC_OPERATION_TIMEOUTS: Record<string, SlowOperationTimeouts> = {
   'AWS::RDS::DBCluster': {
     create: 60 * MINUTE_MS,
     delete: 60 * MINUTE_MS,
+  },
+  // A TimeToLive change inside DynamoDB's TTL rate-limit interval is re-sent
+  // until AWS accepts it, as CloudFormation does (issue #5451); AWS documents
+  // the interval as up to an hour, so the update needs more than the generic
+  // 30 minutes. The tables' delete keeps its own 30-minute minimum.
+  'AWS::DynamoDB::Table': {
+    update: 60 * MINUTE_MS,
+  },
+  'AWS::DynamoDB::GlobalTable': {
+    update: 60 * MINUTE_MS,
   },
   // EKS control-plane create/delete typically runs 8-15 min and can exceed
   // the flat 15-min inner CC poll cap (issue #1315).
