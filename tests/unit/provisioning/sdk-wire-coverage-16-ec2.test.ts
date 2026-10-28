@@ -29,7 +29,7 @@ vi.mock('../../../src/provisioning/providers/idempotency-token.js', async (orig)
   }),
 }));
 
-import { CASES_16_EC2 } from './sdk-wire-cases-16-ec2.js';
+import { CASES_16_EC2, describeEc2Extras } from './sdk-wire-cases-16-ec2.js';
 import { allowUnscopedCreateTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 
 // The tokenless creates' `ClientToken` is a stack-scoped token; no deploy puts
@@ -46,3 +46,5 @@ afterAll(() => {
 describe('SDK wire coverage (batch 16, EC2)', () => {
   describeWireCases(CASES_16_EC2);
 });
+
+describeEc2Extras();

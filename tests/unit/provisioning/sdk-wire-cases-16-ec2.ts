@@ -2,6 +2,7 @@ import {
   ACCOUNT,
   createOnlyOf,
   DECLARED_DEFAULT,
+  record,
   setOutputOverrides,
   TAG_THROWS,
   wire,
@@ -10,7 +11,9 @@ import {
   type Throw,
   type TypeCase,
 } from './sdk-wire-harness.js';
+import { describe, expect, it } from 'vite-plus/test';
 import type { ResourceProvider } from '../../../src/types/resource.js';
+import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 
 /**
@@ -39,7 +42,14 @@ const ALL = ['create', 'update-add', 'update-remove'];
 const ec2 = (): ResourceProvider =>
   Object.assign(new EC2Provider(), { sleep: () => new Promise<void>((resolve) => setImmediate(resolve)) }) as ResourceProvider;
 
-/** A provider whose `update()` always refuses (no in-place API), answered in place for `settled`. */
+/**
+ * A provider whose `update()` is answered in place. The two association types'
+ * real `update()` always refuses (no in-place API, ${SRC}:5737-5748 and
+ * 1890-1896), and every handled property is create-only, so the engine
+ * replaces on any change and the bag probes skip every update comparison; only
+ * the harness's no-op `settled` update would reach it. `describeEc2Extras`
+ * pins the real refusal, with nothing on the wire.
+ */
 const refusingUpdate = (): ResourceProvider => {
   const real = ec2();
   return Object.assign(Object.create(real) as ResourceProvider, {
@@ -134,7 +144,7 @@ const tagTargets = (command = 'DeleteTagsCommand') => [
 const INSTANCE_THROWS: Record<string, Throw> = {
   'create:ImageId': required('ImageId', /ImageId is required for EC2 Instance/, '7428-7434'),
   'update-remove:InstanceType': {
-    why: `CloudFormation fails an update that removes InstanceType ("No attributes specified", measured, go-to-k/cdkd#5446), so update() refuses it before any call (${SRC}:8191-8194, 8280-8286)`,
+    why: `CloudFormation fails an update that removes InstanceType ("No attributes specified", measured, go-to-k/cdkd#5446), so update() refuses it before any call (${SRC}:8280-8286)`,
     says: /InstanceType was removed from the template, and CloudFormation fails that update/,
   },
 };
@@ -239,7 +249,7 @@ const INSTANCE_CASE: TypeCase = tc(
           ...TAG_THROWS(ALL, 2),
           ...INSTANCE_THROWS,
           'update-remove:DisableApiTermination': {
-            why: `CloudFormation fails an update that removes DisableApiTermination from an existing instance (measured, #1160), so update() refuses it before any call (guardTerminationProtectionRemoval, ${SRC}:8066)`,
+            why: `CloudFormation fails an update that removes DisableApiTermination from an existing instance (measured, #1160), so update() refuses it before any call (guardTerminationProtectionRemoval, ${SRC}:8088-8093)`,
             says: /DisableApiTermination was removed from the template, and CloudFormation fails that update/,
           },
         },
@@ -691,7 +701,7 @@ export const CASES_16_EC2: TypeCase[] = [
     {
       targets: tagTargets(),
       nestedExempt: {
-        'SecurityGroupIngress.SourceSecurityGroupName': `EC2-Classic / default-VPC only: a VPC security group names its peer by SourceSecurityGroupId, and the standalone SecurityGroupIngress twin lists the member as unsupported for the same reason (${SRC}:1337-1348)`,
+        'SecurityGroupIngress.SourceSecurityGroupName': `the inline Name is not sent (silent drop): the rule builder reads only SourceSecurityGroupId / SourceSecurityGroupOwnerId (${SRC}:9368-9388), and unlike the standalone SecurityGroupIngress twin (${SRC}:1337-1348) the inline member has no unhandledByDesign entry; tracked by go-to-k/cdkd#5478`,
       },
     }
   ),
@@ -810,3 +820,25 @@ export const CASES_16_EC2: TypeCase[] = [
     }
   ),
 ];
+
+/** Direct-call checks the bag probes cannot make. */
+export function describeEc2Extras(): void {
+  describe('EC2 association update', () => {
+    it.each([
+      ['AWS::EC2::SubnetRouteTableAssociation', 'rtbassoc-1', { SubnetId: 'subnet-1', RouteTableId: 'rtb-1' }],
+      ['AWS::EC2::SubnetNetworkAclAssociation', 'aclassoc-1', { SubnetId: 'subnet-1', NetworkAclId: 'acl-1' }],
+    ])('%s refuses an in-place update and sends nothing', async (resourceType, physicalId, bag) => {
+      setOutputOverrides(undefined);
+      let thrown: unknown;
+      const outcome = await record(async () => {
+        try {
+          await ec2().update('L', physicalId, resourceType, structuredClone(bag), structuredClone(bag));
+        } catch (error) {
+          thrown = error;
+        }
+      });
+      expect(outcome).toEqual({ threw: false, wire: '' });
+      expect(thrown).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    });
+  });
+}
