@@ -21,6 +21,7 @@ import {
   markSameGenerationBag,
 } from '../secret-redaction.js';
 import { withRetry } from '../retry.js';
+import { withoutUnsettledProperties } from '../../state/unsettled-properties.js';
 import { type RollbackExecutorContext } from './types.js';
 import { safe } from './messages.js';
 
@@ -277,8 +278,19 @@ export async function createWithRollbackRetry(
  * resource's and must survive untouched. A `NoEcho` declaration on the result
  * is the CALLER's to register (`recordNoEchoAttributeValues`) before the
  * record is redacted: this function only builds it.
+ *
+ * Except `unsettledProperties` (go-to-k/cdkd#5380), which every caller's
+ * successful `update()` settles: AWS now holds the bag the record describes,
+ * so the record carries none.
  */
 export function recordAfterRollbackUpdate(
+  restored: ResourceState,
+  result: ResourceUpdateResult | undefined
+): ResourceState {
+  return withoutUnsettledProperties(recordAfterRollbackUpdateUnsettled(restored, result));
+}
+
+function recordAfterRollbackUpdateUnsettled(
   restored: ResourceState,
   result: ResourceUpdateResult | undefined
 ): ResourceState {

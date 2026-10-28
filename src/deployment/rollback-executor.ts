@@ -139,6 +139,7 @@ import {
 } from './rollback-executor/replay-orphan-delete.js';
 import { replayReadopt, replayRevert } from './rollback-executor/replay-revert.js';
 import { replayReverseReplacement } from './rollback-executor/replay-reverse-replacement.js';
+import { unsettledContextOf } from '../state/unsettled-properties.js';
 
 /** `undefined` for an empty list, so an absent field stays absent. */
 function nonEmptyOrUndefined<T>(items: T[]): T[] | undefined {
@@ -1537,6 +1538,11 @@ async function replayFailedOperationsUnbound(
                   replayingState: true,
                   recordedAttributes: current.attributes,
                   ...(revertFailedClaimed && { inlinePolicyClaimed: revertFailedClaimed }),
+                  // go-to-k/cdkd#5380: the failed update's unsettled keys may
+                  // hold either side in AWS while the attempted bag equals the
+                  // restored one there, so the provider converges them against
+                  // AWS; the record built below clears them only on success.
+                  ...unsettledContextOf(current, prev),
                 },
               ],
               op.logicalId,

@@ -5441,3 +5441,45 @@ describe('renderDiffTree - a masked property whose template expression changed (
     expect(lines).toContain('      - Name:');
   });
 });
+
+describe('renderDiffTree - a property a failed update left unsettled (go-to-k/cdkd#5380)', () => {
+  it('labels the row, since its two sides are equal', () => {
+    const root: DiffTreeNode = {
+      stackName: 'P',
+      displayName: 'P',
+      region: 'us-east-1',
+      ccApiRoutes: new Map(),
+      outputChanges: [],
+      adoptedOrphans: [],
+      unreadable: [],
+      unreadableContainers: [],
+      unreadableOrphans: [],
+      destructiveChanges: [],
+      blocking: [],
+      children: [],
+      changes: changeMap([
+        {
+          logicalId: 'S',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::KinesisFirehose::DeliveryStream',
+          propertyChanges: [
+            {
+              path: 'DeliveryStreamEncryptionConfigurationInput',
+              oldValue: undefined,
+              newValue: undefined,
+              requiresReplacement: false,
+              unsettled: true,
+            },
+            { path: 'Name', oldValue: 'a', newValue: 'b', requiresReplacement: false },
+          ],
+        },
+      ]),
+    };
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+    expect(lines).toContain(
+      '      - DeliveryStreamEncryptionConfigurationInput: [unsettled after a failed update; sent again]'
+    );
+    expect(lines).toContain('      - Name:');
+  });
+});

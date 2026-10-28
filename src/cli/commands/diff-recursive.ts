@@ -4817,7 +4817,9 @@ export function renderChangeLines(
                   ? ' [attribute propagated]'
                   : propChange.maskedExpressionChanged === true
                     ? ' [masked input or expression changed]'
-                    : '';
+                    : propChange.unsettled === true
+                      ? ' [unsettled after a failed update; sent again]'
+                      : '';
             const indent = '              ';
             const [oldFiltered, newFiltered] = stripUnchangedValuePair(
               propChange.oldValue,
