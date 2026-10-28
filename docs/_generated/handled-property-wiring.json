@@ -14750,7 +14750,6 @@
       ],
       "gaps": [],
       "blindSpots": [
-        "computed key in update()",
         "walk(...) in jsonEscapedPairs()",
         "withRemovalDefaults(...) in update()"
       ]

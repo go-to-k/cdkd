@@ -1350,9 +1350,12 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'DurableConfig',
       ];
 
-      const changedConfigFields = configFields.filter(
-        (field) => JSON.stringify(properties[field]) !== JSON.stringify(previousProperties[field])
-      );
+      const changedConfigFields: string[] = [];
+      for (const field of configFields) {
+        if (JSON.stringify(properties[field]) !== JSON.stringify(previousProperties[field])) {
+          changedConfigFields.push(field);
+        }
+      }
       const hasConfigChanges = changedConfigFields.length > 0;
 
       if (hasConfigChanges) {
