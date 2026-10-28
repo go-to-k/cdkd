@@ -16912,7 +16912,8 @@
             "createDBCluster",
             "createDBInstance",
             "update",
-            "updateDBCluster"
+            "updateDBCluster",
+            "updateDBInstance"
           ]
         },
         {
@@ -17121,6 +17122,7 @@
           "seededBy": [
             "create",
             "createDBCluster",
+            "getDriftUnknownPaths",
             "update",
             "updateDBCluster"
           ]

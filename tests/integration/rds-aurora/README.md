@@ -31,7 +31,13 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
   runs with `--verbose` to read AWS's member refusal, which the thrown error
   names only by its class (issue #2319). It
   declares no `DeletionPolicy`, so its destroy takes CloudFormation's default
-  final snapshot, which verify.sh asserts and then deletes (issue #4030).
+  final snapshot, which verify.sh asserts and then deletes (issue #4030). Its
+  `SecondsUntilAutoPause` is 600 in phase 1 and 1800 in phase 2, each asserted
+  live (issue #5466).
+- **EngineCluster** (L1 `CfnDBCluster`, no instance, `DeletionPolicy: Delete`) -
+  phase 2c swaps its `Engine` from aurora-mysql to aurora-postgresql, which
+  CloudFormation replaces: verify.sh asserts the deploy is refused without
+  `--force-stateful-recreation` and replaces the cluster with it (issue #5467).
 
 ## Outputs
 

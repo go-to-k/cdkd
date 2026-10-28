@@ -231,14 +231,38 @@ export class RdsAuroraStack extends cdk.Stack {
       // the VPC's `default` security group on removal (real A/B), so verify.sh
       // asserts exactly that.
       ...(isUpdate ? {} : { vpcSecurityGroupIds: [securityGroup.securityGroupId] }),
+      // Issue #5466: SecondsUntilAutoPause is 600 in phase 1 and 1800 in
+      // phase 2 (AWS default 300; MinCapacity 0 makes the cluster auto-pause).
+      // verify.sh asserts each value is live: a pre-fix cdkd never sends it.
       serverlessV2ScalingConfiguration: {
-        minCapacity: 0.5,
+        minCapacity: 0,
         maxCapacity: 1,
+        secondsUntilAutoPause: isUpdate ? 1800 : 600,
       },
     });
     // Issue #1160: once phase 2 drops the Ref, this keeps the security group
     // deleted AFTER the cluster that may still hold it.
     securityCluster.node.addDependency(securityGroup);
+
+    // Issue #5467: a cluster with NO instance whose Engine phase 2c swaps
+    // (CDKD_TEST_ENGINE_SWAP=true), aurora-mysql -> aurora-postgresql.
+    // CloudFormation replaces the cluster for that (measured), so cdkd must
+    // refuse it without --force-stateful-recreation and replace it with the
+    // flag. DeletionPolicy / UpdateReplacePolicy Delete: no final snapshot.
+    const engineCluster = new rds.CfnDBCluster(this, 'EngineCluster', {
+      engine: process.env.CDKD_TEST_ENGINE_SWAP === 'true' ? 'aurora-postgresql' : 'aurora-mysql',
+      masterUsername: 'cdkdadmin',
+      manageMasterUserPassword: true,
+      backupRetentionPeriod: 1,
+      dbSubnetGroupName: securitySubnetGroup.subnetGroupName,
+      serverlessV2ScalingConfiguration: { minCapacity: 0, maxCapacity: 1 },
+      // verify.sh's per-run id: its cleanup sweep matches this run's clusters only.
+      ...(process.env.CDKD_TEST_RUN_ID
+        ? { tags: [{ key: 'cdkd-integ-run', value: process.env.CDKD_TEST_RUN_ID }] }
+        : {}),
+    });
+    engineCluster.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.DELETE;
+    engineCluster.cfnOptions.updateReplacePolicy = cdk.CfnDeletionPolicy.DELETE;
 
     // Outputs
     new cdk.CfnOutput(this, 'ProxyEndpoint', {

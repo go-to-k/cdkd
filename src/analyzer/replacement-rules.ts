@@ -475,6 +475,78 @@ export function emrClusterInstancesReplaced(oldValue: unknown, newValue: unknown
   );
 }
 
+/*
+ * RDS `Engine` mutability (issue #5467), transcribed from CloudFormation's own
+ * RDS handlers, aws-cloudformation/aws-cloudformation-resource-providers-rds
+ * at commit 5a410e843efb90076c1c4d322707bc989e5a058b:
+ * `aws-rds-dbcluster/.../dbcluster/util/ImmutabilityHelper.java`
+ * `isEngineMutable` and `aws-rds-dbinstance/.../dbinstance/util/ImmutabilityHelper.java`
+ * `isEngineMutable`. An immutable change fails the update `NotUpdatable`,
+ * which CloudFormation turns into a replacement (the change set's
+ * `Replacement: Conditional`). MEASURED (us-east-1, 2026-10-28): DBCluster
+ * aurora-mysql to aurora-postgresql and DBInstance mysql to mariadb both
+ * created a new physical resource. Comparisons keep the handlers' letter-case
+ * rules (`Objects.equal` is exact, `equalsIgnoreCase` is not).
+ *
+ * One deliberate difference: an `Engine` absent on either side never replaces
+ * here. The DBInstance handler then compares against the LIVE engine, which a
+ * template diff cannot see, and a replacement destroys the database.
+ */
+const AURORA = 'aurora';
+const AURORA_MYSQL = 'aurora-mysql';
+const DEPRECATED_ORACLE_SE_ENGINES: ReadonlySet<string> = new Set(['oracle-se', 'oracle-se1']);
+const ORACLE_SE2 = 'oracle-se2';
+const ORACLE_CDB_CONVERSIONS: ReadonlyMap<string, string> = new Map([
+  ['oracle-ee', 'oracle-ee-cdb'],
+  ['oracle-se2', 'oracle-se2-cdb'],
+]);
+const ORACLE_CDB_ENGINES: ReadonlySet<string> = new Set(ORACLE_CDB_CONVERSIONS.values());
+
+/** Both `Engine` values as strings, or `undefined` when either is absent. */
+function enginePair(oldValue: unknown, newValue: unknown): [string, string] | undefined {
+  return typeof oldValue === 'string' && typeof newValue === 'string'
+    ? [oldValue, newValue]
+    : undefined;
+}
+
+/** The DBCluster handler's `isEngineMutable`: unchanged, or `aurora` to `aurora-mysql`. */
+export function dbClusterEngineChangeReplaces(oldValue: unknown, newValue: unknown): boolean {
+  const pair = enginePair(oldValue, newValue);
+  if (pair === undefined) return false;
+  const [before, after] = pair;
+  return !(before === after || (before === AURORA && after === AURORA_MYSQL));
+}
+
+/**
+ * Whether a DBInstance `Engine` change is one the handler applies in place
+ * while the engine string changes, so `ModifyDBInstance` carries the new one
+ * (the handler sends `engine(diff(previous, desired))`).
+ */
+export function dbInstanceEngineChangeIsInPlace(oldValue: unknown, newValue: unknown): boolean {
+  const pair = enginePair(oldValue, newValue);
+  if (pair === undefined) return false;
+  const [before, after] = pair;
+  const from = before.toLowerCase();
+  const to = after.toLowerCase();
+  return (
+    before === after ||
+    // isUpgradeToAuroraMySQL (exact case)
+    (before === AURORA && after === AURORA_MYSQL) ||
+    // isUpgradeToOracleSE2
+    (DEPRECATED_ORACLE_SE_ENGINES.has(from) && to === ORACLE_SE2) ||
+    // isOracleConvertToCDB
+    ORACLE_CDB_CONVERSIONS.get(from) === to ||
+    // isOracleCDBMutable: a CDB engine re-spelled in another case
+    (from === to && ORACLE_CDB_ENGINES.has(to))
+  );
+}
+
+/** The DBInstance handler's `isEngineMutable`, negated. */
+export function dbInstanceEngineChangeReplaces(oldValue: unknown, newValue: unknown): boolean {
+  if (enginePair(oldValue, newValue) === undefined) return false;
+  return !dbInstanceEngineChangeIsInPlace(oldValue, newValue);
+}
+
 /**
  * Replacement rules registry
  *
@@ -1078,6 +1150,25 @@ export class ReplacementRulesRegistry {
         'VpcEncryptionControl',
       ]),
       conditionalReplacements: new Map([['InstanceTenancy', vpcInstanceTenancyChangeReplaces]]),
+    });
+
+    // RDS DBCluster / DBInstance `Engine` (issue #5467): not createOnly in the
+    // CFn schema, but CloudFormation replaces a change its handlers call
+    // immutable (measured, and transcribed from the handlers; see the
+    // predicates). Every other property keeps the schema createOnly fallback,
+    // since these rules name only `Engine`. Both types are stateful, so the
+    // replacement still needs `--force-stateful-recreation`.
+    this.rules.set('AWS::RDS::DBCluster', {
+      replacementProperties: new Set(),
+      conditionalReplacements: new Map<string, ConditionalReplacement>([
+        ['Engine', dbClusterEngineChangeReplaces],
+      ]),
+    });
+    this.rules.set('AWS::RDS::DBInstance', {
+      replacementProperties: new Set(),
+      conditionalReplacements: new Map<string, ConditionalReplacement>([
+        ['Engine', dbInstanceEngineChangeReplaces],
+      ]),
     });
 
     // EC2 Subnet — VpcId / CidrBlock / AvailabilityZone are createOnly per
