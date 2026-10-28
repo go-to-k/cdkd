@@ -399,6 +399,39 @@ assert_gone "replaced Memcached cluster ${MC_ID} still exists after the zone mov
   aws elasticache describe-cache-clusters --cache-cluster-id "${MC_ID}" --region "${REGION}"
 echo "    OK: zone move replaced ${MC_ID} with ${MC_ID_MOVED}, node in ${MC_AZ_AFTER} (#5458)"
 
+echo "==> Step 4g: SG REMOVAL deploy (issue #5491) -- the Redis cluster's VpcSecurityGroupIds removed"
+# PARITY PIN, not a pre-fix red: cdkd sent no SecurityGroupIds for a removed
+# list before #5491 as well. Real CloudFormation keeps the live group on this
+# change (its Modify carries no securityGroupIds), so this goes RED only
+# against a provider that resets or clears the group on removal. The companion
+# PreferredMaintenanceWindow change (wed -> thu) proves the Modify fired.
+SG_BEFORE=$(cc_field 'SecurityGroups[].SecurityGroupId | join(`,`, @)')
+if [ -z "${SG_BEFORE}" ] || [ "${SG_BEFORE}" = "None" ]; then
+  echo "FAIL: the Redis cluster ${CACHE_ID} reports no security group before the SG removal" >&2
+  exit 1
+fi
+set +e
+CDKD_TEST_REMOVAL=true CDKD_TEST_NODETYPE=true CDKD_TEST_NODEREMOVE=true CDKD_TEST_PAZMOVE=true CDKD_TEST_SGREMOVE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+SGREMOVE_RC=$?
+set -e
+if [ "${SGREMOVE_RC}" -ne 0 ]; then
+  echo "FAIL: SG-removal deploy exited ${SGREMOVE_RC} (#5491)" >&2
+  tail -60 "${DEPLOY_LOG}" >&2
+  exit 1
+fi
+echo "    OK: SG-removal deploy exited 0"
+assert_cc "companion PreferredMaintenanceWindow (Modify fired, #5491)" 'PreferredMaintenanceWindow' "thu:05:00-thu:06:00"
+assert_cc "KEPT security groups after removing VpcSecurityGroupIds (#5491)" 'SecurityGroups[].SecurityGroupId | join(`,`, @)' "${SG_BEFORE}"
+CACHE_ID_SG=$(aws elasticache describe-cache-clusters --region "${REGION}" \
+  --query "CacheClusters[?CacheSubnetGroupName=='${SUBNET_GROUP}'].CacheClusterId | [0]" --output text)
+if [ "${CACHE_ID_SG}" != "${CACHE_ID}" ]; then
+  echo "FAIL: the Redis cluster was REPLACED by the SG removal (${CACHE_ID} -> ${CACHE_ID_SG})" >&2
+  exit 1
+fi
+echo "    OK: SG removal kept ${SG_BEFORE} on ${CACHE_ID} in place (#5491)"
+
 echo "==> Step 5: destroy"
 set +e
 node "${LOCAL_DIST}" destroy "${STACK}" \
