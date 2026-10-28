@@ -28,6 +28,8 @@ import * as sns from 'aws-cdk-lib/aws-sns';
  *   lowers it to 1 node, which needs CacheNodeIdsToRemove (issue #5441), and
  *   CDKD_TEST_PAZMOVE=true moves its PreferredAvailabilityZones to a zone the
  *   previous list does not name, which replaces the cluster (issue #5458)
+ * - CDKD_TEST_SGREMOVE=true: the Redis cluster's VpcSecurityGroupIds is removed;
+ *   the live group stays, as CloudFormation keeps it (issue #5491)
  */
 export class CacheStreamingStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -85,6 +87,11 @@ export class CacheStreamingStack extends cdk.Stack {
     // disabled). The topic and log group are NOT mode-gated: only scalar
     // cluster properties change, so no later deploy deletes a resource.
     const removal = process.env.CDKD_TEST_REMOVAL === 'true';
+    // CDKD_TEST_SGREMOVE (issue #5491): VpcSecurityGroupIds removed from the
+    // Redis cluster. Real CloudFormation keeps the live group (its Modify
+    // carries no securityGroupIds); a companion window change (thu) makes the
+    // Modify provably fire.
+    const sgRemove = process.env.CDKD_TEST_SGREMOVE === 'true';
     // CDKD_TEST_NODETYPE (issue #5438): a node-type scale-up. Real
     // CloudFormation applies it in place (same cluster id, ApplyImmediately).
     const nodeTypeChange = process.env.CDKD_TEST_NODETYPE === 'true';
@@ -101,10 +108,15 @@ export class CacheStreamingStack extends cdk.Stack {
       engine: 'redis',
       engineVersion: '7.1',
       numCacheNodes: 1,
-      vpcSecurityGroupIds: [redisSg.securityGroupId],
+      ...(sgRemove ? {} : { vpcSecurityGroupIds: [redisSg.securityGroupId] }),
       cacheSubnetGroupName: subnetGroup.ref,
-      // Companion change: baseline tue, removal wed. Not overlapping SnapshotWindow.
-      preferredMaintenanceWindow: removal ? 'wed:05:00-wed:06:00' : 'tue:05:00-tue:06:00',
+      // Companion change: baseline tue, removal wed, SG removal thu. Not
+      // overlapping SnapshotWindow.
+      preferredMaintenanceWindow: sgRemove
+        ? 'thu:05:00-thu:06:00'
+        : removal
+          ? 'wed:05:00-wed:06:00'
+          : 'tue:05:00-tue:06:00',
       snapshotWindow: '02:00-03:00',
       ...(removal
         ? {}
