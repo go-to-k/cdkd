@@ -118,7 +118,7 @@ dynamodb-ttl-attr-change	2026-10-28T05:24:24Z	PASS	1944	verify.sh	rc ok, orph cl
 ec2-instance	2026-10-28T05:14:33Z	PASS	265	verify.sh	rc ok, orph clean; #5446 in-place update; probes red at t3.small and reader
 ec2-instance-fanout	2026-10-19T00:17:40Z	PASS	90	verify.sh	rc ok, orph clean (#5077)
 ec2-route-targets	2026-10-23T21:25:44Z	PASS	651	verify.sh	rc ok, orph clean, VGW attachment sdk record + Phase 2 swap to 2nd VGW (DetachVpnGateway=1 AttachVpnGateway=1); pre-fix probe RED at sdk-record assertion
-ec2-vpc	2026-10-20T12:02:38Z	PASS	133	verify.sh	PR#5127 1160 route53 hostedzone VPCs kept; pre-fix probe RED at exactly-one-warning (found 0); destroy 0 errors 0 orphans
+ec2-vpc	2026-10-28T06:40:19Z	PASS	125	verify.sh	PR#5463 5448 IGW/RouteTable/NACL tag change in place; pre-fix probe RED at Phase 2 (cannot be updated in place); destroy 0 errors 0 orphans
 ecr	2026-10-20T06:00:42Z	PASS	55	standard	deploy+destroy clean, 0 orphans
 ecr-scanning	2026-10-16T08:15:12Z	PASS	60	verify.sh	rc ok, orph clean (#3341 slice 4995)
 ecs-bluegreen	2026-10-11T09:33:22Z	PASS	230	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean

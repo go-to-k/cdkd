@@ -75,6 +75,10 @@ const UPDATE_TYPES: Array<[string, string, string]> = [
   ['AWS::EC2::EIP', '203.0.113.1|eipalloc-1', 'eipalloc-1'],
   ['AWS::EC2::SecurityGroup', 'sg-1', 'sg-1'],
   ['AWS::EC2::Instance', 'i-1', 'i-1'],
+  // go-to-k/cdkd#5448: Tags-only in-place updates.
+  ['AWS::EC2::InternetGateway', 'igw-1', 'igw-1'],
+  ['AWS::EC2::RouteTable', 'rtb-1', 'rtb-1'],
+  ['AWS::EC2::NetworkAcl', 'acl-1', 'acl-1'],
 ];
 
 function commands(): unknown[] {

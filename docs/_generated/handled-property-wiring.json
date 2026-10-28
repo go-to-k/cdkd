@@ -7666,6 +7666,7 @@
             "updateNatGateway",
             "updateSecurityGroup",
             "updateSubnet",
+            "updateTagsOnly",
             "updateVpc"
           ]
         },
@@ -7778,6 +7779,7 @@
             "createVpcGatewayAttachment",
             "resolveVpcGatewayAttachmentTarget",
             "update",
+            "updateTagsOnly",
             "updateVpcGatewayAttachment",
             "verifyExplicit"
           ]

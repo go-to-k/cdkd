@@ -1790,7 +1790,15 @@ export class EC2Provider implements ResourceProvider {
           context
         );
       case 'AWS::EC2::InternetGateway':
-        return this.updateInternetGateway(logicalId, physicalId);
+        return this.updateTagsOnly(
+          logicalId,
+          physicalId,
+          resourceType,
+          false,
+          properties,
+          previousProperties,
+          context
+        );
       case 'AWS::EC2::EIP':
         return this.updateEip(
           logicalId,
@@ -1819,7 +1827,16 @@ export class EC2Provider implements ResourceProvider {
           context
         );
       case 'AWS::EC2::RouteTable':
-        return this.updateRouteTable(logicalId, physicalId);
+      case 'AWS::EC2::NetworkAcl':
+        return this.updateTagsOnly(
+          logicalId,
+          physicalId,
+          resourceType,
+          true,
+          properties,
+          previousProperties,
+          context
+        );
       case 'AWS::EC2::Route':
         return this.updateRoute(
           logicalId,
@@ -1869,15 +1886,14 @@ export class EC2Provider implements ResourceProvider {
           previousProperties,
           context
         );
-      case 'AWS::EC2::NetworkAcl':
       case 'AWS::EC2::SubnetNetworkAclAssociation':
         // Reject loudly instead of silently no-op'ing on
-        // `cdkd drift --revert`. Same rationale as Subnet / IGW /
-        // NatGateway / RouteTable above. See PR I.
+        // `cdkd drift --revert`. Same rationale as
+        // SubnetRouteTableAssociation above. See PR I.
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          'AWS provides no in-place Update API for this EC2 sub-resource type; every property change requires Delete + Create. Re-deploy with cdkd deploy --replace, or destroy + redeploy.'
+          'AWS provides no in-place Update API for this EC2 sub-resource type; every property change requires Delete + Create. Re-deploy with cdkd deploy --replace, or destroy + redeploy'
         );
       default:
         throw new ProvisioningError(
@@ -3183,22 +3199,51 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
-  private updateInternetGateway(
+  /**
+   * In-place update of a type whose only mutable property is `Tags`
+   * (InternetGateway, RouteTable, NetworkAcl; go-to-k/cdkd#5448). CloudFormation
+   * applies a tag change in place through CreateTags / DeleteTags, so cdkd
+   * does too. `vpcIdCreateOnly` says the registry schema marks `VpcId`
+   * create-only (RouteTable, NetworkAcl): the diff layer routes a change on it
+   * to replacement, but `cdkd drift --revert` calls `update()` without that
+   * classification, so a change on it is refused here rather than silently
+   * no-op'd.
+   */
+  private async updateTagsOnly(
     logicalId: string,
-    physicalId: string
+    physicalId: string,
+    resourceType: string,
+    vpcIdCreateOnly: boolean,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    // IGW has no mutable properties cdkd surfaces (Tags would be the
-    // only candidate; not in `readCurrentState`). Reject loudly instead
-    // of silently no-op'ing on `cdkd drift --revert`. See PR I.
-    void physicalId;
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
-        'AWS::EC2::InternetGateway',
-        logicalId,
-        // The constructor appends the closing period.
-        'destroy + redeploy the InternetGateway. IGW properties are immutable in AWS'
-      )
+    const label = resourceType.slice('AWS::EC2::'.length);
+    this.logger.debug(safeMsg`Updating ${label} ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    if (vpcIdCreateOnly) {
+      const next = properties['VpcId'];
+      const prev = previousProperties['VpcId'];
+      if (next !== undefined && prev !== undefined && next !== prev) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `destroy + redeploy the ${label} (and the resources that depend on it). VpcId is immutable in AWS`
+        );
+      }
+    }
+    await this.applyTagDiff(
+      physicalId,
+      resourceType,
+      logicalId,
+      previousProperties['Tags'],
+      properties['Tags'],
+      maskerOrIdentity(context?.maskSecrets)
     );
+    // No `attributes`: an in-place tag change invalidates none of the
+    // create-time ones, and a partial set would REPLACE the stored ones.
+    return { physicalId, wasReplaced: false };
   }
 
   private async deleteInternetGateway(
@@ -5155,17 +5200,6 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
-  private updateRouteTable(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
-    void physicalId;
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
-        'AWS::EC2::RouteTable',
-        logicalId,
-        'destroy + redeploy the RouteTable (and its associated Routes / SubnetRouteTableAssociations). VpcId is immutable.'
-      )
-    );
-  }
-
   private async deleteRouteTable(
     logicalId: string,
     physicalId: string,
@@ -5676,7 +5710,7 @@ export class EC2Provider implements ResourceProvider {
       new ResourceUpdateNotSupportedError(
         'AWS::EC2::SubnetRouteTableAssociation',
         logicalId,
-        'destroy + redeploy the association. (SubnetId, RouteTableId) is immutable.'
+        'destroy + redeploy the association. (SubnetId, RouteTableId) is immutable'
       )
     );
   }
@@ -9778,7 +9812,7 @@ export class EC2Provider implements ResourceProvider {
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'NetworkAclId, RuleNumber and Egress identify the entry and are createOnly; a change to any of them requires a new entry. Re-deploy with cdkd deploy --replace, or destroy + redeploy.'
+        'NetworkAclId, RuleNumber and Egress identify the entry and are createOnly; a change to any of them requires a new entry. Re-deploy with cdkd deploy --replace, or destroy + redeploy'
       );
     }
 
