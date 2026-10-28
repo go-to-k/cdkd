@@ -8,6 +8,7 @@ This example demonstrates cdkd deployment of a caching and streaming pattern.
 - **Security Group** - Allows Redis access (port 6379) from within the VPC
 - **ElastiCache Subnet Group** - Subnet group for Redis cluster
 - **ElastiCache Redis Cluster** - Single-node cache.t3.micro Redis cluster
+- **ElastiCache Memcached Cluster** - Two-node cache.t3.micro Memcached cluster on its own subnet group
 - **Kinesis Data Stream** - Data stream with 1 shard
 - **Lambda Function** - Inline Python function that processes Kinesis records
 - **Event Source Mapping** - Connects Kinesis stream to Lambda function
@@ -53,5 +54,8 @@ AWS_REGION=us-east-1 STATE_BUCKET=cdkd-state-<accountId> bash verify.sh
 - the `CDKD_TEST_NODETYPE=true` redeploy scales the cluster from
   `cache.t3.micro` to `cache.t3.small` in place: the same cluster id reports
   the new node type once the deploy returns (issue #5438),
+- the `CDKD_TEST_NODEREMOVE=true` redeploy lowers the Memcached cluster from 2
+  nodes to 1 in place, removing node `0001` and keeping `0002` as CloudFormation
+  does (issue #5441),
 - after destroy: state file, Kinesis stream, Lambda, and ElastiCache cluster
   are all gone (0 orphans).

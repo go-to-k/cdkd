@@ -17,6 +17,8 @@
 #   2c. Re-deploy with CDKD_TEST_REMOVAL=true: the second stream's
 #      RecordDistributionStrategy (created AUTO) is removed and must reset to
 #      USER_PARTITION_KEY; the first stream keeps AUTO (go-to-k/cdkd#2762).
+#      The first stream also drops MaxRecordSizeInKiB (4096) and must reset
+#      to 1024 (go-to-k/cdkd#1160).
 #   3. Destroy + assert both streams are gone and the cdkd state file is removed.
 #
 # Required env vars:
@@ -279,7 +281,7 @@ echo "    diff reports no changes; neither backfilled property appears (both sid
 # The second stream drops its AUTO; CloudFormation resets a removed strategy to
 # USER_PARTITION_KEY (CFn A/B), so cdkd must send that reset. The first stream
 # keeps declaring AUTO and must keep it (the retained sibling).
-echo "==> Phase 2c: re-deploy with CDKD_TEST_REMOVAL=true (strategy removed from ${STRATEGY_STREAM_NAME})"
+echo "==> Phase 2c: re-deploy with CDKD_TEST_REMOVAL=true (strategy removed from ${STRATEGY_STREAM_NAME}, MaxRecordSizeInKiB from ${STREAM_NAME})"
 CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
@@ -291,6 +293,15 @@ RDS_KEPT="$(distribution_strategy "${STREAM_NAME}")"
 echo "    AWS RecordDistributionStrategy on ${STREAM_NAME} (Phase 2c): ${RDS_KEPT}"
 assert_eq "RecordDistributionStrategy on the retained sibling" "AUTO" "${RDS_KEPT}"
 echo "    removal reset the strategy; the sibling kept AUTO"
+
+# go-to-k/cdkd#1160: the first stream dropped MaxRecordSizeInKiB (4096 in
+# Phase 2, asserted above), and CloudFormation resets a removed size to 1024
+# (CFn A/B), so cdkd must send UpdateMaxRecordSize(1024).
+SIZE_REMOVED="$(max_record_size)"
+echo "    AWS MaxRecordSizeInKiB on ${STREAM_NAME} (Phase 2c): ${SIZE_REMOVED}"
+assert_eq "MaxRecordSizeInKiB after its removal (reset to the default, go-to-k/cdkd#1160)" \
+  "1024" "${SIZE_REMOVED}"
+echo "    removal reset MaxRecordSizeInKiB to 1024"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"

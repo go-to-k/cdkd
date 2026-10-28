@@ -20,6 +20,14 @@ const { mockSend, mockAutoScalingSend, debugSpy } = vi.hoisted(() => ({
   debugSpy: vi.fn(),
 }));
 
+// Issue #5451: a rate-limited UpdateTimeToLive is re-sent until the enclosing
+// resource deadline runs out. 0 = already out, so a refusal is final at once.
+const ttlDeadline = vi.hoisted(() => ({ remainingMs: 0 }));
+vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/deployment/resource-deadline.js')>()),
+  enclosingDeadlineRemainingMs: () => ttlDeadline.remainingMs,
+}));
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     dynamoDB: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
@@ -465,8 +473,9 @@ describe('DynamoDB thrown wraps keep the caller identity out (go-to-k/cdkd#2319)
       const failure = await thrown(runTtl());
       expect(failure.message).toBe(
         `AWS rejected TimeToLive update on ${TABLE_NAME}: ValidationException. ${VERBOSE_POINTER} ` +
-          'AWS rate-limits TTL changes per table (the interval can last up to about an hour); wait and redeploy, or ' +
-          'keep the previous TTL state in this deploy.'
+          'AWS rate-limits TTL changes per table, and kept refusing until the resource timeout ' +
+          'ran out; redeploy once the interval has passed (up to about an hour), or raise ' +
+          '--resource-timeout.'
       );
       expect(failure.cause).toBe(original);
       expect(hasRedactedCause(failure)).toBe(true);

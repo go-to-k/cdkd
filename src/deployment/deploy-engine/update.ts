@@ -1335,7 +1335,11 @@ export async function provisionUpdate(
               resourceType,
               pc.path,
               currentPropsAsWritten[pc.path],
-              desiredForSkipCheckAsWritten[pc.path]
+              desiredForSkipCheckAsWritten[pc.path],
+              {
+                oldProperties: currentPropsAsWritten,
+                newProperties: desiredForSkipCheckAsWritten,
+              }
             )
           : undefined;
       if (moved && conditionalVerdict !== false) {

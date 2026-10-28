@@ -50,7 +50,7 @@ See the
 ### The type cannot be updated in place at all
 
 ```
-ResourceUpdateNotSupportedError: AWS::EC2::InternetGateway (MyIgw) cannot be updated in place: destroy + redeploy the InternetGateway. IGW properties are immutable in AWS.
+ResourceUpdateNotSupportedError: AWS::EC2::SubnetRouteTableAssociation (MyAssoc) cannot be updated in place: destroy + redeploy the association. (SubnetId, RouteTableId) is immutable.
 ```
 
 For such a type, every change is a replacement. The end of the message names

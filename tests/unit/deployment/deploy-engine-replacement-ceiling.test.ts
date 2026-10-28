@@ -300,6 +300,77 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
     });
   });
 
+  describe("an instance's propagated SecurityGroupIds ceiling reads the SubnetId (issue #5446)", () => {
+    function instTemplate(subnet: Record<string, unknown>): CloudFormationTemplate {
+      return {
+        Resources: {
+          Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: TOKEN, Seed: 'b' } },
+          Inst: {
+            Type: 'AWS::EC2::Instance',
+            Properties: {
+              ImageId: 'ami-1',
+              InstanceType: 't3.nano',
+              ...subnet,
+              SecurityGroupIds: [{ 'Fn::GetAtt': ['Cr', 'Sg'] }],
+            },
+          },
+        },
+      };
+    }
+    function instState(subnet: Record<string, unknown>): StackState {
+      const inst = { ImageId: 'ami-1', InstanceType: 't3.nano', ...subnet, SecurityGroupIds: ['sg-1'] };
+      return {
+        version: STATE_SCHEMA_VERSION_CURRENT,
+        region: REGION,
+        stackName: STACK,
+        resources: {
+          Cr: {
+            physicalId: 'cr-1',
+            resourceType: 'Custom::Thing',
+            properties: { ServiceToken: TOKEN, Seed: 'a' },
+            attributes: { Sg: 'sg-1' },
+            dependencies: [],
+          },
+          Inst: {
+            physicalId: 'i-1',
+            resourceType: 'AWS::EC2::Instance',
+            properties: inst,
+            observedProperties: inst,
+            attributes: {},
+            dependencies: ['Cr'],
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      };
+    }
+    function crReturnsSg(sg: string): void {
+      provider.update.mockImplementation((logicalId: string, physicalId: string) =>
+        Promise.resolve(
+          logicalId === 'Cr'
+            ? { physicalId, wasReplaced: false, attributes: { Sg: sg } }
+            : { physicalId, wasReplaced: false }
+        )
+      );
+    }
+
+    it('replaces an instance with no SubnetId when the group moves', async () => {
+      stateBackend.getState.mockResolvedValue({ state: instState({}), etag: 'etag-old' });
+      crReturnsSg('sg-2');
+      await makeEngine().deploy(STACK, instTemplate({}));
+      expect(callsFor(provider.create, 'Inst')).toHaveLength(1);
+    });
+
+    it('updates an instance with a SubnetId in place when the group moves', async () => {
+      const subnet = { SubnetId: 'subnet-1' };
+      stateBackend.getState.mockResolvedValue({ state: instState(subnet), etag: 'etag-old' });
+      crReturnsSg('sg-2');
+      await makeEngine().deploy(STACK, instTemplate(subnet));
+      expect(callsFor(provider.create, 'Inst')).toHaveLength(0);
+      expect(callsFor(provider.update, 'Inst')).toHaveLength(1);
+    });
+  });
+
   it('still REPLACES the reader when the handler returned a different value (the control)', async () => {
     crReturns('topic-b');
 

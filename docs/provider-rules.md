@@ -1609,6 +1609,11 @@ Checklist when writing or reviewing an `update()`:
   sends `PUBLIC_READ` with no role. ON_DEMAND + `AUTO` -> PROVISIONED fails
   under CloudFormation (with or without an explicit `USER_PARTITION_KEY` in
   the same update) and under cdkd alike.
+  Real CloudFormation A/B, go-to-k/cdkd#1160: a removed `AWS::Kinesis::Stream`
+  `MaxRecordSizeInKiB` RESETS to 1024, and on an `AWS::CodeBuild::Project` a
+  removed `EncryptionKey` RESETS to the AWS managed S3 key (cdkd sends
+  `alias/aws/s3`), a removed `Tags` removes every tag (cdkd sends `[]`), and a
+  removed `SourceVersion` is KEPT.
   `AWS::EC2::NatGateway` `AvailabilityZoneAddresses` (real CloudFormation A/B,
   go-to-k/cdkd#2762): on a gateway created with it, a change updates in place
   and REMOVING it FAILS, so `EC2Provider` refuses the removal; ADDING it to an

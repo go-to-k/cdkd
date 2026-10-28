@@ -40,6 +40,14 @@ const { mockSend, mockAutoScalingSend, warnSpy, debugSpy, infoSpy, watchLabels }
   infoSpy: vi.fn(),
 }));
 
+// Issue #5451: a rate-limited UpdateTimeToLive is re-sent until the enclosing
+// resource deadline runs out. 0 = already out, so a refusal is final at once.
+const ttlDeadline = vi.hoisted(() => ({ remainingMs: 0 }));
+vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/deployment/resource-deadline.js')>()),
+  enclosingDeadlineRemainingMs: () => ttlDeadline.remainingMs,
+}));
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     dynamoDB: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
@@ -535,6 +543,36 @@ describe('DynamoDBGlobalTableProvider masked log sinks (issue #2177)', () => {
       expect(failure.message).toContain(`AWS rejected TimeToLive update on ${SECRET_MASK}:`);
       expect(failure.message).not.toContain(TINY);
       expect(hasRedactedCause(failure)).toBe(true);
+    });
+
+    it('the TTL rate-limit wait masks its announcement and its Ctrl-C label (#5451)', async () => {
+      ttlDeadline.remainingMs = 20;
+      try {
+        let ttlSends = 0;
+        mockSend.mockImplementation(async (command: unknown) => {
+          const n = commandName(command);
+          if (n === 'UpdateTimeToLiveCommand') {
+            ttlSends += 1;
+            if (ttlSends === 1) {
+              throw new Error(`Time to live has been modified multiple times on ${TINY}`);
+            }
+            return {};
+          }
+          if (n === 'DescribeTableCommand') return activeTable(TINY);
+          return {};
+        });
+        const desired = autoscaledProps(TINY);
+        desired['TimeToLiveSpecification'] = { AttributeName: 'ttl', Enabled: true };
+        await provider.update('Gt', TINY, RESOURCE_TYPE, desired, autoscaledProps(TINY), {
+          maskSecrets: createSecretMasker(bagOf(TINY)),
+        });
+        expect(ttlSends).toBe(2);
+        expect(watchLabels).toContain(`DynamoDB TimeToLive rate-limit wait on ${SECRET_MASK}`);
+        const announced = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(announced).toContain('TimeToLive was changed recently');
+      } finally {
+        ttlDeadline.remainingMs = 0;
+      }
     });
 
     it('the replica-removal wait gets the masker, and its timeout names the table masked', async () => {

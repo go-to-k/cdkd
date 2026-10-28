@@ -13,6 +13,24 @@ import { getLogger } from '../utils/logger.js';
 import { sameLambdaFunctionAddress } from '../utils/lambda-function-name.js';
 
 /**
+ * The whole property bags of the resource whose property a conditional
+ * predicate judges, for a rule whose answer depends on a SIBLING property
+ * (issue #5446: an `AWS::EC2::Instance` `SecurityGroupIds` change replaces the
+ * instance only when it has no `SubnetId`). Absent where the caller judges a
+ * value outside a diff; a predicate then answers for the common case.
+ */
+export interface ReplacementSiblings {
+  readonly oldProperties: Readonly<Record<string, unknown>>;
+  readonly newProperties: Readonly<Record<string, unknown>>;
+}
+
+type ConditionalReplacement = (
+  oldValue: unknown,
+  newValue: unknown,
+  siblings?: ReplacementSiblings
+) => boolean;
+
+/**
  * Resource replacement rule
  */
 interface ReplacementRule {
@@ -21,7 +39,91 @@ interface ReplacementRule {
   /** Properties that never require replacement */
   updateableProperties?: Set<string>;
   /** Custom logic for conditional replacement */
-  conditionalReplacements?: Map<string, (oldValue: unknown, newValue: unknown) => boolean>;
+  conditionalReplacements?: Map<string, ConditionalReplacement>;
+}
+
+/**
+ * Conditional-replacement predicate for `AWS::EC2::Instance.SecurityGroupIds`
+ * (issue [#5446](https://github.com/go-to-k/cdkd/issues/5446)). MEASURED
+ * against CloudFormation (us-east-1, 2026-10-28, change sets say
+ * `Replacement: Conditional`): with a `SubnetId` the groups change in place
+ * with no interruption (vary, add, and a removal, which leaves the VPC's
+ * `default` group); with NO `SubnetId` (an instance launched into the default
+ * VPC) the same vary and the removal create a new instance. Without the
+ * sibling bags the common case (a `SubnetId`, which CDK's L2 always emits)
+ * answers in place.
+ */
+export function instanceSecurityGroupIdsChangeReplaces(
+  oldValue: unknown,
+  newValue: unknown,
+  siblings?: ReplacementSiblings
+): boolean {
+  if (siblings === undefined) return false;
+  // A reorder of the same groups is no change, as `EC2Provider` compares
+  // them (not measured against CloudFormation; replacing over it would
+  // destroy an instance for nothing).
+  if (Array.isArray(oldValue) && Array.isArray(newValue)) {
+    const before = new Set(oldValue.map(String));
+    const after = new Set(newValue.map(String));
+    if (before.size === after.size && [...before].every((g) => after.has(g))) return false;
+  }
+  return siblings.newProperties['SubnetId'] == null;
+}
+
+/**
+ * Conditional-replacement predicate for
+ * `AWS::EC2::Instance.BlockDeviceMappings` (issue
+ * [#5446](https://github.com/go-to-k/cdkd/issues/5446)). MEASURED against
+ * CloudFormation (us-east-1, 2026-10-28): a change to `Ebs.DeleteOnTermination`
+ * alone updates in place with no interruption; a `VolumeSize` change, adding a
+ * device, and removing the property create a new instance. So anything but a
+ * `DeleteOnTermination`-only change replaces; `EC2Provider` applies that one
+ * with `ModifyInstanceAttribute`.
+ */
+export function instanceBlockDeviceMappingsChangeReplaces(
+  oldValue: unknown,
+  newValue: unknown
+): boolean {
+  return !blockDeviceMappingsDifferOnlyInDeleteOnTermination(oldValue, newValue);
+}
+
+/**
+ * True when both are lists of the same devices, in the same order, equal in
+ * everything but `Ebs.DeleteOnTermination`. Scalars compare as strings, so
+ * CloudFormation's stringly-typed `"8"` equals `8`.
+ */
+export function blockDeviceMappingsDifferOnlyInDeleteOnTermination(
+  oldValue: unknown,
+  newValue: unknown
+): boolean {
+  if (!Array.isArray(oldValue) || !Array.isArray(newValue)) return false;
+  if (oldValue.length !== newValue.length) return false;
+  const strip = (m: unknown): unknown => {
+    if (m === null || typeof m !== 'object' || Array.isArray(m)) return m;
+    const out: Record<string, unknown> = { ...(m as Record<string, unknown>) };
+    const ebs = out['Ebs'];
+    if (ebs !== null && typeof ebs === 'object' && !Array.isArray(ebs)) {
+      const rest: Record<string, unknown> = { ...(ebs as Record<string, unknown>) };
+      delete rest['DeleteOnTermination'];
+      out['Ebs'] = rest;
+    }
+    return out;
+  };
+  return oldValue.every((m, i) =>
+    isDeepStrictEqual(scalarsAsStrings(strip(m)), scalarsAsStrings(strip(newValue[i])))
+  );
+}
+
+function scalarsAsStrings(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(scalarsAsStrings);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => [k, scalarsAsStrings(v)])
+    );
+  }
+  return typeof value === 'number' || typeof value === 'boolean' ? String(value) : value;
 }
 
 /**
@@ -347,7 +449,8 @@ export class ReplacementRulesRegistry {
     resourceType: string,
     propertyPath: string,
     oldValue: unknown,
-    newValue: unknown
+    newValue: unknown,
+    siblings?: ReplacementSiblings
   ): boolean {
     const rule = this.rules.get(resourceType);
 
@@ -375,7 +478,7 @@ export class ReplacementRulesRegistry {
     if (rule.conditionalReplacements?.has(propertyPath)) {
       const condition = rule.conditionalReplacements.get(propertyPath);
       if (condition) {
-        const requires = condition(oldValue, newValue);
+        const requires = condition(oldValue, newValue, siblings);
         this.logger.debug(
           `Conditional replacement for ${propertyPath} of ${resourceType}: ${requires}`
         );
@@ -398,10 +501,11 @@ export class ReplacementRulesRegistry {
     resourceType: string,
     propertyPath: string,
     oldValue: unknown,
-    newValue: unknown
+    newValue: unknown,
+    siblings?: ReplacementSiblings
   ): boolean | undefined {
     const condition = this.rules.get(resourceType)?.conditionalReplacements?.get(propertyPath);
-    return condition === undefined ? undefined : condition(oldValue, newValue);
+    return condition === undefined ? undefined : condition(oldValue, newValue, siblings);
   }
 
   /**
@@ -929,8 +1033,10 @@ export class ReplacementRulesRegistry {
     });
 
     // EC2 Instance — EbsOptimized can only be changed on a STOPPED instance
-    // (a running instance returns IncorrectInstanceState), and cdkd does not
-    // stop/start instances, so an EbsOptimized change is routed to replacement
+    // (a running instance returns IncorrectInstanceState). `updateInstance`
+    // stops an instance only for an InstanceType / UserData change (issue
+    // #5446, measured), and an EbsOptimized change was not measured against
+    // CloudFormation, so it stays routed to replacement
     // (the create path sets it on the new instance). The other four #609
     // security-backfill props (DisableApiTermination / Monitoring /
     // MetadataOptions / CreditSpecification) ARE mutable in-place on a running
@@ -956,6 +1062,13 @@ export class ReplacementRulesRegistry {
         // no ENI-modification path -- an in-place classification would leave
         // state recording the new value while AWS keeps the old one.
         'NetworkInterfaces',
+      ]),
+      // Issue #5446: InstanceType / UserData (a stop-modify-start),
+      // IamInstanceProfile and, with a SubnetId, SecurityGroupIds update in
+      // place in `updateInstance`; see the two predicates for what replaces.
+      conditionalReplacements: new Map<string, ConditionalReplacement>([
+        ['SecurityGroupIds', instanceSecurityGroupIdsChangeReplaces],
+        ['BlockDeviceMappings', instanceBlockDeviceMappingsChangeReplaces],
       ]),
     });
 

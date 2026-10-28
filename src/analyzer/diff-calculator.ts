@@ -10,7 +10,7 @@ import type {
 } from '../types/state.js';
 import { acceptedCreateOnlyDropsOf } from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
-import { ReplacementRulesRegistry } from './replacement-rules.js';
+import { ReplacementRulesRegistry, type ReplacementSiblings } from './replacement-rules.js';
 import { TemplateParser } from './template-parser.js';
 import {
   getCreateOnlyPropertyPaths,
@@ -136,6 +136,11 @@ export type CanonicalizePropertiesFn = (
  */
 const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   'AWS::EC2::LaunchTemplate': new Set(['LatestVersionNumber', 'DefaultVersionNumber']),
+  // Issue #5446: an InstanceType / UserData update stops and starts the
+  // instance, which gives an instance without an Elastic IP a new public
+  // address and DNS name (its private address and DNS name stay). The update
+  // records the new pair, so a reader re-resolves against it.
+  'AWS::EC2::Instance': new Set(['PublicIp', 'PublicDnsName']),
 });
 
 /**
@@ -243,6 +248,22 @@ export type NoEchoCompareFn = (input: {
 }) => { desired: Record<string, unknown>; current: Record<string, unknown> } | undefined;
 
 /**
+ * The sibling bags a synthetic (propagated) change hands a conditional
+ * replacement predicate (issue #5446: an instance's `SecurityGroupIds`
+ * replaces only without a `SubnetId`).
+ */
+export function siblingsOf(change: {
+  currentProperties?: Record<string, unknown> | undefined;
+  desiredProperties?: Record<string, unknown> | undefined;
+}): ReplacementSiblings | undefined {
+  // Without the bags a predicate answers its non-destructive default.
+  if (change.currentProperties === undefined || change.desiredProperties === undefined) {
+    return undefined;
+  }
+  return { oldProperties: change.currentProperties, newProperties: change.desiredProperties };
+}
+
+/**
  * Diff calculator for comparing desired state (template) with current state
  */
 export class DiffCalculator {
@@ -258,13 +279,15 @@ export class DiffCalculator {
     resourceType: string,
     propertyPath: string,
     oldValue: unknown,
-    newValue: unknown
+    newValue: unknown,
+    siblings?: ReplacementSiblings
   ): boolean | undefined {
     return this.replacementRules.conditionalReplacementVerdict(
       resourceType,
       propertyPath,
       oldValue,
-      newValue
+      newValue,
+      siblings
     );
   }
 
@@ -715,7 +738,8 @@ export class DiffCalculator {
               desiredResource.Type,
               key,
               oldValue,
-              newValue
+              newValue,
+              { oldProperties: currentCompared, newProperties: desiredCompared }
             ),
             maskedExpressionChanged: true,
           });
@@ -843,7 +867,8 @@ export class DiffCalculator {
         syntheticCreateOnlyPaths,
         upstreams.some((id) =>
           isPlainReferenceTo(templateValue, id, desiredTemplate.Resources[id]?.Type)
-        )
+        ),
+        siblingsOf(change)
       );
     }
     do {
@@ -1071,9 +1096,18 @@ export class DiffCalculator {
     resourceType: string,
     propKey: string,
     syntheticCreateOnlyPaths: ReadonlyMap<string, SyntheticCreateOnly>,
-    plainReference: boolean
+    plainReference: boolean,
+    siblings?: ReplacementSiblings
   ): boolean {
-    if (this.replacementRules.requiresReplacement(resourceType, propKey, undefined, undefined)) {
+    if (
+      this.replacementRules.requiresReplacement(
+        resourceType,
+        propKey,
+        undefined,
+        undefined,
+        siblings
+      )
+    ) {
       return true;
     }
     if (this.replacementRules.isClassified(resourceType, propKey)) return false;
@@ -1226,7 +1260,8 @@ export class DiffCalculator {
                   desiredTemplate.Resources[dependentId]?.Properties?.[propKey],
                   replacedId,
                   desiredTemplate.Resources[replacedId]?.Type
-                )
+                ),
+                siblingsOf(change)
               ) ||
               namesRecreatedParent(
                 change.resourceType,
@@ -1467,7 +1502,8 @@ export class DiffCalculator {
             change.resourceType,
             propKey,
             syntheticCreateOnlyPaths,
-            false
+            false,
+            siblingsOf(change)
           ),
           inPlacePropagated: true,
           // go-to-k/cdkd#4043: only a `NoEcho` parameter's value may have
@@ -1715,7 +1751,8 @@ export class DiffCalculator {
           resourceType,
           key,
           oldValue,
-          newValue
+          newValue,
+          { oldProperties: currentProperties, newProperties: desiredProperties }
         );
 
         // Schema fallback: only where the registry has NO explicit opinion (so
@@ -1780,15 +1817,23 @@ export class DiffCalculator {
     resourceType: string,
     key: string,
     oldValue: unknown,
-    newValue: unknown
+    newValue: unknown,
+    siblings: ReplacementSiblings
   ): Promise<boolean> {
-    if (this.replacementRules.requiresReplacement(resourceType, key, oldValue, newValue)) {
+    if (
+      this.replacementRules.requiresReplacement(resourceType, key, oldValue, newValue, siblings)
+    ) {
       return true;
     }
     if (
       this.replacementRules.isClassified(resourceType, key) &&
-      this.replacementRules.conditionalReplacementVerdict(resourceType, key, oldValue, newValue) ===
-        undefined
+      this.replacementRules.conditionalReplacementVerdict(
+        resourceType,
+        key,
+        oldValue,
+        newValue,
+        siblings
+      ) === undefined
     ) {
       return false;
     }

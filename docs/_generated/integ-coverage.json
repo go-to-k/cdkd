@@ -7784,6 +7784,7 @@
         "docdb-neptune",
         "drift-revert",
         "dynamic-ref-cross-region",
+        "ec2-instance",
         "elasticache-replicationgroup-getatt",
         "eventbridge",
         "export-nested-stack",
@@ -7956,6 +7957,9 @@
           "l1"
         ],
         "dynamic-ref-cross-region": [
+          "l1"
+        ],
+        "ec2-instance": [
           "l1"
         ],
         "elasticache-replicationgroup-getatt": [
