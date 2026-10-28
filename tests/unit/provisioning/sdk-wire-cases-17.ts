@@ -115,12 +115,15 @@ const ONE_ZONE_BAG: Bag = {
 };
 
 /**
- * A pure removal of these blocks is a deliberate no-op: they have no clean
- * drop mapping in CloudFormation, and each apply helper returns before any
- * call on an absent value.
+ * A pure removal of these blocks sends nothing: the provider treats it as a
+ * deliberate no-op ("no clean drop mapping in CFn"), and each apply helper
+ * returns before any call on an absent value. No CloudFormation A/B backs that
+ * premise yet, and a CDK app reaches it (`enableAutomaticBackups` true -> false
+ * drops BackupPolicy), so it is a suspected gap, tracked as a row of
+ * go-to-k/cdkd#1160; a fix that resets the value takes the entry out.
  */
 const NO_DROP_MAPPING = (member: string): string =>
-  `a removed ${member} is a deliberate no-op: it has no clean drop mapping in CloudFormation, so the apply helper returns before any call (${EFS_SRC}, updateFileSystem)`;
+  `SUSPECTED GAP: a removed ${member} sends nothing (${EFS_SRC}, updateFileSystem: "no clean drop mapping in CFn"), unverified against CloudFormation; tracked in go-to-k/cdkd#1160`;
 
 const FILE_SYSTEM_CASE: TypeCase = {
   resourceType: 'AWS::EFS::FileSystem',
@@ -189,14 +192,16 @@ const MT_REQUIRED = (member: string): Throw => ({
   says: new RegExp(`${member} is required for EFS MountTarget`),
 });
 
-const SG_FROM_NEXT = `update() sends SecurityGroups whole from the desired bag on every update (${EFS_SRC}, updateMountTarget) and never reads prev, so the removal reaches the wire through next, which update-add observes`;
-
 const MOUNT_TARGET_CASE: TypeCase = {
   resourceType: 'AWS::EFS::MountTarget',
   provider: () => new EFSProvider(),
   physicalId: MT_ID,
   createOnly: createOnlyOf('AWS::EFS::MountTarget'),
   arm: armEfs,
+  wholeFromNext: {
+    keys: (key) => key === 'SecurityGroups',
+    reason: `update() sends SecurityGroups whole from the desired bag on every update (${EFS_SRC}, updateMountTarget) and never reads prev`,
+  },
   exempt: {},
   // ModifyMountTargetSecurityGroups replaces the whole list; no per-key call.
   targets: [],
@@ -207,8 +212,6 @@ const MOUNT_TARGET_CASE: TypeCase = {
       variants: { IpAddressType: 'IPV4_ONLY' },
       expectedSilent: {
         'update-remove:SecurityGroups': `SecurityGroups is required by the CloudFormation schema, so no template drops it; an update with none declared is a no-op (${EFS_SRC}, updateMountTarget)`,
-        'update-remove:SecurityGroups.0': SG_FROM_NEXT,
-        'update-remove:SecurityGroups.1': SG_FROM_NEXT,
       },
       expectedRemovalThrows: {
         'create:FileSystemId': MT_REQUIRED('FileSystemId'),
@@ -376,6 +379,8 @@ const HOSTED_ZONE_CASE: TypeCase = {
   createOnly: createOnlyOf('AWS::Route53::HostedZone'),
   arm: armHostedZone,
   exempt: {},
+  // ChangeTagsForResource re-sends every kept tag in AddTags beside the
+  // removed key, so no request names the removed key alone.
   targets: [],
   bags: [
     {
@@ -463,7 +468,7 @@ const NO_ZONE: Record<string, Throw> = {
  * hosted-zone-id normalizer throws on it before any request is serialized.
  */
 const ALIAS_ZONE_REQUIRED: Throw = {
-  why: `AliasTarget.HostedZoneId is required by the CloudFormation schema; an absent one reaches the Route 53 client's id normalizer as undefined (${R53_SRC}, buildResourceRecordSet), which throws before any request is sent`,
+  why: `AliasTarget.HostedZoneId is required by the CloudFormation schema; an absent one reaches the Route 53 client's id normalizer as undefined (${R53_SRC}, buildResourceRecordSet), which throws before any request is sent; the needle is that SDK-internal TypeError, so an SDK update may reword it`,
   says: /Cannot read properties of undefined \(reading 'replace'\)/,
 };
 
@@ -619,6 +624,7 @@ const RECORD_SET_CASE: TypeCase = {
     reason: `update() UPSERTs the record built from the desired bag alone (${R53_SRC}, updateRecordSet), so a removal reaches the wire through next, which update-add observes; prev is read only for the record's identity (Name / Type / SetIdentifier)`,
   },
   exempt: {},
+  // UPSERT writes the whole record built from next; no per-key call.
   targets: [],
   bags: RECORD_BAGS.map(({ name, bag, throws }) => ({
     name,
