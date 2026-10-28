@@ -20,7 +20,8 @@ run a NEW arm once EARLY too, as soon as the lane has written it, between review
 rounds (never during a `src` fix round); that run sets no marker and is no §8-d
 proof — a new arm's first AWS contact can reject its shape (#4618). Sequence:
 dispatch reviewers → (new arm: early run) → apply EVERY finding, nits included →
-rebase → integ → marker. A UNIT-test-only fix round may overlap the parent's
+§8-d probe → rebase → integ → marker (rebase AFTER the probe: an hour-long
+probe stales the base, #5475). A UNIT-test-only fix round may overlap the parent's
 integ in the lane's tree. Brief the lane: no build, `/check` or `/verify-pr`
 there (a build rewrites the live fixture's `dist/`), no rebase or install, never
 the live fixture's directory, and stage only its own test files (the integ's
