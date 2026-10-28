@@ -592,8 +592,8 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
       expect(result).toEqual([
         { IndexName: 'gsi1', ProvisionedThroughputOverride: { ReadCapacityUnits: 7 } },
         // On-demand is not live on a provisioned table, so the ceiling is not
-        // forwarded into a guaranteed 400.
-        { IndexName: 'gsi2' },
+        // forwarded into a guaranteed 400, and gsi2 has nothing left to send
+        // (go-to-k/cdkd#5489).
       ]);
     });
 
@@ -605,16 +605,18 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
         ],
         'PAY_PER_REQUEST'
       );
+      // gsi1's provisioned read is not live on an on-demand table, so it has
+      // nothing to send (go-to-k/cdkd#5489).
       expect(result).toEqual([
-        { IndexName: 'gsi1' },
         { IndexName: 'gsi2', OnDemandThroughputOverride: { MaxReadRequestUnits: 50 } },
       ]);
     });
 
-    it('emits IndexName only when the replica entry carries no throughput override', () => {
-      expect(toSdkReplicaGlobalSecondaryIndexes([{ IndexName: 'plain' }], 'PAY_PER_REQUEST')).toEqual(
-        [{ IndexName: 'plain' }]
-      );
+    it('sends nothing for a replica entry that carries no throughput override', () => {
+      // AWS refuses a replica Update whose only content is such entries
+      // ("There are no actions specified in the Replica Update Action",
+      // go-to-k/cdkd#5489).
+      expect(toSdkReplicaGlobalSecondaryIndexes([{ IndexName: 'plain' }], 'PAY_PER_REQUEST')).toBeUndefined();
     });
 
     it('returns undefined for an absent / empty list so the SDK field stays unset', () => {

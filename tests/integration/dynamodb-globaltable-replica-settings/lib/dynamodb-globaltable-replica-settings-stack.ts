@@ -42,6 +42,18 @@ export interface DynamoDBGlobalTableReplicaSettingsStackProps extends cdk.StackP
  *                every #5365 setting, which CloudFormation resets too;
  *   - `protect`: with `removed`, protect the replica again (destroy then
  *                needs `--remove-protection`).
+ *   - `idx`:     issue #5489: a global secondary index `gsi1` whose per-replica
+ *                Contributor Insights is on in both regions, and a tag on each
+ *                replica's stream. `removed` drops the insights and the tags
+ *                (the index stays while `idx` is set). Also a single-region
+ *                `ModeTable` (with a sort key) declaring
+ *                `GlobalTableSettingsReplicationMode: ENABLED`;
+ *   - `lsi`:     issue #5489: add a local secondary index to the live
+ *                `ModeTable`, which DynamoDB cannot do (the deploy must be
+ *                refused);
+ *   - `replmode`: issue #5489: `GlobalTableSettingsReplicationMode` on both
+ *                replicas, which CloudFormation refuses on a table with more
+ *                than one replica (the deploy must be refused);
  *   - `ssetable`: a second two-region table on the AWS owned key, for the
  *                `drift --revert` phase of issue #5399. The first table has
  *                switched encryption four times by then, and DynamoDB refused a
@@ -101,9 +113,24 @@ export class DynamoDBGlobalTableReplicaSettingsStack extends cdk.Stack {
             ...(modes.has('policy') && { resourcePolicy: grant('dynamodb:GetItem') }),
           };
 
+    // Issue #5489: the replica-level options of `gsi1` (CDK renders them per
+    // replica; the deploy region's come from the index's own props).
+    const idx = modes.has('idx');
+    const indexInsights = idx && !removed;
     const table = new ddb.TableV2(this, 'ReplicaSettingsTable', {
       tableName: `${this.stackName}-table`,
       partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
+      ...(idx && {
+        globalSecondaryIndexes: [
+          {
+            indexName: 'gsi1',
+            partitionKey: { name: 'gpk', type: ddb.AttributeType.STRING },
+            projectionType: ddb.ProjectionType.KEYS_ONLY,
+            ...(indexInsights && { contributorInsightsSpecification: { enabled: true } }),
+          },
+        ],
+      }),
+
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       ...(!removed && {
         encryption: modes.has('managed')
@@ -122,11 +149,51 @@ export class DynamoDBGlobalTableReplicaSettingsStack extends cdk.Stack {
         {
           region: props.secondRegion,
           ...((!removed || modes.has('protect')) && { deletionProtection: true }),
+          ...(indexInsights && {
+            globalSecondaryIndexOptions: {
+              gsi1: { contributorInsightsSpecification: { enabled: true } },
+            },
+          }),
           ...settings(kinesis.Stream.fromStreamArn(this, 'ReplicaStream', props.replicaStreamArn)),
         },
       ],
     });
     if (modes.has('tag')) cdk.Tags.of(table).add('Cdkd5355', 'tagged');
+    // Issue #5489: TableV2 has no prop for these two replica members.
+    const cfnTable = table.node.defaultChild as ddb.CfnGlobalTable;
+    const replicaCount = 2;
+    for (let i = 0; i < replicaCount; i++) {
+      if (indexInsights) {
+        cfnTable.addPropertyOverride(`Replicas.${i}.ReplicaStreamSpecification.Tags`, [
+          { Key: 'Cdkd5489', Value: `stream-${i}` },
+        ]);
+      }
+      if (modes.has('replmode')) {
+        cfnTable.addPropertyOverride(`Replicas.${i}.GlobalTableSettingsReplicationMode`, 'ENABLED');
+      }
+    }
+    if (idx) {
+      // One replica, the only shape the settings replication mode is valid on.
+      const modeTable = new ddb.TableV2(this, 'ModeTable', {
+        tableName: `${this.stackName}-table3`,
+        partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
+        sortKey: { name: 'sk', type: ddb.AttributeType.STRING },
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+        ...(modes.has('lsi') && {
+          localSecondaryIndexes: [
+            {
+              indexName: 'lsi1',
+              sortKey: { name: 'lsk', type: ddb.AttributeType.STRING },
+              projectionType: ddb.ProjectionType.KEYS_ONLY,
+            },
+          ],
+        }),
+      });
+      (modeTable.node.defaultChild as ddb.CfnGlobalTable).addPropertyOverride(
+        'Replicas.0.GlobalTableSettingsReplicationMode',
+        'ENABLED'
+      );
+    }
 
     if (modes.has('ssetable')) {
       new ddb.TableV2(this, 'SseRevertTable', {

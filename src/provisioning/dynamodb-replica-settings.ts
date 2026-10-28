@@ -9,7 +9,12 @@
  *  - `Replicas[].ResourcePolicy` — `PutResourcePolicy` / `DeleteResourcePolicy`
  *    against the replica's TABLE arn;
  *  - `Replicas[].ReplicaStreamSpecification.ResourcePolicy` — the same two
- *    calls against the replica's STREAM arn.
+ *    calls against the replica's STREAM arn;
+ *  - `Replicas[].GlobalSecondaryIndexes[].ContributorInsightsSpecification` —
+ *    `UpdateContributorInsights` with the index's `IndexName`
+ *    (go-to-k/cdkd#5489);
+ *  - `Replicas[].ReplicaStreamSpecification.Tags` — `TagResource` /
+ *    `UntagResource` against the replica's STREAM arn (go-to-k/cdkd#5489).
  *
  * Each is sent through the replica's OWN region, the local table's included.
  * Before this module none was sent at all: a template declaring them deployed
@@ -20,9 +25,12 @@
  */
 import {
   CONTRIBUTOR_INSIGHTS_KEY,
+  INDEX_CONTRIBUTOR_INSIGHTS_PATH,
+  indexEntriesByName,
   planContributorInsightsOp,
   readContributorInsightsSpec,
 } from './dynamodb-contributor-insights.js';
+import { planTagDiff, readTagList, type CfnTagEntry } from './tag-list.js';
 import {
   coerceCfnBoolean,
   coerceCfnInteger,
@@ -47,6 +55,9 @@ const CI_PATH = `Replicas[].${CONTRIBUTOR_INSIGHTS_KEY}`;
 const KINESIS_PATH = `Replicas[].${KINESIS_KEY}`;
 const TABLE_POLICY_PATH = `Replicas[].${TABLE_POLICY_KEY}`;
 const STREAM_POLICY_PATH = `Replicas[].${REPLICA_STREAM_KEY}.ResourcePolicy`;
+const INDEX_CI_PATH = `Replicas[].${INDEX_CONTRIBUTOR_INSIGHTS_PATH}`;
+export const STREAM_TAGS_PATH = `Replicas[].${REPLICA_STREAM_KEY}.Tags`;
+const REPLICA_INDEXES_KEY = 'GlobalSecondaryIndexes';
 
 /** A declared block cdkd cannot read: never sent, never read as a default. */
 interface Unusable {
@@ -155,6 +166,42 @@ export function readStreamPolicy(replica: Record<string, unknown> | undefined): 
 }
 
 /**
+ * The replica stream's declared `Tags` (go-to-k/cdkd#5489). An absent stream
+ * block, or one without `Tags`, declares none: CloudFormation untags every key
+ * a removed list held (CFn A/B, us-east-1 + us-west-2, 2026-10-28).
+ */
+export type StreamTagsRead = { kind: 'tags'; tags: CfnTagEntry[] } | Unusable;
+
+export function readStreamTags(replica: Record<string, unknown> | undefined): StreamTagsRead {
+  const stream = replica?.[REPLICA_STREAM_KEY];
+  if (stream === undefined || stream === null) return { kind: 'tags', tags: [] };
+  if (!isPlainObject(stream)) {
+    return { kind: 'unusable', reason: `Replicas[].${REPLICA_STREAM_KEY} must be an object` };
+  }
+  const read = readTagList(stream['Tags'], 'desired');
+  return read.kind === 'tags'
+    ? { kind: 'tags', tags: read.tags }
+    : {
+        kind: 'unusable',
+        reason: `${STREAM_TAGS_PATH} must be a list of tags with a non-empty string Key and a scalar Value`,
+      };
+}
+
+/** Every per-index Contributor Insights refusal of one replica entry, by position. */
+function replicaIndexInsightsRefusals(replica: Record<string, unknown> | undefined): string[] {
+  const indexes = replica?.[REPLICA_INDEXES_KEY];
+  if (!Array.isArray(indexes)) return [];
+  return (indexes as unknown[]).flatMap((entry, position) => {
+    if (!isPlainObject(entry)) return [];
+    const read = readContributorInsightsSpec(
+      entry[CONTRIBUTOR_INSIGHTS_KEY],
+      `Replicas[].${REPLICA_INDEXES_KEY}[${position}].${CONTRIBUTOR_INSIGHTS_KEY}`
+    );
+    return read.kind === 'unusable' ? [read.reason] : [];
+  });
+}
+
+/**
  * Every refusal a template-path write must raise for one replica entry before
  * its first call. A create has no live setting to leave alone, so an
  * unreadable block there is a template error, not a skip.
@@ -166,8 +213,12 @@ export function replicaSettingRefusals(replica: Record<string, unknown> | undefi
     readKinesisSpec(replica?.[KINESIS_KEY]),
     readTablePolicy(replica),
     readStreamPolicy(replica),
+    readStreamTags(replica),
   ];
-  return reads.flatMap((read) => (read.kind === 'unusable' ? [read.reason] : []));
+  return [
+    ...reads.flatMap((read) => (read.kind === 'unusable' ? [read.reason] : [])),
+    ...replicaIndexInsightsRefusals(replica),
+  ];
 }
 
 /** One call against one replica, in that replica's own region. */
@@ -180,7 +231,15 @@ export type ReplicaSettingOp =
   | { kind: 'deleteTablePolicy' }
   | { kind: 'putTablePolicy'; document: string }
   | { kind: 'deleteStreamPolicy' }
-  | { kind: 'putStreamPolicy'; document: string };
+  | { kind: 'putStreamPolicy'; document: string }
+  | {
+      kind: 'indexContributorInsights';
+      indexName: string;
+      action: 'ENABLE' | 'DISABLE';
+      mode?: string;
+    }
+  | { kind: 'untagStream'; keys: string[] }
+  | { kind: 'tagStream'; tags: CfnTagEntry[] };
 
 /** Which setting an op belongs to, for the convergence pass and messages. */
 export type ReplicaSetting =
@@ -188,7 +247,9 @@ export type ReplicaSetting =
   | 'contributorInsights'
   | 'kinesis'
   | 'tablePolicy'
-  | 'streamPolicy';
+  | 'streamPolicy'
+  | 'indexContributorInsights'
+  | 'streamTags';
 
 export function settingOf(op: ReplicaSettingOp): ReplicaSetting {
   switch (op.kind) {
@@ -206,6 +267,11 @@ export function settingOf(op: ReplicaSettingOp): ReplicaSetting {
     case 'deleteStreamPolicy':
     case 'putStreamPolicy':
       return 'streamPolicy';
+    case 'indexContributorInsights':
+      return 'indexContributorInsights';
+    case 'untagStream':
+    case 'tagStream':
+      return 'streamTags';
   }
 }
 
@@ -216,6 +282,8 @@ export const SETTING_MEMBER: Readonly<Record<ReplicaSetting, string>> = {
   kinesis: KINESIS_KEY,
   tablePolicy: TABLE_POLICY_KEY,
   streamPolicy: `${REPLICA_STREAM_KEY}.ResourcePolicy`,
+  indexContributorInsights: INDEX_CONTRIBUTOR_INSIGHTS_PATH,
+  streamTags: `${REPLICA_STREAM_KEY}.Tags`,
 };
 
 export function samePolicyDocument(left: string, right: string): boolean {
@@ -272,6 +340,14 @@ export function planReplicaSettingOps(
     fresh: boolean;
     streamReplaced?: boolean;
     keepOnRemoval?: ReadonlySet<ReplicaSetting>;
+    /**
+     * The table-level `GlobalSecondaryIndexes` names the DESIRED side keeps.
+     * A replica index entry naming any other index sends nothing: an index
+     * the update drops takes its Contributor Insights rules with it, and a
+     * call naming it fails with `ResourceNotFoundException`. Absent: no index
+     * is addressed.
+     */
+    tableIndexNames?: ReadonlySet<string>;
   },
   onUnusable: (reason: string) => void
 ): ReplicaSettingOp[] {
@@ -407,6 +483,84 @@ export function planReplicaSettingOps(
     { kind: 'deleteStreamPolicy' },
     'streamPolicy'
   );
+
+  if (options.tableIndexNames !== undefined) {
+    ops.push(
+      ...planReplicaIndexInsightsOps(
+        desired,
+        previous,
+        { fresh: options.fresh, tableIndexNames: options.tableIndexNames, removes },
+        onUnusable
+      )
+    );
+  }
+
+  // The stream's tags (go-to-k/cdkd#5489): CloudFormation diffs them, untagging
+  // a removed key and tagging a new or changed one (CFn A/B, 2026-10-28). A
+  // replaced stream holds none, so every declared tag goes out again.
+  const wantTags = readStreamTags(desired);
+  if (wantTags.kind === 'unusable') {
+    onUnusable(wantTags.reason);
+  } else {
+    const hadTags =
+      options.streamReplaced === true ? { kind: 'tags' as const, tags: [] } : readStreamTags(prev);
+    const plan = planTagDiff(hadTags.kind === 'tags' ? hadTags.tags : [], wantTags.tags);
+    if (plan.remove.length > 0 && removes('streamTags')) {
+      ops.push({ kind: 'untagStream', keys: plan.remove });
+    }
+    if (plan.set.size > 0) {
+      ops.push({
+        kind: 'tagStream',
+        tags: [...plan.set].map(([Key, Value]) => ({ Key, Value })),
+      });
+    }
+  }
+  return ops;
+}
+
+/**
+ * Per-index Contributor Insights of one replica (go-to-k/cdkd#5489), through
+ * the shared table-level plan: CloudFormation sends `UpdateContributorInsights`
+ * with the `IndexName` in each replica's region, and DISABLES it for a block
+ * the template removed — the whole replica `GlobalSecondaryIndexes` list
+ * included (CFn A/B, us-east-1 + us-west-2, 2026-10-28). Indexes are walked by
+ * name over BOTH sides, so a removed entry is seen; only an index in
+ * `tableIndexNames` is addressed (see {@link planReplicaSettingOps}).
+ */
+export function planReplicaIndexInsightsOps(
+  desired: Record<string, unknown> | undefined,
+  previous: Record<string, unknown> | undefined,
+  options: {
+    fresh: boolean;
+    tableIndexNames: ReadonlySet<string>;
+    removes: (setting: ReplicaSetting) => boolean;
+  },
+  onUnusable: (reason: string) => void
+): ReplicaSettingOp[] {
+  const prev = options.fresh ? undefined : previous;
+  const ops: ReplicaSettingOp[] = [];
+  const desiredIndexes = indexEntriesByName(desired?.[REPLICA_INDEXES_KEY]);
+  const prevIndexes = indexEntriesByName(prev?.[REPLICA_INDEXES_KEY]);
+  for (const indexName of new Set([...desiredIndexes.keys(), ...prevIndexes.keys()])) {
+    if (!options.tableIndexNames.has(indexName)) continue;
+    const want = readContributorInsightsSpec(
+      desiredIndexes.get(indexName)?.[CONTRIBUTOR_INSIGHTS_KEY],
+      INDEX_CI_PATH
+    );
+    const op = planContributorInsightsOp(
+      want,
+      readContributorInsightsSpec(
+        prevIndexes.get(indexName)?.[CONTRIBUTOR_INSIGHTS_KEY],
+        INDEX_CI_PATH
+      ),
+      onUnusable
+    );
+    if (op === undefined) continue;
+    // A new replica (and a new index) starts with it off.
+    if (options.fresh && op.action === 'DISABLE') continue;
+    if (want.kind === 'absent' && !options.removes('indexContributorInsights')) continue;
+    ops.push({ kind: 'indexContributorInsights', indexName, ...op });
+  }
   return ops;
 }
 
@@ -419,6 +573,10 @@ export interface LiveReplicaSettings {
   /** `false` when AWS answered that there is no policy. */
   hasTablePolicy?: boolean;
   hasStreamPolicy?: boolean;
+  /** Per index name; an index whose read failed (or is transient) is missing. */
+  indexContributorInsightsEnabled?: ReadonlyMap<string, boolean>;
+  /** The stream's tags, key -> value. */
+  streamTags?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -492,7 +650,38 @@ export function planReplicaSettingCorrections(
   ) {
     ops.push({ kind: 'putStreamPolicy', document: streamPolicy.document });
   }
+  if (only.has('indexContributorInsights') && live.indexContributorInsightsEnabled !== undefined) {
+    for (const [indexName, entry] of declaredIndexInsights(desired)) {
+      const enabled = live.indexContributorInsightsEnabled.get(indexName);
+      if (enabled === undefined || enabled === entry.enabled) continue;
+      ops.push(
+        !entry.enabled
+          ? { kind: 'indexContributorInsights', indexName, action: 'DISABLE' }
+          : entry.mode === undefined
+            ? { kind: 'indexContributorInsights', indexName, action: 'ENABLE' }
+            : { kind: 'indexContributorInsights', indexName, action: 'ENABLE', mode: entry.mode }
+      );
+    }
+  }
+  const streamTags = readStreamTags(desired);
+  if (only.has('streamTags') && streamTags.kind === 'tags' && live.streamTags !== undefined) {
+    const liveTags = live.streamTags;
+    const missing = streamTags.tags.filter((t) => liveTags.get(t.Key) !== t.Value);
+    if (missing.length > 0) ops.push({ kind: 'tagStream', tags: missing });
+  }
   return ops;
+}
+
+/** The replica index entries declaring a usable `ContributorInsightsSpecification`, by name. */
+export function declaredIndexInsights(
+  desired: Record<string, unknown> | undefined
+): Map<string, { enabled: boolean; mode?: string }> {
+  const out = new Map<string, { enabled: boolean; mode?: string }>();
+  for (const [indexName, entry] of indexEntriesByName(desired?.[REPLICA_INDEXES_KEY])) {
+    const read = readContributorInsightsSpec(entry[CONTRIBUTOR_INSIGHTS_KEY], INDEX_CI_PATH);
+    if (read.kind === 'usable') out.set(indexName, read);
+  }
+  return out;
 }
 
 /** Which settings a replica entry declares usably — what the convergence reads. */
@@ -507,6 +696,9 @@ export function declaredReplicaSettings(
   if (readKinesisSpec(desired?.[KINESIS_KEY]).kind === 'usable') declared.add('kinesis');
   if (readTablePolicy(desired).kind === 'usable') declared.add('tablePolicy');
   if (readStreamPolicy(desired).kind === 'usable') declared.add('streamPolicy');
+  if (declaredIndexInsights(desired).size > 0) declared.add('indexContributorInsights');
+  const tags = readStreamTags(desired);
+  if (tags.kind === 'tags' && tags.tags.length > 0) declared.add('streamTags');
   return declared;
 }
 
@@ -691,7 +883,13 @@ export function canonicalizePre5381ReplicaBaseline(
 }
 
 /** Replica members a `drift --revert` desired side may omit only because they were not read. */
-const UNREAD_REPLICA_MEMBERS = ['TableClass', 'DeletionProtectionEnabled', 'SSESpecification'];
+const UNREAD_REPLICA_MEMBERS = [
+  'TableClass',
+  'DeletionProtectionEnabled',
+  'SSESpecification',
+  // Not read back either (go-to-k/cdkd#5489).
+  'GlobalTableSettingsReplicationMode',
+];
 
 /**
  * `drift --revert`'s desired side, with each replica member it OMITS taken from

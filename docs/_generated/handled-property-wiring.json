@@ -5903,6 +5903,8 @@
             "element-read"
           ],
           "seededBy": [
+            "applyReplicaIndexInsights",
+            "applyReplicaSettings",
             "create",
             "update"
           ]
@@ -5947,6 +5949,7 @@
             "element-read"
           ],
           "seededBy": [
+            "applyReplicaIndexInsights",
             "applyReplicaKeys",
             "applyReplicaSettings",
             "canonicalizeDesiredProperties",

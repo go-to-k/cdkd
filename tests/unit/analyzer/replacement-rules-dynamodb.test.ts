@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   ReplacementRulesRegistry,
   attributeTypeChangedForSharedAttribute,
+  globalTableLocalSecondaryIndexesRemoved,
 } from '../../../src/analyzer/replacement-rules.js';
 
 /**
@@ -75,5 +76,49 @@ describe('attributeTypeChangedForSharedAttribute', () => {
   it('tolerates undefined / non-array inputs', () => {
     expect(attributeTypeChangedForSharedAttribute(undefined, undefined)).toBe(false);
     expect(attributeTypeChangedForSharedAttribute(null, [{ AttributeName: 'x' }])).toBe(false);
+  });
+});
+
+/**
+ * go-to-k/cdkd#5489: CloudFormation REPLACES a GlobalTable whose declared
+ * `LocalSecondaryIndexes` list is removed, and fails the update in place for
+ * an added one (CFn A/B, us-east-1 + us-west-2, 2026-10-28).
+ */
+describe('ReplacementRulesRegistry — DynamoDB GlobalTable LocalSecondaryIndexes', () => {
+  const registry = new ReplacementRulesRegistry();
+  const GT = 'AWS::DynamoDB::GlobalTable';
+  const lsi = [
+    {
+      IndexName: 'lsi1',
+      KeySchema: [
+        { AttributeName: 'pk', KeyType: 'HASH' },
+        { AttributeName: 'lsk', KeyType: 'RANGE' },
+      ],
+      Projection: { ProjectionType: 'KEYS_ONLY' },
+    },
+  ];
+  const lsi2 = [{ ...lsi[0], IndexName: 'lsi2' }];
+
+  it.each([
+    ['absent', undefined],
+    ['null', null],
+    ['an empty list', []],
+  ])('replaces when a declared list becomes %s', (_label, next) => {
+    expect(registry.requiresReplacement(GT, 'LocalSecondaryIndexes', lsi, next)).toBe(true);
+  });
+
+  it.each([
+    ['added to a table without one', undefined, lsi],
+    ['added over an empty list', [], lsi],
+    ['changed', lsi, lsi2],
+    ['absent to empty', undefined, []],
+  ])('stays an update (refused by the provider) when the list is %s', (_label, prev, next) => {
+    expect(registry.requiresReplacement(GT, 'LocalSecondaryIndexes', prev, next)).toBe(false);
+    expect(globalTableLocalSecondaryIndexesRemoved(prev, next)).toBe(false);
+  });
+
+  it("leaves TableName to the schema's createOnly fallback", () => {
+    expect(registry.isClassified(GT, 'TableName')).toBe(false);
+    expect(registry.isClassified(GT, 'LocalSecondaryIndexes')).toBe(true);
   });
 });
