@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd GlobalTable replica settings integ (issues #5355, #5365, #5381, #5399).
+# verify.sh — cdkd GlobalTable replica settings integ (issues #5355, #5365, #5381, #5399, #5489).
 #
 # A two-region `TableV2` renders its KMS key, table class and deletion
 # protection PER REPLICA. cdkd read the key and the class under names the CFn
@@ -22,6 +22,16 @@
 #      fails every one of these). Assert each region holds point-in-time
 #      recovery (10 days), Contributor Insights, streaming to ITS region's
 #      Kinesis stream and a stream resource policy (#5365).
+#  1b. `idx` (issue #5489): add a global secondary index whose per-replica
+#      Contributor Insights is on, a tag on each replica's stream, and a
+#      single-region `ModeTable` declaring GlobalTableSettingsReplicationMode
+#      ENABLED. Assert the index's insights are ENABLED and each stream holds
+#      its tag in both regions, and the ModeTable reads ENABLED (a pre-fix
+#      binary sends none of the three).
+#  1c. `idx,lsi` and `idx,replmode` (issue #5489): a local secondary index
+#      added to the live ModeTable, and a replication mode on the two-replica
+#      table, must each be REFUSED (CloudFormation fails both); a pre-fix
+#      binary deployed both green with nothing applied.
 #   2. Turn the replica's protection off out of band (a replica deployed by a
 #      pre-fix binary), then deploy an ordinary change (`tag`). Assert the
 #      unchanged `true` is converged back on, and that the replica's class and
@@ -42,6 +52,7 @@
 #      replica is unprotected, cdkd warned that it auto-disabled the replica's
 #      protection, and every #5365 setting reset as CloudFormation resets it
 #      (measured): PITR and insights off, streaming disabled, both policies gone.
+#      The #5489 index insights read DISABLED and the stream tags are gone.
 #  5b. `tag,removed,ssetable`: a second two-region table on the AWS owned key
 #      (the first has used up its encryption switches). Drift is clean; then
 #      both its regions move to the customer managed keys out of band (one
@@ -115,6 +126,8 @@ TABLE="${STACK}-table"
 # Phase 5b's own table (issue #5399): ${TABLE} has switched encryption four
 # times by then, and DynamoDB refused a further switch on it.
 TABLE2="${STACK}-table2"
+# Issue #5489's single-region ModeTable (`idx`).
+TABLE3="${STACK}-table3"
 LOCAL_ALIAS="alias/${STACK}-local"
 REPLICA_ALIAS="alias/${STACK}-replica"
 # Tag on the keys this script creates, so a key whose alias was never
@@ -226,6 +239,50 @@ await_replica() { # usage: await_replica <region> <regex> <failure message>
   exit 1
 }
 
+# "<gsi1 insights status> <the stream's Cdkd5489 tag | none>" for ${TABLE} in
+# region $1 (issue #5489).
+index_settings() {
+  local sarn ci tag
+  sarn="$(aws dynamodb describe-table --table-name "${TABLE}" --region "$1" \
+    --query 'Table.LatestStreamArn' --output text)" || return 1
+  ci="$(aws dynamodb describe-contributor-insights --table-name "${TABLE}" --index-name gsi1 \
+    --region "$1" --query 'ContributorInsightsStatus' --output text)" || return 1
+  tag="$(aws dynamodb list-tags-of-resource --resource-arn "${sarn}" --region "$1" \
+    --query "Tags[?Key=='Cdkd5489'].Value | [0]" --output text)" || return 1
+  [ "${tag}" = "None" ] && tag=none
+  printf '%s\t%s\n' "${ci}" "${tag}"
+}
+
+# Poll until region $1's #5489 settings match the extended regex $2 (insights
+# pass through ENABLING / DISABLING), then FAIL with $3.
+await_index() { # usage: await_index <region> <regex> <failure message>
+  local i got
+  for i in $(seq 1 60); do
+    got="$(index_settings "$1")" || got="(read failed)"
+    if printf '%s' "${got}" | grep -qE "$2"; then
+      echo "    $1: ${got}"
+      return 0
+    fi
+    sleep 10
+  done
+  echo "FAIL: $3 ($1 reads '${got}')" >&2
+  exit 1
+}
+
+# A deploy that must be REFUSED with a message matching the fixed string $3
+# (issue #5489). `deploy` pipes through tee, so its status is the pipeline's.
+deploy_refused() { # usage: deploy_refused <modes> <log file> <expected message> <phase label>
+  if deploy "$1" "$2"; then
+    echo "FAIL: $4: the deploy succeeded, but must be refused (issue #5489)" >&2
+    exit 1
+  fi
+  if ! grep -qF "$3" "$2"; then
+    echo "FAIL: $4: the deploy failed without the refusal '$3' (issue #5489)" >&2
+    exit 1
+  fi
+  echo "    refused: $3"
+}
+
 # Delete Kinesis stream $2 in region $1 if it exists.
 retire_stream() { # usage: retire_stream <region> <stream name>
   local out
@@ -316,11 +373,12 @@ cleanup() {
   fi
   teardown_table "${TABLE}"
   teardown_table "${TABLE2}"
+  teardown_table "${TABLE3}"
   # Keys LAST, once every table is gone: a table still DELETING on a customer
   # managed key whose deletion is scheduled stays stuck until the key is
   # enabled again (bounded: 15 min per table and region).
   local t r out
-  for t in "${TABLE}" "${TABLE2}"; do
+  for t in "${TABLE}" "${TABLE2}" "${TABLE3}"; do
     for r in "${REGION}" "${SECOND_REGION}"; do
       for _ in $(seq 1 90); do
         # Only a not-found answer is "gone"; any other failure retries.
@@ -493,6 +551,45 @@ await_replica "${REGION}" "^ENABLED	10	ENABLED	${LOCAL_KINESIS_ARN}	absent	prese
 await_replica "${SECOND_REGION}" "^ENABLED	10	ENABLED	${REPLICA_KINESIS_ARN}	absent	present$" \
   "Phase 1: the ${SECOND_REGION} replica lacks its point-in-time recovery, Contributor Insights, Kinesis stream or stream policy (issue #5365)"
 
+# --- Phase 1b: per-index insights, stream tags, replication mode (#5489) ---
+echo "==> Phase 1b: add gsi1 with per-replica insights, stream tags, and a one-replica ModeTable"
+deploy "idx" "${LOG_DIR}/phase1b.log"
+wait_settled
+# CDK renders the second region's replica first (stream-0) and the deploy
+# region's last (stream-1). A pre-fix binary sends neither the insights nor
+# the tags: DISABLED, none.
+await_index "${REGION}" "^ENABLED	stream-1$" \
+  "Phase 1b: the ${REGION} table's gsi1 insights or stream tag did not reach AWS (issue #5489)"
+await_index "${SECOND_REGION}" "^ENABLED	stream-0$" \
+  "Phase 1b: the ${SECOND_REGION} replica's gsi1 insights or stream tag did not reach AWS (issue #5489)"
+MODE="$(aws dynamodb describe-table --table-name "${TABLE3}" --region "${REGION}" \
+  --query 'Table.GlobalTableSettingsReplicationMode' --output text)"
+if [ "${MODE}" != "ENABLED" ]; then
+  echo "FAIL: Phase 1b: ${TABLE3} reads GlobalTableSettingsReplicationMode '${MODE}', not ENABLED (issue #5489)" >&2
+  exit 1
+fi
+echo "    ${TABLE3}: GlobalTableSettingsReplicationMode ENABLED"
+
+# --- Phase 1c: the two refusals (#5489) ------------------------------------
+echo "==> Phase 1c: an LSI added to a live table, and a replication mode on two replicas, are refused"
+deploy_refused "idx,lsi" "${LOG_DIR}/phase1c-lsi.log" \
+  "LocalSecondaryIndexes is immutable on AWS::DynamoDB::GlobalTable" "Phase 1c (lsi)"
+LSI="$(aws dynamodb describe-table --table-name "${TABLE3}" --region "${REGION}" \
+  --query 'length(Table.LocalSecondaryIndexes || `[]`)' --output text)"
+if [ "${LSI}" != "0" ]; then
+  echo "FAIL: Phase 1c (lsi): ${TABLE3} holds ${LSI} local secondary index(es) after the refusal" >&2
+  exit 1
+fi
+deploy_refused "idx,replmode" "${LOG_DIR}/phase1c-mode.log" \
+  "can be declared only on a table with exactly one replica" "Phase 1c (replmode)"
+MODE="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
+  --query 'Table.GlobalTableSettingsReplicationMode' --output text)"
+if [ "${MODE}" = "ENABLED" ]; then
+  echo "FAIL: Phase 1c (replmode): ${TABLE} reads GlobalTableSettingsReplicationMode ENABLED after the refusal" >&2
+  exit 1
+fi
+wait_settled
+
 # --- Phase 2: an unchanged `true` is converged on the next update ---------
 echo "==> Phase 2: unprotect the replica out of band, then deploy an ordinary change"
 # Phase 1 set this replica's protection moments ago, and DynamoDB throttles a
@@ -520,7 +617,7 @@ await_settings "${SECOND_REGION}" "	False$" "Phase 2 premise: the out-of-band un
 aws dynamodb update-continuous-backups --table-name "${TABLE}" --region "${SECOND_REGION}" \
   --point-in-time-recovery-specification PointInTimeRecoveryEnabled=false >/dev/null
 await_replica "${SECOND_REGION}" "^DISABLED	" "Phase 2 premise: the out-of-band PITR disable did not land"
-deploy "tag" "${LOG_DIR}/phase2.log"
+deploy "tag,idx" "${LOG_DIR}/phase2.log"
 wait_settled
 TABLE_ARN="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
   --query 'Table.TableArn' --output text)"
@@ -563,7 +660,7 @@ echo "    no corrective replica update"
 
 # --- Phase 2b: a table resource policy on an existing replica (#5365) -----
 echo "==> Phase 2b: add a table resource policy to both replicas"
-deploy "tag,policy" "${LOG_DIR}/phase2b.log"
+deploy "tag,policy,idx" "${LOG_DIR}/phase2b.log"
 wait_settled
 await_replica "${REGION}" "^ENABLED	10	ENABLED	${LOCAL_KINESIS_ARN}	present	present$" \
   "Phase 2b: the ${REGION} table has no resource policy (issue #5365)"
@@ -664,7 +761,7 @@ echo "    OK: clean after --revert"
 # DynamoDB takes this only as ONE ReplicaUpdates call naming every region's
 # key; SSESpecification and a one-replica Update are refused (measured).
 echo "==> Phase 3: rotate both regions to their second customer managed key"
-deploy "tag,policy,rotated" "${LOG_DIR}/phase3.log"
+deploy "tag,policy,rotated,idx" "${LOG_DIR}/phase3.log"
 wait_settled
 LOCAL_KEY2_ARN="$(aws kms describe-key --key-id "${LOCAL_ALIAS}2" --region "${REGION}" \
   --query 'KeyMetadata.Arn' --output text)"
@@ -679,7 +776,7 @@ fi
 
 # --- Phase 4: customer managed keys -> the AWS managed key -----------------
 echo "==> Phase 4: move both regions to the AWS managed key"
-deploy "tag,policy,managed" "${LOG_DIR}/phase4.log"
+deploy "tag,policy,managed,idx" "${LOG_DIR}/phase4.log"
 wait_settled
 LOCAL_MANAGED_ARN="$(aws kms describe-key --key-id alias/aws/dynamodb --region "${REGION}" \
   --query 'KeyMetadata.Arn' --output text)"
@@ -692,7 +789,7 @@ await_settings "${SECOND_REGION}" "^ENABLED	KMS	${SECOND_MANAGED_ARN}	STANDARD_I
 
 # --- Phase 5: removals reset, as CloudFormation does ---------------------
 echo "==> Phase 5: remove the key, the table class and the replica's protection"
-deploy "tag,removed" "${LOG_DIR}/phase5.log"
+deploy "tag,removed,idx" "${LOG_DIR}/phase5.log"
 wait_settled
 # An AWS owned key reads back as no SSEDescription (None) — what the CFn A/B
 # measured once SSESpecification was removed.
@@ -710,6 +807,12 @@ await_replica "${REGION}" "^DISABLED	None	DISABLED	none	absent	absent$" \
   "Phase 5: the ${REGION} table did not reset its point-in-time recovery, insights, Kinesis stream and policies (issue #5365)"
 await_replica "${SECOND_REGION}" "^DISABLED	None	DISABLED	none	absent	absent$" \
   "Phase 5: the ${SECOND_REGION} replica did not reset its point-in-time recovery, insights, Kinesis stream and policies (issue #5365)"
+# CloudFormation disables a removed index block and untags a removed stream
+# tag (measured for #5489).
+await_index "${REGION}" "^DISABLED	none$" \
+  "Phase 5: the ${REGION} table's gsi1 insights or stream tag did not reset (issue #5489)"
+await_index "${SECOND_REGION}" "^DISABLED	none$" \
+  "Phase 5: the ${SECOND_REGION} replica's gsi1 insights or stream tag did not reset (issue #5489)"
 
 # --- Phase 5b: drift --revert returns the AWS owned key (#5399) ----------
 # On its OWN table (`ssetable`): ${TABLE} has switched encryption four times
@@ -721,7 +824,7 @@ await_replica "${SECOND_REGION}" "^DISABLED	None	DISABLED	none	absent	absent$" \
 # the table stayed on the keys.
 echo "==> Phase 5b: a second table on the AWS owned key, moved to customer managed keys out of band, then drift --revert"
 PHASE5B="Phase 5b (issue #5399)"
-deploy "tag,removed,ssetable" "${LOG_DIR}/phase5b.log"
+deploy "tag,removed,ssetable,idx" "${LOG_DIR}/phase5b.log"
 GT_TABLE="${TABLE2}"
 wait_settled
 await_settings "${REGION}" "^None	None	None	None	False$" \
@@ -775,7 +878,7 @@ echo "    OK: back on the AWS owned key, and clean after --revert"
 echo "==> Phase 6: protect the replica again"
 # DynamoDB refuses a second protection change on one table within 15 s.
 sleep 16
-deploy "tag,removed,protect,ssetable" "${LOG_DIR}/phase6.log"
+deploy "tag,removed,protect,ssetable,idx" "${LOG_DIR}/phase6.log"
 wait_settled
 await_settings "${SECOND_REGION}" "	True$" "Phase 6: the replica was not protected again (issue #5355)"
 
@@ -799,6 +902,8 @@ for r in "${REGION}" "${SECOND_REGION}"; do
   assert_gone "table ${TABLE2} still exists in ${r} after destroy" aws dynamodb describe-table --table-name "${TABLE2}" --region "${r}"
 done
 echo "    the Phase 5b table deleted in both regions"
+assert_gone "table ${TABLE3} still exists in ${REGION} after destroy" aws dynamodb describe-table --table-name "${TABLE3}" --region "${REGION}"
+echo "    the Phase 1b ModeTable deleted"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
@@ -812,4 +917,4 @@ for k in "${LOCAL_KEY_ARN}" "${LOCAL_KEY2_ARN}"; do
 done
 echo "    both stack keys pending deletion"
 
-echo "[verify] PASS — GlobalTable replica KMS key, table class and deletion protection (issue #5355) and point-in-time recovery, Contributor Insights, Kinesis stream and resource policies (issue #5365) reach AWS and reset on removal, all phases passed"
+echo "[verify] PASS — GlobalTable replica KMS key, table class and deletion protection (issue #5355) point-in-time recovery, Contributor Insights, Kinesis stream and resource policies (issue #5365), and per-index insights, stream tags and the replication mode (issue #5489) reach AWS and reset on removal, all phases passed"

@@ -31,6 +31,7 @@ import {
   type GlobalSecondaryIndex,
   type GlobalSecondaryIndexDescription,
   type GlobalSecondaryIndexUpdate,
+  type GlobalTableSettingsReplicationMode,
   type LocalSecondaryIndex,
   type OnDemandThroughput,
   type ProvisionedThroughput,
@@ -174,8 +175,11 @@ import {
   type CredentialConfig,
 } from '../../utils/ambient-client-defaults.js';
 import { injectiveKey } from '../../state/record-keys.js';
+import { indexEntriesByName } from '../dynamodb-contributor-insights.js';
 import {
+  declaredIndexInsights,
   declaredReplicaSettings,
+  planReplicaIndexInsightsOps,
   canonicalizePre5381ReplicaBaseline,
   keepUnreadReplicaMembers,
   readPitrSpec,
@@ -1242,6 +1246,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         'LocalSecondaryIndexes'
       ] as LocalSecondaryIndex[];
     }
+    // go-to-k/cdkd#5489: the settings replication mode rides `CreateTable`, as
+    // CloudFormation sends it; a mode on a table with more than one replica is
+    // refused below (`replicaSettingsRefusal`) before anything is created.
+    const createMode = readReplicationMode(properties);
+    if (createMode.kind === 'usable') {
+      createParams.GlobalTableSettingsReplicationMode =
+        createMode.mode as GlobalTableSettingsReplicationMode;
+    }
 
     // SSE: GlobalTable's CFn shape is { SSEEnabled, SSEType } with NO
     // top-level KMSMasterKeyId — the key is per-replica, so the LOCAL table's
@@ -1806,17 +1818,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * takes 1–5 min).
    *
    * `CreateReplicationGroupMemberAction` has no member for a replica's
-   * point-in-time recovery, Contributor Insights, Kinesis destination or
-   * resource policies: {@link applyReplicaSettings} sends those through the
-   * replica's own region once every replica is ACTIVE (go-to-k/cdkd#5365).
-   *
-   * DELIBERATELY UNMAPPED replica sub-key (Issue #1387 — recorded rather
-   * than silently dropped):
-   *  - `GlobalSecondaryIndexes[].ContributorInsightsSpecification` — a
-   *    per-index `UpdateContributorInsights` call.
-   * `Replicas` is declared in `handledProperties` at the TOP level, which
-   * is the granularity cdkd's pre-flight property-coverage check works at;
-   * these nested keys are tracked as a known gap, not a supported surface.
+   * point-in-time recovery, Contributor Insights (the table's or an index's),
+   * Kinesis destination, resource policies or stream tags:
+   * {@link applyReplicaSettings} sends those through the replica's own region
+   * once every replica is ACTIVE (go-to-k/cdkd#5365, go-to-k/cdkd#5489).
    */
   private async addReplica(
     tableName: string,
@@ -2440,6 +2445,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     const desired = Array.isArray(properties['Replicas'])
       ? (properties['Replicas'] as unknown[])
       : [];
+    // go-to-k/cdkd#5489: a replica's per-index Contributor Insights. On a
+    // create every index already exists, so it is sent here; `update()` runs
+    // this pass BEFORE its GSI diff, so a new index does not exist yet, and
+    // {@link applyReplicaIndexInsights} sends them all after that diff.
+    const tableIndexNames =
+      previousProperties === undefined
+        ? new Set(indexEntriesByName(properties['GlobalSecondaryIndexes']).keys())
+        : undefined;
     for (const entry of desired) {
       const replica = asRecord(entry);
       const region = replica?.['Region'];
@@ -2452,7 +2465,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const ops = planReplicaSettingOps(
         replica,
         previous,
-        { fresh, streamReplaced, keepOnRemoval },
+        {
+          fresh,
+          streamReplaced,
+          keepOnRemoval,
+          ...(tableIndexNames !== undefined && { tableIndexNames }),
+        },
         (reason) =>
           warn(
             `The ${region} replica of ${tableName}: ${reason}, so that setting was left as it ` +
@@ -2480,6 +2498,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
       // What the template did not change but declares: checked against AWS.
       const unchanged = fresh ? new Set<ReplicaSetting>() : declaredReplicaSettings(replica);
+      // Checked by `applyReplicaIndexInsights`, after `update()`'s GSI diff.
+      unchanged.delete('indexContributorInsights');
       for (const op of ops) unchanged.delete(settingOf(op));
       if (ops.length === 0 && unchanged.size === 0) continue;
 
@@ -2577,7 +2597,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         region,
         unchanged,
         describe,
-        maskSecrets
+        maskSecrets,
+        replica
       );
       for (const op of planReplicaSettingCorrections(replica, live, unchanged)) {
         const member = SETTING_MEMBER[settingOf(op)];
@@ -2615,6 +2636,164 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
+   * Send a `GlobalTableSettingsReplicationMode` change (go-to-k/cdkd#5489) in
+   * its own `UpdateTable`, as CloudFormation does, and wait for the table to
+   * settle. A failure fails the update: the template asked for it.
+   */
+  private async sendReplicationMode(
+    tableName: string,
+    logicalId: string,
+    mode: string,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    this.logger.debug(
+      maskSecrets(`Setting GlobalTableSettingsReplicationMode of ${tableName} to ${mode}`)
+    );
+    await this.sendLocalSettingUpdate(
+      {
+        TableName: tableName,
+        GlobalTableSettingsReplicationMode: mode as GlobalTableSettingsReplicationMode,
+      },
+      true,
+      'GlobalTableSettingsReplicationMode',
+      tableName,
+      logicalId,
+      maskSecrets
+    );
+  }
+
+  /**
+   * `update()`'s per-index Contributor Insights pass over every replica
+   * (go-to-k/cdkd#5489), run AFTER the GSI diff so an index this update
+   * created exists. The template-driven calls fail the update; a declared
+   * setting the template did not change is checked against AWS and corrected
+   * best-effort — before this issue none was ever sent, so a replica deployed
+   * then holds none of them under a record that names them.
+   */
+  private async applyReplicaIndexInsights(
+    tableName: string,
+    logicalId: string,
+    currentRegion: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    freshRegions: ReadonlySet<unknown>,
+    keepOnRemoval: ReadonlySet<ReplicaSetting>,
+    replaying: boolean,
+    warn: (message: string) => void,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const tableIndexNames = new Set(
+      indexEntriesByName(properties['GlobalSecondaryIndexes']).keys()
+    );
+    if (tableIndexNames.size === 0) return;
+    const desired = Array.isArray(properties['Replicas'])
+      ? (properties['Replicas'] as unknown[])
+      : [];
+    for (const entry of desired) {
+      const replica = asRecord(entry);
+      const region = replica?.['Region'];
+      if (typeof region !== 'string' || region === '') continue;
+      const fresh = freshRegions.has(region);
+      const ops = planReplicaIndexInsightsOps(
+        replica,
+        localReplicaEntry(previousProperties, region),
+        {
+          fresh,
+          tableIndexNames,
+          removes: (setting) => !keepOnRemoval.has(setting),
+        },
+        (reason) =>
+          warn(
+            `The ${region} replica of ${tableName}: ${reason}, so that setting was left as it ` +
+              `is. ` +
+              (replaying
+                ? `The value came from a recorded state, which a template edit cannot reach.`
+                : `Fix the template value and re-deploy.`)
+          )
+      );
+      // Declared, unchanged and on the table: checked against AWS.
+      const addressed = new Set(
+        ops.flatMap((op) => (op.kind === 'indexContributorInsights' ? [op.indexName] : []))
+      );
+      const declared = declaredIndexInsights(replica);
+      const unchanged = fresh
+        ? []
+        : [...declared.keys()].filter((name) => tableIndexNames.has(name) && !addressed.has(name));
+      if (ops.length === 0 && unchanged.length === 0) continue;
+
+      const client =
+        region === currentRegion ? this.dynamoDBClient : this.getRegionalClient(region);
+      await this.waitForGlobalTableSettled(tableName, logicalId, maskSecrets, {
+        ...(region !== currentRegion && { region }),
+      });
+      // An index this update created may still be building in this region,
+      // and its rules cannot be set until it is ACTIVE. Best-effort: a wait
+      // that ends unconfirmed leaves AWS's own refusal as the backstop.
+      await waitForIndexesSettled({
+        tableName,
+        logicalId,
+        logger: maskedLogger(this.logger, maskSecrets, tableName),
+        describeTable: () => client.send(new DescribeTableCommand({ TableName: tableName })),
+        maxAttempts: 900,
+        proceedNote: `setting the index's Contributor Insights may be refused.`,
+      });
+      // No op here addresses an arn.
+      const describe = (): Promise<{ tableArn?: string; streamArn?: string }> =>
+        Promise.resolve({});
+      for (const op of ops) {
+        await this.sendReplicaSettingOp(
+          client,
+          tableName,
+          region,
+          logicalId,
+          op,
+          describe,
+          maskSecrets
+        );
+      }
+      if (unchanged.length === 0) continue;
+      const replicaIndexes = indexEntriesByName(replica?.['GlobalSecondaryIndexes']);
+      const onlyUnchanged: Record<string, unknown> = {
+        ...replica,
+        GlobalSecondaryIndexes: unchanged.map((name) => replicaIndexes.get(name)),
+      };
+      const only = new Set<ReplicaSetting>(['indexContributorInsights']);
+      const live = await this.readLiveReplicaSettings(
+        client,
+        tableName,
+        region,
+        only,
+        describe,
+        maskSecrets,
+        onlyUnchanged
+      );
+      for (const op of planReplicaSettingCorrections(onlyUnchanged, live, only)) {
+        try {
+          await this.sendReplicaSettingOp(
+            client,
+            tableName,
+            region,
+            logicalId,
+            op,
+            describe,
+            maskSecrets
+          );
+        } catch (convergeError) {
+          if (isInterruptedWaitError(convergeError)) throw convergeError;
+          this.logger.warn(
+            maskSecrets(
+              `The ${region} replica of ${tableName} does not hold the declared ` +
+                `${SETTING_MEMBER.indexContributorInsights} of an index, and setting it failed ` +
+                `(${describeAwsFailure(convergeError).summary}). The next deploy that updates ` +
+                `this table tries again.`
+            )
+          );
+        }
+      }
+    }
+  }
+
+  /**
    * What AWS reports for the given settings of one replica. Each read is
    * best-effort: a failure leaves that setting unknown, and an unknown setting
    * is never corrected.
@@ -2625,7 +2804,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     region: string,
     wanted: ReadonlySet<ReplicaSetting>,
     describe: () => Promise<{ tableArn?: string; streamArn?: string }>,
-    maskSecrets: SecretMasker
+    maskSecrets: SecretMasker,
+    // The desired replica entry: names the indexes whose read is wanted.
+    declared?: Record<string, unknown>
   ): Promise<LiveReplicaSettings> {
     const live: LiveReplicaSettings = {};
     const attempt = async (what: string, read: () => Promise<void>): Promise<void> => {
@@ -2695,6 +2876,40 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       await attempt('the stream resource policy', async () => {
         const answer = await hasPolicy((await describe()).streamArn);
         if (answer !== undefined) live.hasStreamPolicy = answer;
+      });
+    }
+    if (wanted.has('indexContributorInsights')) {
+      const perIndex = new Map<string, boolean>();
+      for (const indexName of declaredIndexInsights(declared).keys()) {
+        await attempt(`Contributor Insights of an index`, async () => {
+          const out = await client.send(
+            new DescribeContributorInsightsCommand({ TableName: tableName, IndexName: indexName })
+          );
+          const status = out.ContributorInsightsStatus;
+          // ENABLING / DISABLING are on their way: nothing to correct yet.
+          if (status === 'ENABLED' || status === 'DISABLED') {
+            perIndex.set(indexName, status === 'ENABLED');
+          }
+        });
+      }
+      live.indexContributorInsightsEnabled = perIndex;
+    }
+    if (wanted.has('streamTags')) {
+      await attempt('the stream tags', async () => {
+        const arn = (await describe()).streamArn;
+        if (arn === undefined) return;
+        const tags = new Map<string, string>();
+        let nextToken: string | undefined;
+        do {
+          const out = await client.send(
+            new ListTagsOfResourceCommand({ ResourceArn: arn, NextToken: nextToken })
+          );
+          for (const t of out.Tags ?? []) {
+            if (t.Key !== undefined) tags.set(t.Key, t.Value ?? '');
+          }
+          nextToken = out.NextToken;
+        } while (nextToken !== undefined);
+        live.streamTags = tags;
       });
     }
     return live;
@@ -2991,6 +3206,34 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // No policy left to remove is the goal.
           if (!(error instanceof PolicyNotFoundException)) throw error;
         }
+        break;
+      }
+      case 'indexContributorInsights':
+        await send(() =>
+          client.send(
+            new UpdateContributorInsightsCommand({
+              TableName: tableName,
+              IndexName: op.indexName,
+              ContributorInsightsAction: op.action,
+              ...(op.mode !== undefined && {
+                ContributorInsightsMode: op.mode as ContributorInsightsMode,
+              }),
+            })
+          )
+        );
+        break;
+      case 'untagStream': {
+        // No stream left means no stream tags left: the goal.
+        if ((await describe()).streamArn === undefined) break;
+        const arn = await arnFor('streamArn');
+        await send(() =>
+          client.send(new UntagResourceCommand({ ResourceArn: arn, TagKeys: op.keys }))
+        );
+        break;
+      }
+      case 'tagStream': {
+        const arn = await arnFor('streamArn');
+        await send(() => client.send(new TagResourceCommand({ ResourceArn: arn, Tags: op.tags })));
         break;
       }
     }
@@ -3563,10 +3806,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         physicalId
       );
     }
+    // go-to-k/cdkd#5489: an ADDED or REMOVED whole list is a change too. Before,
+    // the guard needed both sides to declare a list, so adding or removing it
+    // sent nothing and the update went green while DynamoDB kept the live
+    // table's LSIs (it has no API that changes them). CloudFormation never
+    // applies either in place (CFn A/B, us-east-1 + us-west-2, 2026-10-28): a
+    // removed list REPLACES the table, and an added one fails the update with
+    // "LocalSecondaryIndex template can be updated only to values matching
+    // existing resource". An absent list and an empty one both declare no index.
     if (
-      properties['LocalSecondaryIndexes'] !== undefined &&
-      previousProperties['LocalSecondaryIndexes'] !== undefined &&
-      !deepEqual(properties['LocalSecondaryIndexes'], previousProperties['LocalSecondaryIndexes'])
+      !deepEqual(
+        lsiListOrEmpty(properties['LocalSecondaryIndexes']),
+        lsiListOrEmpty(previousProperties['LocalSecondaryIndexes'])
+      )
     ) {
       throw new ProvisioningError(
         log.mask(
@@ -4936,6 +5188,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
       }
 
+      // go-to-k/cdkd#5489: a REMOVED settings replication mode is reset
+      // before the replica diff, while the table still has the one replica a
+      // mode is valid on; a declared one is sent after it (below).
+      const modeUpdate = replicationModeUpdate(properties, previousProperties);
+      if (modeUpdate === 'DISABLED' && readReplicationMode(properties).kind === 'absent') {
+        await this.sendReplicationMode(physicalId, logicalId, modeUpdate, maskSecrets);
+      }
+
       // 5. Replica diff. AWS limits to ONE ReplicaUpdates entry per call,
       // so serialize Create / Update / Delete and wait between each.
       // `currentRegion` is already resolved once at the top of update().
@@ -5238,6 +5498,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         await this.waitForReplicaActive(physicalId, region, logicalId, undefined, maskSecrets);
       }
       const addedReplicaRegions = new Set(replicaDiff.added.map((r) => r['Region']));
+      if (modeUpdate !== undefined && readReplicationMode(properties).kind === 'usable') {
+        await this.sendReplicationMode(physicalId, logicalId, modeUpdate, maskSecrets);
+      }
       await this.convergeReplicaDeletionProtection(
         physicalId,
         logicalId,
@@ -5269,6 +5532,25 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         keylessSseFromTemplate,
         maskSecrets
       );
+      // A read-back omits a member whose read failed, and carries a policy
+      // only where one is declared: an absence there is no removal. A rollback replay must not
+      // turn recovery off on a record whose update may never have sent it.
+      const replicaKeepOnRemoval = new Set<ReplicaSetting>(
+        context?.desiredFromAwsReadback === true
+          ? [
+              'pitr',
+              'contributorInsights',
+              'kinesis',
+              'tablePolicy',
+              'streamPolicy',
+              // Neither is read back (go-to-k/cdkd#5489).
+              'indexContributorInsights',
+              'streamTags',
+            ]
+          : context?.replayingState === true
+            ? ['pitr']
+            : []
+      );
       // go-to-k/cdkd#5365: the per-replica settings, the local table's
       // included, after every replica change above has settled. A
       // `StreamViewType` change minted a new stream, which holds no policy.
@@ -5284,16 +5566,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           asRecord(previousProperties['StreamSpecification'])?.['StreamViewType']
         ),
         context?.replayingState === true || context?.desiredFromAwsReadback === true,
-        // A read-back omits a member whose read failed, and carries a policy
-        // only where one is declared: an absence there is no removal. A rollback replay must not
-        // turn recovery off on a record whose update may never have sent it.
-        new Set<ReplicaSetting>(
-          context?.desiredFromAwsReadback === true
-            ? ['pitr', 'contributorInsights', 'kinesis', 'tablePolicy', 'streamPolicy']
-            : context?.replayingState === true
-              ? ['pitr']
-              : []
-        ),
+        replicaKeepOnRemoval,
         describeResp.Table?.LatestStreamArn,
         warn,
         maskSecrets
@@ -5752,6 +6025,21 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           maskSecrets
         );
       }
+
+      // go-to-k/cdkd#5489: each replica's per-index Contributor Insights, now
+      // that every index this update created exists.
+      await this.applyReplicaIndexInsights(
+        physicalId,
+        logicalId,
+        currentRegion,
+        properties,
+        previousProperties,
+        addedReplicaRegions,
+        replicaKeepOnRemoval,
+        context?.replayingState === true || context?.desiredFromAwsReadback === true,
+        warn,
+        maskSecrets
+      );
 
       // 7. TimeToLiveSpecification (separate API).
       // AWS rate-limits TTL changes per table ("Time to live has been
@@ -9296,7 +9584,82 @@ const REPLICA_SETTING_MEMBERS = [
   'KinesisStreamSpecification',
   'ResourcePolicy',
   'ReplicaStreamSpecification',
+  // Its entries' ContributorInsightsSpecification (go-to-k/cdkd#5489).
+  'GlobalSecondaryIndexes',
 ] as const;
+
+const REPLICATION_MODE_KEY = 'GlobalTableSettingsReplicationMode';
+
+/** One read of the declared `Replicas[].GlobalTableSettingsReplicationMode`. */
+export type ReplicationModeRead =
+  | { kind: 'absent' }
+  | { kind: 'usable'; mode: string }
+  | { kind: 'unusable'; reason: string };
+
+/**
+ * Read the settings replication mode (go-to-k/cdkd#5489). The CFn schema puts
+ * it on each replica, but DynamoDB holds ONE per table (a `CreateTable` /
+ * `UpdateTable` member), and CloudFormation refuses it unless the table has
+ * exactly one replica: "GlobalTableSettingsReplicationMode can be specified
+ * when exactly one replica is present" (CFn A/B, us-east-1 + us-west-2,
+ * 2026-10-28, on a create with two replicas and on an update adding one). With
+ * one replica it rides `CreateTable`, and a change goes out in its own
+ * `UpdateTable`.
+ */
+export function readReplicationMode(properties: Record<string, unknown>): ReplicationModeRead {
+  const replicas = Array.isArray(properties['Replicas'])
+    ? (properties['Replicas'] as unknown[])
+    : [];
+  const declared = replicas
+    .map((entry) => asRecord(entry)?.[REPLICATION_MODE_KEY])
+    .filter((value) => value !== undefined && value !== null);
+  if (declared.length === 0) return { kind: 'absent' };
+  const [first] = declared;
+  if (typeof first !== 'string' || first === '' || declared.some((v) => v !== first)) {
+    return {
+      kind: 'unusable',
+      reason: `Replicas[].${REPLICATION_MODE_KEY} must be one non-empty string`,
+    };
+  }
+  if (replicas.length !== 1) {
+    return {
+      kind: 'unusable',
+      reason:
+        `Replicas[].${REPLICATION_MODE_KEY} can be declared only on a table with exactly one ` +
+        `replica, as CloudFormation refuses it ("GlobalTableSettingsReplicationMode can be ` +
+        `specified when exactly one replica is present"); remove it, or keep one replica`,
+    };
+  }
+  return { kind: 'usable', mode: first };
+}
+
+/** What a change to the mode, or to the replica count, is compared by. */
+function replicationModeShape(properties: Record<string, unknown>): unknown {
+  const replicas = Array.isArray(properties['Replicas'])
+    ? (properties['Replicas'] as unknown[])
+    : [];
+  return replicas.map((entry) => asRecord(entry)?.[REPLICATION_MODE_KEY] ?? null);
+}
+
+/**
+ * The mode an update must send, or `undefined` when none: the declared mode
+ * when it changed, and `DISABLED` when the template removed one — what
+ * CloudFormation sends for a removal (CFn A/B, 2026-10-28: `UpdateTable` with
+ * `GlobalTableSettingsReplicationMode: DISABLED`). A mode that was never valid
+ * on the recorded side (two replicas) was never sent, so it is not reset.
+ */
+export function replicationModeUpdate(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): string | undefined {
+  const want = readReplicationMode(properties);
+  if (want.kind === 'unusable') return undefined;
+  const had = readReplicationMode(previousProperties);
+  const desired = want.kind === 'usable' ? want.mode : undefined;
+  const recorded = had.kind === 'usable' ? had.mode : undefined;
+  if (desired === recorded) return undefined;
+  return desired ?? 'DISABLED';
+}
 
 /**
  * The template-path refusal for the per-replica settings go-to-k/cdkd#5365
@@ -9321,6 +9684,16 @@ export function replicaSettingsRefusal(
   previousProperties: Record<string, unknown> | undefined,
   currentRegion?: string
 ): string | undefined {
+  // go-to-k/cdkd#5489: refused only when the mode or the replica list changed
+  // (an unchanged one is not a pending operation).
+  const mode = readReplicationMode(properties);
+  if (
+    mode.kind === 'unusable' &&
+    (previousProperties === undefined ||
+      !deepEqual(replicationModeShape(properties), replicationModeShape(previousProperties)))
+  ) {
+    return mode.reason;
+  }
   const desired = Array.isArray(properties['Replicas'])
     ? (properties['Replicas'] as unknown[])
     : [];
@@ -11611,12 +11984,10 @@ export function buildLiveRecoveryGsiBaseline(
  * | `ReadProvisionedThroughputSettings.ReadCapacityUnits`      | `ProvisionedThroughputOverride.ReadCapacityUnits` |
  * | `ReadOnDemandThroughputSettings.MaxReadRequestUnits`       | `OnDemandThroughputOverride.MaxReadRequestUnits`  |
  *
- * DELIBERATELY UNMAPPED: `ContributorInsightsSpecification`. The replica-GSI
- * SDK shape has no member for it — per-index contributor insights are toggled
- * by a separate `UpdateContributorInsights(TableName, IndexName)` call, which
- * this provider does not issue for any index (it only reads the TABLE-level
- * status back in `readCurrentState`). Recorded here rather than silently
- * dropped; tracked with the other GlobalTable nested-key gaps.
+ * `ContributorInsightsSpecification` is not mapped HERE: the replica-GSI SDK
+ * shape has no member for it. It goes out as a separate
+ * `UpdateContributorInsights(TableName, IndexName)` call in the replica's own
+ * region (`planReplicaIndexInsightsOps`, go-to-k/cdkd#5489).
  */
 export function toSdkReplicaGlobalSecondaryIndexes(
   replicaIndexes: unknown,
@@ -11931,4 +12302,13 @@ function deepEqual(a: unknown, b: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * A `LocalSecondaryIndexes` value for the immutability guard: absent, `null`
+ * and `[]` all declare no index (go-to-k/cdkd#5489).
+ */
+function lsiListOrEmpty(value: unknown): unknown {
+  if (value === undefined || value === null) return [];
+  return value;
 }
