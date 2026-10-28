@@ -1351,6 +1351,7 @@
       "integs": [
         "docdb-fix-forward-orphan",
         "docdb-neptune",
+        "dynamodb-gsi-update",
         "kinesis-stream-mode-switch",
         "lambda-esm-documentdb",
         "neptune-fix-forward-orphan",
@@ -1362,6 +1363,7 @@
     {
       "flag": "--resource-warn-after",
       "integs": [
+        "dynamodb-gsi-update",
         "kinesis-stream-mode-switch",
         "stream-delete-redeploy"
       ]
