@@ -465,7 +465,7 @@ describe('DynamoDB thrown wraps keep the caller identity out (go-to-k/cdkd#2319)
       const failure = await thrown(runTtl());
       expect(failure.message).toBe(
         `AWS rejected TimeToLive update on ${TABLE_NAME}: ValidationException. ${VERBOSE_POINTER} ` +
-          'AWS enforces a ~4-hour rate limit on TTL changes per table; wait and redeploy, or ' +
+          'AWS rate-limits TTL changes per table (the interval can last up to about an hour); wait and redeploy, or ' +
           'keep the previous TTL state in this deploy.'
       );
       expect(failure.cause).toBe(original);
@@ -476,7 +476,7 @@ describe('DynamoDB thrown wraps keep the caller identity out (go-to-k/cdkd#2319)
     it('keeps a non-AWS text verbatim, closed as one sentence', async () => {
       failOn('UpdateTimeToLiveCommand', new Error(TTL_LIMIT));
       const failure = await thrown(runTtl());
-      expect(failure.message).toContain(`${TTL_LIMIT}. AWS enforces`);
+      expect(failure.message).toContain(`${TTL_LIMIT}. AWS rate-limits`);
       expect(hasRedactedCause(failure)).toBe(false);
     });
   });
