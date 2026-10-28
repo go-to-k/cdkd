@@ -120,6 +120,16 @@ if [ ! -f "${LOCAL_DIST}" ]; then
   exit 1
 fi
 
+# Pre-flight: the judge evaluator names a `us.` cross-region inference
+# profile (lib/agentcore-tools-stack.ts), which only US regions serve.
+case "${REGION}" in
+  us-*) ;;
+  *)
+    echo "FAIL: this integ runs in a us-* region only (the judge evaluator's ModelId is a US inference profile); got AWS_REGION=${REGION}" >&2
+    exit 1
+    ;;
+esac
+
 # Pre-flight: AgentCore must be available in this region (the adopt-only
 # providers resolve the AWS-managed defaults live).
 if ! aws bedrock-agentcore-control get-browser --browser-id aws.browser.v1 \
@@ -128,15 +138,15 @@ if ! aws bedrock-agentcore-control get-browser --browser-id aws.browser.v1 \
   exit 1
 fi
 
-# Pre-flight (#5432): the judge assertions read multiDimensional through the
-# AWS CLI, whose own model drops a member it predates, so an old CLI would
-# read an empty scale and blame cdkd. Refuse to run on one.
-if ! aws bedrock-agentcore-control create-evaluator help 2>/dev/null | grep -q multiDimensional; then
-  echo "FAIL: this AWS CLI does not model RatingScale.multiDimensional; upgrade it before running this integ" >&2
-  exit 1
-fi
-
 # The judge evaluator's dimension names, in order, one line (#5432).
+#
+# Read through the repo's own @aws-sdk/client-bedrock-agentcore-control (the
+# version cdkd ships), NOT the AWS CLI: a CLI whose model predates
+# RatingScale.multiDimensional drops the member from its output, which would
+# read as an empty scale and demand a CLI upgrade of every contributor. With
+# the SDK pinned back to 3.1152.0 this read drops the member too, so Phase 1
+# still fails (empty dimensions) -- the readback cannot mask the bug it checks.
+REPO_ROOT="$(cd "${PWD}/../../.." && pwd)"
 judge_dimensions() {
   local id out
   id="$(find_evaluator_id "${JUDGE_NAME}")" || return 1
@@ -144,10 +154,22 @@ judge_dimensions() {
     echo "FAIL: evaluator ${JUDGE_NAME}-* not found" >&2
     return 1
   fi
-  out="$(aws bedrock-agentcore-control get-evaluator --evaluator-id "${id}" --region "${REGION}" \
-    --query 'evaluatorConfig.llmAsAJudge.ratingScale.multiDimensional[].dimensionName' \
-    --output text)" || return 1
-  printf '%s %s\n' "${id}" "$(printf '%s' "${out}" | tr -s '[:space:]' ' ')"
+  out="$(EVALUATOR_ID="${id}" REGION="${REGION}" REPO_ROOT="${REPO_ROOT}" node -e '
+    const sdk = require(require.resolve("@aws-sdk/client-bedrock-agentcore-control", {
+      paths: [process.env.REPO_ROOT],
+    }));
+    new sdk.BedrockAgentCoreControlClient({ region: process.env.REGION })
+      .send(new sdk.GetEvaluatorCommand({ evaluatorId: process.env.EVALUATOR_ID }))
+      .then((r) => {
+        const dims = r.evaluatorConfig?.llmAsAJudge?.ratingScale?.multiDimensional ?? [];
+        console.log(dims.map((d) => d.dimensionName).join(" "));
+      })
+      .catch((e) => {
+        console.error(`FAIL: GetEvaluator ${process.env.EVALUATOR_ID}: ${e.name}: ${e.message}`);
+        process.exit(1);
+      });
+  ')" || return 1
+  printf '%s %s\n' "${id}" "${out}"
 }
 
 echo "==> Installing fixture deps"
@@ -160,8 +182,23 @@ cleanup
 
 # --- Phase 1: deploy baseline (evaluator at TRACE) ---------------------
 echo "==> Phase 1: deploy AgentCore tools stack"
-env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+# A failed judge-evaluator create is NOT the #5432 symptom (that was a create
+# that SUCCEEDED without the scale), so it is named apart: the usual cause is
+# the account's Bedrock model access (AccessDenied / Validation).
+P1_LOG="$(mktemp)"
+if ! env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${P1_LOG}"; then
+  if grep -q "Failed to create BedrockAgentCore Evaluator JudgeEvaluator" "${P1_LOG}"; then
+    if grep -qE "AccessDenied|ValidationException|[Mm]odel" "${P1_LOG}"; then
+      echo "FAIL: the judge evaluator's CreateEvaluator was refused -- model access, not #5432 (check Bedrock model access for the ModelId in ${REGION}; re-run with --verbose for AWS's text)" >&2
+    else
+      echo "FAIL: the judge evaluator's CreateEvaluator failed -- not the #5432 symptom (that create succeeds without the scale); see the error above" >&2
+    fi
+  fi
+  rm -f "${P1_LOG}"
+  exit 1
+fi
+rm -f "${P1_LOG}"
 
 EVALUATOR_ID_P1="$(find_evaluator_id)"
 if [ -z "${EVALUATOR_ID_P1}" ]; then
