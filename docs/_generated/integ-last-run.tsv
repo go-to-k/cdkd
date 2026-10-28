@@ -336,7 +336,7 @@ rollback-replay-cc-generated-name	2026-10-20T10:37:15Z	PASS	174	verify.sh	#5064 
 rollback-replay-effective-props	2026-10-20T10:42:05Z	PASS	264	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 rollback-same-id-recreate	2026-10-20T19:58:09Z	PASS	167	verify.sh	PR #5100 pre-merge run, own state bucket, rc ok, orph clean
 rollback-sqs-cooldown	2026-10-24T07:04:10Z	PASS	154	verify.sh	rc ok, orph clean
-route53	2026-10-27T17:54:00Z	PASS	391	verify.sh	PR #5414 at a7985b789; us-east-1; own state bucket; rc=0, HostedZone on reusable delegation set via SDK, drift clean, 0 errors, 0 orphans; pre-fix probe RED at routing-layer cc-api (#2762)
+route53	2026-10-28T09:53:09Z	PASS	562	verify.sh	rc ok, orph clean; #5465 AcceleratedRecovery ENABLED on deploy return (pre-fix probe RED)
 s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 PR #4449)
 s3-cloudfront	2026-10-27T11:54:53Z	PASS	276	verify.sh	rc ok, orph clean; #5393 Enabled arm: pre-fix MalformedXML at Distribution CREATE, post-fix green

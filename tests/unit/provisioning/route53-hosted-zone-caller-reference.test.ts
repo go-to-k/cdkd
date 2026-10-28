@@ -236,6 +236,14 @@ describe('Route53Provider hosted-zone CallerReference (issue #2039)', () => {
         if (command.constructor.name === 'UpdateHostedZoneFeaturesCommand') {
           firstAttempt = false;
         }
+        if (command.constructor.name === 'GetHostedZoneCommand') {
+          // The post-enable settle wait (#5465) reads the zone as ENABLED.
+          return (aws.send(command as never) as Promise<{ HostedZone: Record<string, unknown> }>)
+            .then((r) => ({
+              ...r,
+              HostedZone: { ...r.HostedZone, Features: { AcceleratedRecoveryStatus: 'ENABLED' } },
+            }));
+        }
         return aws.send(command as never);
       }
     );
@@ -244,7 +252,7 @@ describe('Route53Provider hosted-zone CallerReference (issue #2039)', () => {
       () =>
         provider.create('Zone', 'AWS::Route53::HostedZone', {
           Name: 'example.com',
-          HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' },
+          HostedZoneFeatures: { EnableAcceleratedRecovery: true },
         }),
       'Zone',
       { sleep: advancingSleep }
@@ -269,6 +277,14 @@ describe('Route53Provider hosted-zone CallerReference (issue #2039)', () => {
         if (command.constructor.name === 'UpdateHostedZoneFeaturesCommand') {
           firstAttempt = false;
         }
+        if (command.constructor.name === 'GetHostedZoneCommand') {
+          // The post-enable settle wait (#5465) reads the zone as ENABLED.
+          return (aws.send(command as never) as Promise<{ HostedZone: Record<string, unknown> }>)
+            .then((r) => ({
+              ...r,
+              HostedZone: { ...r.HostedZone, Features: { AcceleratedRecoveryStatus: 'ENABLED' } },
+            }));
+        }
         return aws.send(command as never);
       }
     );
@@ -277,7 +293,7 @@ describe('Route53Provider hosted-zone CallerReference (issue #2039)', () => {
       () =>
         provider.create('Zone', 'AWS::Route53::HostedZone', {
           Name: 'example.com',
-          HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' },
+          HostedZoneFeatures: { EnableAcceleratedRecovery: true },
         }),
       'Zone',
       { sleep: advancingSleep }
