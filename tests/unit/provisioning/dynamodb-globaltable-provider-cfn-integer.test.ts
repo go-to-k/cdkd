@@ -508,15 +508,16 @@ describe('GlobalTable capacity forwarders read the measured DynamoDB Integer gra
       'a %s ReadCapacityUnits sends NO ProvisionedThroughputOverride and reports the suppression',
       (_l, value) => {
         const diagnostics: ThroughputDiagnostic[] = [];
-        const [index] = toSdkReplicaGlobalSecondaryIndexes(
+        const indexes = toSdkReplicaGlobalSecondaryIndexes(
           [{ IndexName: 'gsi1', ReadProvisionedThroughputSettings: { ReadCapacityUnits: value } }],
           'PROVISIONED',
           diagnostics
-        )!;
+        );
         // The one PROVISIONED site that CAN suppress (absent = inherit the
         // source table), so the replica keeps the inherited capacity instead
         // of taking `Number()`'s reading OR a 5 fallback.
-        expect(index).toEqual({ IndexName: 'gsi1' });
+        // No override left, so the entry has nothing to send (go-to-k/cdkd#5489).
+        expect(indexes).toBeUndefined();
         expect(diagnostics).toHaveLength(1);
         expect(diagnostics[0]!.message).toContain('keeps the source table');
       }
@@ -545,7 +546,7 @@ describe('GlobalTable capacity forwarders read the measured DynamoDB Integer gra
         // suppressed, and the merge then dropped the value -- an inherited
         // capacity with nothing saying so.
         const diagnostics: ThroughputDiagnostic[] = [];
-        const [index] = toSdkReplicaGlobalSecondaryIndexes(
+        const indexes = toSdkReplicaGlobalSecondaryIndexes(
           [
             {
               IndexName: 'gsi1',
@@ -555,8 +556,9 @@ describe('GlobalTable capacity forwarders read the measured DynamoDB Integer gra
           ],
           'PROVISIONED',
           diagnostics
-        )!;
-        expect(index).toEqual({ IndexName: 'gsi1' });
+        );
+        // No override left, so the entry has nothing to send (go-to-k/cdkd#5489).
+        expect(indexes).toBeUndefined();
         const messages = diagnostics.map((d) => d.message);
         expect(messages.some((m) => m.includes('keeps the source table'))).toBe(true);
         expect(messages.some((m) => m.includes('ProvisionedThroughputOverride.ReadCapacityUnits'))).toBe(
@@ -569,12 +571,13 @@ describe('GlobalTable capacity forwarders read the measured DynamoDB Integer gra
       'an on-demand %s MaxReadRequestUnits sends NO OnDemandThroughputOverride and reports it',
       (_l, value) => {
         const diagnostics: ThroughputDiagnostic[] = [];
-        const [index] = toSdkReplicaGlobalSecondaryIndexes(
+        const indexes = toSdkReplicaGlobalSecondaryIndexes(
           [{ IndexName: 'gsi1', ReadOnDemandThroughputSettings: { MaxReadRequestUnits: value } }],
           'PAY_PER_REQUEST',
           diagnostics
-        )!;
-        expect(index).toEqual({ IndexName: 'gsi1' });
+        );
+        // No override left, so the entry has nothing to send (go-to-k/cdkd#5489).
+        expect(indexes).toBeUndefined();
         expect(diagnostics.map((d) => d.member)).toEqual(['MaxReadRequestUnits']);
       }
     );

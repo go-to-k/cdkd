@@ -12038,7 +12038,7 @@ export function toSdkReplicaGlobalSecondaryIndexes(
   maskSecrets: MaskerFn = (text) => text
 ): ReplicaGlobalSecondaryIndex[] | undefined {
   if (!Array.isArray(replicaIndexes) || replicaIndexes.length === 0) return undefined;
-  return replicaIndexes.map((entry) => {
+  const translated = replicaIndexes.map((entry) => {
     const cfn = asRecord(entry);
     if (!cfn) return entry as ReplicaGlobalSecondaryIndex;
     const indexName = cfn['IndexName'] as string | undefined;
@@ -12058,6 +12058,20 @@ export function toSdkReplicaGlobalSecondaryIndexes(
     }
     return sdk;
   });
+  // go-to-k/cdkd#5489: an entry that carries no override has nothing to send.
+  // The usual case is a replica index that declares only its
+  // ContributorInsightsSpecification, which goes out as UpdateContributorInsights
+  // instead. AWS refuses an `Update` holding only such entries ("There are no
+  // actions specified in the Replica Update Action of the request", measured
+  // on the dynamodb-globaltable-replica-settings integ). A non-object entry
+  // (an unresolved intrinsic) is kept, so AWS still rejects it as before.
+  const sendable = translated.filter(
+    (sdk) =>
+      asRecord(sdk) === undefined ||
+      sdk.ProvisionedThroughputOverride !== undefined ||
+      sdk.OnDemandThroughputOverride !== undefined
+  );
+  return sendable.length > 0 ? sendable : undefined;
 }
 
 /**

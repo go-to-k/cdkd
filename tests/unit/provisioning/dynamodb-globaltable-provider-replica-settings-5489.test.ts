@@ -97,6 +97,7 @@ import {
   replicaSettingsRefusal,
   replicationModeCorrection,
   replicationModeUpdate,
+  toSdkReplicaGlobalSecondaryIndexes,
 } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 import {
   InterruptedWaitError,
@@ -764,6 +765,33 @@ describe('GlobalTable #5489 ordering and failure paths', () => {
     expect(updateTables()).toEqual(['replica-delete:eu-west-1', 'mode:ENABLED']);
   });
 
+  it('the integ Phase 1b shape sends no ReplicaUpdates entry without an action', async () => {
+    // GSI add + per-replica index insights + stream tags in one update: the
+    // replica's GlobalSecondaryIndexes carries ONLY ContributorInsights, which
+    // has no ReplicaGlobalSecondaryIndex member. Live, AWS refused the
+    // resulting `Update: { RegionName, GlobalSecondaryIndexes: [{ IndexName }] }`
+    // ("There are no actions specified in the Replica Update Action").
+    setLive({ gsi: false }, {});
+    const previous = { ...base({}, {}), GlobalSecondaryIndexes: undefined };
+    const desired = base(
+      { ...ci(true), ...streamTags(['Cdkd5489', 'stream-1']) },
+      { ...ci(true), ...streamTags(['Cdkd5489', 'stream-0']) }
+    );
+    await provider.update('T', TABLE, RESOURCE_TYPE, desired, previous);
+    const replicaUpdates = sent(mockSend, UpdateTableCommand).flatMap(
+      (input) => (input['ReplicaUpdates'] ?? []) as Array<Record<string, any>>
+    );
+    expect(replicaUpdates.filter((u) => u['Update'] !== undefined)).toEqual([]);
+    for (const update of replicaUpdates) {
+      for (const index of (update['Update'] ?? update['Create'])?.GlobalSecondaryIndexes ?? []) {
+        expect(Object.keys(index).length).toBeGreaterThan(1);
+      }
+    }
+    expect(sent(regionalSend, UpdateContributorInsightsCommand)).toEqual([
+      { TableName: TABLE, IndexName: 'gsi1', ContributorInsightsAction: 'ENABLE' },
+    ]);
+  });
+
   it('a GSI added with its replica insights is created before the insights are set', async () => {
     setLive({ gsi: false }, {});
     const desired = base(ci(true), {});
@@ -919,5 +947,25 @@ describe('corrections: the DISABLE and mode-bearing ENABLE arms', () => {
     expect(replicationModeCorrection(one('DISABLED'), one('DISABLED'), undefined)).toBeUndefined();
     expect(replicationModeCorrection(one('ENABLED'), one('DISABLED'), undefined)).toBeUndefined();
     expect(replicationModeCorrection(one(), one(), 'ENABLED')).toBeUndefined();
+  });
+});
+
+describe('replica index translation drops entries with nothing to send (go-to-k/cdkd#5489)', () => {
+  it('keeps an entry with an override and drops one declaring only insights', () => {
+    expect(
+      toSdkReplicaGlobalSecondaryIndexes(
+        [
+          { IndexName: 'gsi1', ContributorInsightsSpecification: { Enabled: true } },
+          { IndexName: 'gsi2', ReadOnDemandThroughputSettings: { MaxReadRequestUnits: 20 } },
+        ],
+        'PAY_PER_REQUEST'
+      )
+    ).toEqual([{ IndexName: 'gsi2', OnDemandThroughputOverride: { MaxReadRequestUnits: 20 } }]);
+    expect(
+      toSdkReplicaGlobalSecondaryIndexes(
+        [{ IndexName: 'gsi1', ContributorInsightsSpecification: { Enabled: true } }],
+        'PAY_PER_REQUEST'
+      )
+    ).toBeUndefined();
   });
 });
