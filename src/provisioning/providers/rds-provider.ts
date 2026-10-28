@@ -1010,9 +1010,11 @@ export class RDSProvider implements ResourceProvider {
           // Issue #5426: a cluster deleted from outside cdkd (the create wait
           // read `deleting`) refuses this delete yet is not left running: say
           // so instead of the billing warning. Only AWS's own not-found class
-          // counts as gone; any other read keeps the warning.
+          // counts as gone; any other read keeps the warning. Either way the
+          // created-before-failure mark stays (fail closed): a not-found read
+          // can be read-after-create lag, and a later delete of a gone
+          // cluster is a no-op success.
           const retiring = await this.partialClusterRetiring(dbClusterIdentifier);
-          if (retiring === 'gone') clusterLeftBehind = false;
           if (retiring !== undefined) {
             // AWS's refusal text at debug only, masked (go-to-k/cdkd#2319).
             this.logger.debug(
@@ -1022,7 +1024,7 @@ export class RDSProvider implements ResourceProvider {
             );
             this.logger.warn(
               maskerOrIdentity(mask)(
-                `Partially-created DBCluster ${logicalId} (${dbClusterIdentifier}) is ${retiring === 'gone' ? 'already deleted' : "already in status 'deleting'"}; cdkd did not delete it again`
+                `Partially-created DBCluster ${logicalId} (${dbClusterIdentifier}) is ${retiring === 'gone' ? 'read as already deleted' : "already in status 'deleting'"}; cdkd did not delete it again. Outside a rollback's re-create, the failed deploy's rollback journal still records it, so \`cdkd rollback --revert-failed\` confirms it is gone`
               )
             );
             throw innerError;

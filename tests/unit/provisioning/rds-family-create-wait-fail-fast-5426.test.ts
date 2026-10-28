@@ -315,6 +315,8 @@ describe('RDS DBCluster create cleanup after a terminal status (issue #5426)', (
       name: 'InvalidDBClusterStateFault',
     });
   };
+  const JOURNAL =
+    "Outside a rollback's re-create, the failed deploy's rollback journal still records it, so `cdkd rollback --revert-failed` confirms it is gone";
   const warnings = () => mockWarn.mock.calls.map((call) => String(call[0]));
   const create = (props: Record<string, unknown> = {}) =>
     provider.create(LOGICAL_ID, 'AWS::RDS::DBCluster', {
@@ -342,7 +344,7 @@ describe('RDS DBCluster create cleanup after a terminal status (issue #5426)', (
 
     expect(error.message).toContain(`DBCluster ${LOGICAL_ID} entered status deleting`);
     expect(warnings()).toEqual([
-      `Partially-created DBCluster ${LOGICAL_ID} (${CLUSTER_ID}) is already in status 'deleting'; cdkd did not delete it again`,
+      `Partially-created DBCluster ${LOGICAL_ID} (${CLUSTER_ID}) is already in status 'deleting'; cdkd did not delete it again. ${JOURNAL}`,
     ]);
     // AWS's refusal text stays at debug.
     expect(
@@ -356,16 +358,17 @@ describe('RDS DBCluster create cleanup after a terminal status (issue #5426)', (
     expect(createdBeforeFailure(error, LOGICAL_ID, 'AWS::RDS::DBCluster')).toBe(CLUSTER_ID);
   });
 
-  it('a refused cleanup on a cluster already gone drops the created-before-failure mark', async () => {
+  it('a refused cleanup on a cluster read as gone still keeps the created-before-failure mark (fail closed)', async () => {
     const gone = Object.assign(new Error('DBCluster not found'), { name: 'DBClusterNotFoundFault' });
     routeCleanup(['deleting', gone], refused);
 
     const error = await caught(create());
 
     expect(warnings()).toEqual([
-      `Partially-created DBCluster ${LOGICAL_ID} (${CLUSTER_ID}) is already deleted; cdkd did not delete it again`,
+      `Partially-created DBCluster ${LOGICAL_ID} (${CLUSTER_ID}) is read as already deleted; cdkd did not delete it again. ${JOURNAL}`,
     ]);
-    expect(createdBeforeFailure(error, LOGICAL_ID, 'AWS::RDS::DBCluster')).toBeUndefined();
+    // A not-found read can be read-after-create lag: the journal keeps it.
+    expect(createdBeforeFailure(error, LOGICAL_ID, 'AWS::RDS::DBCluster')).toBe(CLUSTER_ID);
   });
 
   it.each([
