@@ -9,7 +9,8 @@
 #   - FileSystemProtection → UpdateFileSystemProtection  (DescribeFileSystems)
 # Each was a silent-drop before the backfill. Also asserts the MountTarget's
 # IpAddressType / IpAddress stay on the SDK route and reach AWS, with its
-# Fn::GetAtt IpAddress output (issue #2762). Also asserts the destroy path
+# Fn::GetAtt IpAddress output (issue #2762), and that a FileSystemTags /
+# AccessPointTags change is applied in place on redeploy (issue #5464). Also asserts the destroy path
 # cleans up the file system, mount target, access point, and state file.
 #
 # Required env vars:
@@ -243,6 +244,30 @@ if [ -z "${MT_LOGICAL_ID}" ] || [ "${MT_DRIFT_BUCKET}" != "clean" ]; then
 fi
 echo "    OK: cdkd drift reported mount target ${MT_LOGICAL_ID} clean (#2762)"
 
+# --- Assertion 7: baseline tags (issue #5464) ---------------------------
+# fs_tag / ap_tag print a key's live value, or <absent>.
+AP_ID=$(echo "${STATE}" | jq -r '.outputs.AccessPointId // empty')
+if [ -z "${AP_ID}" ]; then
+  echo "FAIL: AccessPointId output missing from deploy state" >&2
+  exit 1
+fi
+fs_tag() {
+  aws efs describe-file-systems --file-system-id "${FS_ID}" --region "${REGION}" --output json \
+    | jq -r --arg k "$1" '[.FileSystems[0].Tags[]? | select(.Key == $k) | .Value] | .[0] // "<absent>"'
+}
+ap_tag() {
+  aws efs describe-access-points --access-point-id "${AP_ID}" --region "${REGION}" --output json \
+    | jq -r --arg k "$1" '[.AccessPoints[0].Tags[]? | select(.Key == $k) | .Value] | .[0] // "<absent>"'
+}
+FS_RETAG_P1=$(fs_tag cdkd-retag); FS_DROP_P1=$(fs_tag cdkd-drop)
+AP_RETAG_P1=$(ap_tag cdkd-ap-retag); AP_DROP_P1=$(ap_tag cdkd-ap-drop)
+if [ "${FS_RETAG_P1}" != "v1" ] || [ "${FS_DROP_P1}" != "x" ] \
+  || [ "${AP_RETAG_P1}" != "v1" ] || [ "${AP_DROP_P1}" != "x" ]; then
+  echo "FAIL: baseline tags wrong: file system cdkd-retag='${FS_RETAG_P1}' cdkd-drop='${FS_DROP_P1}', access point cdkd-ap-retag='${AP_RETAG_P1}' cdkd-ap-drop='${AP_DROP_P1}' (expected v1 / x / v1 / x)" >&2
+  exit 1
+fi
+echo "    OK: baseline file system and access point tags applied on create"
+
 # --- Phase 1b: throughput removal redeploy (issue #1160 efs batch) ----
 # The removal template drops ThroughputMode + ProvisionedThroughputInMibps.
 # EFS UpdateFileSystem merges (absent = "no change"), so pre-fix the live
@@ -287,6 +312,44 @@ if [ "${MT_ID_P2}" != "${MT_ID}" ]; then
 fi
 echo "    OK: mount target ${MT_ID} kept across the redeploy"
 
+# Issue #5464: the same redeploy retags the file system (cdkd-retag v1 -> v2,
+# cdkd-drop removed). Pre-fix a FileSystemTags change sent nothing: AWS kept
+# v1 and cdkd-drop while state recorded the new tags.
+FS_RETAG_P2=$(fs_tag cdkd-retag); FS_DROP_P2=$(fs_tag cdkd-drop)
+if [ "${FS_RETAG_P2}" != "v2" ] || [ "${FS_DROP_P2}" != "<absent>" ]; then
+  echo "FAIL: file system tags not updated in place: cdkd-retag='${FS_RETAG_P2}' (expected v2), cdkd-drop='${FS_DROP_P2}' (expected <absent>) (FileSystemTags update silent-drop NOT closed, #5464)" >&2
+  exit 1
+fi
+echo "    OK: file system retagged in place (#5464)"
+
+# --- Phase 1c: access point retag redeploy (issue #5464) -------------
+# Only AccessPointTags changes (cdkd-ap-retag v1 -> v2, cdkd-ap-drop removed).
+# Pre-fix the provider refused every AccessPoint update, so this deploy failed.
+echo "==> Phase 1c: re-deploy retagging the access point"
+set +e
+CDKD_TEST_REMOVAL=true CDKD_TEST_AP_RETAG=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+AP_DEPLOY_RC=$?
+set -e
+if [ "${AP_DEPLOY_RC}" -ne 0 ]; then
+  echo "FAIL: the access-point retag deploy failed (rc=${AP_DEPLOY_RC}); an AccessPointTags-only change must apply in place (#5464)" >&2
+  exit 1
+fi
+AP_RETAG_P3=$(ap_tag cdkd-ap-retag); AP_DROP_P3=$(ap_tag cdkd-ap-drop)
+if [ "${AP_RETAG_P3}" != "v2" ] || [ "${AP_DROP_P3}" != "<absent>" ]; then
+  echo "FAIL: access point tags not updated in place: cdkd-ap-retag='${AP_RETAG_P3}' (expected v2), cdkd-ap-drop='${AP_DROP_P3}' (expected <absent>) (#5464)" >&2
+  exit 1
+fi
+STATE_P3=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+AP_ID_P3=$(echo "${STATE_P3}" | jq -r '.outputs.AccessPointId // empty')
+if [ "${AP_ID_P3}" != "${AP_ID}" ]; then
+  echo "FAIL: AccessPoint was REPLACED by the retag redeploy (${AP_ID} -> ${AP_ID_P3}) (#5464)" >&2
+  exit 1
+fi
+echo "    OK: access point ${AP_ID} retagged in place (#5464)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -301,4 +364,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> efs-standalone test passed (EFS::FileSystem #609 backfill closed + #2762 MountTarget addressing + clean destroy)"
+echo "==> efs-standalone test passed (EFS::FileSystem #609 backfill closed + #2762 MountTarget addressing + #5464 retag in place + clean destroy)"

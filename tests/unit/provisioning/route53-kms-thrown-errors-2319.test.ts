@@ -171,7 +171,7 @@ function sites(): Site[] {
       run: () =>
         r53.create('Res', HZ, {
           Name: 'example.com',
-          HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' },
+          HostedZoneFeatures: { EnableAcceleratedRecovery: true },
         }),
     },
     {
@@ -563,7 +563,7 @@ describe('Route 53 / KMS thrown wraps keep the caller identity out (go-to-k/cdkd
       new Route53Provider().create(
         'Res',
         HZ,
-        { Name: 'example.com', HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' } },
+        { Name: 'example.com', HostedZoneFeatures: { EnableAcceleratedRecovery: true } },
         { maskSecrets: MASK }
       )],
     ['Route 53 hosted zone delete', 'DeleteHostedZoneCommand', () =>
@@ -643,7 +643,7 @@ describe('Route 53 / KMS thrown wraps keep the caller identity out (go-to-k/cdkd
       const failure = await thrown(
         new Route53Provider().create('Res', HZ, {
           Name: 'example.com',
-          HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' },
+          HostedZoneFeatures: { EnableAcceleratedRecovery: true },
         })
       );
       expect(failure.message).toContain(`AccessDenied. ${VERBOSE_POINTER}`);

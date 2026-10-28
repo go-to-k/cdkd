@@ -1091,15 +1091,13 @@ export class ElastiCacheProvider implements ResourceProvider {
       }
       const plan = nodesToRemove(liveNodes, desiredCount, zones);
       if (plan === undefined) {
-        const liveZones = liveNodes.map((n) => n.zone);
-        const disjoint = zones !== undefined && !zones.some((z) => liveZones.includes(z));
+        // A list sharing no zone with the PREVIOUS template list never gets
+        // here: the deploy replaces the cluster for it, as CloudFormation
+        // does (issue #5458, `replacement-rules.ts`).
         throw new ProvisioningError(
           safeMsg`Cannot update CacheCluster ${logicalId}: lowering NumCacheNodes to ${String(desiredCount)} ` +
             `with this PreferredAvailabilityZones list needs a node removed and a node added in a ` +
             `zone no live node occupies, in one update, which ModifyCacheCluster cannot do. ` +
-            (disjoint
-              ? `CloudFormation replaces the cluster for a move to disjoint zones; cdkd does not yet (issue #5458). `
-              : '') +
             `Replace the cluster (for example by changing its logical ID), or list only zones the kept nodes occupy.`,
           resourceType,
           logicalId,

@@ -354,6 +354,51 @@ if [ "${MC_ID_AFTER}" != "${MC_ID}" ]; then
 fi
 echo "    OK: Memcached cluster ${MC_ID} scaled in place to node 0002 (#5441)"
 
+echo "==> Step 4f: ZONE MOVE deploy (issue #5458) -- Memcached PreferredAvailabilityZones [az0] -> [az1]"
+# Real CloudFormation REPLACES the cluster when the list moves to zones the
+# previous list does not name. Before #5458 cdkd updated it in place, sending
+# NewAvailabilityZones with no node added, which AWS refuses: the deploy
+# failed. The type is in the stateful-recreate guard set, so the replacement
+# needs --force-stateful-recreation (a refusal without it is the guard, not
+# this bug).
+MC_AZ_BEFORE=$(mc_field 'CacheNodes[0].CustomerAvailabilityZone')
+set +e
+CDKD_TEST_REMOVAL=true CDKD_TEST_NODETYPE=true CDKD_TEST_NODEREMOVE=true CDKD_TEST_PAZMOVE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --force-stateful-recreation \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+PAZMOVE_RC=$?
+set -e
+if [ "${PAZMOVE_RC}" -ne 0 ]; then
+  echo "FAIL: zone-move deploy exited ${PAZMOVE_RC} (#5458)" >&2
+  tail -60 "${DEPLOY_LOG}" >&2
+  exit 1
+fi
+echo "    OK: zone-move deploy exited 0"
+MC_ON_GROUP=$(aws elasticache describe-cache-clusters --region "${REGION}" \
+  --query "length(CacheClusters[?CacheSubnetGroupName=='${MC_SUBNET_GROUP}'])" --output text)
+if [ "${MC_ON_GROUP}" != "1" ]; then
+  echo "FAIL: ${MC_ON_GROUP} Memcached clusters on ${MC_SUBNET_GROUP} after the zone move, expected 1 (old one not deleted?)" >&2
+  exit 1
+fi
+MC_ID_MOVED=$(mc_field 'CacheClusterId')
+if [ "${MC_ID_MOVED}" = "${MC_ID}" ]; then
+  echo "FAIL: Memcached cluster ${MC_ID} was NOT replaced by the zone move (#5458: CloudFormation replaces it)" >&2
+  exit 1
+fi
+MOVE_AZ=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | jq -r '.outputs.MemcachedMoveAz // empty')
+if [ -z "${MOVE_AZ}" ] || [ "${MOVE_AZ}" = "${MC_AZ_BEFORE}" ]; then
+  echo "FAIL: cannot resolve a target zone other than ${MC_AZ_BEFORE} from the MemcachedMoveAz output (got '${MOVE_AZ}')" >&2
+  exit 1
+fi
+MC_AZ_AFTER=$(mc_field 'CacheNodes[0].CustomerAvailabilityZone')
+if [ "${MC_AZ_AFTER}" != "${MOVE_AZ}" ]; then
+  echo "FAIL: the replacement's node is in '${MC_AZ_AFTER}', expected ${MOVE_AZ} (the template's new zone)" >&2
+  exit 1
+fi
+assert_gone "replaced Memcached cluster ${MC_ID} still exists after the zone move" \
+  aws elasticache describe-cache-clusters --cache-cluster-id "${MC_ID}" --region "${REGION}"
+echo "    OK: zone move replaced ${MC_ID} with ${MC_ID_MOVED}, node in ${MC_AZ_AFTER} (#5458)"
+
 echo "==> Step 5: destroy"
 set +e
 node "${LOCAL_DIST}" destroy "${STACK}" \

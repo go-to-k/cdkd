@@ -160,18 +160,38 @@ describe('EFSProvider read-update round-trip', () => {
 
   // ─── AWS::EFS::AccessPoint ───────────────────────────────────────────
 
-  it('AccessPoint — update() rejects with ResourceUpdateNotSupportedError (no mutable surface)', async () => {
-    const observed = {
-      FileSystemId: 'fs-1',
-      PosixUser: { Uid: 1000, Gid: 1000 },
-      RootDirectory: {
-        Path: '/data',
-        CreationInfo: { OwnerUid: 1000, OwnerGid: 1000, Permissions: '755' },
-      },
-    };
+  // #5464: AccessPointTags is the one mutable surface, so an identical bag is
+  // a silent no-op and any other change still refuses.
+  const observedAp = {
+    FileSystemId: 'fs-1',
+    PosixUser: { Uid: 1000, Gid: 1000 },
+    RootDirectory: {
+      Path: '/data',
+      CreationInfo: { OwnerUid: 1000, OwnerGid: 1000, Permissions: '755' },
+    },
+  };
 
+  it('AccessPoint — update() with an identical bag sends nothing', async () => {
+    const result = await provider.update(
+      'L',
+      'fsap-1',
+      'AWS::EFS::AccessPoint',
+      observedAp,
+      observedAp
+    );
+    expect(result).toEqual({ physicalId: 'fsap-1', wasReplaced: false });
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('AccessPoint — update() rejects a RootDirectory change with ResourceUpdateNotSupportedError', async () => {
     await expect(
-      provider.update('L', 'fsap-1', 'AWS::EFS::AccessPoint', observed, observed)
+      provider.update(
+        'L',
+        'fsap-1',
+        'AWS::EFS::AccessPoint',
+        { ...observedAp, RootDirectory: { ...observedAp.RootDirectory, Path: '/other' } },
+        observedAp
+      )
     ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
     expect(mockSend).not.toHaveBeenCalled();
   });

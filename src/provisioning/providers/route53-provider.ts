@@ -41,6 +41,7 @@ import {
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
 import { markNotGone } from '../not-gone.js';
+import { isTruthyCfnBoolean } from '../data-delete-intent.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
@@ -89,6 +90,46 @@ import {
 export function isZoneDisabledForMutationError(error: unknown): boolean {
   return error instanceof Error && error.message.includes('is marked disabled for mutation');
 }
+
+/**
+ * Whether a HostedZone's properties enable accelerated recovery. The
+ * CloudFormation member is `HostedZoneFeatures.EnableAcceleratedRecovery`
+ * (boolean, the schema's only member); `AcceleratedRecoveryStatus` is the
+ * GetHostedZone read-side status, not a template property (issue #5465).
+ *
+ * `acceptReadSideKey` also reads that status, for two sides that can carry
+ * it: a `drift --revert` desired side (a drift baseline recorded before #5465
+ * holds the readback under it) and an update's previous side (state recorded
+ * from a template that used it as an override, which the pre-#5465 provider
+ * enabled). Never a deploy's desired side: it is not a template property.
+ */
+function declaresAcceleratedRecovery(
+  properties: Record<string, unknown>,
+  acceptReadSideKey = false
+): boolean {
+  const features = properties['HostedZoneFeatures'] as Record<string, unknown> | undefined;
+  if (isTruthyCfnBoolean(features?.['EnableAcceleratedRecovery'])) return true;
+  const legacyStatus = features?.['AcceleratedRecoveryStatus'];
+  return (
+    acceptReadSideKey &&
+    features?.['EnableAcceleratedRecovery'] === undefined &&
+    typeof legacyStatus === 'string' &&
+    ACCELERATED_RECOVERY_ON_STATUSES.has(legacyStatus)
+  );
+}
+
+/**
+ * The `AcceleratedRecoveryStatus` values `readCurrentState` reports as
+ * `EnableAcceleratedRecovery: true`: settled on, on its way there, or a
+ * DISABLE that failed (the feature is still on). Every other status
+ * (DISABLED, a disabling phase, a failed enable) reads `false`.
+ */
+const ACCELERATED_RECOVERY_ON_STATUSES: ReadonlySet<string> = new Set([
+  'ENABLED',
+  'ENABLING',
+  'ENABLING_HOSTED_ZONE_LOCKED',
+  'DISABLE_FAILED',
+]);
 
 /**
  * A `HostedZoneName` that resolved cleanly but matches no zone.
@@ -767,20 +808,17 @@ export class Route53Provider implements ResourceProvider {
       // Configure query logging
       await this.applyQueryLoggingConfig(zoneId, properties, logicalId);
 
-      // `HostedZoneFeatures.AcceleratedRecoveryStatus`: post-create
+      // `HostedZoneFeatures.EnableAcceleratedRecovery`: post-create
       // control-plane call. CreateHostedZone does NOT accept this field;
       // it requires a separate UpdateHostedZoneFeatures call AFTER the
       // zone is created. Same pattern as RecursiveLoop on Lambda::Function
-      // (PR #719). AWS default is DISABLED, so we only call AWS when the
-      // template explicitly requests ENABLED (calling with `false` would
+      // (PR #719). AWS default is disabled, so we only call AWS when the
+      // template explicitly enables it (calling with `false` would
       // be a no-op API hit). Failure here triggers `delete-on-post-create-
       // failure` atomicity — delete the just-created hosted zone before
       // bubbling the error, otherwise the next deploy retry sees an orphan
       // zone (live on AWS, not in cdkd state) and CREATE-collides.
-      const desiredAcceleratedRecovery = (
-        properties['HostedZoneFeatures'] as Record<string, unknown> | undefined
-      )?.['AcceleratedRecoveryStatus'] as string | undefined;
-      if (desiredAcceleratedRecovery === 'ENABLED') {
+      if (declaresAcceleratedRecovery(properties)) {
         try {
           await this.getClient().send(
             new UpdateHostedZoneFeaturesCommand({
@@ -797,7 +835,7 @@ export class Route53Provider implements ResourceProvider {
             // create()). AWS rejects DeleteHostedZone with
             // HostedZoneNotEmpty when a logging config is still attached,
             // so a template that sets BOTH `QueryLoggingConfig` and
-            // `HostedZoneFeatures.AcceleratedRecoveryStatus: ENABLED`
+            // `HostedZoneFeatures.EnableAcceleratedRecovery: true`
             // would leak the zone if the UHF rollback skipped this step.
             await this.deleteQueryLoggingConfigForZone(zoneId, logicalId);
             await this.getClient().send(new DeleteHostedZoneCommand({ Id: zoneId }));
@@ -840,6 +878,19 @@ export class Route53Provider implements ResourceProvider {
               )
           );
         }
+        // As CloudFormation does, return only once the zone reports ENABLED
+        // (measured ~4 min, us-east-1, 2026-10-28): until then Route 53 refuses
+        // every record mutation on the zone, which a record set created in the
+        // same deploy would otherwise hit. Outside the rollback above: a zone
+        // whose enable is in flight is locked against DeleteHostedZone too, so
+        // a failure here leaves the zone to the created-before-failure record.
+        await this.waitForAcceleratedRecoveryFeatureSettled(
+          zoneId,
+          logicalId,
+          resourceType,
+          true,
+          true
+        );
       }
 
       // Collect name servers
@@ -1043,28 +1094,37 @@ export class Route53Provider implements ResourceProvider {
       // by the warning below (VPCS_KEPT_ON_REMOVAL_NOTE).
       await this.syncVPCAssociations(physicalId, properties, logicalId);
 
-      // `HostedZoneFeatures.AcceleratedRecoveryStatus`: post-create
+      // `HostedZoneFeatures.EnableAcceleratedRecovery`: post-create
       // control-plane call, gated on the BOOLEAN-effective diff (i.e.
       // "is this zone supposed to have AcceleratedRecovery enabled").
-      // Comparing the raw strings would fire an unnecessary AWS call for
-      // `prev: undefined, next: 'DISABLED'` (both map to disabled — AWS
-      // default; no transition needed). Removal of the property is
-      // treated as DISABLED so a user dropping the template field
-      // implicitly turns the feature off on the next deploy.
-      const prevEnabled =
-        ((previousProperties['HostedZoneFeatures'] as Record<string, unknown> | undefined)?.[
-          'AcceleratedRecoveryStatus'
-        ] as string | undefined) === 'ENABLED';
-      const nextEnabled =
-        ((properties['HostedZoneFeatures'] as Record<string, unknown> | undefined)?.[
-          'AcceleratedRecoveryStatus'
-        ] as string | undefined) === 'ENABLED';
+      // Comparing the raw values would fire an unnecessary AWS call for
+      // `prev: undefined, next: false` (both mean disabled — AWS default;
+      // no transition needed). Removal of the property is treated as
+      // disabled so a user dropping the template field turns the feature
+      // off on the next deploy.
+      // The previous side accepts the read-side key too: a template that used
+      // it as an override was ENABLED by the pre-#5465 provider, so dropping
+      // it must disable, and moving to `EnableAcceleratedRecovery: true` is
+      // no change.
+      const prevEnabled = declaresAcceleratedRecovery(previousProperties, true);
+      const nextEnabled = declaresAcceleratedRecovery(
+        properties,
+        context?.desiredFromAwsReadback === true
+      );
       if (prevEnabled !== nextEnabled) {
         await this.getClient().send(
           new UpdateHostedZoneFeaturesCommand({
             HostedZoneId: physicalId,
             EnableAcceleratedRecovery: nextEnabled,
           })
+        );
+        // As CloudFormation does, return only once the transition settles
+        // (measured: minutes either way); only a toggle pays this wait.
+        await this.waitForAcceleratedRecoveryFeatureSettled(
+          physicalId,
+          logicalId,
+          resourceType,
+          nextEnabled
         );
       }
 
@@ -1782,6 +1842,28 @@ export class Route53Provider implements ResourceProvider {
   }
 
   /**
+   * The settle wait after this zone's own UpdateHostedZoneFeatures (issue
+   * #5465): polls until the status is the one the call asked for.
+   * `freshZone`: the zone was created by this call, so no earlier `*_FAILED`
+   * can be read back and the first one is final.
+   */
+  private async waitForAcceleratedRecoveryFeatureSettled(
+    zoneId: string,
+    logicalId: string,
+    resourceType: string,
+    enabled: boolean,
+    freshZone = false
+  ): Promise<void> {
+    const verb = enabled ? 'enable' : 'disable';
+    await this.waitForAcceleratedRecoveryMutable(zoneId, logicalId, resourceType, {
+      blocked: `the hosted zone ${logicalId} can be deployed`,
+      retry: `after the ${verb} of Accelerated Recovery (hosted zone ${logicalId}); re-run the deploy once the transition settles`,
+      settledAt: enabled ? 'ENABLED' : 'DISABLED',
+      freshZone,
+    });
+  }
+
+  /**
    * Wait until the hosted zone's AcceleratedRecoveryStatus reaches a state
    * that ALLOWS mutations again (issue #1467).
    *
@@ -1795,11 +1877,29 @@ export class Route53Provider implements ResourceProvider {
    * terminal-stable (ENABLED / DISABLED / zone gone), throwing on the
    * `*_FAILED` operator-recovery states and on timeout. Same env-overridable
    * poll knobs as the zone guard.
+   *
+   * Also the settle wait after a hosted zone's own UpdateHostedZoneFeatures
+   * on create and update (issue #5465): CloudFormation returns only once the
+   * status settles, and a dependent record-set change in the same deploy
+   * would otherwise hit the transition's lock. `blocked` names what the
+   * transition holds up and `retry` the next step, for the two errors;
+   * `settledAt` narrows "settled" to the status the call asked for, so a read
+   * that still shows the PRE-call status (DISABLED right after an enable) is
+   * not taken as done.
    */
   private async waitForAcceleratedRecoveryMutable(
     zoneId: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    purpose: {
+      blocked: string;
+      retry: string;
+      settledAt?: 'ENABLED' | 'DISABLED';
+      freshZone?: boolean;
+    } = {
+      blocked: `the record set ${logicalId} can be deleted`,
+      retry: `(record set ${logicalId}); re-run the destroy once the transition settles`,
+    }
   ): Promise<void> {
     const client = this.getClient();
     // Number.isFinite guards: a garbage env value would otherwise make the
@@ -1817,8 +1917,24 @@ export class Route53Provider implements ResourceProvider {
     );
     const timeoutMs = Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : 600000;
     const deadline = Date.now() + timeoutMs;
-    const TERMINAL_FAILED = new Set<string>(['ENABLE_FAILED', 'DISABLE_FAILED']);
-    const MUTABLE = new Set<string>(['ENABLED', 'DISABLED']);
+    // A settle wait fails only on its OWN direction's failure: the other
+    // direction's `*_FAILED` is the pre-call status still being read (a
+    // disable sent to recover an ENABLE_FAILED zone first reads ENABLE_FAILED).
+    // Its own direction's counts only once a transition was read since the
+    // call: a re-sent enable on an ENABLE_FAILED zone first reads the old
+    // failure too, and an unbroken failure is left to the deadline.
+    const TERMINAL_FAILED = new Set<string>(
+      purpose.settledAt === 'ENABLED'
+        ? ['ENABLE_FAILED']
+        : purpose.settledAt === 'DISABLED'
+          ? ['DISABLE_FAILED']
+          : ['ENABLE_FAILED', 'DISABLE_FAILED']
+    );
+    const MUTABLE = new Set<string>(
+      purpose.settledAt !== undefined ? [purpose.settledAt] : ['ENABLED', 'DISABLED']
+    );
+    let sawTransition = purpose.settledAt === undefined || purpose.freshZone === true;
+    let lastStatus: string | undefined;
 
     while (Date.now() < deadline) {
       let status: string | undefined;
@@ -1826,13 +1942,29 @@ export class Route53Provider implements ResourceProvider {
         const resp = await client.send(new GetHostedZoneCommand({ Id: zoneId }));
         status = resp.HostedZone?.Features?.AcceleratedRecoveryStatus;
       } catch (err) {
-        if (err instanceof Error && err.name === 'NoSuchHostedZone') return;
+        // Gone is "nothing left to wait for" on a record delete, but a settle
+        // wait is for a zone this deploy is creating or updating.
+        if (
+          err instanceof Error &&
+          err.name === 'NoSuchHostedZone' &&
+          purpose.settledAt === undefined
+        ) {
+          return;
+        }
         throw err;
       }
-      if (status === undefined || MUTABLE.has(status)) return;
-      if (TERMINAL_FAILED.has(status)) {
+      // An absent status is the never-enabled zone: settled, unless the call
+      // being waited on was the enable itself.
+      if (status === undefined) {
+        if (purpose.settledAt !== 'ENABLED') return;
+      } else if (MUTABLE.has(status)) {
+        return;
+      }
+      lastStatus = status;
+      if (status?.includes('ING') === true) sawTransition = true;
+      if (status !== undefined && sawTransition && TERMINAL_FAILED.has(status)) {
         throw new ProvisioningError(
-          `Cannot mutate hosted zone ${zoneId}: AcceleratedRecoveryStatus is '${status}' — operator must resolve before the record set ${logicalId} can be deleted`,
+          `Cannot mutate hosted zone ${zoneId}: AcceleratedRecoveryStatus is '${status}' — operator must resolve before ${purpose.blocked}`,
           resourceType,
           logicalId,
           zoneId
@@ -1851,7 +1983,7 @@ export class Route53Provider implements ResourceProvider {
       }
     }
     throw new ProvisioningError(
-      `Timed out after ${timeoutMs}ms waiting for AcceleratedRecoveryStatus to reach a mutable state on hosted zone ${zoneId} (record set ${logicalId}); re-run the destroy once the transition settles`,
+      `Timed out after ${timeoutMs}ms waiting for AcceleratedRecoveryStatus to reach a mutable state on hosted zone ${zoneId} ${purpose.retry}${purpose.settledAt !== undefined ? ` (last status: ${lastStatus ?? 'none'})` : ''}`,
       resourceType,
       logicalId,
       zoneId
@@ -2812,17 +2944,19 @@ export class Route53Provider implements ResourceProvider {
           ? `/delegationset/${bare}`
           : bare;
     }
-    // `HostedZoneFeatures.AcceleratedRecoveryStatus`: emit-when-present
+    // `HostedZoneFeatures.EnableAcceleratedRecovery`: emit-when-present
     // (gated on `!== undefined`, NOT a default-when-absent placeholder).
     // GetHostedZone returns `HostedZone.Features?.AcceleratedRecoveryStatus`
     // only when the feature was explicitly toggled (zones older than the
     // 2025 feature launch may return undefined indefinitely); emitting a
-    // phantom `{ AcceleratedRecoveryStatus: 'DISABLED' }` placeholder
-    // would force guaranteed drift on every clean run for the typical
-    // zone that never opted in.
-    if (resp.HostedZone.Features?.AcceleratedRecoveryStatus !== undefined) {
+    // phantom `{ EnableAcceleratedRecovery: false }` placeholder would force
+    // guaranteed drift on every clean run for the typical zone that never
+    // opted in. The read-side status maps onto the template's boolean
+    // (issue #5465): an enabling transition is the declared `true`.
+    const acceleratedRecoveryStatus = resp.HostedZone.Features?.AcceleratedRecoveryStatus;
+    if (acceleratedRecoveryStatus !== undefined) {
       result['HostedZoneFeatures'] = {
-        AcceleratedRecoveryStatus: resp.HostedZone.Features.AcceleratedRecoveryStatus,
+        EnableAcceleratedRecovery: ACCELERATED_RECOVERY_ON_STATUSES.has(acceleratedRecoveryStatus),
       };
     }
 

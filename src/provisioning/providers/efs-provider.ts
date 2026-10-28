@@ -20,6 +20,8 @@ import {
   PutBackupPolicyCommand,
   PutFileSystemPolicyCommand,
   UpdateFileSystemProtectionCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   FileSystemNotFound,
   MountTargetNotFound,
   AccessPointNotFound,
@@ -38,6 +40,7 @@ import {
   type RootDirectory,
   type IpAddressType,
 } from '@aws-sdk/client-efs';
+import { isDeepStrictEqual } from 'node:util';
 import { getLogger } from '../../utils/logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { definedAttributes } from '../attribute-map.js';
@@ -45,6 +48,8 @@ import { replayWarn, requireConfigString } from '../config-shape.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { planTagDiff, refuseMalformedDesiredTags, tagPlanWarning } from '../tag-list.js';
+import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
 import {
   earliestDefined,
@@ -355,16 +360,18 @@ export class EFSProvider implements ResourceProvider {
   /**
    * Mutable surfaces by resource type:
    *  - `AWS::EFS::FileSystem` → `UpdateFileSystem` (ThroughputMode,
-   *    ProvisionedThroughputInMibps). Other property changes
-   *    (Encrypted / KmsKeyId / PerformanceMode / etc.) are routed
+   *    ProvisionedThroughputInMibps), the post-create Put* / Update* calls,
+   *    and `TagResource` / `UntagResource` (FileSystemTags). Other property
+   *    changes (Encrypted / KmsKeyId / PerformanceMode / etc.) are routed
    *    through DELETE+CREATE by the replacement-detection layer; if a
    *    diff somehow includes them, defensively reject.
    *  - `AWS::EFS::MountTarget` → `ModifyMountTargetSecurityGroups`
    *    (SecurityGroups only). IpAddress / IpAddressType / Ipv6Address /
    *    SubnetId / FileSystemId are immutable.
-   *  - `AWS::EFS::AccessPoint` → no mutable surface; AWS recreates on
-   *    every change. Reject so `cdkd drift --revert` surfaces a clear
-   *    "use --replace" hint.
+   *  - `AWS::EFS::AccessPoint` → `TagResource` / `UntagResource`
+   *    (AccessPointTags, the one property the CFn schema leaves updatable;
+   *    go-to-k/cdkd#5464). Any other change is refused so `cdkd drift
+   *    --revert` surfaces a clear "use --replace" hint.
    */
   update(
     logicalId: string,
@@ -388,12 +395,13 @@ export class EFSProvider implements ResourceProvider {
       case 'AWS::EFS::MountTarget':
         return this.updateMountTarget(logicalId, physicalId, resourceType, properties, log);
       case 'AWS::EFS::AccessPoint':
-        return Promise.reject(
-          new ResourceUpdateNotSupportedError(
-            resourceType,
-            logicalId,
-            'AWS EFS AccessPoint has no in-place update API — there is no UpdateAccessPoint command; every property change requires DeleteAccessPoint + CreateAccessPoint. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.'
-          )
+        return this.updateAccessPoint(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          log
         );
       default:
         throw new ProvisioningError(
@@ -402,6 +410,138 @@ export class EFSProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
+    }
+  }
+
+  /**
+   * Apply a tag diff to an EFS file system or access point (both are tagged
+   * by id through `TagResource` / `UntagResource`; go-to-k/cdkd#5464).
+   * `TagResource` only adds or overwrites, so a key the template dropped —
+   * or the whole property removed — is untagged explicitly, as CloudFormation
+   * does. Both sides go through `planTagDiff`: an unreadable record untags
+   * nothing. The desired side must already have passed
+   * `refuseMalformedDesiredTags`.
+   */
+  private async applyTagDiff(
+    resourceId: string,
+    resourceType: string,
+    logicalId: string,
+    recorded: unknown,
+    desired: unknown,
+    log: MaskedLogSinks
+  ): Promise<void> {
+    const plan = planTagDiff(recorded, desired);
+    const warning = tagPlanWarning(plan, resourceType, logicalId);
+    if (warning !== undefined) log.warn(warning);
+    if (plan.remove.length > 0) {
+      await this.retryOnTransientControlPlane(
+        () =>
+          this.getClient().send(
+            new UntagResourceCommand({ ResourceId: resourceId, TagKeys: plan.remove })
+          ),
+        `UntagResource ${resourceId}`,
+        log
+      );
+    }
+    if (plan.set.size > 0) {
+      await this.retryOnTransientControlPlane(
+        () =>
+          this.getClient().send(
+            new TagResourceCommand({
+              ResourceId: resourceId,
+              Tags: [...plan.set].map(([Key, Value]) => ({ Key, Value })),
+            })
+          ),
+        `TagResource ${resourceId}`,
+        log
+      );
+    }
+  }
+
+  private async updateAccessPoint(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
+  ): Promise<ResourceUpdateResult> {
+    // Every property but AccessPointTags is create-only in the CFn schema, so
+    // the replacement-detection layer routes such a change through
+    // DELETE+CREATE; reaching here with one, refuse rather than apply the
+    // tags alone and report success. Key-order-insensitive, like the engine's
+    // own diff (a synth-fresh object vs a JSON.parse'd record). A recorded
+    // LEAF holding a dynamic reference or cdkd's mask never equals its
+    // resolved desired value, so that leaf alone is left to the diff layer,
+    // which decided; its siblings are still compared.
+    const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+      typeof v === 'object' && v !== null && !Array.isArray(v);
+    const sameExceptSecretLeaves = (desired: unknown, recorded: unknown): boolean => {
+      // A removed secret-derived leaf (desired undefined) is still a change.
+      if (
+        desired !== undefined &&
+        typeof recorded === 'string' &&
+        holdsSecretDerivedEntry(recorded)
+      ) {
+        return true;
+      }
+      if (Array.isArray(desired) && Array.isArray(recorded)) {
+        return (
+          desired.length === recorded.length &&
+          desired.every((d, i) => sameExceptSecretLeaves(d, recorded[i]))
+        );
+      }
+      if (isPlainObject(desired) && isPlainObject(recorded)) {
+        const ks = new Set([...Object.keys(desired), ...Object.keys(recorded)]);
+        return [...ks].every((k) => sameExceptSecretLeaves(desired[k], recorded[k]));
+      }
+      return isDeepStrictEqual(desired, recorded);
+    };
+    const keys = new Set([...Object.keys(properties), ...Object.keys(previousProperties)]);
+    for (const key of keys) {
+      if (key === 'AccessPointTags') continue;
+      if (!sameExceptSecretLeaves(properties[key], previousProperties[key])) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `AWS EFS AccessPoint ${key} changed or was removed, and it is immutable on AWS — there is no UpdateAccessPoint command, and only AccessPointTags can change in place; any other property change requires DeleteAccessPoint + CreateAccessPoint. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.`
+        );
+      }
+    }
+
+    refuseMalformedDesiredTags(
+      properties['AccessPointTags'],
+      resourceType,
+      logicalId,
+      physicalId,
+      'AccessPointTags'
+    );
+
+    try {
+      await this.applyTagDiff(
+        physicalId,
+        resourceType,
+        logicalId,
+        previousProperties['AccessPointTags'],
+        properties['AccessPointTags'],
+        log
+      );
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update EFS AccessPoint ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
     }
   }
 
@@ -461,6 +601,11 @@ export class EFSProvider implements ResourceProvider {
     //    ThroughputMode: 'provisioned' is deferred (no wire shape can reset
     //    it — the API requires a value while the mode is provisioned, and
     //    there is no documented default to reset to).
+    //  - Removing ONLY ThroughputMode from a 'provisioned' file system while
+    //    keeping ProvisionedThroughputInMibps is RETAINED by CloudFormation
+    //    (live CFn A/B, go-to-k/cdkd#5464: provisioned@1MiBps stayed so for
+    //    2 min after UPDATE_COMPLETE), so sending nothing is parity — pinned
+    //    by a negative unit test.
     const effectiveThroughputMode =
       newThroughputMode === undefined &&
       newProvisioned === undefined &&
@@ -480,6 +625,18 @@ export class EFSProvider implements ResourceProvider {
     const backupChanged = changed('BackupPolicy');
     const policyChanged = changed('FileSystemPolicy') || changed('BypassPolicyLockoutSafetyCheck');
     const protectionChanged = changed('FileSystemProtection');
+    // FileSystemTags is tag-updatable in the CFn schema (go-to-k/cdkd#5464):
+    // CloudFormation retags in place, and a removed key is untagged.
+    const tagsChanged = changed('FileSystemTags');
+    if (tagsChanged) {
+      refuseMalformedDesiredTags(
+        properties['FileSystemTags'],
+        resourceType,
+        logicalId,
+        physicalId,
+        'FileSystemTags'
+      );
+    }
 
     if (
       !throughputModeChanged &&
@@ -487,7 +644,8 @@ export class EFSProvider implements ResourceProvider {
       !lifecycleChanged &&
       !backupChanged &&
       !policyChanged &&
-      !protectionChanged
+      !protectionChanged &&
+      !tagsChanged
     ) {
       // No mutable diff — nothing to do (silent success, matching the
       // wider provider convention). Drift comparator wouldn't have
@@ -539,6 +697,16 @@ export class EFSProvider implements ResourceProvider {
       }
       if (protectionChanged) {
         await this.applyFileSystemProtection(physicalId, properties['FileSystemProtection'], log);
+      }
+      if (tagsChanged) {
+        await this.applyTagDiff(
+          physicalId,
+          resourceType,
+          logicalId,
+          previousProperties['FileSystemTags'],
+          properties['FileSystemTags'],
+          log
+        );
       }
 
       log.debug(`Successfully updated EFS FileSystem ${logicalId}`);

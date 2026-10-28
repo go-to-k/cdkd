@@ -166,13 +166,17 @@ describe('Route53Provider', () => {
         });
         // UpdateHostedZoneFeatures resolves
         mockSend.mockResolvedValueOnce({});
+        // The settle wait's GetHostedZone (#5465)
+        mockSend.mockResolvedValueOnce({
+          HostedZone: { Features: { AcceleratedRecoveryStatus: 'ENABLED' } },
+        });
 
         await provider.create('MyZone', 'AWS::Route53::HostedZone', {
           Name: 'example.com',
-          HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' },
+          HostedZoneFeatures: { EnableAcceleratedRecovery: true },
         });
 
-        expect(mockSend).toHaveBeenCalledTimes(2);
+        expect(mockSend).toHaveBeenCalledTimes(3);
         const createCall = mockSend.mock.calls[0][0];
         const uhfCall = mockSend.mock.calls[1][0];
         expect(createCall.constructor.name).toBe('CreateHostedZoneCommand');
@@ -219,7 +223,7 @@ describe('Route53Provider', () => {
         expect(Array.isArray(result.attributes?.['NameServers'])).toBe(true);
       });
 
-      it('create: omits UpdateHostedZoneFeatures when AcceleratedRecoveryStatus=DISABLED (matches AWS default)', async () => {
+      it('create: omits UpdateHostedZoneFeatures when EnableAcceleratedRecovery=false (matches AWS default)', async () => {
         mockSend.mockResolvedValueOnce({
           HostedZone: { Id: '/hostedzone/Z1234567890' },
           DelegationSet: { NameServers: [] },
@@ -227,12 +231,12 @@ describe('Route53Provider', () => {
 
         const result = await provider.create('MyZone', 'AWS::Route53::HostedZone', {
           Name: 'example.com',
-          HostedZoneFeatures: { AcceleratedRecoveryStatus: 'DISABLED' },
+          HostedZoneFeatures: { EnableAcceleratedRecovery: false },
         });
 
         expect(result.attributes).toEqual({ Id: 'Z1234567890', NameServers: [] });
 
-        // Only CreateHostedZone fires — DISABLED is the AWS default so we skip
+        // Only CreateHostedZone fires — disabled is the AWS default so we skip
         // the explicit toggle call.
         expect(mockSend).toHaveBeenCalledTimes(1);
         expect(mockSend.mock.calls[0][0].constructor.name).toBe('CreateHostedZoneCommand');
@@ -256,7 +260,7 @@ describe('Route53Provider', () => {
         await expect(
           provider.create('MyZone', 'AWS::Route53::HostedZone', {
             Name: 'example.com',
-            HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' },
+            HostedZoneFeatures: { EnableAcceleratedRecovery: true },
           })
         ).rejects.toThrow(/Failed to enable Accelerated Recovery/);
 
@@ -269,21 +273,24 @@ describe('Route53Provider', () => {
         expect(mockSend.mock.calls[3][0].constructor.name).toBe('DeleteHostedZoneCommand');
       });
 
-      it('update: prev=DISABLED → next=ENABLED fires UpdateHostedZoneFeatures', async () => {
+      it('update: prev=false → next=true fires UpdateHostedZoneFeatures', async () => {
         // updateHostedZone fires UpdateHostedZoneComment + (when diffed)
         // UpdateHostedZoneFeatures + final GetHostedZone for NS read.
         // applyHostedZoneTags / applyQueryLoggingConfig / syncVPCAssociations
         // no-op without their property set in `properties`.
         mockSend.mockResolvedValueOnce({}); // UpdateHostedZoneComment
         mockSend.mockResolvedValueOnce({}); // UpdateHostedZoneFeatures
+        mockSend.mockResolvedValueOnce({
+          HostedZone: { Features: { AcceleratedRecoveryStatus: 'ENABLED' } },
+        }); // GetHostedZone (settle wait, #5465)
         mockSend.mockResolvedValueOnce({ DelegationSet: { NameServers: [] } }); // GetHostedZone (final, for NS)
 
         await provider.update(
           'MyZone',
           'Z1234567890',
           'AWS::Route53::HostedZone',
-          { Name: 'example.com', HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' } },
-          { Name: 'example.com', HostedZoneFeatures: { AcceleratedRecoveryStatus: 'DISABLED' } }
+          { Name: 'example.com', HostedZoneFeatures: { EnableAcceleratedRecovery: true } },
+          { Name: 'example.com', HostedZoneFeatures: { EnableAcceleratedRecovery: false } }
         );
 
         const uhfCalls = mockSend.mock.calls.filter(
@@ -296,9 +303,12 @@ describe('Route53Provider', () => {
         });
       });
 
-      it('update: prev=ENABLED → next=undefined fires UpdateHostedZoneFeatures(false) (treat absent as DISABLED)', async () => {
+      it('update: prev=true → next=undefined fires UpdateHostedZoneFeatures(false) (treat absent as disabled)', async () => {
         mockSend.mockResolvedValueOnce({}); // UpdateHostedZoneComment
         mockSend.mockResolvedValueOnce({}); // UpdateHostedZoneFeatures
+        mockSend.mockResolvedValueOnce({
+          HostedZone: { Features: { AcceleratedRecoveryStatus: 'DISABLED' } },
+        }); // GetHostedZone (settle wait, #5465)
         mockSend.mockResolvedValueOnce({ DelegationSet: { NameServers: [] } });
 
         await provider.update(
@@ -306,7 +316,7 @@ describe('Route53Provider', () => {
           'Z1234567890',
           'AWS::Route53::HostedZone',
           { Name: 'example.com' },
-          { Name: 'example.com', HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' } }
+          { Name: 'example.com', HostedZoneFeatures: { EnableAcceleratedRecovery: true } }
         );
 
         const uhfCalls = mockSend.mock.calls.filter(
@@ -319,7 +329,7 @@ describe('Route53Provider', () => {
         });
       });
 
-      it('update: unchanged AcceleratedRecoveryStatus does NOT fire UpdateHostedZoneFeatures', async () => {
+      it('update: unchanged EnableAcceleratedRecovery does NOT fire UpdateHostedZoneFeatures', async () => {
         mockSend.mockResolvedValueOnce({}); // UpdateHostedZoneComment
         mockSend.mockResolvedValueOnce({ DelegationSet: { NameServers: [] } }); // GetHostedZone (final)
 
@@ -327,8 +337,8 @@ describe('Route53Provider', () => {
           'MyZone',
           'Z1234567890',
           'AWS::Route53::HostedZone',
-          { Name: 'example.com', HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' } },
-          { Name: 'example.com', HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' } }
+          { Name: 'example.com', HostedZoneFeatures: { EnableAcceleratedRecovery: true } },
+          { Name: 'example.com', HostedZoneFeatures: { EnableAcceleratedRecovery: true } }
         );
 
         const uhfCalls = mockSend.mock.calls.filter(
@@ -1223,7 +1233,9 @@ describe('Route53Provider', () => {
             },
             (e: Error) => e
           );
-          expect(err.message).toContain("AcceleratedRecoveryStatus is 'ENABLE_FAILED'");
+          expect(err.message).toContain(
+            "AcceleratedRecoveryStatus is 'ENABLE_FAILED' — operator must resolve before the record set MyRecord can be deleted"
+          );
           // The wait helper's ProvisioningError must surface as-is — the
           // outer catch's re-throw guard prevents the generic
           // "Failed to delete record set" double-wrap that would bury the
@@ -1247,6 +1259,10 @@ describe('Route53Provider', () => {
             (e: Error) => e
           );
           expect(err.message).toContain('Timed out after 30ms');
+          // The record-delete wording, unchanged by #5465's settle-wait reuse.
+          expect(err.message).toContain(
+            '(record set MyRecord); re-run the destroy once the transition settles'
+          );
           expect(err.message).not.toContain('Failed to delete record set');
         } finally {
           delete process.env['CDKD_R53_ACCEL_RECOVERY_POLL_INTERVAL_MS'];

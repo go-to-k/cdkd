@@ -674,10 +674,22 @@ describe('EFSProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('AccessPoint always rejects with ResourceUpdateNotSupportedError (no mutable surface)', async () => {
+    it('AccessPoint rejects a non-tag change with ResourceUpdateNotSupportedError', async () => {
       await expect(
-        provider.update('MyAP', 'fsap-123', 'AWS::EFS::AccessPoint', {}, {})
+        provider.update(
+          'MyAP',
+          'fsap-123',
+          'AWS::EFS::AccessPoint',
+          { FileSystemId: 'fs-2' },
+          { FileSystemId: 'fs-1' }
+        )
       ).rejects.toThrow(ResourceUpdateNotSupportedError);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('AccessPoint with no diff is a silent no-op (#5464: tags are its one mutable surface)', async () => {
+      const result = await provider.update('MyAP', 'fsap-123', 'AWS::EFS::AccessPoint', {}, {});
+      expect(result).toEqual({ physicalId: 'fsap-123', wasReplaced: false });
       expect(mockSend).not.toHaveBeenCalled();
     });
   });

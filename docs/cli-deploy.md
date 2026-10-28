@@ -190,6 +190,11 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
 - **Types that are not in the table can still wait.** A DynamoDB table, an EFS
   file system and an EMR cluster, among others, wait for their own readiness
   on create in every mode, because cdkd needs the result.
+- **`AWS::Route53::HostedZone` waits for accelerated recovery to settle in
+  every mode**, `--no-wait` included, on create and on update, whenever a
+  deploy turns `HostedZoneFeatures.EnableAcceleratedRecovery` on or off: the
+  zone refuses record changes until it reads `ENABLED` or `DISABLED` (about
+  four minutes), and CloudFormation waits the same way.
 - **`AWS::Lambda::NetworkConnector` waits for `ACTIVE` in every mode.** AWS
   rejects a web function revision that uses a connector still in `PENDING`, so
   an early return would only move the wait into a failure. See

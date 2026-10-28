@@ -207,7 +207,7 @@ describe('ElastiCacheProvider CacheCluster NumCacheNodes decrease (issue #5441)'
         { ...base, NumCacheNodes: 1, PreferredAvailabilityZones: ['us-east-1b'] },
         { ...base, NumCacheNodes: 2, PreferredAvailabilityZones: ['us-east-1a', 'us-east-1c'] }
       )
-    ).rejects.toThrow(/lowering NumCacheNodes to 1[\s\S]*disjoint zones[\s\S]*#5458/);
+    ).rejects.toThrow(/lowering NumCacheNodes to 1[\s\S]*needs a node removed and a node added/);
     expect(sent().some((c) => c.constructor.name === 'ModifyCacheClusterCommand')).toBe(false);
   });
 });
@@ -348,7 +348,7 @@ describe('ElastiCacheProvider CacheCluster node removal refusals and drops (issu
     expect(modifySent()).toBe(false);
   });
 
-  it('names no CloudFormation replacement when the refused zone list overlaps the live zones', async () => {
+  it('refuses a zone list that overlaps the live zones but leaves the kept nodes short', async () => {
     always(
       cluster([
         ['0001', 'us-east-1a'],
@@ -365,7 +365,6 @@ describe('ElastiCacheProvider CacheCluster node removal refusals and drops (issu
       { ...base, NumCacheNodes: 3 }
     );
     await expect(failure).rejects.toThrow(/needs a node removed and a node added/);
-    await expect(failure).rejects.not.toThrow(/#5458/);
     expect(modifySent()).toBe(false);
   });
 

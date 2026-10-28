@@ -36,7 +36,7 @@ bench-sdk	2026-10-24T06:40:41Z	PASS	40	standard	final #5242 round (engine defaul
 bootstrap-free-region	2026-10-05T08:20:47Z	PASS	81	verify.sh	rc 0, 0 orphans; ca-central-1, delete-marker residue from earlier runs purged (#2624 PR #4573)
 bucket-deployment	2026-10-11T09:33:22Z	PASS	80	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 budgets	2026-10-22T21:55:31Z	PASS	133	verify.sh	PR#5188 Run C at HEAD (73687a4de): Phase2b clean (2 checked, 0 unsupported); Phase2c drift exit1 on Budget.BudgetLimit.Amount (2->3) OK; Phase2d --revert restored limit to 2, kept both subscribers and FilterExpression, drift clean after; destroy 0 errors; AWS/S3 clean after; marker SET.
-cache-streaming	2026-10-28T06:35:37Z	PASS	2280	verify.sh	rc ok, #5441 memcached node removal verified (probe red at Step 4e), orph clean
+cache-streaming	2026-10-28T10:03:18Z	PASS	2250	verify.sh	rc ok, #5458 memcached zone move replace verified (probe red at Step 4f), orph clean
 cc-abandoned-create-resume	2026-10-20T03:03:42Z	PASS	121	verify.sh	deploy+destroy clean, 0 orphans
 cc-api-fallback	2026-10-25T03:31:31Z	PASS	182	verify.sh	rc ok, orph clean, own bucket (#5272)
 cc-api-fallback-transitions	2026-10-23T16:20:21Z	PASS	98	verify.sh	#634 items 3+4 verified end-to-end; both HTTP API probes + state files gone
@@ -128,7 +128,7 @@ ecs-service-update-props	2026-10-22T19:00:38Z	PASS	132	verify.sh	rc ok, destroy 
 ecs-taskdef-tags-launch-type	2026-10-27T12:49:28Z	PASS	65	verify.sh	rc ok, orph clean; #5392 probes red at TaskDef update / Svc LaunchType guard
 efs-immutable-replacement	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
-efs-standalone	2026-10-27T17:50:35Z	PASS	186	verify.sh	PR #5414 at a7985b789; us-east-1; own state bucket; rc=0, MountTarget DUAL_STACK 10.0.0.100 via SDK, GetAtt IpAddress, drift clean, 0 errors, 0 orphans; pre-fix probe RED at routing-layer cc-api (#2762)
+efs-standalone	2026-10-28T10:32:59Z	PASS	255	verify.sh	PR #5471 at 14081e56e; us-east-1; shared state bucket; rc=0, FileSystemTags + AccessPointTags retagged in place (#5464), 0 errors, 0 orphans; pre-fix probe RED at Phase 1b FileSystem tag assertion
 elasticache-replicationgroup-getatt	2026-10-21T13:56:47Z	PASS	604	verify.sh	rc ok, GetAtt PrimaryEndPoint verified, orph clean
 elbv2-same-name-replacement	2026-10-20T09:26:37Z	PASS	84	verify.sh	#5064 head re-run, clean
 emr-cluster	2026-10-28T01:01:49Z	PASS	1825	verify.sh	rc ok, 0 orph, phase 3d on 522e80287 (core resize + UnhealthyNodeReplacement in place); pre-fix RED at phase 3d
@@ -336,7 +336,7 @@ rollback-replay-cc-generated-name	2026-10-20T10:37:15Z	PASS	174	verify.sh	#5064 
 rollback-replay-effective-props	2026-10-20T10:42:05Z	PASS	264	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 rollback-same-id-recreate	2026-10-20T19:58:09Z	PASS	167	verify.sh	PR #5100 pre-merge run, own state bucket, rc ok, orph clean
 rollback-sqs-cooldown	2026-10-24T07:04:10Z	PASS	154	verify.sh	rc ok, orph clean
-route53	2026-10-27T17:54:00Z	PASS	391	verify.sh	PR #5414 at a7985b789; us-east-1; own state bucket; rc=0, HostedZone on reusable delegation set via SDK, drift clean, 0 errors, 0 orphans; pre-fix probe RED at routing-layer cc-api (#2762)
+route53	2026-10-28T09:53:09Z	PASS	562	verify.sh	rc ok, orph clean; #5465 AcceleratedRecovery ENABLED on deploy return (pre-fix probe RED)
 s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 PR #4449)
 s3-cloudfront	2026-10-27T11:54:53Z	PASS	276	verify.sh	rc ok, orph clean; #5393 Enabled arm: pre-fix MalformedXML at Distribution CREATE, post-fix green
