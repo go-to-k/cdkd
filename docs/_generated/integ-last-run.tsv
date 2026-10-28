@@ -118,6 +118,7 @@ dynamodb-ttl-attr-change	2026-10-28T05:24:24Z	PASS	1944	verify.sh	rc ok, orph cl
 ec2-instance	2026-10-28T05:14:33Z	PASS	265	verify.sh	rc ok, orph clean; #5446 in-place update; probes red at t3.small and reader
 ec2-instance-fanout	2026-10-19T00:17:40Z	PASS	90	verify.sh	rc ok, orph clean (#5077)
 ec2-route-targets	2026-10-23T21:25:44Z	PASS	651	verify.sh	rc ok, orph clean, VGW attachment sdk record + Phase 2 swap to 2nd VGW (DetachVpnGateway=1 AttachVpnGateway=1); pre-fix probe RED at sdk-record assertion
+ec2-sg-source-group-name	2026-10-28T13:02:37Z	PASS	60	verify.sh	PR#5479 5478 SourceSecurityGroupName peer created+renamed in place (real PASS, not SKIP); pre-fix probe RED at Phase 1; destroy 0 errors 0 orphans
 ec2-vpc	2026-10-28T08:15:27Z	PASS	135	verify.sh	PR#5472 5449 VPC InstanceTenancy: dedicated->default in place, default->dedicated replaced; pre-fix probes RED at both arms; destroy 0 errors 0 orphans
 ecr	2026-10-20T06:00:42Z	PASS	55	standard	deploy+destroy clean, 0 orphans
 ecr-scanning	2026-10-16T08:15:12Z	PASS	60	verify.sh	rc ok, orph clean (#3341 slice 4995)
