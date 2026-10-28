@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-27T10:33:08.389Z",
+  "generatedAt": "2026-10-28T10:59:16.866Z",
   "summary": {
-    "tier2Count": 1625,
-    "schemasRead": 1625,
-    "withCreateOnly": 1423,
+    "tier2Count": 1628,
+    "schemasRead": 1628,
+    "withCreateOnly": 1424,
     "schemasWithNoProperties": 0,
     "candidateCount": 117,
     "guardedCount": 87,
