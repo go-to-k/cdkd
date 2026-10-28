@@ -311,7 +311,13 @@ const armHostedZone = (physicalId: string, bag: Bag): void => {
       VPCs: vpcs.map((v) => ({ VPCId: v['VPCId'], VPCRegion: v['VPCRegion'] })),
     }),
     UpdateHostedZoneFeaturesCommand: (input) => {
-      recovery = input['EnableAcceleratedRecovery'] === true ? 'ENABLED' : 'DISABLED';
+      // The API requires the boolean; refusing a request without it, as
+      // Route 53 does, keeps the settle wait from polling a status that never
+      // arrives.
+      if (typeof input['EnableAcceleratedRecovery'] !== 'boolean') {
+        throw new Error('InvalidInput: EnableAcceleratedRecovery is required');
+      }
+      recovery = input['EnableAcceleratedRecovery'] ? 'ENABLED' : 'DISABLED';
       return {};
     },
     ListQueryLoggingConfigsCommand: () => ({ QueryLoggingConfigs: liveConfigs }),
