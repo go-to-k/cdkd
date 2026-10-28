@@ -122,6 +122,8 @@ The minimums exist for these reasons:
 - A DynamoDB table delete stacks several polling waits that share one
   allowance.
 - Deleting one of the slow types routinely takes 15 to 30 minutes.
+- Changing an ElastiCache cache cluster's node type is an in-place update
+  that cdkd waits out, and a large node can scale for longer than 30 minutes.
 
 The default is `30m` and not `1h` so that one stuck resource of an ordinary
 type does not hold the stack for an hour.
