@@ -33,7 +33,8 @@ Minimal EC2 Instance deployment example for cdkd.
 - Updating an instance in place (issue #5446): `verify.sh` Phase 1h redeploys with
   `CDKD_TEST_UPDATE_5446=true`, which changes `InstanceType` (t3.micro to t3.small), moves the
   instance to a second security group and adds `UserData`. As in CloudFormation, the same instance
-  is stopped, modified and started again.
+  is stopped, modified and started again. An SSM parameter reading `Fn::GetAtt Instance.PublicIp`
+  (added in Phase 1g, `CDKD_TEST_IP_READER=true`) must follow the new public address.
 - Removing the in-place security properties (issue #1160). `verify.sh` Phase 1d redeploys with
   `CDKD_TEST_REMOVAL=true`, which drops `MetadataOptions`, `Monitoring` and `CreditSpecification`.
   As in CloudFormation, detailed monitoring is turned off and the other two keep their values.

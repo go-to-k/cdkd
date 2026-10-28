@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as kms from 'aws-cdk-lib/aws-kms';
 
 /**
@@ -55,6 +56,10 @@ export class Ec2InstanceStack extends cdk.Stack {
     // SecurityGroupIds and UserData. CloudFormation applies all three to the
     // SAME instance (a stop and a start for the type and the user data).
     const isUpdate5446 = process.env.CDKD_TEST_UPDATE_5446 === 'true';
+    // Issue #5446 (verify.sh Phases 1g-1h): a RESOURCE reading the instance's
+    // public address, added once the instance is running (a --no-wait Phase 0
+    // has no address to give it), so Phase 1h's stop/start has to PROMOTE it.
+    const withIpReader = process.env.CDKD_TEST_IP_READER === 'true';
     const datMode = process.env.CDKD_TEST_DAT;
 
     // Create VPC with 1 AZ and no NAT gateways (cost saving)
@@ -150,6 +155,18 @@ export class Ec2InstanceStack extends cdk.Stack {
       value: instance.attrPublicIp,
       description: 'EC2 Instance Public IP',
     });
+
+    if (withIpReader) {
+      const ipReader = new ssm.CfnParameter(this, 'PublicIpReader5446', {
+        type: 'String',
+        value: instance.attrPublicIp,
+        description: 'cdkd ec2-instance integ (issue #5446): reads Fn::GetAtt Instance.PublicIp',
+      });
+      new cdk.CfnOutput(this, 'IpReaderParamName', {
+        value: ipReader.ref,
+        description: 'The SSM parameter reading the instance public IP (issue #5446)',
+      });
+    }
 
     new cdk.CfnOutput(this, 'PrivateIp', {
       value: instance.attrPrivateIp,

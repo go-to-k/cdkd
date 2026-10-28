@@ -102,6 +102,8 @@ interface World {
   failModify?: (input: Record<string, unknown>) => Error | undefined;
   failStart?: number; // reject the first N StartInstances calls
   failStop?: Error;
+  publicIp?: string; // PublicIpAddress DescribeInstances reports
+  publicIpAfterStart?: string; // what it becomes once StartInstances is called
   associateErrors?: Error[]; // rejections for successive associate / replace calls
   vpcId?: string | null;
   defaultGroups?: Array<{ GroupId: string }>;
@@ -124,6 +126,7 @@ function install(): void {
                 InstanceId: ID,
                 State: name === undefined ? undefined : { Name: name },
                 RootDeviceType: world.rootDeviceType ?? 'ebs',
+                ...(world.publicIp !== undefined && { PublicIpAddress: world.publicIp }),
                 VpcId: world.vpcId === null ? undefined : (world.vpcId ?? 'vpc-1'),
               },
             ],
@@ -146,6 +149,9 @@ function install(): void {
     }
     if (command instanceof StopInstancesCommand && world.failStop) {
       return Promise.reject(world.failStop);
+    }
+    if (command instanceof StartInstancesCommand && world.publicIpAfterStart !== undefined) {
+      world.publicIp = world.publicIpAfterStart;
     }
     if (command instanceof StartInstancesCommand && (world.failStart ?? 0) > 0) {
       world.failStart!--;
@@ -866,5 +872,15 @@ describe('parent review round (#5457)', () => {
       (e: unknown) => e
     );
     expect(isRefusedBeforeApplying(err, 'Inst')).toBe(false);
+  });
+});
+
+describe('the refreshed attributes after a stop/start (#5457)', () => {
+  it("records the instance's NEW public address the start gave it", async () => {
+    world.states = ['running', 'running', 'stopped', 'running'];
+    world.publicIp = '1.2.3.4';
+    world.publicIpAfterStart = '5.6.7.8';
+    const result = await update({ ...BASE, InstanceType: 't3.micro' });
+    expect(result.attributes?.['PublicIp']).toBe('5.6.7.8');
   });
 });

@@ -64,7 +64,9 @@
 # Phase 1h is the issue #5446 arm: one deploy changes InstanceType, moves the
 # instance to a second security group and adds UserData; the instance must
 # keep its id and come back running as t3.small, in that group only, with the
-# template's user data.
+# template's user data. Phase 1g adds an SSM parameter reading
+# Fn::GetAtt Instance.PublicIp, and after the stop/start both the PublicIp
+# Output and that parameter must carry the instance's new address.
 #
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
@@ -1331,7 +1333,7 @@ echo "    OK: explicit DisableApiTermination false applied (issue #1160)"
 # Phase 1g: declare it true again, so Phase 2's destroy still exercises the
 # --remove-protection flip of a protected instance (the #609 destroy arm).
 echo "==> Phase 1g: DisableApiTermination declared true again (issue #1160)"
-removal_deploy P1G_OUTPUT ok CDKD_TEST_REMOVAL=true
+removal_deploy P1G_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_IP_READER=true
 poll_until "termination protection after DisableApiTermination: true" "True" read_dat
 echo "    OK: explicit DisableApiTermination true applied; the destroy below meets a protected instance"
 
@@ -1352,7 +1354,7 @@ esac
 P1H_IP_BEFORE=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
   --query 'Reservations[0].Instances[0].PublicIpAddress' --output text 2>&1) \
   || P1H_IP_BEFORE="<read error>"
-removal_deploy P1H_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE_5446=true
+removal_deploy P1H_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE_5446=true CDKD_TEST_IP_READER=true
 P1H_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>&1) || {
   echo "FAIL: issue #5446 -- could not read the state after the Phase 1h deploy: $(sanitize_aws_output "${P1H_STATE}")" >&2
   exit 1
@@ -1407,6 +1409,28 @@ if [ "${P1H_IP_AFTER}" = "${P1H_IP_BEFORE}" ]; then
   echo "    NOTE: #5446 the public address did not change across the stop/start (${P1H_IP_AFTER}); the Output check above holds but does not discriminate this run"
 else
   echo "    OK: #5446 .outputs.PublicIp moved with the stop/start (${P1H_IP_BEFORE} -> ${P1H_IP_AFTER})"
+fi
+# A RESOURCE reader too (Phase 1g created it): the SSM parameter whose Value is
+# Fn::GetAtt Instance.PublicIp must be PROMOTED by the update and carry the new
+# address. Before the reader promotion it kept the pre-stop address.
+IP_READER_NAME=$(echo "${P1H_STATE}" | jq -r '.outputs.IpReaderParamName // ""')
+if [ -z "${IP_READER_NAME}" ]; then
+  echo "FAIL: issue #5446 -- .outputs.IpReaderParamName is missing; Phase 1g should have created the PublicIp reader" >&2
+  exit 1
+fi
+IP_READER_VALUE=$(aws ssm get-parameter --name "${IP_READER_NAME}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text 2>&1) || {
+  echo "FAIL: issue #5446 -- get-parameter ${IP_READER_NAME} failed: $(sanitize_aws_output "${IP_READER_VALUE}")" >&2
+  exit 1
+}
+if [ "${IP_READER_VALUE}" != "${P1H_IP_AFTER}" ]; then
+  echo "FAIL: issue #5446 -- SSM parameter ${IP_READER_NAME} (Fn::GetAtt Instance.PublicIp) is '${IP_READER_VALUE}' after the stop/start, expected the live address '${P1H_IP_AFTER}' (before: ${P1H_IP_BEFORE}); the reader was not promoted" >&2
+  exit 1
+fi
+if [ "${P1H_IP_AFTER}" = "${P1H_IP_BEFORE}" ]; then
+  echo "    NOTE: #5446 the public address did not change, so the reader check does not discriminate this run"
+else
+  echo "    OK: #5446 the PublicIp reader (SSM parameter) followed the stop/start to ${IP_READER_VALUE}"
 fi
 
 # --- Phase 2: destroy (--remove-protection required) ------------------
