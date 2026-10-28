@@ -5,6 +5,10 @@ import {
   UpdateFileSystemCommand,
   DeleteFileSystemCommand,
   DescribeFileSystemsCommand,
+  AssociateFileSystemAliasesCommand,
+  DisassociateFileSystemAliasesCommand,
+  DescribeFileSystemAliasesCommand,
+  type Alias,
   TagResourceCommand,
   UntagResourceCommand,
   FileSystemNotFound,
@@ -113,9 +117,15 @@ const LUSTRE_MUTABLE_SUBPROPS = new Set<string>([
 /**
  * `WindowsConfiguration` sub-properties `UpdateFileSystem` accepts (the
  * mutable subset — mirrors `UpdateFileSystemWindowsConfiguration`).
- * Everything else in the CFn block (ActiveDirectoryId, DeploymentType,
- * PreferredSubnetId, Aliases, ...) is fixed at creation, so a change on one
- * is rejected by update() with a `--replace` pointer.
+ * `Aliases` is mutable too but not through `UpdateFileSystem`: its change is
+ * an Associate/Disassociate delta (go-to-k/cdkd#5469,
+ * {@link FSxFileSystemProvider.applyAliasDelta}), so it is handled before this
+ * set is consulted. Everything else in the CFn block (ActiveDirectoryId,
+ * DeploymentType, PreferredSubnetId, ...) is fixed at creation, so a change on
+ * one is rejected by update() with a `--replace` pointer. The CFn template
+ * reference documents ActiveDirectoryId and PreferredSubnetId as "No
+ * interruption", but no FSx API changes either one (neither is in
+ * `UpdateFileSystemWindowsConfiguration`), so cdkd cannot apply them in place.
  */
 const WINDOWS_MUTABLE_SUBPROPS = new Set<string>([
   'WeeklyMaintenanceStartTime',
@@ -233,6 +243,80 @@ const routeTableDelta = (next: unknown, prev: unknown): { add?: string[]; remove
   return {
     ...(add.length > 0 && { add }),
     ...(remove.length > 0 && { remove }),
+  };
+};
+
+/**
+ * go-to-k/cdkd#5469: consecutive CREATE_FAILED / DELETE_FAILED reads of an
+ * alias never seen in transition before they count as its outcome rather than
+ * a stale read from before the action this wait follows.
+ */
+const STALE_FAILED_READS = 3;
+
+/**
+ * go-to-k/cdkd#5469: the administrative actions an alias change waits for:
+ * any PENDING / IN_PROGRESS one except a storage or IOPS optimization, which
+ * can run for hours after the update it follows (that update then reads
+ * UPDATED_OPTIMIZING, which is not waited for either).
+ */
+const ALIAS_NON_BLOCKING_ACTIONS: ReadonlySet<string> = new Set([
+  'STORAGE_OPTIMIZATION',
+  'IOPS_OPTIMIZATION',
+]);
+const runningAliasBlockingActions = (fs: FileSystem): string[] =>
+  (fs.AdministrativeActions ?? [])
+    .filter(
+      (a) =>
+        (a.Status === 'PENDING' || a.Status === 'IN_PROGRESS') &&
+        !ALIAS_NON_BLOCKING_ACTIONS.has(a.AdministrativeActionType ?? '')
+    )
+    .map((a) => a.AdministrativeActionType ?? 'unknown');
+
+/**
+ * A BadRequest refusing an alias call because an administrative action is in
+ * progress (go-to-k/cdkd#5469): re-sent until the deadline.
+ */
+const isAdministrativeActionInProgress = (error: unknown): error is Error =>
+  error instanceof Error &&
+  error.name === 'BadRequest' &&
+  /in progress/i.test(describeAwsFailure(error).detail);
+
+/**
+ * A poll error worth another poll (throttle, server-side, network). The
+ * message test reads `.detail`, never `.summary`: it matches AWS's OWN wording.
+ */
+const isTransientFsxError = (error: unknown): boolean => {
+  const name = error instanceof Error ? error.name : '';
+  return (
+    name === 'ThrottlingException' ||
+    name === 'ServiceLimitExceeded' ||
+    name === 'InternalServerError' ||
+    name === 'TimeoutError' ||
+    /rate exceeded|too many requests|timed? ?out|ECONNRESET|EPIPE|socket hang up/i.test(
+      describeAwsFailure(error).detail
+    )
+  );
+};
+
+/**
+ * go-to-k/cdkd#5469: the Associate/Disassociate deltas a Windows `Aliases`
+ * change needs. FSx stores an alias name lowercased whatever spelling it was
+ * given, so names compare (and are sent) lowercased and a case-only edit or a
+ * reorder yields no delta. A removed property means "no aliases": every
+ * previous name is disassociated, as a removed `RouteTableIds` is.
+ */
+export const aliasDelta = (next: unknown, prev: unknown): { add: string[]; remove: string[] } => {
+  const names = (value: unknown): Set<string> =>
+    new Set(
+      (Array.isArray(value) ? value : [])
+        .filter((v): v is string => typeof v === 'string')
+        .map((v) => v.toLowerCase())
+    );
+  const nextNames = names(next);
+  const prevNames = names(prev);
+  return {
+    add: [...nextNames].filter((n) => !prevNames.has(n)),
+    remove: [...prevNames].filter((n) => !nextNames.has(n)),
   };
 };
 
@@ -689,8 +773,9 @@ export class FSxFileSystemProvider implements ResourceProvider {
         'Tags',
         // Left in place and named in update()'s own warning (no reset).
         ...TOP_LEVEL_LEFT_IN_PLACE_PROPS,
-        // Each sub-property removal is refused (immutable) or named in
-        // update()'s own warning.
+        // Each sub-property removal is refused (immutable), named in
+        // update()'s own warning, or diffed (RouteTableIds; Windows Aliases,
+        // go-to-k/cdkd#5469).
         ...Object.values(VARIANT_CONFIG_KEY),
       ]),
     ],
@@ -1278,6 +1363,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
       diff: variantDiff,
       hasMutableDiff: variantHasMutableDiff,
       leftInPlace,
+      aliases,
     } = variantConfigKey
       ? this.computeVariantConfigDiff(
           resourceType,
@@ -1286,7 +1372,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
           (properties[variantConfigKey] ?? {}) as Record<string, unknown>,
           (previousProperties[variantConfigKey] ?? {}) as Record<string, unknown>
         )
-      : { diff: {}, hasMutableDiff: false, leftInPlace: [] };
+      : { diff: {}, hasMutableDiff: false, leftInPlace: [], aliases: { add: [], remove: [] } };
+    const aliasesChanged = aliases.add.length > 0 || aliases.remove.length > 0;
     // Issue #1160: named once, and only after the update SUCCEEDED (the
     // shared caller's own warning has the same timing) — a retried attempt
     // would repeat it, and a failure falling back to replacement would make
@@ -1371,6 +1458,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
       !storageTypeChanged &&
       !typeVersionChanged &&
       !networkTypeChanged &&
+      !aliasesChanged &&
       !tagsChanged
     ) {
       this.logger.debug(`No mutable diff for FSx FileSystem ${logicalId}, skipping update`);
@@ -1381,6 +1469,9 @@ export class FSxFileSystemProvider implements ResourceProvider {
     this.logger.debug(`Updating FSx FileSystem ${logicalId}: ${physicalId}`);
 
     try {
+      // One deadline for every wait this update runs: the FILE_SYSTEM_UPDATE
+      // action, then the alias changes (go-to-k/cdkd#5469).
+      const deadline = Date.now() + this.maxWaitMs;
       const needsUpdateCall =
         variantHasMutableDiff ||
         storageCapacityChanged ||
@@ -1452,8 +1543,15 @@ export class FSxFileSystemProvider implements ResourceProvider {
           // otherwise yield an empty filtered list (inProgress=false) and
           // return prematurely with the pre-update config.
           respPendingActions.length > 0,
+          deadline,
           context?.maskSecrets
         );
+      }
+
+      // go-to-k/cdkd#5469: after the UpdateFileSystem action settled, so the
+      // alias actions never overlap it.
+      if (aliasesChanged) {
+        await this.applyAliasDelta(physicalId, logicalId, resourceType, aliases, deadline);
       }
 
       if (tagsChanged) {
@@ -1553,11 +1651,17 @@ export class FSxFileSystemProvider implements ResourceProvider {
     configKey: string,
     next: Record<string, unknown>,
     prev: Record<string, unknown>
-  ): { diff: Record<string, unknown>; hasMutableDiff: boolean; leftInPlace: string[] } {
+  ): {
+    diff: Record<string, unknown>;
+    hasMutableDiff: boolean;
+    leftInPlace: string[];
+    aliases: { add: string[]; remove: string[] };
+  } {
     const mutable = VARIANT_MUTABLE_SUBPROPS[configKey] ?? new Set<string>();
     const keys = new Set([...Object.keys(next), ...Object.keys(prev)]);
     const diff: Record<string, unknown> = {};
     const leftInPlace: string[] = [];
+    let aliases: { add: string[]; remove: string[] } = { add: [], remove: [] };
     let hasMutableDiff = false;
     for (const key of keys) {
       const nextVal = next[key];
@@ -1567,6 +1671,13 @@ export class FSxFileSystemProvider implements ResourceProvider {
       // (CFn "Update requires: No interruption"): nothing on AWS to update,
       // so a change or removal only lands in the record delete() reads.
       if (configKey === 'OpenZFSConfiguration' && key === 'Options') continue;
+      // go-to-k/cdkd#5469: Windows `Aliases` (CFn "Update requires: No
+      // interruption", not createOnly in the registry schema) changes through
+      // Associate/DisassociateFileSystemAliases, never UpdateFileSystem.
+      if (configKey === 'WindowsConfiguration' && key === 'Aliases') {
+        aliases = aliasDelta(nextVal, prevVal);
+        continue;
+      }
       if (!mutable.has(key)) {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
@@ -1591,7 +1702,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
       // trigger a no-op UpdateFileSystem call for it.
       if (applied) hasMutableDiff = true;
     }
-    return { diff, hasMutableDiff, leftInPlace };
+    return { diff, hasMutableDiff, leftInPlace, aliases };
   }
 
   /**
@@ -1784,6 +1895,261 @@ export class FSxFileSystemProvider implements ResourceProvider {
         this.unmappedMutableSubprop(ctx, key);
     }
     return true;
+  }
+
+  /**
+   * go-to-k/cdkd#5469: apply a Windows `Aliases` change. Disassociate first
+   * (it frees room under the 50-alias limit) and wait until the removed names
+   * are gone, then associate and wait until the added ones are AVAILABLE —
+   * each call starts an async administrative action, so the two are not run
+   * concurrently, and the deploy returns only once the aliases read back as
+   * the template declares.
+   *
+   * The delta is reconciled against ONE read of the live aliases first, so a
+   * retry after a partial failure converges instead of failing for ever:
+   * `DisassociateFileSystemAliases` answers 400 for a name that is not
+   * associated, so only a listed name that is not already DELETING is sent;
+   * `AssociateFileSystemAliases` is a no-op for a name already there, which
+   * would leave a CREATE_FAILED one failed (and a DELETING / DELETE_FAILED
+   * one never AVAILABLE), so that one is cleared first — disassociated unless
+   * already DELETING, then waited out — and associated afresh; an AVAILABLE /
+   * CREATING one is not re-sent.
+   *
+   * Before any of it, wait until no OTHER administrative action is PENDING /
+   * IN_PROGRESS. A storage or IOPS optimization (which can run for hours
+   * after a capacity or throughput increase) is not waited for: FSx documents
+   * nothing refusing an alias action beside one. If FSx does refuse a call
+   * with a BadRequest naming an administrative action in progress, the call
+   * is re-sent until `deadline`, the one deadline `update()` gives every
+   * wait.
+   */
+  private async applyAliasDelta(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    delta: { add: string[]; remove: string[] },
+    deadline: number
+  ): Promise<void> {
+    await this.waitForNoAdministrativeAction(physicalId, logicalId, resourceType, deadline);
+    const live = new Map(
+      (await this.describeAliases(physicalId)).map((a) => [a.Name?.toLowerCase(), a.Lifecycle])
+    );
+    // An added name stuck mid-removal (DELETING / DELETE_FAILED, e.g. after an
+    // interrupted earlier attempt) or CREATE_FAILED is still associated, so an
+    // Associate would be a no-op that never reaches AVAILABLE: clear it first.
+    const retryAdd = delta.add.filter((n) => {
+      const lifecycle = live.get(n);
+      return (
+        lifecycle === 'CREATE_FAILED' || lifecycle === 'DELETING' || lifecycle === 'DELETE_FAILED'
+      );
+    });
+    const awaitGone = [...delta.remove, ...retryAdd];
+    const sendRemove = awaitGone.filter((n) => live.has(n) && live.get(n) !== 'DELETING');
+    const sendAdd = delta.add.filter(
+      (n) => live.get(n) !== 'AVAILABLE' && live.get(n) !== 'CREATING'
+    );
+    if (sendRemove.length > 0) {
+      await this.sendAliasCall(
+        physicalId,
+        logicalId,
+        resourceType,
+        () =>
+          new DisassociateFileSystemAliasesCommand({
+            FileSystemId: physicalId,
+            Aliases: sendRemove,
+          }),
+        deadline
+      );
+    }
+    if (awaitGone.length > 0) {
+      await this.waitForAliases(physicalId, logicalId, resourceType, awaitGone, 'gone', deadline);
+    }
+    if (sendAdd.length > 0) {
+      await this.sendAliasCall(
+        physicalId,
+        logicalId,
+        resourceType,
+        () => new AssociateFileSystemAliasesCommand({ FileSystemId: physicalId, Aliases: sendAdd }),
+        deadline
+      );
+    }
+    if (delta.add.length > 0) {
+      await this.waitForAliases(
+        physicalId,
+        logicalId,
+        resourceType,
+        delta.add,
+        'AVAILABLE',
+        deadline
+      );
+    }
+  }
+
+  /** Every alias of the file system, all pages. */
+  private async describeAliases(physicalId: string): Promise<Alias[]> {
+    const aliases: Alias[] = [];
+    let nextToken: string | undefined;
+    do {
+      const resp = await this.getClient().send(
+        new DescribeFileSystemAliasesCommand({ FileSystemId: physicalId, NextToken: nextToken })
+      );
+      aliases.push(...(resp.Aliases ?? []));
+      nextToken = resp.NextToken;
+    } while (nextToken);
+    return aliases;
+  }
+
+  /**
+   * Wait until no `AdministrativeActions` entry other than a storage / IOPS
+   * optimization is PENDING or IN_PROGRESS (go-to-k/cdkd#5469), so an alias
+   * action never overlaps another update. An optimization (and the
+   * UPDATED_OPTIMIZING status of the update it follows) is not waited for: it
+   * can run for hours. Bounded by the caller's `deadline`.
+   */
+  private async waitForNoAdministrativeAction(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    deadline: number
+  ): Promise<void> {
+    const transientState = { count: 0 };
+    let running: string[] = [];
+    while (Date.now() < deadline) {
+      const fs = await this.describeForPoll(physicalId, transientState);
+      if (fs) {
+        running = runningAliasBlockingActions(fs);
+        if (running.length === 0) return;
+        this.logger.debug(
+          safeMsg`FSx FileSystem ${physicalId}: waiting for ${running.join(', ')} to finish before changing DNS aliases...`
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
+    }
+    throw new ProvisioningError(
+      safeMsg`Timed out waiting for FSx FileSystem ${physicalId} administrative actions (${running.join(', ') || 'unknown'}) to finish before changing its DNS aliases (${Math.round(this.maxWaitMs / 60000)} min). Re-deploy once they complete.`,
+      resourceType,
+      logicalId,
+      physicalId
+    );
+  }
+
+  /**
+   * Send an Associate / Disassociate call, re-sending it while FSx refuses it
+   * with a BadRequest naming an administrative action in progress
+   * (go-to-k/cdkd#5469), until `deadline`; any other error propagates. On the
+   * deadline the error names the actions still running.
+   */
+  private async sendAliasCall(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    command: () => AssociateFileSystemAliasesCommand | DisassociateFileSystemAliasesCommand,
+    deadline: number
+  ): Promise<void> {
+    for (;;) {
+      try {
+        const call = command();
+        if (call instanceof AssociateFileSystemAliasesCommand) await this.getClient().send(call);
+        else await this.getClient().send(call);
+        return;
+      } catch (error) {
+        if (!isAdministrativeActionInProgress(error)) throw error;
+        if (Date.now() >= deadline) {
+          let running: string[] = [];
+          try {
+            const fs = await this.describeForPoll(physicalId, { count: 0 });
+            running = (fs?.AdministrativeActions ?? [])
+              .filter((a) => a.Status === 'PENDING' || a.Status === 'IN_PROGRESS')
+              .map((a) => a.AdministrativeActionType ?? 'unknown');
+          } catch {
+            // The refusal is the error to report; the names are best-effort.
+          }
+          throw new ProvisioningError(
+            safeMsg`Timed out changing FSx FileSystem ${physicalId} DNS aliases: FSx kept refusing the call while an administrative action (${running.join(', ') || 'unknown'}) is in progress (${Math.round(this.maxWaitMs / 60000)} min). Re-deploy once it completes.`,
+            resourceType,
+            logicalId,
+            physicalId,
+            error
+          );
+        }
+        this.logger.debug(
+          safeMsg`FSx FileSystem ${physicalId}: DNS alias call refused while an administrative action is in progress, re-sending...`
+        );
+        await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
+      }
+    }
+  }
+
+  /**
+   * Poll `DescribeFileSystemAliases` until each of `names` is AVAILABLE
+   * (`target: 'AVAILABLE'`) or absent (`target: 'gone'`), up to `deadline`.
+   * A name read as CREATE_FAILED / DELETE_FAILED fails the update, FSx will
+   * not get there on its own, but only once that name was read in transition
+   * (CREATING / DELETING) during this wait or read failed
+   * {@link STALE_FAILED_READS} times in a row: a fresh Disassociate of a
+   * DELETE_FAILED name (the retry arm of `applyAliasDelta`) can read the old
+   * DELETE_FAILED before FSx flips it to DELETING.
+   */
+  private async waitForAliases(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: string[],
+    target: 'AVAILABLE' | 'gone',
+    deadline: number
+  ): Promise<void> {
+    const failedLifecycle = target === 'AVAILABLE' ? 'CREATE_FAILED' : 'DELETE_FAILED';
+    const transitionLifecycle = target === 'AVAILABLE' ? 'CREATING' : 'DELETING';
+    const seenTransition = new Set<string>();
+    const failedReads = new Map<string, number>();
+    let transient = 0;
+    while (Date.now() < deadline) {
+      let aliases: Alias[];
+      try {
+        aliases = await this.describeAliases(physicalId);
+        transient = 0;
+      } catch (error) {
+        // Tolerated like the file-system polls' (describeForPoll): one
+        // throttle must not fail an update whose alias action already ran.
+        if (!isTransientFsxError(error) || transient >= 5) throw error;
+        transient += 1;
+        await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
+        continue;
+      }
+      const byName = new Map(aliases.map((a) => [a.Name?.toLowerCase(), a.Lifecycle]));
+      for (const n of names) {
+        const lifecycle = byName.get(n);
+        if (lifecycle === transitionLifecycle) seenTransition.add(n);
+        failedReads.set(n, lifecycle === failedLifecycle ? (failedReads.get(n) ?? 0) + 1 : 0);
+      }
+      const failed = names.filter(
+        (n) =>
+          byName.get(n) === failedLifecycle &&
+          (seenTransition.has(n) || (failedReads.get(n) ?? 0) >= STALE_FAILED_READS)
+      );
+      if (failed.length > 0) {
+        throw new ProvisioningError(
+          safeMsg`FSx FileSystem ${physicalId}: DNS alias ${failed.join(', ')} entered ${failedLifecycle}. Check the alias name and the file system's Active Directory, then re-deploy.`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+      const settled = names.every((n) =>
+        target === 'AVAILABLE' ? byName.get(n) === 'AVAILABLE' : !byName.has(n)
+      );
+      if (settled) return;
+      this.logger.debug(
+        safeMsg`FSx FileSystem ${physicalId}: waiting for DNS aliases ${names.join(', ')} to be ${target}...`
+      );
+      await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
+    }
+    throw new ProvisioningError(
+      safeMsg`Timed out waiting for FSx FileSystem ${physicalId} DNS aliases ${names.join(', ')} to be ${target} (${Math.round(this.maxWaitMs / 60000)} min)`,
+      resourceType,
+      logicalId,
+      physicalId
+    );
   }
 
   /**
@@ -2014,18 +2380,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
       transientState.count = 0;
       return response.FileSystems?.[0];
     } catch (error) {
-      const name = error instanceof Error ? error.name : '';
-      // `.detail`, never `.summary`: the substring test below is what keeps this
-      // degradation alive, and it matches AWS's OWN wording. Byte-identical to
-      // the ternary it replaced, minus that ternary's throw.
       const msg = describeAwsFailure(error).detail;
-      const transient =
-        name === 'ThrottlingException' ||
-        name === 'ServiceLimitExceeded' ||
-        name === 'InternalServerError' ||
-        name === 'TimeoutError' ||
-        /rate exceeded|too many requests|timed? ?out|ECONNRESET|EPIPE|socket hang up/i.test(msg);
-      if (transient && transientState.count < maxConsecutiveTransient) {
+      if (isTransientFsxError(error) && transientState.count < maxConsecutiveTransient) {
         transientState.count += 1;
         this.logger.debug(
           `Transient DescribeFileSystems error while polling ${fileSystemId} (${transientState.count}/${maxConsecutiveTransient}): ${msg} — retrying`
@@ -2110,13 +2466,13 @@ export class FSxFileSystemProvider implements ResourceProvider {
     resourceType: string,
     actionThresholdMs: number,
     requireActionObservation: boolean,
+    deadline: number,
     mask?: MaskerFn
   ): Promise<FileSystem> {
-    const startTime = Date.now();
     const transientState = { count: 0 };
     let seenTrackedAction = false;
 
-    while (Date.now() - startTime < this.maxWaitMs) {
+    while (Date.now() < deadline) {
       const fs = await this.describeForPoll(fileSystemId, transientState);
 
       if (fs) {
@@ -2490,6 +2846,12 @@ export class FSxFileSystemProvider implements ResourceProvider {
    * report `LogConfiguration` as drift until a `drift --accept`. Logging off
    * and the key absent mean the same here, so both sides drop it; logging
    * turned ON or OFF against the baseline still differs and is still reported.
+   *
+   * Also lowercase each `WindowsConfiguration.Aliases` name on both sides
+   * (go-to-k/cdkd#5469): FSx stores an alias lowercased whatever spelling it
+   * was given, and `update()` compares names case-insensitively, so a
+   * mixed-case template (`Keep.corp.example.com`) against the readback is no
+   * difference.
    */
   canonicalizeDriftProperties(
     resourceType: string,
@@ -2497,7 +2859,9 @@ export class FSxFileSystemProvider implements ResourceProvider {
   ): Record<string, unknown> {
     if (resourceType !== 'AWS::FSx::FileSystem') return properties;
     const lustre = properties['LustreConfiguration'];
-    if (typeof lustre !== 'object' || lustre === null || Array.isArray(lustre)) return properties;
+    if (typeof lustre !== 'object' || lustre === null || Array.isArray(lustre)) {
+      return this.canonicalizeWindowsAliases(properties);
+    }
     const log = (lustre as Record<string, unknown>)['LogConfiguration'];
     if (
       typeof log !== 'object' ||
@@ -2505,10 +2869,30 @@ export class FSxFileSystemProvider implements ResourceProvider {
       Array.isArray(log) ||
       JSON.stringify(log) !== JSON.stringify({ Level: 'DISABLED' })
     ) {
-      return properties;
+      return this.canonicalizeWindowsAliases(properties);
     }
     const { LogConfiguration: _disabled, ...rest } = lustre as Record<string, unknown>;
-    return { ...properties, LustreConfiguration: rest };
+    return this.canonicalizeWindowsAliases({ ...properties, LustreConfiguration: rest });
+  }
+
+  private canonicalizeWindowsAliases(properties: Record<string, unknown>): Record<string, unknown> {
+    const windows = properties['WindowsConfiguration'];
+    if (typeof windows !== 'object' || windows === null || Array.isArray(windows))
+      return properties;
+    const aliases = (windows as Record<string, unknown>)['Aliases'];
+    if (
+      !Array.isArray(aliases) ||
+      aliases.every((a) => typeof a !== 'string' || a === a.toLowerCase())
+    ) {
+      return properties;
+    }
+    return {
+      ...properties,
+      WindowsConfiguration: {
+        ...(windows as Record<string, unknown>),
+        Aliases: aliases.map((a) => (typeof a === 'string' ? a.toLowerCase() : a)),
+      },
+    };
   }
 
   /**
