@@ -324,7 +324,6 @@ const ON_DEMAND_BAG: Bag = {
           { Key: 's2', Value: 'v2' },
         ],
       },
-      GlobalTableSettingsReplicationMode: 'ENABLED',
     },
     { Region: 'us-west-2' },
   ],
@@ -334,7 +333,9 @@ const ON_DEMAND_BAG: Bag = {
  * A replica resource policy is refused in the deploy that creates the replica
  * whenever the table has a cross-region replica (CloudFormation refuses it
  * too), so the policies ride on a single-region table, where create sends
- * them.
+ * them. `GlobalTableSettingsReplicationMode` rides here for the same reason:
+ * CloudFormation refuses it unless the table has exactly one replica
+ * (go-to-k/cdkd#5489).
  */
 const SINGLE_REGION_BAG: Bag = {
   TableName: TABLE,
@@ -347,6 +348,7 @@ const SINGLE_REGION_BAG: Bag = {
       Region: 'us-east-1',
       ResourcePolicy: { PolicyDocument: POLICY('table') },
       ReplicaStreamSpecification: { ResourcePolicy: { PolicyDocument: POLICY('stream') } },
+      GlobalTableSettingsReplicationMode: 'ENABLED',
     },
   ],
 };
@@ -450,17 +452,13 @@ const STREAM_VIEW_DEFAULT = `an absent StreamViewType is NEW_AND_OLD_IMAGES (${S
 const GSI_READ_SHADOWED = `the index-level read throughput is only the fallback of the deploy-region replica's own GlobalSecondaryIndexes entry, which this bag declares and which wins (${S}:10612-10618, 10770-10772, 10856); CFn precedence unmeasured`;
 const GSI_SHAPE_WARNED = `a changed index KeySchema / Projection is warned about ("recreate the index") with no call (${S}:5632-5644); CFn unmeasured`;
 const SEED = `SeedCapacity is the initial capacity of a PAY_PER_REQUEST -> PROVISIONED switch only; a create starts at MinCapacity, as CloudFormation does (live-measured, go-to-k/cdkd#1427 / #1435, ${S}:10528-10557), and RegisterScalableTarget has no seed member`;
-const GAP_INDEX_INSIGHTS = `SUSPECTED GAP: UpdateContributorInsights is never sent with an IndexName, so a replica index's ContributorInsightsSpecification is never delivered; documented as a known gap in the code (${S}:1813-1819); tracked in go-to-k/cdkd#5489`;
-const GAP_REPLICATION_MODE = `SUSPECTED GAP: Replicas[].GlobalTableSettingsReplicationMode is read nowhere in the provider, though CreateTable / UpdateTable carry a GlobalTableSettingsReplicationMode member; tracked in go-to-k/cdkd#5489`;
-const GAP_STREAM_TAGS = `SUSPECTED GAP: Replicas[].ReplicaStreamSpecification.Tags is read nowhere (only its ResourcePolicy is, ${RS}:11, 149), so the stream's tags are never delivered; tracked in go-to-k/cdkd#5489`;
-const GAP_LSI_LIST = `SUSPECTED GAP: the LocalSecondaryIndexes guard fires only when both sides declare a list (${S}:3567-3568), so adding or removing the whole list sends nothing and the update succeeds, while DynamoDB cannot change a live table's LSIs; a missing refusal, CFn unmeasured; tracked in go-to-k/cdkd#5489`;
 const LSI_VARY = `the varied LocalSecondaryIndexes entry is refused like its removal (${S}:3566-3578), so the vary sees no wire`;
 const SSE_KEY_PASS = `the table's customer managed key goes through the replica-key pass on a table with cross-region replicas (measured, ${S}:4664-4676), which sends nothing while the declared key is the live one; SSEEnabled / SSEType with that key only re-spell the same encryption (an absent SSEEnabled is true, an absent SSEType with SSEEnabled is KMS, ${S}:9506-9520)`;
 
 const PROVISIONED_THROWS: Record<string, Throw> = {
   ...keyThrows(PROVISIONED_BAG),
   ...pick(PROVISIONED_BAG, [
-    [UPD, /^LocalSecondaryIndexes\./, LSI_REFUSED],
+    [UPD, /^LocalSecondaryIndexes(\..*)?$/, LSI_REFUSED],
     [/^(create|update-remove)$/, /^Replicas\.0\.KinesisStreamSpecification\.StreamArn$/, {
       why: `a replica Kinesis destination without its StreamArn is refused before any call (${RS}:105)`,
       says: /KinesisStreamSpecification\.StreamArn is required/,
@@ -472,11 +470,9 @@ const PROVISIONED_THROWS: Record<string, Throw> = {
 const PROVISIONED_SILENT: Record<string, string> = {
   ...keySilent(PROVISIONED_BAG),
   ...pick(PROVISIONED_BAG, [
-    [UPD, /^LocalSecondaryIndexes$/, GAP_LSI_LIST],
     [VARY_ON_UPDATE, /^LocalSecondaryIndexes\./, LSI_VARY],
     [/^(create|create-vary|update-vary)$/, /SeedCapacity$/, SEED],
     [ANY, /^GlobalSecondaryIndexes\.0\.ReadProvisionedThroughputSettings/, GSI_READ_SHADOWED],
-    [ANY, /^Replicas\.0\.GlobalSecondaryIndexes\.0\.ContributorInsightsSpecification/, GAP_INDEX_INSIGHTS],
     [/^create$/, /^SSESpecification\.SSEEnabled$/, `an absent SSEEnabled is true (${S}:9514), the declared value`],
     [/^update-add$/, /^SSESpecification\.(SSEEnabled|SSEType)$/, SSE_KEY_PASS],
     [/^update-(remove|vary)$/, /^SSESpecification\.SSEType$/, SSE_KEY_PASS],
@@ -489,6 +485,15 @@ const PROVISIONED_SILENT: Record<string, string> = {
   ]),
 };
 
+const ON_DEMAND_THROWS: Record<string, Throw> = {
+  ...keyThrows(ON_DEMAND_BAG),
+  ...pick(ON_DEMAND_BAG, [
+    [/^(create|update-remove)$/, /^Replicas\.0\.ReplicaStreamSpecification\.Tags\.\d+\.(Key|Value)$/, {
+      why: `a replica stream tag without its Key or Value is refused before any call (${RS}, readStreamTags; go-to-k/cdkd#5489)`,
+      says: /ReplicaStreamSpecification\.Tags must be a list of tags/,
+    }],
+  ]),
+};
 const ON_DEMAND_SILENT: Record<string, string> = {
   ...keySilent(ON_DEMAND_BAG),
   ...pick(ON_DEMAND_BAG, [
@@ -498,8 +503,6 @@ const ON_DEMAND_SILENT: Record<string, string> = {
     [/^create$/, /^StreamSpecification\.StreamViewType$/, STREAM_VIEW_DEFAULT],
     [ANY, /^GlobalSecondaryIndexes\.0\.ReadOnDemandThroughputSettings/, GSI_READ_SHADOWED],
     [VARY_ON_UPDATE, /^GlobalSecondaryIndexes\.0\.(KeySchema|Projection)\./, GSI_SHAPE_WARNED],
-    [ANY, /^Replicas\.0\.ReplicaStreamSpecification/, GAP_STREAM_TAGS],
-    [ANY, /^Replicas\.0\.GlobalTableSettingsReplicationMode$/, GAP_REPLICATION_MODE],
   ]),
 };
 
@@ -518,8 +521,11 @@ const SINGLE_REGION_SILENT: Record<string, string> = {
   ...pick(SINGLE_REGION_BAG, [
     [/^(create|update-add|update-remove)$/, /^BillingMode$/, BILLING_DEFAULT],
     [/^create$/, /^StreamSpecification\.StreamViewType$/, STREAM_VIEW_DEFAULT],
-    [REMOVE, /^Replicas(\.0(\.Region)?)?$/, `Replicas is required by the CloudFormation schema, and the deploy-region replica is the table itself: no deployable template drops it`],
+    // A removed whole entry still sends one call: the recorded replication
+    // mode is reset to DISABLED (go-to-k/cdkd#5489).
+    [REMOVE, /^Replicas\.0\.Region$/, `Replicas is required by the CloudFormation schema, and the deploy-region replica is the table itself: no deployable template drops it`],
     [/vary$/, /^Replicas\.0\.Region$/, `any other Region makes the replica cross-region, whose ResourcePolicy is refused in the deploy that creates it (${S}:9346-9359), so the vary sees no wire`],
+    [VARY_ON_UPDATE, /^Replicas\.0\.GlobalTableSettingsReplicationMode$/, `the update-vary base drops the whole replica entry, so the update re-creates the deploy-region replica, whose ResourcePolicy is refused in the deploy that creates it; the create-vary shows the varied mode reaching CreateTable, and the unit suite pins the UpdateTable (go-to-k/cdkd#5489)`],
   ]),
 };
 
@@ -548,7 +554,7 @@ const GLOBAL_TABLE_CASE: TypeCase = {
       name: 'on-demand',
       bag: fresh(ON_DEMAND_BAG),
       expectedSilent: ON_DEMAND_SILENT,
-      expectedRemovalThrows: keyThrows(ON_DEMAND_BAG),
+      expectedRemovalThrows: ON_DEMAND_THROWS,
     },
     {
       name: 'single-region',
