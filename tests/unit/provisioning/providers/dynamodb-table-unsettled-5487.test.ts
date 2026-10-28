@@ -25,7 +25,9 @@ vi.mock('../../../../src/utils/logger.js', () => {
   return { getLogger: () => ({ ...child, child: () => child }) };
 });
 
+import { PolicyNotFoundException } from '@aws-sdk/client-dynamodb';
 import { DynamoDBTableProvider } from '../../../../src/provisioning/providers/dynamodb-table-provider.js';
+import { ProvisioningError } from '../../../../src/utils/error-handler.js';
 
 const TYPE = 'AWS::DynamoDB::Table';
 const ARN = 'arn:aws:dynamodb:us-east-1:123456789012:table/t';
@@ -44,6 +46,9 @@ interface Live {
   failPitr?: boolean;
   tags?: Array<{ Key: string; Value: string }>;
   deletionProtection?: boolean;
+  noArn?: boolean;
+  /** GetResourcePolicy answers PolicyNotFoundException (the table has none). */
+  noPolicy?: boolean;
 }
 
 function serve(live: Live): void {
@@ -53,7 +58,7 @@ function serve(live: Live): void {
         return {
           Table: {
             TableName: 't',
-            TableArn: ARN,
+            ...(live.noArn !== true && { TableArn: ARN }),
             TableStatus: live.status ?? 'ACTIVE',
             KeySchema: KEYS.KeySchema,
             AttributeDefinitions: KEYS.AttributeDefinitions,
@@ -91,6 +96,11 @@ function serve(live: Live): void {
         return { KinesisDataStreamDestinations: [] };
       case 'DescribeContributorInsightsCommand':
         return { ContributorInsightsStatus: 'DISABLED' };
+      case 'GetResourcePolicyCommand':
+        if (live.noPolicy === true) {
+          throw new PolicyNotFoundException({ message: 'no policy', $metadata: {} });
+        }
+        return { Policy: '{"Version":"2012-10-17","Statement":[]}' };
       default:
         return {};
     }
@@ -176,6 +186,44 @@ describe('DynamoDB table unsettled properties (go-to-k/cdkd#5487)', () => {
     expect(m.marks).toEqual([key]);
     expect(m.writesAt).toEqual([0]);
     expect(writes()).toBeGreaterThan(0);
+  });
+
+  it('a per-index Contributor Insights change marks GlobalSecondaryIndexes before its call; an unchanged one marks nothing', async () => {
+    const gsi = (insights?: boolean) => ({
+      IndexName: 'g',
+      KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+      Projection: { ProjectionType: 'ALL' },
+      ...(insights !== undefined && { ContributorInsightsSpecification: { Enabled: insights } }),
+    });
+    serve({ gsiStatus: 'ACTIVE' });
+    const m = marker();
+    await provider.update(
+      'T',
+      't',
+      TYPE,
+      { ...KEYS, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [gsi(true)] },
+      { ...KEYS, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [gsi(false)] },
+      { markUnsettled: m.markUnsettled }
+    );
+    const ci = sent('UpdateContributorInsightsCommand').filter((c) => c.input.IndexName === 'g');
+    expect(ci).toHaveLength(1);
+    // Once at the index block's gate, and again immediately before the
+    // per-index insights call itself, with no write between the two.
+    expect(m.marks.filter((k) => k === 'GlobalSecondaryIndexes')).toHaveLength(2);
+    expect(m.writesAt[m.marks.lastIndexOf('GlobalSecondaryIndexes')]).toBe(writes() - 1);
+    vi.clearAllMocks();
+    serve({ gsiStatus: 'ACTIVE' });
+    const unchanged = marker();
+    await provider.update(
+      'T',
+      't',
+      TYPE,
+      { ...KEYS, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [gsi(true)] },
+      { ...KEYS, BillingMode: 'PAY_PER_REQUEST', GlobalSecondaryIndexes: [gsi(true)] },
+      { markUnsettled: unchanged.markUnsettled }
+    );
+    expect(sent('UpdateContributorInsightsCommand')).toHaveLength(0);
+    expect(unchanged.marks).toEqual([]);
   });
 
   it('marks nothing for an update that sends nothing, and Tags only when the tag plan writes', async () => {
@@ -267,5 +315,104 @@ describe('DynamoDB table unsettled properties (go-to-k/cdkd#5487)', () => {
     expect((await provider.unsettledInTransition('t', 'T', TYPE, all)).size).toBe(0);
     mockSend.mockRejectedValue(new Error('throttled'));
     expect((await provider.unsettledInTransition('t', 'T', TYPE, all)).size).toBe(all.size);
+  });
+
+  it('readUnsettled: an unsettled ResourcePolicy on a table with none reads as absent, not a refusal', async () => {
+    serve({ noPolicy: true });
+    const live = (await provider.readUnsettled('t', 'T', TYPE, new Set(['ResourcePolicy']), KEYS)) as Record<
+      string,
+      unknown
+    >;
+    expect(live).not.toHaveProperty('ResourcePolicy');
+    serve({});
+    const held = (await provider.readUnsettled('t', 'T', TYPE, new Set(['ResourcePolicy']), KEYS)) as Record<
+      string,
+      unknown
+    >;
+    expect(held).toHaveProperty('ResourcePolicy');
+  });
+
+  it('readUnsettled: a table with no TableArn refuses the ResourcePolicy read as a ProvisioningError', async () => {
+    serve({ noArn: true });
+    await expect(
+      provider.readUnsettled('t', 'T', TYPE, new Set(['ResourcePolicy']), KEYS)
+    ).rejects.toBeInstanceOf(ProvisioningError);
+  });
+
+  it.each(['CREATING', 'UPDATING', 'DELETING'])('a table %s is moving', async (status) => {
+    serve({ status });
+    expect([...(await provider.unsettledInTransition('t', 'T', TYPE, new Set(['BillingMode'])))]).toEqual([
+      'BillingMode',
+    ]);
+  });
+
+  it.each(['INACCESSIBLE_ENCRYPTION_CREDENTIALS', 'ARCHIVING', 'ARCHIVED', 'REPLICATION_NOT_AUTHORIZED'])(
+    'a table %s is at rest: the update runs, so AWS names the cause',
+    async (status) => {
+      serve({ status });
+      expect((await provider.unsettledInTransition('t', 'T', TYPE, new Set(['BillingMode']))).size).toBe(0);
+    }
+  );
+
+  it.each([
+    ['DELETING', true],
+    ['UPDATING', true],
+    ['ACTIVE', false],
+  ])('an index %s moves GlobalSecondaryIndexes: %s', async (gsiStatus, moving) => {
+    serve({ gsiStatus });
+    expect(
+      (await provider.unsettledInTransition('t', 'T', TYPE, new Set(['GlobalSecondaryIndexes']))).size
+    ).toBe(moving ? 1 : 0);
+  });
+
+  it('a TTL DISABLING is not moving, and reads as its destination (no TTL)', async () => {
+    serve({ ttl: 'DISABLING' });
+    expect((await provider.unsettledInTransition('t', 'T', TYPE, new Set(['TimeToLiveSpecification']))).size).toBe(0);
+    const live = (await provider.readUnsettled('t', 'T', TYPE, new Set(['TimeToLiveSpecification']), KEYS)) as Record<
+      string,
+      unknown
+    >;
+    expect(live).not.toHaveProperty('TimeToLiveSpecification');
+  });
+
+  it('a refused TTL attribute-name change marks nothing', async () => {
+    mockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name === 'DescribeTimeToLiveCommand') {
+        return { TimeToLiveDescription: { TimeToLiveStatus: 'ENABLED', AttributeName: 'old' } };
+      }
+      if (cmd.constructor.name === 'DescribeTableCommand') {
+        return { Table: { TableName: 't', TableArn: ARN, TableStatus: 'ACTIVE', BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' } } };
+      }
+      return {};
+    });
+    const m = marker();
+    await provider
+      .update(
+        'T',
+        't',
+        TYPE,
+        { ...KEYS, BillingMode: 'PAY_PER_REQUEST', TimeToLiveSpecification: { AttributeName: 'new', Enabled: true } },
+        { ...KEYS, BillingMode: 'PAY_PER_REQUEST', TimeToLiveSpecification: { AttributeName: 'old', Enabled: true } },
+        { markUnsettled: m.markUnsettled }
+      )
+      .catch(() => undefined);
+    expect(m.marks).not.toContain('TimeToLiveSpecification');
+    expect(sent('UpdateTimeToLiveCommand')).toHaveLength(0);
+  });
+
+  it('a ResourcePolicy change on a table with no TableArn marks nothing', async () => {
+    serve({ noArn: true });
+    const m = marker();
+    await provider
+      .update(
+        'T',
+        't',
+        TYPE,
+        { ...KEYS, BillingMode: 'PAY_PER_REQUEST', ResourcePolicy: { PolicyDocument: { Statement: [] } } },
+        { ...KEYS, BillingMode: 'PAY_PER_REQUEST' },
+        { markUnsettled: m.markUnsettled }
+      )
+      .catch(() => undefined);
+    expect(m.marks).not.toContain('ResourcePolicy');
   });
 });

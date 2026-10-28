@@ -75,7 +75,13 @@ function refusal(args: Identity, names: Iterable<string>, why: string): Provisio
   const list = [...names].sort().join(', ');
   return new ProvisioningError(
     `${args.logicalId} (${args.resourceType}): an earlier failed update left ${list} unsettled, ` +
-      `and ${why} — nothing was updated. Re-run the deploy once the resource has settled.`,
+      `and ${why} — nothing was updated. Re-run the deploy once the resource has settled` +
+      // The escape hatch is named only where it exists: `cdkd drift` reads a
+      // resource through `readCurrentState`, and its --accept records what AWS
+      // holds (clearing the names) once nothing is still changing.
+      (args.provider.readCurrentState !== undefined
+        ? ", or, to keep what AWS holds instead, run 'cdkd drift --accept' once it has."
+        : '.'),
     args.resourceType,
     args.logicalId,
     args.physicalId

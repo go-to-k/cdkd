@@ -613,6 +613,20 @@ describe('the engine converges unsettled names before the removal step (go-to-k/
     expect(prev?.['Extra']).toBe('v');
   });
 
+  it('a refusal names drift --accept as the escape hatch when the provider can be drifted', async () => {
+    const f = fakeAws({ DeliveryStreamName: 'stream' });
+    const run = await deploy({
+      state: stateOf({ unsettledProperties: [ENC] }),
+      template: templateOf(plain),
+      hooks: { ...f.hooks, unsettledInTransition: async (_p: string, _l: string, _t: string, n: ReadonlySet<string>) => n },
+      update: f.update,
+      options: { noRollback: true },
+    });
+    const chain: string[] = [];
+    for (let e: unknown = run.thrown; e instanceof Error && chain.length < 8; e = e.cause) chain.push(e.message);
+    expect(chain.join('\n')).toContain("run 'cdkd drift --accept' once it has");
+  });
+
   it('a name AWS is still changing refuses the update before any call, and stays unsettled', async () => {
     const f = fakeAws({ DeliveryStreamName: 'stream' });
     const run = await deploy({
@@ -790,6 +804,8 @@ describe('convergence messages say what happened (go-to-k/cdkd#5487)', () => {
       chain.push(e.message);
     }
     expect(chain.join('\n')).toMatch(/AWS is still changing it or cdkd could not confirm it settled/);
+    // This provider has no readCurrentState: no `cdkd drift` escape hatch is named.
+    expect(chain.join('\n')).not.toContain('drift --accept');
   });
 
   it('a live-only key the template never had is not called removed from the template', async () => {
