@@ -151,7 +151,7 @@ fifo-sqs-event-source	2026-10-16T16:36:24Z	PASS	105	verify.sh	PR #5012 (#5004) r
 fsx-lustre	2026-10-27T21:43:55Z	PASS	2661	verify.sh	#5430 LogConfiguration create/update; rc ok, orph clean, probe red pre-fix
 fsx-ontap	2026-10-02T10:50:28Z	PASS	1613	verify.sh	#1160 PR #4398; rc ok, orph clean, no final backup
 fsx-openzfs	2026-10-28T02:59:23Z	PASS	1488	verify.sh	rc ok, destroy 0 errors, orph clean, final backup deleted, #5431 probes A/B red
-fsx-windows	2026-10-02T10:50:28Z	PASS	4588	verify.sh	#1160 PR #4398; AD-joined rc ok, orph clean, no final backup
+fsx-windows	2026-10-28T19:20:50Z	PASS	4833	verify.sh	#5469 PR #5475; Aliases in-place update; rc ok, orph clean, no final backup
 full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 gc-custom-asset-names	2026-10-05T08:20:47Z	PASS	163	verify.sh	rc ok, orph clean; us-east-2, run alone (a parallel batch's locks make gc refuse) (#2624 PR #4573)
 generated-name-lifecycle	2026-10-20T19:58:09Z	PASS	1040	verify.sh	PR #5100 pre-merge run, rc ok, orph clean
