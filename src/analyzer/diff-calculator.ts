@@ -247,7 +247,7 @@ export type NoEchoCompareFn = (input: {
  * replacement predicate (issue #5446: an instance's `SecurityGroupIds`
  * replaces only without a `SubnetId`).
  */
-function siblingsOf(change: {
+export function siblingsOf(change: {
   currentProperties?: Record<string, unknown> | undefined;
   desiredProperties?: Record<string, unknown> | undefined;
 }): ReplacementSiblings | undefined {

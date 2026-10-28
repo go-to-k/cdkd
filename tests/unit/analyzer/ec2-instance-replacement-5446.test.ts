@@ -34,7 +34,7 @@ import {
   ReplacementRulesRegistry,
   blockDeviceMappingsDifferOnlyInDeleteOnTermination,
 } from '../../../src/analyzer/replacement-rules.js';
-import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import { DiffCalculator, siblingsOf } from '../../../src/analyzer/diff-calculator.js';
 import { maskedPropertyFingerprint } from '../../../src/deployment/masked-property-fingerprints.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
@@ -279,5 +279,25 @@ describe('a masked SecurityGroupIds edit asks the predicate with the siblings (i
 
   it('stays in place with a SubnetId', async () => {
     expect((await run({ SubnetId: 'subnet-1' }))?.requiresReplacement).toBe(false);
+  });
+});
+
+describe('siblingsOf (issue #5446)', () => {
+  it('hands both bags over', () => {
+    expect(siblingsOf({ currentProperties: { a: 1 }, desiredProperties: { b: 2 } })).toEqual({
+      oldProperties: { a: 1 },
+      newProperties: { b: 2 },
+    });
+  });
+
+  it.each([
+    ['the desired bag', { currentProperties: {} }],
+    ['the current bag', { desiredProperties: {} }],
+  ])('answers undefined without %s, so a predicate takes its in-place default', (_n, change) => {
+    const siblings = siblingsOf(change);
+    expect(siblings).toBeUndefined();
+    expect(rules.requiresReplacement(TYPE, 'SecurityGroupIds', ['sg-a'], ['sg-b'], siblings)).toBe(
+      false
+    );
   });
 });
