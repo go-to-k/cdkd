@@ -105,6 +105,19 @@ export class EfsStandaloneStack extends cdk.Stack {
       },
     });
 
+    // Issue #5464: FileSystemTags / AccessPointTags are tag-updatable in
+    // CloudFormation. The removal phase (CDKD_TEST_REMOVAL) retags the file
+    // system — one value changed, one key dropped — and the access-point phase
+    // (CDKD_TEST_AP_RETAG) does the same to the access point alone, so each
+    // half fails at its own verify.sh assertion. Pre-fix the file-system
+    // retag sent nothing and the access-point retag was refused.
+    const apRetag = process.env.CDKD_TEST_AP_RETAG === 'true';
+    const fsOnly = { excludeResourceTypes: ['AWS::EFS::AccessPoint'] };
+    cdk.Tags.of(fs).add('cdkd-retag', removal ? 'v2' : 'v1', fsOnly);
+    if (!removal) cdk.Tags.of(fs).add('cdkd-drop', 'x', fsOnly);
+    cdk.Tags.of(ap).add('cdkd-ap-retag', apRetag ? 'v2' : 'v1');
+    if (!apRetag) cdk.Tags.of(ap).add('cdkd-ap-drop', 'x');
+
     // Outputs
     new cdk.CfnOutput(this, 'FileSystemId', {
       value: fs.fileSystemId,

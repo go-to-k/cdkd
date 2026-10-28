@@ -8806,7 +8806,9 @@
           ],
           "seededBy": [
             "create",
-            "createAccessPoint"
+            "createAccessPoint",
+            "update",
+            "updateAccessPoint"
           ]
         },
         {
@@ -8936,7 +8938,9 @@
           ],
           "seededBy": [
             "create",
-            "createFileSystem"
+            "createFileSystem",
+            "update",
+            "updateFileSystem"
           ]
         },
         {
@@ -9130,7 +9134,9 @@
       ],
       "gaps": [],
       "blindSpots": [
-        "computed key in updateFileSystem()"
+        "computed key in updateAccessPoint()",
+        "computed key in updateFileSystem()",
+        "Object.keys(...) in updateAccessPoint()"
       ]
     },
     {
