@@ -95,7 +95,8 @@ cleanup() {
       for name in "${MAIN}" "${PEER_A}" "${PEER_B}"; do
         gid=$(group_id "${name}" 2>/dev/null)
         case "${gid}" in
-          sg-?*) aws ec2 delete-security-group --region "${REGION}" --group-id "${gid}" >/dev/null 2>&1 || true ;;
+          sg-?*) aws ec2 delete-security-group --region "${REGION}" --group-id "${gid}" >/dev/null 2>&1 \
+            || echo "WARN: teardown sweep could not delete ${name} (${gid})" >&2 ;;
         esac
       done
       ;;
@@ -161,14 +162,19 @@ if [ "${P1_RC}" -ne 0 ]; then
   echo "FAIL: Phase 1 deploy exited ${P1_RC}; an inline rule naming its peer by SourceSecurityGroupName must deploy as CloudFormation deploys it (issue #5478)" >&2
   exit 1
 fi
-MAIN_ID=$(group_id "${MAIN}")
-PEER_A_ID=$(group_id "${PEER_A}")
-PEER_B_ID=$(group_id "${PEER_B}")
+MAIN_ID=$(group_id "${MAIN}") || MAIN_ID="<describe failed>"
+PEER_A_ID=$(group_id "${PEER_A}") || PEER_A_ID="<describe failed>"
+PEER_B_ID=$(group_id "${PEER_B}") || PEER_B_ID="<describe failed>"
 if [ -z "${MAIN_ID}" ] || [ -z "${PEER_A_ID}" ] || [ -z "${PEER_B_ID}" ]; then
   echo "FAIL: a group is missing from ${DEFAULT_VPC}: ${MAIN}='${MAIN_ID}' ${PEER_A}='${PEER_A_ID}' ${PEER_B}='${PEER_B_ID}'" >&2
   exit 1
 fi
-P1_PEERS=$(rule_peers "${MAIN_ID}")
+P1_PEERS=""
+for _ in 1 2 3 4 5 6; do
+  P1_PEERS=$(rule_peers "${MAIN_ID}") || P1_PEERS="<describe failed>"
+  [ "${P1_PEERS}" = "${PEER_A_ID}" ] && break
+  sleep 5
+done
 if [ "${P1_PEERS}" != "${PEER_A_ID}" ]; then
   echo "FAIL: ${MAIN} (${MAIN_ID}) tcp/443 ingress peers are '${P1_PEERS}', expected '${PEER_A_ID}' (${PEER_A}): the SourceSecurityGroupName peer did not reach AWS (issue #5478)" >&2
   exit 1
@@ -177,16 +183,23 @@ echo "    OK: ${MAIN}'s rule peers with ${PEER_A} (${PEER_A_ID})"
 
 # --- Phase 2: rename the peer to PEER_B ------------------------------
 echo "==> Phase 2: update (Main's ingress names ${PEER_B})"
+set +e
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-P2_MAIN_ID=$(group_id "${MAIN}")
+P2_RC=$?
+set -e
+if [ "${P2_RC}" -ne 0 ]; then
+  echo "FAIL: Phase 2 deploy exited ${P2_RC}; renaming the SourceSecurityGroupName peer must update in place (issue #5478)" >&2
+  exit 1
+fi
+P2_MAIN_ID=$(group_id "${MAIN}") || P2_MAIN_ID="<describe failed>"
 if [ "${P2_MAIN_ID}" != "${MAIN_ID}" ]; then
   echo "FAIL: ${MAIN} was replaced by a rule change (must update in place): '${MAIN_ID}' -> '${P2_MAIN_ID}'" >&2
   exit 1
 fi
 P2_PEERS=""
 for _ in 1 2 3 4 5 6; do
-  P2_PEERS=$(rule_peers "${MAIN_ID}")
+  P2_PEERS=$(rule_peers "${MAIN_ID}") || P2_PEERS="<describe failed>"
   [ "${P2_PEERS}" = "${PEER_B_ID}" ] && break
   sleep 5
 done
@@ -198,8 +211,15 @@ echo "    OK: the rule now peers with ${PEER_B} (${PEER_B_ID}) only, in place"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
+set +e
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --force
+P3_RC=$?
+set -e
+if [ "${P3_RC}" -ne 0 ]; then
+  echo "FAIL: Phase 3 destroy exited ${P3_RC}" >&2
+  exit 1
+fi
 for gid in "${MAIN_ID}" "${PEER_A_ID}" "${PEER_B_ID}"; do
   assert_gone "security group ${gid} still exists after destroy" aws ec2 describe-security-groups --region "${REGION}" --group-ids "${gid}"
 done
