@@ -729,6 +729,14 @@ export class CodeBuildProvider implements ResourceProvider {
         input.tags = [];
       }
 
+      // go-to-k/cdkd#5492, CFn A/B (us-east-1, a CODECOMMIT-source project in
+      // a VPC with an EFS mount, a secondary source, version and artifact, and
+      // a badge): each of `VpcConfig` / `FileSystemLocations` /
+      // `SecondarySources` / `SecondaryArtifacts` / `SecondarySourceVersions`
+      // / `BadgeEnabled` was removed once alone and once beside a
+      // `Description` change. CloudFormation's UpdateProject (CloudTrail)
+      // omitted the removed member every time and the live value was KEPT, so
+      // the merge pass-through is parity and none of the six is reset.
       const updated = await this.getClient().send(new UpdateProjectCommand(input));
 
       // go-to-k/cdkd#2762: `Visibility` / `ResourceAccessRole`, sent as a pair

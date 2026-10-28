@@ -1478,12 +1478,16 @@ or a second write after a first one landed, calls
 refusal or a read (#5380). If the update then fails, the record names the key
 unsettled, and the next deploy hands it back in
 `UpdateContext.unsettledProperties` even when the template and the record
-agree. A provider that marks a key must, on finding it there, compare the
-desired value with what AWS holds (not with `previousProperties`) and send
-only what differs. A rollback revert hands the set too. If its
-`readCurrentState` reports an in-progress transition as a value, it also
-implements `unsettledInTransition`, so `cdkd drift --accept` / `--revert`
-keep a key AWS is still changing.
+agree. Before the removal step the engine replaces each such key's previous
+value with what AWS holds now (`src/deployment/unsettled-convergence.ts`), so
+the provider's own comparison of the two bags sends only what differs; `Tags`
+keeps the record's side, because CloudFormation leaves tags it did not record.
+A provider whose `readCurrentState` reports another value than the one its
+update compares, or swallows a failed read, implements `readUnsettled`. One
+whose resource has in-progress states implements `unsettledInTransition`: the
+engine then refuses to diff a moving key, keeps it unsettled after an update
+until AWS shows the template's value, and `cdkd drift --accept` / `--revert`
+keep it too (#5487).
 
 Checklist when writing or reviewing an `update()`:
 
@@ -1628,6 +1632,11 @@ Checklist when writing or reviewing an `update()`:
   removed `EncryptionKey` RESETS to the AWS managed S3 key (cdkd sends
   `alias/aws/s3`), a removed `Tags` removes every tag (cdkd sends `[]`), and a
   removed `SourceVersion` is KEPT.
+  Real CloudFormation A/B, go-to-k/cdkd#5492: on an `AWS::CodeBuild::Project`
+  a removed `VpcConfig`, `FileSystemLocations`, `SecondarySources`,
+  `SecondaryArtifacts`, `SecondarySourceVersions` or `BadgeEnabled` is KEPT
+  (CloudFormation's `UpdateProject` omits it, alone or beside another change),
+  so cdkd sends nothing for it either.
   `AWS::EC2::NatGateway` `AvailabilityZoneAddresses` (real CloudFormation A/B,
   go-to-k/cdkd#2762): on a gateway created with it, a change updates in place
   and REMOVING it FAILS, so `EC2Provider` refuses the removal; ADDING it to an

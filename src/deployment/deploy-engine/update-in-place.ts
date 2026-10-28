@@ -29,6 +29,12 @@ import {
 import { isPinnedToCcApi, preparePropertiesForCcApi } from './routing.js';
 import { extractTemplateAttributes, propertiesToRecord } from './record-shape.js';
 import { unsettledPropertiesOf } from '../../state/unsettled-properties.js';
+import {
+  addedByFailedUpdateWarning,
+  settleUnsettledPrevious,
+  splitUnhandledRemovals,
+  unsettledAfterUpdate,
+} from '../unsettled-convergence.js';
 import { replacementNameOrigin } from './name-collision.js';
 import { withUnchangedSecretPrincipalLists } from '../../provisioning/iam-policy-targets.js';
 import { withRecreatedAttachmentsDropped } from '../child-of-recreated-parent.js';
@@ -320,9 +326,33 @@ export async function updateInPlace(
     );
   }
 
+  // go-to-k/cdkd#5487: before the removal step, each unsettled name's previous
+  // value becomes what AWS holds now (a moving one refuses the update), so the
+  // removal step below resets a key the template omits but AWS now carries,
+  // and the provider's own comparison sends only what AWS lacks. `Tags`
+  // keeps the record's side (CloudFormation leaves tags it did not record).
+  const unsettledIdentity = {
+    provider: updateProvider,
+    logicalId,
+    physicalId: currentResource.physicalId,
+    resourceType,
+    recordedProperties: currentResource.properties ?? {},
+  };
+  const previousSettled = await settleUnsettledPrevious({
+    ...unsettledIdentity,
+    names: unsettled,
+    previous: previousForUpdate,
+  });
+  if (unsettled.has('Tags')) {
+    engine.logger.warn(
+      safeMsg`${logicalId} (${resourceType}): an earlier failed update left Tags unsettled. cdkd re-applies the template's tags and removes only the recorded ones the template dropped; a tag that failed update added and no template declares is left on the resource. Remove it by hand if it should not be there.`
+    );
+  }
+
   // Issue #1160: a property the previous template declared and this one
   // omits. Computed once, outside the retry loop, against the SAME previous
-  // bag the provider diffs (the state record, never an AWS readback); the
+  // bag the provider diffs (the state record — except an unsettled name,
+  // which go-to-k/cdkd#5487 replaced with the AWS readback above); the
   // provider's declared reset values go into the bag it is handed, and an
   // audited type's undeclared removal is named once the in-place update
   // succeeded (a replacement fallback leaves no value in place).
@@ -330,7 +360,7 @@ export async function updateInPlace(
     updateProvider,
     resourceType,
     updateProps,
-    previousForUpdate
+    previousSettled
   );
 
   let result;
@@ -399,7 +429,7 @@ export async function updateInPlace(
             // unchanged secret reference was dropped (go-to-k/cdkd#4064),
             // and at a `reattach` child's list naming a principal this
             // deploy re-created (go-to-k/cdkd#4461).
-            previousForUpdate,
+            previousSettled,
             // The UPDATE twin of the CREATE call's masker (issue #1932
             // item 3): same resolved bag, same exposure, so the contract
             // is applied on both or it has a hole in the shape of
@@ -482,8 +512,22 @@ export async function updateInPlace(
     }
     // An injected reset is sent, never recorded: state keeps the template.
     result = withoutInjectedRemovals(result, removal.injected);
-    if (removal.unhandled.length > 0) {
-      engine.logger.warn(removalWarning(logicalId, resourceType, removal.unhandled));
+    // go-to-k/cdkd#5487: a live-only key the convergence step found is no
+    // template removal; it is named for what it is.
+    const unhandledByCause = splitUnhandledRemovals(
+      removal.unhandled,
+      previousForUpdate,
+      unsettled
+    );
+    if (unhandledByCause.removedFromTemplate.length > 0) {
+      engine.logger.warn(
+        removalWarning(logicalId, resourceType, unhandledByCause.removedFromTemplate)
+      );
+    }
+    if (unhandledByCause.addedByFailedUpdate.length > 0) {
+      engine.logger.warn(
+        addedByFailedUpdateWarning(logicalId, resourceType, unhandledByCause.addedByFailedUpdate)
+      );
     }
   } catch (updateError) {
     // If UPDATE is not supported, fall back to a replacement. Two
@@ -1387,6 +1431,18 @@ export async function updateInPlace(
     }
   }
 
+  // go-to-k/cdkd#5487: an unsettled name is settled only on proof — AWS no
+  // longer changing it and holding what the template declares. Otherwise it
+  // stays on the record, and the next deploy converges it again.
+  const stillUnsettled = result.wasReplaced
+    ? []
+    : await unsettledAfterUpdate({ ...unsettledIdentity, names: unsettled, desired: updateProps });
+  if (stillUnsettled.length > 0) {
+    engine.logger.warn(
+      safeMsg`${logicalId} (${resourceType}): the update succeeded, but AWS does not yet show the template's ${stillUnsettled.join(', ')}; cdkd keeps ${stillUnsettled.length === 1 ? 'it' : 'them'} unsettled and converges again on the next deploy.`
+    );
+  }
+
   // go-to-k/cdkd#4615: journaled on the completed op, so a rollback reverts an
   // in-place update in place even when it changed the physical id.
   engine.replacementRun.updateWasReplaced.set(logicalId, result.wasReplaced === true);
@@ -1538,6 +1594,7 @@ export async function updateInPlace(
     ...(dependencies && dependencies.length > 0 && { dependencies }),
     ...extractTemplateAttributes(template, logicalId),
     provisionedBy: resultProvisionedBy,
+    ...(stillUnsettled.length > 0 && { unsettledProperties: stillUnsettled }),
     ...(keepsParameterRefusal && {
       observedBaselineRefused: true as const,
       observedBaselineRefusalReason: 'unverifiable-parameter' as const,

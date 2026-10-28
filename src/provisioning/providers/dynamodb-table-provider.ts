@@ -2600,6 +2600,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // deploy) or downgrade (a rollback revert or `cdkd drift --revert`).
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#5487: before each call that changes the table, so a
+    // failure from there on (the ACTIVE / SSE / Kinesis waits, the deadline,
+    // a later call) leaves the key unsettled for the next deploy to converge.
+    const markUnsettled = (key: string): void => context?.markUnsettled?.(key);
     // ONE masked sink for every warning in this method (issue #1997), rather
     // than a `maskSecrets(...)` at each `this.logger.warn` call: a warning added
     // later is masked by construction instead of by the author remembering. It
@@ -2861,7 +2865,11 @@ export class DynamoDBTableProvider implements ResourceProvider {
           resourceType,
           logicalId,
           previousProperties['Tags'],
-          properties['Tags']
+          properties['Tags'],
+          {
+            forceUpsert: context?.unsettledProperties?.has('Tags') === true,
+            beforeWrite: () => markUnsettled('Tags'),
+          }
         );
       }
 
@@ -3398,6 +3406,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
           // between each — AWS's one-GSI-op-per-call budget, and the wait is
           // what returns the table to a state that accepts the flip (the same
           // index-status race issue #1553 handles).
+          markUnsettled('GlobalSecondaryIndexes');
           await this.runGsiOps(
             physicalId,
             removable.map((name) => ({ Delete: { IndexName: name } })),
@@ -3641,6 +3650,18 @@ export class DynamoDBTableProvider implements ResourceProvider {
             );
           }
         }
+        // go-to-k/cdkd#5487: every key this one call changes, before it.
+        if (billingMode !== prevBillingMode) markUnsettled('BillingMode');
+        if (
+          JSON.stringify(properties['ProvisionedThroughput']) !==
+          JSON.stringify(previousProperties['ProvisionedThroughput'])
+        ) {
+          markUnsettled('ProvisionedThroughput');
+        }
+        if (tableClassChanged) markUnsettled('TableClass');
+        if (updateInput.GlobalSecondaryIndexUpdates !== undefined) {
+          markUnsettled('GlobalSecondaryIndexes');
+        }
         await this.dynamoDBClient.send(new UpdateTableCommand(updateInput));
         // UpdateTable is async; wait for ACTIVE so later branches (and any
         // subsequent UpdateTable for OnDemand/Warm throughput) don't race a
@@ -3727,6 +3748,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
                 `${ON_DEMAND_LIMIT_RESET}, DynamoDB's reset sentinel)`
             );
           }
+          markUnsettled('OnDemandThroughput');
           await this.dynamoDBClient.send(
             new UpdateTableCommand({
               TableName: physicalId,
@@ -3819,6 +3841,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
             maskSecrets
           )
         ) {
+          markUnsettled('WarmThroughput');
           await this.dynamoDBClient.send(
             new UpdateTableCommand({ TableName: physicalId, WarmThroughput: warmThroughputToSend })
           );
@@ -3864,6 +3887,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
           liveTable !== undefined
         );
         if (sseUpdate !== undefined) {
+          markUnsettled('SSESpecification');
           await this.dynamoDBClient.send(
             new UpdateTableCommand({ TableName: physicalId, SSESpecification: sseUpdate })
           );
@@ -3897,6 +3921,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
               `it was not applied`
           );
         } else if (table?.DeletionProtectionEnabled !== desiredDeletionProtection) {
+          markUnsettled('DeletionProtectionEnabled');
           await this.dynamoDBClient.send(
             new UpdateTableCommand({
               TableName: physicalId,
@@ -3945,6 +3970,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
         JSON.stringify(properties['StreamSpecification']) !==
         JSON.stringify(previousProperties['StreamSpecification'])
       ) {
+        // go-to-k/cdkd#5487: every call below changes the stream (its view
+        // type, its tags or resource policy); a failure from here leaves it
+        // unsettled.
+        markUnsettled('StreamSpecification');
         const newViewType = this.extractStreamViewType(properties['StreamSpecification']);
         const prevViewType = this.extractStreamViewType(previousProperties['StreamSpecification']);
         const liveStream = table?.StreamSpecification;
@@ -4061,6 +4090,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         JSON.stringify(properties['GlobalSecondaryIndexes']) !==
         JSON.stringify(previousProperties['GlobalSecondaryIndexes'])
       ) {
+        markUnsettled('GlobalSecondaryIndexes');
         await this.applyGsiUpdates(
           physicalId,
           resourceType,
@@ -4083,6 +4113,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         JSON.stringify(properties['PointInTimeRecoverySpecification']) !==
         JSON.stringify(previousProperties['PointInTimeRecoverySpecification'])
       ) {
+        markUnsettled('PointInTimeRecoverySpecification');
         await this.applyPointInTimeRecovery(
           physicalId,
           properties['PointInTimeRecoverySpecification'],
@@ -4106,6 +4137,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
           properties['TimeToLiveSpecification'],
           previousProperties['TimeToLiveSpecification']
         );
+        // After the refusal: a refused change sent nothing.
+        markUnsettled('TimeToLiveSpecification');
         await this.applyTimeToLive(
           physicalId,
           properties['TimeToLiveSpecification'],
@@ -4135,6 +4168,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
             physicalId
           );
         }
+        markUnsettled('ResourcePolicy');
         await this.applyResourcePolicy(
           table.TableArn,
           properties['ResourcePolicy'],
@@ -4149,6 +4183,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         JSON.stringify(properties['KinesisStreamSpecification']) !==
         JSON.stringify(previousProperties['KinesisStreamSpecification'])
       ) {
+        markUnsettled('KinesisStreamSpecification');
         await this.applyKinesisStreamingDestination(
           physicalId,
           properties['KinesisStreamSpecification'],
@@ -4163,6 +4198,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         JSON.stringify(properties['ContributorInsightsSpecification']) !==
         JSON.stringify(previousProperties['ContributorInsightsSpecification'])
       ) {
+        markUnsettled('ContributorInsightsSpecification');
         await this.applyContributorInsights(
           physicalId,
           properties['ContributorInsightsSpecification'],
@@ -4179,7 +4215,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
         physicalId,
         properties['GlobalSecondaryIndexes'],
         previousProperties['GlobalSecondaryIndexes'],
-        maskSecrets
+        maskSecrets,
+        () => markUnsettled('GlobalSecondaryIndexes')
       );
 
       return {
@@ -4751,15 +4788,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
-    newTagsRaw: unknown
+    newTagsRaw: unknown,
+    unsettled: { forceUpsert: boolean; beforeWrite: () => void } = {
+      forceUpsert: false,
+      beforeWrite: () => undefined,
+    }
   ): Promise<void> {
     const plan = planTagDiff(oldTagsRaw, newTagsRaw);
     const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
     if (tagWarning !== undefined) {
       this.logger.warn(tagWarning);
     }
-    const tagsToAdd = [...plan.set].map(([k, v]) => ({ Key: k, Value: v }));
+    // go-to-k/cdkd#5487: unsettled Tags re-send every template tag and remove
+    // only the recorded ones the template dropped.
+    const toSet = unsettled.forceUpsert ? planTagDiff(undefined, newTagsRaw).set : plan.set;
+    const tagsToAdd = [...toSet].map(([k, v]) => ({ Key: k, Value: v }));
     const tagsToRemove = plan.remove;
+    if (tagsToRemove.length > 0 || tagsToAdd.length > 0) unsettled.beforeWrite();
 
     if (tagsToRemove.length > 0) {
       await this.dynamoDBClient.send(
@@ -5763,7 +5808,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
     tableName: string,
     desiredIndexes: unknown,
     previousIndexes: unknown,
-    maskSecrets: SecretMasker
+    maskSecrets: SecretMasker,
+    beforeSend: () => void = () => undefined
   ): Promise<void> {
     const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     const ops = planIndexContributorInsightsOps(
@@ -5778,6 +5824,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
     if (ops.length === 0) return;
     await this.waitForTableAndIndexesActive(tableName);
     for (const op of ops) {
+      // go-to-k/cdkd#5487: per-index insights live inside the index entries,
+      // so a failure from this call on leaves GlobalSecondaryIndexes unsettled.
+      beforeSend();
       await this.sendContributorInsightsOp(tableName, op, maskSecrets);
     }
   }
@@ -8018,6 +8067,162 @@ export class DynamoDBTableProvider implements ResourceProvider {
   }
 
   /**
+   * go-to-k/cdkd#5487: the live values of a record's unsettled properties in
+   * the template's shape, for the engine's convergence step. `readCurrentState`
+   * (shaped against the record, so its indexes and warm throughput carry the
+   * members the record declares) with two corrections:
+   *
+   * - a PAY_PER_REQUEST table reports no `ProvisionedThroughput` (DescribeTable
+   *   answers 0/0, which no template declares, and the billing block would
+   *   read it as a change and send an UpdateTable AWS refuses as a no-op);
+   * - the settings read by their own calls (PITR, TTL, resource policy,
+   *   Kinesis, Contributor Insights) are read STRICTLY when unsettled:
+   *   `readCurrentState` omits them on a failed read, which would converge
+   *   them to "not set".
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const live = await this.readCurrentState(
+      physicalId,
+      logicalId,
+      resourceType,
+      recordedProperties
+    );
+    if (typeof live !== 'object' || live === null) return live;
+    const out: Record<string, unknown> = { ...live };
+    if (out['BillingMode'] === 'PAY_PER_REQUEST') delete out['ProvisionedThroughput'];
+    const strict = async (key: string, read: () => Promise<unknown>): Promise<void> => {
+      if (!names.has(key)) return;
+      const value = await read();
+      if (value === undefined) delete out[key];
+      else out[key] = value;
+    };
+    await strict('PointInTimeRecoverySpecification', () =>
+      this.readPointInTimeRecovery(physicalId, true)
+    );
+    await strict('TimeToLiveSpecification', () => this.readTimeToLive(physicalId, true));
+    await strict('KinesisStreamSpecification', () =>
+      this.readKinesisStreamSpecification(physicalId, true)
+    );
+    await strict('ContributorInsightsSpecification', () =>
+      this.readTableContributorInsights(physicalId, true)
+    );
+    if (names.has('ResourcePolicy')) {
+      const table = (
+        await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId }))
+      ).Table;
+      if (!table?.TableArn) {
+        throw new ProvisioningError(
+          `DescribeTable returned no TableArn for the table, which reading its unsettled ResourcePolicy needs`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+      const tableArn = table.TableArn;
+      await strict('ResourcePolicy', () =>
+        this.readTableResourcePolicy(physicalId, tableArn, true)
+      );
+    }
+    return out;
+  }
+
+  /**
+   * go-to-k/cdkd#5487: the unsettled names AWS is still changing. While the
+   * table is CREATING / UPDATING / DELETING every table-level name is (the
+   * separately-applied settings and `Tags` are not); an index CREATING /
+   * UPDATING / DELETING moves `GlobalSecondaryIndexes`; an SSE ENABLING /
+   * DISABLING / UPDATING moves `SSESpecification`; a TTL ENABLING moves
+   * `TimeToLiveSpecification` (DISABLING reads as its destination, no TTL); a
+   * Kinesis destination ENABLING / DISABLING / UPDATING moves
+   * `KinesisStreamSpecification`. A status at rest — an inaccessible key, an
+   * archived table — is not moving: the update runs and AWS's error names it.
+   * A failed read keeps every name, which the engine reports as unconfirmed.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>> {
+    const SEPARATE = new Set([
+      'Tags',
+      'PointInTimeRecoverySpecification',
+      'TimeToLiveSpecification',
+      'ResourcePolicy',
+      'KinesisStreamSpecification',
+      'ContributorInsightsSpecification',
+    ]);
+    try {
+      const table = (
+        await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId }))
+      ).Table;
+      const moving = new Set<string>();
+      // Only a status AWS is moving through. An inaccessible-key or archived
+      // table is at rest: the update runs, so AWS's own error names the cause.
+      if (
+        table?.TableStatus === 'CREATING' ||
+        table?.TableStatus === 'UPDATING' ||
+        table?.TableStatus === 'DELETING'
+      ) {
+        for (const name of names) if (!SEPARATE.has(name)) moving.add(name);
+      }
+      if (
+        names.has('GlobalSecondaryIndexes') &&
+        (table?.GlobalSecondaryIndexes ?? []).some(
+          (index) =>
+            index.IndexStatus === 'CREATING' ||
+            index.IndexStatus === 'UPDATING' ||
+            index.IndexStatus === 'DELETING'
+        )
+      ) {
+        moving.add('GlobalSecondaryIndexes');
+      }
+      const sse = table?.SSEDescription?.Status;
+      if (
+        names.has('SSESpecification') &&
+        (sse === 'ENABLING' || sse === 'DISABLING' || sse === 'UPDATING')
+      ) {
+        moving.add('SSESpecification');
+      }
+      if (names.has('TimeToLiveSpecification')) {
+        const ttl = (
+          await this.dynamoDBClient.send(new DescribeTimeToLiveCommand({ TableName: physicalId }))
+        ).TimeToLiveDescription?.TimeToLiveStatus;
+        // DISABLING can last up to an hour and only ever ends disabled, so it
+        // is read as its destination (no TTL, `readTimeToLive`), not as moving.
+        if (ttl === 'ENABLING') moving.add('TimeToLiveSpecification');
+      }
+      if (names.has('KinesisStreamSpecification')) {
+        const destinations =
+          (
+            await this.dynamoDBClient.send(
+              new DescribeKinesisStreamingDestinationCommand({ TableName: physicalId })
+            )
+          ).KinesisDataStreamDestinations ?? [];
+        if (
+          destinations.some(
+            (d) =>
+              d.DestinationStatus === 'ENABLING' ||
+              d.DestinationStatus === 'DISABLING' ||
+              d.DestinationStatus === 'UPDATING'
+          )
+        ) {
+          moving.add('KinesisStreamSpecification');
+        }
+      }
+      return moving;
+    } catch {
+      return names;
+    }
+  }
+
+  /**
    * Read the AWS-current DynamoDB table configuration in CFn-property shape.
    *
    * `DescribeTable` returns every field cdkd manages in one call. AWS uses
@@ -8280,7 +8485,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * drift read.
    */
   private async readPointInTimeRecovery(
-    physicalId: string
+    physicalId: string,
+    strict = false
   ): Promise<Record<string, unknown> | undefined> {
     try {
       const pitrResp = await this.dynamoDBClient.send(
@@ -8299,6 +8505,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
       return pitr;
     } catch (err) {
+      if (strict) throw err;
       this.logger.debug(
         `Could not read PointInTimeRecovery for ${physicalId}: ${describeAwsFailure(err).detail}`
       );
@@ -8313,7 +8520,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * TimeToLiveSpecification without one, so we omit it; ENABLING / DISABLING
    * are transient and also omitted so drift doesn't fire on a momentary state.
    */
-  private async readTimeToLive(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readTimeToLive(
+    physicalId: string,
+    strict = false
+  ): Promise<Record<string, unknown> | undefined> {
     try {
       const ttlResp = await this.dynamoDBClient.send(
         new DescribeTimeToLiveCommand({ TableName: physicalId })
@@ -8324,6 +8534,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
       return undefined;
     } catch (err) {
+      if (strict) throw err;
       this.logger.debug(
         `Could not read TimeToLive for ${physicalId}: ${describeAwsFailure(err).detail}`
       );
@@ -8341,7 +8552,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
    */
   private async readTableResourcePolicy(
     physicalId: string,
-    tableArn: string
+    tableArn: string,
+    strict = false
   ): Promise<Record<string, unknown> | undefined> {
     try {
       const rpResp = await this.dynamoDBClient.send(
@@ -8356,6 +8568,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
       return { PolicyDocument: doc };
     } catch (err) {
+      // A table with no policy answers PolicyNotFoundException: "not set",
+      // strict or not, or an unsettled ResourcePolicy would refuse forever.
+      if (
+        strict &&
+        !(err instanceof ResourceNotFoundException) &&
+        !(err instanceof PolicyNotFoundException)
+      ) {
+        throw err;
+      }
       if (!(err instanceof ResourceNotFoundException)) {
         this.logger.debug(
           `Could not read ResourcePolicy for ${physicalId}: ${describeAwsFailure(err).detail}`
@@ -8375,7 +8596,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * value.
    */
   private async readKinesisStreamSpecification(
-    physicalId: string
+    physicalId: string,
+    strict = false
   ): Promise<Record<string, unknown> | undefined> {
     try {
       const kResp = await this.dynamoDBClient.send(
@@ -8394,6 +8616,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
       return kspec;
     } catch (err) {
+      if (strict) throw err;
       this.logger.debug(
         `Could not read KinesisStreamingDestination for ${physicalId}: ${describeAwsFailure(err).detail}`
       );
@@ -8409,7 +8632,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * ENABLED so a disabled table doesn't grow a CFn-invalid placeholder.
    */
   private async readTableContributorInsights(
-    physicalId: string
+    physicalId: string,
+    strict = false
   ): Promise<ReturnType<typeof reverseMapTableContributorInsights>> {
     try {
       const ciResp = await this.dynamoDBClient.send(
@@ -8420,6 +8644,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         ciResp.ContributorInsightsMode
       );
     } catch (err) {
+      if (strict) throw err;
       this.logger.debug(
         `Could not read ContributorInsights for ${physicalId}: ${describeAwsFailure(err).detail}`
       );

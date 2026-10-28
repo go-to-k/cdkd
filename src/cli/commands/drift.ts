@@ -180,6 +180,10 @@ import type { ResourceState, StackState } from '../../types/state.js';
 import { stackInstanceIdCarriedFrom } from '../../types/state.js';
 import { nameScopeOf } from '../../state/name-generation.js';
 import {
+  settleUnsettledPrevious,
+  withUnprovenUnsettled,
+} from '../../deployment/unsettled-convergence.js';
+import {
   unsettledPropertiesOf,
   withUnsettledProperties,
   withoutUnsettledProperties,
@@ -5055,6 +5059,9 @@ async function runAccept(
         // go-to-k/cdkd#5380: the baseline now records what AWS holds, so what
         // a failed deploy left unsettled on this resource is settled, except a
         // key AWS is still changing (the readback is not where it will end).
+        // No post-update proof as on the deploy / revert side (#5487): an
+        // accept writes the live readback AS the record, so record == live by
+        // construction; only a value still moving can disagree later.
         const settled = await settleUnsettled(
           existing,
           outcome.logicalId,
@@ -7520,6 +7527,19 @@ async function runRevert(
                   return;
                 }
                 try {
+                  // go-to-k/cdkd#5487: the deploy's convergence step. The
+                  // previous side is already AWS's; this refuses a name AWS is
+                  // still changing (the catch below reports it) and re-reads
+                  // the unsettled ones.
+                  const revertPrevious = await settleUnsettledPrevious({
+                    provider,
+                    logicalId: outcome.logicalId,
+                    physicalId: stateResource.physicalId,
+                    resourceType: outcome.resourceType,
+                    recordedProperties: stateResource.properties ?? {},
+                    names: unsettledPropertiesOf(stateResource),
+                    previous: outcome.awsProperties,
+                  });
                   const updateResult = await withRetry(
                     () =>
                       provider.update(
@@ -7527,7 +7547,7 @@ async function runRevert(
                         stateResource.physicalId,
                         outcome.resourceType,
                         newProperties,
-                        outcome.awsProperties,
+                        revertPrevious,
                         // The desired bag here is `observedProperties ?? properties`
                         // overlaid onto the AWS-current snapshot — an AWS READBACK, not
                         // a template (issue #1732). Several `readCurrentState`
@@ -7612,13 +7632,25 @@ async function runRevert(
                   // go-to-k/cdkd#5380: AWS now holds the baseline, so what a
                   // failed deploy left unsettled here is settled.
                   // A key AWS is still changing stays (go-to-k/cdkd#5380).
-                  if (unsettledPropertiesOf(stateResource).size > 0) {
-                    const settled = await settleUnsettled(
-                      stateResource,
-                      outcome.logicalId,
-                      () => provider
+                  // Settled only on proof (go-to-k/cdkd#5487): AWS no longer
+                  // changing the name and holding the reverted value under
+                  // drift's comparator, as on the deploy side.
+                  const unsettledNames = unsettledPropertiesOf(stateResource);
+                  if (unsettledNames.size > 0) {
+                    const settled = await withUnprovenUnsettled(
+                      withoutUnsettledProperties(stateResource),
+                      {
+                        provider,
+                        logicalId: outcome.logicalId,
+                        physicalId: stateResource.physicalId,
+                        resourceType: outcome.resourceType,
+                        recordedProperties: stateResource.properties ?? {},
+                        names: unsettledNames,
+                        desired: newProperties,
+                      },
+                      (message) => logger.warn(maskSecretsInText(message, secrets))
                     );
-                    if (settled !== stateResource) {
+                    if (unsettledPropertiesOf(settled).size < unsettledNames.size) {
                       settledByRevert.set(outcome.logicalId, settled);
                     }
                   }
@@ -8788,7 +8820,8 @@ async function settleUnsettled(
         record.physicalId,
         logicalId,
         record.resourceType,
-        names
+        names,
+        record.properties
       );
     }
   } catch {

@@ -19,6 +19,10 @@
 #      USER_PARTITION_KEY; the first stream keeps AUTO (go-to-k/cdkd#2762).
 #      The first stream also drops MaxRecordSizeInKiB (4096) and must reset
 #      to 1024 (go-to-k/cdkd#1160).
+#   2d. Raise the second stream's retention to 48h under a 2s per-type
+#      deadline: the deploy fails mid-update and the record must name
+#      RetentionPeriodHours unsettled; once ACTIVE at 48h, a redeploy of the
+#      24h template must decrease it and clear the name (go-to-k/cdkd#5487).
 #   3. Destroy + assert both streams are gone and the cdkd state file is removed.
 #
 # Required env vars:
@@ -302,6 +306,58 @@ echo "    AWS MaxRecordSizeInKiB on ${STREAM_NAME} (Phase 2c): ${SIZE_REMOVED}"
 assert_eq "MaxRecordSizeInKiB after its removal (reset to the default, go-to-k/cdkd#1160)" \
   "1024" "${SIZE_REMOVED}"
 echo "    removal reset MaxRecordSizeInKiB to 1024"
+
+# --- Phase 2d: a retention change the deadline cut short (go-to-k/cdkd#5487)
+# IncreaseStreamRetentionPeriod puts the stream in UPDATING; a 2s per-type
+# deadline fails the update after that call. Before the fix the record kept 24,
+# so the redeploy of the 24h template below diffed empty and the stream stayed
+# at 48. Now the record names RetentionPeriodHours unsettled, and the redeploy
+# compares it with the live period and decreases it.
+retention_of() { # usage: retention_of <stream name>
+  aws kinesis describe-stream-summary --stream-name "$1" --region "${REGION}" \
+    --query 'StreamDescriptionSummary.RetentionPeriodHours' --output text
+}
+status_of() { # usage: status_of <stream name>
+  aws kinesis describe-stream-summary --stream-name "$1" --region "${REGION}" \
+    --query 'StreamDescriptionSummary.StreamStatus' --output text
+}
+unsettled_of() { # usage: unsettled_of <stream name> -- the record's unsettledProperties, comma-joined
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+    | jq -r --arg name "$1" '[.resources[]
+        | select(.resourceType == "AWS::Kinesis::Stream" and .physicalId == $name)
+        | (.unsettledProperties // [])[]] | join(",")'
+}
+assert_eq "retention on ${STRATEGY_STREAM_NAME} before Phase 2d" "24" "$(retention_of "${STRATEGY_STREAM_NAME}")"
+echo "==> Phase 2d: raise retention on ${STRATEGY_STREAM_NAME} to 48h under a 2s Kinesis deadline (must fail mid-update)"
+set +e
+CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_RETENTION=48 node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --resource-warn-after AWS::Kinesis::Stream=1s \
+  --resource-timeout AWS::Kinesis::Stream=2s
+P2D_EXIT=$?
+set -e
+if [ "${P2D_EXIT}" -eq 0 ]; then
+  echo "FAIL: Phase 2d's deploy succeeded; the 2s deadline must cut the UPDATING transition short (premise of the arm)" >&2
+  exit 1
+fi
+assert_eq "${STRATEGY_STREAM_NAME} record's unsettledProperties after the cut-short deploy (go-to-k/cdkd#5487)" \
+  "RetentionPeriodHours" "$(unsettled_of "${STRATEGY_STREAM_NAME}")"
+P2D_STATUS=""
+for _ in $(seq 1 60); do
+  P2D_STATUS="$(status_of "${STRATEGY_STREAM_NAME}")"
+  [ "${P2D_STATUS}" = "ACTIVE" ] && break
+  sleep 2
+done
+assert_eq "${STRATEGY_STREAM_NAME} status once the cut-short increase finished" "ACTIVE" "${P2D_STATUS}"
+assert_eq "retention on ${STRATEGY_STREAM_NAME} once the increase finished" "48" "$(retention_of "${STRATEGY_STREAM_NAME}")"
+echo "==> Phase 2d: redeploy the 24h template (the record's own value)"
+CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+assert_eq "retention on ${STRATEGY_STREAM_NAME} after redeploying the recorded template (go-to-k/cdkd#5487: the redeploy diffed empty and left 48h)" \
+  "24" "$(retention_of "${STRATEGY_STREAM_NAME}")"
+assert_eq "${STRATEGY_STREAM_NAME} record's unsettledProperties after the converging deploy" \
+  "" "$(unsettled_of "${STRATEGY_STREAM_NAME}")"
+echo "    the unsettled retention converged on redeploy (go-to-k/cdkd#5487)"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"

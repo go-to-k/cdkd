@@ -11645,9 +11645,12 @@
             "AWS::FSx::FileSystem"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
+            "canonicalizeDriftProperties",
+            "canonicalizeWindowsAliases",
             "create"
           ]
         }
@@ -11656,7 +11659,8 @@
       "blindSpots": [
         "computed key in detectVariantConfigKey()",
         "computed key in update()",
-        "object spread in canonicalizeDriftProperties()"
+        "object spread in canonicalizeDriftProperties()",
+        "object spread in canonicalizeWindowsAliases()"
       ]
     },
     {

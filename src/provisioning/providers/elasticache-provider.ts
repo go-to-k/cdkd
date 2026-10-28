@@ -712,12 +712,15 @@ export class ElastiCacheProvider implements ResourceProvider {
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
-      // Class 2 sanitization: `readCurrentState` always-emits
-      // `VpcSecurityGroupIds: []` for clusters without VPC SGs (legacy
-      // EC2-Classic, or transient state). Round-tripping an empty array
-      // through `ModifyCacheClusterCommand.SecurityGroupIds` makes AWS
-      // reject with "must specify at least one security group" — pass
-      // `undefined` instead so AWS treats the field as "no change".
+      // An absent or empty desired `VpcSecurityGroupIds` sends no
+      // `SecurityGroupIds` (an absent Modify member = unchanged), so the
+      // cluster keeps its live groups. That is what CloudFormation does
+      // (#5491, real CloudFormation A/B, us-east-1, a redis cluster in a VPC
+      // with one template security group): removing the property sent a
+      // ModifyCacheCluster with no `securityGroupIds`, `[]` sent
+      // `securityGroupIds: []`, and in both the cluster kept the group.
+      // `undefined` for `[]` also covers `readCurrentState`, which always
+      // emits `VpcSecurityGroupIds: []` for a cluster without VPC groups.
       // Drift detection is unaffected: state `[]` vs AWS `[sg-1]` still
       // surfaces as drift on the read side.
       const rawSgIds = properties['VpcSecurityGroupIds'] as string[] | undefined;
@@ -742,9 +745,8 @@ export class ElastiCacheProvider implements ResourceProvider {
       //     clusters (ipv4 / ipv6 NetworkType forces the matching value),
       //     and AWS does not document the dual-stack default; a wrong reset
       //     flips client DNS resolution, so leave unchanged.
-      //   * VpcSecurityGroupIds — deliberate empty-guard above
-      //     (readCurrentState placeholder defense); classified UNCERTAIN in
-      //     the #1160 audit, out of this batch's scope.
+      //   * VpcSecurityGroupIds — CloudFormation keeps the live groups on
+      //     removal (#5491 A/B; see the empty-guard above).
 
       // #5004 (real CloudFormation A/B, us-east-1): CloudFormation KEEPS the
       // live value when SnapshotRetentionLimit, AutoMinorVersionUpgrade or

@@ -2424,6 +2424,7 @@
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
+        "codebuild-project",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
@@ -2482,6 +2483,9 @@
         ],
         "cc-final-snapshot-handlers": [
           "l2"
+        ],
+        "codebuild-project": [
+          "l1"
         ],
         "deletion-ordering-complex": [
           "l2"
@@ -2650,6 +2654,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "codebuild-project",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -2735,6 +2740,9 @@
         ],
         "cc-protection-flip-eks": [
           "l2"
+        ],
+        "codebuild-project": [
+          "l1"
         ],
         "deletion-ordering-complex": [
           "l2"
@@ -3174,6 +3182,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "codebuild-project",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -3263,6 +3272,9 @@
         ],
         "cc-protection-flip-eks": [
           "l2"
+        ],
+        "codebuild-project": [
+          "l1"
         ],
         "deletion-ordering-complex": [
           "l2"
@@ -6725,6 +6737,7 @@
         "cc-getatt-readback",
         "ci-cd",
         "cloudtrail-trail",
+        "codebuild-project",
         "composite-stack",
         "conditions",
         "context-test",
@@ -6801,6 +6814,9 @@
           "literal"
         ],
         "cloudtrail-trail": [
+          "l2"
+        ],
+        "codebuild-project": [
           "l2"
         ],
         "composite-stack": [

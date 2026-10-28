@@ -71,7 +71,9 @@ import type { Construct } from 'constructs';
  *     minutes of billed wall clock while exercising the same
  *     `applyWindowsUpdateField` mapping.
  *   - Tag value change + tag REMOVAL (TagResource / UntagResource).
- * Both must keep the FileSystemId unchanged (no replacement).
+ *   - `Aliases` swap (go-to-k/cdkd#5469): Associate /
+ *     DisassociateFileSystemAliases, not UpdateFileSystem.
+ * All must keep the FileSystemId unchanged (no replacement).
  *
  * Known coverage boundary: because `WeeklyMaintenanceStartTime` is
  * metadata-only, `UpdateFileSystem` reports no pending administrative
@@ -129,6 +131,14 @@ export class FsxWindowsStack extends cdk.Stack {
         // The UPDATE phase moves this; see the class doc for why it is
         // the chosen mutable sub-property.
         weeklyMaintenanceStartTime: isUpdate ? '2:06:00' : '1:05:00',
+        // go-to-k/cdkd#5469: the UPDATE phase drops one alias, adds one and
+        // re-cases the kept one (FSx stores names lowercased, so that is no
+        // change). cdkd used to refuse any Aliases change with a --replace
+        // pointer; it now sends DisassociateFileSystemAliases then
+        // AssociateFileSystemAliases, after the UpdateFileSystem above.
+        aliases: isUpdate
+          ? ['keep.corp.cdkd-integ.com', 'add.corp.cdkd-integ.com']
+          : ['Keep.corp.cdkd-integ.com', 'drop.corp.cdkd-integ.com'],
         // AUTOMATIC is the default (SSD IOPS scale with capacity), so this
         // costs nothing. Setting it alone would prove nothing either —
         // being the default, a provider that dropped the block entirely

@@ -1409,8 +1409,15 @@ The next deploy reads the field through `unsettledPropertiesOf`
 name as an in-place change labelled `unsettled` even when the template and
 the record agree, the no-change skips do not fire, the name is in
 `UpdateContext.changedProperties`, and `UpdateContext.unsettledProperties`
-tells the provider to compare the desired value with what AWS holds and
-converge it. The record the update writes carries no field, which clears it.
+tells the provider which keys converge. Before the removal step the engine
+replaces each such key's previous value with what AWS holds
+(`src/deployment/unsettled-convergence.ts`, #5487) and refuses a key AWS is
+still changing; `Tags` keeps the record's side. After the update (the deploy,
+both rollback revert arms and `drift --revert`) the name is cleared only when
+AWS is no longer changing it and holds the requested value under drift's
+comparator; otherwise it stays on the new record. `drift --accept` clears it
+without that check: it records the live value, so record and AWS agree by
+construction. The record the update writes carries no field, which clears it.
 `recordAfterRollbackUpdate` drops it (a rollback revert, `--revert-failed`,
 `drift --revert`); the two rollback arms hand the names to `update()` as
 `UpdateContext.unsettledProperties` first, so they are converged rather than

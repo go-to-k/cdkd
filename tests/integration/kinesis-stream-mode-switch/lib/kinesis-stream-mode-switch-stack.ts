@@ -81,5 +81,10 @@ export class KinesisStreamModeSwitchStack extends cdk.Stack {
     if (process.env.CDKD_TEST_REMOVAL !== 'true') {
       (strategyStream.node.defaultChild as kinesis.CfnStream).recordDistributionStrategy = 'AUTO';
     }
+    // go-to-k/cdkd#5487: CDKD_TEST_RETENTION=48 raises the retention period,
+    // which verify.sh's Phase 2d cuts short with a per-type deadline.
+    if (process.env.CDKD_TEST_RETENTION === '48') {
+      (strategyStream.node.defaultChild as kinesis.CfnStream).retentionPeriodHours = 48;
+    }
   }
 }

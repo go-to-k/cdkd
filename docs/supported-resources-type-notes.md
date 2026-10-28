@@ -89,9 +89,15 @@ storage capacity.
 OpenZFS. AWS marks the type `NON_PROVISIONABLE`, which means Cloud Control
 cannot manage it, so cdkd's SDK provider is the only path for it.
 
-- **Update.** A property that `UpdateFileSystem` accepts changes in place. A
-  change to a property that cannot change is rejected, and the error points
-  to `--replace`.
+- **Update.** A property that `UpdateFileSystem` accepts changes in place.
+  So does a Windows `Aliases` list, through `AssociateFileSystemAliases` and
+  `DisassociateFileSystemAliases`. cdkd first waits until no other
+  administrative action runs on the file system (a storage or IOPS
+  optimization is not waited for; it can take hours), re-sends a call FSx
+  refuses while an administrative action is in progress, and waits until the
+  aliases read back as declared. A change to a property that cannot change is rejected, and the
+  error points to `--replace`. That includes Windows `ActiveDirectoryId` and
+  `PreferredSubnetId`, which no FSx API can change.
 - **Create and delete.** cdkd waits until the file system is `AVAILABLE`, and
   on delete until it is gone. The timeout for one resource of this type is
   one hour.

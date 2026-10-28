@@ -140,6 +140,7 @@ import {
 import { replayReadopt, replayRevert } from './rollback-executor/replay-revert.js';
 import { replayReverseReplacement } from './rollback-executor/replay-reverse-replacement.js';
 import { unsettledContextOf } from '../state/unsettled-properties.js';
+import { withUnprovenUnsettled } from './unsettled-convergence.js';
 
 /** `undefined` for an empty list, so an absent field stays absent. */
 function nonEmptyOrUndefined<T>(items: T[]): T[] | undefined {
@@ -1572,6 +1573,20 @@ async function replayFailedOperationsUnbound(
             ),
             prev,
             noEcho.substituted
+          );
+          // go-to-k/cdkd#5487: settled only on proof, as on the deploy side.
+          stateResources[op.logicalId] = await withUnprovenUnsettled(
+            stateResources[op.logicalId]!,
+            {
+              provider,
+              logicalId: op.logicalId,
+              physicalId: current.physicalId,
+              resourceType: op.resourceType,
+              recordedProperties: current.properties ?? {},
+              names: unsettledContextOf(current, prev).unsettledProperties ?? new Set(),
+              desired: desiredProps ?? {},
+            },
+            (message) => logger.warn(mask(message))
           );
           // go-to-k/cdkd#4225, the `revert` arm's twin: its previous side is
           // the failed attempt's bag.
