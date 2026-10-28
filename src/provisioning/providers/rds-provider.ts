@@ -66,7 +66,7 @@ import {
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
   deleteAfterProtectionFlipWithFinalSnapshot,
-  isTerminalDbStatus,
+  isTerminalDbWaitStatus,
 } from './deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
@@ -958,7 +958,7 @@ export class RDSProvider implements ResourceProvider {
       try {
         // Wait for cluster to become available (skip with --no-wait)
         if (process.env['CDKD_NO_WAIT'] !== 'true') {
-          await this.waitForClusterAvailable(dbClusterIdentifier);
+          await this.waitForClusterAvailable(logicalId, dbClusterIdentifier);
         }
 
         // Describe to get final attributes
@@ -1007,6 +1007,28 @@ export class RDSProvider implements ResourceProvider {
             `Delete requested for partially-created DBCluster ${logicalId} (${dbClusterIdentifier}) after wiring failure (not waiting for deleted state)`
           );
         } catch (cleanupError) {
+          // Issue #5426: a cluster deleted from outside cdkd (the create wait
+          // read `deleting`) refuses this delete yet is not left running: say
+          // so instead of the billing warning. Only AWS's own not-found class
+          // counts as gone; any other read keeps the warning. Either way the
+          // created-before-failure mark stays (fail closed): a not-found read
+          // can be read-after-create lag, and a later delete of a gone
+          // cluster is a no-op success.
+          const retiring = await this.partialClusterRetiring(dbClusterIdentifier);
+          if (retiring !== undefined) {
+            // AWS's refusal text at debug only, masked (go-to-k/cdkd#2319).
+            this.logger.debug(
+              maskerOrIdentity(mask)(
+                `Cleanup delete of partially-created DBCluster ${logicalId} refused: ${maskerOrIdentity(mask)(describeAwsFailure(cleanupError).detail)}`
+              )
+            );
+            this.logger.warn(
+              maskerOrIdentity(mask)(
+                `Partially-created DBCluster ${logicalId} (${dbClusterIdentifier}) is ${retiring === 'gone' ? 'read as already deleted' : "already in status 'deleting'"}; cdkd did not delete it again. Outside a rollback's re-create, the failed deploy's rollback journal still records it, so \`cdkd rollback --revert-failed\` confirms it is gone`
+              )
+            );
+            throw innerError;
+          }
           // The identifier is TEMPLATE-chosen (or generated), so the recovery
           // commands render through `pasteableAwsCommand` (issue #3136): one
           // that cannot be printed exactly withholds them rather than naming
@@ -1605,7 +1627,7 @@ export class RDSProvider implements ResourceProvider {
 
       // Wait for instance to become available (skip with --no-wait)
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
-        await this.waitForInstanceAvailable(dbInstanceIdentifier);
+        await this.waitForInstanceAvailable(logicalId, dbInstanceIdentifier);
       }
 
       // Describe to get final attributes
@@ -2015,6 +2037,23 @@ export class RDSProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * Issue #5426: after a failed cleanup delete of a partially-created cluster,
+   * whether AWS already has it on its way out: `gone` on `DBClusterNotFoundFault`
+   * by class, `deleting` on that status, `undefined` for anything else (an
+   * empty read or another failure included), which keeps the caller's warning.
+   */
+  private async partialClusterRetiring(
+    dbClusterIdentifier: string
+  ): Promise<'gone' | 'deleting' | undefined> {
+    try {
+      const cluster = await this.describeDBCluster(dbClusterIdentifier);
+      return cluster?.Status === 'deleting' ? 'deleting' : undefined;
+    } catch (error) {
+      return error instanceof Error && error.name === 'DBClusterNotFoundFault' ? 'gone' : undefined;
+    }
+  }
+
   private isNotFoundError(error: unknown, faultName: string): boolean {
     if (!(error instanceof Error)) return false;
     const name = (error as { name?: string }).name ?? '';
@@ -2366,7 +2405,7 @@ export class RDSProvider implements ResourceProvider {
 
   /**
    * A cluster read inside an update wait (issue #5417). A vanished cluster or a
-   * terminal status (`isTerminalDbStatus`) never reaches the awaited state, so
+   * terminal status (`isTerminalDbWaitStatus`) never reaches the awaited state, so
    * fail now rather than after the 30-minute budget.
    */
   private requireClusterWhileWaiting(
@@ -2381,7 +2420,7 @@ export class RDSProvider implements ResourceProvider {
         safeMsg`DescribeDBClusters returned no cluster for DBCluster ${logicalId} while waiting for its new ${change}`
       );
     }
-    if (isTerminalDbStatus(cluster.Status)) {
+    if (isTerminalDbWaitStatus(cluster.Status)) {
       throw new Error(
         safeMsg`DBCluster ${logicalId} entered status ${cluster.Status ?? ''} while applying its new ${change}`
       );
@@ -2518,9 +2557,12 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a DBCluster to become available
+   * Wait for a DBCluster to become available. A terminal status
+   * (`isTerminalDbWaitStatus`) fails at once rather than after the
+   * 30-minute budget (issue #5426).
    */
   private async waitForClusterAvailable(
+    logicalId: string,
     dbClusterIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -2534,6 +2576,12 @@ export class RDSProvider implements ResourceProvider {
       this.logger.debug(`DBCluster ${dbClusterIdentifier} status: ${status}`);
 
       if (status === 'available') return;
+      // Issue #5426: a terminal status never becomes 'available'.
+      if (isTerminalDbWaitStatus(status)) {
+        throw new Error(
+          safeMsg`DBCluster ${logicalId} entered status ${status ?? ''} while being created, which it does not leave on its own`
+        );
+      }
 
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
@@ -2576,9 +2624,12 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a DBInstance to become available
+   * Wait for a DBInstance to become available. A terminal status
+   * (`isTerminalDbWaitStatus`) fails at once rather than after the
+   * 30-minute budget (issue #5426).
    */
   private async waitForInstanceAvailable(
+    logicalId: string,
     dbInstanceIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -2592,6 +2643,12 @@ export class RDSProvider implements ResourceProvider {
       this.logger.debug(`DBInstance ${dbInstanceIdentifier} status: ${status}`);
 
       if (status === 'available') return;
+      // Issue #5426: a terminal status never becomes 'available'.
+      if (isTerminalDbWaitStatus(status)) {
+        throw new Error(
+          safeMsg`DBInstance ${logicalId} entered status ${status ?? ''} while being created, which it does not leave on its own`
+        );
+      }
 
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);

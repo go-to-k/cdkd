@@ -3,7 +3,7 @@ import { safeMsg } from '../../utils/display-safe.js';
 import {
   isFinalSnapshotNotAvailableRefusal,
   isProceedDbStatus,
-  isTerminalDbStatus,
+  isTerminalDbWaitStatus,
 } from './deletion-protection-compensation.js';
 
 /**
@@ -64,7 +64,7 @@ export interface InstanceModifyRetryOptions {
  * attempt) can be refused that way and is then resent once with the same
  * values, reaching the same end state. Between retries every transitional
  * status is waited out (`isProceedDbStatus` ends the wait); a TERMINAL one
- * (`isTerminalDbStatus`) fails at once, since no wait ends it. Each retry first
+ * (`isTerminalDbWaitStatus`) fails at once, since no wait ends it. Each retry first
  * sleeps, as the readback can lag the state AWS refused on. The wait and every
  * retry share one budget: {@link INSTANCE_MODIFY_RETRY_WAIT_MS}, or what the
  * resource deadline leaves minus a margin, whichever is less. A describe
@@ -111,7 +111,7 @@ export async function modifyDbInstanceWhenAvailable(
         delay = Math.min(delay * 2, 10_000);
         const status = await opts.readStatus();
         if (status === undefined || isProceedDbStatus(status)) break;
-        if (isTerminalDbStatus(status)) {
+        if (isTerminalDbWaitStatus(status)) {
           throw new Error(
             `AWS refused the update because ${subject} not in the 'available' state, and it reads status '${status}', which does not end on its own; re-run the deploy once the instance is 'available'`,
             { cause: error }

@@ -52,7 +52,7 @@ import {
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
   deleteAfterProtectionFlipWithFinalSnapshot,
-  isTerminalDbStatus,
+  isTerminalDbWaitStatus,
 } from './deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
@@ -503,7 +503,7 @@ export class DocDBProvider implements ResourceProvider {
 
       // Wait for cluster to become available (skip with --no-wait)
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
-        await this.waitForClusterAvailable(dbClusterIdentifier);
+        await this.waitForClusterAvailable(logicalId, dbClusterIdentifier);
       }
 
       // Describe to get final attributes
@@ -934,7 +934,7 @@ export class DocDBProvider implements ResourceProvider {
 
       // Wait for instance to become available (skip with --no-wait)
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
-        await this.waitForInstanceAvailable(dbInstanceIdentifier);
+        await this.waitForInstanceAvailable(logicalId, dbInstanceIdentifier);
       }
 
       const described = await this.describeDBInstance(dbInstanceIdentifier);
@@ -1307,7 +1307,7 @@ export class DocDBProvider implements ResourceProvider {
 
   /**
    * A cluster read inside an update wait (issues #5411, #5419). A vanished
-   * cluster or a terminal status (`isTerminalDbStatus`) never reaches the
+   * cluster or a terminal status (`isTerminalDbWaitStatus`) never reaches the
    * awaited state, so fail now rather than after the 30-minute budget.
    */
   private requireClusterWhileWaiting(
@@ -1322,7 +1322,7 @@ export class DocDBProvider implements ResourceProvider {
         safeMsg`DescribeDBClusters returned no cluster for DocDB DBCluster ${logicalId} while waiting for its new ${change}`
       );
     }
-    if (isTerminalDbStatus(cluster.Status)) {
+    if (isTerminalDbWaitStatus(cluster.Status)) {
       throw new Error(
         safeMsg`DocDB DBCluster ${logicalId} entered status ${cluster.Status ?? ''} while applying its new ${change}`
       );
@@ -1432,11 +1432,14 @@ export class DocDBProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a DBCluster to become available. DocDB's SDK does not ship a
-   * `waitUntilDBClusterAvailable` waiter (only DBInstance has waiters),
-   * so we poll Status manually with exponential backoff.
+   * Wait for a DocDB DBCluster to become available. DocDB's SDK does not ship
+   * a `waitUntilDBClusterAvailable` waiter (only DBInstance has waiters), so
+   * Status is polled with exponential backoff. A terminal status
+   * (`isTerminalDbWaitStatus`) fails at once rather than after the
+   * 30-minute budget (issue #5426).
    */
   private async waitForClusterAvailable(
+    logicalId: string,
     dbClusterIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -1450,6 +1453,12 @@ export class DocDBProvider implements ResourceProvider {
       this.logger.debug(`DocDB DBCluster ${dbClusterIdentifier} status: ${status}`);
 
       if (status === 'available') return;
+      // Issue #5426: a terminal status never becomes 'available'.
+      if (isTerminalDbWaitStatus(status)) {
+        throw new Error(
+          safeMsg`DocDB DBCluster ${logicalId} entered status ${status ?? ''} while being created, which it does not leave on its own`
+        );
+      }
 
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
@@ -1494,9 +1503,12 @@ export class DocDBProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a DBInstance to become available (manual poll — matches RDS).
+   * Wait for a DocDB DBInstance to become available. A terminal status
+   * (`isTerminalDbWaitStatus`) fails at once rather than after the
+   * 30-minute budget (issue #5426).
    */
   private async waitForInstanceAvailable(
+    logicalId: string,
     dbInstanceIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -1510,6 +1522,12 @@ export class DocDBProvider implements ResourceProvider {
       this.logger.debug(`DocDB DBInstance ${dbInstanceIdentifier} status: ${status}`);
 
       if (status === 'available') return;
+      // Issue #5426: a terminal status never becomes 'available'.
+      if (isTerminalDbWaitStatus(status)) {
+        throw new Error(
+          safeMsg`DocDB DBInstance ${logicalId} entered status ${status ?? ''} while being created, which it does not leave on its own`
+        );
+      }
 
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);

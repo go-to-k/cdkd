@@ -42,6 +42,10 @@ export interface DynamoDBGlobalTableReplicaSettingsStackProps extends cdk.StackP
  *                every #5365 setting, which CloudFormation resets too;
  *   - `protect`: with `removed`, protect the replica again (destroy then
  *                needs `--remove-protection`).
+ *   - `ssetable`: a second two-region table on the AWS owned key, for the
+ *                `drift --revert` phase of issue #5399. The first table has
+ *                switched encryption four times by then, and DynamoDB refused a
+ *                further switch on it with LimitExceededException.
  *
  * verify.sh gives the stack a per-run name, which the table name and the key
  * aliases follow, so a run never meets another run's table or alias.
@@ -123,6 +127,15 @@ export class DynamoDBGlobalTableReplicaSettingsStack extends cdk.Stack {
       ],
     });
     if (modes.has('tag')) cdk.Tags.of(table).add('Cdkd5355', 'tagged');
+
+    if (modes.has('ssetable')) {
+      new ddb.TableV2(this, 'SseRevertTable', {
+        tableName: `${this.stackName}-table2`,
+        partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+        replicas: [{ region: props.secondRegion }],
+      });
+    }
 
     new cdk.CfnOutput(this, 'TableName', { value: table.tableName });
   }

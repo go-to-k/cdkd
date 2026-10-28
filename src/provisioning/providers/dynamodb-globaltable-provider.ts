@@ -100,6 +100,7 @@ import {
 } from '../dynamodb-warm-throughput.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
+import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
 import {
   isAmbiguousOutcomeError,
   isThrottlingError,
@@ -605,7 +606,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // as this resource.
     const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
     const wrapped = build(
-      `${log.mask(failure.summary)}${relay}${relayedIndexBusyDelete(failure.detail)}`
+      `${log.mask(failure.summary)}${relay}${relayedIndexBusyDelete(failure.detail)}` +
+        relayedEncryptionChangeLimit(failure.detail)
     );
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
@@ -2743,6 +2745,81 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * The pauses between re-reads of a Kinesis destination this update
+   * disabled. `DisableKinesisStreamingDestination` answers `DISABLING`, and
+   * the first `DescribeKinesisStreamingDestination` after it read `ACTIVE` in
+   * one run and `DISABLING` in another, then `DISABLED` about a second later
+   * (measured us-east-1, 2026-10-28). The deploy captures its drift baseline
+   * right after the update, so a capture inside that window recorded a
+   * destination AWS was removing, and every later `cdkd drift` reported it
+   * (go-to-k/cdkd#5399's integ).
+   */
+  protected kinesisDisableSettleDelaysMs: readonly number[] = Array<number>(30).fill(2000);
+
+  /**
+   * Wait until no entry for `streamArn` among `tableName`'s destinations is
+   * `ACTIVE`, `ENABLING`, `UPDATING` or `DISABLING` (the read-back's present
+   * set, plus `DISABLING`, which is still settling: a later read can flicker
+   * back to `ACTIVE`, above). Best-effort, since the disable itself was accepted: a
+   * failed read ends the wait with a debug line, and running out of re-reads
+   * or of the resource deadline ends it with a warning.
+   */
+  private async waitForKinesisDisableSettled(
+    client: DynamoDBClient,
+    tableName: string,
+    streamArn: string,
+    scope: string,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const watch = startInterruptWatch(maskSecrets(`Kinesis streaming disable on ${scope}`));
+    let last = 'none read';
+    try {
+      for (const delayMs of [0, ...this.kinesisDisableSettleDelaysMs]) {
+        // The engine's deadline does not cancel this update: a wait that
+        // outlived it would keep polling with nobody waiting on it.
+        if (enclosingDeadlineRemainingMs() <= 0) break;
+        if (delayMs > 0) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.max(0, Math.min(delayMs, enclosingDeadlineRemainingMs())))
+          );
+        }
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        let unsettled: string | undefined;
+        try {
+          const out = await client.send(
+            new DescribeKinesisStreamingDestinationCommand({ TableName: tableName })
+          );
+          // Judged across EVERY entry for the stream: history entries (a
+          // DISABLED or ENABLE_FAILED one) linger beside the current entry,
+          // and neither may decide the wait on its own.
+          unsettled = (out.KinesisDataStreamDestinations ?? []).find(
+            (d) =>
+              d.StreamArn === streamArn && KINESIS_DISABLE_UNSETTLED.has(d.DestinationStatus ?? '')
+          )?.DestinationStatus;
+        } catch (error) {
+          this.logger.debug(
+            maskSecrets(
+              `Could not confirm the Kinesis streaming disable on ${scope}: ` +
+                describeAwsFailure(error).detail
+            )
+          );
+          return;
+        }
+        if (unsettled === undefined) return;
+        last = unsettled;
+      }
+      this.logger.warn(
+        maskSecrets(
+          `The Kinesis streaming destination on ${scope} had not settled ` +
+            `(last status: ${last}); 'cdkd drift' may report it on this replica until it does`
+        )
+      );
+    } finally {
+      watch.dispose();
+    }
+  }
+
   /** The Kinesis streams a table streams to (`ACTIVE` or `ENABLING`). */
   private async activeKinesisStreamArns(
     client: DynamoDBClient,
@@ -2868,6 +2945,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // Already off (a re-run, or an out-of-band disable) is the goal.
           if (await this.kinesisStreaming(client, tableName, op.streamArn, error)) throw error;
         }
+        await this.waitForKinesisDisableSettled(
+          client,
+          tableName,
+          op.streamArn,
+          scope,
+          maskSecrets
+        );
         break;
       case 'kinesisPrecision':
         await send(() =>
@@ -2978,8 +3062,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       this.logger.warn(
         maskSecrets(
           `${tableName} does not hold its declared ${what}, and setting it failed ` +
-            `(${describeAwsFailure(error).summary}). The next deploy that updates this table ` +
-            `tries again.`
+            `(${describeAwsFailure(error).summary}).` +
+            relayedEncryptionChangeLimit(describeAwsFailure(error).detail) +
+            ` The next deploy that updates this table tries again.`
         )
       );
     }
@@ -8595,6 +8680,34 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
+   * `SSESpecification`, while the template leaves the table on the AWS owned
+   * key: no block (CDK's default) or `SSEEnabled: false` (CDK's
+   * `dynamoOwnedKey()`). `readCurrentState` omits the block unless encryption
+   * is ENABLED, so a baseline captured on the AWS owned key has none, and a
+   * later move to a KMS key was compared nowhere at the top level and kept by
+   * `drift --revert` (go-to-k/cdkd#5399). Sent absent, `update()` takes its
+   * removal path: `SSESpecification: { Enabled: false }`, which returns every
+   * region to the AWS owned key, as CloudFormation does (go-to-k/cdkd#5355).
+   *
+   * A template declaring encryption ON gets nothing: a baseline without the
+   * block disagrees with that template, and it must not turn the declared
+   * encryption off. A missing block is not proof of the AWS owned key on its
+   * own (the read-back omits it for every status but ENABLED, e.g.
+   * ENABLING, UPDATING, DISABLING or INACCESSIBLE_ENCRYPTION_CREDENTIALS), so the template's answer is what bounds the reset.
+   */
+  getDriftAbsentMeansDefaultKeys(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): readonly string[] {
+    if (resourceType !== 'AWS::DynamoDB::GlobalTable') return [];
+    const declared = properties['SSESpecification'];
+    if (declared === undefined) return ['SSESpecification'];
+    return coerceCfnBoolean(asRecord(declared)?.['SSEEnabled']) === false
+      ? ['SSESpecification']
+      : [];
+  }
+
+  /**
    * Adopt an existing DynamoDB GlobalTable into cdkd state.
    *
    * Lookup order:
@@ -9730,6 +9843,33 @@ export const REPLICA_COPY_RELEASE_POLL_MS = 5000;
  * second of margin (go-to-k/cdkd#5355).
  */
 export const DELETION_PROTECTION_REFLIP_MS = 16_000;
+
+/**
+ * Restates DynamoDB's encryption-change quota in the update's wraps, which
+ * withhold AWS's text (go-to-k/cdkd#5399's integ). A table takes 4
+ * encryption changes in a 24-hour window and then one every 6 hours
+ * (`LimitExceededException`: "Encryption mode changes are limited in the 24h
+ * window ...", measured us-east-1, 2026-10-28); reduced to the class name, the
+ * refusal told the operator nothing. Returns a leading space plus the
+ * sentence, or `''`.
+ */
+export function relayedEncryptionChangeLimit(withheldText: string): string {
+  return /Encryption mode changes are limited/i.test(withheldText)
+    ? ' AWS limits a table to 4 encryption changes in 24 hours, then one every 6 hours; ' +
+        'retry the change later (--verbose shows when AWS allows the next one).'
+    : '';
+}
+
+/**
+ * The Kinesis destination statuses a disable has not settled from
+ * (go-to-k/cdkd#5399): the read-back's present set plus `DISABLING`.
+ */
+const KINESIS_DISABLE_UNSETTLED: ReadonlySet<string> = new Set([
+  'ACTIVE',
+  'ENABLING',
+  'UPDATING',
+  'DISABLING',
+]);
 
 /**
  * {@link DynamoDBGlobalTableProvider.waitForReplicaProtectionSettled}'s cap:
