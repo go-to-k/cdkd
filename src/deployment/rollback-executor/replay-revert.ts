@@ -45,6 +45,7 @@ import { updateWithRollbackRetry, recordAfterRollbackUpdate } from './replay-ret
 import { maskRestoredNoEchoRecord, substituteMarkedNoEchoLeaves } from './replay-noecho.js';
 import type { ReplayOpScope } from './replay-scope.js';
 import { unsettledContextOf } from '../../state/unsettled-properties.js';
+import { withUnprovenUnsettled } from '../unsettled-convergence.js';
 
 /**
  * How the reverse replacement hands this arm an old resource that survived
@@ -661,6 +662,21 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
     ),
     previousState,
     noEcho.substituted
+  );
+  // go-to-k/cdkd#5487: a name either record carried unsettled is settled only
+  // on proof (AWS no longer changing it and holding the restored value).
+  stateResources[op.logicalId] = await withUnprovenUnsettled(
+    stateResources[op.logicalId]!,
+    {
+      provider,
+      logicalId: op.logicalId,
+      physicalId: current.physicalId,
+      resourceType: op.resourceType,
+      recordedProperties: current.properties ?? {},
+      names: unsettledContextOf(current, previousState).unsettledProperties ?? new Set(),
+      desired: desiredProps ?? {},
+    },
+    (message) => logger.warn(mask(message))
   );
   // go-to-k/cdkd#4225: a PARTIAL revert is no completed writer, as on
   // the deploy side.

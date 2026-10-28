@@ -30,6 +30,9 @@
 import { calculateResourceDrift } from '../analyzer/drift-calculator.js';
 import type { ResourceProvider } from '../types/resource.js';
 import { ProvisioningError } from '../utils/error-handler.js';
+import type { ResourceState } from '../types/state.js';
+import { withUnsettledProperties } from '../state/unsettled-properties.js';
+import { safeMsg } from '../utils/display-safe.js';
 
 /** Keys whose update merges into what AWS holds rather than replacing it. */
 export const MERGE_SEMANTICS_KEYS: ReadonlySet<string> = new Set(['Tags']);
@@ -200,4 +203,23 @@ export async function unsettledAfterUpdate(
   } catch {
     return [...names].sort();
   }
+}
+
+/**
+ * `record` (one a successful `update()` just rebuilt, carrying no unsettled
+ * names) with the names {@link unsettledAfterUpdate} could not prove settled
+ * put back, warning about them. The rollback revert arms and `cdkd drift
+ * --revert` call it after their update, as the deploy's in-place update does.
+ */
+export async function withUnprovenUnsettled<R extends ResourceState>(
+  record: R,
+  args: Identity & { names: ReadonlySet<string>; desired: Record<string, unknown> },
+  warn: (message: string) => void
+): Promise<R> {
+  const kept = await unsettledAfterUpdate(args);
+  if (kept.length === 0) return record;
+  warn(
+    safeMsg`${args.logicalId} (${args.resourceType}): the update succeeded, but AWS does not yet show the requested ${kept.join(', ')}; cdkd keeps ${kept.length === 1 ? 'it' : 'them'} unsettled and converges again on the next deploy.`
+  );
+  return withUnsettledProperties(record, kept);
 }
