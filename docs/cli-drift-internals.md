@@ -631,6 +631,16 @@ a diff-based `update()` (SNS, IAM Role) sees `newVal === oldVal` for them and
 does not touch AWS for those keys. `--revert` undoes exactly the delta
 `cdkd drift` reported and leaves non-drifted attributes alone.
 
+Some readbacks omit a top-level property while it is at its default, so a
+baseline captured then has no such key. A provider names those keys
+(`getDriftAbsentMeansDefaultKeys`, issue
+[#5399](https://github.com/go-to-k/cdkd/issues/5399)): drift compares each one
+even when the `observedProperties` baseline lacks it, and `--revert` sends it
+absent, so the provider resets it as it does for a property removed from the
+template. A GlobalTable recorded on the AWS owned key and moved to a KMS key
+out of band reports `SSESpecification`, and the revert returns every region to
+the AWS owned key.
+
 Per-resource failures are collected and surface as `PartialFailureError` at
 the end of the run; one resource's failure does not abort the rest. cdkd state's
 recorded properties are normally NOT modified — once `provider.update`

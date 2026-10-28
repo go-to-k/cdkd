@@ -107,7 +107,7 @@ dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table 
 dynamodb-fix-forward-orphan	2026-10-19T10:52:49Z	PASS	170	verify.sh	rc ok, orph clean
 dynamodb-globaltable	2026-10-20T03:28:23Z	PASS	1478	verify.sh	deploy+destroy clean, 0 orphans
 dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc ok, orph clean (#4283 PR #4449)
-dynamodb-globaltable-replica-settings	2026-10-27T11:33:33Z	PASS	1207	verify.sh	rc ok, orph clean; #5381 phase 2c drift arm; pre-fix probe red at Phase 2c drift exit
+dynamodb-globaltable-replica-settings	2026-10-28T03:49:30Z	PASS	2582	verify.sh	rc ok, orph clean; #5399 phase 5b table2 arm; probe2 red at SSESpecification report
 dynamodb-gsi-update	2026-10-24T19:26:15Z	PASS	1235	verify.sh	rc ok, orph clean, #5266 tail-c
 dynamodb-ondemand	2026-10-27T17:47:12Z	PASS	560	verify.sh	rc ok, orph clean, KinesisRemovalTable arm (#5423) green, pre-fix probe red at Phase 1.5
 dynamodb-sse	2026-10-16T08:15:12Z	PASS	45	verify.sh	rc ok, orph clean (#3341 slice 4995)
