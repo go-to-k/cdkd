@@ -78,8 +78,12 @@ interface World {
 let world: World;
 
 function install(): void {
+  let describes = 0;
   mockSend.mockImplementation((command: unknown) => {
     if (command instanceof DescribeInstancesCommand) {
+      // The waits' sleep is stubbed, so a wait that never sees its target
+      // state would spin; fail it instead, as a red test rather than a hang.
+      if (++describes > 50) return Promise.reject(new Error('runaway DescribeInstances poll'));
       const name = world.states.length > 1 ? world.states.shift()! : world.states[0];
       return Promise.resolve({
         Reservations: [
