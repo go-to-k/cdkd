@@ -9394,7 +9394,7 @@ export class EC2Provider implements ResourceProvider {
     // CloudFormation sends it (measured in a default VPC: the rule was created
     // with the named group as its peer). An id, when both are given, wins.
     const peerGroupName =
-      inline && direction === 'ingress' && !peerGroupId
+      inline && direction === 'ingress'
         ? (properties['SourceSecurityGroupName'] as string | undefined)
         : undefined;
     if (peerGroupId || peerGroupName) {
