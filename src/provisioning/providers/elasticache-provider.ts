@@ -104,6 +104,51 @@ function availabilityZonesNotCovered(a: readonly string[], b: readonly string[])
 }
 
 /**
+ * The cache node ids a `NumCacheNodes` decrease removes, matching what
+ * CloudFormation sent (issue #5441, CloudTrail on real change-set runs,
+ * memcached, us-east-1): it keeps the nodes with the HIGHEST ids --
+ * 3 nodes to 1 removed `0001, 0002`; two nodes in us-east-1a and one in
+ * us-east-1c, to `[us-east-1c, us-east-1a]`, removed the lower us-east-1a
+ * node -- and, with a desired `PreferredAvailabilityZones`, keeps only nodes
+ * whose zone the list still names (`[1a, 1b, 1c]` to `[1a, 1c]` removed the
+ * us-east-1b node). Returned lowest id first, as CloudFormation sent them.
+ *
+ * `undefined` when the kept nodes cannot reach the desired count without
+ * adding a node in a new zone: a removal and an addition in one update.
+ */
+export function nodesToRemove(
+  nodes: readonly { id: string | undefined; zone: string | undefined }[],
+  desiredCount: number,
+  desiredZones: readonly string[] | undefined
+): string[] | undefined {
+  const remainingZones = desiredZones === undefined ? undefined : [...desiredZones];
+  // A node the describe gives no id cannot be named for removal: keep it.
+  const named = nodes.filter(
+    (n): n is { id: string; zone: string | undefined } => n.id !== undefined
+  );
+  const keep = new Set<string>();
+  const unnamed = nodes.length - named.length;
+  const byIdDesc = [...named].sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+  for (const node of byIdDesc) {
+    if (keep.size + unnamed >= desiredCount) break;
+    if (remainingZones === undefined) {
+      keep.add(node.id);
+      continue;
+    }
+    const i = node.zone === undefined ? -1 : remainingZones.indexOf(node.zone);
+    if (i >= 0) {
+      remainingZones.splice(i, 1);
+      keep.add(node.id);
+    }
+  }
+  if (keep.size + unnamed < desiredCount) return undefined;
+  return named
+    .map((n) => n.id)
+    .filter((id) => !keep.has(id))
+    .sort();
+}
+
+/**
  * AWS ElastiCache Provider
  *
  * Implements resource provisioning for ElastiCache resources:
@@ -715,7 +760,14 @@ export class ElastiCacheProvider implements ResourceProvider {
       // the template is scaled back by the next update; an unchanged live type
       // is a no-op for AWS.
       const desiredNodeType = properties['CacheNodeType'] as string | undefined;
-      const placement = await this.newNodePlacement(physicalId, properties, previousProperties);
+      const nodeChanges = await this.planNodeChanges(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties
+      );
+      const placement = nodeChanges.placement;
       this.warnNotAppliedInPlace(logicalId, properties, previousProperties, placement);
 
       await this.getClient().send(
@@ -727,6 +779,9 @@ export class ElastiCacheProvider implements ResourceProvider {
           ...(placement && {
             NewAvailabilityZones: placement.newAvailabilityZones,
             ...(placement.azMode !== undefined && { AZMode: placement.azMode }),
+          }),
+          ...(nodeChanges.removeIds.length > 0 && {
+            CacheNodeIdsToRemove: nodeChanges.removeIds,
           }),
           SecurityGroupIds: sgIds,
           CacheParameterGroupName: properties['CacheParameterGroupName'] as string | undefined,
@@ -768,8 +823,13 @@ export class ElastiCacheProvider implements ResourceProvider {
       // it REPORTS the template node type: the status can still read
       // `available` right after the Modify returns, and a scale measured about
       // ten minutes on cache.t4g, so this wait's cap is longer.
-      if (desiredNodeType !== undefined) {
-        await this.waitForClusterAvailable(physicalId, NODE_TYPE_MODIFY_WAIT_MS, desiredNodeType);
+      if (desiredNodeType !== undefined || nodeChanges.removeIds.length > 0) {
+        await this.waitForClusterAvailable(
+          physicalId,
+          NODE_TYPE_MODIFY_WAIT_MS,
+          desiredNodeType,
+          nodeChanges.removeIds
+        );
       } else {
         await this.waitForClusterAvailable(physicalId);
       }
@@ -950,39 +1010,89 @@ export class ElastiCacheProvider implements ResourceProvider {
   }
 
   /**
-   * Where the nodes an update adds go (issue #5438). CloudFormation sends
-   * `NewAvailabilityZones` -- the desired `PreferredAvailabilityZones` minus
-   * the zones the live nodes already occupy -- with the desired `AZMode`, and
-   * nothing when that difference is empty (real CloudFormation runs: a
-   * memcached scale-out from 1 node in us-east-1c to
-   * `[us-east-1c, us-east-1b]` sent `NewAvailabilityZones: [us-east-1b]`;
-   * an `AZMode` or `PreferredAvailabilityZones` change covering the live
-   * zones, or their removal, sent neither). A difference with no node added
-   * is sent as well, and AWS refuses it, as it refused CloudFormation's.
+   * The node additions and removals an update sends, from one describe of
+   * the live nodes (issues #5438, #5441). Real CloudFormation runs on
+   * memcached, us-east-1:
    *
-   * The live zones need a describe, made only when the desired list or the
-   * node count changed from the previous template.
+   * - Added nodes: CloudFormation sends `NewAvailabilityZones` -- the desired
+   *   `PreferredAvailabilityZones` minus the zones the live nodes occupy --
+   *   with the desired `AZMode`, and nothing when that difference is empty
+   *   (1 node in us-east-1c to `[us-east-1c, us-east-1b]` sent
+   *   `NewAvailabilityZones: [us-east-1b]`). A difference with no node added
+   *   is sent as well, and AWS refuses it, as it refused CloudFormation's.
+   * - Removed nodes: AWS refuses a lower `NumCacheNodes` without
+   *   `CacheNodeIdsToRemove`. CloudFormation keeps the nodes with the HIGHEST
+   *   ids and removes the rest, first any node in a zone the desired
+   *   `PreferredAvailabilityZones` no longer lists (`nodesToRemove`).
+   *
+   * The describe is made only when the desired zone list or `NumCacheNodes`
+   * changed from the previous template.
    */
-  private async newNodePlacement(
+  private async planNodeChanges(
+    logicalId: string,
     physicalId: string,
+    resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
-  ): Promise<{ newAvailabilityZones: string[]; azMode: AZMode | undefined } | undefined> {
-    const desired = properties['PreferredAvailabilityZones'];
-    if (!Array.isArray(desired) || desired.length === 0) return undefined;
+  ): Promise<{
+    placement: { newAvailabilityZones: string[]; azMode: AZMode | undefined } | undefined;
+    removeIds: string[];
+  }> {
+    const none = { placement: undefined, removeIds: [] };
+    const desiredZones = properties['PreferredAvailabilityZones'];
+    const zones =
+      Array.isArray(desiredZones) && desiredZones.length > 0
+        ? (desiredZones as string[])
+        : undefined;
+    const countChanged =
+      String(properties['NumCacheNodes']) !== String(previousProperties['NumCacheNodes']);
     if (
-      isDeepStrictEqual(desired, previousProperties['PreferredAvailabilityZones']) &&
-      String(properties['NumCacheNodes']) === String(previousProperties['NumCacheNodes'])
+      !countChanged &&
+      (zones === undefined ||
+        isDeepStrictEqual(zones, previousProperties['PreferredAvailabilityZones']))
     ) {
-      return undefined;
+      return none;
     }
     const live = await this.describeCacheCluster(physicalId);
-    const liveZones = (live?.CacheNodes ?? [])
-      .map((n) => n.CustomerAvailabilityZone)
-      .filter((az): az is string => typeof az === 'string');
-    const newAvailabilityZones = availabilityZonesNotCovered(desired as string[], liveZones);
-    if (newAvailabilityZones.length === 0) return undefined;
-    return { newAvailabilityZones, azMode: properties['AZMode'] as AZMode | undefined };
+    const liveNodes = (live?.CacheNodes ?? []).map((n) => ({
+      id: n.CacheNodeId,
+      zone: n.CustomerAvailabilityZone,
+    }));
+    const desiredCount =
+      properties['NumCacheNodes'] != null ? Number(properties['NumCacheNodes']) : undefined;
+
+    let removeIds: string[] = [];
+    if (desiredCount !== undefined && desiredCount < liveNodes.length) {
+      const plan = nodesToRemove(liveNodes, desiredCount, zones);
+      if (plan === undefined) {
+        throw new ProvisioningError(
+          safeMsg`Cannot update CacheCluster ${logicalId}: lowering NumCacheNodes to ${String(desiredCount)} ` +
+            `while PreferredAvailabilityZones moves nodes to zones no live node occupies needs nodes ` +
+            `removed and added in one update, which cdkd does not do. Deploy the zone change and the ` +
+            `node-count change separately, or replace the cluster.`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+      removeIds = plan;
+    }
+
+    const newAvailabilityZones =
+      zones === undefined
+        ? []
+        : availabilityZonesNotCovered(
+            zones,
+            liveNodes
+              .filter((n) => n.id === undefined || !removeIds.includes(n.id))
+              .map((n) => n.zone)
+              .filter((z): z is string => typeof z === 'string')
+          );
+    const placement =
+      newAvailabilityZones.length > 0
+        ? { newAvailabilityZones, azMode: properties['AZMode'] as AZMode | undefined }
+        : undefined;
+    return { placement, removeIds };
   }
 
   /**
@@ -1153,7 +1263,8 @@ export class ElastiCacheProvider implements ResourceProvider {
   private async waitForClusterAvailable(
     cacheClusterId: string,
     maxWaitMs = 600_000,
-    expectedNodeType?: string
+    expectedNodeType?: string,
+    removedNodeIds: readonly string[] = []
   ): Promise<void> {
     const startTime = Date.now();
     let delay = 10_000;
@@ -1165,8 +1276,18 @@ export class ElastiCacheProvider implements ResourceProvider {
       this.logger.debug(`CacheCluster ${cacheClusterId} status: ${status}`);
 
       const liveNodeType = cluster?.CacheNodeType;
+      // A removal is done when the describe lists none of the removed nodes
+      // (issue #5441): right after the Modify the cluster can still read
+      // `available` with every node present.
+      const removalDone =
+        removedNodeIds.length === 0 ||
+        (cluster?.CacheNodes !== undefined &&
+          !cluster.CacheNodes.some(
+            (n) => n.CacheNodeId !== undefined && removedNodeIds.includes(n.CacheNodeId)
+          ));
       if (
         status === 'available' &&
+        removalDone &&
         (expectedNodeType === undefined || liveNodeType === expectedNodeType)
       ) {
         return;
@@ -1175,6 +1296,7 @@ export class ElastiCacheProvider implements ResourceProvider {
       // on its old type with nothing pending: fail now, not at the cap.
       if (
         expectedNodeType !== undefined &&
+        liveNodeType !== expectedNodeType &&
         status === 'available' &&
         cluster?.PendingModifiedValues?.CacheNodeType === undefined &&
         Date.now() - startTime > NODE_TYPE_DROPPED_AFTER_MS
@@ -1189,9 +1311,11 @@ export class ElastiCacheProvider implements ResourceProvider {
     }
 
     throw new Error(
-      expectedNodeType === undefined
-        ? `Timed out waiting for CacheCluster ${cacheClusterId} to become available`
-        : safeMsg`Timed out waiting for CacheCluster ${cacheClusterId} to become available with node type ${expectedNodeType}`
+      removedNodeIds.length > 0
+        ? safeMsg`Timed out waiting for CacheCluster ${cacheClusterId} to remove cache nodes ${removedNodeIds.join(', ')}`
+        : expectedNodeType === undefined
+          ? `Timed out waiting for CacheCluster ${cacheClusterId} to become available`
+          : safeMsg`Timed out waiting for CacheCluster ${cacheClusterId} to become available with node type ${expectedNodeType}`
     );
   }
 
