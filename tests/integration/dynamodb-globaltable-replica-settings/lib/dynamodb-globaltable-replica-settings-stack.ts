@@ -48,6 +48,8 @@ export interface DynamoDBGlobalTableReplicaSettingsStackProps extends cdk.StackP
  *                (the index stays while `idx` is set). Also a single-region
  *                `ModeTable` (with a sort key) declaring
  *                `GlobalTableSettingsReplicationMode: ENABLED`;
+ *   - `gsi`:     go-to-k/cdkd#5487: `gsi1` alone, which verify.sh's Phase 1a
+ *                cuts short with a deadline;
  *   - `lsi`:     issue #5489: add a local secondary index to the live
  *                `ModeTable`, which DynamoDB cannot do (the deploy must be
  *                refused);
@@ -116,11 +118,14 @@ export class DynamoDBGlobalTableReplicaSettingsStack extends cdk.Stack {
     // Issue #5489: the replica-level options of `gsi1` (CDK renders them per
     // replica; the deploy region's come from the index's own props).
     const idx = modes.has('idx');
+    // go-to-k/cdkd#5487: `gsi` adds `gsi1` alone (no insights, no stream tags,
+    // no ModeTable), for verify.sh's cut-short Phase 1a.
+    const withGsi = idx || modes.has('gsi');
     const indexInsights = idx && !removed;
     const table = new ddb.TableV2(this, 'ReplicaSettingsTable', {
       tableName: `${this.stackName}-table`,
       partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
-      ...(idx && {
+      ...(withGsi && {
         globalSecondaryIndexes: [
           {
             indexName: 'gsi1',

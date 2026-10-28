@@ -5856,11 +5856,13 @@
             "AWS::DynamoDB::GlobalTable"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
             "create",
-            "update"
+            "update",
+            "updateInScope"
           ]
         },
         {
@@ -5870,11 +5872,13 @@
             "AWS::DynamoDB::GlobalTable"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
             "create",
-            "update"
+            "update",
+            "updateInScope"
           ]
         },
         {
@@ -5889,7 +5893,8 @@
           ],
           "seededBy": [
             "create",
-            "update"
+            "update",
+            "updateInScope"
           ]
         },
         {
@@ -5906,7 +5911,8 @@
             "applyReplicaIndexInsights",
             "applyReplicaSettings",
             "create",
-            "update"
+            "update",
+            "updateInScope"
           ]
         },
         {
@@ -5921,7 +5927,8 @@
           ],
           "seededBy": [
             "create",
-            "update"
+            "update",
+            "updateInScope"
           ]
         },
         {
@@ -5931,11 +5938,13 @@
             "AWS::DynamoDB::GlobalTable"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
             "create",
-            "update"
+            "update",
+            "updateInScope"
           ]
         },
         {
@@ -5957,7 +5966,8 @@
             "convergeReplicaSettings",
             "create",
             "readCurrentState",
-            "update"
+            "update",
+            "updateInScope"
           ]
         },
         {
@@ -5974,7 +5984,8 @@
             "applyReplicaKeys",
             "create",
             "getDriftAbsentMeansDefaultKeys",
-            "update"
+            "update",
+            "updateInScope"
           ]
         },
         {
@@ -5984,11 +5995,13 @@
             "AWS::DynamoDB::GlobalTable"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
             "create",
-            "update"
+            "update",
+            "updateInScope"
           ]
         },
         {
@@ -6003,7 +6016,8 @@
           ],
           "seededBy": [
             "create",
-            "update"
+            "update",
+            "updateInScope"
           ]
         },
         {
@@ -6013,11 +6027,13 @@
             "AWS::DynamoDB::GlobalTable"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
             "create",
-            "update"
+            "update",
+            "updateInScope"
           ]
         },
         {
@@ -6027,11 +6043,13 @@
             "AWS::DynamoDB::GlobalTable"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
             "create",
-            "update"
+            "update",
+            "updateInScope"
           ]
         },
         {
@@ -6046,7 +6064,8 @@
           ],
           "seededBy": [
             "create",
-            "update"
+            "update",
+            "updateInScope"
           ]
         },
         {
@@ -6061,7 +6080,8 @@
           ],
           "seededBy": [
             "create",
-            "update"
+            "update",
+            "updateInScope"
           ]
         }
       ],
@@ -6070,9 +6090,9 @@
         "computed key in canonicalizeDriftProperties()",
         "computed key in collectDesiredKeyAttributeNames()",
         "computed key in replicationImpliedStreamSpecification()",
-        "computed key in update()",
-        "extractLocalTags(...) in update()",
-        "keepUnreadReplicaMembers(...) in update()",
+        "computed key in updateInScope()",
+        "extractLocalTags(...) in updateInScope()",
+        "keepUnreadReplicaMembers(...) in updateInScope()",
         "object spread in canonicalizeDesiredProperties()",
         "object spread in canonicalizeDriftProperties()",
         "object spread in create()",

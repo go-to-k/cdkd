@@ -22,6 +22,10 @@
 #      fails every one of these). Assert each region holds point-in-time
 #      recovery (10 days), Contributor Insights, streaming to ITS region's
 #      Kinesis stream and a stream resource policy (#5365).
+#  1a. `gsi` under a 15s per-type deadline (go-to-k/cdkd#5487): the GSI add
+#      fails mid backfill and the record must name GlobalSecondaryIndexes
+#      unsettled; a same-template retry while CREATING must be refused; once
+#      ACTIVE, a redeploy of the base template must delete gsi1 and clear it.
 #  1b. `idx` (issue #5489): add a global secondary index whose per-replica
 #      Contributor Insights is on, a tag on each replica's stream, and a
 #      single-region `ModeTable` declaring GlobalTableSettingsReplicationMode
@@ -550,6 +554,77 @@ await_replica "${REGION}" "^ENABLED	10	ENABLED	${LOCAL_KINESIS_ARN}	absent	prese
   "Phase 1: the ${REGION} table lacks its point-in-time recovery, Contributor Insights, Kinesis stream or stream policy (issue #5365)"
 await_replica "${SECOND_REGION}" "^ENABLED	10	ENABLED	${REPLICA_KINESIS_ARN}	absent	present$" \
   "Phase 1: the ${SECOND_REGION} replica lacks its point-in-time recovery, Contributor Insights, Kinesis stream or stream policy (issue #5365)"
+
+# --- Phase 1a: a GSI add the deadline cut short (go-to-k/cdkd#5487) ------
+# UpdateTable's GSI Create is accepted at once and the index backfills in both
+# regions for minutes, so a 15s per-type deadline fails the update after the
+# call. Before the fix the record kept "no GSI", so the redeploy of the base
+# template below diffed empty and gsi1 stayed. Now the record names
+# GlobalSecondaryIndexes unsettled; a same-template retry while the index is
+# CREATING is refused; once ACTIVE, the base redeploy deletes it.
+gt_unsettled() { # the GlobalTable record's unsettledProperties, comma-joined
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+    | jq -r --arg name "${TABLE}" '[.resources[]
+        | select(.resourceType == "AWS::DynamoDB::GlobalTable" and .physicalId == $name)
+        | (.unsettledProperties // [])[]] | join(",")'
+}
+gsi1_status() {
+  aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
+    --query "Table.GlobalSecondaryIndexes[?IndexName=='gsi1'].IndexStatus | [0]" --output text
+}
+echo "==> Phase 1a: add gsi1 under a 15s GlobalTable deadline (must fail while the index backfills)"
+set +e
+CDKD_TEST_UPDATE="gsi" node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --resource-warn-after AWS::DynamoDB::GlobalTable=5s \
+  --resource-timeout AWS::DynamoDB::GlobalTable=15s >"${LOG_DIR}/phase1a.log" 2>&1
+P1A_EXIT=$?
+set -e
+if [ "${P1A_EXIT}" -eq 0 ]; then
+  echo "FAIL: Phase 1a's deploy succeeded; the 15s deadline must cut the gsi1 backfill short (premise of the arm)" >&2
+  exit 1
+fi
+case ",$(gt_unsettled)," in
+  *,GlobalSecondaryIndexes,*) : ;;
+  *) echo "FAIL: GlobalTable record's unsettledProperties after the cut-short add is '$(gt_unsettled)', expected it to name GlobalSecondaryIndexes (go-to-k/cdkd#5487)" >&2; exit 1 ;;
+esac
+if [ "$(gsi1_status)" = "CREATING" ]; then
+  set +e
+  CDKD_TEST_UPDATE="gsi" node "${LOCAL_DIST}" deploy "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${LOG_DIR}/phase1a-retry.log" 2>&1
+  P1A_RETRY_EXIT=$?
+  set -e
+  if [ "${P1A_RETRY_EXIT}" -eq 0 ] || ! grep -q "AWS is still changing it" "${LOG_DIR}/phase1a-retry.log"; then
+    echo "FAIL: the same-template retry while gsi1 is CREATING must be refused as in transition (exit ${P1A_RETRY_EXIT})" >&2
+    cat "${LOG_DIR}/phase1a-retry.log" >&2
+    exit 1
+  fi
+  echo "    the same-template retry during the backfill was refused and kept the name"
+fi
+P1A_STATUS=""
+for _ in $(seq 1 180); do
+  P1A_STATUS="$(gsi1_status)"
+  [ "${P1A_STATUS}" = "ACTIVE" ] && break
+  sleep 5
+done
+if [ "${P1A_STATUS}" != "ACTIVE" ]; then
+  echo "FAIL: gsi1 is '${P1A_STATUS}' after the cut-short add, expected it to reach ACTIVE" >&2
+  exit 1
+fi
+wait_settled
+echo "==> Phase 1a: redeploy the base template (no GSI, the record's own value)"
+deploy "" "${LOG_DIR}/phase1a-converge.log"
+P1A_COUNT="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
+  --query 'length(Table.GlobalSecondaryIndexes || `[]`)' --output text)"
+if [ "${P1A_COUNT}" != "0" ]; then
+  echo "FAIL: ${P1A_COUNT} GSI(s) after redeploying the base template, expected 0 (go-to-k/cdkd#5487: the redeploy diffed empty and left gsi1)" >&2
+  exit 1
+fi
+if [ -n "$(gt_unsettled)" ]; then
+  echo "FAIL: GlobalTable record still names unsettled properties after the converging deploy: $(gt_unsettled)" >&2
+  exit 1
+fi
+echo "    the unsettled GSI add converged on redeploy (go-to-k/cdkd#5487)"
 
 # --- Phase 1b: per-index insights, stream tags, replication mode (#5489) ---
 echo "==> Phase 1b: add gsi1 with per-replica insights, stream tags, and a one-replica ModeTable"
