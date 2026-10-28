@@ -152,6 +152,14 @@ function pipeIdentityToken(
 
 /** States a pipe rests in. */
 const SETTLED_STATES: ReadonlySet<string> = new Set(['RUNNING', 'STOPPED']);
+/** go-to-k/cdkd#5487: the states AWS is still moving a pipe through. */
+const MOVING_STATES: ReadonlySet<string> = new Set([
+  'CREATING',
+  'UPDATING',
+  'STARTING',
+  'STOPPING',
+  'DELETING',
+]);
 
 /** Poll interval for the settle and gone waits. */
 const PIPE_POLL_INTERVAL_MS = 5_000;
@@ -752,6 +760,11 @@ export class PipesPipeProvider implements ResourceProvider {
           previousProperties['SourceParameters']
         );
         if (sourceParameters !== undefined) input.SourceParameters = sourceParameters;
+        // Every key the call changes, before it: the settle wait that follows
+        // can fail with the change accepted.
+        for (const key of this.changedPipeFields(desired, previousProperties)) {
+          context?.markUnsettled?.(key);
+        }
         const accepted = await this.getClient().send(new UpdatePipeCommand(input));
         settled = await this.waitForSettled(
           physicalId,
@@ -763,10 +776,21 @@ export class PipesPipeProvider implements ResourceProvider {
         );
       }
 
-      const plan = planTagDiff(tagMapAsList(previousProperties['Tags']), tagMapAsList(desiredTags));
+      const recordedPlan = planTagDiff(
+        tagMapAsList(previousProperties['Tags']),
+        tagMapAsList(desiredTags)
+      );
+      // go-to-k/cdkd#5487: unsettled Tags re-send every template tag (AWS may
+      // lack the ones a failed update did not reach) and remove only the
+      // recorded ones the template dropped.
+      const plan =
+        context?.unsettledProperties?.has('Tags') === true
+          ? { ...recordedPlan, set: planTagDiff([], tagMapAsList(desiredTags)).set }
+          : recordedPlan;
       const warning = tagPlanWarning(plan, resourceType, logicalId);
       if (warning) this.logger.warn(warning);
       if (plan.set.size > 0 || plan.remove.length > 0) {
+        context?.markUnsettled?.('Tags');
         settled ??= await this.describe(physicalId);
         const arn = settled.Arn;
         if (!arn) {
@@ -1104,12 +1128,64 @@ export class PipesPipeProvider implements ResourceProvider {
     desired: Record<string, unknown>,
     previous: Record<string, unknown>
   ): boolean {
+    return this.changedPipeFields(desired, previous).length > 0;
+  }
+
+  /** The non-`Tags` top-level keys whose desired value differs from `previous`. */
+  private changedPipeFields(
+    desired: Record<string, unknown>,
+    previous: Record<string, unknown>
+  ): string[] {
     const keys = new Set([...Object.keys(desired), ...Object.keys(previous)]);
     keys.delete('Tags');
-    for (const key of keys) {
-      if (JSON.stringify(desired[key]) !== JSON.stringify(previous[key])) return true;
+    return [...keys].filter(
+      (key) => JSON.stringify(desired[key]) !== JSON.stringify(previous[key])
+    );
+  }
+
+  /**
+   * go-to-k/cdkd#5487: while the pipe is CREATING, UPDATING, STARTING,
+   * STOPPING or DELETING, an unsettled key other than `Tags` is still
+   * changing. A failed read keeps
+   * every name, which only costs the next deploy a re-send.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>> {
+    try {
+      const state = (await this.describe(physicalId)).CurrentState;
+      // Only a state AWS is moving through. A failed one (`*_FAILED`) is at
+      // rest: the update must run, since only another UpdatePipe recovers it
+      // (`readUnsettled` makes it re-send).
+      if (state === undefined || !MOVING_STATES.has(state)) return new Set();
+      return new Set([...names].filter((name) => name !== 'Tags'));
+    } catch {
+      return names;
     }
-    return false;
+  }
+
+  /**
+   * go-to-k/cdkd#5487: `readCurrentState` for the engine's convergence step,
+   * except that a pipe at rest in a failed state (`*_FAILED`) reports none of
+   * the unsettled names: whatever its configuration reads, it is not what the
+   * failed call asked for, so the update re-sends them.
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const live = await this.readCurrentState(physicalId, logicalId, resourceType);
+    if (typeof live !== 'object' || live === null) return live;
+    const state = (await this.describe(physicalId)).CurrentState;
+    if (state === undefined || !state.endsWith('_FAILED')) return live;
+    const out: Record<string, unknown> = { ...live };
+    for (const name of names) delete out[name];
+    return out;
   }
 
   /** The pipe's current state, or `undefined` once it is gone. */

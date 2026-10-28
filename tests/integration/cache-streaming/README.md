@@ -60,5 +60,8 @@ AWS_REGION=us-east-1 STATE_BUCKET=cdkd-state-<accountId> bash verify.sh
 - the `CDKD_TEST_PAZMOVE=true` redeploy (with `--force-stateful-recreation`)
   moves the Memcached cluster's `PreferredAvailabilityZones` to the VPC's other
   zone, which replaces the cluster as CloudFormation does (issue #5458),
+- the `CDKD_TEST_SGREMOVE=true` redeploy removes the Redis cluster's
+  `VpcSecurityGroupIds` and the cluster keeps its security group, as
+  CloudFormation does (issue #5491; a parity pin, not a pre-fix red),
 - after destroy: state file, Kinesis stream, Lambda, and ElastiCache cluster
   are all gone (0 orphans).

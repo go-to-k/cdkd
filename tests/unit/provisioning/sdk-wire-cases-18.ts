@@ -513,7 +513,7 @@ const CLUSTER_CASE: TypeCase = {
             `a removed ${k} is deliberately not reset: its default is engine-, version- or AWS-assigned, with no reset value cdkd can name (${ELASTICACHE_SRC}, updateCacheCluster's #1160 note); CFn unmeasured`,
           ])
         ),
-        'update-remove:VpcSecurityGroupIds': `SUSPECTED GAP: an absent (or empty) VpcSecurityGroupIds is sent as no change (${ELASTICACHE_SRC}:723-724, the readCurrentState placeholder defense), so removing every group keeps the live ones; CFn unmeasured, tracked in go-to-k/cdkd#5491`,
+        'update-remove:VpcSecurityGroupIds': `a removed (or empty) VpcSecurityGroupIds sends no SecurityGroupIds, so the live groups stay: the same outcome CloudFormation reaches, the group is kept (CFn A/B on go-to-k/cdkd#5491: removal sent no securityGroupIds, [] sent securityGroupIds: [], and in both the cluster kept its group; ${ELASTICACHE_SRC}, updateCacheCluster)`,
         ...beneath(REDIS_CLUSTER, ['VpcSecurityGroupIds'], MODIFY_FROM_NEXT('SecurityGroupIds')),
         // Every member of a still-present entry but its LogType: the entry is
         // sent from next, and prev only names the log types to disable.

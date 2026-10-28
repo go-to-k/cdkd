@@ -114,6 +114,73 @@ case "${SRCARN}" in
 esac
 echo "    OK: pipe reached AWS (CurrentState=${STATE}, Source=${SRCARN})"
 
+# --- An UpdatePipe the deadline cut short (go-to-k/cdkd#5487) ---------------
+# UpdatePipe is accepted at once and the pipe reads UPDATING until it settles,
+# so a 5s per-type deadline fails the update after the call. Before the fix the
+# record kept BatchSize 1, so the redeploy of the base template below diffed
+# empty and the pipe stayed at 2. Now the record names SourceParameters
+# unsettled, and the redeploy compares it with the live pipe (SourceParameters
+# is never read back, so it is sent again) and puts BatchSize 1 back.
+pipe_unsettled() { # the pipe record's unsettledProperties, comma-joined
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+    | jq -r '[.resources[] | select(.resourceType == "AWS::Pipes::Pipe")
+        | (.unsettledProperties // [])[]] | join(",")'
+}
+echo "==> Cut-short UPDATE (BatchSize 1 -> 2 under a 5s Pipes deadline; must fail mid-update)"
+set +e
+env -u CDKD_TEST_SOURCE_SWITCH CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --resource-warn-after AWS::Pipes::Pipe=2s --resource-timeout AWS::Pipes::Pipe=5s
+CUT_EXIT=$?
+set -e
+[ "${CUT_EXIT}" -ne 0 ] || { echo "FAIL: the cut-short UPDATE succeeded; the 5s deadline must end it while the pipe is UPDATING (premise of the arm)" >&2; exit 1; }
+CUT_UNSETTLED="$(pipe_unsettled)"
+case ",${CUT_UNSETTLED}," in
+  *,SourceParameters,*) : ;;
+  *) echo "FAIL: pipe record's unsettledProperties after the cut-short UPDATE is '${CUT_UNSETTLED}', expected it to name SourceParameters (go-to-k/cdkd#5487)" >&2; exit 1 ;;
+esac
+# Same-template RETRY at once, while the pipe may still be UPDATING
+# (go-to-k/cdkd#5487): a moving value is never diffed, so the deploy refuses
+# before any call and the name stays. If the pipe already settled, the retry
+# converges instead (BatchSize 2, name cleared) and the arm below has nothing
+# left to prove, so it stops there.
+RETRY_LOG="$(mktemp)"
+set +e
+env -u CDKD_TEST_SOURCE_SWITCH CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  >"${RETRY_LOG}" 2>&1
+RETRY_EXIT=$?
+set -e
+RETRY_SETTLED_FIRST=false
+if [ "${RETRY_EXIT}" -ne 0 ]; then
+  grep -q "AWS is still changing it" "${RETRY_LOG}" || { echo "FAIL: the same-template retry failed for another reason than the in-transition refusal:" >&2; cat "${RETRY_LOG}" >&2; exit 1; }
+  [ "$(pipe_unsettled)" = "${CUT_UNSETTLED}" ] || { echo "FAIL: the refused retry changed the pipe record's unsettledProperties (expected '${CUT_UNSETTLED}', got '$(pipe_unsettled)')" >&2; exit 1; }
+  echo "    OK: the same-template retry during the transition was refused and kept the name"
+else
+  RETRY_SETTLED_FIRST=true
+  [ -z "$(pipe_unsettled)" ] || { echo "FAIL: the same-template retry succeeded but left '$(pipe_unsettled)' unsettled" >&2; exit 1; }
+  echo "    NOTE: the pipe settled before the retry; the retry converged it (BatchSize 2) and cleared the name"
+fi
+CUT_STATE=""
+for _ in $(seq 1 60); do
+  CUT_STATE="$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" --query CurrentState --output text)"
+  [ "${CUT_STATE}" = "RUNNING" ] && break
+  sleep 5
+done
+[ "${CUT_STATE}" = "RUNNING" ] || { echo "FAIL: pipe is '${CUT_STATE}' after the cut-short UPDATE, expected it to settle RUNNING" >&2; exit 1; }
+CUT_BS=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" \
+  --query 'SourceParameters.SqsQueueParameters.BatchSize' --output text)
+[ "${CUT_BS}" = "2" ] || { echo "FAIL: BatchSize once the cut-short UPDATE settled is '${CUT_BS}', expected 2" >&2; exit 1; }
+echo "==> Redeploy the base template (BatchSize 1)"
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_SOURCE_SWITCH node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+CONV_BS=$(aws pipes describe-pipe --name "${PIPE}" --region "${REGION}" \
+  --query 'SourceParameters.SqsQueueParameters.BatchSize' --output text)
+[ "${CONV_BS}" = "1" ] || { echo "FAIL: BatchSize after redeploying the base template is '${CONV_BS}', expected 1 (go-to-k/cdkd#5487: the redeploy diffed empty and left 2)" >&2; exit 1; }
+[ -z "$(pipe_unsettled)" ] || { echo "FAIL: pipe record still names unsettled properties after the converging deploy" >&2; exit 1; }
+if [ "${RETRY_SETTLED_FIRST}" = "true" ]; then
+  echo "    OK: base redeploy applied as an ordinary update (the retry had already settled the name)"
+else
+  echo "    OK: the unsettled SourceParameters converged on redeploy (go-to-k/cdkd#5487)"
+fi
+
 echo "==> UPDATE (BatchSize 1 -> 2) — must be IN-PLACE, not a replacement (issue #960)"
 UPDATE_LOG="$(mktemp)"
 env -u CDKD_TEST_SOURCE_SWITCH CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \

@@ -1352,6 +1352,8 @@
         "docdb-fix-forward-orphan",
         "docdb-neptune",
         "dynamodb-gsi-update",
+        "emr-instance-configs",
+        "eventbridge-pipes",
         "kinesis-stream-mode-switch",
         "lambda-esm-documentdb",
         "neptune-fix-forward-orphan",
@@ -1364,6 +1366,8 @@
       "flag": "--resource-warn-after",
       "integs": [
         "dynamodb-gsi-update",
+        "emr-instance-configs",
+        "eventbridge-pipes",
         "kinesis-stream-mode-switch",
         "stream-delete-redeploy"
       ]

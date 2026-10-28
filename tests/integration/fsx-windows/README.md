@@ -78,8 +78,11 @@ service constraints are stricter):
 4. **Update** (`CDKD_TEST_UPDATE=true`): `WeeklyMaintenanceStartTime`
    `1:05:00 -> 2:06:00` (`UpdateFileSystem` — a mutable
    `WindowsConfiguration` sub-property), tag value change AND tag removal
-   (`TagResource` / `UntagResource`). Asserts the FileSystemId is
-   unchanged (in-place, no replacement) and the AD binding is untouched.
+   (`TagResource` / `UntagResource`), and an `Aliases` swap — one dropped,
+   one added, the kept one re-cased (`DisassociateFileSystemAliases` /
+   `AssociateFileSystemAliases`, go-to-k/cdkd#5469). Asserts the
+   FileSystemId is unchanged (in-place, no replacement), the AD binding is
+   untouched, and the aliases read back as declared (lowercased, any order).
 5. **Delete the file system through cdkd** by re-deploying with
    `FSX_AD_ID` unset — the file system is no longer in the template, so
    cdkd plans a DELETE for it. Asserts it is gone by id AND by the

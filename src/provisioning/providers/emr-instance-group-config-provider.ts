@@ -107,6 +107,14 @@ export function resetEMRInstanceGroupCreateRetryStateForTests(): void {
   groupsCreatedByThisProcess.resetForTests();
 }
 
+/** go-to-k/cdkd#5487: the instance group states EMR is still moving a group through. */
+const MOVING_GROUP_STATES: ReadonlySet<string> = new Set([
+  'PROVISIONING',
+  'BOOTSTRAPPING',
+  'RESIZING',
+  'RECONFIGURING',
+]);
+
 /**
  * SDK Provider for `AWS::EMR::InstanceGroupConfig` (issue #1070).
  *
@@ -552,6 +560,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
 
     try {
       if (instanceCountChanged) {
+        context?.markUnsettled?.('InstanceCount');
         await this.getClient().send(
           new ModifyInstanceGroupsCommand({
             ...(jobFlowId && { ClusterId: jobFlowId }),
@@ -607,6 +616,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
         const policy = properties['AutoScalingPolicy'] as
           | import('@aws-sdk/client-emr').AutoScalingPolicy
           | undefined;
+        context?.markUnsettled?.('AutoScalingPolicy');
         if (policy) {
           await this.getClient().send(
             new PutAutoScalingPolicyCommand({
@@ -846,6 +856,70 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
    * consecutive transient errors (throttle / 5xx / reset) so a single blip
    * during a 10-minute poll does not spuriously fail the create.
    */
+  /**
+   * go-to-k/cdkd#5487: the group's mutable properties as AWS holds them, for
+   * the engine's convergence step. `InstanceCount` is the RUNNING count — what
+   * the group effectively has, whether it settled, is moving (which
+   * `unsettledInTransition` refuses first) or is stuck in a failed state. `AutoScalingPolicy` is the attached policy's
+   * description: its presence is what a comparison with the template needs,
+   * and a re-sent Put is idempotent. A failed read throws.
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    _names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    const jobFlowId = recordedProperties?.['JobFlowId'];
+    if (typeof jobFlowId !== 'string' || jobFlowId === '') {
+      throw new ProvisioningError(
+        `EMR InstanceGroupConfig ${logicalId} has no JobFlowId (the cluster id) recorded, so cdkd cannot read the group to converge what an earlier failed update left unsettled`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    const group = await this.findGroupForPoll(jobFlowId, physicalId, { count: 0 }, 0);
+    if (group === undefined) return undefined;
+    return {
+      ...(group.RunningInstanceCount !== undefined && {
+        InstanceCount: group.RunningInstanceCount,
+      }),
+      ...(group.AutoScalingPolicy !== undefined && { AutoScalingPolicy: group.AutoScalingPolicy }),
+    };
+  }
+
+  /**
+   * go-to-k/cdkd#5487: an unsettled `InstanceCount` is in transition while the
+   * group is PROVISIONING, BOOTSTRAPPING, RESIZING or RECONFIGURING. A group at
+   * rest in a failed or stuck state (SUSPENDED, ARRESTED) is not: the update
+   * runs, compares the RUNNING count with the template and re-sends the resize
+   * (the path that recovers such a group). The autoscaling policy is applied at
+   * once. No cluster id: nothing to read here, and `readUnsettled` refuses with
+   * the cause. A failed read keeps the name in transition.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>
+  ): Promise<ReadonlySet<string>> {
+    if (!names.has('InstanceCount')) return new Set();
+    const jobFlowId = recordedProperties?.['JobFlowId'];
+    if (typeof jobFlowId !== 'string' || jobFlowId === '') return new Set();
+    try {
+      const group = await this.findGroupForPoll(jobFlowId, physicalId, { count: 0 }, 0);
+      const state = group?.Status?.State;
+      return state !== undefined && MOVING_GROUP_STATES.has(state)
+        ? new Set(['InstanceCount'])
+        : new Set();
+    } catch {
+      return new Set(['InstanceCount']);
+    }
+  }
+
   private async findGroupForPoll(
     clusterId: string,
     groupId: string,

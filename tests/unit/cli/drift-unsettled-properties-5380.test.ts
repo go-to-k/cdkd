@@ -113,7 +113,10 @@ async function runDrift(
   state: StackState,
   flags: string[],
   update: () => Promise<unknown> = async () => ({ physicalId: 'drifted', attributes: {} }),
-  inTransition?: (names: ReadonlySet<string>) => Promise<ReadonlySet<string>>,
+  inTransition?: (
+    names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>
+  ) => Promise<ReadonlySet<string>>,
   revertLands = true
 ): Promise<{ stdout: string; saved: StackState | undefined; updates: number }> {
   let updates = 0;
@@ -132,8 +135,13 @@ async function runDrift(
       return result;
     }),
     ...(inTransition !== undefined && {
-      unsettledInTransition: async (_p: string, _l: string, _t: string, names: ReadonlySet<string>) =>
-        inTransition(names),
+      unsettledInTransition: async (
+        _p: string,
+        _l: string,
+        _t: string,
+        names: ReadonlySet<string>,
+        recordedProperties?: Record<string, unknown>
+      ) => inTransition(names, recordedProperties),
     }),
   }));
   const chunks: string[] = [];
@@ -246,6 +254,20 @@ describe('cdkd drift and unsettled properties (go-to-k/cdkd#5380)', () => {
       async () => new Set()
     );
     expect(cleared.saved?.resources['Drifted']).not.toHaveProperty('unsettledProperties');
+  });
+
+  it('the transition hook is handed the record\'s properties (go-to-k/cdkd#5487: a parent id it needs)', async () => {
+    let seen: Record<string, unknown> | undefined;
+    await runDrift(
+      stateWith({ drifted: { unsettledProperties: [ENC] } }),
+      ['--accept', '--yes'],
+      undefined,
+      async (_names, recorded) => {
+        seen = recorded;
+        return new Set();
+      }
+    );
+    expect(seen?.['DeliveryStreamName']).toBe('drifted');
   });
 
   it('a transition hook that throws keeps every name', async () => {

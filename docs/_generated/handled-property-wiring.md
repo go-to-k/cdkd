@@ -59,7 +59,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `EMRInstanceGroupConfigProvider` (emr-instance-group-config-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `EventBridgeBusProvider` (eventbridge-bus-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `FirehoseProvider` (firehose-provider.ts) | `computed key in applyUpdate()`, `computed key in unappliedS3BackupModeDestination()`, `computed key in warnUnappliedS3BackupMode()`, `rest-destructure in withRecordedEncryption()` |
-| `FSxFileSystemProvider` (fsx-filesystem-provider.ts) | `computed key in detectVariantConfigKey()`, `computed key in update()`, `object spread in canonicalizeDriftProperties()` |
+| `FSxFileSystemProvider` (fsx-filesystem-provider.ts) | `computed key in detectVariantConfigKey()`, `computed key in update()`, `object spread in canonicalizeDriftProperties()`, `object spread in canonicalizeWindowsAliases()` |
 | `IAMRoleProvider` (iam-role-provider.ts) | `object spread in update()`, `withRemovalDefaults(...) in update()` |
 | `IAMUserGroupProvider` (iam-user-group-provider.ts) | `computed key in derivedNamePairs()` |
 | `KinesisStreamProvider` (kinesis-provider.ts) | `object spread in canonicalizeDesiredProperties()`, `object spread in effectiveMetricsProperties()` |
