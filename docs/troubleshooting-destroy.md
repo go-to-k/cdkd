@@ -198,7 +198,7 @@ commands.
 
 A successful `cdkd destroy` of an `AWS::FSx::FileSystem` can leave a final
 backup that you are billed for. cdkd calls `DeleteFileSystem` with the API's
-defaults, as CloudFormation does. Those defaults take a final backup for
+final-backup defaults, as CloudFormation does. Those defaults take a final backup for
 Windows and ONTAP file systems, and this has been observed on OpenZFS too.
 
 The backup is usually untagged, so find it by its `FileSystem.FileSystemId`

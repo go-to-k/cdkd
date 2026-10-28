@@ -53,10 +53,11 @@ aws backup delete-recovery-point --region <region> \
 ## FSx final backup on destroy
 
 Destroying an `AWS::FSx::FileSystem` can leave a backup behind, and AWS
-charges for it. cdkd calls `DeleteFileSystem` with the API's defaults, as
-CloudFormation does, and for Windows and ONTAP file systems the default is to
-take a final backup. The same was observed on OpenZFS. A SCRATCH Lustre
-deployment takes none.
+charges for it. cdkd calls `DeleteFileSystem` with the API's final-backup
+defaults, as CloudFormation does (the only delete-time property it sends is a
+declared OpenZFS `OpenZFSConfiguration.Options`), and for Windows and ONTAP
+file systems the default is to take a final backup. The same was observed on
+OpenZFS. A SCRATCH Lustre deployment takes none.
 
 Two things make the backup easy to miss:
 
