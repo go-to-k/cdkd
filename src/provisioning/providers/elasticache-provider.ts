@@ -1053,6 +1053,13 @@ export class ElastiCacheProvider implements ResourceProvider {
     ) {
       return none;
     }
+    // Without a zone list, only a decrease needs the live nodes (their ids).
+    if (
+      zones === undefined &&
+      !(Number(properties['NumCacheNodes']) < Number(previousProperties['NumCacheNodes']))
+    ) {
+      return none;
+    }
     const live = await this.describeCacheCluster(physicalId);
     const liveNodes = (live?.CacheNodes ?? []).map((n) => ({
       id: n.CacheNodeId,
@@ -1068,8 +1075,9 @@ export class ElastiCacheProvider implements ResourceProvider {
         throw new ProvisioningError(
           safeMsg`Cannot update CacheCluster ${logicalId}: lowering NumCacheNodes to ${String(desiredCount)} ` +
             `while PreferredAvailabilityZones moves nodes to zones no live node occupies needs nodes ` +
-            `removed and added in one update, which cdkd does not do. Deploy the zone change and the ` +
-            `node-count change separately, or replace the cluster.`,
+            `removed and added in one update, which ModifyCacheCluster cannot do (CloudFormation ` +
+            `replaces the cluster for a move to disjoint zones; cdkd does not yet, issue #5458). ` +
+            `Replace the cluster (for example by changing its logical ID), or keep a live zone in the list.`,
           resourceType,
           logicalId,
           physicalId

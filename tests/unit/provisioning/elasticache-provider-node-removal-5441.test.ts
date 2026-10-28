@@ -160,6 +160,8 @@ describe('ElastiCacheProvider CacheCluster NumCacheNodes decrease (issue #5441)'
     );
 
     expect(modifyInput()).not.toHaveProperty('CacheNodeIdsToRemove');
+    // An increase with no zone list needs no node ids: no planning describe.
+    expect(sent()[0].constructor.name).toBe('ModifyCacheClusterCommand');
   });
 
   it('makes no planning describe when NumCacheNodes is unchanged', async () => {
