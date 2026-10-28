@@ -22,6 +22,7 @@ import {
 } from '../secret-redaction.js';
 import { withRetry } from '../retry.js';
 import { withoutUnsettledProperties } from '../../state/unsettled-properties.js';
+import { settleUnsettledPrevious } from '../unsettled-convergence.js';
 import { type RollbackExecutorContext } from './types.js';
 import { safe } from './messages.js';
 
@@ -50,7 +51,19 @@ export async function updateWithRollbackRetry(
   // Issue #1160, for BOTH revert arms: each hands over two state records, so
   // the removal is template-vs-template on either. Once per op, outside the
   // retry loop, exactly as the deploy's in-place update does it.
-  const [, , resourceType, desired, previous, context] = args;
+  const [, , resourceType, desired, recordedPrevious, context] = args;
+  // go-to-k/cdkd#5487: the deploy's convergence step, before the removal step:
+  // an unsettled name's previous value becomes what AWS holds (a moving one
+  // refuses this revert, so the record keeps the name).
+  const previous = await settleUnsettledPrevious({
+    provider,
+    logicalId: args[0],
+    physicalId: args[1],
+    resourceType,
+    recordedProperties: recordedPrevious,
+    names: context?.unsettledProperties ?? new Set(),
+    previous: recordedPrevious,
+  });
   const removal = prepareRemovalForUpdate(provider, resourceType, desired, previous);
   const revertArgs: Parameters<ResourceProvider['update']> = [
     args[0],

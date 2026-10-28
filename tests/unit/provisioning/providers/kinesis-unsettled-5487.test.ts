@@ -1,9 +1,9 @@
 /**
  * go-to-k/cdkd#5487: the Kinesis stream `update()` marks each key just before
- * the call that changes it (`UpdateContext.markUnsettled`), converges a key an
- * earlier failed update left unsettled against what the stream holds now
- * (Kinesis refuses same-value calls, so only what AWS lacks is sent), and
- * reports a key still changing while the stream reads UPDATING.
+ * the call that changes it (`UpdateContext.markUnsettled`), reads the live
+ * values the engine's convergence step compares (`readUnsettled`: the OPEN
+ * shard count), re-sends unsettled Tags without removing tags it never
+ * recorded, and reports a key still changing while the stream reads UPDATING.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
@@ -127,58 +127,63 @@ describe('Kinesis stream unsettled properties (go-to-k/cdkd#5487)', () => {
     expect(sent('UpdateShardCountCommand')).toHaveLength(0);
   });
 
-  it('an unsettled ShardCount equal in the bags is sent when the stream holds another count', async () => {
+  it('readUnsettled: readCurrentState with the OPEN shard count', async () => {
+    serve({ shards: 1, closed: 2, retention: 48 });
+    const live = (await provider.readUnsettled('s', 'S', TYPE, new Set(['ShardCount']))) as Record<
+      string,
+      unknown
+    >;
+    expect(live['ShardCount']).toBe(1);
+    expect(live['RetentionPeriodHours']).toBe(48);
+    const withoutShards = (await provider.readUnsettled('s', 'S', TYPE, new Set(['Tags']))) as Record<
+      string,
+      unknown
+    >;
+    // readCurrentState's own count (open + closed) when ShardCount is not asked for.
+    expect(withoutShards['ShardCount']).toBe(3);
+  });
+
+  it('an unsettled mode switch compares the live open shard count, not the record', async () => {
     serve({ shards: 2 });
     await provider.update('S', 's', TYPE, { ShardCount: 1 }, { ShardCount: 1 }, {
-      unsettledProperties: new Set(['ShardCount']),
+      unsettledProperties: new Set(['StreamModeDetails']),
     });
     expect(sent('UpdateShardCountCommand').map((c) => c.input.TargetShardCount)).toEqual([1]);
-  });
-
-  it('an unsettled ShardCount the stream already holds sends nothing (a same-count call is refused)', async () => {
-    // Two closed shards beside the open one: the OPEN count is what is compared.
-    serve({ shards: 1, closed: 2 });
-    await provider.update('S', 's', TYPE, { ShardCount: 1 }, { ShardCount: 1 }, {
-      unsettledProperties: new Set(['ShardCount']),
-    });
-    expect(sent('UpdateShardCountCommand')).toHaveLength(0);
-  });
-
-  it('without unsettled keys the recorded bag decides and no live read is taken', async () => {
+    vi.clearAllMocks();
     serve({ shards: 2 });
     await provider.update('S', 's', TYPE, { ShardCount: 1 }, { ShardCount: 1 });
     expect(sent('UpdateShardCountCommand')).toHaveLength(0);
-    expect(sent('DescribeStreamCommand')).toHaveLength(1); // the result envelope only
   });
 
-  it('an unsettled encryption removal the stream still holds is stopped', async () => {
-    serve({ encryption: { EncryptionType: 'KMS', KeyId: 'k' } });
-    await provider.update('S', 's', TYPE, {}, {}, {
-      unsettledProperties: new Set(['StreamEncryption']),
-    });
-    expect(sent('StopStreamEncryptionCommand')).toHaveLength(1);
-    expect(sent('StartStreamEncryptionCommand')).toHaveLength(0);
+  it('unsettled Tags re-send every template tag and remove only recorded tags the template dropped', async () => {
+    serve({});
+    const marks: string[] = [];
+    await provider.update(
+      'S',
+      's',
+      TYPE,
+      { Tags: [{ Key: 'a', Value: '1' }] },
+      { Tags: [{ Key: 'a', Value: '1' }, { Key: 'gone', Value: 'x' }] },
+      { unsettledProperties: new Set(['Tags']), markUnsettled: (k: string) => marks.push(k) }
+    );
+    expect(sent('AddTagsToStreamCommand').map((c) => c.input.Tags)).toEqual([{ a: '1' }]);
+    expect(sent('RemoveTagsFromStreamCommand').map((c) => c.input.TagKeys)).toEqual([['gone']]);
+    expect(marks).toContain('Tags');
   });
 
-  it('an unsettled retention is compared with the live period', async () => {
-    serve({ retention: 48 });
-    await provider.update('S', 's', TYPE, {}, {}, {
-      unsettledProperties: new Set(['RetentionPeriodHours']),
-    });
-    expect(sent('DecreaseStreamRetentionPeriodCommand').map((c) => c.input.RetentionPeriodHours)).toEqual([24]);
-  });
-
-  it('refuses before any write when the stream cannot be read to converge', async () => {
-    mockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
-      if (cmd.constructor.name === 'DescribeStreamCommand') throw new Error('throttled');
-      return {};
-    });
-    await expect(
-      provider.update('S', 's', TYPE, { ShardCount: 1 }, { ShardCount: 1 }, {
-        unsettledProperties: new Set(['ShardCount']),
-      })
-    ).rejects.toThrow();
-    expect(sent('UpdateShardCountCommand')).toHaveLength(0);
+  it('settled Tags equal in the bags send nothing and mark nothing (the mark follows the plan)', async () => {
+    serve({});
+    const marks: string[] = [];
+    await provider.update(
+      'S',
+      's',
+      TYPE,
+      { Tags: [{ Key: 'a', Value: '1' }] },
+      { Tags: [{ Value: '1', Key: 'a' }] },
+      { markUnsettled: (k: string) => marks.push(k) }
+    );
+    expect(sent('AddTagsToStreamCommand')).toHaveLength(0);
+    expect(marks).toEqual([]);
   });
 
   it('unsettledInTransition: every key but Tags while UPDATING, none once ACTIVE, all on a failed read', async () => {

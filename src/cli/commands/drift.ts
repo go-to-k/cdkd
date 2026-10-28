@@ -179,6 +179,7 @@ import {
 import type { ResourceState, StackState } from '../../types/state.js';
 import { stackInstanceIdCarriedFrom } from '../../types/state.js';
 import { nameScopeOf } from '../../state/name-generation.js';
+import { settleUnsettledPrevious } from '../../deployment/unsettled-convergence.js';
 import {
   unsettledPropertiesOf,
   withUnsettledProperties,
@@ -7520,6 +7521,19 @@ async function runRevert(
                   return;
                 }
                 try {
+                  // go-to-k/cdkd#5487: the deploy's convergence step. The
+                  // previous side is already AWS's; this refuses a name AWS is
+                  // still changing (the catch below reports it) and re-reads
+                  // the unsettled ones.
+                  const revertPrevious = await settleUnsettledPrevious({
+                    provider,
+                    logicalId: outcome.logicalId,
+                    physicalId: stateResource.physicalId,
+                    resourceType: outcome.resourceType,
+                    recordedProperties: stateResource.properties ?? {},
+                    names: unsettledPropertiesOf(stateResource),
+                    previous: outcome.awsProperties,
+                  });
                   const updateResult = await withRetry(
                     () =>
                       provider.update(
@@ -7527,7 +7541,7 @@ async function runRevert(
                         stateResource.physicalId,
                         outcome.resourceType,
                         newProperties,
-                        outcome.awsProperties,
+                        revertPrevious,
                         // The desired bag here is `observedProperties ?? properties`
                         // overlaid onto the AWS-current snapshot — an AWS READBACK, not
                         // a template (issue #1732). Several `readCurrentState`
@@ -8788,7 +8802,8 @@ async function settleUnsettled(
         record.physicalId,
         logicalId,
         record.resourceType,
-        names
+        names,
+        record.properties
       );
     }
   } catch {

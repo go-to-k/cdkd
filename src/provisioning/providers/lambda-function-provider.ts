@@ -97,7 +97,6 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { withRemovalDefaults } from '../update-removal.js';
-import { previousWithLiveUnsettled } from '../unsettled-previous.js';
 
 /**
  * A Lambda function NAME (1-64 of `a-z A-Z 0-9 _ -`), the physical id this
@@ -1266,27 +1265,6 @@ export class LambdaFunctionProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    // go-to-k/cdkd#5487: a key an earlier failed update left unsettled is
-    // compared with what the function holds now (a ZIP function's `Code`,
-    // which no read returns, is sent again), before the removal defaults read
-    // the previous side.
-    try {
-      previousProperties = await previousWithLiveUnsettled(
-        previousProperties,
-        context,
-        () => this.readCurrentState(physicalId, logicalId, resourceType),
-        { resourceType, logicalId, physicalId }
-      );
-    } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      throw new ProvisioningError(
-        `${logicalId} (${resourceType}): could not read the resource to converge what an earlier failed update left unsettled — nothing was updated`,
-        resourceType,
-        logicalId,
-        physicalId,
-        error instanceof Error ? error : undefined
-      );
-    }
     // Before each call that changes the function: a failure from there on
     // (the update waiter, a later call) leaves the key unsettled.
     const markUnsettled = (key: string): void => context?.markUnsettled?.(key);
@@ -1637,9 +1615,6 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // Update tags if changed. Lambda's TagResource takes a map shape
       // (Tags: { key: value }); UntagResource takes a key list. cdkd
       // state holds Tags in CFn shape ([{ Key, Value }]).
-      if (JSON.stringify(previousProperties['Tags']) !== JSON.stringify(properties['Tags'])) {
-        markUnsettled('Tags');
-      }
       await this.applyTagDiff(
         functionArn,
         physicalId,
@@ -1647,7 +1622,11 @@ export class LambdaFunctionProvider implements ResourceProvider {
         logicalId,
         previousProperties['Tags'],
         properties['Tags'],
-        log
+        log,
+        {
+          forceUpsert: context?.unsettledProperties?.has('Tags') === true,
+          beforeWrite: () => markUnsettled('Tags'),
+        }
       );
 
       return {
@@ -1950,7 +1929,11 @@ export class LambdaFunctionProvider implements ResourceProvider {
     logicalId: string,
     oldTagsRaw: unknown,
     newTagsRaw: unknown,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    unsettled: { forceUpsert: boolean; beforeWrite: () => void } = {
+      forceUpsert: false,
+      beforeWrite: () => undefined,
+    }
   ): Promise<void> {
     if (!functionArn) return;
 
@@ -1959,8 +1942,14 @@ export class LambdaFunctionProvider implements ResourceProvider {
     if (tagWarning !== undefined) {
       log.warn(tagWarning);
     }
-    const tagsToAdd = Object.fromEntries(plan.set);
+    // go-to-k/cdkd#5487: unsettled Tags re-send every template tag (AWS may
+    // lack the ones the failed update did not reach) and remove only the
+    // recorded ones the template dropped.
+    const tagsToAdd = Object.fromEntries(
+      unsettled.forceUpsert ? planTagDiff(undefined, newTagsRaw).set : plan.set
+    );
     const tagsToRemove = plan.remove;
+    if (tagsToRemove.length > 0 || Object.keys(tagsToAdd).length > 0) unsettled.beforeWrite();
 
     if (tagsToRemove.length > 0) {
       await this.lambdaClient.send(
@@ -2477,6 +2466,71 @@ export class LambdaFunctionProvider implements ResourceProvider {
       if (err instanceof ResourceNotFoundException) return undefined;
       throw err;
     }
+  }
+
+  /**
+   * go-to-k/cdkd#5487: `readCurrentState`, except that a setting read by its
+   * own call (concurrency, recursion, runtime management, code signing) is
+   * read STRICTLY when it is unsettled: `readCurrentState` omits it on a failed
+   * read, which the engine would take as "not set" and converge to the wrong
+   * side. A `ResourceNotFoundException` on such a call means "not set".
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const live = await this.readCurrentState(physicalId, logicalId, resourceType);
+    if (typeof live !== 'object' || live === null) return live;
+    const out: Record<string, unknown> = { ...live };
+    const strict = async <T>(read: () => Promise<T>): Promise<T | undefined> => {
+      try {
+        return await read();
+      } catch (error) {
+        if (error instanceof ResourceNotFoundException) return undefined;
+        throw error;
+      }
+    };
+    const set = (key: string, value: unknown): void => {
+      if (value === undefined) delete out[key];
+      else out[key] = value;
+    };
+    if (names.has('ReservedConcurrentExecutions')) {
+      const r = await strict(() =>
+        this.lambdaClient.send(new GetFunctionConcurrencyCommand({ FunctionName: physicalId }))
+      );
+      set('ReservedConcurrentExecutions', r?.ReservedConcurrentExecutions);
+    }
+    if (names.has('RecursiveLoop')) {
+      const r = await strict(() =>
+        this.lambdaClient.send(new GetFunctionRecursionConfigCommand({ FunctionName: physicalId }))
+      );
+      set('RecursiveLoop', r?.RecursiveLoop);
+    }
+    if (names.has('RuntimeManagementConfig')) {
+      const r = await strict(() =>
+        this.lambdaClient.send(new GetRuntimeManagementConfigCommand({ FunctionName: physicalId }))
+      );
+      set(
+        'RuntimeManagementConfig',
+        r?.UpdateRuntimeOn === undefined
+          ? undefined
+          : {
+              UpdateRuntimeOn: r.UpdateRuntimeOn,
+              ...(r.RuntimeVersionArn !== undefined && { RuntimeVersionArn: r.RuntimeVersionArn }),
+            }
+      );
+    }
+    if (names.has('CodeSigningConfigArn')) {
+      const r = await strict(() =>
+        this.lambdaClient.send(
+          new GetFunctionCodeSigningConfigCommand({ FunctionName: physicalId })
+        )
+      );
+      set('CodeSigningConfigArn', r?.CodeSigningConfigArn);
+    }
+    return out;
   }
 
   /**

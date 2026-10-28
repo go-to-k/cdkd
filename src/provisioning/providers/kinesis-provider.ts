@@ -59,7 +59,6 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { waitForGoneAfterDelete } from '../delete-gone-wait.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
-import { previousWithLiveUnsettled } from '../unsettled-previous.js';
 
 /**
  * Class 1/2 sanitize for `StreamEncryption` placeholder.
@@ -766,28 +765,6 @@ export class KinesisStreamProvider implements ResourceProvider {
           `${physicalId} is left as it is rather than refusing the restore`
       );
     }
-    // go-to-k/cdkd#5487: a key an earlier failed update left unsettled is
-    // compared with what the stream holds now, so the per-key checks below send
-    // only what AWS lacks (Kinesis refuses most same-value calls). The live
-    // `ShardCount` is the OPEN shards: `readCurrentState` counts closed ones too.
-    try {
-      previousProperties = await previousWithLiveUnsettled(
-        previousProperties,
-        context,
-        () => this.readCurrentState(physicalId, logicalId, resourceType),
-        { resourceType, logicalId, physicalId },
-        { ShardCount: () => this.getOpenShardCount(physicalId) }
-      );
-    } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      throw new ProvisioningError(
-        `${logicalId} (${resourceType}): could not read the resource to converge what an earlier failed update left unsettled — nothing was updated`,
-        resourceType,
-        logicalId,
-        physicalId,
-        error instanceof Error ? error : undefined
-      );
-    }
     // Before each call that changes the stream: a failure from there on leaves
     // the key unsettled for the next deploy to converge.
     const markUnsettled = (key: string): void => context?.markUnsettled?.(key);
@@ -848,9 +825,12 @@ export class KinesisStreamProvider implements ResourceProvider {
         // assigns a shard count based on the prior on-demand throughput and
         // previousProperties carries no ShardCount, so read the live count to
         // know the real base to reconcile against.
-        const oldShardCount = modeChanged
-          ? await this.getOpenShardCount(physicalId)
-          : Number(previousProperties['ShardCount'] ?? 1);
+        // go-to-k/cdkd#5487: an unsettled mode switch may have moved the shards
+        // whatever the two modes now say, so the live count is compared.
+        const oldShardCount =
+          modeChanged || context?.unsettledProperties?.has('StreamModeDetails') === true
+            ? await this.getOpenShardCount(physicalId)
+            : Number(previousProperties['ShardCount'] ?? 1);
 
         if (newShardCount !== oldShardCount) {
           this.logger.debug(
@@ -901,15 +881,16 @@ export class KinesisStreamProvider implements ResourceProvider {
 
       // Apply tag diff. Kinesis uses AddTagsToStream (map shape) and
       // RemoveTagsFromStream (TagKeys list).
-      if (JSON.stringify(previousProperties['Tags']) !== JSON.stringify(properties['Tags'])) {
-        markUnsettled('Tags');
-      }
       await this.applyTagDiff(
         physicalId,
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        {
+          forceUpsert: context?.unsettledProperties?.has('Tags') === true,
+          beforeWrite: () => markUnsettled('Tags'),
+        }
       );
 
       // Update StreamEncryption if changed.
@@ -1444,15 +1425,25 @@ export class KinesisStreamProvider implements ResourceProvider {
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
-    newTagsRaw: unknown
+    newTagsRaw: unknown,
+    unsettled: { forceUpsert: boolean; beforeWrite: () => void } = {
+      forceUpsert: false,
+      beforeWrite: () => undefined,
+    }
   ): Promise<void> {
     const plan = planTagDiff(oldTagsRaw, newTagsRaw);
     const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
     if (tagWarning !== undefined) {
       this.logger.warn(tagWarning);
     }
-    const tagsToAdd = Object.fromEntries(plan.set);
+    // go-to-k/cdkd#5487: unsettled Tags re-send every template tag (AWS may
+    // lack the ones the failed update did not reach) and remove only the
+    // recorded ones the template dropped.
+    const tagsToAdd = Object.fromEntries(
+      unsettled.forceUpsert ? planTagDiff(undefined, newTagsRaw).set : plan.set
+    );
     const tagsToRemove = plan.remove;
+    if (tagsToRemove.length > 0 || Object.keys(tagsToAdd).length > 0) unsettled.beforeWrite();
 
     if (tagsToRemove.length > 0) {
       await this.getClient().send(
@@ -1477,6 +1468,21 @@ export class KinesisStreamProvider implements ResourceProvider {
    *  1. `--resource <id>=<name>` override or `Properties.Name` → verify
    *     with `DescribeStream`.
    */
+  /**
+   * go-to-k/cdkd#5487: `readCurrentState`, with `ShardCount` the OPEN shard
+   * count the update compares (`readCurrentState` counts closed shards too).
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const live = await this.readCurrentState(physicalId, logicalId, resourceType);
+    if (typeof live !== 'object' || live === null || !names.has('ShardCount')) return live;
+    return { ...live, ShardCount: await this.getOpenShardCount(physicalId) };
+  }
+
   /**
    * go-to-k/cdkd#5487: while the stream reads UPDATING (a shard-count, mode,
    * retention, encryption, record-size, distribution or metrics change still

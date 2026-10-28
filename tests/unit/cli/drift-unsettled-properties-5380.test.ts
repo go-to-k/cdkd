@@ -225,10 +225,7 @@ describe('cdkd drift and unsettled properties (go-to-k/cdkd#5380)', () => {
     expect(warned[0]).toContain("that a failed deploy's unsettled properties are settled");
   });
 
-  it.each([
-    ['--accept', ['--accept', '--yes']],
-    ['--revert', ['--revert', '--yes']],
-  ])('%s keeps a key the provider reports still in transition, and clears one it does not', async (_l, flags) => {
+  it.each([['--accept', ['--accept', '--yes']]])('%s keeps a key the provider reports still in transition, and clears one it does not', async (_l, flags) => {
     const kept = await runDrift(
       stateWith({ drifted: { unsettledProperties: [ENC, 'Tags'] } }),
       flags,
@@ -258,15 +255,26 @@ describe('cdkd drift and unsettled properties (go-to-k/cdkd#5380)', () => {
     expect(saved?.resources['Drifted']?.unsettledProperties).toEqual([ENC]);
   });
 
-  it('a --revert that leaves every name in transition writes no state for them', async () => {
+  it('--revert refuses a resource with a name AWS is still changing (go-to-k/cdkd#5487), and writes nothing', async () => {
     const { saved, updates } = await runDrift(
       stateWith({ drifted: { unsettledProperties: [ENC] } }),
       ['--revert', '--yes'],
       undefined,
       async (names) => names
     );
-    expect(updates).toBe(1);
+    expect(updates).toBe(0);
     expect(saved).toBeUndefined();
+  });
+
+  it('--revert of a resource with no name in transition reverts and clears it', async () => {
+    const { saved, updates } = await runDrift(
+      stateWith({ drifted: { unsettledProperties: [ENC] } }),
+      ['--revert', '--yes'],
+      undefined,
+      async () => new Set()
+    );
+    expect(updates).toBe(1);
+    expect(saved?.resources['Drifted']).not.toHaveProperty('unsettledProperties');
   });
 
   it('a failed --revert writes nothing, so the record keeps the field', async () => {

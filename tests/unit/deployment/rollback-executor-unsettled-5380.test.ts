@@ -49,12 +49,12 @@ const silentLogger = {
   child: () => silentLogger,
 } as unknown as RollbackExecutorContext['logger'];
 
-function ctxWith(update: unknown): RollbackExecutorContext {
+function ctxWith(update: unknown, hooks: Record<string, unknown> = {}): RollbackExecutorContext {
   return {
     region: 'us-east-1',
     logger: silentLogger,
     providerRegistry: {
-      getProviderFor: () => ({ provider: { update } }),
+      getProviderFor: () => ({ provider: { update, ...hooks } }),
     } as unknown as RollbackExecutorContext['providerRegistry'],
     recordEvent: vi.fn(),
   };
@@ -130,5 +130,40 @@ describe('the revert of a completed UPDATE converges what its previous record na
     expect(result.failures).toBe(0);
     expect([...(seen?.unsettledProperties ?? [])]).toEqual([ENC]);
     expect(state.S).not.toHaveProperty('unsettledProperties');
+  });
+});
+
+describe('--revert-failed takes the convergence step before the removal step (go-to-k/cdkd#5487)', () => {
+  it('hands update() the live value of an unsettled key as the previous side', async () => {
+    let previous: Record<string, unknown> | undefined;
+    const update = vi.fn(async (...args: unknown[]) => {
+      previous = args[4] as Record<string, unknown>;
+      return { physicalId: 'phys', wasReplaced: false };
+    });
+    const state = { S: res({ unsettledProperties: [ENC] }) };
+    await replayFailedOperations(
+      failedOp(),
+      state,
+      'stack',
+      ctxWith(update, {
+        readCurrentState: async () => ({ DeliveryStreamName: 'phys', [ENC]: { KeyType: 'AWS_OWNED_CMK' } }),
+      })
+    );
+    expect(previous?.[ENC]).toEqual({ KeyType: 'AWS_OWNED_CMK' });
+  });
+
+  it('refuses the revert while the key is in transition, keeping the name', async () => {
+    const update = vi.fn(async () => ({ physicalId: 'phys', wasReplaced: false }));
+    const state = { S: res({ unsettledProperties: [ENC] }) };
+    await replayFailedOperations(
+      failedOp(),
+      state,
+      'stack',
+      ctxWith(update, {
+        unsettledInTransition: async (_p: string, _l: string, _t: string, n: ReadonlySet<string>) => n,
+      })
+    );
+    expect(update).not.toHaveBeenCalled();
+    expect(state.S.unsettledProperties).toEqual([ENC]);
   });
 });

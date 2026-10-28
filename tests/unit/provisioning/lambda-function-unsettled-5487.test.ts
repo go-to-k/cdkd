@@ -1,9 +1,10 @@
 /**
  * go-to-k/cdkd#5487: the Lambda function `update()` marks each key just
- * before the call that changes it (`UpdateContext.markUnsettled`), converges a
- * key an earlier failed update left unsettled against what the function holds
- * now, and reports a configuration / code key still changing while the
- * function reads `LastUpdateStatus: InProgress`.
+ * before the call that changes it (`UpdateContext.markUnsettled`), reads the
+ * live values the engine's convergence step compares (`readUnsettled`: strict
+ * for a separately-read setting), re-sends unsettled Tags without removing
+ * tags it never recorded, and reports a configuration / code key still
+ * changing while the function reads `LastUpdateStatus: InProgress`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
@@ -108,46 +109,55 @@ describe('Lambda function unsettled properties (go-to-k/cdkd#5487)', () => {
     expect(sent('UpdateFunctionConfigurationCommand')).toHaveLength(0);
   });
 
-  it('an unsettled Timeout equal in the bags is re-sent when the function holds another value', async () => {
-    serve({ timeout: 10 });
-    await provider.update('F', 'f', TYPE, { ...BASE, Timeout: 3 }, { ...BASE, Timeout: 3 }, {
-      unsettledProperties: new Set(['Timeout']),
-    });
-    expect(sent('UpdateFunctionConfigurationCommand').map((c) => c.input.Timeout)).toEqual([3]);
+  it('unsettled Tags re-send every template tag and remove only recorded tags the template dropped', async () => {
+    serve({ tags: { operator: 'keep' } });
+    await provider.update(
+      'F',
+      'f',
+      TYPE,
+      { ...BASE, Tags: [{ Key: 'a', Value: '1' }] },
+      { ...BASE, Tags: [{ Key: 'a', Value: '1' }, { Key: 'gone', Value: 'x' }] },
+      { unsettledProperties: new Set(['Tags']) }
+    );
+    expect(sent('TagResourceCommand').map((c) => c.input.Tags)).toEqual([{ a: '1' }]);
+    expect(sent('UntagResourceCommand').map((c) => c.input.TagKeys)).toEqual([['gone']]);
   });
 
-  it('an unsettled Timeout the function already holds sends nothing', async () => {
-    serve({ timeout: 3 });
-    await provider.update('F', 'f', TYPE, { ...BASE, Timeout: 3 }, { ...BASE, Timeout: 3 }, {
-      unsettledProperties: new Set(['Timeout']),
+  it('readUnsettled reads an unsettled separately-applied setting strictly', async () => {
+    serve({});
+    mockLambdaSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name === 'GetFunctionConcurrencyCommand') throw new Error('throttled');
+      if (cmd.constructor.name === 'GetFunctionCommand') {
+        return { Configuration: { FunctionName: 'f', FunctionArn: ARN, ...BASE }, Tags: {} };
+      }
+      return {};
     });
-    expect(sent('UpdateFunctionConfigurationCommand')).toHaveLength(0);
-  });
-
-  it('without unsettled keys the recorded bag decides', async () => {
-    serve({ timeout: 10 });
-    await provider.update('F', 'f', TYPE, { ...BASE, Timeout: 3 }, { ...BASE, Timeout: 3 });
-    expect(sent('UpdateFunctionConfigurationCommand')).toHaveLength(0);
-  });
-
-  it('unsettled Tags converge against the live tags', async () => {
-    serve({ tags: { stale: 'x' } });
-    await provider.update('F', 'f', TYPE, { ...BASE }, { ...BASE }, {
-      unsettledProperties: new Set(['Tags']),
-    });
-    expect(sent('UntagResourceCommand').map((c) => c.input.TagKeys)).toEqual([['stale']]);
-  });
-
-  it('refuses before any write when the function cannot be read to converge', async () => {
-    mockLambdaSend.mockImplementation(async () => {
-      throw new Error('throttled');
-    });
+    // readCurrentState swallows the failure (the drift snapshot omits the key)...
+    const snapshot = (await provider.readCurrentState('f', 'F', TYPE)) as Record<string, unknown>;
+    expect(snapshot).not.toHaveProperty('ReservedConcurrentExecutions');
+    // ...readUnsettled refuses to report "not set" for an unsettled one.
     await expect(
-      provider.update('F', 'f', TYPE, { ...BASE, Timeout: 3 }, { ...BASE, Timeout: 3 }, {
-        unsettledProperties: new Set(['Timeout']),
-      })
-    ).rejects.toThrow();
-    expect(sent('UpdateFunctionConfigurationCommand')).toHaveLength(0);
+      provider.readUnsettled('f', 'F', TYPE, new Set(['ReservedConcurrentExecutions']))
+    ).rejects.toThrow('throttled');
+    // A setting that is not unsettled keeps readCurrentState's tolerance.
+    await expect(provider.readUnsettled('f', 'F', TYPE, new Set(['Timeout']))).resolves.toBeDefined();
+  });
+
+  it('readUnsettled reads an unsettled setting AWS reports as not set as absent', async () => {
+    mockLambdaSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name === 'GetFunctionCommand') {
+        return { Configuration: { FunctionName: 'f', FunctionArn: ARN, ...BASE }, Tags: {} };
+      }
+      if (cmd.constructor.name === 'GetFunctionConcurrencyCommand') return {};
+      return {};
+    });
+    const live = (await provider.readUnsettled(
+      'f',
+      'F',
+      TYPE,
+      new Set(['ReservedConcurrentExecutions'])
+    )) as Record<string, unknown>;
+    expect(live).not.toHaveProperty('ReservedConcurrentExecutions');
   });
 
   it('unsettledInTransition: configuration keys while InProgress or Pending, none once settled', async () => {
