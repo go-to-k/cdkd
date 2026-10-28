@@ -75,8 +75,8 @@ describe('nodesToRemove (issue #5441, CloudFormation-measured)', () => {
 
   it('orders ids numerically-as-strings regardless of the describe order', () => {
     expect(
-      nodesToRemove([node('0003', 'c'), node('0001', 'c'), node('0002', 'c')], 2, undefined)
-    ).toEqual(['0001']);
+      nodesToRemove([node('0003', 'c'), node('0002', 'c'), node('0001', 'c')], 1, undefined)
+    ).toEqual(['0001', '0002']);
   });
 
   it('returns undefined when the kept nodes cannot reach the count without a node in a new zone', () => {
