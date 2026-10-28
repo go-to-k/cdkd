@@ -209,6 +209,12 @@ function previousMetricNames(value: unknown): MetricsName[] {
 }
 
 /**
+ * AWS's `MaxRecordSizeInKiB` for a stream that declares none, and what
+ * CloudFormation resets a removed one to (go-to-k/cdkd#1160, CFn A/B).
+ */
+const DEFAULT_MAX_RECORD_SIZE_KIB = 1024;
+
+/**
  * The `MaxRecordSizeInKiB` twin of {@link readShardLevelMetrics}, with the same
  * three answers and for the same reason.
  *
@@ -942,11 +948,24 @@ export class KinesisStreamProvider implements ResourceProvider {
             `unchanged; the same value is REFUSED on a template-path create`
         );
       }
-      const newMaxRecordSize = comparableRecordSize(properties['MaxRecordSizeInKiB'], mask);
-      const oldMaxRecordSize = comparableRecordSize(previousProperties['MaxRecordSizeInKiB'], mask);
+      // A REMOVAL resets the size to AWS's default, as CloudFormation does
+      // (go-to-k/cdkd#1160; CFn A/B, us-east-1: 2048 -> removed -> 1024, both
+      // alone and beside a RetentionPeriodHours change). Only an ABSENT
+      // desired side is a removal; an unusable one warned above and keeps the
+      // live size. An unusable PREVIOUS side reads as the default, as the
+      // retention sibling reads its own, so it triggers no reset call.
+      const newMaxRecordSize =
+        desiredSizeRead.kind === 'absent'
+          ? DEFAULT_MAX_RECORD_SIZE_KIB
+          : comparableRecordSize(properties['MaxRecordSizeInKiB'], mask);
+      const recordedMaxRecordSize = comparableRecordSize(
+        previousProperties['MaxRecordSizeInKiB'],
+        mask
+      );
+      const oldMaxRecordSize = recordedMaxRecordSize ?? DEFAULT_MAX_RECORD_SIZE_KIB;
       if (newMaxRecordSize !== undefined && newMaxRecordSize !== oldMaxRecordSize) {
         this.logger.debug(
-          `Updating max record size for ${physicalId}: from ${oldMaxRecordSize ?? 'no value'} to ${newMaxRecordSize}`
+          `Updating max record size for ${physicalId}: from ${recordedMaxRecordSize ?? 'no value'} to ${newMaxRecordSize}`
         );
         await this.getClient().send(
           new UpdateMaxRecordSizeCommand({

@@ -16,6 +16,8 @@ import type { Construct } from 'constructs';
  * other seven must still carry their phase-1 values (cdkd passes them
  * through, matching CFn). A fixture that only checked the reset would pass
  * just as well against an over-eager provider that reset everything.
+ * Phase 2 also drops `EncryptionKey` and `Tags`, which CFn resets
+ * (go-to-k/cdkd#1160).
  */
 export class CodeBuildProjectStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -64,6 +66,14 @@ export class CodeBuildProjectStack extends cdk.Stack {
       cfnProject.visibility = 'PUBLIC_READ';
       cfnProject.resourceAccessRole = project.role!.roleArn;
       cfnProject.autoRetryLimit = 3;
+      // go-to-k/cdkd#1160: CloudFormation RESETS a removed EncryptionKey to
+      // the AWS managed S3 key (read back as `...:alias/aws/s3`) and removes
+      // every tag when Tags is removed (CFn A/B), so Phase 2 must see both.
+      // verify.sh passes the aws/s3 managed key's KEY ARN, the one spelling
+      // that reads back differently from the reset; no key is created.
+      const keyArn = process.env['CDKD_INTEG_CB_KEY_ARN'];
+      if (keyArn) cfnProject.encryptionKey = keyArn;
+      cfnProject.tags.setTag('cdkd-integ-tag', 'phase1');
       cfnProject.buildBatchConfig = {
         serviceRole: project.role!.roleArn,
         timeoutInMins: 120,
@@ -77,6 +87,10 @@ export class CodeBuildProjectStack extends cdk.Stack {
       // assertion fails against correct behavior (observed live 2026-08-10).
       // Delete the property outright so the phase is a true removal.
       cfnProject.addPropertyDeletionOverride('Cache');
+      // Same for `EncryptionKey`: the L2 emits `alias/aws/s3` when no key is
+      // given, a value change the pre-fix provider already sent. Delete it so
+      // Phase 2 is a true removal (go-to-k/cdkd#1160).
+      cfnProject.addPropertyDeletionOverride('EncryptionKey');
     }
 
     // Issue #3866 refusal phase (verify.sh Phase 0): `Triggers` (CDK's
