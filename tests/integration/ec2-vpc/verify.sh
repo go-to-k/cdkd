@@ -178,8 +178,8 @@ if [ -z "${DOWN_VPC}" ] || [ -z "${UP_VPC}" ]; then
   echo "FAIL: tenancy VPC physical ids missing from state: TenancyDownVpc='${DOWN_VPC}' TenancyUpVpc='${UP_VPC}' (issue #5449)" >&2
   exit 1
 fi
-P1_DOWN_TENANCY=$(tenancy "${DOWN_VPC}")
-P1_UP_TENANCY=$(tenancy "${UP_VPC}")
+P1_DOWN_TENANCY=$(tenancy "${DOWN_VPC}") || P1_DOWN_TENANCY="<describe-vpcs failed>"
+P1_UP_TENANCY=$(tenancy "${UP_VPC}") || P1_UP_TENANCY="<describe-vpcs failed>"
 if [ "${P1_DOWN_TENANCY}" != "dedicated" ] || [ "${P1_UP_TENANCY}" != "default" ]; then
   echo "FAIL: InstanceTenancy after create: ${DOWN_VPC}='${P1_DOWN_TENANCY}' (expected dedicated), ${UP_VPC}='${P1_UP_TENANCY}' (expected default) (issue #5449)" >&2
   exit 1
@@ -304,7 +304,13 @@ if [ "${P2_DOWN_VPC}" != "${DOWN_VPC}" ]; then
   echo "FAIL: TenancyDownVpc was replaced by an InstanceTenancy removal (must change in place): '${DOWN_VPC}' -> '${P2_DOWN_VPC}' (issue #5449)" >&2
   exit 1
 fi
-P2_DOWN_TENANCY=$(tenancy "${DOWN_VPC}")
+# Bounded read: EC2's describe APIs are eventually consistent.
+P2_DOWN_TENANCY=""
+for _ in 1 2 3 4 5 6; do
+  P2_DOWN_TENANCY=$(tenancy "${DOWN_VPC}") || P2_DOWN_TENANCY="<describe-vpcs failed>"
+  [ "${P2_DOWN_TENANCY}" = "default" ] && break
+  sleep 5
+done
 if [ "${P2_DOWN_TENANCY}" != "default" ]; then
   echo "FAIL: ${DOWN_VPC} kept InstanceTenancy '${P2_DOWN_TENANCY}' after the property was removed; CloudFormation changes it to default in place (issue #5449)" >&2
   exit 1
@@ -313,7 +319,12 @@ if [ -z "${P2_UP_VPC}" ] || [ "${P2_UP_VPC}" = "${UP_VPC}" ]; then
   echo "FAIL: TenancyUpVpc '${UP_VPC}' was not replaced by default -> dedicated (state now '${P2_UP_VPC}'); CloudFormation creates a new VPC (issue #5449)" >&2
   exit 1
 fi
-P2_UP_TENANCY=$(tenancy "${P2_UP_VPC}")
+P2_UP_TENANCY=""
+for _ in 1 2 3 4 5 6; do
+  P2_UP_TENANCY=$(tenancy "${P2_UP_VPC}") || P2_UP_TENANCY="<describe-vpcs failed>"
+  [ "${P2_UP_TENANCY}" = "dedicated" ] && break
+  sleep 5
+done
 if [ "${P2_UP_TENANCY}" != "dedicated" ]; then
   echo "FAIL: replacement VPC ${P2_UP_VPC} has InstanceTenancy '${P2_UP_TENANCY}', expected dedicated (issue #5449)" >&2
   exit 1
