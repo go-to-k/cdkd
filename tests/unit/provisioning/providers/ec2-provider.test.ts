@@ -676,6 +676,25 @@ describe('EC2Provider - SecurityGroup egress handling', () => {
         expect(pairs(ingressInputs())).toEqual([{ GroupName: 'peer-b' }]);
       });
 
+      it('on update, an id + name rule is a no-op round-trip and when the redundant name goes', async () => {
+        mockSend.mockResolvedValue({});
+        const withBoth = {
+          GroupDescription: 'd',
+          SecurityGroupIngress: [{ ...byName('peer-a'), SourceSecurityGroupId: 'sg-peer' }],
+        };
+        const idOnly = {
+          GroupDescription: 'd',
+          SecurityGroupIngress: [
+            { IpProtocol: 'tcp', FromPort: 443, ToPort: 443, SourceSecurityGroupId: 'sg-peer' },
+          ],
+        };
+        await provider.update('MainSg', 'sg-main', 'AWS::EC2::SecurityGroup', withBoth, withBoth);
+        await provider.update('MainSg', 'sg-main', 'AWS::EC2::SecurityGroup', withBoth, idOnly);
+        await provider.update('MainSg', 'sg-main', 'AWS::EC2::SecurityGroup', idOnly, withBoth);
+        expect(ingressInputs()).toEqual([]);
+        expect(revokeInputs()).toEqual([]);
+      });
+
       it('on update, an unchanged named peer sends nothing', async () => {
         mockSend.mockResolvedValue({});
         const props = { GroupDescription: 'd', SecurityGroupIngress: [byName('peer-a')] };

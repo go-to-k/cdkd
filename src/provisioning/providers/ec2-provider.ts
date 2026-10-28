@@ -9465,6 +9465,11 @@ export class EC2Provider implements ResourceProvider {
           ? (rule['SourceSecurityGroupOwnerId'] as string | undefined)
           : undefined;
       // go-to-k/cdkd#5478: a peer named by group name is a rule of its own.
+      // Keyed only when no id is given, since the wire then sends the id
+      // alone: a redundant name must not churn revoke / authorize. `sgRuleKey`
+      // (the drift read side) does not key the name, because AWS reports the
+      // peer by id, so a `cdkd drift --revert` of a name-only rule re-attaches
+      // it (revoke + authorize of the same peer).
       const peerName =
         direction === 'ingress'
           ? (rule['SourceSecurityGroupName'] as string | undefined)
@@ -9482,7 +9487,7 @@ export class EC2Provider implements ResourceProvider {
         c4: rule['CidrIp'] ?? null,
         c6: rule['CidrIpv6'] ?? null,
         peer: peerKey ?? null,
-        peerName: peerName ?? null,
+        peerName: peerKey ? null : (peerName ?? null),
         peerOwner: peerOwner ?? null,
         pl: prefixKey ?? null,
         d: rule['Description'] ?? null,
