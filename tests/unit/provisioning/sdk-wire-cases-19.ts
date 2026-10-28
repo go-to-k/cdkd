@@ -500,8 +500,6 @@ export function describeRdsExtras(): void {
     });
   });
 
-  // go-to-k/cdkd#5466: the bag probes see the member delivered (create and
-  // update-add / update-vary); these name the wire member itself.
   // The bag probes see a removed MasterUserSecret change the wire (so it reads
   // as delivered) without seeing WHAT goes out: the credential-change gate
   // re-sends the still-declared ManageMasterUserPassword, with no key, though
@@ -528,6 +526,8 @@ export function describeRdsExtras(): void {
     );
   });
 
+  // go-to-k/cdkd#5466: the bag probes see the member delivered (create and
+  // update-add / update-vary); these name the wire member itself.
   describe('DBCluster ServerlessV2ScalingConfiguration.SecondsUntilAutoPause (go-to-k/cdkd#5466)', () => {
     const MEMBER = 'ServerlessV2ScalingConfiguration.SecondsUntilAutoPause=600';
 
