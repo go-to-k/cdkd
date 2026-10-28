@@ -7877,7 +7877,7 @@ export class EC2Provider implements ResourceProvider {
     );
     // Issue #5446: decided (and every refusal raised) before any mutating
     // call, so a refused update applies nothing.
-    const memberPlan = await this.planInstanceMemberUpdates(
+    const memberPlan = this.planInstanceMemberUpdates(
       logicalId,
       physicalId,
       resourceType,
@@ -7887,6 +7887,9 @@ export class EC2Provider implements ResourceProvider {
     );
 
     try {
+      // A read, before the first mutating call below.
+      await this.refuseUnstoppableInstance(logicalId, physicalId, resourceType, memberPlan);
+
       await this.applyTagDiff(
         physicalId,
         resourceType,
@@ -8103,17 +8106,18 @@ export class EC2Provider implements ResourceProvider {
    *
    * Refused before any call: a value the deploy cannot send (a
    * `{{resolve:...}}` token or the redaction mask, which a state record holds
-   * in place of a secret), a removed `InstanceType`, and a stop on an
-   * instance-store-backed instance, which cannot be stopped.
+   * in place of a secret) and a removed `InstanceType`. A stop on an
+   * instance-store-backed instance is refused by
+   * `refuseUnstoppableInstance`, also before any mutating call.
    */
-  private async planInstanceMemberUpdates(
+  private planInstanceMemberUpdates(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
     context: UpdateContext | undefined
-  ): Promise<InstanceMemberPlan> {
+  ): InstanceMemberPlan {
     const plan: InstanceMemberPlan = {};
     const removed = (key: string): boolean =>
       context?.removedProperties !== undefined
@@ -8273,38 +8277,37 @@ export class EC2Provider implements ResourceProvider {
       if (flips.length > 0) plan.deleteOnTermination = flips;
     }
 
-    // A stop is needed: refuse an instance-store-backed one before any call.
-    if (plan.instanceType !== undefined || plan.userData !== undefined) {
-      let instance: Instance | undefined;
-      try {
-        const resp = await this.ec2Client.send(
-          new DescribeInstancesCommand({ InstanceIds: [physicalId] })
-        );
-        instance = resp.Reservations?.[0]?.Instances?.[0];
-      } catch (error) {
-        const cause = error instanceof Error ? error : undefined;
-        throw this.wrapCaughtError(
-          maskerOrIdentity(context?.maskSecrets),
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to update EC2 Instance ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        );
-      }
-      if (instance?.RootDeviceType === 'instance-store') {
-        throw new ResourceUpdateNotSupportedError(
-          resourceType,
-          logicalId,
-          `${[plan.instanceType !== undefined ? 'InstanceType' : '', plan.userData !== undefined ? 'UserData' : ''].filter(Boolean).join(' and ')} can change only on a stopped instance, and an instance-store-backed instance cannot be stopped; CloudFormation replaces it. Re-deploy with cdkd deploy --replace.`
-        );
-      }
-    }
     return plan;
+  }
+
+  /**
+   * Issue #5446: an InstanceType / UserData change needs a stop, and an
+   * instance-store-backed instance cannot be stopped; CloudFormation replaces
+   * it. Refused (a read only, before any mutating call) with
+   * ResourceUpdateNotSupportedError, so `cdkd deploy --replace` takes it.
+   */
+  private async refuseUnstoppableInstance(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    plan: InstanceMemberPlan
+  ): Promise<void> {
+    if (plan.instanceType === undefined && plan.userData === undefined) return;
+    const resp = await this.ec2Client.send(
+      new DescribeInstancesCommand({ InstanceIds: [physicalId] })
+    );
+    if (resp.Reservations?.[0]?.Instances?.[0]?.RootDeviceType !== 'instance-store') return;
+    const members = [
+      plan.instanceType !== undefined ? 'InstanceType' : '',
+      plan.userData !== undefined ? 'UserData' : '',
+    ]
+      .filter(Boolean)
+      .join(' and ');
+    throw new ResourceUpdateNotSupportedError(
+      resourceType,
+      logicalId,
+      `${members} can change only on a stopped instance, and an instance-store-backed instance cannot be stopped; CloudFormation replaces it. Re-deploy with cdkd deploy --replace.`
+    );
   }
 
   /**
@@ -8374,7 +8377,7 @@ export class EC2Provider implements ResourceProvider {
     try {
       if (!wasStopped) {
         this.logger.info(
-          `Stopping EC2 Instance ${logicalId} (${physicalId}) to change its ${plan.instanceType !== undefined ? 'InstanceType' : ''}${plan.instanceType !== undefined && plan.userData !== undefined ? ' and ' : ''}${plan.userData !== undefined ? 'UserData' : ''}; it is started again afterwards`
+          safeMsg`Stopping EC2 Instance ${logicalId} (${physicalId}) to change its ${plan.instanceType !== undefined ? 'InstanceType' : ''}${plan.instanceType !== undefined && plan.userData !== undefined ? ' and ' : ''}${plan.userData !== undefined ? 'UserData' : ''}; it is started again afterwards`
         );
         await this.ec2Client.send(new StopInstancesCommand({ InstanceIds: [physicalId] }));
         stopIssued = true;
@@ -8401,16 +8404,16 @@ export class EC2Provider implements ResourceProvider {
         try {
           await this.ec2Client.send(new StartInstancesCommand({ InstanceIds: [physicalId] }));
           this.logger.warn(
-            `${logicalId}: the InstanceType / UserData change failed after instance ${physicalId} was stopped; cdkd started it again with its previous settings.`
+            safeMsg`${logicalId}: the InstanceType / UserData change failed after instance ${physicalId} was stopped; cdkd started it again with its previous settings.`
           );
         } catch (startError) {
           this.logger.warn(
-            `${logicalId}: instance ${physicalId} was stopped for an InstanceType / UserData change that failed, and starting it again failed too (${describeAwsFailure(startError).summary}). Start it with: aws ec2 start-instances --instance-ids ${physicalId}`
+            safeMsg`${logicalId}: instance ${physicalId} was stopped for an InstanceType / UserData change that failed, and starting it again failed too (${describeAwsFailure(startError).summary}). Start it with: aws ec2 start-instances --instance-ids ${physicalId}`
           );
         }
       } else if (stopIssued) {
         this.logger.warn(
-          `${logicalId}: instance ${physicalId} was stopped for an InstanceType / UserData change that did not finish. Once it is stopped, start it with: aws ec2 start-instances --instance-ids ${physicalId}`
+          safeMsg`${logicalId}: instance ${physicalId} was stopped for an InstanceType / UserData change that did not finish. Once it is stopped, start it with: aws ec2 start-instances --instance-ids ${physicalId}`
         );
       }
       throw error;
@@ -8420,7 +8423,7 @@ export class EC2Provider implements ResourceProvider {
     await this.ec2Client.send(new StartInstancesCommand({ InstanceIds: [physicalId] }));
     if (process.env['CDKD_NO_WAIT'] === 'true') {
       this.logger.debug(
-        `Instance ${physicalId} started (skipping running-state wait per --no-wait)`
+        safeMsg`Instance ${physicalId} started (skipping running-state wait per --no-wait)`
       );
       return;
     }
@@ -8569,7 +8572,7 @@ export class EC2Provider implements ResourceProvider {
         const msg = describeAwsFailure(error).detail;
         if (this.isInstanceProfilePropagationError(msg) && attempt < maxAttempts) {
           this.logger.debug(
-            `IAM instance profile not yet propagated for ${logicalId} (${physicalId}) (attempt ${attempt}/${maxAttempts}: ${msg}), retrying in ${attempt}s...`
+            safeMsg`IAM instance profile not yet propagated for ${logicalId} (${physicalId}) (attempt ${attempt}/${maxAttempts}: ${msg}), retrying in ${attempt}s...`
           );
           await this.sleep(attempt * 1000);
           continue;
