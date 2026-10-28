@@ -114,7 +114,7 @@ dynamodb-sse	2026-10-16T08:15:12Z	PASS	45	verify.sh	rc ok, orph clean (#3341 sli
 dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-streams	2026-10-13T02:41:29Z	PASS	235	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 dynamodb-tableclass-switch	2026-10-03T04:27:40Z	PASS	67	verify.sh	rc ok, orph clean (#4283 PR #4449)
-dynamodb-ttl-attr-change	2026-10-28T05:24:24Z	PASS	1944	verify.sh	rc ok, orph clean; 2c waited out rate limit (1874s); pre-fix probe RED at 2c (#5451)
+dynamodb-ttl-attr-change	2026-10-28T06:40:29Z	PASS	1944	verify.sh	rc ok, orph clean; re-verify on merged head f018aa3c1; 2c waited 1876s (#5451)
 ec2-instance	2026-10-28T05:14:33Z	PASS	265	verify.sh	rc ok, orph clean; #5446 in-place update; probes red at t3.small and reader
 ec2-instance-fanout	2026-10-19T00:17:40Z	PASS	90	verify.sh	rc ok, orph clean (#5077)
 ec2-route-targets	2026-10-23T21:25:44Z	PASS	651	verify.sh	rc ok, orph clean, VGW attachment sdk record + Phase 2 swap to 2nd VGW (DetachVpnGateway=1 AttachVpnGateway=1); pre-fix probe RED at sdk-record assertion
