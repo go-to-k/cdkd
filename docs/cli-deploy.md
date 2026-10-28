@@ -178,7 +178,7 @@ CloudFormation and Terraform do, for comparison.
 | `AWS::Neptune::DBCluster` / `DBInstance` | Return after the create or update call | Wait for `available` (5-10 min); an update waits for changed cluster security groups to apply | same as default | Waits | Waits |
 | `AWS::ElastiCache::CacheCluster` etc. | Return after the create call | Wait for `available` | same as default | Waits | Waits |
 | `AWS::EC2::NatGateway` | Return while `pending` | Wait for `available` (1-2 min) | same as default | Waits | Waits |
-| `AWS::EC2::Instance` | Return while `pending` | Wait for `running` (30-60 s) | same as default | Waits | Waits |
+| `AWS::EC2::Instance` | Return while `pending`; an update that stops the instance (an `InstanceType` / `UserData` change) still waits for `stopped`, then returns after the start | Wait for `running` (30-60 s), on create and after an update's stop and start | same as default | Waits | Waits |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | Return while `provisioning` | Wait for `active` (90-180 s) | same as default | Waits | Waits |
 | `AWS::Lambda::MicrovmImage` | Return while `CREATING` | Wait for `CREATED` | same as default | Waits | n/a |
 

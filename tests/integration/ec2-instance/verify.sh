@@ -61,6 +61,11 @@
 # show that key and those IOPS (pre-#5445 both were dropped on create), and the
 # destroy must leave the CMK PendingDeletion.
 #
+# Phase 1h is the issue #5446 arm: one deploy changes InstanceType, moves the
+# instance to a second security group and adds UserData; the instance must
+# keep its id and come back running as t3.small, in that group only, with the
+# template's user data.
+#
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
 # fixture stack doc.
@@ -1330,6 +1335,56 @@ removal_deploy P1G_OUTPUT ok CDKD_TEST_REMOVAL=true
 poll_until "termination protection after DisableApiTermination: true" "True" read_dat
 echo "    OK: explicit DisableApiTermination true applied; the destroy below meets a protected instance"
 
+# Phase 1h (issue #5446): InstanceType t3.micro -> t3.small, SecurityGroupIds
+# moved to the stack's second group, and UserData added, in ONE deploy.
+# CloudFormation applies all three to the SAME instance (measured: a stop and
+# a start for the type and the user data, the groups with no interruption).
+# Before #5446 the deploy reported success and AWS kept t3.micro, the first
+# group and no user data. Termination protection (Phase 1g) does not block a
+# stop, and the destroy below still meets a protected instance.
+echo "==> Phase 1h: in-place InstanceType / SecurityGroupIds / UserData update (issue #5446)"
+UPDATE_SG_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | jq -r '.outputs.UpdateSgId // ""')
+case "${UPDATE_SG_ID}" in
+  sg-*) ;;
+  *) echo "FAIL: issue #5446 -- .outputs.UpdateSgId is '${UPDATE_SG_ID}', expected a security group id" >&2; exit 1 ;;
+esac
+removal_deploy P1H_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE_5446=true
+P1H_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+P1H_INSTANCE_ID=$(echo "${P1H_STATE}" | jq -r '.outputs.InstanceId // ""')
+if [ "${P1H_INSTANCE_ID}" != "${INSTANCE_ID}" ]; then
+  echo "FAIL: issue #5446 -- .outputs.InstanceId is '${P1H_INSTANCE_ID}' after the update, expected the same instance ${INSTANCE_ID}; CloudFormation updates these in place" >&2
+  exit 1
+fi
+P1H_INSTANCE=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
+  --query 'Reservations[0].Instances[0]' --output json)
+P1H_TYPE=$(echo "${P1H_INSTANCE}" | jq -r '.InstanceType // "<absent>"')
+P1H_STATE_NAME=$(echo "${P1H_INSTANCE}" | jq -r '.State.Name // "<absent>"')
+P1H_GROUPS=$(echo "${P1H_INSTANCE}" | jq -r '[.SecurityGroups[]?.GroupId] | sort | join(",")')
+if [ "${P1H_TYPE}" != "t3.small" ]; then
+  echo "FAIL: issue #5446 -- instance ${INSTANCE_ID} is '${P1H_TYPE}' after the update, expected t3.small; the InstanceType change was not applied" >&2
+  exit 1
+fi
+if [ "${P1H_GROUPS}" != "${UPDATE_SG_ID}" ]; then
+  echo "FAIL: issue #5446 -- instance ${INSTANCE_ID} is in '${P1H_GROUPS}' after the update, expected only ${UPDATE_SG_ID}; the SecurityGroupIds change was not applied" >&2
+  exit 1
+fi
+if [ "${P1H_STATE_NAME}" != "running" ]; then
+  echo "FAIL: issue #5446 -- instance ${INSTANCE_ID} is '${P1H_STATE_NAME}' after the update, expected running; the stop for the change was not followed by a start" >&2
+  exit 1
+fi
+P1H_USERDATA=$(aws ec2 describe-instance-attribute --instance-id "${INSTANCE_ID}" --attribute userData \
+  --region "${REGION}" --query 'UserData.Value' --output text 2>&1) \
+  || P1H_USERDATA="<describe-failed: $(sanitize_aws_output "${P1H_USERDATA}")>"
+# The template value is Fn::Base64 of this script; EC2 reports the stored user
+# data base64-encoded, so the two must be byte-equal (a double encoding would
+# store the base64 text itself).
+P1H_WANT_USERDATA=$(printf '#!/bin/bash\necho cdkd-5446\n' | base64 | tr -d '\n')
+if [ "${P1H_USERDATA}" != "${P1H_WANT_USERDATA}" ]; then
+  echo "FAIL: issue #5446 -- instance ${INSTANCE_ID} user data is '${P1H_USERDATA}', expected '${P1H_WANT_USERDATA}'; the UserData change was not applied, or was encoded twice" >&2
+  exit 1
+fi
+echo "    OK: #5446 same instance ${INSTANCE_ID} is t3.small, in ${UPDATE_SG_ID} only, running, with the template's user data"
+
 # --- Phase 2: destroy (--remove-protection required) ------------------
 echo "==> Phase 2: destroy with --remove-protection (instance is termination-protected)"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -1412,4 +1467,4 @@ echo "    OK: #5445 fixture CMK is PendingDeletion"
 EBS_KEY_ARN=""
 
 echo ""
-echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces + #5445 Ebs members + #4606 identity reads + #1160 removal) ==="
+echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces + #5445 Ebs members + #4606 identity reads + #1160 removal + #5446 in-place update) ==="

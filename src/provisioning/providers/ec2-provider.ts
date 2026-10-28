@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   EC2Client,
   CreateVpcCommand,
@@ -101,7 +102,17 @@ import {
   type NatGateway,
   AssociateNatGatewayAddressCommand,
   DisassociateNatGatewayAddressCommand,
+  StopInstancesCommand,
+  StartInstancesCommand,
+  ReplaceIamInstanceProfileAssociationCommand,
+  DisassociateIamInstanceProfileCommand,
 } from '@aws-sdk/client-ec2';
+import { blockDeviceMappingsDifferOnlyInDeleteOnTermination } from '../../analyzer/replacement-rules.js';
+import {
+  enclosingDeadlineExpired,
+  enclosingDeadlineRemainingMs,
+} from '../../deployment/resource-deadline.js';
+import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
 import { getLogger } from '../../utils/logger.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { canonicalizeIpv4Cidr } from '../../utils/ipv4-cidr.js';
@@ -212,7 +223,7 @@ import {
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { withRetry } from '../../deployment/retry.js';
-import { startInterruptWatch } from '../interrupt-watch.js';
+import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
 import {
   getPriorAttempts,
   markRefusedBeforeApplying,
@@ -243,6 +254,68 @@ const EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT: CompositeIdFormat = {
  * per-resource `--resource-timeout` still bounds the whole call.
  */
 const VPN_GATEWAY_ATTACHMENT_WAIT_MS = 10 * 60 * 1000;
+
+/**
+ * Issue #5446: the stop / start waits of an in-place InstanceType / UserData
+ * change. The resource deadline bounds them first; this cap applies only
+ * outside one. A t3 stop or start measured about a minute.
+ */
+const INSTANCE_STATE_WAIT_CAP_MS = 15 * 60 * 1000;
+const INSTANCE_STATE_POLL_MS = 5000;
+
+/** What `EC2Provider.planInstanceMemberUpdates` decided to apply (issue #5446). */
+interface InstanceMemberPlan {
+  instanceType?: string;
+  /** Raw user-data bytes; empty for a removed UserData. */
+  userData?: Uint8Array;
+  profile?: { kind: 'set'; arn?: string; name?: string } | { kind: 'remove' };
+  securityGroups?: { kind: 'set'; ids: string[] } | { kind: 'vpc-default' };
+  deleteOnTermination?: Array<{ DeviceName: string; DeleteOnTermination: boolean }>;
+}
+
+/**
+ * A recorded stand-in for a value cdkd resolved and sent: a string carrying a
+ * `{{resolve:...}}` token, or the state redaction mask (issue #5446). A state
+ * record (a rollback revert's desired bag) holds these where the template had
+ * a secret; sending one would write the stand-in onto the instance.
+ */
+function isRecordedStandIn(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(isRecordedStandIn);
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some(isRecordedStandIn);
+  }
+  return (
+    typeof value === 'string' && (value === SECRET_MASK || dynamicReferenceTokens(value).length > 0)
+  );
+}
+
+/**
+ * An instance profile's comparison key: its NAME, from a name, an ARN
+ * (`arn:...:instance-profile[/path]/<name>`) or an `{Arn,Name}` object. State
+ * carries the template's name while a drift readback carries the ARN.
+ */
+function instanceProfileKey(value: unknown): string | undefined {
+  const fromArn = (arn: string): string => arn.slice(arn.lastIndexOf('/') + 1);
+  if (typeof value === 'string') {
+    const v = value.trim();
+    if (v === '') return undefined;
+    return v.startsWith('arn:') ? fromArn(v) : v;
+  }
+  if (value !== null && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    if (typeof obj['Name'] === 'string' && obj['Name'] !== '') return obj['Name'];
+    if (typeof obj['Arn'] === 'string' && obj['Arn'] !== '') return fromArn(obj['Arn']);
+  }
+  return undefined;
+}
+
+/** Two lists of strings hold the same members, order and repeats aside. */
+function sameStringSet(a: unknown, b: unknown): boolean {
+  if (!Array.isArray(a) || !Array.isArray(b)) return a === b;
+  const sa = new Set(a.map(String));
+  const sb = new Set(b.map(String));
+  return sa.size === sb.size && [...sa].every((x) => sb.has(x));
+}
 
 /** `DetachVpnGateway`'s answer for an attachment that is not `attached` right now. */
 const VPN_DETACH_IN_PROGRESS_ERRORS: ReadonlySet<string> = new Set(['IncorrectState']);
@@ -1207,8 +1280,11 @@ export class EC2Provider implements ResourceProvider {
     // detailed monitoring off (real A/B, us-east-1: `Monitoring.State`
     // `enabled` -> `disabled`). `updateInstanceSecurityProps` diffs it against
     // the previous template, so the injected `false` calls UnmonitorInstances
-    // only when monitoring was on. The other Instance properties that
-    // `update()` modifies in place get no reset (see that method).
+    // only when monitoring was on. MetadataOptions / CreditSpecification get
+    // no reset (see that method); a removed UserData / IamInstanceProfile /
+    // SecurityGroupIds is read from `removedProperties` instead, because its
+    // CloudFormation reset is a call (clear, disassociate, the VPC's default
+    // group), not a value (issue #5446, see planInstanceMemberUpdates).
     ['AWS::EC2::Instance', new Map<string, unknown>([['Monitoring', false]])],
   ]);
 
@@ -7773,9 +7849,12 @@ export class EC2Provider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    // Most EC2 Instance property changes require replacement.
-    // Immutable properties (ImageId, SubnetId, KeyName) are handled by
-    // the deployment engine's replacement detection.
+    // Immutable properties (ImageId, SubnetId, KeyName, ...) and the
+    // replacing shapes of SecurityGroupIds / BlockDeviceMappings are handled
+    // by the deployment engine's replacement detection. InstanceType,
+    // UserData, IamInstanceProfile, SecurityGroupIds and a
+    // DeleteOnTermination-only BlockDeviceMappings change are applied here
+    // (issue #5446; see planInstanceMemberUpdates).
     // Tags plus four of the five security-focused backfill props (#609) —
     // DisableApiTermination / Monitoring / MetadataOptions /
     // CreditSpecification — are mutable in-place, so they are diffed
@@ -7796,6 +7875,16 @@ export class EC2Provider implements ResourceProvider {
       previousProperties,
       context
     );
+    // Issue #5446: decided (and every refusal raised) before any mutating
+    // call, so a refused update applies nothing.
+    const memberPlan = await this.planInstanceMemberUpdates(
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
 
     try {
       await this.applyTagDiff(
@@ -7808,6 +7897,8 @@ export class EC2Provider implements ResourceProvider {
       );
 
       await this.updateInstanceSecurityProps(physicalId, properties, previousProperties);
+
+      await this.applyInstanceMemberUpdates(logicalId, physicalId, resourceType, memberPlan);
 
       // Refresh attributes. The map REPLACES the record's (the engine does
       // not merge it with the previous one), and that is the right answer
@@ -7828,6 +7919,10 @@ export class EC2Provider implements ResourceProvider {
         attributes: describedInstanceAttributes(physicalId, instance),
       };
     } catch (error) {
+      // Issue #5446: the stop/start waits throw their own non-retryable
+      // ProvisioningError, and Ctrl-C an InterruptedWaitError; both pass
+      // through unwrapped so the engine sees what they are.
+      if (error instanceof CdkdError || isInterruptedWaitError(error)) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
         maskerOrIdentity(context?.maskSecrets),
@@ -7977,6 +8072,510 @@ export class EC2Provider implements ResourceProvider {
           InstanceCreditSpecifications: [{ InstanceId: physicalId, CpuCredits: newCpuCredits }],
         })
       );
+    }
+  }
+
+  /**
+   * Issue #5446: decide which of `InstanceType`, `UserData`,
+   * `IamInstanceProfile`, `SecurityGroupIds` and a
+   * `BlockDeviceMappings[].Ebs.DeleteOnTermination`-only change this update
+   * applies, and raise every refusal, before any mutating call.
+   *
+   * What CloudFormation does, MEASURED (us-east-1, 2026-10-28, a t3.nano):
+   *  - `InstanceType`, `UserData`: in place with a stop and a start (same
+   *    instance, new launch time). A removed `UserData` clears it, also with
+   *    a stop and start. A removed `InstanceType` FAILS the update ("No
+   *    attributes specified"), so it is refused here, as
+   *    `guardTerminationProtectionRemoval` refuses its sibling.
+   *  - `IamInstanceProfile`: in place, no interruption; removed, the profile
+   *    is disassociated.
+   *  - `SecurityGroupIds` with a `SubnetId`: in place, no interruption; removed,
+   *    the instance gets its VPC's `default` group. (Without a `SubnetId`
+   *    CloudFormation replaces; the replacement rule routes that.)
+   *  - `BlockDeviceMappings`: only a `DeleteOnTermination` change is in place;
+   *    everything else is routed to replacement.
+   *
+   * A member is CHANGED per the engine's `changedProperties` when it is set
+   * (a redacted state value cannot be compared to a resolved one), else per
+   * the two bags. A member is REMOVED per `removedProperties`, else per the
+   * two bags; `drift --revert` names none, and a key its readback lacks
+   * (`UserData`) is therefore never cleared there.
+   *
+   * Refused before any call: a value the deploy cannot send (a
+   * `{{resolve:...}}` token or the redaction mask, which a state record holds
+   * in place of a secret), a removed `InstanceType`, and a stop on an
+   * instance-store-backed instance, which cannot be stopped.
+   */
+  private async planInstanceMemberUpdates(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): Promise<InstanceMemberPlan> {
+    const plan: InstanceMemberPlan = {};
+    const removed = (key: string): boolean =>
+      context?.removedProperties !== undefined
+        ? context.removedProperties.has(key)
+        : previousProperties[key] !== undefined && properties[key] === undefined;
+    const changed = (key: string, same: (a: unknown, b: unknown) => boolean): boolean => {
+      const before = previousProperties[key];
+      const after = properties[key];
+      if (after === undefined && !removed(key)) return false;
+      if (context?.changedProperties !== undefined && !context.changedProperties.has(key)) {
+        return false;
+      }
+      // Byte-equal sides are no change, stand-ins included (a rollback revert
+      // compares two state records redacted alike). Otherwise two equivalent
+      // values are no change unless one is a stand-in: a redacted record
+      // cannot say whether the value behind it moved.
+      if (isDeepStrictEqual(before, after)) return false;
+      const comparable = !isRecordedStandIn(before) && !isRecordedStandIn(after);
+      return !(comparable && same(before, after));
+    };
+    const refuseStandIn = (key: string): void => {
+      if (!isRecordedStandIn(properties[key])) return;
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${logicalId} (${resourceType}): ${key} holds a recorded stand-in (an unresolved {{resolve:...}} reference or the redaction mask), not a value cdkd can send. The instance was not updated; deploy from the template so the value resolves.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    };
+
+    // InstanceType: a removal fails in CloudFormation.
+    if (changed('InstanceType', (a, b) => a === b)) {
+      if (properties['InstanceType'] === undefined) {
+        if (context?.replayingState === true) {
+          this.logger.warn(
+            safeMsg`${logicalId} (${resourceType}): the state being restored does not declare InstanceType; the rollback leaves the instance type at its current AWS value.`
+          );
+        } else {
+          throw markNonRetryable(
+            new ProvisioningError(
+              safeMsg`${logicalId} (${resourceType}): InstanceType was removed from the template, and CloudFormation fails that update for an existing instance. Keep it declared (set it to the instance's current type to leave it unchanged). The instance was not updated.`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+      } else {
+        refuseStandIn('InstanceType');
+        plan.instanceType = requireConfigString(
+          properties['InstanceType'],
+          '',
+          'AWS::EC2::Instance InstanceType'
+        );
+      }
+    }
+
+    // UserData: a removal clears it.
+    if (changed('UserData', (a, b) => a === b)) {
+      const userData = properties['UserData'];
+      if (userData === undefined) {
+        plan.userData = new Uint8Array(0);
+      } else {
+        refuseStandIn('UserData');
+        if (typeof userData !== 'string') {
+          throw markNonRetryable(
+            new ProvisioningError(
+              `${logicalId} (${resourceType}): UserData must be a base64 string (Fn::Base64), got a ${Array.isArray(userData) ? 'list' : typeof userData}. The instance was not updated.`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+        // CloudFormation's UserData is base64 text. ModifyInstanceAttribute's
+        // blob is the RAW bytes (the SDK base64-encodes it on the wire), so the
+        // template value is decoded once here; sending its text would store
+        // base64 as the user data.
+        plan.userData = new Uint8Array(Buffer.from(userData, 'base64'));
+      }
+    }
+
+    // IamInstanceProfile: compared by profile name (state carries the
+    // template's name, a drift readback the ARN).
+    if (changed('IamInstanceProfile', (a, b) => instanceProfileKey(a) === instanceProfileKey(b))) {
+      if (properties['IamInstanceProfile'] === undefined) {
+        plan.profile = { kind: 'remove' };
+      } else {
+        refuseStandIn('IamInstanceProfile');
+        const desired = this.normalizeIamInstanceProfile(properties['IamInstanceProfile']);
+        if (desired === undefined) {
+          throw markNonRetryable(
+            new ProvisioningError(
+              `${logicalId} (${resourceType}): IamInstanceProfile is neither a profile name, an ARN, nor an {Arn,Name} object. The instance was not updated.`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+        plan.profile = { kind: 'set', ...desired };
+      }
+    }
+
+    // SecurityGroupIds: compared as sets (the readback's order is AWS's).
+    if (changed('SecurityGroupIds', (a, b) => sameStringSet(a, b))) {
+      const groups = properties['SecurityGroupIds'];
+      if (groups === undefined) {
+        plan.securityGroups = { kind: 'vpc-default' };
+      } else {
+        const ids = Array.isArray(groups) ? groups : undefined;
+        if (
+          ids === undefined ||
+          ids.length === 0 ||
+          !ids.every((g) => typeof g === 'string' && g !== '')
+        ) {
+          throw markNonRetryable(
+            new ProvisioningError(
+              `${logicalId} (${resourceType}): SecurityGroupIds must be a non-empty list of security group ids. The instance was not updated.`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+        if (ids.some((g) => isRecordedStandIn(g))) refuseStandIn('SecurityGroupIds');
+        plan.securityGroups = { kind: 'set', ids: ids as string[] };
+      }
+    }
+
+    // BlockDeviceMappings: only a DeleteOnTermination-only change reaches an
+    // in-place update; anything else the replacement rule routes away, and
+    // what is left here (a readback bag, a direct call) has no API.
+    const beforeBdm = previousProperties['BlockDeviceMappings'];
+    const afterBdm = properties['BlockDeviceMappings'];
+    if (
+      afterBdm !== undefined &&
+      (context?.changedProperties === undefined ||
+        context.changedProperties.has('BlockDeviceMappings')) &&
+      blockDeviceMappingsDifferOnlyInDeleteOnTermination(beforeBdm, afterBdm)
+    ) {
+      const flips: Array<{ DeviceName: string; DeleteOnTermination: boolean }> = [];
+      (afterBdm as Array<Record<string, unknown>>).forEach((m, i) => {
+        const before = (beforeBdm as Array<Record<string, unknown>>)[i];
+        const read = (x: Record<string, unknown> | undefined): boolean | undefined => {
+          const ebs = x?.['Ebs'] as Record<string, unknown> | undefined;
+          if (ebs === undefined || ebs === null) return undefined;
+          return this.coerceBool(ebs['DeleteOnTermination']) ?? true;
+        };
+        const want = read(m);
+        if (want !== undefined && want !== read(before) && typeof m['DeviceName'] === 'string') {
+          flips.push({ DeviceName: m['DeviceName'], DeleteOnTermination: want });
+        }
+      });
+      if (flips.length > 0) plan.deleteOnTermination = flips;
+    }
+
+    // A stop is needed: refuse an instance-store-backed one before any call.
+    if (plan.instanceType !== undefined || plan.userData !== undefined) {
+      let instance: Instance | undefined;
+      try {
+        const resp = await this.ec2Client.send(
+          new DescribeInstancesCommand({ InstanceIds: [physicalId] })
+        );
+        instance = resp.Reservations?.[0]?.Instances?.[0];
+      } catch (error) {
+        const cause = error instanceof Error ? error : undefined;
+        throw this.wrapCaughtError(
+          maskerOrIdentity(context?.maskSecrets),
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to update EC2 Instance ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        );
+      }
+      if (instance?.RootDeviceType === 'instance-store') {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `${[plan.instanceType !== undefined ? 'InstanceType' : '', plan.userData !== undefined ? 'UserData' : ''].filter(Boolean).join(' and ')} can change only on a stopped instance, and an instance-store-backed instance cannot be stopped; CloudFormation replaces it. Re-deploy with cdkd deploy --replace.`
+        );
+      }
+    }
+    return plan;
+  }
+
+  /**
+   * Issue #5446: apply a {@link planInstanceMemberUpdates} plan. The calls
+   * that need no interruption go first (groups, profile, DeleteOnTermination),
+   * then one stop -> modify -> start covers InstanceType and UserData
+   * together, as CloudFormation's single launch-time move shows. An instance
+   * the user had already stopped is modified and left stopped. A failure
+   * after the stop starts the instance again (best effort) before the error
+   * surfaces, so a failed update does not leave it down; an interrupt or an
+   * expired deadline says how to start it by hand. `--no-wait` skips only the
+   * final wait for `running`: the modify needs `stopped`.
+   */
+  private async applyInstanceMemberUpdates(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    plan: InstanceMemberPlan
+  ): Promise<void> {
+    if (plan.securityGroups !== undefined) {
+      const groups =
+        plan.securityGroups.kind === 'set'
+          ? plan.securityGroups.ids
+          : [await this.vpcDefaultSecurityGroupId(logicalId, physicalId, resourceType)];
+      await this.ec2Client.send(
+        new ModifyInstanceAttributeCommand({ InstanceId: physicalId, Groups: groups })
+      );
+    }
+
+    if (plan.profile !== undefined) {
+      await this.applyInstanceProfileChange(logicalId, physicalId, plan.profile);
+    }
+
+    if (plan.deleteOnTermination !== undefined) {
+      await this.ec2Client.send(
+        new ModifyInstanceAttributeCommand({
+          InstanceId: physicalId,
+          BlockDeviceMappings: plan.deleteOnTermination.map((f) => ({
+            DeviceName: f.DeviceName,
+            Ebs: { DeleteOnTermination: f.DeleteOnTermination },
+          })),
+        })
+      );
+    }
+
+    if (plan.instanceType === undefined && plan.userData === undefined) return;
+
+    let state = await this.readInstanceState(physicalId);
+    if (state === 'pending') {
+      state = await this.waitForInstanceState(logicalId, physicalId, resourceType, 'running');
+    } else if (state === 'stopping') {
+      state = await this.waitForInstanceState(logicalId, physicalId, resourceType, 'stopped');
+    }
+    const wasStopped = state === 'stopped';
+    if (!wasStopped && state !== 'running') {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${logicalId} (${resourceType}): instance ${physicalId} is ${state ?? 'not returned by DescribeInstances'}, so its InstanceType / UserData cannot be changed. The instance was not updated.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+
+    let stopIssued = false;
+    try {
+      if (!wasStopped) {
+        this.logger.info(
+          `Stopping EC2 Instance ${logicalId} (${physicalId}) to change its ${plan.instanceType !== undefined ? 'InstanceType' : ''}${plan.instanceType !== undefined && plan.userData !== undefined ? ' and ' : ''}${plan.userData !== undefined ? 'UserData' : ''}; it is started again afterwards`
+        );
+        await this.ec2Client.send(new StopInstancesCommand({ InstanceIds: [physicalId] }));
+        stopIssued = true;
+        await this.waitForInstanceState(logicalId, physicalId, resourceType, 'stopped');
+      }
+      if (plan.instanceType !== undefined) {
+        await this.ec2Client.send(
+          new ModifyInstanceAttributeCommand({
+            InstanceId: physicalId,
+            InstanceType: { Value: plan.instanceType },
+          })
+        );
+      }
+      if (plan.userData !== undefined) {
+        await this.ec2Client.send(
+          new ModifyInstanceAttributeCommand({
+            InstanceId: physicalId,
+            UserData: { Value: plan.userData },
+          })
+        );
+      }
+    } catch (error) {
+      if (stopIssued && !isInterruptedWaitError(error) && !enclosingDeadlineExpired()) {
+        try {
+          await this.ec2Client.send(new StartInstancesCommand({ InstanceIds: [physicalId] }));
+          this.logger.warn(
+            `${logicalId}: the InstanceType / UserData change failed after instance ${physicalId} was stopped; cdkd started it again with its previous settings.`
+          );
+        } catch (startError) {
+          this.logger.warn(
+            `${logicalId}: instance ${physicalId} was stopped for an InstanceType / UserData change that failed, and starting it again failed too (${describeAwsFailure(startError).summary}). Start it with: aws ec2 start-instances --instance-ids ${physicalId}`
+          );
+        }
+      } else if (stopIssued) {
+        this.logger.warn(
+          `${logicalId}: instance ${physicalId} was stopped for an InstanceType / UserData change that did not finish. Once it is stopped, start it with: aws ec2 start-instances --instance-ids ${physicalId}`
+        );
+      }
+      throw error;
+    }
+
+    if (wasStopped) return;
+    await this.ec2Client.send(new StartInstancesCommand({ InstanceIds: [physicalId] }));
+    if (process.env['CDKD_NO_WAIT'] === 'true') {
+      this.logger.debug(
+        `Instance ${physicalId} started (skipping running-state wait per --no-wait)`
+      );
+      return;
+    }
+    await this.waitForInstanceState(logicalId, physicalId, resourceType, 'running');
+  }
+
+  /** The instance's `State.Name`, or undefined when DescribeInstances omits it. */
+  private async readInstanceState(physicalId: string): Promise<string | undefined> {
+    const resp = await this.ec2Client.send(
+      new DescribeInstancesCommand({ InstanceIds: [physicalId] })
+    );
+    return resp.Reservations?.[0]?.Instances?.[0]?.State?.Name;
+  }
+
+  /**
+   * Poll DescribeInstances until the instance reaches `target` (issue #5446).
+   * Ctrl-C ends the wait with an `InterruptedWaitError`; the resource
+   * deadline ends it non-retryably, and so does a terminal state. Outside a
+   * deadline the wait is capped at {@link INSTANCE_STATE_WAIT_CAP_MS}.
+   */
+  private async waitForInstanceState(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    target: 'running' | 'stopped'
+  ): Promise<string> {
+    const watch = startInterruptWatch(`EC2 Instance ${logicalId} ${target} wait`);
+    const capAt = Date.now() + INSTANCE_STATE_WAIT_CAP_MS;
+    let last: string | undefined;
+    try {
+      for (;;) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        const remaining = Math.min(enclosingDeadlineRemainingMs(), capAt - Date.now());
+        if (remaining <= 0) {
+          throw markNonRetryable(
+            new ProvisioningError(
+              `${logicalId} (${resourceType}): timed out waiting for instance ${physicalId} to be ${target} (last state: ${last ?? 'none reported'})`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+        last = await this.readInstanceState(physicalId);
+        if (last === target) return last;
+        if (last === 'terminated' || last === 'shutting-down' || last === undefined) {
+          throw markNonRetryable(
+            new ProvisioningError(
+              `${logicalId} (${resourceType}): instance ${physicalId} is ${last ?? 'no longer returned by DescribeInstances'} while cdkd waited for it to be ${target}`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        await this.sleep(
+          Math.max(0, Math.min(INSTANCE_STATE_POLL_MS, enclosingDeadlineRemainingMs()))
+        );
+      }
+    } finally {
+      watch.dispose();
+    }
+  }
+
+  /** The `default` security group of the instance's VPC (a removed `SecurityGroupIds`). */
+  private async vpcDefaultSecurityGroupId(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string
+  ): Promise<string> {
+    const resp = await this.ec2Client.send(
+      new DescribeInstancesCommand({ InstanceIds: [physicalId] })
+    );
+    const vpcId = resp.Reservations?.[0]?.Instances?.[0]?.VpcId;
+    const groups =
+      vpcId === undefined
+        ? undefined
+        : await this.ec2Client.send(
+            new DescribeSecurityGroupsCommand({
+              Filters: [
+                { Name: 'vpc-id', Values: [vpcId] },
+                { Name: 'group-name', Values: ['default'] },
+              ],
+            })
+          );
+    const id = groups?.SecurityGroups?.[0]?.GroupId;
+    if (id === undefined) {
+      throw new ProvisioningError(
+        `${logicalId} (${resourceType}): SecurityGroupIds was removed, and the default security group of instance ${physicalId}'s VPC (${vpcId ?? 'unknown'}) could not be found to put in its place`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    return id;
+  }
+
+  /**
+   * Associate, replace or disassociate the instance's IAM instance profile
+   * (issue #5446). A profile created in the same deploy can still be
+   * propagating, so the associate / replace call retries through the same
+   * signals {@link ensureIamInstanceProfileAssociated} does.
+   */
+  private async applyInstanceProfileChange(
+    logicalId: string,
+    physicalId: string,
+    change: NonNullable<InstanceMemberPlan['profile']>
+  ): Promise<void> {
+    const assoc = await this.ec2Client.send(
+      new DescribeIamInstanceProfileAssociationsCommand({
+        Filters: [{ Name: 'instance-id', Values: [physicalId] }],
+      })
+    );
+    const current = assoc.IamInstanceProfileAssociations?.find(
+      (a) => a.State === 'associated' || a.State === 'associating'
+    );
+    if (change.kind === 'remove') {
+      if (current?.AssociationId === undefined) return;
+      await this.ec2Client.send(
+        new DisassociateIamInstanceProfileCommand({ AssociationId: current.AssociationId })
+      );
+      return;
+    }
+    const spec = change.arn !== undefined ? { Arn: change.arn } : { Name: change.name };
+    const maxAttempts = 10;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        if (current?.AssociationId !== undefined) {
+          await this.ec2Client.send(
+            new ReplaceIamInstanceProfileAssociationCommand({
+              AssociationId: current.AssociationId,
+              IamInstanceProfile: spec,
+            })
+          );
+        } else {
+          await this.ec2Client.send(
+            new AssociateIamInstanceProfileCommand({
+              InstanceId: physicalId,
+              IamInstanceProfile: spec,
+            })
+          );
+        }
+        return;
+      } catch (error) {
+        const msg = describeAwsFailure(error).detail;
+        if (this.isInstanceProfilePropagationError(msg) && attempt < maxAttempts) {
+          this.logger.debug(
+            `IAM instance profile not yet propagated for ${logicalId} (${physicalId}) (attempt ${attempt}/${maxAttempts}: ${msg}), retrying in ${attempt}s...`
+          );
+          await this.sleep(attempt * 1000);
+          continue;
+        }
+        throw error;
+      }
     }
   }
 

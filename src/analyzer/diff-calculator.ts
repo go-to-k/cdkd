@@ -1715,7 +1715,8 @@ export class DiffCalculator {
           resourceType,
           key,
           oldValue,
-          newValue
+          newValue,
+          { oldProperties: currentProperties, newProperties: desiredProperties }
         );
 
         // Schema fallback: only where the registry has NO explicit opinion (so
