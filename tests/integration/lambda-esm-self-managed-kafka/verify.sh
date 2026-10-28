@@ -25,6 +25,9 @@
 #   2b. Re-deploy with CDKD_TEST_REMOVAL=true too: the block leaves the
 #      template. Assert the schema registry is gone from AWS while provisioned
 #      mode, batchSize 20 and the LoggingConfig (the retained siblings) stay.
+#      The MaximumRetryAttempts / MaximumRecordAgeInSeconds Phase 2 added leave
+#      too: assert AWS keeps 3 / 3600, as CloudFormation does, and cdkd names
+#      them as kept (issue #1160).
 #   2c. Re-deploy with CDKD_TEST_ESM_DEFAULTS=true too: batchSize, the poller
 #      config and the LoggingConfig leave the template. Assert AWS reset them
 #      as CloudFormation does: BatchSize 100, no poller config, no LoggingConfig
@@ -287,6 +290,15 @@ if [ "${LOG_P2}" != "WARN" ]; then
 fi
 echo "    OK: the added LoggingConfig reached AWS"
 
+# The Kafka error-handling numerics this phase ADDED, the baseline Phase 2b
+# removes (#1160).
+RETRY_P2="$(esm_json | jq -r '"\(.MaximumRetryAttempts) \(.MaximumRecordAgeInSeconds)"')"
+if [ "${RETRY_P2}" != "3 3600" ]; then
+  echo "FAIL: after update, MaximumRetryAttempts / MaximumRecordAgeInSeconds read '${RETRY_P2}', expected '3 3600'" >&2
+  exit 1
+fi
+echo "    OK: the added MaximumRetryAttempts / MaximumRecordAgeInSeconds reached AWS"
+
 # Belt-and-braces only, for the reason Phase 1.5 gives: the baseline is the
 # readback captured by this same deploy. The AWS assertions above are the proof.
 DRIFT_RC=0
@@ -303,8 +315,38 @@ echo "    OK: no drift after the update"
 # --- Phase 2b: remove the schema registry -------------------------------
 echo "==> Phase 2b: re-deploy with CDKD_TEST_REMOVAL=true (the schema registry leaves the template)"
 wait_settled || { echo "FAIL: waiting for ESM ${UUID_P1} to settle failed" >&2; exit 1; }
+REMOVAL_LOG="$(mktemp)"
+REMOVAL_RC=0
 env -u CDKD_TEST_ESM_DEFAULTS -u CDKD_TEST_ESM_TOPIC CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${REMOVAL_LOG}" 2>&1 || REMOVAL_RC=$?
+cat "${REMOVAL_LOG}"
+if [ "${REMOVAL_RC}" != "0" ]; then
+  echo "FAIL: the Phase 2b deploy failed (exit ${REMOVAL_RC})" >&2
+  rm -f "${REMOVAL_LOG}"
+  exit 1
+fi
+# Issue #1160, third CloudFormation A/B: on a provisioned-mode Kafka mapping a
+# removed MaximumRetryAttempts / MaximumRecordAgeInSeconds is kept (CFn sent
+# neither). cdkd keeps them too, and names them as kept the way CFn keeps them.
+# The sentinel is the pre-fix line, which called CFn's answer unmeasured.
+RETRY_KEPT_LINE='properties MaximumRetryAttempts, MaximumRecordAgeInSeconds were removed from the template; the Kafka mapping keeps its current values, as CloudFormation keeps them.'
+if grep -F 'since what CloudFormation resets there is not measured' "${REMOVAL_LOG}" | grep -qF 'MaximumRetryAttempts'; then
+  echo "FAIL: cdkd still calls CloudFormation's answer for the removed Kafka retry settings unmeasured (issue #1160)" >&2
+  rm -f "${REMOVAL_LOG}"
+  exit 1
+fi
+if ! grep -qF "${RETRY_KEPT_LINE}" "${REMOVAL_LOG}"; then
+  echo "FAIL: the Phase 2b deploy did not name the kept MaximumRetryAttempts / MaximumRecordAgeInSeconds (issue #1160)" >&2
+  rm -f "${REMOVAL_LOG}"
+  exit 1
+fi
+rm -f "${REMOVAL_LOG}"
+RETRY_P3="$(esm_json | jq -r '"\(.MaximumRetryAttempts) \(.MaximumRecordAgeInSeconds)"')"
+if [ "${RETRY_P3}" != "3 3600" ]; then
+  echo "FAIL: after removing them from the template, MaximumRetryAttempts / MaximumRecordAgeInSeconds read '${RETRY_P3}'; CloudFormation keeps '3 3600' (issue #1160)" >&2
+  exit 1
+fi
+echo "    OK: the removed MaximumRetryAttempts / MaximumRecordAgeInSeconds were kept and named, as CloudFormation keeps them"
 wait_settled || { echo "FAIL: waiting for ESM ${UUID_P1} to settle failed" >&2; exit 1; }
 if [ "$(esm_uuid)" != "${UUID_P1}" ]; then
   echo "FAIL: ESM was REPLACED on the schema-registry removal, expected an in-place update" >&2

@@ -103,7 +103,101 @@ describe('LambdaEventSourceMappingProvider removal audit (issue #1160)', () => {
     ]);
   });
 
-  it('names every kept Kafka error-handling removal in one line', async () => {
+  // Third CloudFormation A/B: on a provisioned-mode Kafka mapping CFn sent
+  // neither key on their removal, and the mapping kept 3 / 3600.
+  describe('Kafka retry removals while provisioned mode stays declared', () => {
+    const kafka = {
+      FunctionName: 'fn',
+      EventSourceArn: KAFKA_ARN,
+      ProvisionedPollerConfig: { MinimumPollers: 1, MaximumPollers: 2 },
+    };
+    const cfnKeepsLines = (): string[] =>
+      warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes('as CloudFormation keeps'));
+
+    it('keeps both, as CloudFormation keeps them, in one line', async () => {
+      await provider.update('L', UUID, TYPE, kafka, {
+        ...kafka,
+        MaximumRetryAttempts: 3,
+        MaximumRecordAgeInSeconds: 3600,
+      });
+
+      const input = updateInput();
+      expect(input).not.toHaveProperty('MaximumRetryAttempts');
+      expect(input).not.toHaveProperty('MaximumRecordAgeInSeconds');
+      expect(keptLines()).toEqual([]);
+      expect(cfnKeepsLines()).toEqual([
+        'L (AWS::Lambda::EventSourceMapping): properties MaximumRetryAttempts, MaximumRecordAgeInSeconds were removed from the template; the Kafka mapping keeps its current values, as CloudFormation keeps them. Declare -1 for no limit instead.',
+      ]);
+    });
+
+    it.each(['MaximumRetryAttempts', 'MaximumRecordAgeInSeconds'])(
+      'words a lone %s removal in the singular',
+      async (key) => {
+        await provider.update('L', UUID, TYPE, kafka, { ...kafka, [key]: 5 });
+
+        expect(updateInput()).not.toHaveProperty(key);
+        expect(keptLines()).toEqual([]);
+        expect(cfnKeepsLines()).toEqual([
+          `L (AWS::Lambda::EventSourceMapping): property ${key} was removed from the template; the Kafka mapping keeps its current value, as CloudFormation keeps it. Declare -1 for no limit instead.`,
+        ]);
+      }
+    );
+
+    it('still names an unmeasured ParallelizationFactor in the general kept line', async () => {
+      await provider.update('L', UUID, TYPE, kafka, {
+        ...kafka,
+        MaximumRetryAttempts: 3,
+        ParallelizationFactor: 2,
+      });
+
+      expect(keptLines()).toEqual([
+        'L (AWS::Lambda::EventSourceMapping): property ParallelizationFactor was removed from the template; cdkd keeps the current AWS value on this Kafka mapping, since what CloudFormation resets there is not measured. Declare the value you want instead.',
+      ]);
+      expect(cfnKeepsLines()).toHaveLength(1);
+      expect(cfnKeepsLines()[0]).toContain('property MaximumRetryAttempts was removed');
+    });
+
+    it('words the line as absent from what is restored on a rollback replay', async () => {
+      await provider.update(
+        'L',
+        UUID,
+        TYPE,
+        kafka,
+        { ...kafka, MaximumRecordAgeInSeconds: 3600 },
+        { replayingState: true }
+      );
+
+      expect(cfnKeepsLines()).toEqual([
+        'L (AWS::Lambda::EventSourceMapping): property MaximumRecordAgeInSeconds is absent from the configuration being restored; the Kafka mapping keeps its current value, as CloudFormation keeps it. Declare -1 for no limit instead.',
+      ]);
+    });
+
+    it('keeps the unmeasured line on a provisioned-mode SQS mapping', async () => {
+      const sqs = { ...kafka, EventSourceArn: SQS_ARN };
+      await provider.update('L', UUID, TYPE, sqs, { ...sqs, MaximumRetryAttempts: 3 });
+
+      expect(cfnKeepsLines()).toEqual([]);
+      expect(keptLines()).toEqual([
+        'L (AWS::Lambda::EventSourceMapping): property MaximumRetryAttempts was removed from the template; cdkd keeps the current AWS value on this SQS mapping, since what CloudFormation resets there is not measured. Declare the value you want instead.',
+      ]);
+    });
+
+    it('falls back to the unmeasured line when the update also leaves provisioned mode', async () => {
+      const { ProvisionedPollerConfig: _ppc, ...leaving } = kafka;
+      await provider.update('L', UUID, TYPE, leaving, { ...kafka, MaximumRetryAttempts: 3 });
+
+      expect(updateInput()['ProvisionedPollerConfig']).toEqual({});
+      expect(updateInput()).not.toHaveProperty('MaximumRetryAttempts');
+      expect(cfnKeepsLines()).toEqual([]);
+      expect(keptLines()).toEqual([
+        'L (AWS::Lambda::EventSourceMapping): property MaximumRetryAttempts was removed from the template; cdkd keeps the current AWS value on this Kafka mapping, since what CloudFormation resets there is not measured. Declare the value you want instead.',
+      ]);
+    });
+  });
+
+  it('names every kept Kafka error-handling removal in one line outside provisioned mode', async () => {
     const kafka = { FunctionName: 'fn', EventSourceArn: KAFKA_ARN };
     await provider.update('L', UUID, TYPE, kafka, {
       ...kafka,

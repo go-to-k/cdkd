@@ -46,7 +46,9 @@ import {
  *
  * REMOVAL phase (CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true) drops the schema
  * registry again while keeping provisioned mode and batchSize 20, so the
- * removal must reach AWS as the `{ SchemaRegistryConfig: {} }` reset.
+ * removal must reach AWS as the `{ SchemaRegistryConfig: {} }` reset. It also
+ * drops the `MaximumRetryAttempts` / `MaximumRecordAgeInSeconds` the UPDATE
+ * phase added, which CloudFormation keeps (issue #1160).
  *
  * DEFAULTS phase (the above plus CDKD_TEST_ESM_DEFAULTS=true, issue #1160)
  * drops `batchSize`, the poller config and the `LoggingConfig` the UPDATE phase
@@ -128,5 +130,12 @@ export class LambdaEsmSelfManagedKafkaStack extends cdk.Stack {
     if (isTopicChange) cfnEsm.addPropertyOverride('Topics', ['cdkd-integ-topic-5356']);
     if (isDefaults) cfnEsm.addPropertyDeletionOverride('BatchSize');
     else if (isUpdate) cfnEsm.addPropertyOverride('LoggingConfig', { SystemLogLevel: 'WARN' });
+    // Issue #1160 (third CFn A/B): the Kafka error-handling numerics, which AWS
+    // takes in provisioned mode only. The REMOVAL phase drops them while the
+    // poller config stays; CloudFormation keeps both values, and so must cdkd.
+    if (isUpdate && !isRemoval) {
+      cfnEsm.addPropertyOverride('MaximumRetryAttempts', 3);
+      cfnEsm.addPropertyOverride('MaximumRecordAgeInSeconds', 3600);
+    }
   }
 }

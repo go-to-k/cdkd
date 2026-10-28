@@ -1327,6 +1327,17 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     // silently only where the A/B showed CloudFormation keeps it too: an SQS
     // mapping's ProvisionedPollerConfig and a Kafka mapping's batching window.
     const kept: string[] = [];
+    // Issue #1160, third CloudFormation A/B (us-east-1, 2026-10-28, a
+    // self-managed Kafka mapping in provisioned mode): removing
+    // `MaximumRetryAttempts: 3` / `MaximumRecordAgeInSeconds: 3600` while
+    // ProvisionedPollerConfig stayed declared read back 3 / 3600, as
+    // CloudFormation sent neither. cdkd keeps them too and says so. MSK shares
+    // the `kafka` kind and is assumed to match. When the update also leaves
+    // provisioned mode, CloudFormation's answer is not measured, so the
+    // general kept line below names them instead.
+    const keptAsCfnKeeps: string[] = [];
+    const kafkaStaysProvisioned =
+      prevKind === 'kafka' && properties['ProvisionedPollerConfig'] !== undefined;
     if (wasSet('BatchSize') && !DEFAULT_BATCH_SIZE_BY_KIND.has(prevKind)) kept.push('BatchSize');
     if (
       wasSet('MaximumBatchingWindowInSeconds') &&
@@ -1341,8 +1352,18 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         'ParallelizationFactor',
         'TumblingWindowInSeconds',
       ]) {
-        if (wasSet(key)) kept.push(key);
+        if (!wasSet(key)) continue;
+        const measuredKeep =
+          kafkaStaysProvisioned &&
+          (key === 'MaximumRetryAttempts' || key === 'MaximumRecordAgeInSeconds');
+        (measuredKeep ? keptAsCfnKeeps : kept).push(key);
       }
+    }
+    if (keptAsCfnKeeps.length > 0) {
+      const one = keptAsCfnKeeps.length === 1;
+      log.warn(
+        safeMsg`${logicalId} (${resourceType}): ${one ? 'property' : 'properties'} ${keptAsCfnKeeps.join(', ')} ${removed(one)}; the Kafka mapping keeps its current ${one ? 'value' : 'values'}, as CloudFormation keeps ${one ? 'it' : 'them'}. Declare -1 for no limit instead.`
+      );
     }
     if (wasSet('FunctionResponseTypes') && !KINDS_WITH_FUNCTION_RESPONSE_TYPES.has(prevKind))
       kept.push('FunctionResponseTypes');
