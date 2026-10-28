@@ -44,6 +44,7 @@ import { resolveReplayProps, refuseMaskedReplayBaseline } from './replay-props.j
 import { updateWithRollbackRetry, recordAfterRollbackUpdate } from './replay-retry.js';
 import { maskRestoredNoEchoRecord, substituteMarkedNoEchoLeaves } from './replay-noecho.js';
 import type { ReplayOpScope } from './replay-scope.js';
+import { unsettledContextOf } from '../../state/unsettled-properties.js';
 
 /**
  * How the reverse replacement hands this arm an old resource that survived
@@ -634,6 +635,9 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
           replayingState: true,
           recordedAttributes: current.attributes,
           ...(revertClaimed && { inlinePolicyClaimed: revertClaimed }),
+          // go-to-k/cdkd#5380: what either record names unsettled is
+          // converged against AWS, since the record built below clears it.
+          ...unsettledContextOf(current, previousState),
         },
       ],
       op.logicalId,

@@ -36,6 +36,12 @@
 #      S3DestinationConfiguration (issue #5439: cdkd refused the update, while
 #      a measured CloudFormation change set updates it in place). The change
 #      must apply with the stream's CreateTimestamp unchanged.
+#   3g. Redeploy adding the encryption block under a 30s Firehose deadline:
+#      the Start is sent and the deploy fails mid-transition. The record must
+#      name the key unsettled (and `cdkd drift --json` list it); once the
+#      stream reads ENABLED, a redeploy of the unencrypted template must
+#      converge it to DISABLED and clear the name (issue #5380: the record
+#      kept the old block, so that redeploy diffed empty and sent nothing).
 #   4. Destroy, assert the streams, both buckets, the role and the cdkd state
 #      file are gone -- immediately, with no polling.
 #
@@ -352,6 +358,64 @@ assert_eq "legacy-S3 stream BufferingHints.SizeInMBs after Phase 3f (issue #5439
 P3F_CREATED="$(legacy_desc CreateTimestamp)"
 assert_eq "legacy-S3 stream CreateTimestamp after Phase 3f (the update must apply in place, not replace the stream)" "${P3F_PRE_CREATED}" "${P3F_CREATED}"
 echo "    legacy S3 destination updated in place, CreateTimestamp unchanged (issue #5439)"
+
+# --- Phase 3g: an encryption change the deadline cut short (issue #5380) ---
+# The Start is sent within seconds and the ENABLING transition takes 80-95 s,
+# so a 30 s per-type deadline fails the update AFTER the irreversible call.
+# Before the fix the record kept the previous (unencrypted) block and nothing
+# else, so the redeploy of that same template below diffed empty and sent
+# nothing: the stream stayed ENABLED. Now the record names the key unsettled
+# and the redeploy reads the stream and stops encryption.
+unsettled_of_stream() { # the stream record's unsettledProperties, comma-joined
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+    | jq -r --arg name "${NAME}" '[.resources[]
+        | select(.resourceType == "AWS::KinesisFirehose::DeliveryStream" and .physicalId == $name)
+        | (.unsettledProperties // [])[]] | join(",")'
+}
+P3G_PRE="$(firehose_enc Status)"
+assert_eq "Firehose encryption before Phase 3g" "DISABLED" "${P3G_PRE}"
+echo "==> Phase 3g: redeploy adding encryption under a 30s Firehose deadline (must fail mid-transition)"
+set +e
+CDKD_SRD_PHASE=b CDKD_SRD_TAG=updated CDKD_SRD_FILE_EXT=.ndjson CDKD_SRD_TRIM=1 CDKD_SRD_LEGACY_V2=1 CDKD_SRD_ENC=1 \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --resource-warn-after AWS::KinesisFirehose::DeliveryStream=10s \
+  --resource-timeout AWS::KinesisFirehose::DeliveryStream=30s
+P3G_EXIT=$?
+set -e
+if [ "${P3G_EXIT}" -eq 0 ]; then
+  echo "FAIL: Phase 3g's deploy succeeded; the 30s deadline must cut the ENABLING transition short (premise of the arm)" >&2
+  exit 1
+fi
+P3G_UNSETTLED="$(unsettled_of_stream)"
+assert_eq "stream record's unsettledProperties after the cut-short deploy (issue #5380: a failed update recorded nothing it had applied)" \
+  "DeliveryStreamEncryptionConfigurationInput" "${P3G_UNSETTLED}"
+# `cdkd drift` names it too; its exit code reports the drift itself.
+P3G_DRIFT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json || true)"
+P3G_DRIFT_UNSETTLED="$(printf '%s' "${P3G_DRIFT}" \
+  | jq -r '[.[].unsettled // [] | .[] | .properties[]] | join(",")')"
+assert_eq "cdkd drift --json unsettled properties after Phase 3g (issue #5380)" \
+  "DeliveryStreamEncryptionConfigurationInput" "${P3G_DRIFT_UNSETTLED}"
+# Let the transition AWS accepted finish, so the next phase starts from a
+# stream that holds the attempted block while the record holds none.
+P3G_SETTLED=""
+for _ in $(seq 1 40); do
+  P3G_SETTLED="$(firehose_enc Status)"
+  [ "${P3G_SETTLED}" != "ENABLING" ] && break
+  sleep 5
+done
+assert_eq "Firehose encryption once the cut-short Start finished" "ENABLED" "${P3G_SETTLED}"
+
+echo "==> Phase 3g: redeploy the template without encryption (the record's own block)"
+CDKD_SRD_PHASE=b CDKD_SRD_TAG=updated CDKD_SRD_FILE_EXT=.ndjson CDKD_SRD_TRIM=1 CDKD_SRD_LEGACY_V2=1 \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+P3G_STATUS="$(firehose_enc Status)"
+assert_eq "Firehose encryption after redeploying the recorded template (issue #5380: the redeploy diffed empty and left the stream encrypted)" \
+  "DISABLED" "${P3G_STATUS}"
+P3G_AFTER="$(unsettled_of_stream)"
+assert_eq "stream record's unsettledProperties after the converging deploy" "" "${P3G_AFTER}"
+P3G_CREATED="$(firehose_created)"
+assert_eq "Firehose CreateTimestamp after Phase 3g (encryption must converge in place)" "${PRE_CREATED}" "${P3G_CREATED}"
+echo "    the unsettled encryption converged on redeploy (issue #5380)"
 
 # --- Phase 4: destroy, everything gone at once ---------------------------
 STREAM_ARN="$(stream_arn)"

@@ -39,6 +39,16 @@ On this page:
                         └─────────────┘ └───────────────┘ └──────────────┘
 ```
 
+The resource whose update failed is not reverted by the automatic rollback.
+When its update had already sent a change that AWS applies on its own time
+(today, a Firehose delivery stream's encryption Start or Stop), cdkd records
+the property as unsettled on that resource, because AWS may finish the change
+or keep the old setting. `cdkd drift` lists such properties. The next
+`cdkd deploy` sends them again, whichever template it deploys, and the
+provider reads AWS and changes only what differs. A successful
+`cdkd drift --accept` or `--revert` of the resource clears the mark too,
+unless AWS is still making the change (run it again once the change ends).
+
 A failed deploy can also leave an orphaned resource, which is one that exists
 in AWS but is in no cdkd state file. cdkd saves state after every completed
 resource, so orphans are rare. They have three sources:

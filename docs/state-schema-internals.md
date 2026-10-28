@@ -167,7 +167,7 @@ when it was first sent, written BEFORE the create is sent. It holds no secret.
 
 The write-ahead copy of a first deploy's `stackInstanceId`
 (`{"stackInstanceVersion": 1, "stackInstanceId": "<uuid>"}`), described with
-[schema version 13](#version-13-adds-stackinstanceid-current-writers). It
+[schema version 13](#version-13-adds-stackinstanceid). It
 exists only between a first deploy's first create and its first state save,
 or after such a deploy was interrupted. `s3:DeleteObject` on its key is
 required wherever deleting the stack record is: `deleteState` deletes it
@@ -411,7 +411,7 @@ region the CDK app declares.
 ## Schema version history
 
 
-Writers always emit the current version, `version: 13`. Readers accept every
+Writers always emit the current version, `version: 14`. Readers accept every
 earlier version and upgrade it in memory; the next write persists the current
 shape. A binary that meets a version newer than it knows refuses the record
 with an "Upgrade cdkd" error.
@@ -431,6 +431,7 @@ with an "Upgrade cdkd" error.
 | 11 | `noEchoLeaves` / `noEchoAttributeNames` on each resource; `NoEcho` values stored as `***` |
 | 12 | `referenceProvenance` on each resource, `outputReferenceProvenance` on the stack |
 | 13 | `stackInstanceId` and `retiredNameGenerations` on the stack, `nameGeneration` / `nameGenerationHigh` on each resource |
+| 14 | `unsettledProperties` on each resource |
 
 `version: 2` and `version: 4` have no section of their own below: the first is
 the key layout every later section assumes, and the second is described with
@@ -1293,7 +1294,7 @@ value dropped, the time, and a count of every AWS SDK command it sent, by
 client and command (`src/utils/sdk-call-log.ts`). Nothing of a request,
 response or flag value is kept.
 
-### `version: 13` adds `stackInstanceId` (current writers)
+### `version: 13` adds `stackInstanceId`
 
 Schema `version: 13` adds `StackState.stackInstanceId` (issue
 [#5064](https://github.com/go-to-k/cdkd/issues/5064)): a `crypto.randomUUID()`
@@ -1383,6 +1384,45 @@ No read-time migration: a v12 document is read unchanged and stays a LEGACY
 stack (no id) forever, through every later write. The bump exists because an
 older binary rebuilds a record field by field and would drop the id; it
 refuses a `version: 13` record with the "Upgrade cdkd" error instead.
+
+### `version: 14` adds `unsettledProperties` (current writers)
+
+Schema `version: 14` adds `ResourceState.unsettledProperties` (issue
+[#5380](https://github.com/go-to-k/cdkd/issues/5380)): the top-level property
+NAMES, never values, whose change a failed `update()` had started with an
+irreversible call, so AWS may hold the recorded value, the attempted one, or
+neither. `properties` keeps the recorded value.
+
+A provider calls `UpdateContext.markUnsettled(key)` immediately before such a
+call (Firehose: before `StartDeliveryStreamEncryption` /
+`StopDeliveryStreamEncryption`), never for a refusal or a failed read before
+it. The engine keeps only a key the update sends or the record holds. The marks are held on the engine (`DeployEngine.unsettledMarks`), outside
+the provider's promise, so a mark survives the per-resource deadline's race,
+Ctrl-C and a retried attempt. A failed update's marks are written onto its
+record in `execute.ts` before any later save, unioned with the record's own; a
+successful update, and the update-not-supported replacement fallback once its
+create succeeded, discard them; the post-rollback save records any mark made
+while the rollback ran.
+
+The next deploy reads the field through `unsettledPropertiesOf`
+(`src/state/unsettled-properties.ts`, malformed = none). The diff adds each
+name as an in-place change labelled `unsettled` even when the template and
+the record agree, the no-change skips do not fire, the name is in
+`UpdateContext.changedProperties`, and `UpdateContext.unsettledProperties`
+tells the provider to compare the desired value with what AWS holds and
+converge it. The record the update writes carries no field, which clears it.
+`recordAfterRollbackUpdate` drops it (a rollback revert, `--revert-failed`,
+`drift --revert`); the two rollback arms hand the names to `update()` as
+`UpdateContext.unsettledProperties` first, so they are converged rather than
+skipped. A successful `drift --accept` / `--revert` of the resource drops them
+too, except a name the provider's optional `unsettledInTransition` reports AWS
+is still changing (Firehose: ENABLING / DISABLING). `cdkd drift`
+lists the names in the human report and as `unsettled` in `--json`.
+
+A bump, for v10's reason: an older binary rewriting the record would drop the
+names, and a later deploy back to the recorded template would diff empty and
+leave AWS on the other side. A v13 document is read unchanged (nothing
+unsettled).
 
 ## Fields added without a version bump
 

@@ -548,6 +548,17 @@ export class DeployEngine {
   attemptedResolvedProps = new Map<string, Record<string, unknown>>();
 
   /**
+   * go-to-k/cdkd#5380: per logical id, the top-level property names this
+   * deploy's `update()` declared (`UpdateContext.markUnsettled`) it was about
+   * to change with an irreversible call. Held HERE, outside the provider's
+   * promise, so a mark survives the per-resource deadline's race, Ctrl-C and a
+   * retried attempt; a successful update deletes its entry, a failed one is
+   * recorded on the resource's record at the failure save.
+   */
+  /** @internal */
+  unsettledMarks = new Map<string, Set<string>>();
+
+  /**
    * go-to-k/cdkd#3252: the Cloud Control CREATEs an earlier run stopped
    * waiting for that completed in AWS, by logical id, which this deploy's
    * CREATE of that logical id takes over instead of making another
@@ -994,6 +1005,7 @@ export class DeployEngine {
     // otherwise journal the PREVIOUS run's bag against today's template and
     // pairs — and now mark it as today's.
     this.attemptedResolvedProps = new Map();
+    this.unsettledMarks = new Map();
     this.resumedCreates = new Map();
     this.generatedNameGuard = undefined;
     this.liveTaskLabels = new Map();
