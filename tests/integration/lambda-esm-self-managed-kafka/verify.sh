@@ -330,7 +330,7 @@ fi
 # neither). cdkd keeps them too, and names them as kept the way CFn keeps them.
 # The sentinel is the pre-fix line, which called CFn's answer unmeasured.
 RETRY_KEPT_LINE='properties MaximumRetryAttempts, MaximumRecordAgeInSeconds were removed from the template; the Kafka mapping keeps its current values, as CloudFormation keeps them.'
-if grep -F 'since what CloudFormation resets there is not measured' "${REMOVAL_LOG}" | grep -qF 'MaximumRetryAttempts'; then
+if awk 'index($0, "since what CloudFormation resets there is not measured") && index($0, "MaximumRetryAttempts") { found = 1 } END { exit !found }' "${REMOVAL_LOG}"; then
   echo "FAIL: cdkd still calls CloudFormation's answer for the removed Kafka retry settings unmeasured (issue #1160)" >&2
   rm -f "${REMOVAL_LOG}"
   exit 1
@@ -367,6 +367,9 @@ fi
 echo "    OK: the schema registry was removed; provisioned mode, batchSize 20 and the LoggingConfig stayed"
 
 # --- Phase 2c: remove batchSize, the poller config and the LoggingConfig -----
+# The mapping still holds the MaximumRetryAttempts / MaximumRecordAgeInSeconds
+# Phase 2b kept. A direct UpdateEventSourceMapping probe (#1160) showed AWS
+# accepts clearing the poller config with `{}` while they are set.
 echo "==> Phase 2c: re-deploy with CDKD_TEST_ESM_DEFAULTS=true (batchSize, poller config and LoggingConfig leave the template)"
 env -u CDKD_TEST_ESM_TOPIC CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_ESM_DEFAULTS=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes

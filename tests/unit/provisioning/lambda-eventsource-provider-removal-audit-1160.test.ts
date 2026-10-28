@@ -184,6 +184,16 @@ describe('LambdaEventSourceMappingProvider removal audit (issue #1160)', () => {
       ]);
     });
 
+    it('falls back to the unmeasured line when the update enters provisioned mode', async () => {
+      const { ProvisionedPollerConfig: _ppc, ...onDemand } = kafka;
+      await provider.update('L', UUID, TYPE, kafka, { ...onDemand, MaximumRetryAttempts: 3 });
+
+      expect(cfnKeepsLines()).toEqual([]);
+      expect(keptLines()).toEqual([
+        'L (AWS::Lambda::EventSourceMapping): property MaximumRetryAttempts was removed from the template; cdkd keeps the current AWS value on this Kafka mapping, since what CloudFormation resets there is not measured. Declare the value you want instead.',
+      ]);
+    });
+
     it('falls back to the unmeasured line when the update also leaves provisioned mode', async () => {
       const { ProvisionedPollerConfig: _ppc, ...leaving } = kafka;
       await provider.update('L', UUID, TYPE, leaving, { ...kafka, MaximumRetryAttempts: 3 });

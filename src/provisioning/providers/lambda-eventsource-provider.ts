@@ -1332,12 +1332,14 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     // `MaximumRetryAttempts: 3` / `MaximumRecordAgeInSeconds: 3600` while
     // ProvisionedPollerConfig stayed declared read back 3 / 3600, as
     // CloudFormation sent neither. cdkd keeps them too and says so. MSK shares
-    // the `kafka` kind and is assumed to match. When the update also leaves
-    // provisioned mode, CloudFormation's answer is not measured, so the
+    // the `kafka` kind and is assumed to match. When the update enters or
+    // leaves provisioned mode, CloudFormation's answer is not measured, so the
     // general kept line below names them instead.
     const keptAsCfnKeeps: string[] = [];
     const kafkaStaysProvisioned =
-      prevKind === 'kafka' && properties['ProvisionedPollerConfig'] !== undefined;
+      prevKind === 'kafka' &&
+      previousProperties['ProvisionedPollerConfig'] !== undefined &&
+      properties['ProvisionedPollerConfig'] !== undefined;
     if (wasSet('BatchSize') && !DEFAULT_BATCH_SIZE_BY_KIND.has(prevKind)) kept.push('BatchSize');
     if (
       wasSet('MaximumBatchingWindowInSeconds') &&
