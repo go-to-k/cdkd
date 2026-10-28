@@ -15,6 +15,11 @@
 # Phases:
 #   1. Deploy the table with only the `pk` partition key; capture its
 #      CreationDateTime + assert no GSI.
+#   1c. Add `gsi1` under a 10s per-type deadline: the deploy fails mid
+#      backfill and the record must name GlobalSecondaryIndexes unsettled; a
+#      same-template retry while CREATING must be refused; once ACTIVE, a
+#      redeploy of the base template must delete the index and clear the name
+#      (go-to-k/cdkd#5487).
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (adds GSI `gsi1` on `gsipk`).
 #      Assert: deploy succeeds, the table's CreationDateTime is UNCHANGED (no
 #      replacement), GSI `gsi1` exists and reaches ACTIVE, and the table routes
@@ -263,6 +268,80 @@ case "${WARM_P1}" in
     ;;
 esac
 echo "    baseline WarmThroughput=${WARM_P1}"
+
+# --- Phase 1c: a GSI add the deadline cut short (go-to-k/cdkd#5487) ------
+# UpdateTable's GSI Create is accepted at once and the index backfills
+# (CREATING) for minutes, so a 10s per-type deadline fails the update after
+# the call. Before the fix the record kept "no GSI", so the redeploy of the
+# base template below diffed empty and the index stayed. Now the record names
+# GlobalSecondaryIndexes unsettled; a same-template retry while the index is
+# CREATING is refused (a moving index is never diffed); once it is ACTIVE, the
+# base redeploy compares the live indexes with the template and deletes it.
+table_unsettled() { # the table record's unsettledProperties, comma-joined
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+    | jq -r --arg name "${TABLE_NAME}" '[.resources[]
+        | select(.resourceType == "AWS::DynamoDB::Table" and .physicalId == $name)
+        | (.unsettledProperties // [])[]] | join(",")'
+}
+gsi_status() {
+  aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query "Table.GlobalSecondaryIndexes[?IndexName=='${GSI_NAME}'].IndexStatus | [0]" --output text
+}
+echo "==> Phase 1c: add ${GSI_NAME} under a 10s DynamoDB deadline (must fail while the index backfills)"
+set +e
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --resource-warn-after AWS::DynamoDB::Table=5s --resource-timeout AWS::DynamoDB::Table=10s
+P1C_EXIT=$?
+set -e
+if [ "${P1C_EXIT}" -eq 0 ]; then
+  echo "FAIL: Phase 1c's deploy succeeded; the 10s deadline must cut the GSI backfill short (premise of the arm)" >&2
+  exit 1
+fi
+case ",$(table_unsettled)," in
+  *,GlobalSecondaryIndexes,*) : ;;
+  *) echo "FAIL: table record's unsettledProperties after the cut-short GSI add is '$(table_unsettled)', expected it to name GlobalSecondaryIndexes (go-to-k/cdkd#5487)" >&2; exit 1 ;;
+esac
+if [ "$(gsi_status)" = "CREATING" ]; then
+  P1C_RETRY_LOG="$(mktemp)"
+  set +e
+  CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${P1C_RETRY_LOG}" 2>&1
+  P1C_RETRY_EXIT=$?
+  set -e
+  if [ "${P1C_RETRY_EXIT}" -eq 0 ] || ! grep -q "AWS is still changing it" "${P1C_RETRY_LOG}"; then
+    echo "FAIL: the same-template retry while ${GSI_NAME} is CREATING must be refused as in transition (exit ${P1C_RETRY_EXIT}):" >&2
+    cat "${P1C_RETRY_LOG}" >&2
+    exit 1
+  fi
+  echo "    the same-template retry during the backfill was refused and kept the name"
+fi
+P1C_STATUS=""
+P1C_T0="$(date +%s)"
+for _ in $(seq 1 360); do
+  P1C_STATUS="$(gsi_status)"
+  [ "${P1C_STATUS}" = "ACTIVE" ] && break
+  sleep 5
+done
+if [ "${P1C_STATUS}" != "ACTIVE" ]; then
+  echo "FAIL: ${GSI_NAME} is '${P1C_STATUS}' after the cut-short add, expected it to reach ACTIVE within the 30-min bound" >&2
+  exit 1
+fi
+echo "    ${GSI_NAME} reached ACTIVE $(( $(date +%s) - P1C_T0 ))s after the cut-short add returned"
+echo "==> Phase 1c: redeploy the base template (no GSI, the record's own value)"
+env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+P1C_COUNT="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+  --query 'length(Table.GlobalSecondaryIndexes || `[]`)' --output text)"
+if [ "${P1C_COUNT}" != "0" ]; then
+  echo "FAIL: ${P1C_COUNT} GSI(s) after redeploying the base template, expected 0 (go-to-k/cdkd#5487: the redeploy diffed empty and left the index)" >&2
+  exit 1
+fi
+if [ -n "$(table_unsettled)" ]; then
+  echo "FAIL: table record still names unsettled properties after the converging deploy: $(table_unsettled)" >&2
+  exit 1
+fi
+echo "    the unsettled GSI add converged on redeploy (go-to-k/cdkd#5487)"
 
 # --- Phase 2: add a GSI (in-place UPDATE, must NOT replace) ------------
 echo "==> Phase 2: re-deploy adding GSI ${GSI_NAME} (in-place UpdateTable)"
