@@ -234,27 +234,16 @@ if [ "${P2_FIELDS}" != "${P2_EXPECTED}" ]; then
 fi
 echo "    OK: removed fields cleared and the lifecycle back to 900 / 28800, in place (issue #1160)"
 
-# Issue #5433, LOG-ONLY premise probe: does removing the authorizer drop the
-# service-managed Lattice gateway's ENIs from the auth VPC, or do they stay
-# until the runtime is deleted? Records the answer; never fails the run (a
-# probe ERROR still fails loudly). The gate is Phase 3's VPC-gone assertion,
-# and the stack orders the runtime's delete before the VPC's.
-enis="?"
-for _ in $(seq 1 12); do
-  enis=$(aws ec2 describe-network-interfaces --region "${REGION}" --filters "Name=vpc-id,Values=${AUTH_VPC_ID}" \
-    --query 'length(NetworkInterfaces)' --output text) \
-    || { echo "FAIL (issue #5433): the ENI probe on auth VPC ${AUTH_VPC_ID} failed" >&2; exit 1; }
-  [ "${enis}" = "0" ] && break
-  sleep 10
-done
-if [ "${enis}" = "0" ]; then
-  echo "    NOTE (issue #5433): premise HOLDS - no network interface left in auth VPC ${AUTH_VPC_ID} after the private endpoint was removed"
-else
-  echo "    NOTE (issue #5433): premise FAILS - ${enis} network interface(s) still in auth VPC ${AUTH_VPC_ID} 120s after the private endpoint was removed:"
-  aws ec2 describe-network-interfaces --region "${REGION}" --filters "Name=vpc-id,Values=${AUTH_VPC_ID}" \
-    --query 'NetworkInterfaces[].[NetworkInterfaceId,InterfaceType,Description]' --output text \
-    || { echo "FAIL (issue #5433): the ENI listing on auth VPC ${AUTH_VPC_ID} failed" >&2; exit 1; }
-fi
+# Issue #5433, LOG-ONLY: AgentCore keeps the managed Lattice resource gateway
+# after the authorizer is removed and deletes it with the runtime (measured
+# with CloudFormation in us-east-1: still ACTIVE 10 min after the removal,
+# gone about 1 min into the runtime's delete). Recorded, never a failure;
+# Phase 3's VPC-gone assertion is the gate, and the stack orders the
+# runtime's delete before the VPC's. A probe ERROR still fails loudly.
+enis=$(aws ec2 describe-network-interfaces --region "${REGION}" --filters "Name=vpc-id,Values=${AUTH_VPC_ID}" "Name=description,Values=Resource Gateway Interface*" \
+  --query 'length(NetworkInterfaces)' --output text) \
+  || { echo "FAIL (issue #5433): the ENI probe on auth VPC ${AUTH_VPC_ID} failed" >&2; exit 1; }
+echo "    NOTE (issue #5433): ${enis} resource gateway interface(s) in auth VPC ${AUTH_VPC_ID} after the private endpoint was removed (expected: kept until the runtime is deleted)"
 
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"

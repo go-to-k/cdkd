@@ -7,7 +7,7 @@ This example demonstrates deploying an Amazon Bedrock AgentCore Runtime using cd
 - **AgentCore Runtime (Code)** - Runtime with S3 code asset source
 - **AgentCore Runtime (Docker)** - Runtime with ECR Docker asset source
 - **Cognito User Pool** - the OIDC issuer the code runtime's JWT authorizer points at
-- **VPC** (isolated subnets, no NAT) - the managed VPC Lattice private endpoint the JWT authorizer uses in Phase 1
+- **VPC** (public + private subnets, one NAT gateway) - the managed VPC Lattice private endpoint the JWT authorizer uses in Phase 1; the NAT gives AgentCore the egress it needs to validate the Cognito discovery URL
 
 ## What `verify.sh` checks
 

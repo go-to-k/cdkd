@@ -35,8 +35,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * Lattice private endpoint whose `ManagedVpcResource.Tags` carry keys a
  * first-letter case flip would change (`Env`, `Cost-Center`) or the readback
  * flip would (`lowerKey`); verify.sh reads them back from AWS and through
- * `cdkd drift`. The VPC (isolated subnets, no NAT) stays in both phases so
- * the removal phase only drops the endpoint with the authorizer.
+ * `cdkd drift`. AgentCore Identity validates the discovery URL from INSIDE
+ * the VPC (through the Lattice resource gateway), so the gateway's subnets
+ * need egress to the public Cognito endpoint: one NAT gateway (an isolated
+ * VPC fails the create with "Failed to validate discovery url"). The VPC
+ * stays in both phases so the removal phase only drops the endpoint with the
+ * authorizer.
  *
  * covers: AWS::BedrockAgentCore::Runtime
  */
@@ -86,9 +90,10 @@ export class BedrockAgentcoreStack extends cdk.Stack {
     const authAzs = process.env.CDKD_AUTH_AZS?.split(',').filter((az) => az !== '');
     const authVpc = new ec2.Vpc(this, 'AuthVpc', {
       ...(authAzs && authAzs.length > 0 ? { availabilityZones: authAzs } : { maxAzs: 2 }),
-      natGateways: 0,
+      natGateways: 1,
       subnetConfiguration: [
-        { name: 'isolated', subnetType: ec2.SubnetType.PRIVATE_ISOLATED, cidrMask: 24 },
+        { name: 'public', subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 },
+        { name: 'private', subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS, cidrMask: 24 },
       ],
     });
     // Both phases: destroy deletes the runtime (and its managed endpoint)
@@ -100,7 +105,7 @@ export class BedrockAgentcoreStack extends cdk.Stack {
         {
           ManagedVpcResource: {
             VpcIdentifier: authVpc.vpcId,
-            SubnetIds: authVpc.isolatedSubnets.map((s) => s.subnetId),
+            SubnetIds: authVpc.privateSubnets.map((s) => s.subnetId),
             EndpointIpAddressType: 'IPV4',
             Tags: { Env: 'cdkd-integ', 'Cost-Center': '5433', lowerKey: 'v' },
           },
