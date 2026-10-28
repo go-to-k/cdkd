@@ -11,6 +11,7 @@ Minimal VPC and Security Group deployment example for cdkd.
 - **Security Group** - Allows inbound HTTP (port 80) from anywhere
 - **Second VPC** - A bare VPC with DNS support off, for the removal phase
 - **Private hosted zone** - Associated with the main VPC, for the removal phase
+- **Two tenancy VPCs** - Bare VPCs (dedicated, default) whose `InstanceTenancy` the removal phase changes
 
 No EC2 instances are created to avoid costs.
 
@@ -26,6 +27,9 @@ No EC2 instances are created to avoid costs.
   CloudFormation does, and warns once (same phase, issue #1160)
 - Changing and removing a tag on the Internet Gateway, the public Route Table
   and the custom Network ACL updates each in place (same phase, issue #5448)
+- Removing `InstanceTenancy` from a dedicated VPC changes it to `default` in
+  place, and `default` -> `dedicated` replaces the VPC, as CloudFormation does
+  (same phase, issue #5449)
 
 ## Deploy
 

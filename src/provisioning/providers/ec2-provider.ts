@@ -4,6 +4,7 @@ import {
   CreateVpcCommand,
   DeleteVpcCommand,
   ModifyVpcAttributeCommand,
+  ModifyVpcTenancyCommand,
   DescribeVpcAttributeCommand,
   DescribeVpcsCommand,
   DescribeInternetGatewaysCommand,
@@ -2459,6 +2460,25 @@ export class EC2Provider implements ResourceProvider {
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
+      // InstanceTenancy (go-to-k/cdkd#5449; CloudFormation measured on a
+      // throwaway stack, us-east-1): `dedicated` -> `default` and a removal
+      // from `dedicated` update the VPC in place (ModifyVpcTenancy, the only
+      // direction AWS offers); `default` -> `dedicated` creates a new VPC,
+      // routed to replacement by `vpcInstanceTenancyChangeReplaces`. Only
+      // `cdkd drift --revert` reaches here with that direction, so it is
+      // refused, before any call, rather than silently left as is. An absent
+      // value is `default`; the call itself is sent after the DNS attributes.
+      const tenancyOf = (v: unknown): string => (v === undefined ? 'default' : String(v));
+      const newTenancy = tenancyOf(properties['InstanceTenancy']);
+      const oldTenancy = tenancyOf(previousProperties['InstanceTenancy']);
+      if (newTenancy !== oldTenancy && newTenancy !== 'default') {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          'destroy + redeploy the VPC (and the resources that depend on it). AWS changes InstanceTenancy in place only to default, and CloudFormation creates a new VPC for this change'
+        );
+      }
+
       // Coerce CFn-string-or-bool ("true" | true) into a real boolean so the
       // diff below treats `"true"` and `true` as the same value.
       const asBool = (v: unknown): boolean | undefined => {
@@ -2497,6 +2517,12 @@ export class EC2Provider implements ResourceProvider {
         );
       }
 
+      if (newTenancy !== oldTenancy) {
+        await this.ec2Client.send(
+          new ModifyVpcTenancyCommand({ VpcId: physicalId, InstanceTenancy: 'default' })
+        );
+      }
+
       // Update tags (diff add/remove against previousProperties)
       await this.applyTagDiff(
         physicalId,
@@ -2518,6 +2544,9 @@ export class EC2Provider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // The InstanceTenancy refusal is control flow the deploy engine matches
+      // BY CLASS; a re-wrap would hide it.
+      if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
         maskerOrIdentity(context?.maskSecrets),
@@ -3575,8 +3604,12 @@ export class EC2Provider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    // Tags and InstanceId (association) are mutable in place; Domain / pool /
-    // border group are create-only and handled by the replacement path.
+    // Tags and InstanceId (association) are mutable in place. NetworkBorderGroup
+    // is create-only (the replacement path). A Domain or PublicIpv4Pool change
+    // is deliberately not applied: CloudFormation neither replaces the address
+    // nor changes it (go-to-k/cdkd#5449, measured: change set "Modify,
+    // RequiresRecreation: Never", and the executed update kept the same
+    // allocation, domain and pool), and AWS has no call to move one.
     this.logger.debug(`Updating EIP ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);

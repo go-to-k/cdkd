@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   ModifyVpcAttributeCommand,
+  ModifyVpcTenancyCommand,
   ModifySubnetAttributeCommand,
   DescribeSubnetsCommand,
   CreateTagsCommand,
@@ -70,6 +71,7 @@ describe('EC2Provider read-update round-trip', () => {
   // Helpers — count mutating SDK calls (anything that writes to AWS).
   const mutatingCommandTypes: Array<new (...args: never[]) => unknown> = [
     ModifyVpcAttributeCommand,
+    ModifyVpcTenancyCommand,
     ModifySubnetAttributeCommand,
     CreateTagsCommand,
     DeleteTagsCommand,
@@ -139,6 +141,63 @@ describe('EC2Provider read-update round-trip', () => {
         (c) => c[0] instanceof ModifyVpcAttributeCommand
       );
       expect(modifyCalls).toHaveLength(1);
+    });
+  });
+
+  describe('AWS::EC2::VPC InstanceTenancy (#5449)', () => {
+    const tenancyCalls = (): unknown[] =>
+      mockSend.mock.calls.filter((c) => c[0] instanceof ModifyVpcTenancyCommand).map((c) => c[0].input);
+
+    it.each([
+      ['dedicated -> default', { InstanceTenancy: 'dedicated' }, { InstanceTenancy: 'default' }],
+      ['a removal from dedicated', { InstanceTenancy: 'dedicated' }, {}],
+    ])('%s sends one ModifyVpcTenancy to default on the same VPC', async (_l, prev, next) => {
+      mockSend.mockResolvedValue({});
+      const base = { CidrBlock: '10.0.0.0/16' };
+      const result = await provider.update(
+        'Vpc',
+        'vpc-123',
+        'AWS::EC2::VPC',
+        { ...base, ...next },
+        { ...base, ...prev }
+      );
+      expect(result.physicalId).toBe('vpc-123');
+      expect(result.wasReplaced).toBe(false);
+      expect(tenancyCalls()).toEqual([{ VpcId: 'vpc-123', InstanceTenancy: 'default' }]);
+    });
+
+    it.each([
+      ['no change', { InstanceTenancy: 'dedicated' }, { InstanceTenancy: 'dedicated' }],
+      ['absent -> default', {}, { InstanceTenancy: 'default' }],
+      ['default -> absent', { InstanceTenancy: 'default' }, {}],
+    ])('%s sends no ModifyVpcTenancy', async (_l, prev, next) => {
+      mockSend.mockResolvedValue({});
+      await provider.update('Vpc', 'vpc-123', 'AWS::EC2::VPC', next, prev);
+      expect(tenancyCalls()).toEqual([]);
+      expect(countMutatingCalls()).toBe(0);
+    });
+
+    it('refuses a change to dedicated (CloudFormation replaces) before any call, unwrapped', async () => {
+      const error = await provider
+        .update(
+          'Vpc',
+          'vpc-123',
+          'AWS::EC2::VPC',
+          {
+            InstanceTenancy: 'dedicated',
+            EnableDnsHostnames: true,
+            Tags: [{ Key: 'k', Value: 'new' }],
+          },
+          {
+            InstanceTenancy: 'default',
+            EnableDnsHostnames: false,
+            Tags: [{ Key: 'k', Value: 'old' }],
+          }
+        )
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((error as Error).message).toContain('InstanceTenancy in place only to default');
+      expect(countMutatingCalls()).toBe(0);
     });
   });
 
