@@ -220,7 +220,12 @@ for lid in ${TAGGED_LOGICAL_IDS}; do
     echo "FAIL: ${lid} physical id missing from state (issue #5448)" >&2
     exit 1
   fi
-  pair=$(tag_pair "${pid}")
+  pair=""
+  for _ in 1 2 3 4 5 6; do
+    pair=$(tag_pair "${pid}") || pair="<describe-tags failed>"
+    [ "${pair}" = "one/x" ] && break
+    sleep 5
+  done
   if [ "${pair}" != "one/x" ]; then
     echo "FAIL: ${lid} (${pid}) after create: cdkd-5448/cdkd-5448-gone='${pair}', expected 'one/x' (issue #5448)" >&2
     exit 1
@@ -355,7 +360,7 @@ fi
 for pid in ${P2_TAGGED_IDS}; do
   pair=""
   for _ in 1 2 3 4 5 6; do
-    pair=$(tag_pair "${pid}")
+    pair=$(tag_pair "${pid}") || pair="<describe-tags failed>"
     [ "${pair}" = "two/" ] && break
     sleep 5
   done
