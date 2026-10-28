@@ -7007,8 +7007,11 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createVpc"
+            "createVpc",
+            "update",
+            "updateVpc"
           ]
         },
         {

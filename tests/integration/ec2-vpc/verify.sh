@@ -13,7 +13,9 @@
 # cdkd must send no DisassociateVPCFromHostedZone, keep the zone on the VPC,
 # and print one warning naming the kept associations (issue #1160). It also
 # changes one tag and drops another on the IGW, the public RouteTable and the
-# custom NACL, asserted in place on the same physical ids (issue #5448). Then
+# custom NACL, asserted in place on the same physical ids (issue #5448), and
+# changes two VPCs' InstanceTenancy: a removal from dedicated is one in-place
+# ModifyVpcTenancy, default -> dedicated replaces the VPC (issue #5449). Then
 # destroys clean.
 #
 # Required env vars:
@@ -165,6 +167,25 @@ if [ "${MAIN_DNS}" != "True/True" ] || [ "${OFF_DNS}" != "False/False" ]; then
 fi
 echo "    OK: baseline DNS hostnames/support True/True and False/False"
 
+# Issue #5449 baseline: TenancyDownVpc is dedicated and TenancyUpVpc default
+# first, so default / dedicated afterwards are the Phase 2 update's doing.
+tenancy() { # usage: tenancy <vpc-id>
+  aws ec2 describe-vpcs --vpc-ids "$1" --region "${REGION}" --query 'Vpcs[0].InstanceTenancy' --output text
+}
+DOWN_VPC=$(physical_id TenancyDownVpc)
+UP_VPC=$(physical_id TenancyUpVpc)
+if [ -z "${DOWN_VPC}" ] || [ -z "${UP_VPC}" ]; then
+  echo "FAIL: tenancy VPC physical ids missing from state: TenancyDownVpc='${DOWN_VPC}' TenancyUpVpc='${UP_VPC}' (issue #5449)" >&2
+  exit 1
+fi
+P1_DOWN_TENANCY=$(tenancy "${DOWN_VPC}") || P1_DOWN_TENANCY="<describe-vpcs failed>"
+P1_UP_TENANCY=$(tenancy "${UP_VPC}") || P1_UP_TENANCY="<describe-vpcs failed>"
+if [ "${P1_DOWN_TENANCY}" != "dedicated" ] || [ "${P1_UP_TENANCY}" != "default" ]; then
+  echo "FAIL: InstanceTenancy after create: ${DOWN_VPC}='${P1_DOWN_TENANCY}' (expected dedicated), ${UP_VPC}='${P1_UP_TENANCY}' (expected default) (issue #5449)" >&2
+  exit 1
+fi
+echo "    OK: baseline InstanceTenancy dedicated on ${DOWN_VPC}, default on ${UP_VPC}"
+
 # Issue #1160 baseline: the private zone is associated with the main VPC
 # only, so an association still there after the removal is the keep.
 zone_vpcs() { # usage: zone_vpcs <zone-id> -> sorted VPC ids, space-separated
@@ -274,6 +295,43 @@ if [ "${RM_MAIN_DNS}" != "False/True" ] || [ "${RM_OFF_DNS}" != "False/True" ]; 
 fi
 echo "    OK: removed DNS hostnames reset to False, removed DNS support reset to True, in place (issue #1160)"
 
+# Issue #5449: dropping InstanceTenancy from a dedicated VPC is an in-place
+# ModifyVpcTenancy to default; default -> dedicated creates a new VPC and
+# deletes the old one, as CloudFormation does (measured, us-east-1).
+P2_DOWN_VPC=$(physical_id TenancyDownVpc)
+P2_UP_VPC=$(physical_id TenancyUpVpc)
+if [ "${P2_DOWN_VPC}" != "${DOWN_VPC}" ]; then
+  echo "FAIL: TenancyDownVpc was replaced by an InstanceTenancy removal (must change in place): '${DOWN_VPC}' -> '${P2_DOWN_VPC}' (issue #5449)" >&2
+  exit 1
+fi
+# Bounded read: EC2's describe APIs are eventually consistent.
+P2_DOWN_TENANCY=""
+for _ in 1 2 3 4 5 6; do
+  P2_DOWN_TENANCY=$(tenancy "${DOWN_VPC}") || P2_DOWN_TENANCY="<describe-vpcs failed>"
+  [ "${P2_DOWN_TENANCY}" = "default" ] && break
+  sleep 5
+done
+if [ "${P2_DOWN_TENANCY}" != "default" ]; then
+  echo "FAIL: ${DOWN_VPC} kept InstanceTenancy '${P2_DOWN_TENANCY}' after the property was removed; CloudFormation changes it to default in place (issue #5449)" >&2
+  exit 1
+fi
+if [ -z "${P2_UP_VPC}" ] || [ "${P2_UP_VPC}" = "${UP_VPC}" ]; then
+  echo "FAIL: TenancyUpVpc '${UP_VPC}' was not replaced by default -> dedicated (state now '${P2_UP_VPC}'); CloudFormation creates a new VPC (issue #5449)" >&2
+  exit 1
+fi
+P2_UP_TENANCY=""
+for _ in 1 2 3 4 5 6; do
+  P2_UP_TENANCY=$(tenancy "${P2_UP_VPC}") || P2_UP_TENANCY="<describe-vpcs failed>"
+  [ "${P2_UP_TENANCY}" = "dedicated" ] && break
+  sleep 5
+done
+if [ "${P2_UP_TENANCY}" != "dedicated" ]; then
+  echo "FAIL: replacement VPC ${P2_UP_VPC} has InstanceTenancy '${P2_UP_TENANCY}', expected dedicated (issue #5449)" >&2
+  exit 1
+fi
+assert_gone "the replaced TenancyUpVpc '${UP_VPC}' still exists after Phase 2 (issue #5449)" aws ec2 describe-vpcs --vpc-ids "${UP_VPC}" --region "${REGION}"
+echo "    OK: ${DOWN_VPC} changed to default in place, ${UP_VPC} replaced by dedicated ${P2_UP_VPC} (issue #5449)"
+
 # Issue #5070: a NACL entry rule change is "Update requires: No interruption"
 # in CloudFormation, served by one atomic ReplaceNetworkAclEntry. A delete +
 # create leaves rule 100 absent between the two calls, so the SDK call log
@@ -286,6 +344,12 @@ fi
 p2_calls() { # <command name> [client name, default EC2Client]
   node -e 'const fs=require("fs");let n=0;for(const l of fs.readFileSync(process.argv[1],"utf8").split("\n")){if(l.trim()==="")continue;n+=JSON.parse(l).counts[process.argv[3]+"."+process.argv[2]]??0}process.stdout.write(String(n))' "${P2_CALLS}" "$1" "${2:-EC2Client}"
 }
+P2_TENANCY="$(p2_calls ModifyVpcTenancyCommand)"
+if [ "${P2_TENANCY}" != "1" ]; then
+  echo "FAIL: expected exactly one ModifyVpcTenancy in Phase 2 (the TenancyDownVpc removal), found ${P2_TENANCY} (issue #5449)" >&2
+  cat "${P2_CALLS}" >&2
+  exit 1
+fi
 P2_REPLACE="$(p2_calls ReplaceNetworkAclEntryCommand)"
 P2_DELETE="$(p2_calls DeleteNetworkAclEntryCommand)"
 P2_CREATE="$(p2_calls CreateNetworkAclEntryCommand)"
@@ -380,7 +444,9 @@ env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" destroy "${STACK}" \
 
 assert_gone "VPC '${MAIN_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${MAIN_VPC}" --region "${REGION}"
 assert_gone "VPC '${OFF_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${OFF_VPC}" --region "${REGION}"
-echo "    OK: both VPCs are gone"
+assert_gone "VPC '${DOWN_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${DOWN_VPC}" --region "${REGION}"
+assert_gone "VPC '${P2_UP_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${P2_UP_VPC}" --region "${REGION}"
+echo "    OK: all four VPCs are gone"
 assert_gone "private hosted zone '${ZONE_ID}' still exists after destroy" aws route53 get-hosted-zone --id "${ZONE_ID}"
 echo "    OK: the private hosted zone is gone"
 
@@ -388,4 +454,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ec2-vpc test passed (removed VPC DNS attributes reset + in-place NACL entry change + kept private zone VPCs + in-place IGW / RouteTable / NACL tags + clean destroy)"
+echo "==> ec2-vpc test passed (removed VPC DNS attributes reset + in-place NACL entry change + kept private zone VPCs + in-place IGW / RouteTable / NACL tags + VPC InstanceTenancy + clean destroy)"

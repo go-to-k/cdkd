@@ -43,6 +43,19 @@ interface ReplacementRule {
 }
 
 /**
+ * Conditional-replacement predicate for `AWS::EC2::VPC.InstanceTenancy`
+ * (issue [#5449](https://github.com/go-to-k/cdkd/issues/5449)). MEASURED
+ * against CloudFormation (us-east-1, 2026-10-28; change sets say
+ * `Replacement: Conditional`): `default` -> `dedicated` creates a new VPC,
+ * while `dedicated` -> `default` and a removal from `dedicated` keep the VPC
+ * and change it in place (ModifyVpcTenancy). An absent value is `default`.
+ */
+export function vpcInstanceTenancyChangeReplaces(oldValue: unknown, newValue: unknown): boolean {
+  const tenancyOf = (v: unknown): string => (v == null ? 'default' : String(v));
+  return tenancyOf(newValue) !== 'default' && tenancyOf(newValue) !== tenancyOf(oldValue);
+}
+
+/**
  * Conditional-replacement predicate for `AWS::EC2::Instance.SecurityGroupIds`
  * (issue [#5446](https://github.com/go-to-k/cdkd/issues/5446)). MEASURED
  * against CloudFormation (us-east-1, 2026-10-28, change sets say
@@ -1018,6 +1031,20 @@ export class ReplacementRulesRegistry {
     // registered targets (Cluster/Instance Identifiers) are mutable.
     this.rules.set('AWS::RDS::DBProxyTargetGroup', {
       replacementProperties: new Set(['DBProxyName', 'TargetGroupName']),
+    });
+
+    // EC2 VPC (issue #5449) — InstanceTenancy is not createOnly in the registry
+    // schema, but only a change TO `default` is in place; see the predicate.
+    // The registry schema's createOnly list is named here too, so the
+    // classification survives a DescribeType failure (as for the Subnet).
+    this.rules.set('AWS::EC2::VPC', {
+      replacementProperties: new Set([
+        'CidrBlock',
+        'Ipv4IpamPoolId',
+        'Ipv4NetmaskLength',
+        'VpcEncryptionControl',
+      ]),
+      conditionalReplacements: new Map([['InstanceTenancy', vpcInstanceTenancyChangeReplaces]]),
     });
 
     // EC2 Subnet — VpcId / CidrBlock / AvailabilityZone are createOnly per

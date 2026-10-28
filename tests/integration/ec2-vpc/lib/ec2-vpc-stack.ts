@@ -18,6 +18,7 @@ import * as route53 from 'aws-cdk-lib/aws-route53';
  * - Removal of the VPC DNS attributes (CDKD_TEST_REMOVAL, issue #1160)
  * - An in-place NACL entry rule change in the same deploy (issue #5070)
  * - In-place tag changes on the IGW, public RouteTable and NACL (issue #5448)
+ * - VPC InstanceTenancy dedicated -> default in place, default -> dedicated replaced (issue #5449)
  * - A private hosted zone whose `VPCs` the removal phase drops (issue #1160)
  * - Fn::GetAtt for outputs (VPC ID, Security Group ID, Subnet IDs, NACL ID, EIP, Launch Template)
  *
@@ -63,6 +64,20 @@ export class Ec2VpcStack extends cdk.Stack {
     const dnsOffVpc = new ec2.CfnVPC(this, 'DnsOffVpc', {
       cidrBlock: '10.1.0.0/16',
       ...(isRemoval ? {} : { enableDnsHostnames: false, enableDnsSupport: false }),
+    });
+
+    // Issue #5449: two bare VPCs whose InstanceTenancy the removal phase
+    // changes. CloudFormation (measured, us-east-1) changes dedicated -> default
+    // in place, here by dropping the property, and creates a new VPC for
+    // default -> dedicated. No subnets or instances, so no dedicated-tenancy
+    // charge.
+    const tenancyDownVpc = new ec2.CfnVPC(this, 'TenancyDownVpc', {
+      cidrBlock: '10.2.0.0/16',
+      ...(isRemoval ? {} : { instanceTenancy: 'dedicated' }),
+    });
+    const tenancyUpVpc = new ec2.CfnVPC(this, 'TenancyUpVpc', {
+      cidrBlock: '10.3.0.0/16',
+      instanceTenancy: isRemoval ? 'dedicated' : 'default',
     });
 
     // Issue #1160: a private hosted zone on the main VPC. The removal phase
@@ -175,6 +190,11 @@ export class Ec2VpcStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'DnsOffVpcId', {
       value: dnsOffVpc.ref,
       description: 'DNS-support-off VPC ID (issue #1160 removal phase)',
+    });
+
+    new cdk.CfnOutput(this, 'TenancyVpcIds', {
+      value: cdk.Fn.join(',', [tenancyDownVpc.ref, tenancyUpVpc.ref]),
+      description: 'InstanceTenancy VPC IDs (issue #5449 removal phase)',
     });
 
     new cdk.CfnOutput(this, 'PrivateZoneId', {
