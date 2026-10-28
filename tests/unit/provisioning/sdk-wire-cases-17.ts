@@ -313,9 +313,10 @@ const armHostedZone = (physicalId: string, bag: Bag): void => {
       VPCs: vpcs.map((v) => ({ VPCId: v['VPCId'], VPCRegion: v['VPCRegion'] })),
     }),
     UpdateHostedZoneFeaturesCommand: (input) => {
-      // The API requires the boolean; refusing a request without it, as
-      // Route 53 does, keeps the settle wait from polling a status that never
-      // arrives.
+      // A test device, not measured Route 53 behaviour (the SDK model marks
+      // the member optional): a mutation dropping the boolean would leave
+      // the status DISABLED and the settle wait polling real timers until
+      // its deadline, so refusing turns that probe red at once.
       if (typeof input['EnableAcceleratedRecovery'] !== 'boolean') {
         throw new Error('InvalidInput: EnableAcceleratedRecovery is required');
       }
