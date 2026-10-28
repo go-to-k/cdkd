@@ -5,8 +5,12 @@ CodeBuild Project removal-semantics fixture for cdkd (issue
 
 ## Resources
 
-- **AWS::CodeBuild::Project** — a `NO_SOURCE` project with an inline buildspec
-  (never built; the fixture only exercises the control plane).
+- **AWS::CodeBuild::Project** — a `CODECOMMIT`-source project with an inline
+  buildspec (never built; the fixture only exercises the control plane, so the
+  repositories it names are never created).
+- **AWS::EC2::VPC / Subnet / SecurityGroup** and **AWS::S3::Bucket** — kept in
+  both phases for the project's `VpcConfig` and secondary artifact
+  ([#5492](https://github.com/go-to-k/cdkd/issues/5492)).
 - **AWS::IAM::Role** — the CDK L2's generated build service role, reused as the
   batch-build service role.
 
@@ -26,6 +30,13 @@ resets exactly ONE of the eight optional fields this provider forwards:
 | `AutoRetryLimit` | retained | pass-through (parity) |
 | `Cache` | retained | pass-through (parity) |
 | `LogsConfig` | retained | pass-through (parity) |
+
+A second CloudFormation A/B
+([#5492](https://github.com/go-to-k/cdkd/issues/5492)) showed CloudFormation
+also KEEPS a removed `VpcConfig`, `FileSystemLocations`, `SecondarySources`,
+`SecondarySourceVersions`, `SecondaryArtifacts` and `BadgeEnabled` (its
+`UpdateProject` omits them), so Phase 1 sets all six and Phase 2 drops them and
+asserts each is still live.
 
 Phase 1 deploys with all eight set. Phase 2 (`CDKD_TEST_REMOVAL=true`) drops
 all eight from the template and asserts BOTH halves of that table: the batch

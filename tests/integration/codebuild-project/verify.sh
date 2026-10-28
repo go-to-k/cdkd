@@ -2,7 +2,7 @@
 # cdkd integration test: AWS::CodeBuild::Project removal semantics (issue #1160
 # codebuild batch).
 #
-# Deploys a NO_SOURCE project carrying BuildBatchConfig plus the seven optional
+# Deploys a project carrying BuildBatchConfig plus the seven optional
 # UpdateProject fields a live CFn A/B (2026-08-10) proved CloudFormation
 # RETAINS on removal. Then re-deploys with CDKD_TEST_REMOVAL=true, which drops
 # ALL EIGHT from the template, and asserts the asymmetry cdkd now matches:
@@ -19,6 +19,11 @@
 # and asserts the PRIVATE / no-role reset CloudFormation applies. It also
 # declares `EncryptionKey` + `Tags`, and Phase 2 asserts the managed-key reset
 # and the tag removal CloudFormation applies (go-to-k/cdkd#1160).
+#
+# Phase 1 also declares `VpcConfig`, `FileSystemLocations`, `SecondarySources`,
+# `SecondarySourceVersions`, `SecondaryArtifacts` and `BadgeEnabled`; Phase 2
+# drops all six and asserts they are still live, which is what CloudFormation
+# does (CFn A/B, go-to-k/cdkd#5492).
 #
 # Then destroys and confirms a clean teardown.
 #
@@ -233,6 +238,21 @@ assert_field "logsConfig.cloudWatchLogs.status" '.logsConfig.cloudWatchLogs.stat
 # go-to-k/cdkd#1160 baselines, so the Phase 2 resets cannot pass vacuously.
 assert_field "encryptionKey (the managed key's KEY ARN)" '.encryptionKey' "${CDKD_INTEG_CB_KEY_ARN}"
 assert_field "user tags"                       '[.tags[]? | select(.key | startswith("aws:") | not) | "\(.key)=\(.value)"] | join(",")' 'cdkd-integ-tag=phase1'
+# go-to-k/cdkd#5492 baselines: the six fields CloudFormation KEEPS on removal.
+# Asserted here so the Phase 2 retention reads cannot pass on fields that never
+# landed.
+assert_field "vpcConfig subnet + security group count" \
+  '[(.vpcConfig.subnets // [] | length), (.vpcConfig.securityGroupIds // [] | length)] | join(",")' '1,1'
+VPC_ID_P1="$(project_field '.vpcConfig.vpcId')"
+case "${VPC_ID_P1}" in
+  vpc-?*) echo "    ok: vpcConfig.vpcId = ${VPC_ID_P1}" ;;
+  *) echo "FAIL: vpcConfig.vpcId: expected a vpc- id, got '${VPC_ID_P1}'" >&2; exit 1 ;;
+esac
+assert_field "fileSystemLocations identifiers"  '[.fileSystemLocations[]?.identifier] | join(",")' 'efs1'
+assert_field "secondarySources identifiers"     '[.secondarySources[]?.sourceIdentifier] | join(",")' 'src2'
+assert_field "secondarySourceVersions"          '[.secondarySourceVersions[]? | "\(.sourceIdentifier)=\(.sourceVersion)"] | join(",")' 'src2=refs/heads/main'
+assert_field "secondaryArtifacts identifiers"   '[.secondaryArtifacts[]?.artifactIdentifier] | join(",")' 'art2'
+assert_field "badge.badgeEnabled"               '.badge.badgeEnabled' 'true'
 # go-to-k/cdkd#2762: the UpdateProjectVisibility pair after CreateProject.
 assert_field "projectVisibility"               '.projectVisibility'      'PUBLIC_READ'
 ROLE_ARN_P1="$(project_field '.serviceRole')"
@@ -300,7 +320,7 @@ fi
 echo "    ok: recreate refused, project intact (${PROJECT_ARN_P1B}, created ${PROJECT_CREATED_P1B})"
 
 # --- Phase 2: removal redeploy ---------------------------------------
-echo "==> Phase 2: redeploy with CDKD_TEST_REMOVAL=true (drops all eight)"
+echo "==> Phase 2: redeploy with CDKD_TEST_REMOVAL=true (drops the optional fields)"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -334,6 +354,18 @@ assert_field "concurrentBuildLimit retained"   '.concurrentBuildLimit'   '2'
 assert_field "autoRetryLimit retained"         '.autoRetryLimit'         '3'
 assert_field "cache.type retained"             '.cache.type'             'LOCAL'
 assert_field "logsConfig retained"             '.logsConfig.cloudWatchLogs.status' 'DISABLED'
+
+echo "==> Phase 2: the six fields CFn KEEPS (go-to-k/cdkd#5492) must be unchanged"
+# CFn A/B: CloudFormation's UpdateProject omitted each removed member and the
+# live value stayed, so cdkd must send nothing for them either. A provider that
+# "fixed" any of them into a reset (an empty list, `badgeEnabled: false`) fails
+# here.
+assert_field "vpcConfig retained"               '.vpcConfig.vpcId' "${VPC_ID_P1}"
+assert_field "fileSystemLocations retained"     '[.fileSystemLocations[]?.identifier] | join(",")' 'efs1'
+assert_field "secondarySources retained"        '[.secondarySources[]?.sourceIdentifier] | join(",")' 'src2'
+assert_field "secondarySourceVersions retained" '[.secondarySourceVersions[]? | "\(.sourceIdentifier)=\(.sourceVersion)"] | join(",")' 'src2=refs/heads/main'
+assert_field "secondaryArtifacts retained"      '[.secondaryArtifacts[]?.artifactIdentifier] | join(",")' 'art2'
+assert_field "badge.badgeEnabled retained"      '.badge.badgeEnabled' 'true'
 
 # Replacement guard: the removal must be an in-place UPDATE. A same-name
 # replacement would delete and re-create the project, which would also clear
