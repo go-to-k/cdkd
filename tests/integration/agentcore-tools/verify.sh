@@ -4,7 +4,8 @@
 # Exercises the three AgentCore tool-side SDK Providers:
 #   - AWS::BedrockAgentCore::Browser (adopt-only default singleton)
 #   - AWS::BedrockAgentCore::CodeInterpreter (adopt-only default singleton)
-#   - AWS::BedrockAgentCore::Evaluator (custom code-based evaluator)
+#   - AWS::BedrockAgentCore::Evaluator (custom code-based evaluator, and an
+#     LLM-as-a-judge one with a multi-dimensional rating scale, #5432)
 #
 # Phases:
 #   1. Deploy; assert the default browser / code interpreter were adopted
@@ -15,6 +16,9 @@
 #      back to TRACE (#1160). A CloudFormation A/B kept a removed Evaluator
 #      Description, so assert the live one survives, in place; the Level
 #      change proves the redeploy reached UpdateEvaluator.
+#   The judge evaluator's RatingScale.MultiDimensional (#5432) must read back
+#   with its 2 dimensions after Phase 1 and 3 after Phase 2 (in place). Before
+#   the SDK bump cdkd's client dropped the member: the read was empty.
 #   4. Destroy; assert the evaluator is gone, the AWS-managed defaults are
 #      STILL there (no-op delete must not touch them), and state is removed.
 #
@@ -62,12 +66,14 @@ STACK="CdkdAgentcoreToolsExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 EVALUATOR_NAME="cdkd_integ_agentcore_evaluator"
+JUDGE_NAME="cdkd_integ_agentcore_judge"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 # Resolve the fixture evaluator's id by its fixed name prefix (the service
 # appends a random 10-char suffix to EvaluatorName).
 find_evaluator_id() {
+  local name="${1:-${EVALUATOR_NAME}}"
   # Strict: errexit is CLEARED inside $( ) command substitutions (bash without
   # inherit_errexit), so an intermediate capture failure would NOT abort this
   # body on its own -- the explicit `|| return 1` propagates the probe error
@@ -75,7 +81,7 @@ find_evaluator_id() {
   # silently reading as "no evaluator".
   local out
   out="$(aws bedrock-agentcore-control list-evaluators --region "${REGION}" \
-    --query "evaluators[?starts_with(evaluatorId, '${EVALUATOR_NAME}-')].evaluatorId | [0]" \
+    --query "evaluators[?starts_with(evaluatorId, '${name}-')].evaluatorId | [0]" \
     --output text)" || return 1
   printf '%s\n' "${out}" | grep -v '^None$' || true
 }
@@ -86,11 +92,13 @@ cleanup() {
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
-  LEFTOVER_ID="$(find_evaluator_id)"
-  if [ -n "${LEFTOVER_ID}" ]; then
-    aws bedrock-agentcore-control delete-evaluator --evaluator-id "${LEFTOVER_ID}" \
-      --region "${REGION}" >/dev/null 2>&1 || true
-  fi
+  for name in "${EVALUATOR_NAME}" "${JUDGE_NAME}"; do
+    LEFTOVER_ID="$(find_evaluator_id "${name}")"
+    if [ -n "${LEFTOVER_ID}" ]; then
+      aws bedrock-agentcore-control delete-evaluator --evaluator-id "${LEFTOVER_ID}" \
+        --region "${REGION}" >/dev/null 2>&1 || true
+    fi
+  done
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -120,6 +128,28 @@ if ! aws bedrock-agentcore-control get-browser --browser-id aws.browser.v1 \
   exit 1
 fi
 
+# Pre-flight (#5432): the judge assertions read multiDimensional through the
+# AWS CLI, whose own model drops a member it predates, so an old CLI would
+# read an empty scale and blame cdkd. Refuse to run on one.
+if ! aws bedrock-agentcore-control create-evaluator help 2>/dev/null | grep -q multiDimensional; then
+  echo "FAIL: this AWS CLI does not model RatingScale.multiDimensional; upgrade it before running this integ" >&2
+  exit 1
+fi
+
+# The judge evaluator's dimension names, in order, one line (#5432).
+judge_dimensions() {
+  local id out
+  id="$(find_evaluator_id "${JUDGE_NAME}")" || return 1
+  if [ -z "${id}" ]; then
+    echo "FAIL: evaluator ${JUDGE_NAME}-* not found" >&2
+    return 1
+  fi
+  out="$(aws bedrock-agentcore-control get-evaluator --evaluator-id "${id}" --region "${REGION}" \
+    --query 'evaluatorConfig.llmAsAJudge.ratingScale.multiDimensional[].dimensionName' \
+    --output text)" || return 1
+  printf '%s %s\n' "${id}" "$(printf '%s' "${out}" | tr -s '[:space:]' ' ')"
+}
+
 echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then
   npm install
@@ -145,6 +175,14 @@ if [ "${LEVEL_P1}" != "TRACE" ]; then
   exit 1
 fi
 echo "    evaluator ${EVALUATOR_ID_P1} created at level ${LEVEL_P1}"
+
+JUDGE_P1="$(judge_dimensions)"
+JUDGE_ID_P1="${JUDGE_P1%% *}"
+if [ "${JUDGE_P1#* }" != "accuracy tone" ]; then
+  echo "FAIL: judge evaluator's multi-dimensional rating scale did not reach AWS on create (#5432): dimensions '${JUDGE_P1#* }', want 'accuracy tone'" >&2
+  exit 1
+fi
+echo "    judge evaluator ${JUDGE_ID_P1} created with dimensions: ${JUDGE_P1#* }"
 
 # The adopted defaults must be surfaced through the stack outputs.
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)"
@@ -181,6 +219,17 @@ if [ "${EVALUATOR_ID_P1}" != "${EVALUATOR_ID_P2}" ]; then
 fi
 echo "    evaluator updated in-place (id unchanged, level ${LEVEL_P2})"
 
+JUDGE_P2="$(judge_dimensions)"
+if [ "${JUDGE_P2%% *}" != "${JUDGE_ID_P1}" ]; then
+  echo "FAIL: judge evaluator was REPLACED (${JUDGE_ID_P1} -> ${JUDGE_P2%% *})" >&2
+  exit 1
+fi
+if [ "${JUDGE_P2#* }" != "accuracy tone brevity" ]; then
+  echo "FAIL: judge evaluator's added dimension did not reach AWS on update (#5432): dimensions '${JUDGE_P2#* }', want 'accuracy tone brevity'" >&2
+  exit 1
+fi
+echo "    judge evaluator updated in-place with dimensions: ${JUDGE_P2#* }"
+
 # --- Phase 3: REMOVAL drops Description (issue #1160) ------------------
 echo "==> Phase 3: re-deploy with CDKD_TEST_REMOVAL=true (Description removed, SESSION -> TRACE)"
 env -u CDKD_TEST_UPDATE CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -216,7 +265,12 @@ if [ -n "${LEFTOVER_EVALUATOR}" ]; then
   echo "FAIL: evaluator ${EVALUATOR_NAME}-* still exists after destroy" >&2
   exit 1
 fi
-echo "    evaluator deleted"
+LEFTOVER_JUDGE="$(find_evaluator_id "${JUDGE_NAME}")"
+if [ -n "${LEFTOVER_JUDGE}" ]; then
+  echo "FAIL: evaluator ${JUDGE_NAME}-* still exists after destroy" >&2
+  exit 1
+fi
+echo "    evaluators deleted"
 
 # The AWS-managed defaults must be untouched by the no-op deletes.
 BROWSER_STATUS="$(aws bedrock-agentcore-control get-browser --browser-id aws.browser.v1 \
@@ -233,4 +287,4 @@ echo "    AWS-managed defaults untouched (READY)"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — AgentCore Browser/CodeInterpreter adopt + Evaluator CREATE/UPDATE/destroy, all 4 phases passed"
+echo "[verify] PASS — AgentCore Browser/CodeInterpreter adopt + Evaluator CREATE/UPDATE/destroy (incl. a multi-dimensional judge), all 4 phases passed"

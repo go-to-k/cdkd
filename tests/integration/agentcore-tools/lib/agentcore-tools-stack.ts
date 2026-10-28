@@ -13,7 +13,9 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  * - `AWS::BedrockAgentCore::CodeInterpreter` — adopt-only singleton for the
  *   AWS-managed default code interpreter (`aws.codeinterpreter.v1`).
  * - `AWS::BedrockAgentCore::Evaluator` — a custom code-based evaluator
- *   backed by a fixture Lambda (no Bedrock model-access dependency).
+ *   backed by a fixture Lambda (no Bedrock model-access dependency), and an
+ *   LLM-as-a-judge evaluator with a multi-dimensional rating scale
+ *   (go-to-k/cdkd#5432). Creating it names a model but never invokes one.
  *
  * The Browser / CodeInterpreter types have no L1 constructs in aws-cdk-lib
  * (CDK ships only the *Custom variants), and CfnEvaluator predates the
@@ -32,6 +34,12 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  * to TRACE (issue #1160): a CloudFormation A/B (us-east-1) KEPT a removed
  * Evaluator Description, so the live one must survive, while the Level
  * change proves the redeploy reached `UpdateEvaluator`.
+ *
+ * The judge evaluator's `RatingScale.MultiDimensional` (go-to-k/cdkd#5432)
+ * carries two dimensions in Phase 1 and three from Phase 2 on: both the
+ * `CreateEvaluator` and the `UpdateEvaluator` must deliver them. Before the
+ * SDK bump the client's serializer dropped the member, so the live evaluator
+ * had no `multiDimensional` at all.
  */
 export class AgentcoreToolsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -92,6 +100,65 @@ export class AgentcoreToolsStack extends cdk.Stack {
               { Key: 'phase', Value: 'update' },
             ]
           : [{ Key: 'cdkd-integ', Value: 'agentcore-tools' }],
+      },
+    });
+
+    // go-to-k/cdkd#5432: a multi-dimensional rating scale, one dimension per
+    // DimensionRatingScale member, plus a third from Phase 2 on (the update).
+    // aws-cdk-lib's bundled schema predates the member, so synth warns
+    // (F3002 / F3018); the live CloudFormation registry schema lists it.
+    const dimensions: Record<string, unknown>[] = [
+      {
+        DimensionName: 'accuracy',
+        DimensionInstruction: 'Is the answer factually correct?',
+        DimensionRatingScale: {
+          Numerical: [
+            { Value: 0, Label: 'wrong', Definition: 'The answer is incorrect.' },
+            { Value: 1, Label: 'right', Definition: 'The answer is correct.' },
+          ],
+        },
+      },
+      {
+        DimensionName: 'tone',
+        DimensionInstruction: 'Is the answer polite?',
+        DimensionRatingScale: {
+          Categorical: [
+            { Label: 'polite', Definition: 'The answer is courteous.' },
+            { Label: 'rude', Definition: 'The answer is not courteous.' },
+          ],
+        },
+      },
+    ];
+    if (isUpdate || isRemoval) {
+      dimensions.push({
+        DimensionName: 'brevity',
+        DimensionInstruction: 'Is the answer concise?',
+        DimensionRatingScale: {
+          Categorical: [
+            { Label: 'concise', Definition: 'No needless words.' },
+            { Label: 'verbose', Definition: 'Needless words.' },
+          ],
+        },
+      });
+    }
+    new cdk.CfnResource(this, 'JudgeEvaluator', {
+      type: 'AWS::BedrockAgentCore::Evaluator',
+      properties: {
+        EvaluatorName: 'cdkd_integ_agentcore_judge',
+        Level: 'TRACE',
+        EvaluatorConfig: {
+          LlmAsAJudge: {
+            // At least one placeholder is required; these two are TRACE-level ones.
+            Instructions: 'Given {context}, rate the agent response {assistant_turn} on each dimension.',
+            RatingScale: { MultiDimensional: dimensions },
+            ModelConfig: {
+              BedrockEvaluatorModelConfig: {
+                ModelId: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+              },
+            },
+          },
+        },
+        Tags: [{ Key: 'cdkd-integ', Value: 'agentcore-tools' }],
       },
     });
 
