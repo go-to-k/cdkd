@@ -757,7 +757,7 @@ const CASES: Case[] = [
         { VPCId: 'vpc-1', VPCRegion: 'us-east-1' },
         { VPCId: 'vpc-2', VPCRegion: 'us-east-1' },
       ],
-      HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' },
+      HostedZoneFeatures: { EnableAcceleratedRecovery: true },
     },
     clients: [Route53Client],
     main: 'CreateHostedZoneCommand',
@@ -806,7 +806,7 @@ const CASES: Case[] = [
     resourceType: 'AWS::Route53::HostedZone',
     properties: {
       Name: 'example.com',
-      HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' },
+      HostedZoneFeatures: { EnableAcceleratedRecovery: true },
     },
     clients: [Route53Client],
     main: 'CreateHostedZoneCommand',

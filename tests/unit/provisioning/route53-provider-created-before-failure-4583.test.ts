@@ -131,7 +131,7 @@ describe('Route53Provider HostedZone created-before-failure mark (#4583)', () =>
     const err = await caught(
       provider.create('Zone', TYPE, {
         Name: 'example.com',
-        HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' },
+        HostedZoneFeatures: { EnableAcceleratedRecovery: true },
       })
     );
     expect(
@@ -152,7 +152,7 @@ describe('Route53Provider HostedZone created-before-failure mark (#4583)', () =>
     const err = await caught(
       provider.create('Zone', TYPE, {
         Name: 'example.com',
-        HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' },
+        HostedZoneFeatures: { EnableAcceleratedRecovery: true },
       })
     );
     expect(createdBeforeFailure(err, 'Zone', TYPE)).toBe(ZONE_ID);

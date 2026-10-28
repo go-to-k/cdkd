@@ -993,7 +993,7 @@ describe('an auxiliary call\'s "already exists" is not restated (#2319, #3826)',
           new Route53Provider().create(
             'Hz',
             HZ,
-            { Name: 'example.com', HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' } },
+            { Name: 'example.com', HostedZoneFeatures: { EnableAcceleratedRecovery: true } },
             ctx
           ),
       } as Site,
@@ -1144,7 +1144,7 @@ describe('cleanup and adopt warns name the class (#2319)', () => {
       new Route53Provider().create(
         'Hz',
         HZ,
-        { Name: 'example.com', HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' } },
+        { Name: 'example.com', HostedZoneFeatures: { EnableAcceleratedRecovery: true } },
         ctx
       )
     );
@@ -1357,7 +1357,7 @@ describe('cleanup and adopt warns name the class (#2319)', () => {
         new Route53Provider().create(
           'Hz',
           HZ,
-          { Name: 'example.com', HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' } },
+          { Name: 'example.com', HostedZoneFeatures: { EnableAcceleratedRecovery: true } },
           ctx
         ),
     },
