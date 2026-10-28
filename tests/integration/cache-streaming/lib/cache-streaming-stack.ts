@@ -24,6 +24,8 @@ import * as sns from 'aws-cdk-lib/aws-sns';
  *   (issue #5004 -- see the cluster comment below)
  * - CDKD_TEST_NODETYPE=true: the cluster's CacheNodeType moves cache.t3.micro
  *   -> cache.t3.small, an in-place ModifyCacheCluster (issue #5438)
+ * - A 2-node Memcached cluster on its own subnet group; CDKD_TEST_NODEREMOVE=true
+ *   lowers it to 1 node, which needs CacheNodeIdsToRemove (issue #5441)
  */
 export class CacheStreamingStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -120,6 +122,26 @@ export class CacheStreamingStack extends cdk.Stack {
           }),
     });
     redis.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    // CDKD_TEST_NODEREMOVE (issue #5441): a Memcached scale-in. AWS refuses a
+    // lower NumCacheNodes without CacheNodeIdsToRemove; real CloudFormation
+    // names the lowest node ids and keeps the cluster. Its own subnet group
+    // (same subnet), so the Redis assertions that find their cluster by
+    // subnet group keep finding exactly one.
+    const nodeRemoval = process.env.CDKD_TEST_NODEREMOVE === 'true';
+    const memcachedSubnetGroup = new elasticache.CfnSubnetGroup(this, 'MemcachedSubnetGroup', {
+      description: 'Subnet group for the Memcached cluster',
+      subnetIds: vpc.publicSubnets.map((s) => s.subnetId),
+      cacheSubnetGroupName: `${this.stackName}-memcached-subnet-group`,
+    });
+    const memcached = new elasticache.CfnCacheCluster(this, 'MemcachedCluster', {
+      cacheNodeType: 'cache.t3.micro',
+      engine: 'memcached',
+      numCacheNodes: nodeRemoval ? 1 : 2,
+      vpcSecurityGroupIds: [redisSg.securityGroupId],
+      cacheSubnetGroupName: memcachedSubnetGroup.ref,
+    });
+    memcached.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     // Kinesis Data Stream
     const stream = new kinesis.Stream(this, 'DataStream', {

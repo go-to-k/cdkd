@@ -9164,7 +9164,7 @@
           "seededBy": [
             "create",
             "createCacheCluster",
-            "newNodePlacement",
+            "planNodeChanges",
             "update",
             "updateCacheCluster",
             "warnNotAppliedInPlace"
@@ -9381,7 +9381,7 @@
           "seededBy": [
             "create",
             "createCacheCluster",
-            "newNodePlacement",
+            "planNodeChanges",
             "update",
             "updateCacheCluster"
           ]
@@ -9432,7 +9432,7 @@
           "seededBy": [
             "create",
             "createCacheCluster",
-            "newNodePlacement",
+            "planNodeChanges",
             "update",
             "updateCacheCluster"
           ]

@@ -57,6 +57,7 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 STREAM_NAME="${STACK}-data-stream"
 # ElastiCache lowercases CacheSubnetGroupName; the stack sets it from stackName.
 SUBNET_GROUP="$(printf '%s' "${STACK}-redis-subnet-group" | tr '[:upper:]' '[:lower:]')"
+MC_SUBNET_GROUP="$(printf '%s' "${STACK}-memcached-subnet-group" | tr '[:upper:]' '[:lower:]')"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 DEPLOY_LOG="$(mktemp -t cache-streaming.XXXXXX)"
 
@@ -298,6 +299,61 @@ if [ "${CACHE_ID_SCALED}" != "${CACHE_ID}" ]; then
 fi
 echo "    OK: node-type change was an in-place update"
 
+echo "==> Step 4e: NODE REMOVAL deploy (issue #5441) -- Memcached NumCacheNodes 2 -> 1"
+# The Memcached cluster's id is auto-generated; attribute it via its own
+# subnet group. Before #5441 cdkd sent NumCacheNodes alone and AWS refused it
+# (InvalidParameterCombination: CacheNodeIdsToRemove), failing this deploy;
+# real CloudFormation removes the lowest node id and keeps the cluster.
+mc_field() { # usage: mc_field <JMESPath on the single Memcached cluster>
+  aws elasticache describe-cache-clusters --region "${REGION}" --show-cache-node-info \
+    --query "CacheClusters[?CacheSubnetGroupName=='${MC_SUBNET_GROUP}'] | [0].$1" --output text
+}
+MC_ID=$(mc_field 'CacheClusterId')
+if [ -z "${MC_ID}" ] || [ "${MC_ID}" = "None" ]; then
+  echo "FAIL: cannot resolve the Memcached cluster on subnet group ${MC_SUBNET_GROUP}" >&2
+  exit 1
+fi
+MC_NODES_BEFORE=$(mc_field 'CacheNodes[].CacheNodeId | sort(@) | join(`,`, @)')
+if [ "${MC_NODES_BEFORE}" != "0001,0002" ]; then
+  echo "FAIL: Memcached cluster ${MC_ID} starts with nodes '${MC_NODES_BEFORE}', expected 0001,0002" >&2
+  exit 1
+fi
+echo "    OK: Memcached cluster ${MC_ID} starts with nodes ${MC_NODES_BEFORE}"
+set +e
+CDKD_TEST_REMOVAL=true CDKD_TEST_NODETYPE=true CDKD_TEST_NODEREMOVE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+NODEREMOVE_RC=$?
+set -e
+if [ "${NODEREMOVE_RC}" -ne 0 ]; then
+  echo "FAIL: node-removal deploy exited ${NODEREMOVE_RC} (#5441)" >&2
+  tail -60 "${DEPLOY_LOG}" >&2
+  exit 1
+fi
+echo "    OK: node-removal deploy exited 0"
+# The deploy waits until the removed node is gone, so the count is final as
+# soon as it returns (the loop only absorbs read-after-write lag).
+MC_NODES_AFTER=""
+for _i in 1 2 3 4 5 6; do
+  MC_NODES_AFTER=$(mc_field 'CacheNodes[].CacheNodeId | sort(@) | join(`,`, @)')
+  [ "${MC_NODES_AFTER}" = "0002" ] && break
+  sleep 10
+done
+if [ "${MC_NODES_AFTER}" != "0002" ]; then
+  echo "FAIL: Memcached cluster nodes are '${MC_NODES_AFTER}' after the removal, expected 0002 (CloudFormation keeps the highest id)" >&2
+  exit 1
+fi
+MC_COUNT=$(mc_field 'NumCacheNodes')
+if [ "${MC_COUNT}" != "1" ]; then
+  echo "FAIL: Memcached NumCacheNodes is '${MC_COUNT}', expected 1" >&2
+  exit 1
+fi
+MC_ID_AFTER=$(mc_field 'CacheClusterId')
+if [ "${MC_ID_AFTER}" != "${MC_ID}" ]; then
+  echo "FAIL: Memcached cluster was REPLACED by the node-removal deploy (${MC_ID} -> ${MC_ID_AFTER})" >&2
+  exit 1
+fi
+echo "    OK: Memcached cluster ${MC_ID} scaled in place to node 0002 (#5441)"
+
 echo "==> Step 5: destroy"
 set +e
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -324,6 +380,14 @@ if [ "${CACHE_LEFT}" != "0" ]; then
   echo "FAIL: ${CACHE_LEFT} ElastiCache cluster(s) still exist after destroy (orphan)" >&2
   exit 1
 fi
+MC_LEFT=$(aws elasticache describe-cache-clusters --region "${REGION}" \
+  --query "length(CacheClusters[?CacheSubnetGroupName=='${MC_SUBNET_GROUP}'])" --output text)
+if [ "${MC_LEFT}" != "0" ]; then
+  echo "FAIL: ${MC_LEFT} Memcached cluster(s) still exist after destroy (orphan)" >&2
+  exit 1
+fi
+assert_gone "Memcached subnet group ${MC_SUBNET_GROUP} still exists after destroy" \
+  aws elasticache describe-cache-subnet-groups --cache-subnet-group-name "${MC_SUBNET_GROUP}" --region "${REGION}"
 sweep_log_groups
 LG_LEFT=$(aws logs describe-log-groups --region "${REGION}" \
   --log-group-name-prefix "/aws/lambda/${STACK}-" --query 'logGroups[].logGroupName' --output text)
