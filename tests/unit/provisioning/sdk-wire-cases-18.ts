@@ -275,7 +275,7 @@ const PROJECT_CASE: TypeCase = {
             'BadgeEnabled',
           ].map((k) => [
             `update-remove:${k}`,
-            `SUSPECTED GAP: a removed ${k} sends nothing and UpdateProject merges, so the live value stays; unverified against CloudFormation, a SUSPECT row of go-to-k/cdkd#1160`,
+            `SUSPECTED GAP: a removed ${k} sends nothing and UpdateProject merges, so the live value stays; unverified against CloudFormation, tracked in go-to-k/cdkd#5492`,
           ])
         ),
       },
@@ -513,7 +513,7 @@ const CLUSTER_CASE: TypeCase = {
             `a removed ${k} is deliberately not reset: its default is engine-, version- or AWS-assigned, with no reset value cdkd can name (${ELASTICACHE_SRC}, updateCacheCluster's #1160 note); CFn unmeasured`,
           ])
         ),
-        'update-remove:VpcSecurityGroupIds': `an absent (or empty) VpcSecurityGroupIds is sent as no change, the readCurrentState placeholder defense; UNCERTAIN in the go-to-k/cdkd#1160 audit, CFn unmeasured`,
+        'update-remove:VpcSecurityGroupIds': `SUSPECTED GAP: an absent (or empty) VpcSecurityGroupIds is sent as no change (${ELASTICACHE_SRC}:723-724, the readCurrentState placeholder defense), so removing every group keeps the live ones; CFn unmeasured, tracked in go-to-k/cdkd#5491`,
         ...beneath(REDIS_CLUSTER, ['VpcSecurityGroupIds'], MODIFY_FROM_NEXT('SecurityGroupIds')),
         // Every member of a still-present entry but its LogType: the entry is
         // sent from next, and prev only names the log types to disable.

@@ -163,7 +163,10 @@ function armGlobalTable(_physicalId: string, bag: Bag): void {
         ...(precision ? { ApproximateCreationDateTimePrecision: precision } : {}),
       })),
     }),
-    ListTagsOfResourceCommand: () => ({ Tags: [] }),
+    // The live tags are what the previous deploy left on the deploy-region
+    // replica. Only readCurrentState reads them (dynamodb-globaltable-provider.ts:7775):
+    // create and update diff the recorded Tags, so no write path depends on it.
+    ListTagsOfResourceCommand: () => ({ Tags: (local['Tags'] as unknown[] | undefined) ?? [] }),
     // Every target the provider asks after is registered with its policy: a
     // target the previous deploy did not declare is re-registered anyway,
     // since its previous settings differ (reconcile's registered && unchanged).
