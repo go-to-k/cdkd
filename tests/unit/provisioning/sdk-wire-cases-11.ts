@@ -2,16 +2,18 @@ import {
   ACCOUNT,
   TAG_THROWS,
   createOnlyOf,
+  type BagCase,
   type Throw,
   type TypeCase,
 } from './sdk-wire-harness.js';
 import { CloudTrailProvider } from '../../../src/provisioning/providers/cloudtrail-provider.js';
 import { AgentCoreRuntimeProvider } from '../../../src/provisioning/providers/agentcore-runtime-provider.js';
+import { AgentCoreEvaluatorProvider } from '../../../src/provisioning/providers/agentcore-evaluator-provider.js';
 
 /**
  * The eleventh batch of wire cases (#3723): the CloudTrail trail
  * (`@aws-sdk/client-cloudtrail`, whose provider builds its own clients, a
- * create client among them) and the AgentCore runtime
+ * create client among them), and the AgentCore runtime and evaluator
  * (`@aws-sdk/client-bedrock-agentcore-control`, through `getAwsClients()`).
  * `sdk-wire-coverage-11.test.ts` mocks both packages and that module.
  */
@@ -294,4 +296,157 @@ const RUNTIME_CASE: TypeCase = {
   ],
 };
 
-export const CASES_11: TypeCase[] = [TRAIL_CASE, RUNTIME_CASE];
+// --- AWS::BedrockAgentCore::Evaluator ---------------------------------------------
+
+const EVALUATOR_ARN = `arn:aws:bedrock-agentcore:us-east-1:${ACCOUNT}:evaluator/ev-1`;
+const MODEL_ID = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0';
+
+/**
+ * `update()` sends the desired `EvaluatorConfig` whole, case-converted, and
+ * never reads the previous side (agentcore-evaluator-provider.ts:303-308).
+ */
+const EVALUATOR_FROM_NEXT = {
+  keys: (key: string) => key === 'EvaluatorConfig',
+  reason:
+    'update() sends the desired EvaluatorConfig whole and never reads the previous one (agentcore-evaluator-provider.ts:303-308)',
+};
+
+const BEDROCK_MODEL = {
+  BedrockEvaluatorModelConfig: {
+    ModelId: MODEL_ID,
+    InferenceConfig: { MaxTokens: 512, Temperature: 0.5, TopP: 0.9, StopSequences: ['s1', 's2'] },
+    // A free-form document: its keys go verbatim (agentcore-case-convert.ts).
+    AdditionalModelRequestFields: { top_k: 5, thinking: 'off' },
+  },
+};
+const RESPONSES_MODEL = {
+  ResponsesEvaluatorModelConfig: {
+    ModelId: 'gpt-x',
+    MaxOutputTokens: 256,
+    Temperature: 0.2,
+    TopP: 0.8,
+    Reasoning: { Effort: 'low' },
+  },
+};
+const NUMERICAL = [
+  { Value: 1, Label: 'poor', Definition: 'misses the point' },
+  { Value: 5, Label: 'good', Definition: 'answers it' },
+];
+const CATEGORICAL = [
+  { Label: 'pass', Definition: 'meets the bar' },
+  { Label: 'fail', Definition: 'does not' },
+];
+
+const KEPT_ON_REMOVAL =
+  'left in place on removal: UpdateEvaluator keeps an absent field, and CloudFormation kept a removed Description / KmsKeyArn too (issue #1160 A/B, agentcore-evaluator-provider.ts:298-314)';
+const LEVEL_REQUIRED_UPDATE =
+  'Level is required, so no deployable template removes it: create() refuses an evaluator without it (agentcore-evaluator-provider.ts:205-207)';
+
+const EVALUATOR_REQUIRED: Record<string, Throw> = {
+  'create:EvaluatorName': REQUIRED(
+    'EvaluatorName is required: create() refuses an evaluator without it before any call (agentcore-evaluator-provider.ts:190-196)',
+    /EvaluatorName is required/
+  ),
+  'create:EvaluatorConfig': REQUIRED(
+    'EvaluatorConfig is required: create() refuses an evaluator without it before any call (agentcore-evaluator-provider.ts:198-204)',
+    /EvaluatorConfig is required/
+  ),
+  'create:Level': REQUIRED(
+    'Level is required: create() refuses an evaluator without it before any call (agentcore-evaluator-provider.ts:205-207)',
+    /Level is required/
+  ),
+};
+
+/** A bag of the type's required properties around one `EvaluatorConfig`. */
+const evaluatorBag = (name: string, config: Record<string, unknown>): BagCase => ({
+  name,
+  bag: { EvaluatorName: 'evaluator', Level: 'TRACE', EvaluatorConfig: fresh(config) },
+  variants: { Level: 'SESSION' },
+  expectedSilent: { 'update-remove:Level': LEVEL_REQUIRED_UPDATE },
+  expectedRemovalThrows: EVALUATOR_REQUIRED,
+});
+
+const EVALUATOR_CASE: TypeCase = {
+  resourceType: 'AWS::BedrockAgentCore::Evaluator',
+  provider: () => new AgentCoreEvaluatorProvider(),
+  physicalId: EVALUATOR_ARN,
+  createOnly: createOnlyOf('AWS::BedrockAgentCore::Evaluator'),
+  wholeFromNext: EVALUATOR_FROM_NEXT,
+  exempt: {},
+  targets: [
+    // UntagResource takes the removed keys only.
+    { path: ['Tags', 0], command: 'UntagResourceCommand', names: 'k1', notNames: 'k2' },
+    { path: ['Tags', 1], command: 'UntagResourceCommand', names: 'k2', notNames: 'k1' },
+  ],
+  bags: [
+    {
+      // go-to-k/cdkd#5432: the multi-dimensional rating scale, both
+      // DimensionRatingScale members, with every top-level beside it.
+      name: 'LLM-as-a-judge, multi-dimensional scale, every other property',
+      bag: {
+        EvaluatorName: 'evaluator',
+        Description: 'd',
+        Level: 'TRACE',
+        KmsKeyArn: KMS,
+        EvaluatorConfig: {
+          LlmAsAJudge: {
+            Instructions: 'judge it',
+            RatingScale: {
+              MultiDimensional: [
+                {
+                  DimensionName: 'accuracy',
+                  DimensionInstruction: 'is it right',
+                  DimensionRatingScale: { Numerical: fresh(NUMERICAL) },
+                },
+                {
+                  DimensionName: 'tone',
+                  DimensionInstruction: 'is it polite',
+                  DimensionRatingScale: { Categorical: fresh(CATEGORICAL) },
+                },
+              ],
+            },
+            ModelConfig: fresh(BEDROCK_MODEL),
+          },
+        },
+        Tags: TAG_LIST,
+      },
+      variants: { Level: 'SESSION' },
+      expectedSilent: {
+        'update-remove:Description': KEPT_ON_REMOVAL,
+        'update-remove:KmsKeyArn': KEPT_ON_REMOVAL,
+        'update-remove:Level': LEVEL_REQUIRED_UPDATE,
+      },
+      expectedRemovalThrows: { ...EVALUATOR_REQUIRED, ...TAG_THROWS(ALL_DIRECTIONS, 2) },
+    },
+    evaluatorBag('LLM-as-a-judge, numerical scale, responses model', {
+      LlmAsAJudge: {
+        Instructions: 'judge it',
+        RatingScale: { Numerical: NUMERICAL },
+        ModelConfig: RESPONSES_MODEL,
+      },
+    }),
+    evaluatorBag('LLM-as-a-judge, categorical scale', {
+      LlmAsAJudge: {
+        Instructions: 'judge it',
+        RatingScale: { Categorical: CATEGORICAL },
+        ModelConfig: BEDROCK_MODEL,
+      },
+    }),
+    evaluatorBag('code-based', {
+      CodeBased: {
+        LambdaConfig: {
+          LambdaArn: `arn:aws:lambda:us-east-1:${ACCOUNT}:function:judge`,
+          LambdaTimeoutInSeconds: 60,
+        },
+      },
+    }),
+    evaluatorBag('derived, bedrock model', {
+      Derived: { BaseEvaluatorId: 'Builtin.Helpfulness', ModelConfig: BEDROCK_MODEL },
+    }),
+    evaluatorBag('derived, responses model', {
+      Derived: { BaseEvaluatorId: 'Builtin.Helpfulness', ModelConfig: RESPONSES_MODEL },
+    }),
+  ],
+};
+
+export const CASES_11: TypeCase[] = [TRAIL_CASE, RUNTIME_CASE, EVALUATOR_CASE];

@@ -7,7 +7,7 @@
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
 access-key-cloudmap-fix-forward-orphan	2026-10-25T00:07:44Z	PASS	165	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 acm-certificate	2026-10-26T01:33:59Z	PASS	126	verify.sh	rc 0, destroy 0 errors, orphans clean (PR #5289 local run)
-agentcore-tools	2026-10-19T17:48:11Z	PASS	75	verify.sh	rc ok, orph clean; #1160 removed Evaluator Description kept
+agentcore-tools	2026-10-28T13:19:58Z	PASS	84	verify.sh	91860900d merged tree; multi-dim judge 2->3 dims OK; SDK-3.1152.0 probe RED earlier; orph clean
 alb	2026-10-20T08:55:09Z	PASS	589	verify.sh	PR #5116 (#1160) 0dbcced66; Phase 3.5 listener Port/Protocol removal warns CFn keep, values kept; probe (src reverted) RED at that assertion; run in own state bucket (peer v13 record blocked shared one); destroy 21 deleted 0 errors, orph clean
 alb-advanced	2026-10-17T17:48:47Z	PASS	160	standard	PR #5034 (#1160) 842d0d385; deploy rc=0, destroy 17 deleted 0 errors, orph clean
 api-cognito	2026-10-18T20:35:59Z	PASS	39	standard	PR #5073: CloudWatch role no longer retained; no ApiCognitoStack-* IAM role left, orph clean

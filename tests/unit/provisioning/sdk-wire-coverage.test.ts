@@ -729,14 +729,13 @@ const CASES: TypeCase[] = [
  * here. `MAX_UNCOVERED` is its exact size, lowered by hand with each removal.
  */
 const NOT_YET_COVERED = new Set([
-  'AgentCoreEvaluatorProvider',
   'CodeBuildProvider',
   'DynamoDBGlobalTableProvider',
   'ElastiCacheProvider',
   'KinesisStreamProvider',
   'RDSProvider',
 ]);
-const MAX_UNCOVERED = 6;
+const MAX_UNCOVERED = 5;
 
 /**
  * Every case list, with the test file that runs it and the list's name there.
