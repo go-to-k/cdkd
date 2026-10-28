@@ -4990,16 +4990,25 @@ async function applyGlueTagDiff(
   desired: unknown,
   resourceType: string,
   logicalId: string,
-  warn: (message: string) => void
+  warn: (message: string) => void,
+  unsettled: { forceUpsert: boolean; beforeWrite: () => void } = {
+    forceUpsert: false,
+    beforeWrite: () => undefined,
+  }
 ): Promise<void> {
   const plan = planTagDiff(tagMapAsList(recorded), tagMapAsList(desired));
   const warning = tagPlanWarning(plan, resourceType, logicalId);
   if (warning !== undefined) warn(warning);
-  if (plan.set.size === 0 && plan.remove.length === 0) return;
+  // go-to-k/cdkd#5487: unsettled Tags re-send every template tag (AWS may lack
+  // the ones a failed update did not reach) and remove only the recorded ones
+  // the template dropped.
+  const toSet = unsettled.forceUpsert ? planTagDiff([], tagMapAsList(desired)).set : plan.set;
+  if (toSet.size === 0 && plan.remove.length === 0) return;
+  unsettled.beforeWrite();
   const arn = await resourceArn();
-  if (plan.set.size > 0) {
+  if (toSet.size > 0) {
     await client.send(
-      new TagResourceCommand({ ResourceArn: arn, TagsToAdd: Object.fromEntries(plan.set) })
+      new TagResourceCommand({ ResourceArn: arn, TagsToAdd: Object.fromEntries(toSet) })
     );
   }
   if (plan.remove.length > 0) {
@@ -5073,6 +5082,39 @@ const crawlerLeftInPlaceWarning = (
     ? safeMsg`${logicalId} (AWS::Glue::Crawler): ${subject} ${names.join(', ')} ${one ? 'is' : 'are'} absent from the state being restored; UpdateCrawler keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.`
     : safeMsg`${logicalId} (AWS::Glue::Crawler): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template and ${one ? 'keeps its' : 'keep their'} current AWS value${cfnKeeps}; UpdateCrawler keeps a setting it is not sent. Declare the intended value explicitly to change it.`;
 };
+
+/**
+ * go-to-k/cdkd#5487: the top-level keys `UpdateCrawler` sends (`Role`,
+ * `Targets` and `buildCrawlerCommonFields`'s), each marked unsettled before
+ * the call when it changes.
+ */
+const CRAWLER_UPDATE_KEYS = [
+  'Role',
+  'Targets',
+  'Classifiers',
+  'Configuration',
+  'CrawlerSecurityConfiguration',
+  'DatabaseName',
+  'Description',
+  'LakeFormationConfiguration',
+  'LineageConfiguration',
+  'RecrawlPolicy',
+  'Schedule',
+  'SchemaChangePolicy',
+  'TablePrefix',
+] as const;
+
+/**
+ * go-to-k/cdkd#5487: the top-level keys `UpdateTrigger`'s `TriggerUpdate`
+ * carries, each marked unsettled before the call when it changes.
+ */
+const TRIGGER_UPDATE_KEYS = [
+  'Description',
+  'Schedule',
+  'Actions',
+  'Predicate',
+  'EventBatchingCondition',
+] as const;
 
 /**
  * SDK Provider for `AWS::Glue::Crawler`.
@@ -5257,6 +5299,7 @@ export class GlueCrawlerProvider implements ResourceProvider {
     log.debug(`Updating Glue Crawler ${logicalId}: ${v(physicalId)}`);
     // go-to-k/cdkd#4073: a malformed desired Tags is refused before any call.
     desiredGlueTags(properties['Tags'], resourceType, logicalId, physicalId);
+    const markUnsettled = (key: string): void => context?.markUnsettled?.(key);
     try {
       const updateInput = {
         Name: physicalId,
@@ -5266,6 +5309,11 @@ export class GlueCrawlerProvider implements ResourceProvider {
         }),
         ...buildCrawlerCommonFields(properties),
       };
+      for (const key of CRAWLER_UPDATE_KEYS) {
+        if (JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key])) {
+          markUnsettled(key);
+        }
+      }
       try {
         await this.getClient().send(new UpdateCrawlerCommand(updateInput));
       } catch (err) {
@@ -5289,7 +5337,11 @@ export class GlueCrawlerProvider implements ResourceProvider {
         properties['Tags'],
         resourceType,
         logicalId,
-        log.warn
+        log.warn,
+        {
+          forceUpsert: context?.unsettledProperties?.has('Tags') === true,
+          beforeWrite: () => markUnsettled('Tags'),
+        }
       );
 
       // Issue #1160: a CRAWLER_LEFT_IN_PLACE_ON_REMOVAL property removed from
@@ -6375,6 +6427,7 @@ export class GlueTriggerProvider implements ResourceProvider {
     // go-to-k/cdkd#4073: a malformed desired Tags is refused before any call,
     // so a doomed update never deactivates the trigger.
     desiredGlueTags(properties['Tags'], resourceType, logicalId, physicalId);
+    const markUnsettled = (key: string): void => context?.markUnsettled?.(key);
     try {
       // Glue requires the trigger be DEACTIVATED before UpdateTrigger. Read the
       // current state to decide whether we need to stop+restart.
@@ -6430,6 +6483,11 @@ export class GlueTriggerProvider implements ResourceProvider {
       // OTHERWISE-successful update still surfaces (the trigger really is stuck
       // deactivated in that case).
       let updateError: unknown;
+      for (const key of TRIGGER_UPDATE_KEYS) {
+        if (JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key])) {
+          markUnsettled(key);
+        }
+      }
       try {
         await this.getClient().send(
           new UpdateTriggerCommand({ Name: physicalId, TriggerUpdate: update })
@@ -6464,7 +6522,11 @@ export class GlueTriggerProvider implements ResourceProvider {
         properties['Tags'],
         resourceType,
         logicalId,
-        log.warn
+        log.warn,
+        {
+          forceUpsert: context?.unsettledProperties?.has('Tags') === true,
+          beforeWrite: () => markUnsettled('Tags'),
+        }
       );
 
       return { physicalId, wasReplaced: false };
@@ -6482,6 +6544,32 @@ export class GlueTriggerProvider implements ResourceProvider {
             cause
           )
       );
+    }
+  }
+
+  /**
+   * go-to-k/cdkd#5487: while the trigger reads ACTIVATING, DEACTIVATING,
+   * CREATING or UPDATING, an unsettled key other than `Tags` is still
+   * changing. A failed read keeps every name, which only costs the next deploy
+   * a re-send.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>> {
+    try {
+      const state = (await this.getClient().send(new GetTriggerCommand({ Name: physicalId })))
+        .Trigger?.State;
+      return state === 'ACTIVATING' ||
+        state === 'DEACTIVATING' ||
+        state === 'CREATING' ||
+        state === 'UPDATING'
+        ? new Set([...names].filter((name) => name !== 'Tags'))
+        : new Set();
+    } catch {
+      return names;
     }
   }
 
