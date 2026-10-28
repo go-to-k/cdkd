@@ -5970,6 +5970,7 @@
           "seededBy": [
             "applyReplicaKeys",
             "create",
+            "getDriftAbsentMeansDefaultKeys",
             "update"
           ]
         },
@@ -6458,9 +6459,13 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "buildBlockDeviceMappings",
             "create",
-            "createInstance"
+            "createInstance",
+            "planInstanceMemberUpdates",
+            "update",
+            "updateInstance"
           ]
         },
         {
@@ -6926,8 +6931,12 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createInstance"
+            "createInstance",
+            "planInstanceMemberUpdates",
+            "update",
+            "updateInstance"
           ]
         },
         {
@@ -7013,8 +7022,12 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createInstance"
+            "createInstance",
+            "planInstanceMemberUpdates",
+            "update",
+            "updateInstance"
           ]
         },
         {
@@ -7468,8 +7481,12 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createInstance"
+            "createInstance",
+            "planInstanceMemberUpdates",
+            "update",
+            "updateInstance"
           ]
         },
         {
@@ -7709,8 +7726,12 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createInstance"
+            "createInstance",
+            "planInstanceMemberUpdates",
+            "update",
+            "updateInstance"
           ]
         },
         {
@@ -7806,6 +7827,7 @@
         "computed key in comparableIngressIdentity()",
         "computed key in ingressRuleIdentity()",
         "computed key in narrowRouteDestinations()",
+        "computed key in planInstanceMemberUpdates()",
         "computed key in recordedGatewayIdOf()",
         "computed key in updateRoute()",
         "identity(...) in readSgIngressByIdentity()",
@@ -11432,11 +11454,14 @@
             "AWS::FSx::FileSystem"
           ],
           "evidence": [
+            "delegated",
             "element-read",
             "table-loop"
           ],
           "seededBy": [
             "create",
+            "delete",
+            "toDeleteOpenZFSOptions",
             "update"
           ]
         },
@@ -11517,10 +11542,13 @@
             "AWS::FSx::FileSystem"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "delete",
+            "toDeleteOpenZFSOptions"
           ]
         },
         {

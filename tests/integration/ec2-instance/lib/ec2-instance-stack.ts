@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as kms from 'aws-cdk-lib/aws-kms';
 
 /**
@@ -32,6 +33,10 @@ import * as kms from 'aws-cdk-lib/aws-kms';
  * verify.sh — and (b) is the only place the new `Placement` create path runs
  * against real AWS.
  *
+ * UPDATE phase (issue #5446): CDKD_TEST_UPDATE_5446=true changes InstanceType,
+ * moves the instance to a second security group and adds UserData; see
+ * verify.sh Phase 1h.
+ *
  * REMOVAL phases (issue #1160; CloudFormation A/B in go-to-k/cdkd#1160
  * issuecomment-6281778130). CDKD_TEST_REMOVAL=true drops MetadataOptions /
  * Monitoring / CreditSpecification: CloudFormation turns a removed Monitoring
@@ -47,6 +52,14 @@ export class Ec2InstanceStack extends cdk.Stack {
     super(scope, id, props);
 
     const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
+    // Issue #5446 (verify.sh Phase 1h): the in-place update of InstanceType,
+    // SecurityGroupIds and UserData. CloudFormation applies all three to the
+    // SAME instance (a stop and a start for the type and the user data).
+    const isUpdate5446 = process.env.CDKD_TEST_UPDATE_5446 === 'true';
+    // Issue #5446 (verify.sh Phases 1g-1h): a RESOURCE reading the instance's
+    // public address, added once the instance is running (a --no-wait Phase 0
+    // has no address to give it), so Phase 1h's stop/start has to PROMOTE it.
+    const withIpReader = process.env.CDKD_TEST_IP_READER === 'true';
     const datMode = process.env.CDKD_TEST_DAT;
 
     // Create VPC with 1 AZ and no NAT gateways (cost saving)
@@ -75,6 +88,14 @@ export class Ec2InstanceStack extends cdk.Stack {
       'Allow SSH from anywhere'
     );
 
+    // Issue #5446: a second group, always present, so Phase 1h only moves the
+    // instance's reference from the first group to this one.
+    const updateSecurityGroup = new ec2.SecurityGroup(this, 'InstanceSG5446', {
+      vpc,
+      description: 'cdkd ec2-instance integ (issue #5446): the group Phase 1h moves the instance to',
+      allowAllOutbound: true,
+    });
+
     // Resolve the Amazon Linux 2023 AMI for this stack's region.
     const ami = ec2.MachineImage.latestAmazonLinux2023().getImage(this).imageId;
 
@@ -82,13 +103,16 @@ export class Ec2InstanceStack extends cdk.Stack {
     // stays on the SDK provider path (see class doc above).
     const instance = new ec2.CfnInstance(this, 'Instance', {
       imageId: ami,
-      instanceType: 't3.micro',
+      instanceType: isUpdate5446 ? 't3.small' : 't3.micro',
       subnetId: vpc.publicSubnets[0].subnetId,
       // The property #1276 added to the SDK provider. Emitting it alongside
       // SubnetId mirrors what the L2 construct synthesizes, and RunInstances
       // accepts both as long as they agree.
       availabilityZone: vpc.publicSubnets[0].availabilityZone,
-      securityGroupIds: [securityGroup.securityGroupId],
+      securityGroupIds: [
+        isUpdate5446 ? updateSecurityGroup.securityGroupId : securityGroup.securityGroupId,
+      ],
+      ...(isUpdate5446 ? { userData: cdk.Fn.base64('#!/bin/bash\necho cdkd-5446\n') } : {}),
       // Security-focused property backfill (#609):
       // Termination protection — a silent-drop here would let a user believe
       // the instance is protected when it is not. `cdkd destroy
@@ -132,9 +156,26 @@ export class Ec2InstanceStack extends cdk.Stack {
       description: 'EC2 Instance Public IP',
     });
 
+    if (withIpReader) {
+      const ipReader = new ssm.CfnParameter(this, 'PublicIpReader5446', {
+        type: 'String',
+        value: instance.attrPublicIp,
+        description: 'cdkd ec2-instance integ (issue #5446): reads Fn::GetAtt Instance.PublicIp',
+      });
+      new cdk.CfnOutput(this, 'IpReaderParamName', {
+        value: ipReader.ref,
+        description: 'The SSM parameter reading the instance public IP (issue #5446)',
+      });
+    }
+
     new cdk.CfnOutput(this, 'PrivateIp', {
       value: instance.attrPrivateIp,
       description: 'EC2 Instance Private IP',
+    });
+
+    new cdk.CfnOutput(this, 'UpdateSgId', {
+      value: updateSecurityGroup.securityGroupId,
+      description: 'The group verify.sh Phase 1h moves the instance to (issue #5446)',
     });
 
     new cdk.CfnOutput(this, 'VpcId', {

@@ -96,7 +96,7 @@ diff-fail-on-destructive	2026-10-12T13:46:43Z	PASS	85	verify.sh	rc ok, destroy 0
 diff-intrinsic-target-change	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 dlm-lifecycle-policy	2026-10-22T07:45:16Z	PASS	110	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean
 docdb-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	1830	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
-docdb-neptune	2026-10-27T22:44:34Z	PASS	5650	verify.sh	PR #5427 at 4c3868861; us-east-1; own state bucket; [verify] PASS, 3d Port + VpcSecurityGroupIds removal ok through the fail-fast SG/port waits, final destroy 0 errors, 0 orphans (#5419)
+docdb-neptune	2026-10-28T02:38:45Z	PASS	5318	verify.sh	PR #5455 at 4cccfb36d; us-east-1; own state bucket; [verify] PASS, DocDB/Neptune cluster + instance creates through the fail-fast create waits, 3g --remove-protection compensation ok, final destroy 0 errors, 0 orphans (#5426)
 docker-image-asset	2026-10-17T13:23:24Z	PASS	90	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
 drift-revert	2026-10-25T02:23:30Z	PASS	291	verify.sh	rc ok, orph clean
 drift-revert-arrays	2026-10-16T18:55:45Z	PASS	221	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
@@ -107,7 +107,7 @@ dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table 
 dynamodb-fix-forward-orphan	2026-10-19T10:52:49Z	PASS	170	verify.sh	rc ok, orph clean
 dynamodb-globaltable	2026-10-20T03:28:23Z	PASS	1478	verify.sh	deploy+destroy clean, 0 orphans
 dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc ok, orph clean (#4283 PR #4449)
-dynamodb-globaltable-replica-settings	2026-10-27T11:33:33Z	PASS	1207	verify.sh	rc ok, orph clean; #5381 phase 2c drift arm; pre-fix probe red at Phase 2c drift exit
+dynamodb-globaltable-replica-settings	2026-10-28T03:49:30Z	PASS	2582	verify.sh	rc ok, orph clean; #5399 phase 5b table2 arm; probe2 red at SSESpecification report
 dynamodb-gsi-update	2026-10-24T19:26:15Z	PASS	1235	verify.sh	rc ok, orph clean, #5266 tail-c
 dynamodb-ondemand	2026-10-27T17:47:12Z	PASS	560	verify.sh	rc ok, orph clean, KinesisRemovalTable arm (#5423) green, pre-fix probe red at Phase 1.5
 dynamodb-sse	2026-10-16T08:15:12Z	PASS	45	verify.sh	rc ok, orph clean (#3341 slice 4995)
@@ -116,6 +116,8 @@ dynamodb-streams	2026-10-13T02:41:29Z	PASS	235	verify.sh	rc ok, orph clean, own 
 dynamodb-tableclass-switch	2026-10-03T04:27:40Z	PASS	67	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-ttl-attr-change	2026-10-28T05:24:24Z	PASS	1944	verify.sh	rc ok, orph clean; 2c waited out rate limit (1874s); pre-fix probe RED at 2c (#5451)
 ec2-instance	2026-10-27T23:43:03Z	PASS	250	verify.sh	rc ok, orph clean; #5445 Ebs members; probe red at Encrypted
+dynamodb-ttl-attr-change	2026-10-27T23:45:06Z	PASS	65	verify.sh	rc ok, orph clean; Phase 2c rate-limit path; pre-fix probe RED at 2c (#5447)
+ec2-instance	2026-10-28T05:14:33Z	PASS	265	verify.sh	rc ok, orph clean; #5446 in-place update; probes red at t3.small and reader
 ec2-instance-fanout	2026-10-19T00:17:40Z	PASS	90	verify.sh	rc ok, orph clean (#5077)
 ec2-route-targets	2026-10-23T21:25:44Z	PASS	651	verify.sh	rc ok, orph clean, VGW attachment sdk record + Phase 2 swap to 2nd VGW (DetachVpnGateway=1 AttachVpnGateway=1); pre-fix probe RED at sdk-record assertion
 ec2-vpc	2026-10-20T12:02:38Z	PASS	133	verify.sh	PR#5127 1160 route53 hostedzone VPCs kept; pre-fix probe RED at exactly-one-warning (found 0); destroy 0 errors 0 orphans
@@ -149,7 +151,7 @@ fallback-recreate-children	2026-10-17T05:11:06Z	PASS	115	verify.sh	rc ok, orph c
 fifo-sqs-event-source	2026-10-16T16:36:24Z	PASS	105	verify.sh	PR #5012 (#5004) re-run on 5c17a4e7a (post-rebase, comment-only commits); rc ok, orph clean; scope/limit retained, CBD reset
 fsx-lustre	2026-10-27T21:43:55Z	PASS	2661	verify.sh	#5430 LogConfiguration create/update; rc ok, orph clean, probe red pre-fix
 fsx-ontap	2026-10-02T10:50:28Z	PASS	1613	verify.sh	#1160 PR #4398; rc ok, orph clean, no final backup
-fsx-openzfs	2026-10-23T21:58:56Z	PASS	1333	verify.sh	rc ok, destroy 0 errors, orph clean, final backup deleted
+fsx-openzfs	2026-10-28T02:59:23Z	PASS	1488	verify.sh	rc ok, destroy 0 errors, orph clean, final backup deleted, #5431 probes A/B red
 fsx-windows	2026-10-02T10:50:28Z	PASS	4588	verify.sh	#1160 PR #4398; AD-joined rc ok, orph clean, no final backup
 full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 gc-custom-asset-names	2026-10-05T08:20:47Z	PASS	163	verify.sh	rc ok, orph clean; us-east-2, run alone (a parallel batch's locks make gc refuse) (#2624 PR #4573)
@@ -299,7 +301,7 @@ pipes-fix-forward-orphan	2026-10-22T07:45:16Z	PASS	176	verify.sh	PR #5161 (#2319
 profile-region-default	2026-10-13T14:31:12Z	PASS	155	verify.sh	rc ok, orph clean, own state bucket, after §8-d probe; PR #4864 06b838511
 propagation-races-2	2026-10-22T21:44:19Z	PASS	130	verify.sh	PR #5187; ran alone after batch of 4; rc ok, destroy clean 0 errors, 0 orphans
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-10-27T20:46:09Z	PASS	5887	verify.sh	PR #5420 at 9c6a74eea; us-east-1; own state bucket; rc=0, phase 2 SecurityCluster Port removal reset to 5432 with the fail-fast port wait, final destroy 0 errors, 0 orphans (#5417)
+rds-aurora	2026-10-28T03:58:14Z	PASS	4764	verify.sh	PR #5455 at 4cccfb36d; us-east-1; own state bucket; rc=0, RDS cluster + instance creates through the fail-fast create waits, phase 2b compensation ok, final destroy 0 errors, 0 orphans (#5426)
 rds-dbinstance-backfill	2026-10-23T13:26:24Z	PASS	954	verify.sh	PR #5196 (#5194 helper): rc=0, 0 err 0 orph. One AWS automated backup snapshot lingered briefly post-destroy (DeleteAutomatedBackups async lag) and self-cleared within minutes — confirmed gone by re-poll, not a cdkd orphan. Full re-scan clean: 0 S3 state, 0 IAM, 0 DBInstances, 0 manual snapshots
 rds-fix-forward-orphan	2026-10-24T22:46:19Z	PASS	1031	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans
 rds-full-stack	2026-10-24T22:46:19Z	PASS	1011	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans

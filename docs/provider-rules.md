@@ -2377,6 +2377,14 @@ The ELBv2 attribute bags (`LoadBalancerAttributes`, `TargetGroupAttributes`, `Li
 
 It is non-mutating and returns both inputs by identity when nothing applies. It is async only so a provider can resolve the same client region its readback used; it issues no AWS call.
 
+### `getDriftAbsentMeansDefaultKeys()` when the readback omits a property at its default
+
+The comparator walks only the baseline's top-level keys. When `readCurrentState` omits a top-level property while it is at its default, a baseline captured at the default has no such key, so a later move away from it is compared nowhere, and `--revert` keeps the AWS value for a key the baseline lacks. `getDriftAbsentMeansDefaultKeys(resourceType, properties)` (issue [#5399](https://github.com/go-to-k/cdkd/issues/5399)) names those keys: drift compares each one even when an observed baseline lacks it, and `--revert` sends it absent, so `update()` takes its removal path. The GlobalTable provider names `SSESpecification` (read back only while encryption is ENABLED), whose removal path sends `Enabled: false` and returns every region to the AWS owned key.
+
+- **Name a key only if `update()` resets it on removal.** Sent absent to an `update()` that treats removal as a no-op, the revert does nothing, and the key reports drift forever.
+- **Key it on the template intent.** Return the key only when `properties` also leaves the property at its default. A baseline that disagrees with its template must not clear what the template declares; the GlobalTable names nothing when the template turns encryption on.
+- It is pure and synchronous, and it is not consulted for a record without `observedProperties`.
+
 ### When there is NO observed baseline at all
 
 The paragraph above describes the round-trip when `observedProperties` exists.

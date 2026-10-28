@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   CreateTableCommand,
   DeleteResourcePolicyCommand,
@@ -28,11 +28,19 @@ import {
  * PER REPLICA.
  */
 
-const { mockSend, regionalSend, mockAutoScalingSend, warnSpy } = vi.hoisted(() => ({
+const { mockSend, regionalSend, mockAutoScalingSend, warnSpy, deadline } = vi.hoisted(() => ({
   mockSend: vi.fn(),
   regionalSend: vi.fn(),
   mockAutoScalingSend: vi.fn(),
   warnSpy: vi.fn(),
+  deadline: { remainingMs: Number.POSITIVE_INFINITY },
+}));
+
+vi.mock('../../../src/deployment/resource-deadline.js', async () => ({
+  ...(await vi.importActual<typeof import('../../../src/deployment/resource-deadline.js')>(
+    '../../../src/deployment/resource-deadline.js'
+  )),
+  enclosingDeadlineRemainingMs: () => deadline.remainingMs,
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -171,11 +179,20 @@ const writes = (fn: ReturnType<typeof vi.fn>): Array<[string, Record<string, any
     .filter((c) => WRITES.includes(c.constructor.name))
     .map((c) => [c.constructor.name, c.input]);
 
+let kinesisDescribesAfterDisable = 0;
+
 interface Live {
   pitr?: 'ENABLED' | 'DISABLED';
   period?: number;
   ci?: 'ENABLED' | 'DISABLED';
   kinesis?: string[];
+  /**
+   * The statuses the disabled stream reads with on the describes after a
+   * Kinesis disable, before it is gone (go-to-k/cdkd#5399's integ).
+   */
+  kinesisAfterDisable?: string[];
+  /** A history entry for the disabled stream, listed first on every describe after the disable. */
+  kinesisHistoryStatus?: string;
   tablePolicy?: boolean;
   streamPolicy?: boolean;
 }
@@ -192,6 +209,9 @@ const regionDouble = (
   replicas: string[] | undefined,
   refuse: (name: string, input: Record<string, any>) => Error | undefined = () => undefined
 ) => {
+  let pendingDisable: { streamArn: string; statuses: string[]; drop: () => void } | undefined;
+  // A history entry stays listed for good once its stream was disabled.
+  let historyStream: string | undefined;
   return async (command: Sent): Promise<unknown> => {
     const name = command.constructor.name;
     const refusal = refuse(name, command.input);
@@ -208,13 +228,36 @@ const regionDouble = (
         };
       case DescribeContributorInsightsCommand.name:
         return { ContributorInsightsStatus: live.ci ?? 'DISABLED' };
-      case DescribeKinesisStreamingDestinationCommand.name:
+      case DescribeKinesisStreamingDestinationCommand.name: {
+        const pending = pendingDisable;
+        let status: string | undefined;
+        if (pending !== undefined) {
+          kinesisDescribesAfterDisable++;
+          status = pending.statuses.shift();
+          if (pending.statuses.length === 0) {
+            pending.drop();
+            pendingDisable = undefined;
+          }
+        }
         return {
-          KinesisDataStreamDestinations: (live.kinesis ?? []).map((s) => ({
-            StreamArn: s,
-            DestinationStatus: 'ACTIVE',
-          })),
+          KinesisDataStreamDestinations: [
+            ...(historyStream !== undefined && live.kinesisHistoryStatus !== undefined
+              ? [{ StreamArn: historyStream, DestinationStatus: live.kinesisHistoryStatus }]
+              : []),
+            ...(live.kinesis ?? []).flatMap((s) =>
+            pending !== undefined && s === pending.streamArn && status === undefined
+              ? []
+              : [
+                  {
+                    StreamArn: s,
+                    DestinationStatus:
+                      pending !== undefined && s === pending.streamArn ? status : 'ACTIVE',
+                  },
+                ]
+            ),
+          ],
         };
+      }
       case GetResourcePolicyCommand.name: {
         const has =
           command.input['ResourceArn'] === stream ? live.streamPolicy : live.tablePolicy;
@@ -227,6 +270,17 @@ const regionDouble = (
           if (dropped !== undefined && replicas !== undefined) {
             replicas = replicas.filter((r) => r !== dropped);
           }
+          return {};
+        }
+        if (name === DisableKinesisStreamingDestinationCommand.name) {
+          const off = command.input['StreamArn'];
+          const drop = () => {
+            live.kinesis = (live.kinesis ?? []).filter((s) => s !== off);
+          };
+          historyStream = off;
+          const statuses = [...(live.kinesisAfterDisable ?? [])];
+          if (statuses.length === 0) drop();
+          else pendingDisable = { streamArn: off, statuses, drop };
           return {};
         }
         if (WRITES.includes(name)) return {};
@@ -592,6 +646,83 @@ describe('DynamoDB GlobalTable replica settings writes (go-to-k/cdkd#5365)', () 
         [DeleteResourcePolicyCommand.name, { ResourceArn: REMOTE_STREAM }],
       ]);
       expect(writes(mockSend)).toEqual([]);
+    });
+
+    describe('a Kinesis disable waits for DISABLED (go-to-k/cdkd#5399)', () => {
+      // The first describe after an accepted disable read ACTIVE in one
+      // measured run and DISABLING in another, then DISABLED; the deploy's
+      // baseline capture right after the update recorded the destination.
+      const disable = async (statuses: string[], delays: number[], history?: string) => {
+        (provider as unknown as { kinesisDisableSettleDelaysMs: number[] }).kinesisDisableSettleDelaysMs =
+          delays;
+        const remote: Live = {
+          kinesis: [REMOTE_KS],
+          kinesisAfterDisable: statuses,
+          kinesisHistoryStatus: history,
+        };
+        setLive({}, remote);
+        kinesisDescribesAfterDisable = 0;
+        const desired = base({}, {});
+        await provider.update(
+          'T',
+          TABLE,
+          RESOURCE_TYPE,
+          desired,
+          base({}, { KinesisStreamSpecification: { StreamArn: REMOTE_KS } })
+        );
+        return { remote, desired };
+      };
+      const kinesisWarns = () =>
+        warnSpy.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('Kinesis streaming destination'));
+      afterEach(() => {
+        deadline.remainingMs = Number.POSITIVE_INFINITY;
+      });
+
+      it('keeps reading through DISABLING and an ACTIVE flicker until DISABLED, so the capture omits it', async () => {
+        const { remote, desired } = await disable(['DISABLING', 'ACTIVE', 'DISABLED'], [0, 0, 0, 0]);
+
+        expect(kinesisDescribesAfterDisable).toBe(3);
+        expect(remote.kinesis).toEqual([]);
+        expect(kinesisWarns()).toEqual([]);
+        const captured = (await provider.readCurrentState(TABLE, 'T', RESOURCE_TYPE, desired, {
+          afterOwnWrite: true,
+        } as never)) as Record<string, unknown>;
+        const replica = (captured['Replicas'] as Array<Record<string, unknown>>).find(
+          (r) => r['Region'] === 'eu-west-1'
+        );
+        expect(replica).not.toHaveProperty('KinesisStreamSpecification');
+      });
+
+      it('keeps waiting past a DISABLED history entry for the same stream listed before the DISABLING one', async () => {
+        await disable(['DISABLING', 'DISABLING', 'DISABLED'], [0, 0, 0, 0], 'DISABLED');
+
+        expect(kinesisDescribesAfterDisable).toBe(3);
+        expect(kinesisWarns()).toEqual([]);
+      });
+
+      it('settles beside an ENABLE_FAILED history entry for the same stream', async () => {
+        await disable(['DISABLING', 'DISABLED'], [0, 0, 0, 0], 'ENABLE_FAILED');
+
+        expect(kinesisDescribesAfterDisable).toBe(2);
+        expect(kinesisWarns()).toEqual([]);
+      });
+
+      it('warns, naming drift, when the destination never settles within its re-reads', async () => {
+        await disable(['DISABLING', 'DISABLING', 'DISABLING', 'DISABLING'], [0, 0]);
+
+        expect(kinesisDescribesAfterDisable).toBe(3);
+        expect(kinesisWarns()).toEqual([
+          expect.stringMatching(/had not settled \(last status: DISABLING\); 'cdkd drift' may report it/),
+        ]);
+      });
+
+      it('stops at the resource deadline instead of polling past it', async () => {
+        deadline.remainingMs = 0;
+        await disable(['DISABLING', 'DISABLED'], [0, 0, 0]);
+
+        expect(kinesisDescribesAfterDisable).toBe(0);
+        expect(kinesisWarns()).toEqual([expect.stringContaining('(last status: none read)')]);
+      });
     });
 
     it('sends the local table its settings through the source client', async () => {

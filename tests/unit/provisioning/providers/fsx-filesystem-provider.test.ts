@@ -1487,6 +1487,7 @@ describe('FSxFileSystemProvider readCurrentState', () => {
       'WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.Password',
       'OntapConfiguration.FsxAdminPassword',
       'OpenZFSConfiguration.RootVolumeConfiguration',
+      'OpenZFSConfiguration.Options',
     ]);
     expect(newProvider().getDriftUnknownPaths('AWS::S3::Bucket')).toEqual([]);
   });
@@ -3800,5 +3801,123 @@ describe('FSxFileSystemProvider Lustre LogConfiguration (#5430)', () => {
     const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
 
     expect(state['LustreConfiguration']).not.toHaveProperty('LogConfiguration');
+  });
+});
+
+// go-to-k/cdkd#5431: OpenZFSConfiguration.Options is the one delete-time
+// property in the CFn schema (DELETE_CHILD_VOLUMES_AND_SNAPSHOTS lets
+// DeleteFileSystem remove a file system with child volumes). It is sent on
+// DeleteFileSystem from the recorded properties, and a change to it on update
+// has nothing to send to AWS.
+describe('FSxFileSystemProvider OpenZFS delete Options (#5431)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const DELETE_CHILDREN = 'DELETE_CHILD_VOLUMES_AND_SNAPSHOTS';
+  const withOptions = (options: unknown): Record<string, unknown> => ({
+    ...OPENZFS_PROPS,
+    OpenZFSConfiguration: {
+      ...OPENZFS_PROPS.OpenZFSConfiguration,
+      ...(options !== undefined && { Options: options }),
+    },
+  });
+  const deleteWith = async (properties: Record<string, unknown> | undefined) => {
+    routeSend({
+      DeleteFileSystemCommand: { FileSystemId: FS_ID, Lifecycle: 'DELETING' },
+      DescribeFileSystemsCommand: notFound(),
+    });
+    await newProvider().delete('MyFs', FS_ID, RESOURCE_TYPE, properties);
+    const [del] = callsOf(DeleteFileSystemCommand);
+    return del.input;
+  };
+
+  it('sends the recorded Options on DeleteFileSystem', async () => {
+    expect(await deleteWith(withOptions([DELETE_CHILDREN]))).toEqual({
+      FileSystemId: FS_ID,
+      OpenZFSConfiguration: { Options: [DELETE_CHILDREN] },
+    });
+  });
+
+  it('sends no OpenZFSConfiguration when no Options is recorded', async () => {
+    expect(await deleteWith(withOptions(undefined))).toEqual({ FileSystemId: FS_ID });
+    vi.clearAllMocks();
+    expect(await deleteWith(withOptions([]))).toEqual({ FileSystemId: FS_ID });
+    vi.clearAllMocks();
+    expect(await deleteWith(undefined)).toEqual({ FileSystemId: FS_ID });
+  });
+
+  it('sends no OpenZFSConfiguration for a file system that is not OpenZFS', async () => {
+    expect(
+      await deleteWith({
+        ...LUSTRE_PROPS,
+        OpenZFSConfiguration: { Options: [DELETE_CHILDREN] },
+      })
+    ).toEqual({ FileSystemId: FS_ID });
+  });
+
+  it('accepts an added Options on update without calling UpdateFileSystem or warning', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+
+    const result = await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      withOptions([DELETE_CHILDREN]),
+      withOptions(undefined)
+    );
+
+    expect(result).toMatchObject({ physicalId: FS_ID, wasReplaced: false });
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('accepts a removed Options on update without calling UpdateFileSystem or warning', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      withOptions(undefined),
+      withOptions([DELETE_CHILDREN])
+    );
+
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('still sends the other changes of an update that also changes Options', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      {
+        ...withOptions([DELETE_CHILDREN]),
+        OpenZFSConfiguration: {
+          ...OPENZFS_PROPS.OpenZFSConfiguration,
+          Options: [DELETE_CHILDREN],
+          ThroughputCapacity: 128,
+        },
+      },
+      withOptions(undefined)
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      OpenZFSConfiguration: { ThroughputCapacity: 128 },
+    });
+  });
+
+  it('declares Options drift-unknown: AWS never stores it on the file system', () => {
+    expect(newProvider().getDriftUnknownPaths(RESOURCE_TYPE)).toContain(
+      'OpenZFSConfiguration.Options'
+    );
   });
 });
