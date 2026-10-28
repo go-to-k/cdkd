@@ -1035,9 +1035,15 @@ export class ReplacementRulesRegistry {
 
     // EC2 VPC (issue #5449) — InstanceTenancy is not createOnly in the registry
     // schema, but only a change TO `default` is in place; see the predicate.
-    // The schema's createOnly fallback still classifies every other property.
+    // The registry schema's createOnly list is named here too, so the
+    // classification survives a DescribeType failure (as for the Subnet).
     this.rules.set('AWS::EC2::VPC', {
-      replacementProperties: new Set(),
+      replacementProperties: new Set([
+        'CidrBlock',
+        'Ipv4IpamPoolId',
+        'Ipv4NetmaskLength',
+        'VpcEncryptionControl',
+      ]),
       conditionalReplacements: new Map([['InstanceTenancy', vpcInstanceTenancyChangeReplaces]]),
     });
 

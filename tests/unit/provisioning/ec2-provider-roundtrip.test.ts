@@ -170,11 +170,32 @@ describe('EC2Provider read-update round-trip', () => {
       ['no change', { InstanceTenancy: 'dedicated' }, { InstanceTenancy: 'dedicated' }],
       ['absent -> default', {}, { InstanceTenancy: 'default' }],
       ['default -> absent', { InstanceTenancy: 'default' }, {}],
+      ['null -> default', { InstanceTenancy: null }, { InstanceTenancy: 'default' }],
     ])('%s sends no ModifyVpcTenancy', async (_l, prev, next) => {
       mockSend.mockResolvedValue({});
       await provider.update('Vpc', 'vpc-123', 'AWS::EC2::VPC', next, prev);
       expect(tenancyCalls()).toEqual([]);
       expect(countMutatingCalls()).toBe(0);
+    });
+
+    it('refuses null -> dedicated as a change to dedicated (null reads as default)', async () => {
+      const error = await provider
+        .update(
+          'Vpc',
+          'vpc-123',
+          'AWS::EC2::VPC',
+          { InstanceTenancy: 'dedicated' },
+          { InstanceTenancy: null }
+        )
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect(countMutatingCalls()).toBe(0);
+    });
+
+    it('a removal from null sends no ModifyVpcTenancy', async () => {
+      mockSend.mockResolvedValue({});
+      await provider.update('Vpc', 'vpc-123', 'AWS::EC2::VPC', {}, { InstanceTenancy: null });
+      expect(tenancyCalls()).toEqual([]);
     });
 
     it('refuses a change to dedicated (CloudFormation replaces) before any call, unwrapped', async () => {

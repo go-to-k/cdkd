@@ -29,9 +29,19 @@ describe('ReplacementRulesRegistry — AWS::EC2::VPC InstanceTenancy', () => {
     expect(replaces('dedicated', 'dedicated')).toBe(false);
   });
 
-  it('is classified, and leaves the other VPC properties to the createOnly fallback', () => {
+  it('reads null as default, as the provider does', () => {
+    expect(replaces(null, 'dedicated')).toBe(true);
+    expect(replaces(null, 'default')).toBe(false);
+    expect(replaces('dedicated', null)).toBe(false);
+  });
+
+  it('is classified, and names the schema createOnly list so a DescribeType failure still replaces', () => {
     expect(registry.isClassified(TYPE, 'InstanceTenancy')).toBe(true);
-    expect(registry.isClassified(TYPE, 'CidrBlock')).toBe(false);
+    for (const prop of ['CidrBlock', 'Ipv4IpamPoolId', 'Ipv4NetmaskLength', 'VpcEncryptionControl']) {
+      expect(registry.isClassified(TYPE, prop)).toBe(true);
+      expect(registry.requiresReplacement(TYPE, prop, 'a', 'b')).toBe(true);
+    }
+    expect(registry.requiresReplacement(TYPE, 'CidrBlock', '10.0.0.0/16', '10.1.0.0/16')).toBe(true);
     expect(registry.requiresReplacement(TYPE, 'EnableDnsHostnames', false, true)).toBe(false);
   });
 });

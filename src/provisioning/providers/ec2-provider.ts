@@ -2467,8 +2467,8 @@ export class EC2Provider implements ResourceProvider {
       // routed to replacement by `vpcInstanceTenancyChangeReplaces`. Only
       // `cdkd drift --revert` reaches here with that direction, so it is
       // refused, before any call, rather than silently left as is. An absent
-      // value is `default`; the call itself is sent after the DNS attributes.
-      const tenancyOf = (v: unknown): string => (v === undefined ? 'default' : String(v));
+      // (or null) value is `default`, as in the replacement predicate; the call itself is sent after the DNS attributes.
+      const tenancyOf = (v: unknown): string => (v == null ? 'default' : String(v));
       const newTenancy = tenancyOf(properties['InstanceTenancy']);
       const oldTenancy = tenancyOf(previousProperties['InstanceTenancy']);
       if (newTenancy !== oldTenancy && newTenancy !== 'default') {
