@@ -126,6 +126,7 @@ import {
 import { approveLateReplacement } from '../deployment-approval.js';
 import { findDestructiveChanges } from '../../analyzer/destructive-changes.js';
 import { STACK_UNDER_OTHER_PREFIX } from '../../state/cross-prefix-stack-scan.js';
+import { unsettledPropertiesOf } from '../../state/unsettled-properties.js';
 import {
   diffMovedServiceToken,
   renderServiceTokenRefusal,
@@ -991,6 +992,11 @@ export async function provisionUpdate(
   // The same three terms for ONE top-level key: its as-written value moved, or
   // a move its redacted form hides (a masked property whose template moved, a
   // rewritten or provenance-moved path).
+  // go-to-k/cdkd#5380: a key an earlier failed update left unsettled may hold
+  // either side in AWS, so the update is sent and the key counts as changed
+  // whatever the two bags say. Not a "moved" value: no replacement verdict
+  // below reads it, since the provider changed the key in place.
+  const unsettledNames = unsettledPropertiesOf(currentResource);
   const movedAsWritten = (key: string): boolean =>
     movedMasked.has(key) ||
     rewrittenPaths.has(key) ||
@@ -1167,7 +1173,8 @@ export async function provisionUpdate(
     !suppliesFreshMaskOnlyValue &&
     lostChild === undefined &&
     recreateDirectionFor(engine.options, stackName, logicalId) === undefined &&
-    recordMatchesDesired
+    recordMatchesDesired &&
+    unsettledNames.size === 0
   ) {
     // go-to-k/cdkd#4852: a reader whose read versions moved with an equal
     // value now records the versions it was served (the save persists it).
@@ -1549,6 +1556,7 @@ export async function provisionUpdate(
     lostChild === undefined &&
     recreateDirectionFor(engine.options, stackName, logicalId) === undefined &&
     recordMatchesDesired &&
+    unsettledNames.size === 0 &&
     Object.keys(resolvedProps).every(
       (key) =>
         confirmedPaths.has(key) ||
@@ -1883,9 +1891,11 @@ export async function provisionUpdate(
         ...Object.keys(desiredForSkipCheckAsWritten),
         ...Object.keys(currentPropsAsWritten),
         ...Object.keys(resolvedProps),
+        ...unsettledNames,
       ]),
     ].filter(
       (key) =>
+        unsettledNames.has(key) ||
         movedAsWritten(key) ||
         (!confirmedPaths.has(key) &&
           (pendingParameterLeaves.has(key) || otherFreshAt(key).length > 0))

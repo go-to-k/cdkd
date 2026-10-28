@@ -28,6 +28,7 @@ import {
 } from './replacement.js';
 import { isPinnedToCcApi, preparePropertiesForCcApi } from './routing.js';
 import { extractTemplateAttributes, propertiesToRecord } from './record-shape.js';
+import { unsettledPropertiesOf } from '../../state/unsettled-properties.js';
 import { replacementNameOrigin } from './name-collision.js';
 import { withUnchangedSecretPrincipalLists } from '../../provisioning/iam-policy-targets.js';
 import { withRecreatedAttachmentsDropped } from '../child-of-recreated-parent.js';
@@ -292,6 +293,10 @@ export async function updateInPlace(
       changedForProvider.add(key);
     }
   }
+  // go-to-k/cdkd#5380: the keys an earlier failed update left unsettled, which
+  // `update.ts` already counted in `changedProperties`; the provider is told
+  // which of them to converge against AWS.
+  const unsettled = unsettledPropertiesOf(currentResource);
   // Still nothing: an update the engine forces with no change as written (a
   // `reput` child of a parent re-created under the same id, go-to-k/cdkd#4411).
   // Every key counts, so no provider skips the write the update exists for.
@@ -420,6 +425,32 @@ export async function updateInPlace(
               ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
               ...removal.context,
               changedProperties: changedForProvider,
+              // go-to-k/cdkd#5380: the sink lives on the engine, so a mark
+              // outlives this call's promise (deadline race, Ctrl-C, retry).
+              markUnsettled: (propertyName: string) => {
+                if (typeof propertyName !== 'string' || propertyName === '') return;
+                // Only a top-level key this update sends or the record holds:
+                // anything else names no property this resource has, and the
+                // record must not carry it into every later deploy's diff. (A
+                // name the record already carries unsettled stays by the union
+                // at the failure save.)
+                if (
+                  !Object.hasOwn(resolvedProps, propertyName) &&
+                  !Object.hasOwn(currentResource.properties ?? {}, propertyName)
+                ) {
+                  engine.logger.debug(
+                    safeMsg`${logicalId}: ignored an unsettled mark for ${propertyName}, which is not one of its properties`
+                  );
+                  return;
+                }
+                let marks = engine.unsettledMarks.get(logicalId);
+                if (marks === undefined) {
+                  marks = new Set();
+                  engine.unsettledMarks.set(logicalId, marks);
+                }
+                marks.add(propertyName);
+              },
+              ...(unsettled.size > 0 && { unsettledProperties: unsettled }),
             }
           )
         ),
@@ -432,6 +463,10 @@ export async function updateInPlace(
     // before anything below can throw, so a failed deploy can tell a re-put
     // child that wrote nothing from one that may have.
     if (result.sentNothing === true) engine.replacementRun.updatesThatSentNothing.add(logicalId);
+    // go-to-k/cdkd#5380: the update finished, so what it marked settled (an
+    // earlier attempt's marks included). The record built below carries no
+    // `unsettledProperties`, which clears the previous record's.
+    engine.unsettledMarks.delete(logicalId);
     // go-to-k/cdkd#4911: a provider that replaced the resource inside its own
     // `update()` and reports `'partial'` could not delete the OLD one (its
     // delete threw or was skipped), so the rollback must read AWS before
@@ -1294,6 +1329,11 @@ export async function updateInPlace(
       const fallbackOutcome = await (fallbackGeneration === undefined
         ? replaceFallback()
         : withNameGeneration({ logicalId, generation: fallbackGeneration }, replaceFallback));
+      // go-to-k/cdkd#5380: the replacement now holds the record, so a mark the
+      // failed update made describes the resource it replaced. Only once its
+      // create succeeded: a fallback that throws leaves the old resource, which
+      // keeps the mark.
+      engine.unsettledMarks.delete(logicalId);
       result = fallbackOutcome.result;
       resultProvisionedBy = fallbackOutcome.provisionedBy;
       captureProvider = fallbackOutcome.captureProvider;

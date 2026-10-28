@@ -198,14 +198,26 @@
  *       field and would drop the id, turning the stack legacy behind the
  *       next reader's back. A v12 document is read unchanged (legacy).
  *
+ * - 14 — adds `ResourceState.unsettledProperties` (issue
+ *       [#5380](https://github.com/go-to-k/cdkd/issues/5380)): the top-level
+ *       property NAMES (never values) a provider's `update()` declared it was
+ *       about to change with an irreversible call before that update failed,
+ *       so AWS may hold either side. The next deploy treats each as changed
+ *       and the provider converges it against AWS. Read through
+ *       `unsettledPropertiesOf` (malformed = none).
+ *       A bump, for v10's reason: an older binary rewriting the record would
+ *       drop the names, and a later deploy back to the recorded template would
+ *       diff empty and leave AWS on the other side. A v13 document is read
+ *       unchanged (nothing unsettled).
+ *
  * cdkd readers handle every prior version. Writers always emit
  * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
  * version, rather than silently mishandling the new format.
  */
-export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
+export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 13;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 14;
 
 /**
  * Every schema version this binary can read. Writers always emit
@@ -214,7 +226,7 @@ export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 13;
  * "upgrade cdkd" error in the parser.
  */
 export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
 ];
 
 /**
@@ -783,6 +795,18 @@ export interface ResourceState {
    * for again. ABSENT = `nameGeneration`.
    */
   nameGenerationHigh?: number;
+
+  /**
+   * State schema v14 (go-to-k/cdkd#5380): top-level property NAMES (never
+   * values) whose change a failed `update()` had started with an irreversible
+   * call, so AWS may hold either the recorded value or the attempted one.
+   * `properties` keeps the recorded value; the next deploy treats each name as
+   * changed and the provider converges it against AWS. ABSENT = nothing
+   * unsettled. Cleared by a successful update, `cdkd rollback --revert-failed`
+   * and `cdkd drift --accept` / `--revert`. Read through
+   * `unsettledPropertiesOf` (`src/state/unsettled-properties.ts`).
+   */
+  unsettledProperties?: string[];
 
   /** CloudFormation resource type (e.g., AWS::Lambda::Function) */
   resourceType: string;
@@ -1751,6 +1775,14 @@ export interface PropertyChange {
    * renderer labels it, since `*** -> ***` reads as no change.
    */
   maskedExpressionChanged?: true;
+
+  /**
+   * Set on a change only the record's `unsettledProperties` adds
+   * (go-to-k/cdkd#5380): an earlier update of the property failed after an
+   * irreversible call, so AWS may hold either side although the template and
+   * the record agree. Always in place; the diff renderer labels it.
+   */
+  unsettled?: true;
 
   /**
    * Set on an `inPlacePropagated` change the READ-PROVENANCE arm added
