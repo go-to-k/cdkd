@@ -158,6 +158,7 @@ import type {
   ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import { isTtlAlreadyDisabled, planTimeToLive, readTtlSpec } from '../dynamodb-ttl.js';
 
 /**
  * A DynamoDB table NAME (3-255 of `a-z A-Z 0-9 _ . -`), the physical id this
@@ -2465,7 +2466,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
         undefined,
         maskSecrets
       );
-      await this.applyTimeToLive(tableName, properties['TimeToLiveSpecification']);
+      await this.applyTimeToLive(
+        tableName,
+        properties['TimeToLiveSpecification'],
+        undefined,
+        'create',
+        { logicalId, resourceType }
+      );
 
       // KinesisStreamSpecification and ContributorInsightsSpecification are
       // also post-ACTIVE control-plane calls (separate
@@ -4096,7 +4103,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
         await this.applyTimeToLive(
           physicalId,
           properties['TimeToLiveSpecification'],
-          previousProperties['TimeToLiveSpecification']
+          previousProperties['TimeToLiveSpecification'],
+          'update',
+          { logicalId, resourceType }
         );
       }
 
@@ -4909,16 +4918,6 @@ export class DynamoDBTableProvider implements ResourceProvider {
   }
 
   /**
-   * Apply the table's `TimeToLiveSpecification` via the separate
-   * `UpdateTimeToLive` API (TTL does NOT ride on CreateTable).
-   *
-   * CFn shape is `{ AttributeName: string, Enabled: boolean }`. Called from
-   * both `create()` (after the table is ACTIVE) and `update()` (only when the
-   * value changed). On `update()`-side removal — when the template drops the
-   * block but it was present before — we disable TTL using the PREVIOUS
-   * `AttributeName` (AWS requires the attribute name even to disable TTL).
-   */
-  /**
    * Pre-emptively reject a TTL `AttributeName` change between two enabled
    * specs with a clear, actionable message.
    *
@@ -4941,8 +4940,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
     spec: unknown,
     previousSpec: unknown
   ): void {
-    const cur = this.readTtlSpec(spec);
-    const prev = this.readTtlSpec(previousSpec);
+    const cur = readTtlSpec(spec);
+    const prev = readTtlSpec(previousSpec);
     if (
       cur.enabled &&
       prev.enabled &&
@@ -4968,39 +4967,48 @@ export class DynamoDBTableProvider implements ResourceProvider {
   }
 
   /**
-   * Normalize a `TimeToLiveSpecification` value into `{ enabled, attributeName }`.
-   * Mirrors {@link applyTimeToLive}'s default (`Enabled` absent => true).
+   * Send the `UpdateTimeToLive` call {@link planTimeToLive} plans for a
+   * `TimeToLiveSpecification` change (issue #5447): `Enabled: false` without
+   * an `AttributeName` disables TTL on the recorded attribute, or on the one
+   * `DescribeTimeToLive` reports when no enabled spec was recorded; a
+   * disabled spec on a new or already-disabled table sends nothing, since AWS
+   * refuses to disable a TTL that is not enabled.
+   *
+   * AWS also refuses a second `UpdateTimeToLive` for a while after the last
+   * one (CloudFormation waits it out instead, #5451); that refusal is rethrown as a cdkd-authored error, since the AWS text
+   * itself is redacted from the thrown message.
    */
-  private readTtlSpec(spec: unknown): { enabled: boolean; attributeName: string | undefined } {
-    if (spec === undefined || spec === null) {
-      return { enabled: false, attributeName: undefined };
-    }
-    const s = spec as Record<string, unknown>;
-    const attributeName = s['AttributeName'] as string | undefined;
-    // CFn `Enabled` is a boolean for CDK L2 synth, but a hand-written L1
-    // template can carry the stringified `"true"` / `"false"`. `Boolean("false")`
-    // is `true`, so coerce strings case-insensitively rather than via the bare
-    // `Boolean()` cast (which would treat `"false"` as enabled and either
-    // re-enable a disabled TTL or fire the rename guard spuriously). Absent
-    // `Enabled` defaults to `true` (CFn default).
-    const rawEnabled = s['Enabled'];
-    const enabled =
-      rawEnabled === undefined
-        ? true
-        : typeof rawEnabled === 'string'
-          ? rawEnabled.toLowerCase() === 'true'
-          : Boolean(rawEnabled);
-    return { enabled, attributeName };
-  }
-
   private async applyTimeToLive(
     tableName: string,
     spec: unknown,
-    previousSpec?: unknown
+    previousSpec: unknown,
+    mode: 'create' | 'update',
+    ids: { logicalId: string; resourceType: string }
   ): Promise<void> {
-    if (spec !== undefined && spec !== null) {
-      const { enabled, attributeName } = this.readTtlSpec(spec);
-      if (!attributeName) return;
+    const plan = planTimeToLive(spec, previousSpec, mode);
+    let enabled: boolean;
+    let attributeName: string;
+    if (plan.kind === 'none') return;
+    if (plan.kind === 'disable-live') {
+      const resp = await this.retryOnTransientControlPlane(
+        () => this.dynamoDBClient.send(new DescribeTimeToLiveCommand({ TableName: tableName })),
+        `read TTL on ${tableName}`
+      );
+      const live = resp.TimeToLiveDescription;
+      const status = live?.TimeToLiveStatus;
+      if ((status !== 'ENABLED' && status !== 'ENABLING') || !live?.AttributeName) {
+        this.logger.debug(
+          `TimeToLive already ${status ?? 'DISABLED'} on DynamoDB table ${tableName}; nothing to disable`
+        );
+        return;
+      }
+      enabled = false;
+      attributeName = live.AttributeName;
+    } else {
+      enabled = plan.kind === 'enable';
+      attributeName = plan.attributeName;
+    }
+    try {
       await this.retryOnTransientControlPlane(
         () =>
           this.dynamoDBClient.send(
@@ -5009,33 +5017,33 @@ export class DynamoDBTableProvider implements ResourceProvider {
               TimeToLiveSpecification: { Enabled: enabled, AttributeName: attributeName },
             })
           ),
-        `set TTL on ${tableName}`
+        `${enabled ? 'set' : 'disable'} TTL on ${tableName}`
       );
-      this.logger.debug(
-        `Set TimeToLive Enabled=${enabled} AttributeName=${attributeName} on DynamoDB table ${tableName}`
-      );
-      return;
+    } catch (error) {
+      // A disable whose goal already holds (an earlier attempt that landed
+      // before a later step failed, or an out-of-band disable).
+      if (!enabled && isTtlAlreadyDisabled(describeAwsFailure(error).detail)) {
+        this.logger.debug(`TimeToLive already disabled on DynamoDB table ${tableName}`);
+        return;
+      }
+      if (
+        describeAwsFailure(error).detail.includes('Time to live has been modified multiple times')
+      ) {
+        throw new ProvisioningError(
+          `DynamoDB table ${ids.logicalId}: AWS refused to ${enabled ? 'enable' : 'disable'} ` +
+            `TimeToLive because it was already modified within DynamoDB's rate-limit interval. ` +
+            `Wait for the interval to pass (up to about an hour), then redeploy.`,
+          ids.resourceType,
+          ids.logicalId,
+          tableName,
+          error instanceof Error ? error : undefined
+        );
+      }
+      throw error;
     }
-
-    // Removed from the template: disable using the previous AttributeName.
-    if (previousSpec !== undefined && previousSpec !== null) {
-      const prev = previousSpec as Record<string, unknown>;
-      const prevAttributeName = prev['AttributeName'] as string | undefined;
-      if (!prevAttributeName) return;
-      await this.retryOnTransientControlPlane(
-        () =>
-          this.dynamoDBClient.send(
-            new UpdateTimeToLiveCommand({
-              TableName: tableName,
-              TimeToLiveSpecification: { Enabled: false, AttributeName: prevAttributeName },
-            })
-          ),
-        `disable TTL on ${tableName}`
-      );
-      this.logger.debug(
-        `Disabled TimeToLive (AttributeName=${prevAttributeName}) on DynamoDB table ${tableName}`
-      );
-    }
+    this.logger.debug(
+      `Set TimeToLive Enabled=${enabled} AttributeName=${attributeName} on DynamoDB table ${tableName}`
+    );
   }
 
   /**

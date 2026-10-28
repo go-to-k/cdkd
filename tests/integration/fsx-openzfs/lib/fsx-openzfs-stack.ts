@@ -25,7 +25,13 @@ import type { Construct } from 'constructs';
  *   - ThroughputCapacity 64 -> 128 MB/s (UpdateFileSystem — a mutable
  *     OpenZFSConfiguration sub-property)
  *   - Tag value change + tag REMOVAL (TagResource / UntagResource)
- * Both must keep the FileSystemId unchanged (no replacement).
+ *   - OpenZFSConfiguration.Options DELETE_CHILD_VOLUMES_AND_SNAPSHOTS is
+ *     ADDED (go-to-k/cdkd#5431). It is a DeleteFileSystem option (CFn "Update
+ *     requires: No interruption"), so the deploy must accept it with nothing
+ *     sent to AWS, and the destroy must send it: verify.sh adds a child volume
+ *     outside the stack before the destroy, which FSx refuses to delete
+ *     without the option.
+ * All must keep the FileSystemId unchanged (no replacement).
  *
  * REMOVAL phase (CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true, issue #1160):
  *   - StorageCapacity (64), StorageType (SSD) and NetworkType (IPV4), declared
@@ -79,6 +85,9 @@ export class FsxOpenZfsStack extends cdk.Stack {
         // 64 MB/s baseline; the UPDATE phase scales it to 128, and the
         // THROUGHPUT REMOVAL phase drops it (issue #1160).
         ...(!isTpRemoval && { throughputCapacity: isUpdate ? 128 : 64 }),
+        // go-to-k/cdkd#5431: declared from the UPDATE phase on, so the
+        // destroy deletes the child volume verify.sh adds.
+        ...(isUpdate && { options: ['DELETE_CHILD_VOLUMES_AND_SNAPSHOTS'] }),
         // Sunday 03:30 UTC, or Monday 04:45 under CDKD_TEST_MAINT_ALT=true,
         // which verify.sh picks when AWS already holds the first.
         ...(isRemoval && { weeklyMaintenanceStartTime: isMaintAlt ? '1:04:45' : '7:03:30' }),

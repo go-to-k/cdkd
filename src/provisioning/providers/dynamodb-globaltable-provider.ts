@@ -37,6 +37,7 @@ import {
   type ReplicaGlobalSecondaryIndex,
   type StreamSpecification,
   type Tag,
+  type TimeToLiveDescription,
   type ReplicationGroupUpdate,
   type CreateReplicationGroupMemberAction,
   type ReplicaDescription,
@@ -62,6 +63,7 @@ import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
+import { isTtlAlreadyDisabled, planTimeToLive } from '../dynamodb-ttl.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { isRefusedByName, markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import {
@@ -98,6 +100,7 @@ import {
 } from '../dynamodb-warm-throughput.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
+import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
 import {
   isAmbiguousOutcomeError,
   isThrottlingError,
@@ -603,7 +606,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // as this resource.
     const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
     const wrapped = build(
-      `${log.mask(failure.summary)}${relay}${relayedIndexBusyDelete(failure.detail)}`
+      `${log.mask(failure.summary)}${relay}${relayedIndexBusyDelete(failure.detail)}` +
+        relayedEncryptionChangeLimit(failure.detail)
     );
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
@@ -1474,18 +1478,16 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
       // TTL is a separate API call (UpdateTimeToLive). Applied after
       // table + replicas are ACTIVE so the AWS-side request validates.
-      if (properties['TimeToLiveSpecification']) {
-        const ttl = properties['TimeToLiveSpecification'] as Record<string, unknown>;
-        const attributeName = ttl['AttributeName'] as string | undefined;
-        const enabled = ttl['Enabled'] !== undefined ? Boolean(ttl['Enabled']) : true;
-        if (attributeName) {
-          await this.dynamoDBClient.send(
-            new UpdateTimeToLiveCommand({
-              TableName: tableName,
-              TimeToLiveSpecification: { Enabled: enabled, AttributeName: attributeName },
-            })
-          );
-        }
+      // A disabled spec sends nothing: a new table starts with TTL disabled,
+      // and AWS refuses to disable it again (issue #5447).
+      const createTtl = planTimeToLive(properties['TimeToLiveSpecification'], undefined, 'create');
+      if (createTtl.kind === 'enable') {
+        await this.dynamoDBClient.send(
+          new UpdateTimeToLiveCommand({
+            TableName: tableName,
+            TimeToLiveSpecification: { Enabled: true, AttributeName: createTtl.attributeName },
+          })
+        );
       }
 
       // Application-autoscaling registration (Issue #1419). Before this,
@@ -2743,6 +2745,81 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * The pauses between re-reads of a Kinesis destination this update
+   * disabled. `DisableKinesisStreamingDestination` answers `DISABLING`, and
+   * the first `DescribeKinesisStreamingDestination` after it read `ACTIVE` in
+   * one run and `DISABLING` in another, then `DISABLED` about a second later
+   * (measured us-east-1, 2026-10-28). The deploy captures its drift baseline
+   * right after the update, so a capture inside that window recorded a
+   * destination AWS was removing, and every later `cdkd drift` reported it
+   * (go-to-k/cdkd#5399's integ).
+   */
+  protected kinesisDisableSettleDelaysMs: readonly number[] = Array<number>(30).fill(2000);
+
+  /**
+   * Wait until no entry for `streamArn` among `tableName`'s destinations is
+   * `ACTIVE`, `ENABLING`, `UPDATING` or `DISABLING` (the read-back's present
+   * set, plus `DISABLING`, which is still settling: a later read can flicker
+   * back to `ACTIVE`, above). Best-effort, since the disable itself was accepted: a
+   * failed read ends the wait with a debug line, and running out of re-reads
+   * or of the resource deadline ends it with a warning.
+   */
+  private async waitForKinesisDisableSettled(
+    client: DynamoDBClient,
+    tableName: string,
+    streamArn: string,
+    scope: string,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const watch = startInterruptWatch(maskSecrets(`Kinesis streaming disable on ${scope}`));
+    let last = 'none read';
+    try {
+      for (const delayMs of [0, ...this.kinesisDisableSettleDelaysMs]) {
+        // The engine's deadline does not cancel this update: a wait that
+        // outlived it would keep polling with nobody waiting on it.
+        if (enclosingDeadlineRemainingMs() <= 0) break;
+        if (delayMs > 0) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.max(0, Math.min(delayMs, enclosingDeadlineRemainingMs())))
+          );
+        }
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        let unsettled: string | undefined;
+        try {
+          const out = await client.send(
+            new DescribeKinesisStreamingDestinationCommand({ TableName: tableName })
+          );
+          // Judged across EVERY entry for the stream: history entries (a
+          // DISABLED or ENABLE_FAILED one) linger beside the current entry,
+          // and neither may decide the wait on its own.
+          unsettled = (out.KinesisDataStreamDestinations ?? []).find(
+            (d) =>
+              d.StreamArn === streamArn && KINESIS_DISABLE_UNSETTLED.has(d.DestinationStatus ?? '')
+          )?.DestinationStatus;
+        } catch (error) {
+          this.logger.debug(
+            maskSecrets(
+              `Could not confirm the Kinesis streaming disable on ${scope}: ` +
+                describeAwsFailure(error).detail
+            )
+          );
+          return;
+        }
+        if (unsettled === undefined) return;
+        last = unsettled;
+      }
+      this.logger.warn(
+        maskSecrets(
+          `The Kinesis streaming destination on ${scope} had not settled ` +
+            `(last status: ${last}); 'cdkd drift' may report it on this replica until it does`
+        )
+      );
+    } finally {
+      watch.dispose();
+    }
+  }
+
   /** The Kinesis streams a table streams to (`ACTIVE` or `ENABLING`). */
   private async activeKinesisStreamArns(
     client: DynamoDBClient,
@@ -2868,6 +2945,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // Already off (a re-run, or an out-of-band disable) is the goal.
           if (await this.kinesisStreaming(client, tableName, op.streamArn, error)) throw error;
         }
+        await this.waitForKinesisDisableSettled(
+          client,
+          tableName,
+          op.streamArn,
+          scope,
+          maskSecrets
+        );
         break;
       case 'kinesisPrecision':
         await send(() =>
@@ -2978,8 +3062,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       this.logger.warn(
         maskSecrets(
           `${tableName} does not hold its declared ${what}, and setting it failed ` +
-            `(${describeAwsFailure(error).summary}). The next deploy that updates this table ` +
-            `tries again.`
+            `(${describeAwsFailure(error).summary}).` +
+            relayedEncryptionChangeLimit(describeAwsFailure(error).detail) +
+            ` The next deploy that updates this table tries again.`
         )
       );
     }
@@ -5664,7 +5749,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
 
       // 7. TimeToLiveSpecification (separate API).
-      // AWS enforces a 4-hour rate limit on TTL changes per table
+      // AWS rate-limits TTL changes per table
       // ("Time to live has been modified multiple times within a fixed
       // interval"). Catch and rewrap with an actionable hint pointing
       // at the AWS-side limit, so a user redeploying a TTL-toggling
@@ -5681,6 +5766,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             await this.dynamoDBClient.send(cmd);
           } catch (ttlErr) {
             const msg = describeAwsFailure(ttlErr).detail;
+            // A disable whose goal already holds (an earlier attempt that
+            // landed before a later step failed, or an out-of-band disable).
+            if (cmd.input.TimeToLiveSpecification?.Enabled === false && isTtlAlreadyDisabled(msg)) {
+              this.logger.debug(maskSecrets(`TimeToLive already disabled on ${physicalId}`));
+              return;
+            }
             if (msg.includes('Time to live has been modified multiple times')) {
               throw this.wrapMaskedError(
                 log,
@@ -5688,7 +5779,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
                 (text) =>
                   new ProvisioningError(
                     `AWS rejected TimeToLive update on ${log.value(physicalId)}: ${sentence(text)} ` +
-                      `AWS enforces a ~4-hour rate limit on TTL changes per table; ` +
+                      `AWS rate-limits TTL changes per table (the interval can last up to about an hour); ` +
                       `wait and redeploy, or keep the previous TTL state in this deploy.`,
                     resourceType,
                     logicalId,
@@ -5700,32 +5791,45 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             throw ttlErr;
           }
         };
-        const ttl = properties['TimeToLiveSpecification'] as Record<string, unknown> | undefined;
-        if (ttl?.['AttributeName']) {
+        // Issue #5447: `Enabled: false` needs no AttributeName in the
+        // template, but UpdateTimeToLive needs one even to disable — take the
+        // recorded enabled one, else the live one.
+        const ttlPlan = planTimeToLive(
+          properties['TimeToLiveSpecification'],
+          previousProperties['TimeToLiveSpecification'],
+          'update'
+        );
+        let ttlTarget: { enabled: boolean; attributeName: string } | undefined;
+        if (ttlPlan.kind === 'enable' || ttlPlan.kind === 'disable') {
+          ttlTarget = { enabled: ttlPlan.kind === 'enable', attributeName: ttlPlan.attributeName };
+        } else if (ttlPlan.kind === 'disable-live') {
+          let live: TimeToLiveDescription | undefined;
+          await this.retrySettlingRefusal(
+            async () => {
+              live = (
+                await this.dynamoDBClient.send(
+                  new DescribeTimeToLiveCommand({ TableName: physicalId })
+                )
+              ).TimeToLiveDescription;
+            },
+            `TimeToLive read on ${physicalId}`,
+            maskSecrets
+          );
+          const status = live?.TimeToLiveStatus;
+          if ((status === 'ENABLED' || status === 'ENABLING') && live?.AttributeName) {
+            ttlTarget = { enabled: false, attributeName: live.AttributeName };
+          }
+        }
+        if (ttlTarget) {
           await sendTtl(
             new UpdateTimeToLiveCommand({
               TableName: physicalId,
               TimeToLiveSpecification: {
-                Enabled: ttl['Enabled'] !== undefined ? Boolean(ttl['Enabled']) : true,
-                AttributeName: ttl['AttributeName'] as string,
+                Enabled: ttlTarget.enabled,
+                AttributeName: ttlTarget.attributeName,
               },
             })
           );
-        } else if (previousProperties['TimeToLiveSpecification']) {
-          // TTL removed from template: AWS requires the previous
-          // AttributeName to disable it. Pull from old props.
-          const prevTtl = previousProperties['TimeToLiveSpecification'] as Record<string, unknown>;
-          if (prevTtl['AttributeName']) {
-            await sendTtl(
-              new UpdateTimeToLiveCommand({
-                TableName: physicalId,
-                TimeToLiveSpecification: {
-                  Enabled: false,
-                  AttributeName: prevTtl['AttributeName'] as string,
-                },
-              })
-            );
-          }
         }
       }
 
@@ -8576,6 +8680,34 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
+   * `SSESpecification`, while the template leaves the table on the AWS owned
+   * key: no block (CDK's default) or `SSEEnabled: false` (CDK's
+   * `dynamoOwnedKey()`). `readCurrentState` omits the block unless encryption
+   * is ENABLED, so a baseline captured on the AWS owned key has none, and a
+   * later move to a KMS key was compared nowhere at the top level and kept by
+   * `drift --revert` (go-to-k/cdkd#5399). Sent absent, `update()` takes its
+   * removal path: `SSESpecification: { Enabled: false }`, which returns every
+   * region to the AWS owned key, as CloudFormation does (go-to-k/cdkd#5355).
+   *
+   * A template declaring encryption ON gets nothing: a baseline without the
+   * block disagrees with that template, and it must not turn the declared
+   * encryption off. A missing block is not proof of the AWS owned key on its
+   * own (the read-back omits it for every status but ENABLED, e.g.
+   * ENABLING, UPDATING, DISABLING or INACCESSIBLE_ENCRYPTION_CREDENTIALS), so the template's answer is what bounds the reset.
+   */
+  getDriftAbsentMeansDefaultKeys(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): readonly string[] {
+    if (resourceType !== 'AWS::DynamoDB::GlobalTable') return [];
+    const declared = properties['SSESpecification'];
+    if (declared === undefined) return ['SSESpecification'];
+    return coerceCfnBoolean(asRecord(declared)?.['SSEEnabled']) === false
+      ? ['SSESpecification']
+      : [];
+  }
+
+  /**
    * Adopt an existing DynamoDB GlobalTable into cdkd state.
    *
    * Lookup order:
@@ -9711,6 +9843,33 @@ export const REPLICA_COPY_RELEASE_POLL_MS = 5000;
  * second of margin (go-to-k/cdkd#5355).
  */
 export const DELETION_PROTECTION_REFLIP_MS = 16_000;
+
+/**
+ * Restates DynamoDB's encryption-change quota in the update's wraps, which
+ * withhold AWS's text (go-to-k/cdkd#5399's integ). A table takes 4
+ * encryption changes in a 24-hour window and then one every 6 hours
+ * (`LimitExceededException`: "Encryption mode changes are limited in the 24h
+ * window ...", measured us-east-1, 2026-10-28); reduced to the class name, the
+ * refusal told the operator nothing. Returns a leading space plus the
+ * sentence, or `''`.
+ */
+export function relayedEncryptionChangeLimit(withheldText: string): string {
+  return /Encryption mode changes are limited/i.test(withheldText)
+    ? ' AWS limits a table to 4 encryption changes in 24 hours, then one every 6 hours; ' +
+        'retry the change later (--verbose shows when AWS allows the next one).'
+    : '';
+}
+
+/**
+ * The Kinesis destination statuses a disable has not settled from
+ * (go-to-k/cdkd#5399): the read-back's present set plus `DISABLING`.
+ */
+const KINESIS_DISABLE_UNSETTLED: ReadonlySet<string> = new Set([
+  'ACTIVE',
+  'ENABLING',
+  'UPDATING',
+  'DISABLING',
+]);
 
 /**
  * {@link DynamoDBGlobalTableProvider.waitForReplicaProtectionSettled}'s cap:

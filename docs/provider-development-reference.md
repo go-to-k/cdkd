@@ -29,6 +29,7 @@ and you implement it only when your resource type needs it:
 | `getAttribute` | An attribute may need a live read because state does not hold it |
 | `removalDefaults`, `removalHandledInUpdate` | A removed property resets to a constant, or `update` already handles the removal |
 | `getDriftUnknownPaths`, `getDriftUnorderedPaths`, `canonicalizeDriftProperties`, `canonicalizeDriftPair` | AWS reads a property back differently from how it was sent |
+| `getDriftAbsentMeansDefaultKeys` | The readback omits a top-level property while it is at its default, so a baseline without it records the default and `--revert` must reset it |
 | `getDriftSecretPathAliases` | A secret-bearing template position is compared at another position (Step Functions folds `DefinitionSubstitutions` into `Definition`), so `cdkd drift` must mask that position too |
 | `canonicalizeDesiredProperties` | The provider sends something narrower than what the template declares |
 | `disableCcApiFallback` | Cloud Control cannot manage the type, so an unhandled property must be an error |

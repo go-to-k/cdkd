@@ -1301,6 +1301,125 @@ describe('cdkd drift', () => {
     });
   });
 
+  describe('a key the baseline records at its default by omitting it (go-to-k/cdkd#5399)', () => {
+    // A GlobalTable captured on the AWS owned key: the readback has no
+    // `SSESpecification`. Moved out of band to a customer managed key.
+    const recordedOff = { TableName: 'table-1', BillingMode: 'PAY_PER_REQUEST' };
+    const movedToCmk = {
+      ...recordedOff,
+      SSESpecification: { SSEEnabled: true, SSEType: 'KMS' },
+    };
+    const absentMeansDefault = (_type: string, properties: Record<string, unknown>) =>
+      properties['SSESpecification'] === undefined ? ['SSESpecification'] : [];
+    function stageTable(record: { observedProperties?: Record<string, unknown> }): void {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Table1: makeResource({
+            physicalId: 'table-1',
+            resourceType: 'AWS::DynamoDB::GlobalTable',
+            properties: { TableName: 'table-1' },
+            ...record,
+          }),
+        })
+      );
+    }
+    const sentBag = (updateMock: ReturnType<typeof vi.fn>): Record<string, unknown> =>
+      (updateMock.mock.calls[0] as unknown as [string, string, string, Record<string, unknown>])[3];
+
+    it('reports the key the AWS side gained', async () => {
+      stageTable({ observedProperties: recordedOff });
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => movedToCmk,
+        getDriftAbsentMeansDefaultKeys: absentMeansDefault,
+      });
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(output).toMatch(/- SSESpecification: undefined\n/);
+      expect(output).toMatch(/\+ SSESpecification: \{"SSEEnabled":true,"SSEType":"KMS"\}/);
+    });
+
+    it('--revert sends the key absent, with the AWS side as the previous one', async () => {
+      stageTable({ observedProperties: recordedOff });
+      const updateMock = vi.fn(async () => ({ physicalId: 'table-1', wasReplaced: false }));
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => movedToCmk,
+        getDriftAbsentMeansDefaultKeys: absentMeansDefault,
+        update: updateMock,
+      });
+
+      const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+      expect(error).toBeUndefined();
+      expect(updateMock).toHaveBeenCalledTimes(1);
+      const sent = sentBag(updateMock);
+      expect(Object.keys(sent)).not.toContain('SSESpecification');
+      expect(sent).toEqual(recordedOff);
+      expect(
+        (updateMock.mock.calls[0] as unknown as unknown[])[4]
+      ).toEqual(movedToCmk);
+    });
+
+    it('--accept records the key the AWS side holds', async () => {
+      stageTable({ observedProperties: recordedOff });
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => movedToCmk,
+        getDriftAbsentMeansDefaultKeys: absentMeansDefault,
+      });
+
+      await runDrift(['TestStack', '--accept', '--yes']);
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [, , savedState] = mockSaveState.mock.calls[0]!;
+      expect(
+        (savedState as { resources: Record<string, { observedProperties?: unknown }> }).resources[
+          'Table1'
+        ]?.observedProperties
+      ).toEqual(movedToCmk);
+    });
+
+    it('is not drift while the AWS side lacks the key too', async () => {
+      stageTable({ observedProperties: recordedOff });
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => recordedOff,
+        getDriftAbsentMeansDefaultKeys: absentMeansDefault,
+      });
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(output).toContain('no drift detected');
+    });
+
+    it('compares nothing new for a provider without the hook, or a hook returning no key', async () => {
+      for (const hook of [undefined, () => []]) {
+        stageTable({ observedProperties: recordedOff });
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => movedToCmk,
+          ...(hook !== undefined && { getDriftAbsentMeansDefaultKeys: hook }),
+        });
+
+        const { output } = await runDrift(['TestStack']);
+
+        expect(output).toContain('no drift detected');
+      }
+    });
+
+    it('does not consult the hook for a record without an observed baseline', async () => {
+      stageTable({});
+      const hook = vi.fn(absentMeansDefault);
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => movedToCmk,
+        getDriftAbsentMeansDefaultKeys: hook,
+      });
+
+      const { output } = await runDrift(['TestStack']);
+
+      expect(hook).not.toHaveBeenCalled();
+      expect(output).toContain('no drift detected');
+    });
+  });
+
   it('silently skips `Custom::*` resource types (drift not applicable, issue #323)', async () => {
     // Originally: when a stack contains a `Custom::*` resource (e.g.
     // CDK's S3 auto-delete-objects helper), the provider has no
