@@ -1,4 +1,5 @@
 import {
+  ACCOUNT,
   createOnlyOf,
   paths,
   setOutputOverrides,
@@ -8,7 +9,6 @@ import {
 } from './sdk-wire-harness.js';
 import { EFSProvider } from '../../../src/provisioning/providers/efs-provider.js';
 import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
-import { resetIdempotencyTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 
 /**
  * The seventeenth batch of wire cases (#3723), run by
@@ -31,7 +31,7 @@ const EFS_SRC = 'efs-provider.ts';
 const FS_ID = 'fs-12345678';
 const MT_ID = 'fsmt-12345678';
 const AP_ID = 'fsap-12345678';
-const KMS_KEY = 'arn:aws:kms:us-east-1:123456789012:key/k';
+const KMS_KEY = `arn:aws:kms:us-east-1:${ACCOUNT}:key/k`;
 const TAGS = [
   { Key: 'k1', Value: 'v1' },
   { Key: 'k2', Value: 'v2' },
@@ -268,7 +268,7 @@ const ACCESS_POINT_CASE: TypeCase = {
 
 const R53_SRC = 'route53-provider.ts';
 const ZONE_ID = 'Z0123456789ABCDEFGHIJ';
-const LOG_GROUP_ARN = 'arn:aws:logs:us-east-1:123456789012:log-group:/aws/route53/example.com';
+const LOG_GROUP_ARN = `arn:aws:logs:us-east-1:${ACCOUNT}:log-group:/aws/route53/example.com`;
 
 // --- AWS::Route53::HostedZone ------------------------------------------------
 
@@ -278,12 +278,11 @@ const LOG_GROUP_ARN = 'arn:aws:logs:us-east-1:123456789012:log-group:/aws/route5
  * `DeleteQueryLoggingConfig` removes so the removal path's verify-listing reads
  * it gone, and its Accelerated Recovery status, which an
  * `UpdateHostedZoneFeatures` settles at once so the settle wait's first poll
- * returns. The caller-reference token is reset per call: it is released after
- * each successful create, which bumps its generation, so two identical creates
- * would otherwise send different `CallerReference`s.
+ * returns. The `CallerReference` token is the fixed one
+ * `sdk-wire-coverage-17.test.ts` mocks in, so two identical creates send the
+ * same request.
  */
 const armHostedZone = (physicalId: string, bag: Bag): void => {
-  resetIdempotencyTokensForTests();
   const qlc = bag['QueryLoggingConfig'] as Record<string, unknown> | undefined;
   let liveConfigs =
     typeof qlc?.['CloudWatchLogsLogGroupArn'] === 'string'

@@ -16,7 +16,8 @@ vi.mock('@aws-sdk/client-route-53', (orig) => wrap(orig, 'Route53Client'));
 // A create token is retired when its create succeeds, so the next create of the
 // same logical id mints another and no two creates would send the same request
 // (the harness's determinism check). Each (scope, logical id) answers one fixed
-// token here instead; CreateAccessPoint's `ClientToken` is the one that takes it.
+// token here instead; CreateAccessPoint's `ClientToken` and CreateHostedZone's
+// `CallerReference` are the ones that take it.
 vi.mock('../../../src/provisioning/providers/idempotency-token.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   acquireIdempotencyToken: ({ scope, logicalId }: { scope: string; logicalId: string }) => ({
