@@ -21,6 +21,11 @@
 #      deploy returns), the group's Ref/Fn::GetAtt Id outputs match the AWS
 #      group id, and state routes the group via the SDK provider
 #      (provisionedBy=sdk).
+#   1c. Resize the TASK group 1 -> 2 under a 20s per-type deadline: the deploy
+#      fails mid-resize and the record must name InstanceCount unsettled; a
+#      same-template retry during the resize must be refused, keeping the name;
+#      once 2 instances run, a redeploy of the base template must resize back
+#      to 1 and clear the name (go-to-k/cdkd#5487).
 #   2. Re-deploy with CDKD_TEST_UPDATE=true: resize the TASK group 1 -> 2
 #      (ModifyInstanceGroups, polled to RUNNING). Assert the group Id is
 #      UNCHANGED (in-place, no replace) and the group has 2 RUNNING instances.
@@ -327,6 +332,81 @@ if [ "${GROUP_CFG}" != "task-group" ]; then
   exit 1
 fi
 echo "    standalone-group ConfigurationProperties reached AWS (issue #1383 closed)"
+
+# --- Phase 1c: a resize the deadline cut short (go-to-k/cdkd#5487) -------
+# ModifyInstanceGroups is accepted at once and the group resizes for minutes,
+# so a 20s per-type deadline fails the update after the call. Before the fix
+# the record kept InstanceCount 1, so the redeploy of the base template below
+# diffed empty and the group stayed at 2. Now the record names InstanceCount
+# unsettled, and the redeploy compares it with the group's requested count and
+# resizes back to 1. Phase 2 below then resizes 1 -> 2 as before.
+group_unsettled() { # the TASK group record's unsettledProperties, comma-joined
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+    | jq -r --arg gid "$1" '[.resources[]
+        | select(.resourceType == "AWS::EMR::InstanceGroupConfig" and .physicalId == $gid)
+        | (.unsettledProperties // [])[]] | join(",")'
+}
+wait_group_running_count() { # $1 = cluster id, $2 = group id, $3 = count
+  local n=""
+  for _ in $(seq 1 90); do
+    n="$(task_group_running_count "$1" "$2")"
+    [ "${n}" = "$3" ] && return 0
+    sleep 10
+  done
+  echo "FAIL: TASK group ${2} has '${n}' RUNNING instances, expected $3" >&2
+  exit 1
+}
+echo "==> Phase 1c: resize TASK group 1 -> 2 under a 20s deadline (must fail mid-resize)"
+set +e
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --resource-warn-after AWS::EMR::InstanceGroupConfig=10s \
+  --resource-timeout AWS::EMR::InstanceGroupConfig=20s
+P1C_EXIT=$?
+set -e
+if [ "${P1C_EXIT}" -eq 0 ]; then
+  echo "FAIL: Phase 1c's deploy succeeded; the 20s deadline must cut the resize short (premise of the arm)" >&2
+  exit 1
+fi
+P1C_UNSETTLED="$(group_unsettled "${GID_P1}")"
+if [ "${P1C_UNSETTLED}" != "InstanceCount" ]; then
+  echo "FAIL: TASK group record's unsettledProperties after the cut-short resize is '${P1C_UNSETTLED}', expected 'InstanceCount' (go-to-k/cdkd#5487)" >&2
+  exit 1
+fi
+# Same-template RETRY at once, while the resize still runs (minutes): a moving
+# count is never diffed, so the deploy refuses before any call and the name
+# stays (go-to-k/cdkd#5487: the requested count used to read as settled, so
+# the retry sent nothing and cleared the name).
+P1C_RETRY_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${P1C_RETRY_LOG}" 2>&1
+P1C_RETRY_EXIT=$?
+set -e
+if [ "${P1C_RETRY_EXIT}" -eq 0 ] || ! grep -q "AWS is still changing it" "${P1C_RETRY_LOG}"; then
+  echo "FAIL: the same-template retry during the resize must be refused as in transition (exit ${P1C_RETRY_EXIT}):" >&2
+  cat "${P1C_RETRY_LOG}" >&2
+  exit 1
+fi
+if [ "$(group_unsettled "${GID_P1}")" != "InstanceCount" ]; then
+  echo "FAIL: the refused retry changed the TASK group record's unsettledProperties ('$(group_unsettled "${GID_P1}")')" >&2
+  exit 1
+fi
+echo "    the same-template retry during the resize was refused and kept the name"
+wait_group_running_count "${CID_P1}" "${GID_P1}" 2
+echo "==> Phase 1c: redeploy the base template (InstanceCount 1, the record's own value)"
+env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+P1C_COUNT="$(task_group_running_count "${CID_P1}" "${GID_P1}")"
+if [ "${P1C_COUNT}" != "1" ]; then
+  echo "FAIL: TASK group has '${P1C_COUNT}' RUNNING instances after redeploying the base template, expected 1 (go-to-k/cdkd#5487: the redeploy diffed empty and left 2)" >&2
+  exit 1
+fi
+if [ -n "$(group_unsettled "${GID_P1}")" ]; then
+  echo "FAIL: TASK group record still names unsettled properties after the converging deploy" >&2
+  exit 1
+fi
+echo "    the unsettled InstanceCount converged on redeploy (go-to-k/cdkd#5487)"
 
 # --- Phase 2: in-place resize ------------------------------------------
 echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (resize TASK group 1 -> 2)"
