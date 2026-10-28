@@ -1416,7 +1416,7 @@ export class FirehoseProvider implements ResourceProvider {
         safeMsg`Firehose delivery stream ${logicalId}: ${call} was sent but the encryption change did not finish; ${outcome} the previous setting cdkd keeps recorded. `.concat(
           markUnsettled === undefined
             ? "Run 'cdkd drift' to compare, then 'cdkd drift --revert' to apply the recorded setting or 'cdkd drift --accept' to record the stream's."
-            : `cdkd records ${ENCRYPTION_KEY} as unsettled, so the next 'cdkd deploy' reads the stream and applies the template's setting. To keep the stream as it ends up instead, run 'cdkd drift --accept'.`
+            : `cdkd records ${ENCRYPTION_KEY} as unsettled, so the next 'cdkd deploy' reads the stream and applies the template's setting. To keep the stream as it ends up instead, run 'cdkd drift --accept' once the stream no longer reads ENABLING or DISABLING (an accept during the transition keeps the key unsettled).`
         )
       );
       throw error;
@@ -2735,6 +2735,32 @@ export class FirehoseProvider implements ResourceProvider {
    *
    * Firehose tags use the standard `Tag[]` array shape (`Key`/`Value`).
    */
+  /**
+   * go-to-k/cdkd#5380: the encryption key is still in transition while the
+   * stream reads ENABLING / DISABLING, which `liveEncryptionAsCfn` reports as
+   * a settled value. A failed read answers it as still in transition too: the
+   * caller keeps the name, which only costs a re-send on the next deploy.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>> {
+    if (!names.has(ENCRYPTION_KEY)) return new Set();
+    try {
+      const resp = await this.getClient().send(
+        new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+      );
+      const status = resp.DeliveryStreamDescription?.DeliveryStreamEncryptionConfiguration?.Status;
+      return status === 'ENABLING' || status === 'DISABLING'
+        ? new Set([ENCRYPTION_KEY])
+        : new Set();
+    } catch {
+      return new Set([ENCRYPTION_KEY]);
+    }
+  }
+
   /**
    * Read the AWS-current Firehose delivery stream configuration in CFn-property shape.
    *

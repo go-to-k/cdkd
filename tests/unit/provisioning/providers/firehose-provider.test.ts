@@ -865,6 +865,32 @@ describe('FirehoseProvider', () => {
         expect(sent('DescribeDeliveryStreamCommand')).toHaveLength(1);
       });
 
+      it('unsettledInTransition: the encryption key while ENABLING / DISABLING, none once settled', async () => {
+        const ask = (status: string | undefined) => {
+          mockSend.mockReset();
+          route([status === undefined ? undefined : { Status: status }]);
+          return provider.unsettledInTransition('s', 'MyStream', 'AWS::KinesisFirehose::DeliveryStream', new Set([ENC]));
+        };
+        expect([...(await ask('ENABLING'))]).toEqual([ENC]);
+        expect([...(await ask('DISABLING'))]).toEqual([ENC]);
+        expect([...(await ask('ENABLED'))]).toEqual([]);
+        expect([...(await ask('DISABLED'))]).toEqual([]);
+        expect([...(await ask('ENABLING_FAILED'))]).toEqual([]);
+        expect([...(await ask(undefined))]).toEqual([]);
+      });
+
+      it('unsettledInTransition: no read for other names, and a failed read keeps the key', async () => {
+        mockSend.mockReset();
+        route([{ Status: 'ENABLING' }]);
+        const other = await provider.unsettledInTransition('s', 'MyStream', 'AWS::KinesisFirehose::DeliveryStream', new Set(['Tags']));
+        expect([...other]).toEqual([]);
+        expect(sent('DescribeDeliveryStreamCommand')).toHaveLength(0);
+        mockSend.mockReset();
+        mockSend.mockRejectedValue(new Error('throttled'));
+        const failed = await provider.unsettledInTransition('s', 'MyStream', 'AWS::KinesisFirehose::DeliveryStream', new Set([ENC]));
+        expect([...failed]).toEqual([ENC]);
+      });
+
       it('an unsettled but unusable block is not forced into a refusal', async () => {
         route([{ Status: 'ENABLED', KeyType: 'AWS_OWNED_CMK' }]);
         await runUpdate({ KeyType: 7 }, { KeyType: 7 }, { unsettledProperties: new Set([ENC]) });

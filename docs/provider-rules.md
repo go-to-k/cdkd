@@ -1480,7 +1480,10 @@ unsettled, and the next deploy hands it back in
 `UpdateContext.unsettledProperties` even when the template and the record
 agree. A provider that marks a key must, on finding it there, compare the
 desired value with what AWS holds (not with `previousProperties`) and send
-only what differs.
+only what differs. A rollback revert hands the set too. If its
+`readCurrentState` reports an in-progress transition as a value, it also
+implements `unsettledInTransition`, so `cdkd drift --accept` / `--revert`
+keep a key AWS is still changing.
 
 Checklist when writing or reviewing an `update()`:
 

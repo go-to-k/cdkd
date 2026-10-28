@@ -181,6 +181,7 @@ import { stackInstanceIdCarriedFrom } from '../../types/state.js';
 import { nameScopeOf } from '../../state/name-generation.js';
 import {
   unsettledPropertiesOf,
+  withUnsettledProperties,
   withoutUnsettledProperties,
 } from '../../state/unsettled-properties.js';
 import {
@@ -1457,7 +1458,14 @@ async function driftCommand(
     // resource's refusal is not reported as a partial failure on top of it.
     let outcome: false | void;
     if (options.accept) {
-      outcome = await runAccept(reports, stateBackend, stateConfig, awsClients, options);
+      outcome = await runAccept(
+        reports,
+        stackRegionScope,
+        stateBackend,
+        stateConfig,
+        awsClients,
+        options
+      );
     } else {
       try {
         outcome = await runRevert(
@@ -4728,6 +4736,9 @@ export function setAtPath(target: Record<string, unknown>, path: string, value: 
  */
 async function runAccept(
   reports: StackDriftReport[],
+  // go-to-k/cdkd#5380: only to ask a provider whether an unsettled key is
+  // still in transition before the accept clears it.
+  regionScope: (region: string) => { clients: AwsClients; registry: ProviderRegistry },
   stateBackend: S3StateBackend,
   stateConfig: { bucket: string; prefix: string },
   awsClients: AwsClients,
@@ -5042,8 +5053,17 @@ async function runAccept(
         // written, whatever a changed parent path carried there.
         const written = maskMarkedNoEchoBaselineWithLeaves(redactedBaseline, existing, hasObserved);
         // go-to-k/cdkd#5380: the baseline now records what AWS holds, so what
-        // a failed deploy left unsettled on this resource is settled.
-        const settled = withoutUnsettledProperties(existing);
+        // a failed deploy left unsettled on this resource is settled, except a
+        // key AWS is still changing (the readback is not where it will end).
+        const settled = await settleUnsettled(
+          existing,
+          outcome.logicalId,
+          () =>
+            regionScope(report.region).registry.getProviderFor({
+              resourceType: outcome.resourceType,
+              provisionedBy: existing.provisionedBy,
+            }).provider
+        );
         resources[outcome.logicalId] = hasObserved
           ? { ...settled, observedProperties: written.baseline }
           : {
@@ -6983,7 +7003,7 @@ async function runRevert(
       >();
       // go-to-k/cdkd#5380: the reverted records whose `unsettledProperties`
       // the same write clears.
-      const settledByRevert = new Set<string>();
+      const settledByRevert = new Map<string, ResourceState>();
       // Issue #1914: one resolver per stack, re-resolving the secret expressions
       // the state baseline stores so the provider is handed the concrete value.
       // Deliberately NOT the drift-detection run's map: that one is keyed
@@ -7591,8 +7611,16 @@ async function runRevert(
                   totalSucceeded++;
                   // go-to-k/cdkd#5380: AWS now holds the baseline, so what a
                   // failed deploy left unsettled here is settled.
+                  // A key AWS is still changing stays (go-to-k/cdkd#5380).
                   if (unsettledPropertiesOf(stateResource).size > 0) {
-                    settledByRevert.add(outcome.logicalId);
+                    const settled = await settleUnsettled(
+                      stateResource,
+                      outcome.logicalId,
+                      () => provider
+                    );
+                    if (settled !== stateResource) {
+                      settledByRevert.set(outcome.logicalId, settled);
+                    }
                   }
                   // Issue #1819: the revert landed, but the provider may have left
                   // something behind (a replacement whose old resource survives). The
@@ -7896,10 +7924,13 @@ async function runRevert(
         ) {
           const resources: Record<string, ResourceState> = { ...report.state.resources };
           let settledCount = 0;
-          for (const logicalId of settledByRevert) {
+          for (const [logicalId, settled] of settledByRevert) {
             const existing = resources[logicalId];
             if (!existing) continue;
-            resources[logicalId] = withoutUnsettledProperties(existing);
+            resources[logicalId] = withUnsettledProperties(
+              withoutUnsettledProperties(existing),
+              unsettledPropertiesOf(settled)
+            );
             settledCount++;
           }
           let recordedCount = 0;
@@ -8735,6 +8766,40 @@ interface StackDriftJson {
 }
 
 /**
+ * go-to-k/cdkd#5380: `record` after a successful `--accept` / `--revert` of
+ * it: its `unsettledProperties` keep only the names its provider reports AWS
+ * is still changing (`unsettledInTransition`), and the field goes when none
+ * is. A provider without the hook has none in transition; a hook that throws
+ * keeps every name, which only costs the next deploy a re-send. Returns
+ * `record` itself when nothing would change.
+ */
+async function settleUnsettled(
+  record: ResourceState,
+  logicalId: string,
+  providerOf: () => ResourceProvider | undefined
+): Promise<ResourceState> {
+  const names = unsettledPropertiesOf(record);
+  if (names.size === 0) return record;
+  let kept: ReadonlySet<string> = new Set();
+  try {
+    const provider = providerOf();
+    if (provider?.unsettledInTransition !== undefined) {
+      kept = await provider.unsettledInTransition(
+        record.physicalId,
+        logicalId,
+        record.resourceType,
+        names
+      );
+    }
+  } catch {
+    kept = names;
+  }
+  const keep = [...names].filter((name) => kept.has(name));
+  if (keep.length === names.size) return record;
+  return withUnsettledProperties(withoutUnsettledProperties(record), keep);
+}
+
+/**
  * go-to-k/cdkd#5380: the stack's records that carry `unsettledProperties`, in
  * logical-id order, for both renderings of the report.
  */
@@ -8758,6 +8823,7 @@ function unsettledRowsOf(
 
 function writeJsonReport(reports: StackDriftReport[]): void {
   const payload: StackDriftJson[] = reports.map((r) => {
+    const unsettled = unsettledRowsOf(r);
     const drifted: StackDriftJson['drifted'] = [];
     const clean: StackDriftJson['clean'] = [];
     const deleted: StackDriftJson['deleted'] = [];
@@ -8828,7 +8894,7 @@ function writeJsonReport(reports: StackDriftReport[]): void {
       region: r.region,
       // Omitted when empty — see the field's doc.
       ...(r.warnings.length > 0 && { warnings: r.warnings }),
-      ...(unsettledRowsOf(r).length > 0 && { unsettled: unsettledRowsOf(r) }),
+      ...(unsettled.length > 0 && { unsettled }),
       drifted,
       deleted,
       clean,

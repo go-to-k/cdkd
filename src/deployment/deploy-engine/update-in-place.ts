@@ -429,6 +429,20 @@ export async function updateInPlace(
               // outlives this call's promise (deadline race, Ctrl-C, retry).
               markUnsettled: (propertyName: string) => {
                 if (typeof propertyName !== 'string' || propertyName === '') return;
+                // Only a top-level key this update sends or the record holds:
+                // anything else names no property this resource has, and the
+                // record must not carry it into every later deploy's diff. (A
+                // name the record already carries unsettled stays by the union
+                // at the failure save.)
+                if (
+                  !Object.hasOwn(resolvedProps, propertyName) &&
+                  !Object.hasOwn(currentResource.properties ?? {}, propertyName)
+                ) {
+                  engine.logger.debug(
+                    safeMsg`${logicalId}: ignored an unsettled mark for ${propertyName}, which is not one of its properties`
+                  );
+                  return;
+                }
                 let marks = engine.unsettledMarks.get(logicalId);
                 if (marks === undefined) {
                   marks = new Set();
@@ -503,9 +517,6 @@ export async function updateInPlace(
     const typedUnsupported = updateError instanceof ResourceUpdateNotSupportedError;
     const replaceOptIn = typedUnsupported && engine.options.replace === true;
     if (ccUnsupported || replaceOptIn) {
-      // go-to-k/cdkd#5380: the fallback replaces the resource, so a mark the
-      // failed update made describes a resource that is going away.
-      engine.unsettledMarks.delete(logicalId);
       // go-to-k/cdkd#5064 phase 2: the fallback's new resource takes the next
       // name generation on a stack with an instance id, as a property-driven
       // replacement does (`update.ts`): its name differs, so the name check
@@ -1318,6 +1329,11 @@ export async function updateInPlace(
       const fallbackOutcome = await (fallbackGeneration === undefined
         ? replaceFallback()
         : withNameGeneration({ logicalId, generation: fallbackGeneration }, replaceFallback));
+      // go-to-k/cdkd#5380: the replacement now holds the record, so a mark the
+      // failed update made describes the resource it replaced. Only once its
+      // create succeeded: a fallback that throws leaves the old resource, which
+      // keeps the mark.
+      engine.unsettledMarks.delete(logicalId);
       result = fallbackOutcome.result;
       resultProvisionedBy = fallbackOutcome.provisionedBy;
       captureProvider = fallbackOutcome.captureProvider;

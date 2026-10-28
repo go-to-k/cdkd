@@ -1396,12 +1396,13 @@ neither. `properties` keeps the recorded value.
 A provider calls `UpdateContext.markUnsettled(key)` immediately before such a
 call (Firehose: before `StartDeliveryStreamEncryption` /
 `StopDeliveryStreamEncryption`), never for a refusal or a failed read before
-it. The marks are held on the engine (`DeployEngine.unsettledMarks`), outside
+it. The engine keeps only a key the update sends or the record holds. The marks are held on the engine (`DeployEngine.unsettledMarks`), outside
 the provider's promise, so a mark survives the per-resource deadline's race,
 Ctrl-C and a retried attempt. A failed update's marks are written onto its
 record in `execute.ts` before any later save, unioned with the record's own; a
-successful update and the update-not-supported replacement fallback discard
-them.
+successful update, and the update-not-supported replacement fallback once its
+create succeeded, discard them; the post-rollback save records any mark made
+while the rollback ran.
 
 The next deploy reads the field through `unsettledPropertiesOf`
 (`src/state/unsettled-properties.ts`, malformed = none). The diff adds each
@@ -1411,7 +1412,11 @@ the record agree, the no-change skips do not fire, the name is in
 tells the provider to compare the desired value with what AWS holds and
 converge it. The record the update writes carries no field, which clears it.
 `recordAfterRollbackUpdate` drops it (a rollback revert, `--revert-failed`,
-`drift --revert`), as does a `drift --accept` of the resource. `cdkd drift`
+`drift --revert`); the two rollback arms hand the names to `update()` as
+`UpdateContext.unsettledProperties` first, so they are converged rather than
+skipped. A successful `drift --accept` / `--revert` of the resource drops them
+too, except a name the provider's optional `unsettledInTransition` reports AWS
+is still changing (Firehose: ENABLING / DISABLING). `cdkd drift`
 lists the names in the human report and as `unsettled` in `--json`.
 
 A bump, for v10's reason: an older binary rewriting the record would drop the

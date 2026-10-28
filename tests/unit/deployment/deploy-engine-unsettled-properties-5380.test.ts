@@ -76,6 +76,8 @@ async function deploy(opts: {
   update: UpdateFn;
   options?: Record<string, unknown>;
   levels?: string[][];
+  /** The replacement fallback's create fails. */
+  createFails?: boolean;
 }): Promise<Run> {
   const levels = opts.levels ?? [['S']];
   const contexts: Array<UpdateContext | undefined> = [];
@@ -84,6 +86,7 @@ async function deploy(opts: {
   const provider = {
     create: vi.fn(async (id: string) => {
       created.push(id);
+      if (opts.createFails === true) throw failure('replacement create failed');
       return { physicalId: 'new-stream', attributes: {} };
     }),
     update: vi.fn(
@@ -228,7 +231,7 @@ describe('a failed update records what it left unsettled (go-to-k/cdkd#5380)', (
     expect(run.saved?.resources['S']?.unsettledProperties).toEqual([ENC]);
   });
 
-  it('records it on Ctrl-C during the wait after the call', async () => {
+  it('records it when update() rethrows a provider wait interrupted by the user (InterruptedWaitError)', async () => {
     const run = await deploy({
       state: stateOf(),
       template: templateOf(encrypted),
@@ -289,6 +292,38 @@ describe('a failed update records what it left unsettled (go-to-k/cdkd#5380)', (
     expect(tSave?.resources['S']?.unsettledProperties).toEqual([ENC]);
   });
 
+  it('records a mark that arrives while the automatic rollback runs, in the post-rollback save', async () => {
+    const QUEUE = 'AWS::SQS::Queue';
+    const template = templateOf(encrypted);
+    template.Resources['T'] = { Type: QUEUE, Properties: { QueueName: 'q', Note: 'x' } };
+    let tCalls = 0;
+    const run = await deploy({
+      state: stateOf({}, { T: { ...streamRecord('q'), resourceType: QUEUE, properties: { QueueName: 'q' } } }),
+      template,
+      levels: [['S', 'T']],
+      update: async (id, pid, _props, _prev, context) => {
+        if (id === 'S') {
+          // Past S's 60 ms deadline and the outer catch, inside T's revert.
+          await new Promise((r) => setTimeout(r, 200));
+          context?.markUnsettled?.(ENC);
+          await new Promise(() => undefined);
+        }
+        tCalls++;
+        // The deploy's update is quick; the rollback's revert of it is slow.
+        if (tCalls > 1) await new Promise((r) => setTimeout(r, 400));
+        return { physicalId: pid, attributes: {} };
+      },
+      options: {
+        resourceWarnAfterByType: { [TYPE]: 20 },
+        resourceTimeoutByType: { [TYPE]: 60 },
+      },
+    });
+    expect(run.thrown).toBeDefined();
+    // Premise: T was reverted, so the rollback ran past the late mark.
+    expect(tCalls).toBe(2);
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual([ENC]);
+  });
+
   it('records a mark the provider made after the deadline had abandoned its call', async () => {
     // T is another type, so only S's type takes the short deadline.
     const QUEUE = 'AWS::SQS::Queue';
@@ -316,6 +351,64 @@ describe('a failed update records what it left unsettled (go-to-k/cdkd#5380)', (
     });
     expect(run.thrown).toBeDefined();
     expect(run.saved?.resources['S']?.unsettledProperties).toEqual([ENC]);
+  });
+
+  it('a mark from a retried attempt survives the attempt that failed without marking', async () => {
+    let attempt = 0;
+    const run = await deploy({
+      state: stateOf(),
+      template: templateOf(encrypted),
+      update: async (_id, _pid, _props, _prev, context) => {
+        attempt++;
+        if (attempt === 1) {
+          context?.markUnsettled?.(ENC);
+          throw Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+        }
+        throw failure('settle wait timed out');
+      },
+      options: { noRollback: true },
+    });
+    expect(run.thrown).toBeDefined();
+    // Premise: the engine retried.
+    expect(attempt).toBe(2);
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual([ENC]);
+  }, 20_000);
+
+  it('ignores a mark naming no property this resource sends or holds', async () => {
+    const run = await deploy({
+      state: stateOf(),
+      template: templateOf(encrypted),
+      update: async (_id, _pid, _props, _prev, context) => {
+        context?.markUnsettled?.('NotAProperty');
+        context?.markUnsettled?.(ENC);
+        throw failure('ENABLING_FAILED');
+      },
+      options: { noRollback: true },
+    });
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual([ENC]);
+  });
+
+  it('accepts a mark for a key only the record holds (a removal); an ignored one leaves the record\'s own names', async () => {
+    const removal = await deploy({
+      state: stateOf({ properties: encrypted }),
+      template: templateOf(plain),
+      update: async (_id, _pid, _props, _prev, context) => {
+        context?.markUnsettled?.(ENC);
+        throw failure('DISABLING_FAILED');
+      },
+      options: { noRollback: true },
+    });
+    expect(removal.saved?.resources['S']?.unsettledProperties).toEqual([ENC]);
+    const converging = await deploy({
+      state: stateOf({ unsettledProperties: ['Gone'] }),
+      template: templateOf(plain),
+      update: async (_id, _pid, _props, _prev, context) => {
+        context?.markUnsettled?.('Gone');
+        throw failure('still failing');
+      },
+      options: { noRollback: true },
+    });
+    expect(converging.saved?.resources['S']?.unsettledProperties).toEqual(['Gone']);
   });
 
   it('unions with what an earlier failure left unsettled', async () => {
@@ -381,6 +474,24 @@ describe('a failed update records what it left unsettled (go-to-k/cdkd#5380)', (
     expect(run.created).toEqual(['S']);
     expect(run.saved?.resources['S']?.physicalId).toBe('new-stream');
     expect(run.saved?.resources['S']).not.toHaveProperty('unsettledProperties');
+  });
+
+  it('a replacement fallback whose create fails keeps the mark on the old record', async () => {
+    const run = await deploy({
+      state: stateOf(),
+      template: templateOf(encrypted),
+      update: async (id, _pid, _props, _prev, context) => {
+        context?.markUnsettled?.(ENC);
+        throw new ResourceUpdateNotSupportedError(TYPE, id);
+      },
+      options: { replace: true, noRollback: true },
+      createFails: true,
+    });
+    expect(run.thrown).toBeDefined();
+    expect(run.created).toEqual(['S']);
+    const record = run.saved?.resources['S'];
+    expect(record?.physicalId).toBe('stream');
+    expect(record?.unsettledProperties).toEqual([ENC]);
   });
 
   it('the replacement fallback discards the failed update\'s mark', async () => {

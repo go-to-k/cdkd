@@ -53,3 +53,18 @@ export function withoutUnsettledProperties<R extends ResourceState>(record: R): 
   const { unsettledProperties: _cleared, ...rest } = record;
   return rest as R;
 }
+
+/**
+ * The `UpdateContext.unsettledProperties` a rollback revert hands `update()`
+ * (go-to-k/cdkd#5380): the union of what the records name, spread as nothing
+ * when there is none. The revert's record clears the field, so a key it names
+ * must be converged against AWS rather than skipped because the two bags
+ * agree there.
+ */
+export function unsettledContextOf(...records: unknown[]): {
+  unsettledProperties?: ReadonlySet<string>;
+} {
+  const names = new Set<string>();
+  for (const record of records) for (const name of unsettledPropertiesOf(record)) names.add(name);
+  return names.size > 0 ? { unsettledProperties: names } : {};
+}

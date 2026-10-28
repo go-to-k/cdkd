@@ -1374,6 +1374,24 @@ export interface ResourceProvider {
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined>;
 
   /**
+   * go-to-k/cdkd#5380: of `names` (a record's `unsettledProperties`), the ones
+   * AWS is STILL changing — an asynchronous transition an earlier `update()`
+   * started and that has not ended (a Firehose stream reading ENABLING /
+   * DISABLING). `cdkd drift --accept` / `--revert` keep those names on the
+   * record instead of clearing them, since the readback they compared is not
+   * where AWS will end up. Called only for a record that names some, so an
+   * ordinary drift run makes no extra call. A provider that marks a key with
+   * `UpdateContext.markUnsettled` and whose `readCurrentState` reads an
+   * in-progress state as a value implements it; absent = none in transition.
+   */
+  unsettledInTransition?(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>>;
+
+  /**
    * go-to-k/cdkd#4606: whether `journaledPhysicalId` — the resource a failed
    * CREATE proved it made (a journaled `physicalIdRecoveredFromError` entry)
    * — is the same live AWS resource as the one `record` holds under the same

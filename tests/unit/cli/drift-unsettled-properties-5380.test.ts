@@ -7,13 +7,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 
+const logLines = vi.hoisted(() => [] as string[]);
 vi.mock('../../../src/utils/logger.js', () => {
+  const push =
+    (level: string) =>
+    (...args: unknown[]): void => {
+      logLines.push(`${level} ${args.map(String).join(' ')}`);
+    };
   const make = (): Record<string, unknown> => ({
     setLevel: vi.fn(),
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
+    debug: push('debug'),
+    info: push('info'),
+    warn: push('warn'),
+    error: push('error'),
     child: () => make(),
   });
   return { reserveStdoutForPayload: vi.fn(), getLogger: () => make() };
@@ -106,7 +112,8 @@ function stateWith(extra: { drifted?: Partial<ResourceState>; settled?: Partial<
 async function runDrift(
   state: StackState,
   flags: string[],
-  update: () => Promise<unknown> = async () => ({ physicalId: 'drifted', attributes: {} })
+  update: () => Promise<unknown> = async () => ({ physicalId: 'drifted', attributes: {} }),
+  inTransition?: (names: ReadonlySet<string>) => Promise<ReadonlySet<string>>
 ): Promise<{ stdout: string; saved: StackState | undefined; updates: number }> {
   let updates = 0;
   mockGetState.mockResolvedValue({ state, etag: '"etag-1"' });
@@ -118,6 +125,10 @@ async function runDrift(
     update: vi.fn(async () => {
       updates++;
       return update();
+    }),
+    ...(inTransition !== undefined && {
+      unsettledInTransition: async (_p: string, _l: string, _t: string, names: ReadonlySet<string>) =>
+        inTransition(names),
     }),
   }));
   const chunks: string[] = [];
@@ -194,6 +205,68 @@ describe('cdkd drift and unsettled properties (go-to-k/cdkd#5380)', () => {
     ]);
     expect(saved).toBeDefined();
     expect(saved?.resources['Drifted']).not.toHaveProperty('unsettledProperties');
+  });
+
+  it('--revert clears only the reverted resource; one it did not revert keeps the field', async () => {
+    const { saved } = await runDrift(
+      stateWith({ drifted: { unsettledProperties: [ENC] }, settled: { unsettledProperties: ['Tags'] } }),
+      ['--revert', '--yes']
+    );
+    expect(saved?.resources['Drifted']).not.toHaveProperty('unsettledProperties');
+    expect(saved?.resources['Settled']?.unsettledProperties).toEqual(['Tags']);
+  });
+
+  it('a --revert whose state write fails says the settling was not recorded', async () => {
+    logLines.length = 0;
+    mockSaveState.mockRejectedValueOnce(new Error('AccessDenied on PutObject'));
+    await runDrift(stateWith({ drifted: { unsettledProperties: [ENC] } }), ['--revert', '--yes']);
+    const warned = logLines.filter((l) => l.startsWith('warn ') && l.includes('could not record'));
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("that a failed deploy's unsettled properties are settled");
+  });
+
+  it.each([
+    ['--accept', ['--accept', '--yes']],
+    ['--revert', ['--revert', '--yes']],
+  ])('%s keeps a key the provider reports still in transition, and clears one it does not', async (_l, flags) => {
+    const kept = await runDrift(
+      stateWith({ drifted: { unsettledProperties: [ENC, 'Tags'] } }),
+      flags,
+      undefined,
+      async (names) => new Set([...names].filter((n) => n === ENC))
+    );
+    expect(kept.saved?.resources['Drifted']?.unsettledProperties).toEqual([ENC]);
+    mockSaveState.mockClear();
+    const cleared = await runDrift(
+      stateWith({ drifted: { unsettledProperties: [ENC] } }),
+      flags,
+      undefined,
+      async () => new Set()
+    );
+    expect(cleared.saved?.resources['Drifted']).not.toHaveProperty('unsettledProperties');
+  });
+
+  it('a transition hook that throws keeps every name', async () => {
+    const { saved } = await runDrift(
+      stateWith({ drifted: { unsettledProperties: [ENC] } }),
+      ['--accept', '--yes'],
+      undefined,
+      async () => {
+        throw new Error('throttled');
+      }
+    );
+    expect(saved?.resources['Drifted']?.unsettledProperties).toEqual([ENC]);
+  });
+
+  it('a --revert that leaves every name in transition writes no state for them', async () => {
+    const { saved, updates } = await runDrift(
+      stateWith({ drifted: { unsettledProperties: [ENC] } }),
+      ['--revert', '--yes'],
+      undefined,
+      async (names) => names
+    );
+    expect(updates).toBe(1);
+    expect(saved).toBeUndefined();
   });
 
   it('a failed --revert writes nothing, so the record keeps the field', async () => {

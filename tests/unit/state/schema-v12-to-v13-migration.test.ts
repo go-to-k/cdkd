@@ -17,12 +17,13 @@ import {
  * Schema v13 — `StackState.stackInstanceId` (go-to-k/cdkd#5064).
  *
  * Through the REAL `S3StateBackend` read path, over a VERBATIM v12 document
- * (the shape a v12 binary writes): v13 is current and every older version
- * readable, a v12 document is read unchanged with no id (a LEGACY stack: the
- * getter answers `undefined`), reading rewrites nothing, and a v13 document
- * round-trips its id. The refusal of a version past the current one is pinned
- * by the latest bump's test (`schema-v13-to-v14-migration.test.ts`). What a deploy over a v12 record
- * writes (no id minted) is pinned through the real engine in
+ * (the shape a v12 binary writes): every version through 13 stays readable,
+ * a v12 document is read unchanged with no id (a LEGACY stack: the getter
+ * answers `undefined`), reading rewrites nothing, and a v13 document
+ * round-trips its id. The current version and the refusal of a version past
+ * it are pinned by the latest bump's test (`schema-v13-to-v14-migration.test.ts`).
+ * What a deploy over a v12 record writes (no id minted) is pinned through the
+ * real engine in
  * `tests/unit/deployment/deploy-engine-stack-instance-id-5064.test.ts`.
  */
 vi.mock('@aws-sdk/client-sts', () => ({

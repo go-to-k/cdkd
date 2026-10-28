@@ -1283,6 +1283,8 @@ export async function executeDeployment(
     // Save state after rollback (reflects rolled-back resource state).
     // This is critical: if rollback deleted resources, the state must reflect
     // that. Otherwise, next deploy will think deleted resources still exist.
+    // go-to-k/cdkd#5380: a mark a provider made while the rollback ran.
+    recordUnsettledMarks(engine, newResources);
     try {
       const postRollbackState: StackState = {
         version: STATE_SCHEMA_VERSION_CURRENT,
@@ -1348,6 +1350,7 @@ export async function executeDeployment(
       try {
         const freshState = await engine.stateBackend.getState(stackName, engine.stackRegion);
         const freshEtag = freshState?.etag;
+        recordUnsettledMarks(engine, newResources);
         const postRollbackState: StackState = {
           version: STATE_SCHEMA_VERSION_CURRENT,
           region: engine.stackRegion,
