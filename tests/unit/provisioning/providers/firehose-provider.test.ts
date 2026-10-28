@@ -753,6 +753,125 @@ describe('FirehoseProvider', () => {
       // Ten 5 s sleeps: an Infinity budget must not shrink the cadence.
       expect(lastElapsedMs).toBeGreaterThanOrEqual(50_000);
     });
+
+    describe('unsettled encryption (go-to-k/cdkd#5380)', () => {
+      /** A sink that records each mark with the Start / Stop calls sent before it. */
+      function sink(): { marks: string[]; sentAtMark: number[]; markUnsettled: (k: string) => void } {
+        const marks: string[] = [];
+        const sentAtMark: number[] = [];
+        return {
+          marks,
+          sentAtMark,
+          markUnsettled: (k: string) => {
+            marks.push(k);
+            sentAtMark.push(
+              sent('StartDeliveryStreamEncryptionCommand').length +
+                sent('StopDeliveryStreamEncryptionCommand').length
+            );
+          },
+        };
+      }
+
+      it('marks the key before the Start is sent', async () => {
+        route([{ Status: 'DISABLED' }, { Status: 'ENABLED', KeyType: 'AWS_OWNED_CMK' }]);
+        const s = sink();
+        await runUpdate({ KeyType: 'AWS_OWNED_CMK' }, undefined, { markUnsettled: s.markUnsettled });
+        expect(sent('StartDeliveryStreamEncryptionCommand')).toHaveLength(1);
+        expect(s.marks).toEqual([ENC]);
+        expect(s.sentAtMark).toEqual([0]);
+      });
+
+      it('marks the key before the Stop is sent', async () => {
+        route([{ Status: 'ENABLED', KeyType: 'AWS_OWNED_CMK' }, { Status: 'DISABLED' }]);
+        const s = sink();
+        await runUpdate(undefined, { KeyType: 'AWS_OWNED_CMK' }, { markUnsettled: s.markUnsettled });
+        expect(sent('StopDeliveryStreamEncryptionCommand')).toHaveLength(1);
+        expect(s.marks).toEqual([ENC]);
+        expect(s.sentAtMark).toEqual([0]);
+      });
+
+      it('marks nothing when no Start / Stop is sent: unchanged, already held, or a failed settle', async () => {
+        const s = sink();
+        route([{ Status: 'DISABLED' }]);
+        await runUpdate({ KeyType: 'AWS_OWNED_CMK' }, { KeyType: 'AWS_OWNED_CMK' }, { markUnsettled: s.markUnsettled });
+        mockSend.mockReset();
+        route([{ Status: 'ENABLED', KeyType: 'AWS_OWNED_CMK' }]);
+        await runUpdate({ KeyType: 'AWS_OWNED_CMK' }, undefined, { markUnsettled: s.markUnsettled });
+        mockSend.mockReset();
+        route([{ Status: 'ENABLING', KeyType: 'AWS_OWNED_CMK' }]);
+        const settleError = await runUpdate(undefined, { KeyType: 'AWS_OWNED_CMK' }, {
+          markUnsettled: s.markUnsettled,
+        }).catch((e: unknown) => e);
+        expect((settleError as Error).message).toContain('Timed out waiting to settle');
+        expect(sent('StopDeliveryStreamEncryptionCommand')).toHaveLength(0);
+        expect(s.marks).toEqual([]);
+      });
+
+      it('an unfinished wait on a deploy says the key is recorded unsettled; without the sink it points at drift', async () => {
+        const warn = getLogger().child('FirehoseProvider').warn as ReturnType<typeof vi.fn>;
+        route([
+          { Status: 'ENABLED', KeyType: 'AWS_OWNED_CMK' },
+          { Status: 'DISABLING', KeyType: 'AWS_OWNED_CMK' },
+          { Status: 'DISABLING_FAILED', KeyType: 'AWS_OWNED_CMK' },
+        ]);
+        const s = sink();
+        await runUpdate(undefined, { KeyType: 'AWS_OWNED_CMK' }, { markUnsettled: s.markUnsettled }).catch(
+          () => undefined
+        );
+        const onDeploy = String(warn.mock.calls.at(-1)?.[0]);
+        expect(s.marks).toEqual([ENC]);
+        expect(onDeploy).toContain(`records ${ENC} as unsettled`);
+        expect(onDeploy).toContain("the next 'cdkd deploy' reads the stream");
+        expect(onDeploy).not.toContain("'cdkd drift --revert'");
+        mockSend.mockReset();
+        route([
+          { Status: 'ENABLED', KeyType: 'AWS_OWNED_CMK' },
+          { Status: 'DISABLING', KeyType: 'AWS_OWNED_CMK' },
+          { Status: 'DISABLING_FAILED', KeyType: 'AWS_OWNED_CMK' },
+        ]);
+        await runUpdate(undefined, { KeyType: 'AWS_OWNED_CMK' }).catch(() => undefined);
+        const elsewhere = String(warn.mock.calls.at(-1)?.[0]);
+        expect(elsewhere).toContain("'cdkd drift --revert'");
+        expect(elsewhere).not.toContain('as unsettled');
+      });
+
+      it('an unsettled key with equal bags is converged: the stream still encrypted is stopped', async () => {
+        route([{ Status: 'ENABLED', KeyType: 'AWS_OWNED_CMK' }, { Status: 'DISABLED' }]);
+        await runUpdate(undefined, undefined, { unsettledProperties: new Set([ENC]) });
+        expect(sent('StopDeliveryStreamEncryptionCommand')).toHaveLength(1);
+        expect(sent('StartDeliveryStreamEncryptionCommand')).toHaveLength(0);
+      });
+
+      it('an unsettled key with equal bags is converged: a stream left unencrypted is started', async () => {
+        route([{ Status: 'ENABLING_FAILED' }, { Status: 'ENABLED', KeyType: 'AWS_OWNED_CMK' }]);
+        await runUpdate({ KeyType: 'AWS_OWNED_CMK' }, { KeyType: 'AWS_OWNED_CMK' }, {
+          unsettledProperties: new Set([ENC]),
+        });
+        expect(sent('StartDeliveryStreamEncryptionCommand')).toHaveLength(1);
+      });
+
+      it('an unsettled key the stream already holds sends nothing', async () => {
+        route([{ Status: 'DISABLED' }]);
+        await runUpdate(undefined, undefined, { unsettledProperties: new Set([ENC]) });
+        expect(sent('StopDeliveryStreamEncryptionCommand')).toHaveLength(0);
+        expect(sent('StartDeliveryStreamEncryptionCommand')).toHaveLength(0);
+      });
+
+      it('another unsettled key does not force the encryption read', async () => {
+        route([{ Status: 'ENABLED', KeyType: 'AWS_OWNED_CMK' }]);
+        await runUpdate(undefined, undefined, { unsettledProperties: new Set(['Tags']) });
+        expect(sent('StopDeliveryStreamEncryptionCommand')).toHaveLength(0);
+        // Only the result envelope's read: no settle read for encryption.
+        expect(sent('DescribeDeliveryStreamCommand')).toHaveLength(1);
+      });
+
+      it('an unsettled but unusable block is not forced into a refusal', async () => {
+        route([{ Status: 'ENABLED', KeyType: 'AWS_OWNED_CMK' }]);
+        await runUpdate({ KeyType: 7 }, { KeyType: 7 }, { unsettledProperties: new Set([ENC]) });
+        expect(sent('StopDeliveryStreamEncryptionCommand')).toHaveLength(0);
+        expect(sent('StartDeliveryStreamEncryptionCommand')).toHaveLength(0);
+      });
+    });
   });
 
   describe('update: a DescribeDeliveryStream answer with no VersionId (#4222)', () => {

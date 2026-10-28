@@ -28,6 +28,7 @@ import {
 } from './replacement.js';
 import { isPinnedToCcApi, preparePropertiesForCcApi } from './routing.js';
 import { extractTemplateAttributes, propertiesToRecord } from './record-shape.js';
+import { unsettledPropertiesOf } from '../../state/unsettled-properties.js';
 import { replacementNameOrigin } from './name-collision.js';
 import { withUnchangedSecretPrincipalLists } from '../../provisioning/iam-policy-targets.js';
 import { withRecreatedAttachmentsDropped } from '../child-of-recreated-parent.js';
@@ -292,6 +293,10 @@ export async function updateInPlace(
       changedForProvider.add(key);
     }
   }
+  // go-to-k/cdkd#5380: the keys an earlier failed update left unsettled, which
+  // `update.ts` already counted in `changedProperties`; the provider is told
+  // which of them to converge against AWS.
+  const unsettled = unsettledPropertiesOf(currentResource);
   // Still nothing: an update the engine forces with no change as written (a
   // `reput` child of a parent re-created under the same id, go-to-k/cdkd#4411).
   // Every key counts, so no provider skips the write the update exists for.
@@ -420,6 +425,18 @@ export async function updateInPlace(
               ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
               ...removal.context,
               changedProperties: changedForProvider,
+              // go-to-k/cdkd#5380: the sink lives on the engine, so a mark
+              // outlives this call's promise (deadline race, Ctrl-C, retry).
+              markUnsettled: (propertyName: string) => {
+                if (typeof propertyName !== 'string' || propertyName === '') return;
+                let marks = engine.unsettledMarks.get(logicalId);
+                if (marks === undefined) {
+                  marks = new Set();
+                  engine.unsettledMarks.set(logicalId, marks);
+                }
+                marks.add(propertyName);
+              },
+              ...(unsettled.size > 0 && { unsettledProperties: unsettled }),
             }
           )
         ),
@@ -432,6 +449,10 @@ export async function updateInPlace(
     // before anything below can throw, so a failed deploy can tell a re-put
     // child that wrote nothing from one that may have.
     if (result.sentNothing === true) engine.replacementRun.updatesThatSentNothing.add(logicalId);
+    // go-to-k/cdkd#5380: the update finished, so what it marked settled (an
+    // earlier attempt's marks included). The record built below carries no
+    // `unsettledProperties`, which clears the previous record's.
+    engine.unsettledMarks.delete(logicalId);
     // go-to-k/cdkd#4911: a provider that replaced the resource inside its own
     // `update()` and reports `'partial'` could not delete the OLD one (its
     // delete threw or was skipped), so the rollback must read AWS before
@@ -482,6 +503,9 @@ export async function updateInPlace(
     const typedUnsupported = updateError instanceof ResourceUpdateNotSupportedError;
     const replaceOptIn = typedUnsupported && engine.options.replace === true;
     if (ccUnsupported || replaceOptIn) {
+      // go-to-k/cdkd#5380: the fallback replaces the resource, so a mark the
+      // failed update made describes a resource that is going away.
+      engine.unsettledMarks.delete(logicalId);
       // go-to-k/cdkd#5064 phase 2: the fallback's new resource takes the next
       // name generation on a stack with an instance id, as a property-driven
       // replacement does (`update.ts`): its name differs, so the name check

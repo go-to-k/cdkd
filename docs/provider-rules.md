@@ -1471,6 +1471,17 @@ parameter value confirmed by reading the resource back, so an unchanged one is
 left out; on any other type it stays in the set. The DocDB / RDS DB types stay
 out, since no Describe returns the password.
 
+An `update()` that makes an irreversible call AWS finishes on its own time
+(Firehose's `StartDeliveryStreamEncryption` / `StopDeliveryStreamEncryption`),
+or a second write after a first one landed, calls
+`context?.markUnsettled?.(key)` immediately before that call, never before a
+refusal or a read (#5380). If the update then fails, the record names the key
+unsettled, and the next deploy hands it back in
+`UpdateContext.unsettledProperties` even when the template and the record
+agree. A provider that marks a key must, on finding it there, compare the
+desired value with what AWS holds (not with `previousProperties`) and send
+only what differs.
+
 Checklist when writing or reviewing an `update()`:
 
 - Classify the API: **merge** (absent = unchanged — most `Update*` /

@@ -854,6 +854,35 @@ export interface UpdateContext extends SecretMaskingContext {
    * call: a provider must then fall back to its own comparison of the two bags.
    */
   changedProperties?: ReadonlySet<string> | undefined;
+
+  /**
+   * go-to-k/cdkd#5380: declare, IMMEDIATELY BEFORE an irreversible call that
+   * starts changing a top-level property (a Start / Stop that AWS finishes
+   * asynchronously, a second write after a first one landed), that the change
+   * is in flight. If this `update()` then fails for any reason — the wait
+   * reports `*_FAILED`, the per-resource deadline, Ctrl-C, a later write —
+   * the engine records the name as `ResourceState.unsettledProperties`, and the
+   * next deploy hands it back in {@link unsettledProperties}. Not for a
+   * refusal or a failed read before the call: nothing was sent, so the
+   * recorded value still describes AWS.
+   *
+   * Names only: no value reaches the record. The mark lives on the engine,
+   * outside this call's promise, so it survives a deadline that abandoned the
+   * call. Set ONLY by the deploy's in-place UPDATE; absent elsewhere, so a
+   * provider calls it as `context?.markUnsettled?.(key)`.
+   */
+  markUnsettled?: ((propertyName: string) => void) | undefined;
+
+  /**
+   * go-to-k/cdkd#5380: the top-level properties an EARLIER failed update
+   * left unsettled (see {@link markUnsettled}): AWS may hold the recorded
+   * value, the attempted one, or neither. Each is also in
+   * {@link changedProperties}. A provider that marks a key must, when it
+   * finds that key here, compare the desired value with what AWS holds (not
+   * with the previous bag, which may equal the desired one) and converge it.
+   * Set ONLY by the deploy's in-place UPDATE, and only when non-empty.
+   */
+  unsettledProperties?: ReadonlySet<string> | undefined;
 }
 
 /** A principal kind an inline policy is written onto. */

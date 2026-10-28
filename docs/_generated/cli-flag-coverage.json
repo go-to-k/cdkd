@@ -1353,7 +1353,14 @@
         "lambda-esm-documentdb",
         "neptune-fix-forward-orphan",
         "rds-fix-forward-orphan",
-        "remove-protection"
+        "remove-protection",
+        "stream-delete-redeploy"
+      ]
+    },
+    {
+      "flag": "--resource-warn-after",
+      "integs": [
+        "stream-delete-redeploy"
       ]
     },
     {
@@ -2190,7 +2197,6 @@
     "--ignore-errors",
     "--image-build-concurrency",
     "--no-aggressive-vpc-parallel",
-    "--resource-warn-after",
     "--strict"
   ],
   "unknownFlagsInIntegs": [

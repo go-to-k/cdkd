@@ -916,11 +916,19 @@ export class FirehoseProvider implements ResourceProvider {
       properties[ENCRYPTION_KEY],
       context?.desiredFromAwsReadback === true
     );
-    const encryptionChanged = !sameEncryptionInput(
-      properties[ENCRYPTION_KEY],
-      desiredEncryption,
-      previousProperties[ENCRYPTION_KEY]
-    );
+    // go-to-k/cdkd#5380: an earlier update's Start / Stop that did not finish
+    // left the key unsettled, so the stream may hold either block although the
+    // template and the record agree. `applyEncryptionUpdate` reads the stream
+    // and sends only what it lacks. An unusable block is not forced: it was
+    // never sent, and refusing it now would fail a deploy that sent nothing.
+    const encryptionChanged =
+      !sameEncryptionInput(
+        properties[ENCRYPTION_KEY],
+        desiredEncryption,
+        previousProperties[ENCRYPTION_KEY]
+      ) ||
+      (context?.unsettledProperties?.has(ENCRYPTION_KEY) === true &&
+        desiredEncryption.kind !== 'unusable');
     let encryptionSkipped = false;
     if (encryptionChanged && desiredEncryption.kind === 'unusable') {
       const message =
@@ -1085,7 +1093,8 @@ export class FirehoseProvider implements ResourceProvider {
         physicalId,
         resourceType,
         desiredEncryption,
-        maskerOrIdentity(context?.maskSecrets)
+        maskerOrIdentity(context?.maskSecrets),
+        context?.markUnsettled
       );
     }
 
@@ -1329,7 +1338,8 @@ export class FirehoseProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     desired: { kind: 'absent' } | { kind: 'usable'; keyType: string; keyArn?: string },
-    mask: MaskerFn
+    mask: MaskerFn,
+    markUnsettled: ((propertyName: string) => void) | undefined
   ): Promise<void> {
     const settled = await this.waitForEncryption(logicalId, physicalId, resourceType, mask, {
       what: 'settle',
@@ -1338,10 +1348,13 @@ export class FirehoseProvider implements ResourceProvider {
     if (desired.kind === 'absent') {
       if (settled?.Status !== 'ENABLED' && settled?.Status !== 'DISABLING_FAILED') return;
       this.refuseToStartTransition(logicalId, physicalId, resourceType, 'disable');
+      // go-to-k/cdkd#5380: after the refusal, before the call: from here a
+      // failure leaves the stream in a state the record may not describe.
+      markUnsettled?.(ENCRYPTION_KEY);
       await this.getClient().send(
         new StopDeliveryStreamEncryptionCommand({ DeliveryStreamName: physicalId })
       );
-      await this.warnIfUnfinished(logicalId, 'StopDeliveryStreamEncryption', () =>
+      await this.warnIfUnfinished(logicalId, 'StopDeliveryStreamEncryption', markUnsettled, () =>
         this.waitForEncryption(logicalId, physicalId, resourceType, mask, {
           what: 'disable',
           done: (enc) => enc === undefined || enc.Status === 'DISABLED',
@@ -1354,6 +1367,7 @@ export class FirehoseProvider implements ResourceProvider {
     }
     if (encryptionMatches(settled, desired)) return;
     this.refuseToStartTransition(logicalId, physicalId, resourceType, 'enable');
+    markUnsettled?.(ENCRYPTION_KEY);
     await this.getClient().send(
       new StartDeliveryStreamEncryptionCommand({
         DeliveryStreamName: physicalId,
@@ -1363,7 +1377,7 @@ export class FirehoseProvider implements ResourceProvider {
         },
       })
     );
-    await this.warnIfUnfinished(logicalId, 'StartDeliveryStreamEncryption', () =>
+    await this.warnIfUnfinished(logicalId, 'StartDeliveryStreamEncryption', markUnsettled, () =>
       this.waitForEncryption(logicalId, physicalId, resourceType, mask, {
         what: 'enable',
         done: (enc) => encryptionMatches(enc, desired),
@@ -1377,15 +1391,18 @@ export class FirehoseProvider implements ResourceProvider {
   /**
    * Run the wait that follows an accepted Start / Stop, and when it fails
    * (a `*_FAILED` report, a timeout, the resource deadline, Ctrl-C) warn before
-   * rethrowing. A throwing `update()` leaves the PREVIOUS block in state (no
-   * engine channel records a value from a failed update), while the stream can
-   * still finish the transition, or after a `*_FAILED` hold neither setting: a
-   * later deploy of the previous template then diffs empty and sends nothing.
-   * `cdkd drift` compares against AWS and shows it.
+   * rethrowing. A throwing `update()` leaves the PREVIOUS block in state, while
+   * the stream can still finish the transition, or after a `*_FAILED` hold
+   * neither setting. On a deploy the call was preceded by `markUnsettled`
+   * (go-to-k/cdkd#5380), so the record names the key unsettled and the next
+   * deploy reads the stream and converges it, whichever template it applies.
+   * Elsewhere (a rollback revert, `drift --revert`) nothing marks it, so the
+   * warning points at `cdkd drift`.
    */
   private async warnIfUnfinished<T>(
     logicalId: string,
     call: 'StartDeliveryStreamEncryption' | 'StopDeliveryStreamEncryption',
+    markUnsettled: ((propertyName: string) => void) | undefined,
     wait: () => Promise<T>
   ): Promise<T> {
     try {
@@ -1396,7 +1413,11 @@ export class FirehoseProvider implements ResourceProvider {
           ? 'AWS reported the change failed, so the stream may no longer match'
           : 'the stream may still finish the change, so it may no longer match';
       this.logger.warn(
-        safeMsg`Firehose delivery stream ${logicalId}: ${call} was sent but the encryption change did not finish; ${outcome} the previous setting cdkd keeps recorded. Run 'cdkd drift' to compare, then 'cdkd drift --revert' to apply the recorded setting or 'cdkd drift --accept' to record the stream's.`
+        safeMsg`Firehose delivery stream ${logicalId}: ${call} was sent but the encryption change did not finish; ${outcome} the previous setting cdkd keeps recorded. `.concat(
+          markUnsettled === undefined
+            ? "Run 'cdkd drift' to compare, then 'cdkd drift --revert' to apply the recorded setting or 'cdkd drift --accept' to record the stream's."
+            : `cdkd records ${ENCRYPTION_KEY} as unsettled, so the next 'cdkd deploy' reads the stream and applies the template's setting. To keep the stream as it ends up instead, run 'cdkd drift --accept'.`
+        )
       );
       throw error;
     }

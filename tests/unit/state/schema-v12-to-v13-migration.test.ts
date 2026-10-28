@@ -7,7 +7,6 @@ import {
   stackInstanceIdCarriedFrom,
   type StackState,
 } from '../../../src/types/state.js';
-import { StateError } from '../../../src/utils/error-handler.js';
 import { clearBucketRegionCache } from '../../../src/utils/aws-region-resolver.js';
 import {
   MalformedStackInstanceIdError,
@@ -20,10 +19,9 @@ import {
  * Through the REAL `S3StateBackend` read path, over a VERBATIM v12 document
  * (the shape a v12 binary writes): v13 is current and every older version
  * readable, a v12 document is read unchanged with no id (a LEGACY stack: the
- * getter answers `undefined`), reading rewrites nothing, a v13 document
- * round-trips its id, and a version past 13 is refused with "Upgrade cdkd" —
- * as a v12 binary refuses 13, which is what keeps an older binary from
- * rebuilding a v13 record without its id. What a deploy over a v12 record
+ * getter answers `undefined`), reading rewrites nothing, and a v13 document
+ * round-trips its id. The refusal of a version past the current one is pinned
+ * by the latest bump's test (`schema-v13-to-v14-migration.test.ts`). What a deploy over a v12 record
  * writes (no id minted) is pinned through the real engine in
  * `tests/unit/deployment/deploy-engine-stack-instance-id-5064.test.ts`.
  */
@@ -105,12 +103,11 @@ describe('State schema v13 — stackInstanceId (#5064)', () => {
     });
   };
 
-  it('v13 is the current version, and every version 1..13 is readable', () => {
-    expect(STATE_SCHEMA_VERSION_CURRENT).toBe(13);
+  it('every version 1..13 stays readable (v14, go-to-k/cdkd#5380, is current)', () => {
+    expect(STATE_SCHEMA_VERSION_CURRENT).toBeGreaterThanOrEqual(13);
     for (const v of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]) {
       expect(STATE_SCHEMA_VERSIONS_READABLE).toContain(v);
     }
-    expect(STATE_SCHEMA_VERSIONS_READABLE).not.toContain(14);
   });
 
   it('reads a verbatim v12 document unchanged, as a LEGACY stack, and writes nothing on read', async () => {
@@ -130,16 +127,7 @@ describe('State schema v13 — stackInstanceId (#5064)', () => {
     expect(stackInstanceIdOf(state, 'LegacyV12')).toBe(ID);
   });
 
-  it('refuses version 14 with the "Upgrade cdkd" error, as a v12 binary refuses 13', async () => {
-    serve(JSON.stringify({ version: 14, stackName: 'X', resources: {}, outputs: {}, lastModified: 0 }));
-    const caught = await backend.getState('X', 'us-east-1').catch((e: unknown) => e);
-    expect(caught).toBeInstanceOf(StateError);
-    expect((caught as Error).message).toMatch(/Unsupported state schema version 14/);
-    expect((caught as Error).message).toMatch(/1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13/);
-    expect((caught as Error).message).toMatch(/Upgrade cdkd/);
-  });
-
-  it('saves version 13 with the id intact, and a legacy record without one', async () => {
+  it('saves the current version with the id intact, and a legacy record without one', async () => {
     client.send.mockResolvedValue({ ETag: '"new"' });
     const legacy = JSON.parse(V12_DOCUMENT) as StackState;
     await backend.saveState('LegacyV12', 'us-east-1', legacy, { expectedEtag: '"e"' });
@@ -153,7 +141,10 @@ describe('State schema v13 — stackInstanceId (#5064)', () => {
       .map(([command]) => (command as { input?: { Body?: unknown } }).input?.Body)
       .filter((body): body is string => typeof body === 'string')
       .map((body) => JSON.parse(body) as StackState);
-    expect(bodies.map((b) => b.version)).toEqual([13, 13]);
+    expect(bodies.map((b) => b.version)).toEqual([
+      STATE_SCHEMA_VERSION_CURRENT,
+      STATE_SCHEMA_VERSION_CURRENT,
+    ]);
     expect(Object.hasOwn(bodies[0]!, 'stackInstanceId')).toBe(false);
     expect(bodies[1]!.stackInstanceId).toBe(ID);
   });

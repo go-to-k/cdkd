@@ -180,6 +180,10 @@ import type { ResourceState, StackState } from '../../types/state.js';
 import { stackInstanceIdCarriedFrom } from '../../types/state.js';
 import { nameScopeOf } from '../../state/name-generation.js';
 import {
+  unsettledPropertiesOf,
+  withoutUnsettledProperties,
+} from '../../state/unsettled-properties.js';
+import {
   secretNamedRecordNeedles,
   secretNamePrintingBag,
   secretNamePrintingBags,
@@ -5037,10 +5041,13 @@ async function runAccept(
         // what the user accepted: a marked coordinate is `***` in what is
         // written, whatever a changed parent path carried there.
         const written = maskMarkedNoEchoBaselineWithLeaves(redactedBaseline, existing, hasObserved);
+        // go-to-k/cdkd#5380: the baseline now records what AWS holds, so what
+        // a failed deploy left unsettled on this resource is settled.
+        const settled = withoutUnsettledProperties(existing);
         resources[outcome.logicalId] = hasObserved
-          ? { ...existing, observedProperties: written.baseline }
+          ? { ...settled, observedProperties: written.baseline }
           : {
-              ...existing,
+              ...settled,
               properties: written.baseline,
               ...(written.noEchoLeaves !== undefined && { noEchoLeaves: written.noEchoLeaves }),
             };
@@ -6974,6 +6981,9 @@ async function runRevert(
         string,
         { physicalId: string; attributes: Record<string, unknown> | undefined }
       >();
+      // go-to-k/cdkd#5380: the reverted records whose `unsettledProperties`
+      // the same write clears.
+      const settledByRevert = new Set<string>();
       // Issue #1914: one resolver per stack, re-resolving the secret expressions
       // the state baseline stores so the provider is handed the concrete value.
       // Deliberately NOT the drift-detection run's map: that one is keyed
@@ -7579,6 +7589,11 @@ async function runRevert(
                     { logger: maskingRetryLogger(logger, secrets) }
                   );
                   totalSucceeded++;
+                  // go-to-k/cdkd#5380: AWS now holds the baseline, so what a
+                  // failed deploy left unsettled here is settled.
+                  if (unsettledPropertiesOf(stateResource).size > 0) {
+                    settledByRevert.add(outcome.logicalId);
+                  }
                   // Issue #1819: the revert landed, but the provider may have left
                   // something behind (a replacement whose old resource survives). The
                   // revert still counts as succeeded — the resource IS at the desired
@@ -7874,8 +7889,19 @@ async function runRevert(
         //
         // The same write carries each revert's returned identity
         // (go-to-k/cdkd#4476), applied after the narrowing to the same record.
-        if (narrowedByLogicalId.size > 0 || reRecordedByLogicalId.size > 0) {
+        if (
+          narrowedByLogicalId.size > 0 ||
+          reRecordedByLogicalId.size > 0 ||
+          settledByRevert.size > 0
+        ) {
           const resources: Record<string, ResourceState> = { ...report.state.resources };
+          let settledCount = 0;
+          for (const logicalId of settledByRevert) {
+            const existing = resources[logicalId];
+            if (!existing) continue;
+            resources[logicalId] = withoutUnsettledProperties(existing);
+            settledCount++;
+          }
           let recordedCount = 0;
           for (const [logicalId, delta] of narrowedByLogicalId) {
             const existing = resources[logicalId];
@@ -7942,7 +7968,7 @@ async function runRevert(
             };
           }
 
-          if (recordedCount === 0 && reRecordedCount === 0) {
+          if (recordedCount === 0 && reRecordedCount === 0 && settledCount === 0) {
             // Every reported narrowing was on a key state does not track, or was
             // a value on a template-only baseline — nothing to persist.
             return;
@@ -7956,6 +7982,11 @@ async function runRevert(
           if (reRecordedCount > 0) {
             recordedParts.push(
               `the identity the revert returned on ${reRecordedCount} resource(s)`
+            );
+          }
+          if (settledCount > 0) {
+            recordedParts.push(
+              `that a failed deploy's unsettled properties are settled on ${settledCount} resource(s)`
             );
           }
           const recordedWhat = recordedParts.join(' and ');
@@ -8003,6 +8034,9 @@ async function runRevert(
             const unrecorded = [
               ...(recordedCount > 0 ? ['the value the provider actually applied'] : []),
               ...(reRecordedCount > 0 ? ['the identity the revert returned'] : []),
+              ...(settledCount > 0
+                ? ["that a failed deploy's unsettled properties are settled"]
+                : []),
             ].join(' and ');
             logger.warn(
               `Reverted ${report.stackName} (${report.region}), but could not record ${unrecorded}: ` +
@@ -8658,6 +8692,14 @@ interface StackDriftJson {
    * a schema for them would invite exactly that.
    */
   warnings?: string[];
+  /**
+   * go-to-k/cdkd#5380: resources whose record names properties a failed
+   * deploy's update left unsettled (AWS may hold either side), with those
+   * property names. OMITTED when empty. Informational: the next `cdkd deploy`
+   * sends them again, and a successful `--accept` / `--revert` of the
+   * resource clears them.
+   */
+  unsettled?: Array<{ logicalId: string; type: string; properties: string[] }>;
   /** Issue #323: Custom Resources (drift not applicable); nested stack rows covered by their own block (#4533). */
   skipped: Array<{ logicalId: string; type: string }>;
   /**
@@ -8690,6 +8732,28 @@ interface StackDriftJson {
     referencesUnresolved: boolean;
     cause: NotComparedCause;
   }>;
+}
+
+/**
+ * go-to-k/cdkd#5380: the stack's records that carry `unsettledProperties`, in
+ * logical-id order, for both renderings of the report.
+ */
+function unsettledRowsOf(
+  report: StackDriftReport
+): Array<{ logicalId: string; type: string; properties: string[] }> {
+  const rows: Array<{ logicalId: string; type: string; properties: string[] }> = [];
+  const resources = report.state.resources ?? {};
+  for (const logicalId of Object.keys(resources).sort()) {
+    const record = resources[logicalId];
+    const names = unsettledPropertiesOf(record);
+    if (names.size === 0) continue;
+    rows.push({
+      logicalId,
+      type: typeof record?.resourceType === 'string' ? record.resourceType : 'unknown',
+      properties: [...names].sort(),
+    });
+  }
+  return rows;
 }
 
 function writeJsonReport(reports: StackDriftReport[]): void {
@@ -8764,6 +8828,7 @@ function writeJsonReport(reports: StackDriftReport[]): void {
       region: r.region,
       // Omitted when empty — see the field's doc.
       ...(r.warnings.length > 0 && { warnings: r.warnings }),
+      ...(unsettledRowsOf(r).length > 0 && { unsettled: unsettledRowsOf(r) }),
       drifted,
       deleted,
       clean,
@@ -9265,6 +9330,26 @@ export function writeHumanReport(reports: StackDriftReport[]): void {
           );
         }
         process.stdout.write('\n');
+      }
+    }
+
+    // go-to-k/cdkd#5380: what a failed deploy left unsettled, whatever the
+    // comparison above found (AWS may since have finished either way).
+    const unsettledRows = unsettledRowsOf(report);
+    if (unsettledRows.length > 0) {
+      process.stdout.write(
+        `\n! ${reportHeading(report)}: a failed deploy left properties unsettled on ` +
+          `${unsettledRows.length} resource${unsettledRows.length === 1 ? '' : 's'} ` +
+          `(AWS may hold the recorded value or the attempted one). The next 'cdkd deploy' ` +
+          `sends them again; a successful --accept or --revert of the resource clears them.\n`
+      );
+      for (const row of unsettledRows) {
+        const names = row.properties
+          .map((name) => safeMsg`${reportIdent(name, IDENT_MAX_CODE_POINTS)}`)
+          .join(', ');
+        process.stdout.write(
+          `    ! ${reportResource({ logicalId: row.logicalId, resourceType: row.type })}: ${names}\n`
+        );
       }
     }
 
