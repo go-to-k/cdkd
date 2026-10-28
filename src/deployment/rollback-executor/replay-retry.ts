@@ -22,7 +22,11 @@ import {
 } from '../secret-redaction.js';
 import { withRetry } from '../retry.js';
 import { withoutUnsettledProperties } from '../../state/unsettled-properties.js';
-import { settleUnsettledPrevious } from '../unsettled-convergence.js';
+import {
+  addedByFailedUpdateWarning,
+  settleUnsettledPrevious,
+  splitUnhandledRemovals,
+} from '../unsettled-convergence.js';
 import { type RollbackExecutorContext } from './types.js';
 import { safe } from './messages.js';
 
@@ -79,8 +83,24 @@ export async function updateWithRollbackRetry(
   // nothing) passes through: the revert landed, and `recordAfterRollbackUpdate`
   // keeps the restored record for it rather than failing a recovery path.
   const recorded = (result: ResourceUpdateResult | undefined): ResourceUpdateResult | undefined => {
-    if (removal.unhandled.length > 0) {
-      logger.warn(mask(removalWarning(logicalId, resourceType, removal.unhandled, 'rollback')));
+    const unhandledByCause = splitUnhandledRemovals(
+      removal.unhandled,
+      recordedPrevious,
+      context?.unsettledProperties ?? new Set()
+    );
+    if (unhandledByCause.removedFromTemplate.length > 0) {
+      logger.warn(
+        mask(
+          removalWarning(logicalId, resourceType, unhandledByCause.removedFromTemplate, 'rollback')
+        )
+      );
+    }
+    if (unhandledByCause.addedByFailedUpdate.length > 0) {
+      logger.warn(
+        mask(
+          addedByFailedUpdateWarning(logicalId, resourceType, unhandledByCause.addedByFailedUpdate)
+        )
+      );
     }
     return result === undefined ? undefined : withoutInjectedRemovals(result, removal.injected);
   };

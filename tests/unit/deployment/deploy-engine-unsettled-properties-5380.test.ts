@@ -770,3 +770,44 @@ describe('the engine converges unsettled names before the removal step (go-to-k/
     expect(unsettledInTransition).not.toHaveBeenCalled();
   });
 });
+
+describe('convergence messages say what happened (go-to-k/cdkd#5487)', () => {
+  const warnLines = async (): Promise<string[]> => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    return (getLogger().warn as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => String(c[0]));
+  };
+
+  it('the in-transition refusal covers a hook that could not read as well as a moving value', async () => {
+    const run = await deploy({
+      state: stateOf({ unsettledProperties: ['Extra'] }),
+      template: templateOf(plain),
+      hooks: { unsettledInTransition: async (_p: string, _l: string, _t: string, n: ReadonlySet<string>) => n },
+      update: async (_id, pid) => ({ physicalId: pid, attributes: {} }),
+      options: { noRollback: true },
+    });
+    const chain: string[] = [];
+    for (let e: unknown = run.thrown; e instanceof Error && chain.length < 8; e = e.cause) {
+      chain.push(e.message);
+    }
+    expect(chain.join('\n')).toMatch(/AWS is still changing it or cdkd could not confirm it settled/);
+  });
+
+  it('a live-only key the template never had is not called removed from the template', async () => {
+    const before = (await warnLines()).length;
+    await deploy({
+      state: stateOf({ properties: { DeliveryStreamName: 'stream', Gone: 'g' }, unsettledProperties: ['Extra'] }),
+      template: templateOf(plain),
+      hooks: {
+        readCurrentState: async () => ({ DeliveryStreamName: 'stream', Extra: 'attempted' }),
+        removalHandledInUpdate: new Map([[TYPE, new Set<string>()]]),
+      },
+      update: async (_id, pid) => ({ physicalId: pid, attributes: {} }),
+    });
+    const lines = (await warnLines()).slice(before);
+    const live = lines.filter((l) => l.includes('Extra'));
+    expect(live.some((l) => l.includes('set on the resource but in no template'))).toBe(true);
+    expect(live.some((l) => l.includes('removed from the template'))).toBe(false);
+    // The recorded key the template dropped keeps its own wording.
+    expect(lines.some((l) => l.includes('Gone') && l.includes('removed from the template'))).toBe(true);
+  });
+});

@@ -29,7 +29,12 @@ import {
 import { isPinnedToCcApi, preparePropertiesForCcApi } from './routing.js';
 import { extractTemplateAttributes, propertiesToRecord } from './record-shape.js';
 import { unsettledPropertiesOf } from '../../state/unsettled-properties.js';
-import { settleUnsettledPrevious, unsettledAfterUpdate } from '../unsettled-convergence.js';
+import {
+  addedByFailedUpdateWarning,
+  settleUnsettledPrevious,
+  splitUnhandledRemovals,
+  unsettledAfterUpdate,
+} from '../unsettled-convergence.js';
 import { replacementNameOrigin } from './name-collision.js';
 import { withUnchangedSecretPrincipalLists } from '../../provisioning/iam-policy-targets.js';
 import { withRecreatedAttachmentsDropped } from '../child-of-recreated-parent.js';
@@ -507,8 +512,22 @@ export async function updateInPlace(
     }
     // An injected reset is sent, never recorded: state keeps the template.
     result = withoutInjectedRemovals(result, removal.injected);
-    if (removal.unhandled.length > 0) {
-      engine.logger.warn(removalWarning(logicalId, resourceType, removal.unhandled));
+    // go-to-k/cdkd#5487: a live-only key the convergence step found is no
+    // template removal; it is named for what it is.
+    const unhandledByCause = splitUnhandledRemovals(
+      removal.unhandled,
+      previousForUpdate,
+      unsettled
+    );
+    if (unhandledByCause.removedFromTemplate.length > 0) {
+      engine.logger.warn(
+        removalWarning(logicalId, resourceType, unhandledByCause.removedFromTemplate)
+      );
+    }
+    if (unhandledByCause.addedByFailedUpdate.length > 0) {
+      engine.logger.warn(
+        addedByFailedUpdateWarning(logicalId, resourceType, unhandledByCause.addedByFailedUpdate)
+      );
     }
   } catch (updateError) {
     // If UPDATE is not supported, fall back to a replacement. Two
