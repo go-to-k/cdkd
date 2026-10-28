@@ -101,9 +101,18 @@ cleanup() {
       --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
     state_destroy_rc=$?
   fi
-  # The project is the only stateful leftover a torn run can strand; the
-  # execution role goes with the stack.
+  # Raw sweep for what a torn run can strand. The project is swept by its
+  # fixed name. The go-to-k/cdkd#5492 scaffolding (VPC, subnet, security group,
+  # secondary-artifact bucket) is swept ONLY by the physical ids this run read
+  # from its own state after Phase 1, never by a name pattern, so a parallel
+  # run's resources are never touched. Order: project (references the SG and
+  # subnet), then SG and subnet, then the VPC. The bucket is never written to
+  # (no build runs), so a plain `rb` suffices. The role goes with the stack.
   aws codebuild delete-project --name "${PROJECT_NAME}" --region "${REGION}" >/dev/null 2>&1
+  [ -n "${SG_ID:-}" ] && aws ec2 delete-security-group --group-id "${SG_ID}" --region "${REGION}" >/dev/null 2>&1
+  [ -n "${SUBNET_ID:-}" ] && aws ec2 delete-subnet --subnet-id "${SUBNET_ID}" --region "${REGION}" >/dev/null 2>&1
+  [ -n "${VPC_ID:-}" ] && aws ec2 delete-vpc --vpc-id "${VPC_ID}" --region "${REGION}" >/dev/null 2>&1
+  [ -n "${ARTIFACT_BUCKET:-}" ] && aws s3 rb "s3://${ARTIFACT_BUCKET}" --region "${REGION}" >/dev/null 2>&1
   if [ -n "${STATE_BUCKET:-}" ]; then
     # state.json is gated on the destroy SUCCEEDING: it is the only pointer to
     # resources a failed destroy left behind, so removing it on failure turns a
@@ -271,6 +280,28 @@ echo "    ok: provisionedBy = sdk"
 PROJECT_ARN_P1="$(project_field '.arn')"
 PROJECT_CREATED_P1="$(project_field '.created')"
 
+# go-to-k/cdkd#5492 scaffolding ids, read from THIS run's state so cleanup() can
+# sweep them by id and Phase 3 can assert each is gone. Every one must resolve:
+# an empty id would silently skip both the sweep and the gone-check.
+state_physical_id() { # usage: state_physical_id <resourceType>
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg t "$1" \
+    '[.resources[] | select(.resourceType == $t) | .physicalId] | if length == 1 then .[0] else "" end'
+}
+VPC_ID="$(state_physical_id 'AWS::EC2::VPC')"
+SUBNET_ID="$(state_physical_id 'AWS::EC2::Subnet')"
+SG_ID="$(state_physical_id 'AWS::EC2::SecurityGroup')"
+ARTIFACT_BUCKET="$(state_physical_id 'AWS::S3::Bucket')"
+case "${VPC_ID}" in vpc-?*) ;; *) echo "FAIL: state VPC id: expected one vpc- id, got '${VPC_ID}'" >&2; exit 1 ;; esac
+case "${SUBNET_ID}" in subnet-?*) ;; *) echo "FAIL: state subnet id: expected one subnet- id, got '${SUBNET_ID}'" >&2; exit 1 ;; esac
+case "${SG_ID}" in sg-?*) ;; *) echo "FAIL: state security group id: expected one sg- id, got '${SG_ID}'" >&2; exit 1 ;; esac
+if [ -z "${ARTIFACT_BUCKET}" ]; then
+  echo "FAIL: state secondary-artifact bucket: expected one bucket name, got none" >&2
+  exit 1
+fi
+# The project's live VPC config must point at the recorded scaffolding.
+assert_field "vpcConfig.vpcId is the recorded VPC" '.vpcConfig.vpcId' "${VPC_ID}"
+echo "    ok: scaffolding ids ${VPC_ID} ${SUBNET_ID} ${SG_ID} ${ARTIFACT_BUCKET}"
+
 # --- Phase 1b: issue #3887 recreate refusal ----------------------------
 # AWS::CodeBuild::Project has no Cloud Control handlers. `--recreate-via-cc-api`
 # deletes the resource through its SDK provider BEFORE asking Cloud Control to
@@ -397,6 +428,16 @@ if [ "${NOT_FOUND_COUNT}" != "1" ]; then
   echo "FAIL: CodeBuild project ${PROJECT_NAME} survived destroy (projectsNotFound=${NOT_FOUND_COUNT})" >&2
   exit 1
 fi
+
+echo "==> Phase 3: assert the go-to-k/cdkd#5492 scaffolding is gone"
+assert_gone "VPC ${VPC_ID} survived destroy" \
+  aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --region "${REGION}"
+assert_gone "subnet ${SUBNET_ID} survived destroy" \
+  aws ec2 describe-subnets --subnet-ids "${SUBNET_ID}" --region "${REGION}"
+assert_gone "security group ${SG_ID} survived destroy" \
+  aws ec2 describe-security-groups --group-ids "${SG_ID}" --region "${REGION}"
+assert_gone "secondary-artifact bucket ${ARTIFACT_BUCKET} survived destroy" \
+  aws s3api head-bucket --bucket "${ARTIFACT_BUCKET}"
 
 echo "==> Phase 3: assert state was removed"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
