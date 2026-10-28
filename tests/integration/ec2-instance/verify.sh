@@ -1343,20 +1343,27 @@ echo "    OK: explicit DisableApiTermination true applied; the destroy below mee
 # group and no user data. Termination protection (Phase 1g) does not block a
 # stop, and the destroy below still meets a protected instance.
 echo "==> Phase 1h: in-place InstanceType / SecurityGroupIds / UserData update (issue #5446)"
-UPDATE_SG_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | jq -r '.outputs.UpdateSgId // ""')
+UPDATE_SG_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | jq -r '.outputs.UpdateSgId // ""') \
+  || UPDATE_SG_ID="<state read error>"
 case "${UPDATE_SG_ID}" in
   sg-*) ;;
   *) echo "FAIL: issue #5446 -- .outputs.UpdateSgId is '${UPDATE_SG_ID}', expected a security group id" >&2; exit 1 ;;
 esac
 removal_deploy P1H_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE_5446=true
-P1H_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+P1H_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>&1) || {
+  echo "FAIL: issue #5446 -- could not read the state after the Phase 1h deploy: $(sanitize_aws_output "${P1H_STATE}")" >&2
+  exit 1
+}
 P1H_INSTANCE_ID=$(echo "${P1H_STATE}" | jq -r '.outputs.InstanceId // ""')
 if [ "${P1H_INSTANCE_ID}" != "${INSTANCE_ID}" ]; then
   echo "FAIL: issue #5446 -- .outputs.InstanceId is '${P1H_INSTANCE_ID}' after the update, expected the same instance ${INSTANCE_ID}; CloudFormation updates these in place" >&2
   exit 1
 fi
 P1H_INSTANCE=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
-  --query 'Reservations[0].Instances[0]' --output json)
+  --query 'Reservations[0].Instances[0]' --output json 2>&1) || {
+  echo "FAIL: issue #5446 -- describe-instances ${INSTANCE_ID} failed after the Phase 1h deploy: $(sanitize_aws_output "${P1H_INSTANCE}")" >&2
+  exit 1
+}
 P1H_TYPE=$(echo "${P1H_INSTANCE}" | jq -r '.InstanceType // "<absent>"')
 P1H_STATE_NAME=$(echo "${P1H_INSTANCE}" | jq -r '.State.Name // "<absent>"')
 P1H_GROUPS=$(echo "${P1H_INSTANCE}" | jq -r '[.SecurityGroups[]?.GroupId] | sort | join(",")')

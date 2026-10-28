@@ -54,11 +54,19 @@ interface ReplacementRule {
  * answers in place.
  */
 export function instanceSecurityGroupIdsChangeReplaces(
-  _oldValue: unknown,
-  _newValue: unknown,
+  oldValue: unknown,
+  newValue: unknown,
   siblings?: ReplacementSiblings
 ): boolean {
   if (siblings === undefined) return false;
+  // A reorder of the same groups is no change, as `EC2Provider` compares
+  // them (not measured against CloudFormation; replacing over it would
+  // destroy an instance for nothing).
+  if (Array.isArray(oldValue) && Array.isArray(newValue)) {
+    const before = new Set(oldValue.map(String));
+    const after = new Set(newValue.map(String));
+    if (before.size === after.size && [...before].every((g) => after.has(g))) return false;
+  }
   return siblings.newProperties['SubnetId'] == null;
 }
 

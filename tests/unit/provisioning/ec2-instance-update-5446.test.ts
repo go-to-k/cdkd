@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   AssociateIamInstanceProfileCommand,
+  CreateTagsCommand,
+  DeleteTagsCommand,
   DescribeIamInstanceProfileAssociationsCommand,
   DescribeInstancesCommand,
   DescribeSecurityGroupsCommand,
@@ -16,10 +18,24 @@ import {
 // DeleteOnTermination-only BlockDeviceMappings change, as CloudFormation does
 // (measured, us-east-1), instead of reporting success with AWS unchanged.
 
-const { mockSend, deadline } = vi.hoisted(() => ({
+const { mockSend, deadline, interrupt } = vi.hoisted(() => ({
   mockSend: vi.fn(),
   deadline: { remainingMs: Number.POSITIVE_INFINITY, expired: false },
+  // Raised after this many isInterrupted() reads (Infinity: never).
+  interrupt: { after: Number.POSITIVE_INFINITY, reads: 0 },
 }));
+
+vi.mock('../../../src/provisioning/interrupt-watch.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import('../../../src/provisioning/interrupt-watch.js');
+  return {
+    ...actual,
+    startInterruptWatch: (what: string) => ({
+      isInterrupted: () => ++interrupt.reads > interrupt.after,
+      onInterrupted: () => new actual.InterruptedWaitError(what),
+      dispose: () => undefined,
+    }),
+  };
+});
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -57,6 +73,8 @@ vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) =
 });
 
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
+import { isInterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
+import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import type { UpdateContext } from '../../../src/types/resource.js';
 
 const ID = 'i-0123456789abcdef0';
@@ -67,6 +85,8 @@ const MUTATING = [
   AssociateIamInstanceProfileCommand,
   ReplaceIamInstanceProfileAssociationCommand,
   DisassociateIamInstanceProfileCommand,
+  CreateTagsCommand,
+  DeleteTagsCommand,
 ];
 
 interface World {
@@ -74,6 +94,10 @@ interface World {
   rootDeviceType?: string;
   association?: { AssociationId: string; State: string };
   failModify?: (input: Record<string, unknown>) => Error | undefined;
+  failStart?: number; // reject the first N StartInstances calls
+  associateErrors?: Error[]; // rejections for successive associate / replace calls
+  vpcId?: string | null;
+  defaultGroups?: Array<{ GroupId: string }>;
 }
 let world: World;
 
@@ -93,7 +117,7 @@ function install(): void {
                 InstanceId: ID,
                 State: name === undefined ? undefined : { Name: name },
                 RootDeviceType: world.rootDeviceType ?? 'ebs',
-                VpcId: 'vpc-1',
+                VpcId: world.vpcId === null ? undefined : (world.vpcId ?? 'vpc-1'),
               },
             ],
           },
@@ -106,7 +130,22 @@ function install(): void {
       });
     }
     if (command instanceof DescribeSecurityGroupsCommand) {
-      return Promise.resolve({ SecurityGroups: [{ GroupId: 'sg-default', GroupName: 'default' }] });
+      return Promise.resolve({
+        SecurityGroups: world.defaultGroups ?? [{ GroupId: 'sg-default', GroupName: 'default' }],
+      });
+    }
+    if (command instanceof StartInstancesCommand && (world.failStart ?? 0) > 0) {
+      world.failStart!--;
+      return Promise.reject(
+        Object.assign(new Error('Insufficient capacity'), { name: 'InsufficientInstanceCapacity' })
+      );
+    }
+    if (
+      (command instanceof AssociateIamInstanceProfileCommand ||
+        command instanceof ReplaceIamInstanceProfileAssociationCommand) &&
+      (world.associateErrors?.length ?? 0) > 0
+    ) {
+      return Promise.reject(world.associateErrors!.shift());
     }
     if (command instanceof ModifyInstanceAttributeCommand && world.failModify) {
       const err = world.failModify(command.input as unknown as Record<string, unknown>);
@@ -144,6 +183,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   deadline.remainingMs = Number.POSITIVE_INFINITY;
   deadline.expired = false;
+  interrupt.after = Number.POSITIVE_INFINITY;
+  interrupt.reads = 0;
   delete process.env['CDKD_NO_WAIT'];
   world = { states: ['running'] };
   install();
@@ -406,5 +447,200 @@ describe('what counts as a change', () => {
     const { UserData: _a, ...readback } = BASE;
     await update(readback, readback, { removedProperties: new Set(), desiredFromAwsReadback: true });
     expect(mutatingCalls()).toEqual([]);
+  });
+});
+
+describe('fix round (#5457 review)', () => {
+  it('Ctrl-C during the stop wait passes the InterruptedWaitError through and names the start command', async () => {
+    world.states = ['running', 'running', 'stopping'];
+    interrupt.after = 0; // the first read inside the stop wait
+    const err = await update({ ...BASE, InstanceType: 't3.micro' }).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    // The engine reads an interrupt through the cause chain; updateInstance
+    // adds no wrap of its own (update()'s shared wrapper keeps the cause).
+    expect(isInterruptedWaitError(err)).toBe(true);
+    expect((err as Error).message).not.toContain('Failed to update EC2 Instance');
+    expect(mutatingCalls().map((c) => c.name)).toEqual(['StopInstancesCommand']);
+    expect(logs.warn.mock.calls.flat().join('\n')).toContain('aws ec2 start-instances');
+  });
+
+  it('a failed final start warns, and the rollback that follows starts the instance again', async () => {
+    const id = 'i-0aaaaaaaaaaaaaaa1';
+    const run = (d: Record<string, unknown>, p: Record<string, unknown>, c?: UpdateContext) =>
+      new EC2Provider().update('Inst', id, 'AWS::EC2::Instance', d, p, c);
+    world.states = ['running', 'running', 'stopped'];
+    world.failStart = 1;
+    await expect(run({ ...BASE, InstanceType: 't3.micro' }, BASE)).rejects.toThrow(
+      /Insufficient capacity/
+    );
+    expect(logs.warn.mock.calls.flat().join('\n')).toMatch(
+      /is stopped, with the new InstanceType already applied.*aws ec2 start-instances/
+    );
+    // The rollback revert reads it stopped; the stop was cdkd's, so it starts it.
+    mockSend.mockClear();
+    world.states = ['stopped', 'stopped', 'pending', 'running'];
+    await run(BASE, { ...BASE, InstanceType: 't3.micro' }, { replayingState: true });
+    expect(mutatingCalls().map((c) => c.name)).toEqual([
+      'ModifyInstanceAttributeCommand',
+      'StartInstancesCommand',
+    ]);
+  });
+
+  it('an instance AWS stops right after the start fails the wait and is remembered', async () => {
+    world.states = ['running', 'running', 'stopped', 'pending', 'stopped'];
+    await expect(update({ ...BASE, InstanceType: 't3.micro' })).rejects.toThrow(
+      /stopped again right after it was started/
+    );
+    expect(logs.warn.mock.calls.flat().join('\n')).toContain('aws ec2 start-instances');
+  });
+
+  it('a UserData failure after the InstanceType landed says the new type is applied', async () => {
+    world.states = ['running', 'running', 'stopped'];
+    world.failModify = (input) => (input['UserData'] ? new Error('bad user data') : undefined);
+    await expect(
+      update({ ...BASE, InstanceType: 't3.micro', UserData: B64('v2') })
+    ).rejects.toThrow(/bad user data/);
+    expect(logs.warn.mock.calls.flat().join('\n')).toContain(
+      'started it again, with the new InstanceType already applied'
+    );
+  });
+
+  it('a restart that fails too names the start command', async () => {
+    world.states = ['running', 'running', 'stopped'];
+    world.failModify = () => new Error('bad type');
+    world.failStart = 1;
+    await expect(update({ ...BASE, InstanceType: 't3.bogus' })).rejects.toThrow(/bad type/);
+    expect(logs.warn.mock.calls.flat().join('\n')).toMatch(
+      /starting it again failed too.*aws ec2 start-instances/
+    );
+  });
+
+  it.each([
+    ['pending', ['pending', 'pending', 'running', 'running', 'stopped', 'running']],
+    ['stopping', ['stopping', 'stopping', 'stopped']],
+  ])('starts from %s by waiting first', async (_name, states) => {
+    world.states = [...states];
+    await update({ ...BASE, InstanceType: 't3.micro' });
+    expect(mutatingCalls().map((c) => c.name)).toContain('ModifyInstanceAttributeCommand');
+  });
+
+  it('a stopping instance is modified and left stopped', async () => {
+    world.states = ['stopping', 'stopping', 'stopped'];
+    await update({ ...BASE, InstanceType: 't3.micro' });
+    expect(mutatingCalls().map((c) => c.name)).toEqual(['ModifyInstanceAttributeCommand']);
+  });
+
+  it('refuses an instance that is shutting-down before any mutating call', async () => {
+    world.states = ['shutting-down'];
+    await expect(
+      update({ ...BASE, InstanceType: 't3.micro', SecurityGroupIds: ['sg-b'], Tags: [{ Key: 'k', Value: 'v' }] })
+    ).rejects.toThrow(/is shutting-down, so its InstanceType cannot be changed/);
+    expect(mutatingCalls()).toEqual([]);
+  });
+
+  it('the instance-store refusal is a ResourceUpdateNotSupportedError, before tags and groups', async () => {
+    world.rootDeviceType = 'instance-store';
+    const err = await update({
+      ...BASE,
+      InstanceType: 't3.micro',
+      SecurityGroupIds: ['sg-b'],
+      Tags: [{ Key: 'k', Value: 'v' }],
+    }).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(mutatingCalls()).toEqual([]);
+  });
+
+  it('a stand-in is refused before tags and groups', async () => {
+    await expect(
+      update({ ...BASE, UserData: '***', SecurityGroupIds: ['sg-b'], Tags: [{ Key: 'k', Value: 'v' }] })
+    ).rejects.toThrow(/recorded stand-in/);
+    expect(mutatingCalls()).toEqual([]);
+  });
+
+  it('a rollback keeps a stand-in member and still reverts the others', async () => {
+    await update(
+      { ...BASE, UserData: '***', SecurityGroupIds: ['sg-b'] },
+      { ...BASE, UserData: B64('v2') },
+      { replayingState: true }
+    );
+    expect(mutatingCalls()).toEqual([
+      { name: 'ModifyInstanceAttributeCommand', input: { InstanceId: ID, Groups: ['sg-b'] } },
+    ]);
+    expect(logs.warn.mock.calls.flat().join('\n')).toContain('records UserData as a stand-in');
+  });
+
+  it.each([
+    ['no VpcId', { vpcId: null }],
+    ['no default group', { defaultGroups: [] }],
+  ])('a removed SecurityGroupIds with %s is refused before any mutating call', async (_n, w) => {
+    Object.assign(world, w);
+    const { SecurityGroupIds: _gone, ...rest } = BASE;
+    await expect(
+      update({ ...rest, Tags: [{ Key: 'k', Value: 'v' }] }, BASE, {
+        removedProperties: new Set(['SecurityGroupIds']),
+      })
+    ).rejects.toThrow(/default security group .* could not be found/);
+    expect(mutatingCalls()).toEqual([]);
+  });
+
+  it('retries a profile association through IAM propagation', async () => {
+    world.associateErrors = [
+      Object.assign(new Error('Invalid IAM Instance Profile name'), { name: 'InvalidParameterValue' }),
+    ];
+    const { IamInstanceProfile: _none, ...rest } = BASE;
+    await update({ ...BASE, IamInstanceProfile: 'profile-2' }, rest);
+    expect(mutatingCalls().map((c) => c.name)).toEqual([
+      'AssociateIamInstanceProfileCommand',
+      'AssociateIamInstanceProfileCommand',
+    ]);
+  });
+
+  it('a non-propagation association error is not retried', async () => {
+    world.associateErrors = [Object.assign(new Error('access denied'), { name: 'UnauthorizedOperation' })];
+    const { IamInstanceProfile: _none, ...rest } = BASE;
+    await expect(update({ ...BASE, IamInstanceProfile: 'profile-2' }, rest)).rejects.toThrow();
+    expect(mutatingCalls().map((c) => c.name)).toEqual(['AssociateIamInstanceProfileCommand']);
+  });
+
+  it('stops retrying propagation after ten attempts', async () => {
+    world.associateErrors = Array.from({ length: 12 }, () =>
+      Object.assign(new Error('Invalid IAM Instance Profile name'), { name: 'InvalidParameterValue' })
+    );
+    world.association = { AssociationId: 'iip-assoc-1', State: 'associated' };
+    await expect(update({ ...BASE, IamInstanceProfile: 'profile-2' })).rejects.toThrow();
+    expect(
+      mutatingCalls().filter((c) => c.name === 'ReplaceIamInstanceProfileAssociationCommand')
+    ).toHaveLength(10);
+  });
+
+  it.each([
+    ['a non-string UserData', { UserData: 42 }, /UserData must be a base64 string/],
+    ['an empty SecurityGroupIds', { SecurityGroupIds: [] }, /non-empty list of security group ids/],
+    ['an unreadable IamInstanceProfile', { IamInstanceProfile: 7 }, /IamInstanceProfile is neither/],
+  ])('refuses %s before any mutating call', async (_n, extra, re) => {
+    await expect(update({ ...BASE, ...extra })).rejects.toThrow(re);
+    expect(mutatingCalls()).toEqual([]);
+  });
+
+  it('DeleteOnTermination from absent to false flips it (absent means true)', async () => {
+    const bdm = (ebs: Record<string, unknown>) => ({
+      ...BASE,
+      BlockDeviceMappings: [{ DeviceName: '/dev/sdf', Ebs: { VolumeSize: 8, ...ebs } }],
+    });
+    await update(bdm({ DeleteOnTermination: false }), bdm({}));
+    expect(mutatingCalls()).toEqual([
+      {
+        name: 'ModifyInstanceAttributeCommand',
+        input: {
+          InstanceId: ID,
+          BlockDeviceMappings: [{ DeviceName: '/dev/sdf', Ebs: { DeleteOnTermination: false } }],
+        },
+      },
+    ]);
   });
 });

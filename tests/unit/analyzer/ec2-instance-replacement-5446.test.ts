@@ -14,6 +14,22 @@ vi.mock('../../../src/utils/logger.js', () => ({
   }),
 }));
 
+vi.mock('../../../src/provisioning/create-only-properties.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as object;
+  const { CREATE_ONLY_PATHS_SNAPSHOT } = await import(
+    '../../../src/provisioning/create-only-snapshot.generated.js'
+  );
+  return {
+    ...actual,
+    getCreateOnlyPropertyPaths: async (type: string) => CREATE_ONLY_PATHS_SNAPSHOT.get(type) ?? [],
+  };
+});
+
+vi.mock('../../../src/provisioning/write-only-properties.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as object;
+  return { ...actual, tryGetTopLevelWriteOnlyProperties: async () => new Set<string>() };
+});
+
 import {
   ReplacementRulesRegistry,
   blockDeviceMappingsDifferOnlyInDeleteOnTermination,
@@ -53,6 +69,15 @@ describe('AWS::EC2::Instance SecurityGroupIds replacement (issue #5446)', () => 
       rules.requiresReplacement(TYPE, 'SecurityGroupIds', ['sg-a'], ['sg-b'], {
         oldProperties: { SubnetId: 'subnet-1', SecurityGroupIds: ['sg-a'] },
         newProperties: { SubnetId: 'subnet-1', SecurityGroupIds: ['sg-b'] },
+      })
+    ).toBe(false);
+  });
+
+  it('a reorder of the same groups never replaces', () => {
+    expect(
+      rules.requiresReplacement(TYPE, 'SecurityGroupIds', ['sg-a', 'sg-b'], ['sg-b', 'sg-a'], {
+        oldProperties: {},
+        newProperties: {},
       })
     ).toBe(false);
   });
@@ -134,5 +159,71 @@ describe('DiffCalculator hands the sibling bags to the predicate (issue #5446)',
 
   it('a SecurityGroupIds change without a SubnetId replaces', async () => {
     expect((await groupsChange({}))?.requiresReplacement).toBe(true);
+  });
+});
+
+describe('a replaced security group reaching an instance (issue #5446)', () => {
+  // The group's GroupDescription is create-only, so the group is replaced and
+  // its new id reaches the instance's SecurityGroupIds through the Ref.
+  const run = async (subnet: Record<string, unknown>) => {
+    const base = { ImageId: 'ami-1', InstanceType: 't3.nano', ...subnet };
+    const state = {
+      version: 3,
+      region: 'us-east-1',
+      stackName: 's',
+      resources: {
+        Sg: {
+          physicalId: 'sg-old',
+          resourceType: 'AWS::EC2::SecurityGroup',
+          properties: { GroupDescription: 'a', VpcId: 'vpc-1' },
+          attributes: { GroupId: 'sg-old' },
+          dependencies: [],
+        },
+        Inst: {
+          physicalId: 'i-1',
+          resourceType: TYPE,
+          properties: { ...base, SecurityGroupIds: [{ Ref: 'Sg' }] },
+          attributes: {},
+          dependencies: ['Sg'],
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    } as unknown as StackState;
+    const template = {
+      Resources: {
+        Sg: {
+          Type: 'AWS::EC2::SecurityGroup',
+          Properties: { GroupDescription: 'b', VpcId: 'vpc-1' },
+        },
+        Inst: { Type: TYPE, Properties: { ...base, SecurityGroupIds: [{ Ref: 'Sg' }] } },
+      },
+    } as unknown as CloudFormationTemplate;
+    const changes = await new DiffCalculator().calculateDiff(state, template);
+    expect(changes.get('Sg')?.changeType).toBe('UPDATE');
+    return changes.get('Inst')?.propertyChanges?.find((p) => p.path === 'SecurityGroupIds');
+  };
+
+  it('replaces an instance without a SubnetId', async () => {
+    expect((await run({}))?.requiresReplacement).toBe(true);
+  });
+
+  it('updates an instance with a SubnetId in place', async () => {
+    const pc = await run({ SubnetId: 'subnet-1' });
+    expect(pc).toBeDefined();
+    expect(pc?.requiresReplacement).toBe(false);
+  });
+});
+
+describe('DiffCalculator.conditionalReplacementVerdict forwards the siblings (issue #5446)', () => {
+  it('answers per the sibling SubnetId', () => {
+    const calc = new DiffCalculator();
+    const verdict = (newProperties: Record<string, unknown>) =>
+      calc.conditionalReplacementVerdict(TYPE, 'SecurityGroupIds', ['sg-a'], ['sg-b'], {
+        oldProperties: {},
+        newProperties,
+      });
+    expect(verdict({})).toBe(true);
+    expect(verdict({ SubnetId: 'subnet-1' })).toBe(false);
   });
 });

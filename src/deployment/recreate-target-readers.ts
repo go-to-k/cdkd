@@ -1,6 +1,9 @@
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { StackState } from '../types/state.js';
-import { ReplacementRulesRegistry } from '../analyzer/replacement-rules.js';
+import {
+  ReplacementRulesRegistry,
+  type ReplacementSiblings,
+} from '../analyzer/replacement-rules.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import { getCreateOnlyPropertyPaths } from '../provisioning/create-only-properties.js';
 import { tryGetTopLevelWriteOnlyProperties } from '../provisioning/write-only-properties.js';
@@ -180,9 +183,10 @@ export async function findReplacedReadersOfRecreateTargets(input: {
   const isCreateOnly = async (
     type: string,
     key: string,
-    plainReference: boolean
+    plainReference: boolean,
+    siblings?: ReplacementSiblings
   ): Promise<boolean> => {
-    if (rules.requiresReplacement(type, key, undefined, undefined)) return true;
+    if (rules.requiresReplacement(type, key, undefined, undefined, siblings)) return true;
     if (rules.isClassified(type, key)) return false;
     const keys = await wholeCreateOnlyKeys(type);
     return plainReference ? keys.whole.has(key) : keys.confirmable.has(key);
@@ -209,7 +213,11 @@ export async function findReplacedReadersOfRecreateTargets(input: {
           replacedId,
           resources[replacedId]?.Type
         );
-        if (await isCreateOnly(resource.Type, key, plain)) properties.push(key);
+        const siblings = {
+          oldProperties: record.properties ?? {},
+          newProperties: resource.Properties ?? {},
+        };
+        if (await isCreateOnly(resource.Type, key, plain, siblings)) properties.push(key);
       }
       if (properties.length === 0) continue;
       replaced.add(readerId);

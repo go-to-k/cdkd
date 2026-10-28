@@ -262,6 +262,17 @@ const VPN_GATEWAY_ATTACHMENT_WAIT_MS = 10 * 60 * 1000;
  */
 const INSTANCE_STATE_WAIT_CAP_MS = 15 * 60 * 1000;
 const INSTANCE_STATE_POLL_MS = 5000;
+/** The states a stop -> modify -> start can begin from (issue #5446). */
+const STOPPABLE_INSTANCE_STATES = new Set(['pending', 'running', 'stopping', 'stopped']);
+/**
+ * Instances THIS process stopped and could not start again (issue #5446).
+ * The rollback revert that follows the failed update reads them `stopped`;
+ * this tells it the stop was cdkd's, so it starts them again as
+ * CloudFormation's rollback does, instead of leaving a user-stopped one alone.
+ */
+const instancesLeftStoppedByCdkd = new Set<string>();
+/** The wait errors that mean AWS stopped an instance right after cdkd's start. */
+const instanceStoppedAfterStart = new WeakSet<object>();
 
 /** What `EC2Provider.planInstanceMemberUpdates` decided to apply (issue #5446). */
 interface InstanceMemberPlan {
@@ -269,6 +280,7 @@ interface InstanceMemberPlan {
   /** Raw user-data bytes; empty for a removed UserData. */
   userData?: Uint8Array;
   profile?: { kind: 'set'; arn?: string; name?: string } | { kind: 'remove' };
+  /** `vpc-default` is resolved to a `set` by `prepareInstanceMemberUpdates`. */
   securityGroups?: { kind: 'set'; ids: string[] } | { kind: 'vpc-default' };
   deleteOnTermination?: Array<{ DeviceName: string; DeleteOnTermination: boolean }>;
 }
@@ -7887,8 +7899,8 @@ export class EC2Provider implements ResourceProvider {
     );
 
     try {
-      // A read, before the first mutating call below.
-      await this.refuseUnstoppableInstance(logicalId, physicalId, resourceType, memberPlan);
+      // Reads and refusals, before the first mutating call below.
+      await this.prepareInstanceMemberUpdates(logicalId, physicalId, resourceType, memberPlan);
 
       await this.applyTagDiff(
         physicalId,
@@ -8108,7 +8120,7 @@ export class EC2Provider implements ResourceProvider {
    * `{{resolve:...}}` token or the redaction mask, which a state record holds
    * in place of a secret) and a removed `InstanceType`. A stop on an
    * instance-store-backed instance is refused by
-   * `refuseUnstoppableInstance`, also before any mutating call.
+   * `prepareInstanceMemberUpdates`, also before any mutating call.
    */
   private planInstanceMemberUpdates(
     logicalId: string,
@@ -8138,8 +8150,17 @@ export class EC2Provider implements ResourceProvider {
       const comparable = !isRecordedStandIn(before) && !isRecordedStandIn(after);
       return !(comparable && same(before, after));
     };
-    const refuseStandIn = (key: string): void => {
-      if (!isRecordedStandIn(properties[key])) return;
+    // A stand-in cannot be sent. A forward update refuses it; a rollback
+    // revert (a state record on one side) keeps that member's live value
+    // and warns, so the revert of the other members still runs.
+    const standInSkips = (key: string): boolean => {
+      if (!isRecordedStandIn(properties[key])) return false;
+      if (context?.replayingState === true) {
+        this.logger.warn(
+          safeMsg`${logicalId} (${resourceType}): the state being restored records ${key} as a stand-in (an unresolved {{resolve:...}} reference or the redaction mask), not a value cdkd can send; the rollback leaves ${key} at its current AWS value.`
+        );
+        return true;
+      }
       throw markNonRetryable(
         new ProvisioningError(
           `${logicalId} (${resourceType}): ${key} holds a recorded stand-in (an unresolved {{resolve:...}} reference or the redaction mask), not a value cdkd can send. The instance was not updated; deploy from the template so the value resolves.`,
@@ -8167,8 +8188,7 @@ export class EC2Provider implements ResourceProvider {
             )
           );
         }
-      } else {
-        refuseStandIn('InstanceType');
+      } else if (!standInSkips('InstanceType')) {
         plan.instanceType = requireConfigString(
           properties['InstanceType'],
           '',
@@ -8182,8 +8202,7 @@ export class EC2Provider implements ResourceProvider {
       const userData = properties['UserData'];
       if (userData === undefined) {
         plan.userData = new Uint8Array(0);
-      } else {
-        refuseStandIn('UserData');
+      } else if (!standInSkips('UserData')) {
         if (typeof userData !== 'string') {
           throw markNonRetryable(
             new ProvisioningError(
@@ -8207,8 +8226,7 @@ export class EC2Provider implements ResourceProvider {
     if (changed('IamInstanceProfile', (a, b) => instanceProfileKey(a) === instanceProfileKey(b))) {
       if (properties['IamInstanceProfile'] === undefined) {
         plan.profile = { kind: 'remove' };
-      } else {
-        refuseStandIn('IamInstanceProfile');
+      } else if (!standInSkips('IamInstanceProfile')) {
         const desired = this.normalizeIamInstanceProfile(properties['IamInstanceProfile']);
         if (desired === undefined) {
           throw markNonRetryable(
@@ -8245,8 +8263,9 @@ export class EC2Provider implements ResourceProvider {
             )
           );
         }
-        if (ids.some((g) => isRecordedStandIn(g))) refuseStandIn('SecurityGroupIds');
-        plan.securityGroups = { kind: 'set', ids: ids as string[] };
+        if (!standInSkips('SecurityGroupIds')) {
+          plan.securityGroups = { kind: 'set', ids: ids as string[] };
+        }
       }
     }
 
@@ -8281,45 +8300,85 @@ export class EC2Provider implements ResourceProvider {
   }
 
   /**
-   * Issue #5446: an InstanceType / UserData change needs a stop, and an
-   * instance-store-backed instance cannot be stopped; CloudFormation replaces
-   * it. Refused (a read only, before any mutating call) with
-   * ResourceUpdateNotSupportedError, so `cdkd deploy --replace` takes it.
+   * Issue #5446: the reads and refusals that need AWS, before any mutating
+   * call of the update. An InstanceType / UserData change needs a stop: an
+   * instance-store-backed instance cannot be stopped (CloudFormation replaces
+   * it; refused with ResourceUpdateNotSupportedError, so
+   * `cdkd deploy --replace` takes it), and an instance in any state but
+   * pending / running / stopping / stopped cannot be stopped and started. A
+   * removed `SecurityGroupIds` resolves the VPC's `default` group here, so a
+   * missing one refuses the update before anything is sent.
    */
-  private async refuseUnstoppableInstance(
+  private async prepareInstanceMemberUpdates(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     plan: InstanceMemberPlan
   ): Promise<void> {
-    if (plan.instanceType === undefined && plan.userData === undefined) return;
+    const needsStop = plan.instanceType !== undefined || plan.userData !== undefined;
+    const needsDefaultGroup = plan.securityGroups?.kind === 'vpc-default';
+    if (!needsStop && !needsDefaultGroup) return;
     const resp = await this.ec2Client.send(
       new DescribeInstancesCommand({ InstanceIds: [physicalId] })
     );
-    if (resp.Reservations?.[0]?.Instances?.[0]?.RootDeviceType !== 'instance-store') return;
-    const members = [
-      plan.instanceType !== undefined ? 'InstanceType' : '',
-      plan.userData !== undefined ? 'UserData' : '',
-    ]
-      .filter(Boolean)
-      .join(' and ');
-    throw new ResourceUpdateNotSupportedError(
-      resourceType,
-      logicalId,
-      `${members} can change only on a stopped instance, and an instance-store-backed instance cannot be stopped; CloudFormation replaces it. Re-deploy with cdkd deploy --replace.`
-    );
+    const instance = resp.Reservations?.[0]?.Instances?.[0];
+    if (needsStop) {
+      const members = [
+        plan.instanceType !== undefined ? 'InstanceType' : '',
+        plan.userData !== undefined ? 'UserData' : '',
+      ]
+        .filter(Boolean)
+        .join(' and ');
+      if (instance?.RootDeviceType === 'instance-store') {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `${members} can change only on a stopped instance, and an instance-store-backed instance cannot be stopped; CloudFormation replaces it. Re-deploy with cdkd deploy --replace.`
+        );
+      }
+      const state = instance?.State?.Name;
+      if (!STOPPABLE_INSTANCE_STATES.has(state ?? '')) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            `${logicalId} (${resourceType}): instance ${physicalId} is ${state ?? 'not returned by DescribeInstances'}, so its ${members} cannot be changed. The instance was not updated.`,
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+      }
+    }
+    if (needsDefaultGroup) {
+      plan.securityGroups = {
+        kind: 'set',
+        ids: [
+          await this.vpcDefaultSecurityGroupId(
+            logicalId,
+            physicalId,
+            resourceType,
+            instance?.VpcId
+          ),
+        ],
+      };
+    }
   }
 
   /**
-   * Issue #5446: apply a {@link planInstanceMemberUpdates} plan. The calls
-   * that need no interruption go first (groups, profile, DeleteOnTermination),
-   * then one stop -> modify -> start covers InstanceType and UserData
-   * together, as CloudFormation's single launch-time move shows. An instance
-   * the user had already stopped is modified and left stopped. A failure
-   * after the stop starts the instance again (best effort) before the error
-   * surfaces, so a failed update does not leave it down; an interrupt or an
-   * expired deadline says how to start it by hand. `--no-wait` skips only the
-   * final wait for `running`: the modify needs `stopped`.
+   * Issue #5446: apply a {@link planInstanceMemberUpdates} plan, after
+   * {@link prepareInstanceMemberUpdates}. The calls that need no interruption
+   * go first (groups, profile, DeleteOnTermination), then one stop -> modify
+   * -> start covers InstanceType and UserData together, as CloudFormation's
+   * single launch-time move shows.
+   *
+   * An instance the user had already stopped is modified and left stopped,
+   * unless cdkd itself left it stopped earlier in this process (a failed
+   * start, which the rollback then reverts): CloudFormation's rollback starts
+   * it again, and so does this. Any failure after cdkd's stop starts the
+   * instance again (best effort) and says which changes it already carries;
+   * when that is not possible (an interrupt, an expired deadline, a start
+   * that itself failed) the warning names the `aws ec2 start-instances`
+   * command. `--no-wait` skips only the final wait for `running`: the modify
+   * needs `stopped`.
    */
   private async applyInstanceMemberUpdates(
     logicalId: string,
@@ -8327,13 +8386,12 @@ export class EC2Provider implements ResourceProvider {
     resourceType: string,
     plan: InstanceMemberPlan
   ): Promise<void> {
-    if (plan.securityGroups !== undefined) {
-      const groups =
-        plan.securityGroups.kind === 'set'
-          ? plan.securityGroups.ids
-          : [await this.vpcDefaultSecurityGroupId(logicalId, physicalId, resourceType)];
+    if (plan.securityGroups?.kind === 'set') {
       await this.ec2Client.send(
-        new ModifyInstanceAttributeCommand({ InstanceId: physicalId, Groups: groups })
+        new ModifyInstanceAttributeCommand({
+          InstanceId: physicalId,
+          Groups: plan.securityGroups.ids,
+        })
       );
     }
 
@@ -8361,21 +8419,23 @@ export class EC2Provider implements ResourceProvider {
     } else if (state === 'stopping') {
       state = await this.waitForInstanceState(logicalId, physicalId, resourceType, 'stopped');
     }
-    const wasStopped = state === 'stopped';
-    if (!wasStopped && state !== 'running') {
+    if (state !== 'stopped' && state !== 'running') {
       throw markNonRetryable(
         new ProvisioningError(
-          `${logicalId} (${resourceType}): instance ${physicalId} is ${state ?? 'not returned by DescribeInstances'}, so its InstanceType / UserData cannot be changed. The instance was not updated.`,
+          `${logicalId} (${resourceType}): instance ${physicalId} became ${state ?? 'not returned by DescribeInstances'} during the update, so its InstanceType / UserData were not changed`,
           resourceType,
           logicalId,
           physicalId
         )
       );
     }
+    const startAfter = state === 'running' || instancesLeftStoppedByCdkd.has(physicalId);
 
+    const applied: string[] = [];
+    let phase: 'stop' | 'modify' | 'start' | 'wait' = 'stop';
     let stopIssued = false;
     try {
-      if (!wasStopped) {
+      if (state === 'running') {
         this.logger.info(
           safeMsg`Stopping EC2 Instance ${logicalId} (${physicalId}) to change its ${plan.instanceType !== undefined ? 'InstanceType' : ''}${plan.instanceType !== undefined && plan.userData !== undefined ? ' and ' : ''}${plan.userData !== undefined ? 'UserData' : ''}; it is started again afterwards`
         );
@@ -8383,6 +8443,7 @@ export class EC2Provider implements ResourceProvider {
         stopIssued = true;
         await this.waitForInstanceState(logicalId, physicalId, resourceType, 'stopped');
       }
+      phase = 'modify';
       if (plan.instanceType !== undefined) {
         await this.ec2Client.send(
           new ModifyInstanceAttributeCommand({
@@ -8390,6 +8451,7 @@ export class EC2Provider implements ResourceProvider {
             InstanceType: { Value: plan.instanceType },
           })
         );
+        applied.push('the new InstanceType');
       }
       if (plan.userData !== undefined) {
         await this.ec2Client.send(
@@ -8398,36 +8460,67 @@ export class EC2Provider implements ResourceProvider {
             UserData: { Value: plan.userData },
           })
         );
+        applied.push('the new UserData');
       }
+      if (!startAfter) return;
+      phase = 'start';
+      await this.ec2Client.send(new StartInstancesCommand({ InstanceIds: [physicalId] }));
+      instancesLeftStoppedByCdkd.delete(physicalId);
+      if (process.env['CDKD_NO_WAIT'] === 'true') {
+        this.logger.debug(
+          safeMsg`Instance ${physicalId} started (skipping running-state wait per --no-wait)`
+        );
+        return;
+      }
+      phase = 'wait';
+      await this.waitForInstanceState(logicalId, physicalId, resourceType, 'running', {
+        stoppedIsTerminal: true,
+      });
     } catch (error) {
-      if (stopIssued && !isInterruptedWaitError(error) && !enclosingDeadlineExpired()) {
-        try {
-          await this.ec2Client.send(new StartInstancesCommand({ InstanceIds: [physicalId] }));
+      const carries =
+        applied.length === 0 ? 'its previous settings' : `${applied.join(' and ')} already applied`;
+      const startCommand = `aws ec2 start-instances --instance-ids ${physicalId}`;
+      if (phase === 'wait') {
+        // Started; only a start AWS undid leaves it down.
+        if (instanceStoppedAfterStart.has(error as object)) {
+          instancesLeftStoppedByCdkd.add(physicalId);
           this.logger.warn(
-            safeMsg`${logicalId}: the InstanceType / UserData change failed after instance ${physicalId} was stopped; cdkd started it again with its previous settings.`
-          );
-        } catch (startError) {
-          this.logger.warn(
-            safeMsg`${logicalId}: instance ${physicalId} was stopped for an InstanceType / UserData change that failed, and starting it again failed too (${describeAwsFailure(startError).summary}). Start it with: aws ec2 start-instances --instance-ids ${physicalId}`
+            safeMsg`${logicalId}: instance ${physicalId} stopped again right after cdkd started it, with ${carries}. Start it with: ${startCommand}`
           );
         }
-      } else if (stopIssued) {
-        this.logger.warn(
-          safeMsg`${logicalId}: instance ${physicalId} was stopped for an InstanceType / UserData change that did not finish. Once it is stopped, start it with: aws ec2 start-instances --instance-ids ${physicalId}`
-        );
+        throw error;
       }
+      if (!stopIssued && !startAfter) throw error;
+      const retryStart =
+        phase !== 'start' && !isInterruptedWaitError(error) && !enclosingDeadlineExpired();
+      if (retryStart) {
+        let startFailure: unknown;
+        try {
+          await this.ec2Client.send(new StartInstancesCommand({ InstanceIds: [physicalId] }));
+        } catch (e) {
+          startFailure = e ?? new Error('StartInstances failed');
+        }
+        if (startFailure === undefined) {
+          instancesLeftStoppedByCdkd.delete(physicalId);
+          this.logger.warn(
+            safeMsg`${logicalId}: the InstanceType / UserData change failed after instance ${physicalId} was stopped; cdkd started it again, with ${carries}.`
+          );
+        } else {
+          instancesLeftStoppedByCdkd.add(physicalId);
+          this.logger.warn(
+            safeMsg`${logicalId}: instance ${physicalId} was stopped for an InstanceType / UserData change that failed, and starting it again failed too (${describeAwsFailure(startFailure).summary}); it is stopped, with ${carries}. Start it with: ${startCommand}`
+          );
+        }
+        throw error;
+      }
+      instancesLeftStoppedByCdkd.add(physicalId);
+      this.logger.warn(
+        phase === 'stop'
+          ? safeMsg`${logicalId}: instance ${physicalId} was being stopped for an InstanceType / UserData change that did not finish. Once it is stopped, start it with: ${startCommand}`
+          : safeMsg`${logicalId}: instance ${physicalId} is stopped, with ${carries}; cdkd did not start it again. Start it with: ${startCommand}`
+      );
       throw error;
     }
-
-    if (wasStopped) return;
-    await this.ec2Client.send(new StartInstancesCommand({ InstanceIds: [physicalId] }));
-    if (process.env['CDKD_NO_WAIT'] === 'true') {
-      this.logger.debug(
-        safeMsg`Instance ${physicalId} started (skipping running-state wait per --no-wait)`
-      );
-      return;
-    }
-    await this.waitForInstanceState(logicalId, physicalId, resourceType, 'running');
   }
 
   /** The instance's `State.Name`, or undefined when DescribeInstances omits it. */
@@ -8448,7 +8541,8 @@ export class EC2Provider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    target: 'running' | 'stopped'
+    target: 'running' | 'stopped',
+    opts: { stoppedIsTerminal?: boolean } = {}
   ): Promise<string> {
     const watch = startInterruptWatch(`EC2 Instance ${logicalId} ${target} wait`);
     const capAt = Date.now() + INSTANCE_STATE_WAIT_CAP_MS;
@@ -8467,8 +8561,23 @@ export class EC2Provider implements ResourceProvider {
             )
           );
         }
+        const previous = last;
         last = await this.readInstanceState(physicalId);
         if (last === target) return last;
+        // After a start: `pending` back to `stopped` is AWS undoing the start
+        // (capacity, a type the AMI cannot run), not progress.
+        if (opts.stoppedIsTerminal === true && last === 'stopped' && previous === 'pending') {
+          const stopped = markNonRetryable(
+            new ProvisioningError(
+              `${logicalId} (${resourceType}): instance ${physicalId} stopped again right after it was started; run \`aws ec2 describe-instances --instance-ids ${physicalId}\` and read StateReason for AWS's cause`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+          instanceStoppedAfterStart.add(stopped);
+          throw stopped;
+        }
         if (last === 'terminated' || last === 'shutting-down' || last === undefined) {
           throw markNonRetryable(
             new ProvisioningError(
@@ -8493,12 +8602,9 @@ export class EC2Provider implements ResourceProvider {
   private async vpcDefaultSecurityGroupId(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    vpcId: string | undefined
   ): Promise<string> {
-    const resp = await this.ec2Client.send(
-      new DescribeInstancesCommand({ InstanceIds: [physicalId] })
-    );
-    const vpcId = resp.Reservations?.[0]?.Instances?.[0]?.VpcId;
     const groups =
       vpcId === undefined
         ? undefined
@@ -8512,11 +8618,13 @@ export class EC2Provider implements ResourceProvider {
           );
     const id = groups?.SecurityGroups?.[0]?.GroupId;
     if (id === undefined) {
-      throw new ProvisioningError(
-        `${logicalId} (${resourceType}): SecurityGroupIds was removed, and the default security group of instance ${physicalId}'s VPC (${vpcId ?? 'unknown'}) could not be found to put in its place`,
-        resourceType,
-        logicalId,
-        physicalId
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${logicalId} (${resourceType}): SecurityGroupIds was removed, and the default security group of instance ${physicalId}'s VPC (${vpcId ?? 'unknown'}) could not be found to put in its place. The instance was not updated.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
       );
     }
     return id;

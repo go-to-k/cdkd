@@ -1143,8 +1143,15 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
       // Grandchild stays NO_CHANGE — the cascade did not over-broaden.
       expect(changes.get('ScalableTarget')?.changeType).toBe('NO_CHANGE');
 
-      // The synthetic promotion evaluated the rule with undefined/undefined.
-      expect(spy).toHaveBeenCalledWith('AWS::ECS::Service', 'TaskDefinition', undefined, undefined);
+      // The synthetic promotion evaluated the rule with undefined/undefined
+      // (plus the resource's sibling bags, issue #5446).
+      expect(spy).toHaveBeenCalledWith(
+        'AWS::ECS::Service',
+        'TaskDefinition',
+        undefined,
+        undefined,
+        expect.objectContaining({ oldProperties: expect.any(Object) })
+      );
     } finally {
       spy.mockRestore();
     }
