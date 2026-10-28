@@ -607,6 +607,117 @@ describe('EC2Provider - SecurityGroup egress handling', () => {
       );
     });
 
+    describe('inline ingress SourceSecurityGroupName (go-to-k/cdkd#5478)', () => {
+      const ingressInputs = (): unknown[] =>
+        mockSend.mock.calls
+          .map((c) => c[0])
+          .filter((c) => c instanceof AuthorizeSecurityGroupIngressCommand)
+          .map((c) => c.input);
+      const revokeInputs = (): unknown[] =>
+        mockSend.mock.calls
+          .map((c) => c[0])
+          .filter((c) => c instanceof RevokeSecurityGroupIngressCommand)
+          .map((c) => c.input);
+      const byName = (name: string): Record<string, unknown> => ({
+        IpProtocol: 'tcp',
+        FromPort: 443,
+        ToPort: 443,
+        SourceSecurityGroupName: name,
+      });
+
+      it('sends a named peer on create as UserIdGroupPairs[].GroupName', async () => {
+        mockSend.mockResolvedValueOnce({ GroupId: 'sg-main' }).mockResolvedValueOnce({});
+        await provider.create('MainSg', 'AWS::EC2::SecurityGroup', {
+          GroupDescription: 'named peer',
+          SecurityGroupIngress: [{ ...byName('peer-sg'), Description: 'from peer' }],
+        });
+        expect(ingressInputs()).toEqual([
+          {
+            GroupId: 'sg-main',
+            IpPermissions: [
+              {
+                IpProtocol: 'tcp',
+                FromPort: 443,
+                ToPort: 443,
+                UserIdGroupPairs: [{ GroupName: 'peer-sg', Description: 'from peer' }],
+              },
+            ],
+          },
+        ]);
+      });
+
+      it('lets SourceSecurityGroupId win when both are given', async () => {
+        mockSend.mockResolvedValueOnce({ GroupId: 'sg-main' }).mockResolvedValueOnce({});
+        await provider.create('MainSg', 'AWS::EC2::SecurityGroup', {
+          GroupDescription: 'both',
+          SecurityGroupIngress: [{ ...byName('peer-sg'), SourceSecurityGroupId: 'sg-peer' }],
+        });
+        const perm = (ingressInputs()[0] as { IpPermissions: Array<Record<string, unknown>> })
+          .IpPermissions[0];
+        expect(perm!['UserIdGroupPairs']).toEqual([{ GroupId: 'sg-peer' }]);
+      });
+
+      it('on update, a renamed peer revokes the old named rule and authorizes the new one', async () => {
+        mockSend.mockResolvedValue({});
+        await provider.update(
+          'MainSg',
+          'sg-main',
+          'AWS::EC2::SecurityGroup',
+          { GroupDescription: 'd', SecurityGroupIngress: [byName('peer-b')] },
+          { GroupDescription: 'd', SecurityGroupIngress: [byName('peer-a')] }
+        );
+        const pairs = (inputs: unknown[]): unknown[] =>
+          inputs.flatMap((i) =>
+            (i as { IpPermissions: Array<{ UserIdGroupPairs?: unknown[] }> }).IpPermissions.flatMap(
+              (p) => p.UserIdGroupPairs ?? []
+            )
+          );
+        expect(pairs(revokeInputs())).toEqual([{ GroupName: 'peer-a' }]);
+        expect(pairs(ingressInputs())).toEqual([{ GroupName: 'peer-b' }]);
+      });
+
+      it('on update, an id + name rule is a no-op round-trip and when the redundant name goes', async () => {
+        mockSend.mockResolvedValue({});
+        const withBoth = {
+          GroupDescription: 'd',
+          SecurityGroupIngress: [{ ...byName('peer-a'), SourceSecurityGroupId: 'sg-peer' }],
+        };
+        const idOnly = {
+          GroupDescription: 'd',
+          SecurityGroupIngress: [
+            { IpProtocol: 'tcp', FromPort: 443, ToPort: 443, SourceSecurityGroupId: 'sg-peer' },
+          ],
+        };
+        await provider.update('MainSg', 'sg-main', 'AWS::EC2::SecurityGroup', withBoth, withBoth);
+        await provider.update('MainSg', 'sg-main', 'AWS::EC2::SecurityGroup', withBoth, idOnly);
+        await provider.update('MainSg', 'sg-main', 'AWS::EC2::SecurityGroup', idOnly, withBoth);
+        expect(ingressInputs()).toEqual([]);
+        expect(revokeInputs()).toEqual([]);
+      });
+
+      it('on update, an unchanged named peer sends nothing', async () => {
+        mockSend.mockResolvedValue({});
+        const props = { GroupDescription: 'd', SecurityGroupIngress: [byName('peer-a')] };
+        await provider.update('MainSg', 'sg-main', 'AWS::EC2::SecurityGroup', props, props);
+        expect(ingressInputs()).toEqual([]);
+        expect(revokeInputs()).toEqual([]);
+      });
+
+      it('does not send the name on a standalone SecurityGroupIngress (CloudFormation refuses it there)', async () => {
+        mockSend.mockResolvedValue({ SecurityGroupRules: [{ SecurityGroupRuleId: 'sgr-1' }] });
+        await provider
+          .create('Rule', 'AWS::EC2::SecurityGroupIngress', {
+            GroupId: 'sg-main',
+            ...byName('peer-sg'),
+          })
+          .catch(() => undefined);
+        expect(ingressInputs().length).toBeGreaterThan(0);
+        for (const input of ingressInputs()) {
+          expect(JSON.stringify(input)).not.toContain('peer-sg');
+        }
+      });
+    });
+
     it('should map SourceSecurityGroupOwnerId to UserIdGroupPairs[].UserId on ingress (cross-account peer)', async () => {
       // Cross-account ingress rule: GroupId comes from SourceSecurityGroupId
       // and UserId from SourceSecurityGroupOwnerId. The default egress is

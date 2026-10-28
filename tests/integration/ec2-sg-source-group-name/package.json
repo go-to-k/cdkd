@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-ec2-sg-source-group-name",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd inline SecurityGroup ingress SourceSecurityGroupName integ probe (#5478)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}
