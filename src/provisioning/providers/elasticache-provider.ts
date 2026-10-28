@@ -80,12 +80,13 @@ const NODE_TYPE_MODIFY_WAIT_MS = Math.max(
 );
 
 /**
- * How long after the Modify an `available` cluster still on its old node
- * type, with no node-type change pending, counts as a scale AWS dropped
+ * How long after the Modify an `available` cluster still showing the old
+ * state, with nothing of the change pending -- the old node type (#5438), or
+ * a node it was told to remove (#5441) -- counts as a change AWS dropped
  * rather than one not yet started (AWS logged "Applying modification" about
  * 20 seconds after the Modify in the #5438 measurements).
  */
-const NODE_TYPE_DROPPED_AFTER_MS = 2 * 60_000;
+const MODIFY_DROPPED_AFTER_MS = 2 * 60_000;
 
 /**
  * The members of `a` left after taking out one occurrence per member of `b`
@@ -1069,21 +1070,37 @@ export class ElastiCacheProvider implements ResourceProvider {
       properties['NumCacheNodes'] != null ? Number(properties['NumCacheNodes']) : undefined;
 
     // Nodes are removed only when the TEMPLATE lowered the count (every
-    // measured CloudFormation removal was one): a live count above an
-    // unchanged or raised template count is left for AWS to refuse, never
-    // silently trimmed.
-    const templateLowered =
-      Number(properties['NumCacheNodes']) < Number(previousProperties['NumCacheNodes']);
+    // measured CloudFormation removal was one), and only from a cluster whose
+    // live node count is the previous template count: a cluster scaled
+    // outside the template would lose more nodes than the template change
+    // asks for, so it is refused, never trimmed.
+    const previousCount = Number(previousProperties['NumCacheNodes']);
+    const templateLowered = Number(properties['NumCacheNodes']) < previousCount;
     let removeIds: string[] = [];
     if (templateLowered && desiredCount !== undefined && desiredCount < liveNodes.length) {
+      if (liveNodes.length !== previousCount) {
+        throw new ProvisioningError(
+          safeMsg`Cannot update CacheCluster ${logicalId}: the template lowers NumCacheNodes from ${String(previousCount)} ` +
+            safeMsg`to ${String(desiredCount)}, but the cluster has ${String(liveNodes.length)} nodes, so ` +
+            `the removal would delete nodes the template change does not account for. Deploy ` +
+            `NumCacheNodes set to the live count first, then lower it.`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
       const plan = nodesToRemove(liveNodes, desiredCount, zones);
       if (plan === undefined) {
+        const liveZones = liveNodes.map((n) => n.zone);
+        const disjoint = zones !== undefined && !zones.some((z) => liveZones.includes(z));
         throw new ProvisioningError(
           safeMsg`Cannot update CacheCluster ${logicalId}: lowering NumCacheNodes to ${String(desiredCount)} ` +
-            `while PreferredAvailabilityZones moves nodes to zones no live node occupies needs nodes ` +
-            `removed and added in one update, which ModifyCacheCluster cannot do (CloudFormation ` +
-            `replaces the cluster for a move to disjoint zones; cdkd does not yet, issue #5458). ` +
-            `Replace the cluster (for example by changing its logical ID), or keep a live zone in the list.`,
+            `with this PreferredAvailabilityZones list needs a node removed and a node added in a ` +
+            `zone no live node occupies, in one update, which ModifyCacheCluster cannot do. ` +
+            (disjoint
+              ? `CloudFormation replaces the cluster for a move to disjoint zones; cdkd does not yet (issue #5458). `
+              : '') +
+            `Replace the cluster (for example by changing its logical ID), or list only zones the kept nodes occupy.`,
           resourceType,
           logicalId,
           physicalId
@@ -1311,6 +1328,18 @@ export class ElastiCacheProvider implements ResourceProvider {
       ) {
         return;
       }
+      // A removal AWS accepted and then dropped leaves the nodes listed on an
+      // `available` cluster with no removal pending: fail now, not at the cap.
+      if (
+        !removalDone &&
+        status === 'available' &&
+        (cluster?.PendingModifiedValues?.CacheNodeIdsToRemove ?? []).length === 0 &&
+        Date.now() - startTime > MODIFY_DROPPED_AFTER_MS
+      ) {
+        throw new Error(
+          safeMsg`CacheCluster ${cacheClusterId} is available and still lists cache nodes ${removedNodeIds.join(', ')} with no removal pending; the removal was not applied. Check the cluster's events (aws elasticache describe-events) for the reason, then deploy again.`
+        );
+      }
       // A scale AWS accepted and then dropped leaves the cluster `available`
       // on its old type with nothing pending: fail now, not at the cap.
       if (
@@ -1318,7 +1347,7 @@ export class ElastiCacheProvider implements ResourceProvider {
         liveNodeType !== expectedNodeType &&
         status === 'available' &&
         cluster?.PendingModifiedValues?.CacheNodeType === undefined &&
-        Date.now() - startTime > NODE_TYPE_DROPPED_AFTER_MS
+        Date.now() - startTime > MODIFY_DROPPED_AFTER_MS
       ) {
         throw new Error(
           safeMsg`CacheCluster ${cacheClusterId} is available with node type ${liveNodeType} and no node-type change pending; the change to ${expectedNodeType} was not applied. Check the cluster's events (aws elasticache describe-events) for the reason, then deploy again.`

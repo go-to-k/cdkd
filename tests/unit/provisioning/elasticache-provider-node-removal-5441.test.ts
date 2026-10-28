@@ -207,7 +207,7 @@ describe('ElastiCacheProvider CacheCluster NumCacheNodes decrease (issue #5441)'
         { ...base, NumCacheNodes: 1, PreferredAvailabilityZones: ['us-east-1b'] },
         { ...base, NumCacheNodes: 2, PreferredAvailabilityZones: ['us-east-1a', 'us-east-1c'] }
       )
-    ).rejects.toThrow(/lowering NumCacheNodes to 1/);
+    ).rejects.toThrow(/lowering NumCacheNodes to 1[\s\S]*disjoint zones[\s\S]*#5458/);
     expect(sent().some((c) => c.constructor.name === 'ModifyCacheClusterCommand')).toBe(false);
   });
 });
@@ -288,5 +288,113 @@ describe('ElastiCacheProvider CacheCluster node removal guards (issue #5441 revi
     const input = modifyInput();
     expect(input['CacheNodeIdsToRemove']).toEqual(['0001']);
     expect(input).not.toHaveProperty('NewAvailabilityZones');
+  });
+});
+
+describe('ElastiCacheProvider CacheCluster node removal refusals and drops (issue #5441 parent review)', () => {
+  let provider: ElastiCacheProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockReset();
+    provider = new ElastiCacheProvider();
+    let clock = Date.parse('2026-10-28T00:00:00Z');
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    let sleeps = 0;
+    vi.spyOn(
+      provider as unknown as { sleep: (ms: number) => Promise<void> },
+      'sleep'
+    ).mockImplementation((ms: number) => {
+      clock += ms;
+      return ++sleeps > 50 ? Promise.reject(new Error('waiter did not settle')) : Promise.resolve();
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const base = { Engine: 'memcached', CacheNodeType: 'cache.t4g.micro' };
+  const cluster = (nodes: [string, string][], pending?: string[]) => ({
+    CacheClusterStatus: 'available',
+    CacheNodeType: 'cache.t4g.micro',
+    CacheNodes: nodes.map(([id, az]) => ({ CacheNodeId: id, CustomerAvailabilityZone: az })),
+    ...(pending && { PendingModifiedValues: { CacheNodeIdsToRemove: pending } }),
+  });
+  const always = (c: ReturnType<typeof cluster>) =>
+    mockSend.mockImplementation((cmd: Sent) =>
+      Promise.resolve(
+        cmd.constructor.name === 'DescribeCacheClustersCommand' ? { CacheClusters: [c] } : {}
+      )
+    );
+  const modifySent = () => sent().some((c) => c.constructor.name === 'ModifyCacheClusterCommand');
+
+  it('refuses a decrease when the live node count is not the previous template count', async () => {
+    // Recorded 3, template 2, but 5 live (scaled outside the template): live
+    // minus desired would delete 3 nodes for a 1-node template change.
+    always(
+      cluster([
+        ['0001', 'c'],
+        ['0002', 'c'],
+        ['0003', 'c'],
+        ['0004', 'c'],
+        ['0005', 'c'],
+      ])
+    );
+
+    await expect(
+      provider.update('Cache', 'my-cluster', TYPE, { ...base, NumCacheNodes: 2 }, { ...base, NumCacheNodes: 3 })
+    ).rejects.toThrow(/lowers NumCacheNodes from 3 to 2, but the cluster has 5 nodes/);
+    expect(modifySent()).toBe(false);
+  });
+
+  it('names no CloudFormation replacement when the refused zone list overlaps the live zones', async () => {
+    always(
+      cluster([
+        ['0001', 'us-east-1a'],
+        ['0002', 'us-east-1b'],
+        ['0003', 'us-east-1c'],
+      ])
+    );
+
+    const failure = provider.update(
+      'Cache',
+      'my-cluster',
+      TYPE,
+      { ...base, NumCacheNodes: 2, PreferredAvailabilityZones: ['us-east-1a', 'us-east-1d'] },
+      { ...base, NumCacheNodes: 3 }
+    );
+    await expect(failure).rejects.toThrow(/needs a node removed and a node added/);
+    await expect(failure).rejects.not.toThrow(/#5458/);
+    expect(modifySent()).toBe(false);
+  });
+
+  it('fails early when the removal is dropped (nodes still listed, nothing pending)', async () => {
+    always(
+      cluster([
+        ['0001', 'c'],
+        ['0002', 'c'],
+      ])
+    );
+
+    await expect(
+      provider.update('Cache', 'my-cluster', TYPE, { ...base, NumCacheNodes: 1 }, { ...base, NumCacheNodes: 2 })
+    ).rejects.toThrow(/still lists cache nodes 0001 with no removal pending/);
+  });
+
+  it('keeps waiting while the removal is still pending', async () => {
+    always(
+      cluster(
+        [
+          ['0001', 'c'],
+          ['0002', 'c'],
+        ],
+        ['0001']
+      )
+    );
+
+    await expect(
+      provider.update('Cache', 'my-cluster', TYPE, { ...base, NumCacheNodes: 1 }, { ...base, NumCacheNodes: 2 })
+    ).rejects.toThrow(/waiter did not settle/);
   });
 });
