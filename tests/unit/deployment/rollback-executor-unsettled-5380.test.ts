@@ -49,12 +49,12 @@ const silentLogger = {
   child: () => silentLogger,
 } as unknown as RollbackExecutorContext['logger'];
 
-function ctxWith(update: unknown): RollbackExecutorContext {
+function ctxWith(update: unknown, hooks: Record<string, unknown> = {}): RollbackExecutorContext {
   return {
     region: 'us-east-1',
     logger: silentLogger,
     providerRegistry: {
-      getProviderFor: () => ({ provider: { update } }),
+      getProviderFor: () => ({ provider: { update, ...hooks } }),
     } as unknown as RollbackExecutorContext['providerRegistry'],
     recordEvent: vi.fn(),
   };
@@ -130,5 +130,101 @@ describe('the revert of a completed UPDATE converges what its previous record na
     expect(result.failures).toBe(0);
     expect([...(seen?.unsettledProperties ?? [])]).toEqual([ENC]);
     expect(state.S).not.toHaveProperty('unsettledProperties');
+  });
+});
+
+describe('--revert-failed takes the convergence step before the removal step (go-to-k/cdkd#5487)', () => {
+  it('hands update() the live value of an unsettled key as the previous side', async () => {
+    let previous: Record<string, unknown> | undefined;
+    const update = vi.fn(async (...args: unknown[]) => {
+      previous = args[4] as Record<string, unknown>;
+      return { physicalId: 'phys', wasReplaced: false };
+    });
+    const state = { S: res({ unsettledProperties: [ENC] }) };
+    await replayFailedOperations(
+      failedOp(),
+      state,
+      'stack',
+      ctxWith(update, {
+        readCurrentState: async () => ({ DeliveryStreamName: 'phys', [ENC]: { KeyType: 'AWS_OWNED_CMK' } }),
+      })
+    );
+    expect(previous?.[ENC]).toEqual({ KeyType: 'AWS_OWNED_CMK' });
+  });
+
+  it('refuses the revert while the key is in transition, keeping the name', async () => {
+    const update = vi.fn(async () => ({ physicalId: 'phys', wasReplaced: false }));
+    const state = { S: res({ unsettledProperties: [ENC] }) };
+    await replayFailedOperations(
+      failedOp(),
+      state,
+      'stack',
+      ctxWith(update, {
+        unsettledInTransition: async (_p: string, _l: string, _t: string, n: ReadonlySet<string>) => n,
+      })
+    );
+    expect(update).not.toHaveBeenCalled();
+    expect(state.S.unsettledProperties).toEqual([ENC]);
+  });
+});
+
+describe('a rollback revert settles an unsettled name only on proof (go-to-k/cdkd#5487)', () => {
+  /** AWS holds `before` until update() runs, then `after`. */
+  function aws(before: Record<string, unknown>, after: Record<string, unknown>) {
+    let live = before;
+    return {
+      update: vi.fn(async () => {
+        live = after;
+        return { physicalId: 'phys', wasReplaced: false };
+      }),
+      hooks: { readCurrentState: async () => ({ ...live }) },
+    };
+  }
+  const failedNote = (): FailedOperation[] => [
+    {
+      logicalId: 'S',
+      changeType: 'UPDATE',
+      resourceType: TYPE,
+      physicalId: 'phys',
+      previousState: res({ properties: { DeliveryStreamName: 'phys', Note: 'a' } }),
+      attemptedProperties: { DeliveryStreamName: 'phys', Note: 'b' },
+    } as unknown as FailedOperation,
+  ];
+  const record = () => res({ properties: { DeliveryStreamName: 'phys', Note: 'b' }, unsettledProperties: ['Note'] });
+
+  it('--revert-failed: cleared once AWS holds the restored value', async () => {
+    const f = aws({ DeliveryStreamName: 'phys', Note: 'b' }, { DeliveryStreamName: 'phys', Note: 'a' });
+    const state = { S: record() };
+    await replayFailedOperations(failedNote(), state, 'stack', ctxWith(f.update, f.hooks));
+    expect(f.update).toHaveBeenCalledOnce();
+    expect(state.S).not.toHaveProperty('unsettledProperties');
+  });
+
+  it('--revert-failed: kept when AWS still shows another value after a successful call', async () => {
+    const f = aws({ DeliveryStreamName: 'phys', Note: 'b' }, { DeliveryStreamName: 'phys', Note: 'b' });
+    const state = { S: record() };
+    await replayFailedOperations(failedNote(), state, 'stack', ctxWith(f.update, f.hooks));
+    expect(f.update).toHaveBeenCalledOnce();
+    expect(state.S.unsettledProperties).toEqual(['Note']);
+  });
+
+  it.each([
+    ['cleared once AWS holds the restored value', { Note: 'a' }, undefined],
+    ['kept when AWS still shows another value', { Note: 'b' }, ['Note']],
+  ])('revert of a completed UPDATE: %s', async (_l, after, expected) => {
+    const f = aws({ DeliveryStreamName: 'phys', Note: 'b' }, { DeliveryStreamName: 'phys', ...after });
+    const ops = [
+      {
+        logicalId: 'S',
+        changeType: 'UPDATE',
+        resourceType: TYPE,
+        physicalId: 'phys',
+        previousState: res({ properties: { DeliveryStreamName: 'phys', Note: 'a' }, unsettledProperties: ['Note'] }),
+      } as unknown as CompletedOperation,
+    ];
+    const state = { S: res({ properties: { DeliveryStreamName: 'phys', Note: 'b' } }) };
+    await replayRollback(ops, state, 'stack', ctxWith(f.update, f.hooks));
+    expect(f.update).toHaveBeenCalledOnce();
+    expect(state.S.unsettledProperties).toEqual(expected);
   });
 });

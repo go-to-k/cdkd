@@ -45,7 +45,7 @@ import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { InterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { markNonRetryable } from '../../../src/deployment/retryable-errors.js';
-import type { CloudFormationTemplate, UpdateContext } from '../../../src/types/resource.js';
+import { RESOURCE_NOT_FOUND, type CloudFormationTemplate, type UpdateContext } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 
 const TYPE = 'AWS::KinesisFirehose::DeliveryStream';
@@ -78,6 +78,8 @@ async function deploy(opts: {
   levels?: string[][];
   /** The replacement fallback's create fails. */
   createFails?: boolean;
+  /** Extra provider hooks (`readCurrentState`, `unsettledInTransition`, ...). */
+  hooks?: Record<string, unknown>;
 }): Promise<Run> {
   const levels = opts.levels ?? [['S']];
   const contexts: Array<UpdateContext | undefined> = [];
@@ -104,6 +106,7 @@ async function deploy(opts: {
     ),
     delete: vi.fn(),
     getAttribute: vi.fn(),
+    ...opts.hooks,
   };
   const engine = new DeployEngine(
     {
@@ -554,5 +557,257 @@ describe('the next deploy converges an unsettled key (go-to-k/cdkd#5380)', () =>
     });
     expect(run.thrown).toBeDefined();
     expect(run.saved?.resources['S']?.unsettledProperties).toEqual([ENC]);
+  });
+});
+
+describe('the engine converges unsettled names before the removal step (go-to-k/cdkd#5487)', () => {
+  /** A fake resource: `update()` makes AWS hold the desired bag. */
+  function fakeAws(initial: Record<string, unknown>) {
+    const aws = { live: { ...initial } as Record<string, unknown>, reads: 0 };
+    return {
+      aws,
+      hooks: {
+        readCurrentState: vi.fn(async () => {
+          aws.reads++;
+          return { ...aws.live };
+        }),
+      },
+      update: (async (_id, pid, props) => {
+        aws.live = { ...props };
+        return { physicalId: pid, attributes: {} };
+      }) as UpdateFn,
+    };
+  }
+
+  it('a key absent from the template and the record but live-added is removed, and the name clears', async () => {
+    const f = fakeAws({ DeliveryStreamName: 'stream', Extra: 'attempted' });
+    let prev: Record<string, unknown> | undefined;
+    const run = await deploy({
+      state: stateOf({ unsettledProperties: ['Extra'] }),
+      template: templateOf(plain),
+      hooks: f.hooks,
+      update: async (id, pid, props, previous, context) => {
+        prev = previous;
+        expect([...(context?.removedProperties ?? [])]).toContain('Extra');
+        return f.update(id, pid, props, previous, context);
+      },
+    });
+    expect(run.thrown).toBeUndefined();
+    expect(prev?.['Extra']).toBe('attempted');
+    expect(run.saved?.resources['S']).not.toHaveProperty('unsettledProperties');
+  });
+
+  it('a key whose live value equals the template is still handed over with the live previous side', async () => {
+    const f = fakeAws({ DeliveryStreamName: 'stream', Extra: 'v' });
+    let prev: Record<string, unknown> | undefined;
+    await deploy({
+      state: stateOf({ properties: { DeliveryStreamName: 'stream', Extra: 'old' }, unsettledProperties: ['Extra'] }),
+      template: templateOf({ DeliveryStreamName: 'stream', Extra: 'v' }),
+      hooks: f.hooks,
+      update: async (id, pid, props, previous, context) => {
+        prev = previous;
+        return f.update(id, pid, props, previous, context);
+      },
+    });
+    // Equal sides: a provider's own comparison sends nothing (a same-value call AWS refuses).
+    expect(prev?.['Extra']).toBe('v');
+  });
+
+  it('a name AWS is still changing refuses the update before any call, and stays unsettled', async () => {
+    const f = fakeAws({ DeliveryStreamName: 'stream' });
+    const run = await deploy({
+      state: stateOf({ unsettledProperties: [ENC] }),
+      template: templateOf(plain),
+      hooks: { ...f.hooks, unsettledInTransition: async (_p: string, _l: string, _t: string, n: ReadonlySet<string>) => n },
+      update: f.update,
+      options: { noRollback: true },
+    });
+    expect(run.thrown).toBeDefined();
+    expect(run.contexts).toHaveLength(0);
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual([ENC]);
+  });
+
+  it('an unreadable resource refuses the update before any call, and the name stays', async () => {
+    const run = await deploy({
+      state: stateOf({ unsettledProperties: ['Extra'] }),
+      template: templateOf(plain),
+      hooks: { readCurrentState: async () => { throw new Error('throttled'); } },
+      update: async (_id, pid) => ({ physicalId: pid, attributes: {} }),
+      options: { noRollback: true },
+    });
+    expect(run.thrown).toBeDefined();
+    expect(run.contexts).toHaveLength(0);
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual(['Extra']);
+  });
+
+  it('a key the read does not report leaves the previous side, so its template value is sent again', async () => {
+    const f = fakeAws({ DeliveryStreamName: 'stream' });
+    let prev: Record<string, unknown> | undefined;
+    await deploy({
+      state: stateOf({ properties: { DeliveryStreamName: 'stream', Extra: 'v' }, unsettledProperties: ['Extra'] }),
+      template: templateOf({ DeliveryStreamName: 'stream', Extra: 'v' }),
+      hooks: f.hooks,
+      update: async (id, pid, props, previous, context) => {
+        prev = previous;
+        return f.update(id, pid, props, previous, context);
+      },
+    });
+    expect(prev).not.toHaveProperty('Extra');
+  });
+
+  it('a resource the read reports gone refuses the update before any call', async () => {
+    const run = await deploy({
+      state: stateOf({ unsettledProperties: ['Extra'] }),
+      template: templateOf(plain),
+      hooks: { readCurrentState: async () => RESOURCE_NOT_FOUND },
+      update: async (_id, pid) => ({ physicalId: pid, attributes: {} }),
+      options: { noRollback: true },
+    });
+    expect(run.thrown).toBeDefined();
+    expect(run.contexts).toHaveLength(0);
+  });
+
+  it('a successful update AWS does not reflect keeps the name (the mark clears only on proof)', async () => {
+    const f = fakeAws({ DeliveryStreamName: 'stream', Extra: 'attempted' });
+    const run = await deploy({
+      state: stateOf({ properties: { DeliveryStreamName: 'stream', Extra: 'v' }, unsettledProperties: ['Extra'] }),
+      template: templateOf({ DeliveryStreamName: 'stream', Extra: 'v' }),
+      hooks: f.hooks,
+      // The call "succeeds" but AWS keeps the attempted value.
+      update: async (_id, pid) => ({ physicalId: pid, attributes: {} }),
+    });
+    expect(run.thrown).toBeUndefined();
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual(['Extra']);
+  });
+
+  it('a name still in transition after a successful update stays unsettled', async () => {
+    const f = fakeAws({ DeliveryStreamName: 'stream', Extra: 'v' });
+    let calls = 0;
+    const run = await deploy({
+      state: stateOf({ properties: { DeliveryStreamName: 'stream', Extra: 'v' }, unsettledProperties: ['Extra'] }),
+      template: templateOf({ DeliveryStreamName: 'stream', Extra: 'v' }),
+      // Settled before the update, moving again after it.
+      hooks: { ...f.hooks, unsettledInTransition: async (_p: string, _l: string, _t: string, n: ReadonlySet<string>) => (calls++ === 0 ? new Set() : n) },
+      update: f.update,
+    });
+    expect(run.thrown).toBeUndefined();
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual(['Extra']);
+  });
+
+  it('unsettled Tags keep the record as the previous side (no live-only tag is removed) and clear once AWS holds them', async () => {
+    const f = fakeAws({ DeliveryStreamName: 'stream', Tags: [{ Key: 'a', Value: '1' }, { Key: 'operator', Value: 'x' }] });
+    let prev: Record<string, unknown> | undefined;
+    const run = await deploy({
+      state: stateOf({ properties: { DeliveryStreamName: 'stream', Tags: [{ Key: 'a', Value: '1' }] }, unsettledProperties: ['Tags'] }),
+      template: templateOf({ DeliveryStreamName: 'stream', Tags: [{ Key: 'a', Value: '1' }] }),
+      hooks: f.hooks,
+      update: async (id, pid, props, previous, context) => {
+        prev = previous;
+        expect(context?.changedProperties?.has('Tags')).toBe(true);
+        // AWS keeps the operator tag: the update upserts, it does not replace.
+        return { physicalId: pid, attributes: {} };
+      },
+    });
+    expect(prev?.['Tags']).toEqual([{ Key: 'a', Value: '1' }]);
+    expect(f.aws.live['Tags']).toEqual([{ Key: 'a', Value: '1' }, { Key: 'operator', Value: 'x' }]);
+    expect(run.saved?.resources['S']).not.toHaveProperty('unsettledProperties');
+  });
+
+  it('unsettled Tags whose template tag AWS still lacks stay unsettled', async () => {
+    const f = fakeAws({ DeliveryStreamName: 'stream', Tags: [] });
+    const run = await deploy({
+      state: stateOf({ properties: { DeliveryStreamName: 'stream', Tags: [{ Key: 'a', Value: '1' }] }, unsettledProperties: ['Tags'] }),
+      template: templateOf({ DeliveryStreamName: 'stream', Tags: [{ Key: 'a', Value: '1' }] }),
+      hooks: f.hooks,
+      update: async (_id, pid) => ({ physicalId: pid, attributes: {} }),
+    });
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual(['Tags']);
+  });
+
+  it('only unsettled Tags take no live read before the update', async () => {
+    const f = fakeAws({ DeliveryStreamName: 'stream', Tags: [{ Key: 'a', Value: '1' }] });
+    await deploy({
+      state: stateOf({ properties: { DeliveryStreamName: 'stream', Tags: [{ Key: 'a', Value: '1' }] }, unsettledProperties: ['Tags'] }),
+      template: templateOf({ DeliveryStreamName: 'stream', Tags: [{ Key: 'a', Value: '1' }] }),
+      hooks: f.hooks,
+      update: async (id, pid, props, previous, context) => {
+        // No read before the update: Tags are never substituted.
+        expect(f.aws.reads).toBe(0);
+        return f.update(id, pid, props, previous, context);
+      },
+    });
+  });
+
+  it('a provider readUnsettled hook is preferred over readCurrentState', async () => {
+    const f = fakeAws({ DeliveryStreamName: 'stream', Extra: 'v' });
+    const readUnsettled = vi.fn(async () => ({ DeliveryStreamName: 'stream', Extra: 'from-hook' }));
+    let prev: Record<string, unknown> | undefined;
+    await deploy({
+      state: stateOf({ properties: { DeliveryStreamName: 'stream', Extra: 'v' }, unsettledProperties: ['Extra'] }),
+      template: templateOf({ DeliveryStreamName: 'stream', Extra: 'v' }),
+      hooks: { ...f.hooks, readUnsettled },
+      update: async (id, pid, props, previous, context) => {
+        prev = previous;
+        return f.update(id, pid, props, previous, context);
+      },
+    });
+    expect(prev?.['Extra']).toBe('from-hook');
+    // Before the update and for the post-update proof.
+    expect(readUnsettled).toHaveBeenCalledTimes(2);
+  });
+
+  it('without unsettled names neither convergence hook is called', async () => {
+    const f = fakeAws({ DeliveryStreamName: 'stream' });
+    const readUnsettled = vi.fn(async () => ({}));
+    const unsettledInTransition = vi.fn(async () => new Set<string>());
+    await deploy({
+      state: stateOf(),
+      template: templateOf(encrypted),
+      hooks: { ...f.hooks, readUnsettled, unsettledInTransition },
+      update: f.update,
+    });
+    expect(readUnsettled).not.toHaveBeenCalled();
+    expect(unsettledInTransition).not.toHaveBeenCalled();
+  });
+});
+
+describe('convergence messages say what happened (go-to-k/cdkd#5487)', () => {
+  const warnLines = async (): Promise<string[]> => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    return (getLogger().warn as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => String(c[0]));
+  };
+
+  it('the in-transition refusal covers a hook that could not read as well as a moving value', async () => {
+    const run = await deploy({
+      state: stateOf({ unsettledProperties: ['Extra'] }),
+      template: templateOf(plain),
+      hooks: { unsettledInTransition: async (_p: string, _l: string, _t: string, n: ReadonlySet<string>) => n },
+      update: async (_id, pid) => ({ physicalId: pid, attributes: {} }),
+      options: { noRollback: true },
+    });
+    const chain: string[] = [];
+    for (let e: unknown = run.thrown; e instanceof Error && chain.length < 8; e = e.cause) {
+      chain.push(e.message);
+    }
+    expect(chain.join('\n')).toMatch(/AWS is still changing it or cdkd could not confirm it settled/);
+  });
+
+  it('a live-only key the template never had is not called removed from the template', async () => {
+    const before = (await warnLines()).length;
+    await deploy({
+      state: stateOf({ properties: { DeliveryStreamName: 'stream', Gone: 'g' }, unsettledProperties: ['Extra'] }),
+      template: templateOf(plain),
+      hooks: {
+        readCurrentState: async () => ({ DeliveryStreamName: 'stream', Extra: 'attempted' }),
+        removalHandledInUpdate: new Map([[TYPE, new Set<string>()]]),
+      },
+      update: async (_id, pid) => ({ physicalId: pid, attributes: {} }),
+    });
+    const lines = (await warnLines()).slice(before);
+    const live = lines.filter((l) => l.includes('Extra'));
+    expect(live.some((l) => l.includes('set on the resource but in no template'))).toBe(true);
+    expect(live.some((l) => l.includes('removed from the template'))).toBe(false);
+    // The recorded key the template dropped keeps its own wording.
+    expect(lines.some((l) => l.includes('Gone') && l.includes('removed from the template'))).toBe(true);
   });
 });

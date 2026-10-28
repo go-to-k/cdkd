@@ -1351,6 +1351,7 @@
       "integs": [
         "docdb-fix-forward-orphan",
         "docdb-neptune",
+        "kinesis-stream-mode-switch",
         "lambda-esm-documentdb",
         "neptune-fix-forward-orphan",
         "rds-fix-forward-orphan",
@@ -1361,6 +1362,7 @@
     {
       "flag": "--resource-warn-after",
       "integs": [
+        "kinesis-stream-mode-switch",
         "stream-delete-redeploy"
       ]
     },

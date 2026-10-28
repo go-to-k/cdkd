@@ -113,18 +113,23 @@ async function runDrift(
   state: StackState,
   flags: string[],
   update: () => Promise<unknown> = async () => ({ physicalId: 'drifted', attributes: {} }),
-  inTransition?: (names: ReadonlySet<string>) => Promise<ReadonlySet<string>>
+  inTransition?: (names: ReadonlySet<string>) => Promise<ReadonlySet<string>>,
+  revertLands = true
 ): Promise<{ stdout: string; saved: StackState | undefined; updates: number }> {
   let updates = 0;
+  // AWS reverts to the baseline once update() succeeds, unless told not to.
+  let reverted = false;
   mockGetState.mockResolvedValue({ state, etag: '"etag-1"' });
   mockGetProvider.mockImplementation(() => ({
     readCurrentState: async (physicalId: string) =>
-      physicalId === 'drifted'
+      physicalId === 'drifted' && !(reverted && revertLands)
         ? { DeliveryStreamName: 'drifted', DeliveryStreamType: 'KinesisStreamAsSource' }
         : { DeliveryStreamName: physicalId, DeliveryStreamType: 'DirectPut' },
     update: vi.fn(async () => {
       updates++;
-      return update();
+      const result = await update();
+      reverted = true;
+      return result;
     }),
     ...(inTransition !== undefined && {
       unsettledInTransition: async (_p: string, _l: string, _t: string, names: ReadonlySet<string>) =>
@@ -225,10 +230,7 @@ describe('cdkd drift and unsettled properties (go-to-k/cdkd#5380)', () => {
     expect(warned[0]).toContain("that a failed deploy's unsettled properties are settled");
   });
 
-  it.each([
-    ['--accept', ['--accept', '--yes']],
-    ['--revert', ['--revert', '--yes']],
-  ])('%s keeps a key the provider reports still in transition, and clears one it does not', async (_l, flags) => {
+  it.each([['--accept', ['--accept', '--yes']]])('%s keeps a key the provider reports still in transition, and clears one it does not', async (_l, flags) => {
     const kept = await runDrift(
       stateWith({ drifted: { unsettledProperties: [ENC, 'Tags'] } }),
       flags,
@@ -258,15 +260,45 @@ describe('cdkd drift and unsettled properties (go-to-k/cdkd#5380)', () => {
     expect(saved?.resources['Drifted']?.unsettledProperties).toEqual([ENC]);
   });
 
-  it('a --revert that leaves every name in transition writes no state for them', async () => {
+  it('--revert refuses a resource with a name AWS is still changing (go-to-k/cdkd#5487), and writes nothing', async () => {
     const { saved, updates } = await runDrift(
       stateWith({ drifted: { unsettledProperties: [ENC] } }),
       ['--revert', '--yes'],
       undefined,
       async (names) => names
     );
-    expect(updates).toBe(1);
+    expect(updates).toBe(0);
     expect(saved).toBeUndefined();
+  });
+
+  it('--revert of a resource with no name in transition reverts and clears it', async () => {
+    const { saved, updates } = await runDrift(
+      stateWith({ drifted: { unsettledProperties: [ENC] } }),
+      ['--revert', '--yes'],
+      undefined,
+      async () => new Set()
+    );
+    expect(updates).toBe(1);
+    expect(saved?.resources['Drifted']).not.toHaveProperty('unsettledProperties');
+  });
+
+  it('--revert settles an unsettled name only on proof (go-to-k/cdkd#5487)', async () => {
+    const landed = await runDrift(
+      stateWith({ drifted: { unsettledProperties: ['DeliveryStreamType'] } }),
+      ['--revert', '--yes']
+    );
+    expect(landed.saved?.resources['Drifted']).not.toHaveProperty('unsettledProperties');
+    mockSaveState.mockClear();
+    // The call succeeds but AWS still shows the drifted value: kept, nothing to write.
+    const unproven = await runDrift(
+      stateWith({ drifted: { unsettledProperties: ['DeliveryStreamType'] } }),
+      ['--revert', '--yes'],
+      undefined,
+      undefined,
+      false
+    );
+    expect(unproven.updates).toBe(1);
+    expect(unproven.saved).toBeUndefined();
   });
 
   it('a failed --revert writes nothing, so the record keeps the field', async () => {

@@ -527,6 +527,18 @@ export function inlineCodeFileNameForRuntime(runtime: string | undefined): strin
  * overhead (1s->2s->4s->8s) for an operation that completes immediately.
  * This SDK provider eliminates that polling and returns instantly.
  */
+
+/**
+ * go-to-k/cdkd#5487: the keys `update()` applies with their own calls, which no
+ * `State` / `LastUpdateStatus` transition covers.
+ */
+const SEPARATELY_APPLIED_KEYS: ReadonlySet<string> = new Set([
+  'Tags',
+  'ReservedConcurrentExecutions',
+  'RecursiveLoop',
+  'CodeSigningConfigArn',
+  'RuntimeManagementConfig',
+]);
 export class LambdaFunctionProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
   /** `CreateFunction` goes through this client, which refuses the SDK retry of a 5xx (issue #4639). */
@@ -1253,6 +1265,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // Before each call that changes the function: a failure from there on
+    // (the update waiter, a later call) leaves the key unsettled.
+    const markUnsettled = (key: string): void => context?.markUnsettled?.(key);
     properties = withRemovalDefaults(
       this.removalDefaults,
       resourceType,
@@ -1313,13 +1328,13 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'DurableConfig',
       ];
 
-      let hasConfigChanges = false;
+      const changedConfigFields: string[] = [];
       for (const field of configFields) {
         if (JSON.stringify(properties[field]) !== JSON.stringify(previousProperties[field])) {
-          hasConfigChanges = true;
-          break;
+          changedConfigFields.push(field);
         }
       }
+      const hasConfigChanges = changedConfigFields.length > 0;
 
       if (hasConfigChanges) {
         const configParams: UpdateFunctionConfigurationCommandInput = {
@@ -1393,6 +1408,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
           DurableConfig: properties['DurableConfig'] as DurableConfig | undefined,
         };
 
+        for (const field of changedConfigFields) markUnsettled(field);
         await this.lambdaClient.send(new UpdateFunctionConfigurationCommand(configParams));
         log.debug(`Updated configuration for Lambda function ${log.value(physicalId)}`);
         // Wait for the configuration update to fully apply before any
@@ -1418,6 +1434,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         | undefined;
       const codeSigningChanged = newCodeSigningConfigArn !== prevCodeSigningConfigArn;
       if (codeSigningChanged && newCodeSigningConfigArn === undefined) {
+        markUnsettled('CodeSigningConfigArn');
         await this.lambdaClient.send(
           new DeleteFunctionCodeSigningConfigCommand({ FunctionName: physicalId })
         );
@@ -1467,6 +1484,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
             : undefined,
         };
 
+        markUnsettled('Code');
+        if (architecturesChanged) markUnsettled('Architectures');
         await this.lambdaClient.send(new UpdateFunctionCodeCommand(codeParams));
         log.debug(`Updated code for Lambda function ${log.value(physicalId)}`);
         // Same reason as above: UpdateFunctionCode is async too, and
@@ -1483,6 +1502,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       const newRecursiveLoop = properties['RecursiveLoop'] as RecursiveLoop | undefined;
       const prevRecursiveLoop = previousProperties['RecursiveLoop'] as RecursiveLoop | undefined;
       if (newRecursiveLoop !== undefined && newRecursiveLoop !== prevRecursiveLoop) {
+        markUnsettled('RecursiveLoop');
         await this.lambdaClient.send(
           new PutFunctionRecursionConfigCommand({
             FunctionName: physicalId,
@@ -1511,6 +1531,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'ReservedConcurrentExecutions'
       ] as number | undefined;
       if (newReservedConcurrentExecutions !== prevReservedConcurrentExecutions) {
+        markUnsettled('ReservedConcurrentExecutions');
         if (newReservedConcurrentExecutions === undefined) {
           await this.lambdaClient.send(
             new DeleteFunctionConcurrencyCommand({ FunctionName: physicalId })
@@ -1538,6 +1559,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // mapping to a real Delete call is the #1160 absent-field-removal class,
       // which for a SECURITY control is the direction that matters.
       if (codeSigningChanged && newCodeSigningConfigArn !== undefined) {
+        markUnsettled('CodeSigningConfigArn');
         await this.lambdaClient.send(
           new PutFunctionCodeSigningConfigCommand({
             FunctionName: physicalId,
@@ -1571,6 +1593,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         newRuntimeManagementConfig?.['RuntimeVersionArn'] !==
           prevRuntimeManagementConfig?.['RuntimeVersionArn'];
       if (runtimeManagementChanged) {
+        markUnsettled('RuntimeManagementConfig');
         await this.putRuntimeManagementConfig(
           physicalId,
           newRuntimeManagementConfig ?? { UpdateRuntimeOn: 'Auto' }
@@ -1599,7 +1622,11 @@ export class LambdaFunctionProvider implements ResourceProvider {
         logicalId,
         previousProperties['Tags'],
         properties['Tags'],
-        log
+        log,
+        {
+          forceUpsert: context?.unsettledProperties?.has('Tags') === true,
+          beforeWrite: () => markUnsettled('Tags'),
+        }
       );
 
       return {
@@ -1902,7 +1929,11 @@ export class LambdaFunctionProvider implements ResourceProvider {
     logicalId: string,
     oldTagsRaw: unknown,
     newTagsRaw: unknown,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    unsettled: { forceUpsert: boolean; beforeWrite: () => void } = {
+      forceUpsert: false,
+      beforeWrite: () => undefined,
+    }
   ): Promise<void> {
     if (!functionArn) return;
 
@@ -1911,8 +1942,14 @@ export class LambdaFunctionProvider implements ResourceProvider {
     if (tagWarning !== undefined) {
       log.warn(tagWarning);
     }
-    const tagsToAdd = Object.fromEntries(plan.set);
+    // go-to-k/cdkd#5487: unsettled Tags re-send every template tag (AWS may
+    // lack the ones the failed update did not reach) and remove only the
+    // recorded ones the template dropped.
+    const tagsToAdd = Object.fromEntries(
+      unsettled.forceUpsert ? planTagDiff(undefined, newTagsRaw).set : plan.set
+    );
     const tagsToRemove = plan.remove;
+    if (tagsToRemove.length > 0 || Object.keys(tagsToAdd).length > 0) unsettled.beforeWrite();
 
     if (tagsToRemove.length > 0) {
       await this.lambdaClient.send(
@@ -2428,6 +2465,96 @@ export class LambdaFunctionProvider implements ResourceProvider {
     } catch (err) {
       if (err instanceof ResourceNotFoundException) return undefined;
       throw err;
+    }
+  }
+
+  /**
+   * go-to-k/cdkd#5487: `readCurrentState`, except that a setting read by its
+   * own call (concurrency, recursion, runtime management, code signing) is
+   * read STRICTLY when it is unsettled: `readCurrentState` omits it on a failed
+   * read, which the engine would take as "not set" and converge to the wrong
+   * side. A `ResourceNotFoundException` on such a call means "not set".
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const live = await this.readCurrentState(physicalId, logicalId, resourceType);
+    if (typeof live !== 'object' || live === null) return live;
+    const out: Record<string, unknown> = { ...live };
+    const strict = async <T>(read: () => Promise<T>): Promise<T | undefined> => {
+      try {
+        return await read();
+      } catch (error) {
+        if (error instanceof ResourceNotFoundException) return undefined;
+        throw error;
+      }
+    };
+    const set = (key: string, value: unknown): void => {
+      if (value === undefined) delete out[key];
+      else out[key] = value;
+    };
+    if (names.has('ReservedConcurrentExecutions')) {
+      const r = await strict(() =>
+        this.lambdaClient.send(new GetFunctionConcurrencyCommand({ FunctionName: physicalId }))
+      );
+      set('ReservedConcurrentExecutions', r?.ReservedConcurrentExecutions);
+    }
+    if (names.has('RecursiveLoop')) {
+      const r = await strict(() =>
+        this.lambdaClient.send(new GetFunctionRecursionConfigCommand({ FunctionName: physicalId }))
+      );
+      set('RecursiveLoop', r?.RecursiveLoop);
+    }
+    if (names.has('RuntimeManagementConfig')) {
+      const r = await strict(() =>
+        this.lambdaClient.send(new GetRuntimeManagementConfigCommand({ FunctionName: physicalId }))
+      );
+      set(
+        'RuntimeManagementConfig',
+        r?.UpdateRuntimeOn === undefined
+          ? undefined
+          : {
+              UpdateRuntimeOn: r.UpdateRuntimeOn,
+              ...(r.RuntimeVersionArn !== undefined && { RuntimeVersionArn: r.RuntimeVersionArn }),
+            }
+      );
+    }
+    if (names.has('CodeSigningConfigArn')) {
+      const r = await strict(() =>
+        this.lambdaClient.send(
+          new GetFunctionCodeSigningConfigCommand({ FunctionName: physicalId })
+        )
+      );
+      set('CodeSigningConfigArn', r?.CodeSigningConfigArn);
+    }
+    return out;
+  }
+
+  /**
+   * go-to-k/cdkd#5487: while the function reads `State: Pending` or
+   * `LastUpdateStatus: InProgress`, an unsettled configuration or code key is
+   * still changing; the separately-applied ones (`Tags`, concurrency,
+   * recursion, code signing, runtime management) are not. A failed read keeps
+   * every name, which only costs the next deploy a re-send.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>> {
+    try {
+      const resp = await this.lambdaClient.send(
+        new GetFunctionCommand({ FunctionName: physicalId })
+      );
+      const cfg = resp.Configuration;
+      if (cfg?.State !== 'Pending' && cfg?.LastUpdateStatus !== 'InProgress') return new Set();
+      return new Set([...names].filter((name) => !SEPARATELY_APPLIED_KEYS.has(name)));
+    } catch {
+      return names;
     }
   }
 

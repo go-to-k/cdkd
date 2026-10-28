@@ -1377,18 +1377,39 @@ export interface ResourceProvider {
    * go-to-k/cdkd#5380: of `names` (a record's `unsettledProperties`), the ones
    * AWS is STILL changing — an asynchronous transition an earlier `update()`
    * started and that has not ended (a Firehose stream reading ENABLING /
-   * DISABLING). `cdkd drift --accept` / `--revert` keep those names on the
-   * record instead of clearing them, since the readback they compared is not
-   * where AWS will end up. Called only for a record that names some, so an
-   * ordinary drift run makes no extra call. A provider that marks a key with
+   * DISABLING). The deploy refuses to diff such a name (a moving value), its
+   * post-update proof keeps it, and `cdkd drift --accept` / `--revert` keep it
+   * on the record. Called only for a record that names some, so an ordinary
+   * run makes no extra call. A failed or stuck transition (`*_FAILED`, an
+   * arrested resize) counts as in transition. A provider that marks a key with
    * `UpdateContext.markUnsettled` and whose `readCurrentState` reads an
    * in-progress state as a value implements it; absent = none in transition.
    */
+  /**
+   * go-to-k/cdkd#5487: the live values of `names` (a record's unsettled
+   * properties) in the template's shape, for the engine's convergence step
+   * (`src/deployment/unsettled-convergence.ts`) and its post-update proof. A
+   * provider implements it when `readCurrentState` would report a value other
+   * than the one its update compares (Kinesis: the OPEN shard count) or would
+   * swallow a failed read of an unsettled key (Lambda's separately-read
+   * settings). It must THROW, not omit the key, when a read fails. Absent:
+   * `readCurrentState` is used.
+   */
+  readUnsettled?(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined>;
+
   unsettledInTransition?(
     physicalId: string,
     logicalId: string,
     resourceType: string,
-    names: ReadonlySet<string>
+    names: ReadonlySet<string>,
+    /** The record's `properties`, for a read needing a parent id (an EMR group's `JobFlowId`). */
+    recordedProperties?: Record<string, unknown>
   ): Promise<ReadonlySet<string>>;
 
   /**
