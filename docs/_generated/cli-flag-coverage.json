@@ -455,6 +455,7 @@
         "lost-child-after-failed-deploy",
         "nested-stack-3level",
         "nested-stack-replace-guard",
+        "rds-aurora",
         "rds-full-stack",
         "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",

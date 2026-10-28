@@ -24,6 +24,8 @@
 # A companion change drops BackupRetentionPeriod (7 in phase 1), which
 # CloudFormation RESETS to 1: asserting the reset BEFORE the keeps proves
 # ModifyDBCluster fired in the removal deploy.
+# #5466: the SecurityCluster's SecondsUntilAutoPause is 600 in phase 1 and
+# 1800 in phase 2; each is asserted live (a pre-fix cdkd never sends it).
 # #1160 (VpcSecurityGroupIds removal): phase 2 also drops the SecurityCluster's
 # VpcSecurityGroupIds. A real CloudFormation A/B showed CloudFormation moves
 # the cluster to the VPC's `default` security group, so phase 2 asserts that.
@@ -124,6 +126,9 @@ STACK="RdsAuroraStack"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
+# Issue #5467: tagged onto the EngineCluster, so cleanup's sweep for an
+# unrecorded replacement matches only THIS run's clusters, never a peer's.
+export CDKD_TEST_RUN_ID="rds-aurora-$(date +%s)-$$"
 
 EXPECTED_MONITORING_INTERVAL=60
 EXPECTED_IAM_AUTH="true"
@@ -151,6 +156,14 @@ EVENTS_2B=""
 DEPLOY_1C_LOG=""
 # Phase 2's captured deploy output (issue #1160 DBProxy arm), likewise.
 DEPLOY_2_LOG=""
+# Phase 2c (issue #5467): the EngineCluster before and after its Engine swap,
+# and the refused deploy's captured output. Cleanup deletes both clusters.
+ENGINE_CLUSTER_OLD=""
+ENGINE_CLUSTER_NEW=""
+DEPLOY_2C_LOG=""
+# When the forced swap began (UTC), bounding cleanup's sweep for a replacement
+# an interrupted swap left unrecorded.
+ENGINE_SWAP_START=""
 # Issue #3993: the L2 cluster's identifier, and when this run began (UTC,
 # second precision, the prefix AWS's SnapshotCreateTime is compared on).
 AURORA_CLUSTER_ID=""
@@ -226,6 +239,7 @@ cleanup() {
   [ -n "${EVENTS_2B}" ] && rm -f "${EVENTS_2B}"
   [ -n "${DEPLOY_1C_LOG}" ] && rm -f "${DEPLOY_1C_LOG}"
   [ -n "${DEPLOY_2_LOG}" ] && rm -f "${DEPLOY_2_LOG}"
+  [ -n "${DEPLOY_2C_LOG}" ] && rm -f "${DEPLOY_2C_LOG}"
   if [ -n "${OOB_INSTANCE_ID}" ]; then
     delete_oob_instance "${OOB_INSTANCE_ID}" || true
   fi
@@ -256,6 +270,24 @@ cleanup() {
       --region "${REGION}" \
       --skip-final-snapshot >/dev/null 2>&1 || true
   fi
+  # Issue #5467: the EngineCluster (DeletionPolicy Delete, no instance), both
+  # before and after phase 2c's replacement; a no-op once destroyed. A forced
+  # swap interrupted before its record was saved leaves a replacement no
+  # variable names: only then, sweep the EngineCluster names created since that
+  # deploy began that carry THIS run's `cdkd-integ-run` tag, never the old one
+  # and never a peer run's.
+  ENGINE_CLUSTERS_THIS_RUN=""
+  if [ -z "${ENGINE_CLUSTER_NEW}" ] && [ -n "${ENGINE_SWAP_START}" ]; then
+    ENGINE_CLUSTERS_THIS_RUN=$(aws rds describe-db-clusters --region "${REGION}" \
+      --query "DBClusters[?starts_with(DBClusterIdentifier, 'rdsaurorastack-enginecluster') && DBClusterIdentifier != '${ENGINE_CLUSTER_OLD}' && ClusterCreateTime >= '${ENGINE_SWAP_START}' && length(TagList[?Key=='cdkd-integ-run' && Value=='${CDKD_TEST_RUN_ID}'] || \`[]\`) > \`0\`].DBClusterIdentifier" \
+      --output text 2>/dev/null | tr '\t' ' ')
+  fi
+  for engine_cluster in ${ENGINE_CLUSTER_OLD} ${ENGINE_CLUSTER_NEW} ${ENGINE_CLUSTERS_THIS_RUN}; do
+    aws rds delete-db-cluster \
+      --db-cluster-identifier "${engine_cluster}" \
+      --region "${REGION}" \
+      --skip-final-snapshot >/dev/null 2>&1 || true
+  done
   # Issue #4030: the SecurityCluster's final snapshot from this run's destroy.
   # Older ones are not this run's to delete.
   if [ -n "${DB_CLUSTER_ID}" ] && [ -n "${RUN_START}" ]; then
@@ -330,9 +362,9 @@ if [ -z "${STATE}" ]; then
 fi
 
 # Resolve the security cluster's auto-generated identifier from cdkd state.
-# The fixture's only L1 CfnDBCluster is the SecurityCluster; the L2
-# DatabaseCluster also produces an AWS::RDS::DBCluster, so select by logical
-# id stem ('SecurityCluster') to disambiguate.
+# The L2 DatabaseCluster and the L1 EngineCluster (issue #5467) also produce
+# an AWS::RDS::DBCluster, so select by logical id stem ('SecurityCluster') to
+# disambiguate.
 DB_CLUSTER_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("SecurityCluster"))) | .value.physicalId] | first // ""')
 if [ -z "${DB_CLUSTER_ID}" ] || [ "${DB_CLUSTER_ID}" = "null" ]; then
   echo "FAIL: could not resolve the SecurityCluster DBCluster identifier from state" >&2
@@ -501,6 +533,14 @@ if [ "${ACTUAL_PORT}" != "5433" ]; then
 fi
 echo "    OK: base SecurityCluster Port == 5433 (#1160 phase-2 reset premise)"
 
+# Issue #5466: phase 1 declares SecondsUntilAutoPause 600 (AWS default 300).
+ACTUAL_AUTO_PAUSE=$(echo "${CLUSTER}" | jq -r '.ServerlessV2ScalingConfiguration.SecondsUntilAutoPause // "null"')
+if [ "${ACTUAL_AUTO_PAUSE}" != "600" ]; then
+  echo "FAIL: #5466: base SecurityCluster SecondsUntilAutoPause is '${ACTUAL_AUTO_PAUSE}', expected 600 (CreateDBCluster did not send it)" >&2
+  exit 1
+fi
+echo "    OK: base SecurityCluster SecondsUntilAutoPause == 600 (#5466)"
+
 # --- Phase 1b: Tags on the DBProxyTargetGroup (issue #4087) -----------
 TG_ARN=$(tg_field .physicalId)
 TG_LOGICAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg t "${TG_TYPE}" '[.resources | to_entries[] | select(.value.resourceType == $t) | .key] | first // ""')
@@ -636,7 +676,7 @@ fi
 echo "    OK: #1160 DBProxy premise: ${PROXY_LOGICAL} (sdk) records and holds DebugLogging=true"
 
 # --- Phase 2: UPDATE pass (#5004 removal keeps) --------------------
-echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication + MonitoringInterval + MonitoringRoleArn, all KEPT; DROP Port, reset to 5432; DROP the managed password for a MasterUserPassword; drop proxy DebugLogging; set proxy MaxConnectionsPercent=90)"
+echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (SecondsUntilAutoPause 600 -> 1800; DROP DeletionProtection + EnableIAMDatabaseAuthentication + MonitoringInterval + MonitoringRoleArn, all KEPT; DROP Port, reset to 5432; DROP the managed password for a MasterUserPassword; drop proxy DebugLogging; set proxy MaxConnectionsPercent=90)"
 DEPLOY_2_LOG="$(mktemp)"
 if ! CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -701,6 +741,24 @@ if [ -z "${SETTLED}" ] || [ "${AFTER_PROTECTION}" != "true" ] || [ "${AFTER_IAM}
   exit 1
 fi
 echo "    OK: after removal, AWS kept DeletionProtection=true + IAMDatabaseAuthenticationEnabled=true (#5004, matches CloudFormation)"
+
+# Issue #5466: phase 2 changes SecondsUntilAutoPause 600 -> 1800. Polled, as
+# a scaling change can land after the `available` read above.
+AFTER_AUTO_PAUSE=""
+for i in $(seq 1 12); do
+  AFTER_AUTO_PAUSE=$(aws rds describe-db-clusters --db-cluster-identifier "${DB_CLUSTER_ID}" \
+    --region "${REGION}" \
+    --query 'DBClusters[0].ServerlessV2ScalingConfiguration.SecondsUntilAutoPause' --output text)
+  [ "${AFTER_AUTO_PAUSE}" = "1800" ] && break
+  if [ "${i}" -lt 12 ]; then
+    sleep 10
+  fi
+done
+if [ "${AFTER_AUTO_PAUSE}" != "1800" ]; then
+  echo "FAIL: #5466: after phase 2, the SecurityCluster SecondsUntilAutoPause is '${AFTER_AUTO_PAUSE}', expected 1800 (ModifyDBCluster did not send it)" >&2
+  exit 1
+fi
+echo "    OK: after phase 2, SecondsUntilAutoPause == 1800 (#5466)"
 
 # #1160: phase 2 removed the SecurityCluster's VpcSecurityGroupIds. It must
 # move to the VPC default group, as CloudFormation does; a pre-fix cdkd sends
@@ -806,6 +864,85 @@ if [ "${POST_TG_CLUSTERS}" != "[\"${AURORA_CLUSTER_ID}\"]" ]; then
   exit 1
 fi
 echo "    OK: #3945: target group update applied MaxConnectionsPercent=90; ${AURORA_CLUSTER_ID} is still the only cluster target"
+
+# --- Phase 2c: an Engine change replaces the EngineCluster (issue #5467) ---
+# CloudFormation replaces a DBCluster whose Engine changes (measured), where a
+# pre-fix cdkd reported the deploy done and kept the old engine. The cluster is
+# stateful, so the swap must be REFUSED without --force-stateful-recreation
+# (the pre-fix silent success fails HERE), then replace it with the flag.
+echo "==> Phase 2c: swap the EngineCluster's Engine (aurora-mysql -> aurora-postgresql), first without --force-stateful-recreation"
+engine_cluster_id() {
+  local state
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) \
+    || { echo "FAIL: #5467: could not read s3://${STATE_BUCKET}/${STATE_KEY}" >&2; exit 1; }
+  echo "${state}" \
+    | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("EngineCluster"))) | .value.physicalId] | first // ""'
+}
+cluster_engine() { # usage: cluster_engine <cluster id>
+  aws rds describe-db-clusters --db-cluster-identifier "$1" --region "${REGION}" \
+    --query 'DBClusters[0].Engine' --output text
+}
+ENGINE_CLUSTER_OLD=$(engine_cluster_id)
+if [ -z "${ENGINE_CLUSTER_OLD}" ] || [ "$(cluster_engine "${ENGINE_CLUSTER_OLD}")" != "aurora-mysql" ]; then
+  echo "FAIL: #5467 premise: no EngineCluster on aurora-mysql in state ('${ENGINE_CLUSTER_OLD}')" >&2
+  exit 1
+fi
+DEPLOY_2C_LOG="$(mktemp)"
+if CDKD_TEST_UPDATE=true CDKD_TEST_ENGINE_SWAP=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes >"${DEPLOY_2C_LOG}" 2>&1; then
+  cat "${DEPLOY_2C_LOG}" >&2
+  echo "FAIL: #5467: the Engine swap deployed without --force-stateful-recreation; a replacement of the stateful EngineCluster must be refused (a pre-fix cdkd reports it done and keeps the old engine)" >&2
+  exit 1
+fi
+DEPLOY_2C_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${DEPLOY_2C_LOG}")"
+if ! grep -qF "requires replacement (immutable property changed: Engine)" <<<"${DEPLOY_2C_PLAIN}"; then
+  cat "${DEPLOY_2C_LOG}" >&2
+  echo "FAIL: #5467: the Engine swap failed, but not with the stateful-replacement refusal naming Engine" >&2
+  exit 1
+fi
+rm -f "${DEPLOY_2C_LOG}"
+DEPLOY_2C_LOG=""
+if [ "$(engine_cluster_id)" != "${ENGINE_CLUSTER_OLD}" ] || [ "$(cluster_engine "${ENGINE_CLUSTER_OLD}")" != "aurora-mysql" ]; then
+  echo "FAIL: #5467: the refused Engine swap changed the EngineCluster (state now '$(engine_cluster_id)', was '${ENGINE_CLUSTER_OLD}')" >&2
+  exit 1
+fi
+echo "    OK: the Engine swap was refused without --force-stateful-recreation; ${ENGINE_CLUSTER_OLD} is untouched (#5467)"
+
+echo "==> Phase 2c: the same swap with --force-stateful-recreation replaces the EngineCluster"
+ENGINE_SWAP_START=$(date -u +%Y-%m-%dT%H:%M:%S)
+CDKD_TEST_UPDATE=true CDKD_TEST_ENGINE_SWAP=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force-stateful-recreation \
+  --yes
+ENGINE_CLUSTER_NEW=$(engine_cluster_id)
+if [ -z "${ENGINE_CLUSTER_NEW}" ] || [ "${ENGINE_CLUSTER_NEW}" = "${ENGINE_CLUSTER_OLD}" ]; then
+  echo "FAIL: #5467: the forced Engine swap did not replace the EngineCluster (state '${ENGINE_CLUSTER_NEW}', was '${ENGINE_CLUSTER_OLD}')" >&2
+  exit 1
+fi
+NEW_ENGINE=$(cluster_engine "${ENGINE_CLUSTER_NEW}")
+if [ "${NEW_ENGINE}" != "aurora-postgresql" ]; then
+  echo "FAIL: #5467: the replacement EngineCluster ${ENGINE_CLUSTER_NEW} runs '${NEW_ENGINE}', expected aurora-postgresql" >&2
+  exit 1
+fi
+# Polled: the old cluster's delete can still be in flight.
+OLD_GONE=""
+for i in $(seq 1 60); do
+  if gone_probe aws rds describe-db-clusters --db-cluster-identifier "${ENGINE_CLUSTER_OLD}" --region "${REGION}"; then
+    OLD_GONE="yes"
+    break
+  fi
+  if [ "${i}" -lt 60 ]; then
+    sleep 10
+  fi
+done
+if [ -z "${OLD_GONE}" ]; then
+  echo "FAIL: #5467: the replaced EngineCluster ${ENGINE_CLUSTER_OLD} still exists 10 minutes after the replacement" >&2
+  exit 1
+fi
+echo "    OK: the forced Engine swap replaced ${ENGINE_CLUSTER_OLD} with ${ENGINE_CLUSTER_NEW} (aurora-postgresql), and the old cluster is gone (#5467, matches CloudFormation)"
 
 # --- Phase 2b: --remove-protection compensation (issue #2204) ---------
 # The failure has to be TERMINAL (a retryable one is retried, and a sequence
@@ -1037,6 +1174,23 @@ else
   echo "FAIL: SecurityCluster still in unexpected state after destroy: ${CLUSTER_STATUS}" >&2
   exit 1
 fi
+
+# Issue #5467: the replacement EngineCluster is gone or deleting too.
+if gone_probe aws rds describe-db-clusters --db-cluster-identifier "${ENGINE_CLUSTER_NEW}" --region "${REGION}"; then
+  ENGINE_STATUS="gone"
+elif ! ENGINE_STATUS=$(aws rds describe-db-clusters \
+    --db-cluster-identifier "${ENGINE_CLUSTER_NEW}" \
+    --region "${REGION}" \
+    --query 'DBClusters[0].Status' --output text 2>&1); then
+  printf '%s' "${ENGINE_STATUS}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    && ENGINE_STATUS="gone" \
+    || { echo "FAIL: describe-db-clusters requery undetermined: ${ENGINE_STATUS}" >&2; exit 1; }
+fi
+if [ "${ENGINE_STATUS}" != "gone" ] && [ "${ENGINE_STATUS}" != "deleting" ]; then
+  echo "FAIL: #5467: the replacement EngineCluster ${ENGINE_CLUSTER_NEW} is '${ENGINE_STATUS}' after destroy" >&2
+  exit 1
+fi
+echo "    OK: EngineCluster ${ENGINE_CLUSTER_NEW} is gone or deleting (status: ${ENGINE_STATUS})"
 
 # Issue #4030: the phase-3 destroy of the policy-less SecurityCluster took
 # exactly one cdkd final snapshot (CloudFormation's default is Snapshot).

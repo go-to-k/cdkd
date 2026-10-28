@@ -70,6 +70,7 @@ import {
 } from './deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
+import { dbInstanceEngineChangeIsInPlace } from '../../analyzer/replacement-rules.js';
 import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
 
 /**
@@ -209,6 +210,34 @@ const AURORA_DEFAULT_PORT: ReadonlyMap<string, number> = new Map([
 /** A template number (CFn numbers may arrive as strings), or `undefined` when absent. */
 function numberOrUndefined(value: unknown): number | undefined {
   return value == null ? undefined : Number(value);
+}
+
+/** The template's `AWS::RDS::DBCluster` `ServerlessV2ScalingConfiguration`. */
+interface ServerlessV2ScalingProps {
+  MinCapacity?: number;
+  MaxCapacity?: number;
+  SecondsUntilAutoPause?: number;
+}
+
+/**
+ * The `ServerlessV2ScalingConfiguration` CreateDBCluster / ModifyDBCluster
+ * input: every declared member, `SecondsUntilAutoPause` included, as
+ * CloudFormation's handler translates the block (issue #5466). A removed
+ * `SecondsUntilAutoPause` is simply absent: measured against CloudFormation
+ * (us-east-1, 2026-10-28), the block without it resets the live delay to
+ * AWS's 300-second default, and this block yields the same.
+ */
+function serverlessV2ScalingToSend(config: ServerlessV2ScalingProps): {
+  MinCapacity?: number | undefined;
+  MaxCapacity?: number | undefined;
+  SecondsUntilAutoPause?: number | undefined;
+} {
+  const seconds = numberOrUndefined(config.SecondsUntilAutoPause);
+  return {
+    MinCapacity: config.MinCapacity,
+    MaxCapacity: config.MaxCapacity,
+    ...(seconds !== undefined && { SecondsUntilAutoPause: seconds }),
+  };
 }
 
 /** Issue #1160: the member statuses a cluster change moves an instance through. */
@@ -868,7 +897,7 @@ export class RDSProvider implements ResourceProvider {
     let createdResourceId: string | undefined;
     try {
       const serverlessV2Config = properties['ServerlessV2ScalingConfiguration'] as
-        | { MinCapacity?: number; MaxCapacity?: number }
+        | ServerlessV2ScalingProps
         | undefined;
 
       // #609 — CFn `MasterUserSecret` is `{ KmsKeyId }`; only the key id is a
@@ -918,10 +947,7 @@ export class RDSProvider implements ResourceProvider {
             PubliclyAccessible: properties['PubliclyAccessible'] as boolean,
           }),
           ...(serverlessV2Config && {
-            ServerlessV2ScalingConfiguration: {
-              MinCapacity: serverlessV2Config.MinCapacity,
-              MaxCapacity: serverlessV2Config.MaxCapacity,
-            },
+            ServerlessV2ScalingConfiguration: serverlessV2ScalingToSend(serverlessV2Config),
           }),
           ...(tags.length > 0 && { Tags: tags }),
         })
@@ -1106,17 +1132,18 @@ export class RDSProvider implements ResourceProvider {
         context
       );
       const serverlessV2Config = properties['ServerlessV2ScalingConfiguration'] as
-        | { MinCapacity?: number; MaxCapacity?: number }
+        | ServerlessV2ScalingProps
         | undefined;
       // Class 2 — defence-in-depth on top of the readCurrentState gate.
       // `{}` (or `{ MinCapacity: undefined, MaxCapacity: undefined }`)
       // is structurally invalid as ModifyDBCluster input on
       // non-serverless-v2 clusters; only ship the field when at least
-      // one capacity value is present.
+      // one member is present.
       const hasServerlessV2 =
         serverlessV2Config !== undefined &&
         (serverlessV2Config.MinCapacity !== undefined ||
-          serverlessV2Config.MaxCapacity !== undefined);
+          serverlessV2Config.MaxCapacity !== undefined ||
+          serverlessV2Config.SecondsUntilAutoPause !== undefined);
 
       // #609 — `MasterUserSecret` `{ KmsKeyId }` maps to the scalar modify
       // field `MasterUserSecretKmsKeyId` (same flip as create()).
@@ -1144,6 +1171,9 @@ export class RDSProvider implements ResourceProvider {
       // send nothing. Also unmeasured: ManageMasterUserPassword removed while
       // MasterUserSecret { KmsKeyId } stays declared, which sends `false` plus
       // MasterUserSecretKmsKeyId (RDS accepts a key only when enabling).
+      // A changed MasterUsername sends nothing, and ModifyDBCluster has no such
+      // member. Measured against CloudFormation (us-east-1, 2026-10-28, #5467):
+      // the stack update completes in place and the live user stays the old one.
       const manageMasterUserPasswordOff = managedPasswordOnRemoval(properties, previousProperties);
       const portToSend = clusterPortToSend(properties, previousProperties);
       await this.getClient().send(
@@ -1189,10 +1219,7 @@ export class RDSProvider implements ResourceProvider {
             | boolean
             | undefined,
           ...(hasServerlessV2 && {
-            ServerlessV2ScalingConfiguration: {
-              MinCapacity: serverlessV2Config.MinCapacity,
-              MaxCapacity: serverlessV2Config.MaxCapacity,
-            },
+            ServerlessV2ScalingConfiguration: serverlessV2ScalingToSend(serverlessV2Config),
           }),
           ApplyImmediately: true,
         })
@@ -1724,7 +1751,9 @@ export class RDSProvider implements ResourceProvider {
       //     Port, PubliclyAccessible, AllocatedStorage, MonitoringRoleArn.
       // MasterUserSecret removed while the managed password stays on is
       // unmeasured and sends nothing. VPCSecurityGroups is classified
-      // UNCERTAIN in the #1160 audit and sends nothing.
+      // UNCERTAIN in the #1160 audit and sends nothing. DBInstanceClass is
+      // required by the CloudFormation schema, so no deployable template
+      // removes it, and its removal sends nothing (#5467).
       const manageMasterUserPasswordOff = managedPasswordOnRemoval(properties, previousProperties);
       // #5194: a cluster change in the same deploy can leave this member not
       // `available` for a moment; only that refusal is waited out and resent.
@@ -1744,6 +1773,18 @@ export class RDSProvider implements ResourceProvider {
               }),
               // Removal keeps the live value, as CFn does (#5004 A/B).
               DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
+              // #5467: an Engine change CloudFormation's handler applies in place
+              // (aurora to aurora-mysql, oracle-se / oracle-se1 to oracle-se2, an
+              // Oracle CDB conversion) carries the new Engine, as the handler
+              // sends `engine(diff(previous, desired))`. Any other change
+              // replaces (`dbInstanceEngineChangeReplaces`).
+              ...(previousProperties['Engine'] !== properties['Engine'] &&
+                dbInstanceEngineChangeIsInPlace(
+                  previousProperties['Engine'],
+                  properties['Engine']
+                ) && {
+                  Engine: properties['Engine'] as string,
+                }),
               ...(newEngineVersion !== undefined && {
                 EngineVersion: newEngineVersion,
                 ...(allowMajorVersionUpgrade && { AllowMajorVersionUpgrade: true }),
@@ -2718,6 +2759,26 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
+   * Issue #5466: `readCurrentState` reads `SecondsUntilAutoPause`, which
+   * DescribeDBClusters returns on a cluster with `MinCapacity` 0 even when no
+   * template declares it (AWS's 300-second default; measured us-east-1,
+   * 2026-10-28). On the `observedProperties` baseline the comparator walks the
+   * key UNION, so a record captured before this member was read would report
+   * it as drift; the path is compared only where the template declares it.
+   */
+  getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>): string[] {
+    if (resourceType !== 'AWS::RDS::DBCluster') return [];
+    // An absent or empty bag records nothing to scope by: compare.
+    if (properties === undefined || Object.keys(properties).length === 0) return [];
+    const scaling = properties?.['ServerlessV2ScalingConfiguration'] as
+      | ServerlessV2ScalingProps
+      | undefined;
+    return scaling?.SecondsUntilAutoPause === undefined
+      ? ['ServerlessV2ScalingConfiguration.SecondsUntilAutoPause']
+      : [];
+  }
+
+  /**
    * Read the AWS-current RDS resource configuration in CFn-property shape.
    *
    * Dispatches by resource type:
@@ -3044,6 +3105,11 @@ export class RDSProvider implements ResourceProvider {
       }
       if (cluster.ServerlessV2ScalingConfiguration?.MaxCapacity !== undefined) {
         sc['MaxCapacity'] = cluster.ServerlessV2ScalingConfiguration.MaxCapacity;
+      }
+      // Issue #5466: drift sees the auto-pause delay too.
+      if (cluster.ServerlessV2ScalingConfiguration?.SecondsUntilAutoPause !== undefined) {
+        sc['SecondsUntilAutoPause'] =
+          cluster.ServerlessV2ScalingConfiguration.SecondsUntilAutoPause;
       }
       result['ServerlessV2ScalingConfiguration'] = sc;
     }
