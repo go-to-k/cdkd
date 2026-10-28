@@ -209,6 +209,11 @@ def handler(event, context):
       description: 'SNS topic the cache cluster notifies (issue #5004 removal arm)',
     });
 
+    new cdk.CfnOutput(this, 'MemcachedMoveAz', {
+      value: az1,
+      description: 'Zone the Memcached cluster moves to under CDKD_TEST_PAZMOVE (issue #5458)',
+    });
+
     new cdk.CfnOutput(this, 'StreamName', {
       value: stream.streamName,
       description: 'Kinesis Data Stream name',

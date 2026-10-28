@@ -404,12 +404,11 @@ function emrInstancesReplacingPart(value: unknown): unknown {
  *
  * So an absent or empty list on either side never replaces, nor does any
  * list sharing a zone with the previous one (order and repeats are
- * irrelevant). A list holding a value still unresolved at diff time (an
- * intrinsic object) cannot be compared zone by zone: it replaces when the
- * two lists differ at all, the conservative direction for a change
- * CloudFormation may only make by replacing (the type is in the
- * stateful-recreate guard set, so the replacement still needs
- * `--force-stateful-recreation`).
+ * irrelevant). A side that is not a list of strings (a value still
+ * unresolved at diff time, an intrinsic object) answers `false`, as the
+ * Glue table-name predicate does: a wrong `true` plans the delete of a
+ * stateful cluster that is not moving, while a wrong `false` sends the move
+ * to the in-place update, which AWS refuses loudly.
  */
 export function elastiCachePreferredAvailabilityZonesMovedToDisjoint(
   oldValue: unknown,
@@ -417,9 +416,7 @@ export function elastiCachePreferredAvailabilityZonesMovedToDisjoint(
 ): boolean {
   if (!Array.isArray(oldValue) || !Array.isArray(newValue)) return false;
   if (oldValue.length === 0 || newValue.length === 0) return false;
-  if (![...oldValue, ...newValue].every((z) => typeof z === 'string')) {
-    return !isDeepStrictEqual(oldValue, newValue);
-  }
+  if (![...oldValue, ...newValue].every((z) => typeof z === 'string')) return false;
   return !newValue.some((z) => oldValue.includes(z));
 }
 

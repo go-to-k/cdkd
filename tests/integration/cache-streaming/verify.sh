@@ -385,9 +385,14 @@ if [ "${MC_ID_MOVED}" = "${MC_ID}" ]; then
   echo "FAIL: Memcached cluster ${MC_ID} was NOT replaced by the zone move (#5458: CloudFormation replaces it)" >&2
   exit 1
 fi
+MOVE_AZ=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | jq -r '.outputs.MemcachedMoveAz // empty')
+if [ -z "${MOVE_AZ}" ] || [ "${MOVE_AZ}" = "${MC_AZ_BEFORE}" ]; then
+  echo "FAIL: cannot resolve a target zone other than ${MC_AZ_BEFORE} from the MemcachedMoveAz output (got '${MOVE_AZ}')" >&2
+  exit 1
+fi
 MC_AZ_AFTER=$(mc_field 'CacheNodes[0].CustomerAvailabilityZone')
-if [ "${MC_AZ_AFTER}" = "${MC_AZ_BEFORE}" ] || [ -z "${MC_AZ_AFTER}" ] || [ "${MC_AZ_AFTER}" = "None" ]; then
-  echo "FAIL: the replacement's node is in '${MC_AZ_AFTER}', expected a zone other than ${MC_AZ_BEFORE}" >&2
+if [ "${MC_AZ_AFTER}" != "${MOVE_AZ}" ]; then
+  echo "FAIL: the replacement's node is in '${MC_AZ_AFTER}', expected ${MOVE_AZ} (the template's new zone)" >&2
   exit 1
 fi
 assert_gone "replaced Memcached cluster ${MC_ID} still exists after the zone move" \

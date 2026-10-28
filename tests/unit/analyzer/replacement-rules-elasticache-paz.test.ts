@@ -52,10 +52,14 @@ describe('ReplacementRulesRegistry — AWS::ElastiCache::CacheCluster.PreferredA
     expect(replaces(['us-east-1a', 'us-east-1a'], ['us-east-1a'])).toBe(false);
   });
 
-  it('replaces an unresolved list only when the two lists differ', () => {
-    const getAzs = { 'Fn::GetAZs': '' };
-    expect(elastiCachePreferredAvailabilityZonesMovedToDisjoint([getAzs], [getAzs])).toBe(false);
-    expect(elastiCachePreferredAvailabilityZonesMovedToDisjoint(['us-east-1a'], [getAzs])).toBe(true);
+  it('never replaces when either side still holds an unresolved value', () => {
+    const moved = elastiCachePreferredAvailabilityZonesMovedToDisjoint;
+    const az = { 'Fn::Select': [1, { 'Fn::GetAZs': '' }] };
+    expect(moved(['us-east-1a'], [az])).toBe(false);
+    expect(moved([az], ['us-east-1b'])).toBe(false);
+    expect(moved([az], [az])).toBe(false);
+    // The resolved form of the same move still replaces.
+    expect(moved(['us-east-1a'], ['us-east-1b'])).toBe(true);
   });
 
   it('is classified, and leaves every other property to the schema fallback', () => {
