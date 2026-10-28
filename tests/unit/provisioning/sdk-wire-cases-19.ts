@@ -277,7 +277,7 @@ const CLUSTER_CASE: TypeCase = {
       bag: { Engine: 'mysql', Port: 3307 },
       expectedSilent: {
         ...CLUSTER_ENGINE_SILENT,
-        'update-remove:Port': `a removed Port resets to the engine default on Aurora only, where CloudFormation was measured (#1160); a Multi-AZ DB cluster engine is unmeasured and sends nothing (${SRC}:199-208, 247-259)`,
+        'update-remove:Port': `a removed Port resets to the engine default on Aurora only, where CloudFormation was measured (#1160); a Multi-AZ DB cluster engine is unmeasured and sends nothing (${SRC}:199-208, 247-259; CFn A/B owed on go-to-k/cdkd#1160)`,
       },
     },
   ],
@@ -310,7 +310,7 @@ const INSTANCE_ENGINE_SILENT = Object.fromEntries(
  * 2026-10-29) has no top-level `required` for AWS::RDS::DBInstance. What
  * update() does is what is pinned: it sends only a declared class.
  */
-const INSTANCE_CLASS_REMOVED = `update() sends only a declared DBInstanceClass (${SRC}:1765), and ModifyDBInstance keeps the live class when none is sent; a removal is unmeasured against CloudFormation`;
+const INSTANCE_CLASS_REMOVED = `update() sends only a declared DBInstanceClass (${SRC}:1765), and ModifyDBInstance keeps the live class when none is sent; a removal is unmeasured against CloudFormation (A/B and the comment fix owed on go-to-k/cdkd#1160)`;
 
 const INSTANCE_CASE: TypeCase = {
   resourceType: 'AWS::RDS::DBInstance',
@@ -479,6 +479,9 @@ export function describeRdsExtras(): void {
       ['oracle-se1', 'oracle-se2'],
       ['oracle-ee', 'oracle-ee-cdb'],
       ['oracle-se2', 'oracle-se2-cdb'],
+      // Either case, as the handler's equalsIgnoreCase arms take it; the
+      // desired spelling is what is sent.
+      ['ORACLE-SE1', 'Oracle-SE2'],
     ])('DBInstance %s -> %s is in place, and ModifyDBInstance carries the new Engine', async (from, to) => {
       expect(rules.requiresReplacement('AWS::RDS::DBInstance', 'Engine', from, to)).toBe(false);
       const body = bodyOf(
@@ -499,6 +502,32 @@ export function describeRdsExtras(): void {
 
   // go-to-k/cdkd#5466: the bag probes see the member delivered (create and
   // update-add / update-vary); these name the wire member itself.
+  // The bag probes see a removed MasterUserSecret change the wire (so it reads
+  // as delivered) without seeing WHAT goes out: the credential-change gate
+  // re-sends the still-declared ManageMasterUserPassword, with no key, though
+  // the provider's removal notes say this case sends nothing. Pinned as it is;
+  // CloudFormation's behaviour is unmeasured (go-to-k/cdkd#1160).
+  describe('a removed MasterUserSecret while ManageMasterUserPassword stays true (go-to-k/cdkd#1160)', () => {
+    const managed = (type: 'cluster' | 'instance'): Bag =>
+      fresh((type === 'cluster' ? CLUSTER_CASE : INSTANCE_CASE).bags[1]!.bag);
+    it.each(['cluster', 'instance'] as const)(
+      'the %s update re-sends ManageMasterUserPassword=true and no key',
+      async (type) => {
+        const prev = managed(type);
+        const next = managed(type);
+        delete next['MasterUserSecret'];
+        const outcome =
+          type === 'cluster' ? await updateCluster(next, prev) : await updateInstance(next, prev);
+        const body = bodyOf(
+          outcome,
+          type === 'cluster' ? 'ModifyDBClusterCommand' : 'ModifyDBInstanceCommand'
+        );
+        expect(body.split('&')).toContain('ManageMasterUserPassword=true');
+        expect(body).not.toContain('MasterUserSecretKmsKeyId');
+      }
+    );
+  });
+
   describe('DBCluster ServerlessV2ScalingConfiguration.SecondsUntilAutoPause (go-to-k/cdkd#5466)', () => {
     const MEMBER = 'ServerlessV2ScalingConfiguration.SecondsUntilAutoPause=600';
 
