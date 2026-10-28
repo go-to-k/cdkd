@@ -9136,7 +9136,8 @@
       "blindSpots": [
         "computed key in updateAccessPoint()",
         "computed key in updateFileSystem()",
-        "Object.keys(...) in updateAccessPoint()"
+        "Object.keys(...) in updateAccessPoint()",
+        "withRemovalDefaults(...) in update()"
       ]
     },
     {

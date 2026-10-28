@@ -10,7 +10,9 @@
 # Each was a silent-drop before the backfill. Also asserts the MountTarget's
 # IpAddressType / IpAddress stay on the SDK route and reach AWS, with its
 # Fn::GetAtt IpAddress output (issue #2762), and that a FileSystemTags /
-# AccessPointTags change is applied in place on redeploy (issue #5464). Also asserts the destroy path
+# AccessPointTags change is applied in place on redeploy (issue #5464), and that
+# removing BackupPolicy / FileSystemPolicy / FileSystemProtection resets each as
+# CloudFormation does (issue #1160). Also asserts the destroy path
 # cleans up the file system, mount target, access point, and state file.
 #
 # Required env vars:
@@ -145,16 +147,19 @@ if [ "${LIFECYCLE_TIA}" != "AFTER_30_DAYS" ]; then
 fi
 echo "    OK: LifecyclePolicies TransitionToIA == AFTER_30_DAYS (PutLifecycleConfiguration wired)"
 
-# --- Assertion 3: FileSystemProtection ENABLED ------------------------
+# --- Assertion 3: FileSystemProtection DISABLED -----------------------
+# The baseline declares DISABLED, the non-default value (a fresh file system
+# reads ENABLED), so this proves the call landed and gives Phase 1b's removal
+# reset something to observe (issue #1160).
 PROTECTION=$(aws efs describe-file-systems \
   --file-system-id "${FS_ID}" --region "${REGION}" \
   --query 'FileSystems[0].FileSystemProtection.ReplicationOverwriteProtection' \
   --output text)
-if [ "${PROTECTION}" != "ENABLED" ]; then
-  echo "FAIL: ReplicationOverwriteProtection is '${PROTECTION}', expected 'ENABLED' (UpdateFileSystemProtection silent-drop NOT closed)" >&2
+if [ "${PROTECTION}" != "DISABLED" ]; then
+  echo "FAIL: ReplicationOverwriteProtection is '${PROTECTION}', expected 'DISABLED' (UpdateFileSystemProtection silent-drop NOT closed)" >&2
   exit 1
 fi
-echo "    OK: ReplicationOverwriteProtection == ENABLED (UpdateFileSystemProtection wired)"
+echo "    OK: ReplicationOverwriteProtection == DISABLED (UpdateFileSystemProtection wired)"
 
 # --- Assertion 4: FileSystemPolicy attached ---------------------------
 # DescribeFileSystemPolicy returns the policy as a JSON string. Assert it
@@ -322,6 +327,37 @@ if [ "${FS_RETAG_P2}" != "v2" ] || [ "${FS_DROP_P2}" != "<absent>" ]; then
 fi
 echo "    OK: file system retagged in place (#5464)"
 
+# Issue #1160 (efs-provider.ts row): the same redeploy drops BackupPolicy,
+# FileSystemPolicy and FileSystemProtection. CloudFormation resets all three
+# (live CFn A/B 2026-10-28: PutBackupPolicy DISABLED, DeleteFileSystemPolicy,
+# UpdateFileSystemProtection ENABLED); pre-fix cdkd sent nothing, so backups
+# stayed ENABLED, the policy stayed attached and protection stayed DISABLED.
+# PutBackupPolicy answers DISABLING first, so poll for the settled value.
+BACKUP_P2=""
+for _i in 1 2 3 4 5 6; do
+  BACKUP_P2=$(aws efs describe-backup-policy --file-system-id "${FS_ID}" --region "${REGION}" \
+    --query 'BackupPolicy.Status' --output text)
+  [ "${BACKUP_P2}" = "DISABLED" ] && break
+  if [ "${_i}" -lt 6 ]; then sleep 10; fi
+done
+if [ "${BACKUP_P2}" != "DISABLED" ]; then
+  echo "FAIL: BackupPolicy.Status is '${BACKUP_P2}' after the removal redeploy (waited 60s), expected 'DISABLED' as CloudFormation resets it (removed BackupPolicy silent-drop NOT closed, #1160)" >&2
+  exit 1
+fi
+echo "    OK: removed BackupPolicy reset to DISABLED (#1160)"
+if ! gone_probe aws efs describe-file-system-policy --file-system-id "${FS_ID}" --region "${REGION}"; then
+  echo "FAIL: FileSystemPolicy still attached after the removal redeploy; CloudFormation deletes it (removed FileSystemPolicy silent-drop NOT closed, #1160)" >&2
+  exit 1
+fi
+echo "    OK: removed FileSystemPolicy deleted (#1160)"
+PROTECTION_P2=$(aws efs describe-file-systems --file-system-id "${FS_ID}" --region "${REGION}" \
+  --query 'FileSystems[0].FileSystemProtection.ReplicationOverwriteProtection' --output text)
+if [ "${PROTECTION_P2}" != "ENABLED" ]; then
+  echo "FAIL: ReplicationOverwriteProtection is '${PROTECTION_P2}' after the removal redeploy, expected 'ENABLED' as CloudFormation resets it (removed FileSystemProtection silent-drop NOT closed, #1160)" >&2
+  exit 1
+fi
+echo "    OK: removed FileSystemProtection reset to ENABLED (#1160)"
+
 # --- Phase 1c: access point retag redeploy (issue #5464) -------------
 # Only AccessPointTags changes (cdkd-ap-retag v1 -> v2, cdkd-ap-drop removed).
 # Pre-fix the provider refused every AccessPoint update, so this deploy failed.
@@ -364,4 +400,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> efs-standalone test passed (EFS::FileSystem #609 backfill closed + #2762 MountTarget addressing + #5464 retag in place + clean destroy)"
+echo "==> efs-standalone test passed (EFS::FileSystem #609 backfill closed + #1160 removal resets + #2762 MountTarget addressing + #5464 retag in place + clean destroy)"

@@ -19,6 +19,7 @@ import {
   PutLifecycleConfigurationCommand,
   PutBackupPolicyCommand,
   PutFileSystemPolicyCommand,
+  DeleteFileSystemPolicyCommand,
   UpdateFileSystemProtectionCommand,
   TagResourceCommand,
   UntagResourceCommand,
@@ -91,6 +92,7 @@ import {
 } from '../auxiliary-failure.js';
 import { markNotGone } from '../not-gone.js';
 import { earliestOwnCreationTime, serverClockReading, withServerClock } from './server-clock.js';
+import { withRemovalDefaults } from '../update-removal.js';
 
 /**
  * Whether an access point's `PosixUser` is the one a `CreateAccessPoint`
@@ -172,6 +174,23 @@ export class EFSProvider implements ResourceProvider {
    * entry never speaks for another stack.
    */
   private readonly unconfirmedCreationTokens = new Map<string, number>();
+
+  /**
+   * Issue #1160: what CloudFormation resets a REMOVED `BackupPolicy` /
+   * `FileSystemProtection` to (live CFn A/B: its update sent `PutBackupPolicy
+   * {Status: DISABLED}` and `UpdateFileSystemProtection
+   * {ReplicationOverwriteProtection: ENABLED}`). A removed `FileSystemPolicy`
+   * is a `DeleteFileSystemPolicy`, not a value, so it stays in `updateFileSystem`.
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    [
+      'AWS::EFS::FileSystem',
+      new Map<string, unknown>([
+        ['BackupPolicy', { Status: 'DISABLED' }],
+        ['FileSystemProtection', { ReplicationOverwriteProtection: 'ENABLED' }],
+      ]),
+    ],
+  ]);
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -382,6 +401,13 @@ export class EFSProvider implements ResourceProvider {
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     switch (resourceType) {
       case 'AWS::EFS::FileSystem':
         return this.updateFileSystem(
@@ -673,9 +699,12 @@ export class EFSProvider implements ResourceProvider {
       }
 
       // Post-create control-plane diffs — separate Put*/Update* APIs. Each is
-      // applied only when its value changed (a removal clears LifecyclePolicies;
-      // BackupPolicy / FileSystemPolicy / FileSystemProtection have no clean
-      // "drop" mapping in CFn, so a pure removal is a deliberate no-op).
+      // applied only when its value changed. A REMOVAL resets each one, as
+      // CloudFormation does (live CFn A/B, go-to-k/cdkd#1160, 2026-10-28):
+      // LifecyclePolicies -> cleared; FileSystemPolicy -> DeleteFileSystemPolicy;
+      // BackupPolicy -> DISABLED and FileSystemProtection -> ENABLED arrive
+      // here already injected (`removalDefaults`). Every reset call is
+      // accepted on a file system already at that default.
       if (lifecycleChanged) {
         await this.applyLifecyclePolicies(
           physicalId,
@@ -688,12 +717,19 @@ export class EFSProvider implements ResourceProvider {
         await this.applyBackupPolicy(physicalId, properties['BackupPolicy'], log);
       }
       if (policyChanged) {
-        await this.applyFileSystemPolicy(
-          physicalId,
-          properties['FileSystemPolicy'],
-          properties['BypassPolicyLockoutSafetyCheck'],
-          log
-        );
+        if (
+          properties['FileSystemPolicy'] === undefined &&
+          previousProperties['FileSystemPolicy'] !== undefined
+        ) {
+          await this.deleteFileSystemPolicy(physicalId, log);
+        } else {
+          await this.applyFileSystemPolicy(
+            physicalId,
+            properties['FileSystemPolicy'],
+            properties['BypassPolicyLockoutSafetyCheck'],
+            log
+          );
+        }
       }
       if (protectionChanged) {
         await this.applyFileSystemProtection(physicalId, properties['FileSystemProtection'], log);
@@ -1285,6 +1321,21 @@ export class EFSProvider implements ResourceProvider {
       log
     );
     log.debug(`Set FileSystemPolicy on EFS FileSystem ${fileSystemId}`);
+  }
+
+  /**
+   * Remove the file system's access policy via `DeleteFileSystemPolicy` — what
+   * CloudFormation sends when `FileSystemPolicy` leaves the template
+   * (go-to-k/cdkd#1160). Succeeds when no policy is attached.
+   */
+  private async deleteFileSystemPolicy(fileSystemId: string, log: MaskedLogSinks): Promise<void> {
+    await this.retryOnTransientControlPlane(
+      () =>
+        this.getClient().send(new DeleteFileSystemPolicyCommand({ FileSystemId: fileSystemId })),
+      `delete FileSystemPolicy on ${fileSystemId}`,
+      log
+    );
+    log.debug(`Deleted FileSystemPolicy on EFS FileSystem ${fileSystemId}`);
   }
 
   /**
