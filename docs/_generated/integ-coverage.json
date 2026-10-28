@@ -2431,6 +2431,7 @@
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-instance-fanout",
+        "ec2-sg-source-group-name",
         "ec2-vpc",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
@@ -2503,6 +2504,10 @@
         ],
         "ec2-instance-fanout": [
           "l2"
+        ],
+        "ec2-sg-source-group-name": [
+          "l1",
+          "literal"
         ],
         "ec2-vpc": [
           "l2"

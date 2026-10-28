@@ -683,6 +683,8 @@ export const CASES_16_EC2: TypeCase[] = [
               SourceSecurityGroupId: 'sg-3',
               SourceSecurityGroupOwnerId: ACCOUNT,
             },
+            // go-to-k/cdkd#5478: a default-VPC peer named by group name.
+            { IpProtocol: 'tcp', FromPort: 25, ToPort: 25, SourceSecurityGroupName: 'peer-name' },
           ],
           SecurityGroupEgress: [
             { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: '10.0.0.0/8', Description: 'e' },
@@ -698,12 +700,7 @@ export const CASES_16_EC2: TypeCase[] = [
         },
       },
     ],
-    {
-      targets: tagTargets(),
-      nestedExempt: {
-        'SecurityGroupIngress.SourceSecurityGroupName': `the inline Name is not sent (silent drop): the rule builder reads only SourceSecurityGroupId / SourceSecurityGroupOwnerId (${SRC}:9368-9388), and unlike the standalone SecurityGroupIngress twin (${SRC}:1337-1348) the inline member has no unhandledByDesign entry; tracked by go-to-k/cdkd#5478`,
-      },
-    }
+    { targets: tagTargets() }
   ),
   tc(
     'AWS::EC2::SecurityGroupIngress',

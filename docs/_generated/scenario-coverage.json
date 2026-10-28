@@ -1028,6 +1028,11 @@
       "scenarios": []
     },
     {
+      "name": "ec2-sg-source-group-name",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ec2-vpc",
       "annotated": true,
       "scenarios": []
@@ -3532,6 +3537,7 @@
     "dynamodb-ttl-attr-change",
     "ec2-instance-fanout",
     "ec2-route-targets",
+    "ec2-sg-source-group-name",
     "ecr-scanning",
     "ecs-schedule-targets",
     "ecs-taskdef-tags-launch-type",
