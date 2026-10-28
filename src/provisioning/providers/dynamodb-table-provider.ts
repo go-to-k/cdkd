@@ -4897,6 +4897,11 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // Masks the retry line, whose AWS message can quote the target's arn —
       // and with it the table name, a RESOLVED template value.
       maskSecrets?: SecretMasker;
+      // Send no retry once the enclosing resource deadline has run out: the
+      // resource is already reported failed, and a mutation landing after
+      // that (a TTL enable after the rollback's disable, #5451) leaves AWS
+      // disagreeing with state. The last failure is rethrown instead.
+      stopAtDeadline?: boolean;
     } = {}
   ): Promise<T> {
     let delayMs = 2000;
@@ -4918,6 +4923,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         const retryLine = `Transient error on "${label}" (attempt ${attempt}/${maxAttempts}): ${msg} — retrying in ${delayMs}ms`;
         this.logger.debug(options.maskSecrets ? options.maskSecrets(retryLine) : retryLine);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (options.stopAtDeadline && enclosingDeadlineRemainingMs() <= 0) throw error;
         delayMs = Math.min(delayMs * 2, 30000);
       }
     }
@@ -5033,7 +5039,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
               ),
             `${enabled ? 'set' : 'disable'} TTL on ${tableName}`,
             undefined,
-            { maskSecrets: ids.maskSecrets }
+            { maskSecrets: ids.maskSecrets, stopAtDeadline: true }
           ),
         {
           what: ids.maskSecrets(`DynamoDB TimeToLive rate-limit wait on ${tableName}`),

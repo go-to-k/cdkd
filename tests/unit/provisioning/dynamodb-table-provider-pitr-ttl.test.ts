@@ -228,6 +228,7 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
       // Enabling PITR puts the table in a transient state; the immediate
       // UpdateTimeToLive is rejected with "Backups are being enabled ...
       // Please retry later" until that settles. The provider must retry.
+      ttlDeadline.remainingMs = Infinity;
       vi.useFakeTimers();
       try {
         mockSend.mockResolvedValueOnce({}); // CreateTable
@@ -257,6 +258,7 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
         // The table was NOT rolled back (the retry recovered).
         expect(findCalls(DeleteTableCommand)).toHaveLength(0);
       } finally {
+        ttlDeadline.remainingMs = 0;
         vi.useRealTimers();
       }
     });
@@ -588,6 +590,49 @@ describe('DynamoDBTableProvider PITR / TTL wiring', () => {
           expect(lines.some((l) => l.includes('Set TimeToLive Enabled=false'))).toBe(true);
           expect(lines.filter((l) => l.includes(TABLE_NAME))).toEqual([]);
         } finally {
+          ttlDeadline.remainingMs = 0;
+        }
+      });
+
+      it.each([
+        ['retries a transient refusal while the deadline has time left', Infinity, 2],
+        ['sends no retry once the resource deadline has run out', 0, 1],
+      ])('%s (#5451)', async (_label, remaining, expectedSends) => {
+        ttlDeadline.remainingMs = remaining;
+        vi.useFakeTimers();
+        try {
+          let ttlSends = 0;
+          mockSend.mockImplementation(async (cmd: unknown) => {
+            if (cmd instanceof UpdateTimeToLiveCommand) {
+              ttlSends += 1;
+              if (ttlSends === 1) {
+                throw Object.assign(new Error('Table is being updated'), {
+                  name: 'ResourceInUseException',
+                  $fault: 'client',
+                  $metadata: {},
+                });
+              }
+              return {};
+            }
+            return { Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' } };
+          });
+          const run = provider
+            .update(
+              'L',
+              TABLE_NAME,
+              RESOURCE_TYPE,
+              { TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true } },
+              { TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: false } }
+            )
+            .then(
+              () => 'ok',
+              () => 'failed'
+            );
+          await vi.runAllTimersAsync();
+          expect(await run).toBe(expectedSends === 2 ? 'ok' : 'failed');
+          expect(ttlSends).toBe(expectedSends);
+        } finally {
+          vi.useRealTimers();
           ttlDeadline.remainingMs = 0;
         }
       });

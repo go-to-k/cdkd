@@ -112,7 +112,7 @@ the two.
 | Types | Built-in minimum |
 | --- | --- |
 | `AWS::CloudFormation::CustomResource` | 1 hour |
-| `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable` | 30 minutes; 60 minutes for an update |
+| `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable` | 30 minutes; 75 minutes for an update |
 | Slow types such as `AWS::OpenSearchService::Domain`, and Redshift, ElastiCache and RDS clusters | 60 minutes |
 
 The minimums exist for these reasons:

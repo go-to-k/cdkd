@@ -85,14 +85,16 @@ const SLOW_CC_OPERATION_TIMEOUTS: Record<string, SlowOperationTimeouts> = {
     delete: 60 * MINUTE_MS,
   },
   // A TimeToLive change inside DynamoDB's TTL rate-limit interval is re-sent
-  // until AWS accepts it, as CloudFormation does (issue #5451); AWS documents
-  // the interval as up to an hour, so the update needs more than the generic
-  // 30 minutes. The tables' delete keeps its own 30-minute minimum.
+  // until AWS accepts it, as CloudFormation does (issue #5451). The interval
+  // measured about 31 minutes, already past the generic 30, and AWS documents
+  // it as up to an hour; 75 minutes leaves room for the rest of the update
+  // (a GlobalTable's replica and index waits) on top of a full hour. The
+  // tables' delete keeps its own 30-minute minimum.
   'AWS::DynamoDB::Table': {
-    update: 60 * MINUTE_MS,
+    update: 75 * MINUTE_MS,
   },
   'AWS::DynamoDB::GlobalTable': {
-    update: 60 * MINUTE_MS,
+    update: 75 * MINUTE_MS,
   },
   // EKS control-plane create/delete typically runs 8-15 min and can exceed
   // the flat 15-min inner CC poll cap (issue #1315).

@@ -209,11 +209,13 @@ ST_AFTER=$(ttl_status)
 if [ "${DISABLE_RC}" -ne 0 ]; then
   echo "FAIL: the {Enabled:false} deploy inside the TTL rate-limit window failed (rc=${DISABLE_RC}, ${PHASE_SECS}s) — cdkd did not wait the interval out (#5451)" >&2
   cat "${DISABLE_OUT}" >&2
+  rm -f "${DISABLE_OUT}"
   exit 1
 fi
 if [ "${ST_AFTER}" != "DISABLED" ] && [ "${ST_AFTER}" != "DISABLING" ]; then
   echo "FAIL: the {Enabled:false} deploy succeeded but AWS TTL is still ${ST_AFTER} on $(ttl_attribute) — the disable was never sent (#5447)" >&2
   cat "${DISABLE_OUT}" >&2
+  rm -f "${DISABLE_OUT}"
   exit 1
 fi
 # Vacuity guard: the deploy must have met the rate limit, or this phase never
@@ -221,6 +223,7 @@ fi
 if ! grep -q "TimeToLive was changed recently" "${DISABLE_OUT}"; then
   echo "FAIL: the disable succeeded without announcing the rate-limit wait — the phase did not exercise #5451" >&2
   cat "${DISABLE_OUT}" >&2
+  rm -f "${DISABLE_OUT}"
   exit 1
 fi
 rm -f "${DISABLE_OUT}"

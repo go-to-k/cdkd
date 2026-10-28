@@ -37,9 +37,9 @@ describe('slowCcOperationTimeoutMs', () => {
     expect(slowCcOperationTimeoutMs('AWS::ElastiCache::CacheCluster', 'UPDATE')).toBe(HOUR_MS);
   });
 
-  it('lifts DynamoDB Table / GlobalTable UPDATE only: the TTL rate-limit wait (#5451)', () => {
+  it('lifts DynamoDB Table / GlobalTable UPDATE only, past an hour: the TTL rate-limit wait (#5451)', () => {
     for (const type of ['AWS::DynamoDB::Table', 'AWS::DynamoDB::GlobalTable']) {
-      expect(slowCcOperationTimeoutMs(type, 'UPDATE')).toBe(HOUR_MS);
+      expect(slowCcOperationTimeoutMs(type, 'UPDATE')).toBe(75 * 60 * 1000);
       expect(slowCcOperationTimeoutMs(type, 'CREATE')).toBe(0);
       expect(slowCcOperationTimeoutMs(type, 'DELETE')).toBe(0);
     }
