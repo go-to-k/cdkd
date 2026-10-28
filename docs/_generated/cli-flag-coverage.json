@@ -1799,6 +1799,7 @@
     {
       "flag": "--verbose",
       "integs": [
+        "agentcore-tools",
         "cache-streaming",
         "cc-api-fallback",
         "cdk-cross-account-lookup-role",
