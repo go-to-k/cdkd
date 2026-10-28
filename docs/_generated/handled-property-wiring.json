@@ -11453,11 +11453,14 @@
             "AWS::FSx::FileSystem"
           ],
           "evidence": [
+            "delegated",
             "element-read",
             "table-loop"
           ],
           "seededBy": [
             "create",
+            "delete",
+            "toDeleteOpenZFSOptions",
             "update"
           ]
         },
@@ -11538,10 +11541,13 @@
             "AWS::FSx::FileSystem"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "delete",
+            "toDeleteOpenZFSOptions"
           ]
         },
         {

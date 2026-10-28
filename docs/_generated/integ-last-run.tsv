@@ -114,7 +114,7 @@ dynamodb-sse	2026-10-16T08:15:12Z	PASS	45	verify.sh	rc ok, orph clean (#3341 sli
 dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-streams	2026-10-13T02:41:29Z	PASS	235	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 dynamodb-tableclass-switch	2026-10-03T04:27:40Z	PASS	67	verify.sh	rc ok, orph clean (#4283 PR #4449)
-dynamodb-ttl-attr-change	2026-10-13T02:41:29Z	PASS	55	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
+dynamodb-ttl-attr-change	2026-10-27T23:45:06Z	PASS	65	verify.sh	rc ok, orph clean; Phase 2c rate-limit path; pre-fix probe RED at 2c (#5447)
 ec2-instance	2026-10-27T23:43:03Z	PASS	250	verify.sh	rc ok, orph clean; #5445 Ebs members; probe red at Encrypted
 ec2-instance-fanout	2026-10-19T00:17:40Z	PASS	90	verify.sh	rc ok, orph clean (#5077)
 ec2-route-targets	2026-10-23T21:25:44Z	PASS	651	verify.sh	rc ok, orph clean, VGW attachment sdk record + Phase 2 swap to 2nd VGW (DetachVpnGateway=1 AttachVpnGateway=1); pre-fix probe RED at sdk-record assertion
@@ -131,7 +131,7 @@ efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 de
 efs-standalone	2026-10-27T17:50:35Z	PASS	186	verify.sh	PR #5414 at a7985b789; us-east-1; own state bucket; rc=0, MountTarget DUAL_STACK 10.0.0.100 via SDK, GetAtt IpAddress, drift clean, 0 errors, 0 orphans; pre-fix probe RED at routing-layer cc-api (#2762)
 elasticache-replicationgroup-getatt	2026-10-21T13:56:47Z	PASS	604	verify.sh	rc ok, GetAtt PrimaryEndPoint verified, orph clean
 elbv2-same-name-replacement	2026-10-20T09:26:37Z	PASS	84	verify.sh	#5064 head re-run, clean
-emr-cluster	2026-10-27T19:42:22Z	PASS	1649	verify.sh	rc ok, 0 orph, phase 3c on 33467d9a6 (absent Instances as {})
+emr-cluster	2026-10-28T01:01:49Z	PASS	1825	verify.sh	rc ok, 0 orph, phase 3d on 522e80287 (core resize + UnhealthyNodeReplacement in place); pre-fix RED at phase 3d
 emr-instance-configs	2026-10-22T14:33:44Z	PASS	1059	verify.sh	PR#5182/#5179: pre-fix repro'd NOTCOMPARED:readFailed (confirmed), post-fix PASS; rc ok, orph clean, cluster terminated
 emr-instance-fleets	2026-10-22T14:41:56Z	PASS	1423	verify.sh	PR#5182/#5179: pre-fix repro'd NOTCOMPARED:readFailed (confirmed), post-fix PASS; rc ok, orph clean, cluster terminated
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
@@ -149,7 +149,7 @@ fallback-recreate-children	2026-10-17T05:11:06Z	PASS	115	verify.sh	rc ok, orph c
 fifo-sqs-event-source	2026-10-16T16:36:24Z	PASS	105	verify.sh	PR #5012 (#5004) re-run on 5c17a4e7a (post-rebase, comment-only commits); rc ok, orph clean; scope/limit retained, CBD reset
 fsx-lustre	2026-10-27T21:43:55Z	PASS	2661	verify.sh	#5430 LogConfiguration create/update; rc ok, orph clean, probe red pre-fix
 fsx-ontap	2026-10-02T10:50:28Z	PASS	1613	verify.sh	#1160 PR #4398; rc ok, orph clean, no final backup
-fsx-openzfs	2026-10-23T21:58:56Z	PASS	1333	verify.sh	rc ok, destroy 0 errors, orph clean, final backup deleted
+fsx-openzfs	2026-10-28T02:59:23Z	PASS	1488	verify.sh	rc ok, destroy 0 errors, orph clean, final backup deleted, #5431 probes A/B red
 fsx-windows	2026-10-02T10:50:28Z	PASS	4588	verify.sh	#1160 PR #4398; AD-joined rc ok, orph clean, no final backup
 full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 gc-custom-asset-names	2026-10-05T08:20:47Z	PASS	163	verify.sh	rc ok, orph clean; us-east-2, run alone (a parallel batch's locks make gc refuse) (#2624 PR #4573)
@@ -207,7 +207,7 @@ lambda-destinations	2026-10-24T14:12:33Z	PASS	71	verify.sh	rc ok, orph clean
 lambda-durable-replacement	2026-10-20T06:12:01Z	PASS	170	verify.sh	deploy+destroy clean, 0 orphans
 lambda-env-removal	2026-10-01T04:01:28Z	PASS	110	verify.sh	rc ok, orph clean (#4241)
 lambda-esm-documentdb	2026-10-27T17:54:34Z	PASS	1048	verify.sh	rc ok, orph clean; #1160 ESM removal audit, DocDB update/removal arms
-lambda-esm-self-managed-kafka	2026-10-27T17:54:34Z	PASS	155	verify.sh	rc ok, orph clean; #1160 ESM removal audit
+lambda-esm-self-managed-kafka	2026-10-28T01:22:04Z	PASS	165	verify.sh	rc ok, orph clean; #1160 kept-wording arm red pre-fix at sentinel
 lambda-event-invoke-config-update	2026-10-24T14:12:33Z	PASS	136	verify.sh	rc ok, orph clean
 lambda-fix-forward-orphan	2026-10-24T14:12:33Z	PASS	145	verify.sh	rc ok, orph clean
 lambda-layer-version-update	2026-10-26T11:08:47Z	PASS	126	verify.sh	rc ok, orph clean

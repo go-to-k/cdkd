@@ -48,7 +48,11 @@
 #      `cdkd diff` must mark Instances `[requires replacement]`; a plain
 #      deploy is refused (the type is in the stateful-recreate guard set) and
 #      leaves the cluster alone; `--force-stateful-recreation` replaces it — a
-#      new ClusterId carrying the SG, the old cluster TERMINATING/TERMINATED.
+#      new ClusterId carrying the SG (and a one-node core group for 3d), the old cluster TERMINATING/TERMINATED.
+#   3d. `Instances` changes CloudFormation applies in place (issue #5422):
+#      the replacement's core group 1 -> 2 and `UnhealthyNodeReplacement:
+#      false`. Assert the ClusterId is unchanged, the core group is 2/2
+#      RUNNING (the deploy waited for the resize) and the flag reached AWS.
 #   4. Destroy + assert the cluster is TERMINATED (an EMR cluster bills per
 #      instance-hour, so a leftover is never acceptable) with no ACTIVE
 #      cluster carrying the fixture tag, and the cdkd state file is removed.
@@ -130,6 +134,8 @@ JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
 FF_LOG=""
 # Phase 3c (issue #5418): the diff / deploy log it greps.
 P3C_LOG=""
+# Phase 3d (issue #5422): its deploy log.
+P3D_LOG=""
 DENY_ROLE="cdkd-emr-ff-deny-$(date +%s)-$$"
 DENY_POLICY_NAME="cdkd-emr-ff-deny"
 
@@ -283,6 +289,7 @@ cleanup() {
   [ -n "${PHASE2B_LOG:-}" ] && rm -f "${PHASE2B_LOG}"
   [ -n "${FF_LOG:-}" ] && rm -f "${FF_LOG}"
   [ -n "${P3C_LOG:-}" ] && rm -f "${P3C_LOG}"
+  [ -n "${P3D_LOG:-}" ] && rm -f "${P3D_LOG}"
   # Only THIS run's role: another run's may be live.
   delete_deny_role "${DENY_ROLE}"
   # ORDER MATTERS — the tag-scoped cluster sweep MUST run before
@@ -1289,6 +1296,47 @@ fi
 rm -f "${P3C_LOG}"
 echo "    OK: replaced ${CID_P3C_OLD} (${P3C_STATE}) with ${CID_P3C} (${P3C_NEW_STATE}, AdditionalMasterSecurityGroups=${EXTRA_SG})"
 
+# --- Phase 3d: Instances changes CloudFormation applies in place (issue #5422) ---
+# The replacement's core group goes 1 -> 2 and `UnhealthyNodeReplacement: false`
+# is added. CloudFormation applies both to the running cluster (raw CFn A/B on
+# #5418), so the ClusterId must not change. Before #5422 the provider refused
+# both ("which cdkd does not do yet") and the deploy failed.
+echo "==> Phase 3d: resize the core group 1 -> 2 and set UnhealthyNodeReplacement in place (~5 min)"
+P3D_LOG="$(mktemp)"
+set +e
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL CDKD_TEST_INSTANCES_REPLACE=true \
+  CDKD_TEST_INSTANCES_IN_PLACE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${P3D_LOG}" 2>&1
+P3D_RC=$?
+set -e
+sed 's/^/  /' "${P3D_LOG}"
+if [ "${P3D_RC}" -ne 0 ]; then
+  echo "FAIL [phase 3d]: the in-place deploy exited ${P3D_RC} (output above; before go-to-k/cdkd#5422 the provider refused the core resize and UnhealthyNodeReplacement)" >&2
+  exit 1
+fi
+CID_P3D="$(state_query 'st.resources["Cluster"]?.physicalId')"
+if [ "${CID_P3D}" != "${CID_P3C}" ]; then
+  echo "FAIL [phase 3d]: the cluster was REPLACED (${CID_P3C} -> ${CID_P3D}); CloudFormation updates both changes in place" >&2
+  exit 1
+fi
+P3D_GROUPS="$(list_instance_groups_json "${CID_P3D}")" || { echo "FAIL [phase 3d]: ListInstanceGroups ${CID_P3D} failed" >&2; exit 1; }
+P3D_CORE="$(printf '%s' "${P3D_GROUPS}" | jq -r '
+  [ .[] | select(.InstanceGroupType == "CORE")
+        | "\(.RequestedInstanceCount)/\(.RunningInstanceCount)/\(.Status.State)" ] | join(",")')"
+if [ "${P3D_CORE}" != "2/2/RUNNING" ]; then
+  echo "FAIL [phase 3d]: core group requested/running/state is '${P3D_CORE}', expected '2/2/RUNNING' (the deploy must wait for the resize)" >&2
+  exit 1
+fi
+P3D_UNR="$(aws emr describe-cluster --cluster-id "${CID_P3D}" --region "${REGION}" \
+  --query 'Cluster.UnhealthyNodeReplacement' --output text)" \
+  || { echo "FAIL [phase 3d]: DescribeCluster ${CID_P3D} failed" >&2; exit 1; }
+if [ "${P3D_UNR}" != "False" ]; then
+  echo "FAIL [phase 3d]: UnhealthyNodeReplacement is '${P3D_UNR}', expected False (SetUnhealthyNodeReplacement)" >&2
+  exit 1
+fi
+rm -f "${P3D_LOG}"
+echo "    OK: ${CID_P3D} kept; core group 2/2 RUNNING; UnhealthyNodeReplacement False"
+
 # --- Phase 4: destroy ----------------------------------------------------
 # Phase 3c's replacement terminated the cluster Phase 3 re-adopted, through its
 # imported record; this destroy terminates the replacement Phase 3c created.
@@ -1369,4 +1417,4 @@ if ! printf '%s' "${HEAD_ERR}" | grep -qiE '404|Not Found'; then
 fi
 echo "    cdkd state removed (confirmed via a 404, not an ambiguous error)"
 
-echo "[verify] PASS — AWS::EMR::Cluster SDK provider: deploy + in-place update (incl. tag removal) + StepConcurrencyLevel removal warning + import round-trip (orphan -> import -> observedProperties from live AWS) + fix-forward of a failed CREATE (#4606) + Instances change replaces the cluster (#5418) + destroy (TERMINATED) all passed"
+echo "[verify] PASS — AWS::EMR::Cluster SDK provider: deploy + in-place update (incl. tag removal) + StepConcurrencyLevel removal warning + import round-trip (orphan -> import -> observedProperties from live AWS) + fix-forward of a failed CREATE (#4606) + Instances change replaces the cluster (#5418) + core resize / UnhealthyNodeReplacement in place (#5422) + destroy (TERMINATED) all passed"
