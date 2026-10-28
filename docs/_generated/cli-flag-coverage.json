@@ -437,6 +437,7 @@
       "flag": "--force-stateful-recreation",
       "integs": [
         "backup",
+        "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-required-name-generation",
         "deletion-policy-snapshot",
