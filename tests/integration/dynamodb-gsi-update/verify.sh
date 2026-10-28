@@ -317,15 +317,17 @@ if [ "$(gsi_status)" = "CREATING" ]; then
   echo "    the same-template retry during the backfill was refused and kept the name"
 fi
 P1C_STATUS=""
-for _ in $(seq 1 120); do
+P1C_T0="$(date +%s)"
+for _ in $(seq 1 360); do
   P1C_STATUS="$(gsi_status)"
   [ "${P1C_STATUS}" = "ACTIVE" ] && break
   sleep 5
 done
 if [ "${P1C_STATUS}" != "ACTIVE" ]; then
-  echo "FAIL: ${GSI_NAME} is '${P1C_STATUS}' after the cut-short add, expected it to reach ACTIVE" >&2
+  echo "FAIL: ${GSI_NAME} is '${P1C_STATUS}' after the cut-short add, expected it to reach ACTIVE within the 30-min bound" >&2
   exit 1
 fi
+echo "    ${GSI_NAME} reached ACTIVE $(( $(date +%s) - P1C_T0 ))s after the cut-short add returned"
 echo "==> Phase 1c: redeploy the base template (no GSI, the record's own value)"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
