@@ -152,6 +152,14 @@ function pipeIdentityToken(
 
 /** States a pipe rests in. */
 const SETTLED_STATES: ReadonlySet<string> = new Set(['RUNNING', 'STOPPED']);
+/** go-to-k/cdkd#5487: the states AWS is still moving a pipe through. */
+const MOVING_STATES: ReadonlySet<string> = new Set([
+  'CREATING',
+  'UPDATING',
+  'STARTING',
+  'STOPPING',
+  'DELETING',
+]);
 
 /** Poll interval for the settle and gone waits. */
 const PIPE_POLL_INTERVAL_MS = 5_000;
@@ -1136,9 +1144,9 @@ export class PipesPipeProvider implements ResourceProvider {
   }
 
   /**
-   * go-to-k/cdkd#5487: while the pipe reads anything but RUNNING / STOPPED
-   * (CREATING, UPDATING, STARTING, STOPPING, or a `*_FAILED` state), an
-   * unsettled key other than `Tags` has not settled. A failed read keeps
+   * go-to-k/cdkd#5487: while the pipe is CREATING, UPDATING, STARTING,
+   * STOPPING or DELETING, an unsettled key other than `Tags` is still
+   * changing. A failed read keeps
    * every name, which only costs the next deploy a re-send.
    */
   async unsettledInTransition(
@@ -1149,13 +1157,35 @@ export class PipesPipeProvider implements ResourceProvider {
   ): Promise<ReadonlySet<string>> {
     try {
       const state = (await this.describe(physicalId)).CurrentState;
-      // A failed transition (`*_FAILED`) has not reached the template's value
-      // either: the engine refuses to diff it, as it does a moving one.
-      if (state === undefined || SETTLED_STATES.has(state)) return new Set();
+      // Only a state AWS is moving through. A failed one (`*_FAILED`) is at
+      // rest: the update must run, since only another UpdatePipe recovers it
+      // (`readUnsettled` makes it re-send).
+      if (state === undefined || !MOVING_STATES.has(state)) return new Set();
       return new Set([...names].filter((name) => name !== 'Tags'));
     } catch {
       return names;
     }
+  }
+
+  /**
+   * go-to-k/cdkd#5487: `readCurrentState` for the engine's convergence step,
+   * except that a pipe at rest in a failed state (`*_FAILED`) reports none of
+   * the unsettled names: whatever its configuration reads, it is not what the
+   * failed call asked for, so the update re-sends them.
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const live = await this.readCurrentState(physicalId, logicalId, resourceType);
+    if (typeof live !== 'object' || live === null) return live;
+    const state = (await this.describe(physicalId)).CurrentState;
+    if (state === undefined || !state.endsWith('_FAILED')) return live;
+    const out: Record<string, unknown> = { ...live };
+    for (const name of names) delete out[name];
+    return out;
   }
 
   /** The pipe's current state, or `undefined` once it is gone. */

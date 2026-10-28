@@ -121,16 +121,42 @@ describe('Pipes unsettled properties (go-to-k/cdkd#5487)', () => {
     expect(sent('UntagResourceCommand')).toHaveLength(0);
   });
 
-  it('unsettledInTransition: every key but Tags while UPDATING or failed, none when RUNNING, all on a failed read', async () => {
-    const names = new Set(['Description', 'Tags']);
-    serve({ state: 'UPDATING' });
-    expect([...(await provider().unsettledInTransition('p', 'P', TYPE, names))]).toEqual(['Description']);
-    serve({ state: 'RUNNING' });
-    expect([...(await provider().unsettledInTransition('p', 'P', TYPE, names))]).toEqual([]);
-    // A failed transition never reached the template's value: not settled.
-    serve({ state: 'UPDATE_FAILED' });
-    expect([...(await provider().unsettledInTransition('p', 'P', TYPE, names))]).toEqual(['Description']);
+  it.each(['CREATING', 'UPDATING', 'STARTING', 'STOPPING', 'DELETING'])(
+    'unsettledInTransition: every key but Tags while %s',
+    async (state) => {
+      serve({ state });
+      expect([
+        ...(await provider().unsettledInTransition('p', 'P', TYPE, new Set(['Description', 'Tags']))),
+      ]).toEqual(['Description']);
+    }
+  );
+
+  it.each(['RUNNING', 'STOPPED', 'UPDATE_FAILED', 'START_FAILED', 'CREATE_FAILED'])(
+    'unsettledInTransition: nothing while %s (a failed pipe is at rest; the update must run)',
+    async (state) => {
+      serve({ state });
+      expect((await provider().unsettledInTransition('p', 'P', TYPE, new Set(['Description']))).size).toBe(0);
+    }
+  );
+
+  it('unsettledInTransition: every name on a failed read', async () => {
     mockSend.mockRejectedValue(new Error('throttled'));
-    expect((await provider().unsettledInTransition('p', 'P', TYPE, names)).size).toBe(2);
+    expect((await provider().unsettledInTransition('p', 'P', TYPE, new Set(['Description', 'Tags']))).size).toBe(2);
+  });
+
+  it.each(['UPDATE_FAILED', 'START_FAILED'])(
+    'readUnsettled on a %s pipe reports no unsettled name, so UpdatePipe is re-sent',
+    async (state) => {
+      serve({ state, description: 'a' });
+      const live = (await provider().readUnsettled('p', 'P', TYPE, new Set(['Description']))) as Record<string, unknown>;
+      expect(live).not.toHaveProperty('Description');
+      expect(live['Target']).toBe(BASE.Target);
+    }
+  );
+
+  it('readUnsettled on a RUNNING pipe reports the live values', async () => {
+    serve({ state: 'RUNNING', description: 'a' });
+    const live = (await provider().readUnsettled('p', 'P', TYPE, new Set(['Description']))) as Record<string, unknown>;
+    expect(live['Description']).toBe('a');
   });
 });

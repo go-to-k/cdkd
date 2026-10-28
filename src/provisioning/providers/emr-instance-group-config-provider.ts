@@ -107,6 +107,14 @@ export function resetEMRInstanceGroupCreateRetryStateForTests(): void {
   groupsCreatedByThisProcess.resetForTests();
 }
 
+/** go-to-k/cdkd#5487: the instance group states EMR is still moving a group through. */
+const MOVING_GROUP_STATES: ReadonlySet<string> = new Set([
+  'PROVISIONING',
+  'BOOTSTRAPPING',
+  'RESIZING',
+  'RECONFIGURING',
+]);
+
 /**
  * SDK Provider for `AWS::EMR::InstanceGroupConfig` (issue #1070).
  *
@@ -850,10 +858,9 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
    */
   /**
    * go-to-k/cdkd#5487: the group's mutable properties as AWS holds them, for
-   * the engine's convergence step. `InstanceCount` is the EFFECTIVE count — the
-   * running count once the group is RUNNING with every requested instance up;
-   * any other group is in transition (`unsettledInTransition`), which the
-   * engine refuses before it reads. `AutoScalingPolicy` is the attached policy's
+   * the engine's convergence step. `InstanceCount` is the RUNNING count — what
+   * the group effectively has, whether it settled, is moving (which
+   * `unsettledInTransition` refuses first) or is stuck in a failed state. `AutoScalingPolicy` is the attached policy's
    * description: its presence is what a comparison with the template needs,
    * and a re-sent Put is idempotent. A failed read throws.
    */
@@ -884,12 +891,13 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
   }
 
   /**
-   * go-to-k/cdkd#5487: an unsettled `InstanceCount` is in transition unless the
-   * group is RUNNING with as many instances running as requested — a resize
-   * still running, and a stuck one (ARRESTED, SUSPENDED), alike: the engine
-   * then refuses to diff a moving count rather than reading a requested count
-   * that never arrived. The autoscaling policy is applied at once. No cluster
-   * id or a failed read keeps the name in transition.
+   * go-to-k/cdkd#5487: an unsettled `InstanceCount` is in transition while the
+   * group is PROVISIONING, BOOTSTRAPPING, RESIZING or RECONFIGURING. A group at
+   * rest in a failed or stuck state (SUSPENDED, ARRESTED) is not: the update
+   * runs, compares the RUNNING count with the template and re-sends the resize
+   * (the path that recovers such a group). The autoscaling policy is applied at
+   * once. No cluster id: nothing to read here, and `readUnsettled` refuses with
+   * the cause. A failed read keeps the name in transition.
    */
   async unsettledInTransition(
     physicalId: string,
@@ -900,14 +908,13 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
   ): Promise<ReadonlySet<string>> {
     if (!names.has('InstanceCount')) return new Set();
     const jobFlowId = recordedProperties?.['JobFlowId'];
-    if (typeof jobFlowId !== 'string' || jobFlowId === '') return new Set(['InstanceCount']);
+    if (typeof jobFlowId !== 'string' || jobFlowId === '') return new Set();
     try {
       const group = await this.findGroupForPoll(jobFlowId, physicalId, { count: 0 }, 0);
-      const settled =
-        group?.Status?.State === 'RUNNING' &&
-        group.RequestedInstanceCount !== undefined &&
-        group.RunningInstanceCount === group.RequestedInstanceCount;
-      return settled ? new Set() : new Set(['InstanceCount']);
+      const state = group?.Status?.State;
+      return state !== undefined && MOVING_GROUP_STATES.has(state)
+        ? new Set(['InstanceCount'])
+        : new Set();
     } catch {
       return new Set(['InstanceCount']);
     }

@@ -92,20 +92,33 @@ describe('EMR InstanceGroupConfig unsettled properties (go-to-k/cdkd#5487)', () 
     );
   });
 
-  it('unsettledInTransition: InstanceCount unless RUNNING with every requested instance up', async () => {
+  it.each(['PROVISIONING', 'BOOTSTRAPPING', 'RESIZING', 'RECONFIGURING'])(
+    'unsettledInTransition: InstanceCount while %s',
+    async (state) => {
+      serve({ state, requested: 2, running: 1 });
+      expect([
+        ...(await provider.unsettledInTransition('ig-1', 'G', TYPE, new Set(['InstanceCount']), BASE)),
+      ]).toEqual(['InstanceCount']);
+    }
+  );
+
+  it.each(['SUSPENDED', 'ARRESTED', 'RUNNING'])(
+    'a group at rest in %s is not in transition, and reads its RUNNING count (so the update re-sends the resize)',
+    async (state) => {
+      serve({ state, requested: 2, running: 1 });
+      expect(
+        (await provider.unsettledInTransition('ig-1', 'G', TYPE, new Set(['InstanceCount']), BASE)).size
+      ).toBe(0);
+      const live = await provider.readUnsettled('ig-1', 'G', TYPE, new Set(['InstanceCount']), BASE);
+      expect(live?.['InstanceCount']).toBe(1);
+    }
+  );
+
+  it('unsettledInTransition: nothing without a cluster id (readUnsettled refuses with the cause), all on a failed read', async () => {
     const names = new Set(['InstanceCount', 'AutoScalingPolicy']);
-    serve({ state: 'RESIZING' });
-    expect([...(await provider.unsettledInTransition('ig-1', 'G', TYPE, names, BASE))]).toEqual(['InstanceCount']);
-    // A stuck resize: never reached its requested count.
-    serve({ state: 'ARRESTED', requested: 2, running: 1 });
-    expect([...(await provider.unsettledInTransition('ig-1', 'G', TYPE, names, BASE))]).toEqual(['InstanceCount']);
-    serve({ state: 'RUNNING', requested: 2, running: 1 });
-    expect([...(await provider.unsettledInTransition('ig-1', 'G', TYPE, names, BASE))]).toEqual(['InstanceCount']);
-    serve({ state: 'RUNNING', requested: 2, running: 2 });
-    expect([...(await provider.unsettledInTransition('ig-1', 'G', TYPE, names, BASE))]).toEqual([]);
-    expect([...(await provider.unsettledInTransition('ig-1', 'G', TYPE, names, {}))]).toEqual(['InstanceCount']);
+    expect((await provider.unsettledInTransition('ig-1', 'G', TYPE, names, {})).size).toBe(0);
     mockSend.mockRejectedValue(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }));
     expect([...(await provider.unsettledInTransition('ig-1', 'G', TYPE, names, BASE))]).toEqual(['InstanceCount']);
-    expect([...(await provider.unsettledInTransition('ig-1', 'G', TYPE, new Set(['AutoScalingPolicy']), BASE))]).toEqual([]);
+    expect((await provider.unsettledInTransition('ig-1', 'G', TYPE, new Set(['AutoScalingPolicy']), BASE)).size).toBe(0);
   });
 });
