@@ -3219,7 +3219,7 @@ export class EC2Provider implements ResourceProvider {
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     const label = resourceType.slice('AWS::EC2::'.length);
-    this.logger.debug(`Updating ${label} ${logicalId}: ${physicalId}`);
+    this.logger.debug(safeMsg`Updating ${label} ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     if (vpcIdCreateOnly) {
