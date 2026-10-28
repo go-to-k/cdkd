@@ -115,16 +115,14 @@ const ONE_ZONE_BAG: Bag = {
 };
 
 /**
- * A pure removal of these blocks sends nothing: the provider treats it as a
- * deliberate no-op ("no clean drop mapping in CFn"), and each apply helper
- * returns before any call on an absent value. No CloudFormation A/B backs that
- * premise yet, and a CDK app reaches it (`enableAutomaticBackups` true -> false
- * drops BackupPolicy), so it is a suspected gap, tracked as a row of
- * go-to-k/cdkd#1160; a fix that resets the value takes the entry out.
+ * A REMOVED BackupPolicy / FileSystemPolicy / FileSystemProtection is reset as
+ * CloudFormation does (go-to-k/cdkd#1160), so those removals reach the wire.
+ * What stays silent is emptying the protection block while keeping it: the
+ * apply helper returns before any call on a ReplicationOverwriteProtection-less
+ * block, and CloudFormation REFUSES that shape (live CFn A/B, go-to-k/cdkd#1160:
+ * the update fails "Provide a non-empty request body" and rolls back), so
+ * there is no reset to mirror and the live value stays.
  */
-const NO_DROP_MAPPING = (member: string): string =>
-  `SUSPECTED GAP: a removed ${member} sends nothing (${EFS_SRC}, updateFileSystem: "no clean drop mapping in CFn"), unverified against CloudFormation; tracked in go-to-k/cdkd#1160`;
-
 const FILE_SYSTEM_CASE: TypeCase = {
   resourceType: 'AWS::EFS::FileSystem',
   provider: () => new EFSProvider(),
@@ -151,13 +149,8 @@ const FILE_SYSTEM_CASE: TypeCase = {
         'FileSystemProtection.ReplicationOverwriteProtection': 'ENABLED',
       },
       expectedSilent: {
-        'update-remove:BackupPolicy': NO_DROP_MAPPING('BackupPolicy'),
         'update-remove:BackupPolicy.Status': `BackupPolicy.Status is required by the CloudFormation schema (nestedRequired), so no template drops it; a Status-less block is skipped before any call (${EFS_SRC}, applyBackupPolicy)`,
-        'update-remove:FileSystemPolicy': NO_DROP_MAPPING('FileSystemPolicy'),
-        'update-remove:FileSystemProtection': NO_DROP_MAPPING('FileSystemProtection'),
-        'update-remove:FileSystemProtection.ReplicationOverwriteProtection': NO_DROP_MAPPING(
-          'FileSystemProtection.ReplicationOverwriteProtection'
-        ),
+        'update-remove:FileSystemProtection.ReplicationOverwriteProtection': `CloudFormation refuses an emptied FileSystemProtection block (the update fails, live CFn A/B, go-to-k/cdkd#1160), so there is no reset to send; the apply helper skips it before any call (${EFS_SRC}, applyFileSystemProtection)`,
         'update-remove:ProvisionedThroughputInMibps': `deferred by design: removing only ProvisionedThroughputInMibps while ThroughputMode stays provisioned has no wire shape (the API requires a value in provisioned mode, no documented default) (${EFS_SRC}, updateFileSystem)`,
         'update-remove:ThroughputMode': `CFn parity: CloudFormation RETAINS a provisioned mode when only ThroughputMode is removed and ProvisionedThroughputInMibps stays (live CFn A/B, go-to-k/cdkd#5464), so nothing is sent`,
       },

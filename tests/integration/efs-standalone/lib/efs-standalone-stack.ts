@@ -44,6 +44,12 @@ export class EfsStandaloneStack extends cdk.Stack {
     // change"), so pre-fix the live file system silently stayed provisioned
     // (and kept billing); the provider must mirror CloudFormation's reset to
     // the create default 'bursting' (live CFn A/B 2026-08-11).
+    // The same phase also drops BackupPolicy, FileSystemPolicy and
+    // FileSystemProtection (issue #1160, efs-provider.ts row): CloudFormation
+    // resets each (PutBackupPolicy DISABLED / DeleteFileSystemPolicy /
+    // UpdateFileSystemProtection ENABLED, live CFn A/B 2026-10-28), while
+    // pre-fix cdkd sent nothing. The baseline sets protection DISABLED, the
+    // non-default value, so the removal reset is observable.
     const removal = process.env.CDKD_TEST_REMOVAL === 'true';
 
     // EFS FileSystem — exercises the #609 backfilled top-level properties:
@@ -54,25 +60,25 @@ export class EfsStandaloneStack extends cdk.Stack {
     const fs = new efs.FileSystem(this, 'Fs', {
       vpc,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+      lifecyclePolicy: efs.LifecyclePolicy.AFTER_30_DAYS,
       ...(removal
         ? {}
         : {
             throughputMode: efs.ThroughputMode.PROVISIONED,
             provisionedThroughputPerSecond: cdk.Size.mebibytes(1),
+            enableAutomaticBackups: true,
+            replicationOverwriteProtection: efs.ReplicationOverwriteProtection.DISABLED,
+            fileSystemPolicy: new iam.PolicyDocument({
+              statements: [
+                new iam.PolicyStatement({
+                  effect: iam.Effect.ALLOW,
+                  principals: [new iam.AccountRootPrincipal()],
+                  actions: ['elasticfilesystem:ClientMount'],
+                  resources: ['*'],
+                }),
+              ],
+            }),
           }),
-      lifecyclePolicy: efs.LifecyclePolicy.AFTER_30_DAYS,
-      enableAutomaticBackups: true,
-      replicationOverwriteProtection: efs.ReplicationOverwriteProtection.ENABLED,
-      fileSystemPolicy: new iam.PolicyDocument({
-        statements: [
-          new iam.PolicyStatement({
-            effect: iam.Effect.ALLOW,
-            principals: [new iam.AccountRootPrincipal()],
-            actions: ['elasticfilesystem:ClientMount'],
-            resources: ['*'],
-          }),
-        ],
-      }),
     });
 
     // Issue #2762: the mount target's create-only addressing, which used to
