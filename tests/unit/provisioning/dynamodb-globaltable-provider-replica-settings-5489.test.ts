@@ -95,8 +95,13 @@ import {
   DynamoDBGlobalTableProvider,
   readReplicationMode,
   replicaSettingsRefusal,
+  replicationModeCorrection,
   replicationModeUpdate,
 } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
+import {
+  InterruptedWaitError,
+  isInterruptedWaitError,
+} from '../../../src/provisioning/interrupt-watch.js';
 import {
   declaredReplicaSettings,
   keepUnreadReplicaMembers,
@@ -174,6 +179,16 @@ interface Live {
   /** Per-index Contributor Insights status. */
   indexCi?: Record<string, string>;
   streamTags?: Record<string, string>;
+  /** Split ListTagsOfResource into pages of this size (NextToken paging). */
+  tagPageSize?: number;
+  /** The table reports no stream. */
+  noStream?: boolean;
+  /** What DescribeTable reports as GlobalTableSettingsReplicationMode. */
+  mode?: string;
+  /** Whether gsi1 exists yet (default true); a GSI Create adds it. */
+  gsi?: boolean;
+  /** An error to throw for a command, given its input. */
+  refuse?: (name: string, input: Record<string, any>) => Error | undefined;
 }
 
 const regionDouble = (
@@ -184,6 +199,8 @@ const regionDouble = (
 ) => {
   return async (command: Sent): Promise<unknown> => {
     const name = command.constructor.name;
+    const refusal = live.refuse?.(name, command.input);
+    if (refusal) throw refusal;
     switch (name) {
       case DescribeContributorInsightsCommand.name: {
         const index = command.input['IndexName'];
@@ -192,34 +209,62 @@ const regionDouble = (
             index === undefined ? 'DISABLED' : (live.indexCi?.[index] ?? 'DISABLED'),
         };
       }
-      case ListTagsOfResourceCommand.name:
+      case ListTagsOfResourceCommand.name: {
+        const all =
+          command.input['ResourceArn'] === stream
+            ? Object.entries(live.streamTags ?? {}).map(([Key, Value]) => ({ Key, Value }))
+            : [];
+        const size = live.tagPageSize ?? (all.length || 1);
+        const start = Number(command.input['NextToken'] ?? 0);
+        const next = start + size;
         return {
-          Tags:
-            command.input['ResourceArn'] === stream
-              ? Object.entries(live.streamTags ?? {}).map(([Key, Value]) => ({ Key, Value }))
-              : [],
+          Tags: all.slice(start, next),
+          ...(next < all.length && { NextToken: String(next) }),
         };
+      }
       default:
-        if (WRITES.includes(name) || name === UpdateTableCommand.name) return {};
+        if (name === UpdateTableCommand.name) {
+          const update = command.input['ReplicaUpdates']?.[0];
+          if (update?.Delete !== undefined && replicas !== undefined) {
+            replicas = replicas.filter((r) => r !== update.Delete.RegionName);
+          }
+          if (update?.Create !== undefined && replicas !== undefined) {
+            replicas = [...replicas, update.Create.RegionName];
+          }
+          if (command.input['GlobalSecondaryIndexUpdates']?.[0]?.Create !== undefined) {
+            live.gsi = true;
+          }
+          if (command.input['GlobalTableSettingsReplicationMode'] !== undefined) {
+            const mode = command.input['GlobalTableSettingsReplicationMode'];
+            live.mode = mode === 'DISABLED' ? undefined : mode;
+          }
+          return {};
+        }
+        if (WRITES.includes(name)) return {};
         return {
           Table: {
             TableName: TABLE,
             TableArn: arn,
             TableStatus: 'ACTIVE',
-            LatestStreamArn: stream,
-            StreamSpecification: { StreamEnabled: true, StreamViewType: 'NEW_AND_OLD_IMAGES' },
+            ...(live.noStream !== true && {
+              LatestStreamArn: stream,
+              StreamSpecification: { StreamEnabled: true, StreamViewType: 'NEW_AND_OLD_IMAGES' },
+            }),
+            ...(live.mode !== undefined && { GlobalTableSettingsReplicationMode: live.mode }),
             AttributeDefinitions: [
               { AttributeName: 'pk', AttributeType: 'S' },
               { AttributeName: 'gpk', AttributeType: 'S' },
             ],
-            GlobalSecondaryIndexes: [
-              {
-                IndexName: 'gsi1',
-                IndexStatus: 'ACTIVE',
-                KeySchema: [{ AttributeName: 'gpk', KeyType: 'HASH' }],
-                Projection: { ProjectionType: 'KEYS_ONLY' },
-              },
-            ],
+            ...(live.gsi !== false && {
+              GlobalSecondaryIndexes: [
+                {
+                  IndexName: 'gsi1',
+                  IndexStatus: 'ACTIVE',
+                  KeySchema: [{ AttributeName: 'gpk', KeyType: 'HASH' }],
+                  Projection: { ProjectionType: 'KEYS_ONLY' },
+                },
+              ],
+            }),
             ...(replicas !== undefined && {
               Replicas: replicas.map((r) => ({ RegionName: r, ReplicaStatus: 'ACTIVE' })),
             }),
@@ -548,6 +593,7 @@ describe('DynamoDB GlobalTable writes (go-to-k/cdkd#5489)', () => {
         provider.create('T', RESOURCE_TYPE, base({ GlobalTableSettingsReplicationMode: 'ENABLED' }, {}))
       ).rejects.toThrow(/exactly one replica/);
       expect(sent(mockSend, CreateTableCommand)).toEqual([]);
+      expect(regionalSend).not.toHaveBeenCalled();
     });
 
     it('update: a change and a removal go out in their own UpdateTable', async () => {
@@ -563,8 +609,51 @@ describe('DynamoDB GlobalTable writes (go-to-k/cdkd#5489)', () => {
       await provider.update('T', TABLE, RESOURCE_TYPE, one(), one('ENABLED'));
       expect(modes()).toEqual(['DISABLED']);
       mockSend.mockClear();
+      setLive({ mode: 'ENABLED' }, {}, []);
       await provider.update('T', TABLE, RESOURCE_TYPE, one('ENABLED'), one('ENABLED'));
       expect(modes()).toEqual([]);
+    });
+
+    it('update: a declared, unchanged mode AWS does not hold (a pre-fix deploy) is set', async () => {
+      const one = (mode?: string) =>
+        base(mode === undefined ? {} : { GlobalTableSettingsReplicationMode: mode }, null);
+      const modes = () =>
+        sent(mockSend, UpdateTableCommand)
+          .filter((input) => 'GlobalTableSettingsReplicationMode' in input)
+          .map((input) => input['GlobalTableSettingsReplicationMode']);
+      // DynamoDB's same-account default, which a pre-fix create left.
+      setLive({ mode: 'ENABLED_WITH_OVERRIDES' }, {}, []);
+      await provider.update('T', TABLE, RESOURCE_TYPE, one('ENABLED'), one('ENABLED'));
+      expect(modes()).toEqual(['ENABLED']);
+      // A DISABLED table reports no mode (measured): nothing to correct.
+      mockSend.mockClear();
+      setLive({}, {}, []);
+      await provider.update('T', TABLE, RESOURCE_TYPE, one('DISABLED'), one('DISABLED'));
+      expect(modes()).toEqual([]);
+      // Undeclared: nothing is read into a correction.
+      mockSend.mockClear();
+      setLive({ mode: 'ENABLED_WITH_OVERRIDES' }, {}, []);
+      await provider.update('T', TABLE, RESOURCE_TYPE, one(), one());
+      expect(modes()).toEqual([]);
+    });
+
+    it('update: a failed correction is reported, not thrown', async () => {
+      const one = base({ GlobalTableSettingsReplicationMode: 'ENABLED' }, null);
+      setLive(
+        {
+          mode: 'ENABLED_WITH_OVERRIDES',
+          refuse: (name, input) =>
+            name === UpdateTableCommand.name && 'GlobalTableSettingsReplicationMode' in input
+              ? Object.assign(new Error('nope'), { name: 'ValidationException' })
+              : undefined,
+        },
+        {},
+        []
+      );
+      await expect(provider.update('T', TABLE, RESOURCE_TYPE, one, one)).resolves.toBeDefined();
+      expect(warnSpy.mock.calls.flat().join('\n')).toMatch(
+        /does not hold its declared GlobalTableSettingsReplicationMode/
+      );
     });
 
     it('update: adding a replica while a mode is declared is refused before any write', async () => {
@@ -578,6 +667,8 @@ describe('DynamoDB GlobalTable writes (go-to-k/cdkd#5489)', () => {
         )
       ).rejects.toThrow(/exactly one replica/);
       expect(sent(mockSend, UpdateTableCommand)).toEqual([]);
+      expect(writes(mockSend)).toEqual([]);
+      expect(regionalSend).not.toHaveBeenCalled();
     });
   });
 
@@ -605,14 +696,228 @@ describe('DynamoDB GlobalTable writes (go-to-k/cdkd#5489)', () => {
     });
 
     it('treats an absent list and an empty one alike, and an unchanged list as no change', async () => {
-      await provider.update('T', TABLE, RESOURCE_TYPE, base({}, {}, { LocalSecondaryIndexes: [] }), base());
-      await provider.update(
+      await expect(
+        provider.update('T', TABLE, RESOURCE_TYPE, base({}, {}, { LocalSecondaryIndexes: [] }), base())
+      ).resolves.toBeDefined();
+      await expect(
+        provider.update('T', TABLE, RESOURCE_TYPE, base(), base({}, {}, { LocalSecondaryIndexes: [] }))
+      ).resolves.toBeDefined();
+      await expect(provider.update(
         'T',
         TABLE,
         RESOURCE_TYPE,
         base({}, {}, { LocalSecondaryIndexes: LSI }),
         base({}, {}, { LocalSecondaryIndexes: LSI })
-      );
+      )).resolves.toBeDefined();
     });
+  });
+});
+
+describe('GlobalTable #5489 ordering and failure paths', () => {
+  let provider: DynamoDBGlobalTableProvider;
+  const validation = (): Error => Object.assign(new Error('refused'), { name: 'ValidationException' });
+  /** Every UpdateTable on the source client, as a short tag. */
+  const updateTables = (): string[] =>
+    sent(mockSend, UpdateTableCommand).flatMap((input) => {
+      const replica = input['ReplicaUpdates']?.[0];
+      if (replica?.Create) return [`replica-create:${replica.Create.RegionName}`];
+      if (replica?.Delete) return [`replica-delete:${replica.Delete.RegionName}`];
+      if (input['GlobalSecondaryIndexUpdates']?.[0]?.Create) return ['gsi-create'];
+      if ('GlobalTableSettingsReplicationMode' in input) {
+        return [`mode:${input['GlobalTableSettingsReplicationMode']}`];
+      }
+      return [];
+    });
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    regionalSend.mockReset();
+    mockAutoScalingSend.mockReset();
+    warnSpy.mockReset();
+    vi.restoreAllMocks();
+    setLive();
+    mockAutoScalingSend.mockResolvedValue({ ScalableTargets: [], ScalingPolicies: [] });
+    provider = new DynamoDBGlobalTableProvider();
+  });
+
+  it('a removed mode is reset BEFORE a replica the same update adds', async () => {
+    setLive({ mode: 'ENABLED' }, {}, []);
+    await provider.update(
+      'T',
+      TABLE,
+      RESOURCE_TYPE,
+      base({}, {}),
+      base({ GlobalTableSettingsReplicationMode: 'ENABLED' }, null)
+    );
+    expect(updateTables()).toEqual(['mode:DISABLED', 'replica-create:eu-west-1']);
+  });
+
+  it('an added mode goes out AFTER the replica delete that leaves one replica', async () => {
+    setLive({}, {}, ['eu-west-1']);
+    await provider.update(
+      'T',
+      TABLE,
+      RESOURCE_TYPE,
+      base({ GlobalTableSettingsReplicationMode: 'ENABLED' }, null),
+      base({}, {})
+    );
+    expect(updateTables()).toEqual(['replica-delete:eu-west-1', 'mode:ENABLED']);
+  });
+
+  it('a GSI added with its replica insights is created before the insights are set', async () => {
+    setLive({ gsi: false }, {});
+    const desired = base(ci(true), {});
+    const previous = { ...base({}, {}), GlobalSecondaryIndexes: undefined };
+    await provider.update('T', TABLE, RESOURCE_TYPE, desired, previous);
+    const order = mockSend.mock.calls
+      .map((c) => c[0] as Sent)
+      .flatMap((c) =>
+        c.constructor.name === UpdateTableCommand.name &&
+        c.input['GlobalSecondaryIndexUpdates']?.[0]?.Create
+          ? ['gsi-create']
+          : c.constructor.name === UpdateContributorInsightsCommand.name
+            ? [`ci:${c.input['IndexName']}`]
+            : []
+      );
+    expect(order).toEqual(['gsi-create', 'ci:gsi1']);
+  });
+
+  it('fails the update when one region refuses a template-driven index rule', async () => {
+    setLive(
+      {},
+      {
+        refuse: (name) => (name === UpdateContributorInsightsCommand.name ? validation() : undefined),
+      }
+    );
+    await expect(
+      provider.update('T', TABLE, RESOURCE_TYPE, base(ci(true), ci(true)), base({}, {}))
+    ).rejects.toThrow(/refused/);
+    // The deploy region's went out first.
+    expect(sent(mockSend, UpdateContributorInsightsCommand)).toEqual([
+      { TableName: TABLE, IndexName: 'gsi1', ContributorInsightsAction: 'ENABLE' },
+    ]);
+  });
+
+  it('reports a refused correction and still corrects the next region', async () => {
+    setLive(
+      {
+        refuse: (name) => (name === UpdateContributorInsightsCommand.name ? validation() : undefined),
+      },
+      {}
+    );
+    const props = base(ci(true), ci(true));
+    await expect(provider.update('T', TABLE, RESOURCE_TYPE, props, props)).resolves.toBeDefined();
+    expect(warnSpy.mock.calls.flat().join('\n')).toMatch(
+      /does not hold the declared GlobalSecondaryIndexes\[\]\.ContributorInsightsSpecification/
+    );
+    expect(sent(regionalSend, UpdateContributorInsightsCommand)).toEqual([
+      { TableName: TABLE, IndexName: 'gsi1', ContributorInsightsAction: 'ENABLE' },
+    ]);
+  });
+
+  it('rethrows an interrupt raised during a correction', async () => {
+    setLive(
+      {
+        refuse: (name) =>
+          name === UpdateContributorInsightsCommand.name
+            ? new InterruptedWaitError('the correction')
+            : undefined,
+      },
+      {}
+    );
+    const props = base(ci(true), {});
+    // Wrapped by update()'s own catch, but never swallowed into a warning.
+    const error = await provider.update('T', TABLE, RESOURCE_TYPE, props, props).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(isInterruptedWaitError(error)).toBe(true);
+    expect(warnSpy.mock.calls.flat().join('\n')).not.toMatch(/does not hold the declared/);
+  });
+
+  it('reads ENABLING / DISABLING as no answer, so nothing is corrected', async () => {
+    setLive({ indexCi: { gsi1: 'ENABLING' } }, { indexCi: { gsi1: 'DISABLING' } });
+    const props = base(ci(false), ci(true));
+    await provider.update('T', TABLE, RESOURCE_TYPE, props, props);
+    expect(sent(mockSend, UpdateContributorInsightsCommand)).toEqual([]);
+    expect(sent(regionalSend, UpdateContributorInsightsCommand)).toEqual([]);
+  });
+
+  it('pages ListTagsOfResource before deciding which declared tags are missing', async () => {
+    setLive({ streamTags: { k1: 'v1', k2: 'v2', k3: 'old' }, tagPageSize: 1 }, {});
+    const props = base(streamTags(['k1', 'v1'], ['k3', 'v3']), {});
+    await provider.update('T', TABLE, RESOURCE_TYPE, props, props);
+    expect(sent(mockSend, ListTagsOfResourceCommand).length).toBe(3);
+    expect(sent(mockSend, TagResourceCommand)).toEqual([
+      { ResourceArn: LOCAL_STREAM, Tags: [{ Key: 'k3', Value: 'v3' }] },
+    ]);
+  });
+
+  it('skips the untag when the table has no stream left', async () => {
+    setLive({ noStream: true }, {});
+    await provider.update(
+      'T',
+      TABLE,
+      RESOURCE_TYPE,
+      base({}, {}),
+      base(streamTags(['k1', 'v1']), {})
+    );
+    expect(sent(mockSend, UntagResourceCommand)).toEqual([]);
+  });
+
+  it('a replica this update adds gets no DISABLE and no convergence read', async () => {
+    setLive({}, {}, []);
+    await provider.update(
+      'T',
+      TABLE,
+      RESOURCE_TYPE,
+      base({}, { ...ci(false), ...streamTags(['k1', 'v1']) }),
+      base({}, null)
+    );
+    expect(sent(regionalSend, UpdateContributorInsightsCommand)).toEqual([]);
+    expect(sent(regionalSend, DescribeContributorInsightsCommand)).toEqual([]);
+    expect(sent(regionalSend, ListTagsOfResourceCommand)).toEqual([]);
+    expect(sent(regionalSend, TagResourceCommand)).toEqual([
+      { ResourceArn: REMOTE_STREAM, Tags: [{ Key: 'k1', Value: 'v1' }] },
+    ]);
+  });
+});
+
+describe('corrections: the DISABLE and mode-bearing ENABLE arms', () => {
+  it('disables an index AWS reports on and enables with the declared mode', () => {
+    const only = new Set(['indexContributorInsights'] as const);
+    expect(
+      planReplicaSettingCorrections(
+        ci(false),
+        { indexContributorInsightsEnabled: new Map([['gsi1', true]]) },
+        only
+      )
+    ).toEqual([{ kind: 'indexContributorInsights', indexName: 'gsi1', action: 'DISABLE' }]);
+    expect(
+      planReplicaSettingCorrections(
+        ci(true, 'THROTTLED_KEYS'),
+        { indexContributorInsightsEnabled: new Map([['gsi1', false]]) },
+        only
+      )
+    ).toEqual([
+      {
+        kind: 'indexContributorInsights',
+        indexName: 'gsi1',
+        action: 'ENABLE',
+        mode: 'THROTTLED_KEYS',
+      },
+    ]);
+  });
+
+  it('corrects a declared mode only when AWS holds another one', () => {
+    const one = (mode?: string) =>
+      base(mode === undefined ? {} : { GlobalTableSettingsReplicationMode: mode }, null);
+    expect(replicationModeCorrection(one('ENABLED'), one('ENABLED'), 'ENABLED_WITH_OVERRIDES')).toBe(
+      'ENABLED'
+    );
+    expect(replicationModeCorrection(one('ENABLED'), one('ENABLED'), 'ENABLED')).toBeUndefined();
+    expect(replicationModeCorrection(one('DISABLED'), one('DISABLED'), undefined)).toBeUndefined();
+    expect(replicationModeCorrection(one('ENABLED'), one('DISABLED'), undefined)).toBeUndefined();
+    expect(replicationModeCorrection(one(), one(), 'ENABLED')).toBeUndefined();
   });
 });

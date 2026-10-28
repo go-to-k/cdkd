@@ -2644,7 +2644,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     tableName: string,
     logicalId: string,
     mode: string,
-    maskSecrets: SecretMasker
+    maskSecrets: SecretMasker,
+    // `false` for a correction AWS alone asked for: a failure is reported.
+    fromTemplate = true
   ): Promise<void> {
     this.logger.debug(
       maskSecrets(`Setting GlobalTableSettingsReplicationMode of ${tableName} to ${mode}`)
@@ -2654,7 +2656,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         TableName: tableName,
         GlobalTableSettingsReplicationMode: mode as GlobalTableSettingsReplicationMode,
       },
-      true,
+      fromTemplate,
       'GlobalTableSettingsReplicationMode',
       tableName,
       logicalId,
@@ -3813,7 +3815,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // applies either in place (CFn A/B, us-east-1 + us-west-2, 2026-10-28): a
     // removed list REPLACES the table, and an added one fails the update with
     // "LocalSecondaryIndex template can be updated only to values matching
-    // existing resource". An absent list and an empty one both declare no index.
+    // existing resource". The diff routes a removal to a replacement
+    // (`globalTableLocalSecondaryIndexesRemoved` in the replacement rules), so
+    // only an added or changed list normally reaches this refusal. An absent
+    // list and an empty one both declare no index.
     if (
       !deepEqual(
         lsiListOrEmpty(properties['LocalSecondaryIndexes']),
@@ -5500,6 +5505,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const addedReplicaRegions = new Set(replicaDiff.added.map((r) => r['Region']));
       if (modeUpdate !== undefined && readReplicationMode(properties).kind === 'usable') {
         await this.sendReplicationMode(physicalId, logicalId, modeUpdate, maskSecrets);
+      } else {
+        // A declared mode the template did not change, which a pre-fix deploy
+        // never sent: checked against what AWS reports, and set best-effort.
+        const correction = replicationModeCorrection(
+          properties,
+          previousProperties,
+          describeResp.Table?.GlobalTableSettingsReplicationMode
+        );
+        if (correction !== undefined) {
+          await this.sendReplicationMode(physicalId, logicalId, correction, maskSecrets, false);
+        }
       }
       await this.convergeReplicaDeletionProtection(
         physicalId,
@@ -9659,6 +9675,27 @@ export function replicationModeUpdate(
   const recorded = had.kind === 'usable' ? had.mode : undefined;
   if (desired === recorded) return undefined;
   return desired ?? 'DISABLED';
+}
+
+/**
+ * The mode a DECLARED, UNCHANGED `GlobalTableSettingsReplicationMode` needs to
+ * reach what the template says, given what `DescribeTable` reports, or
+ * `undefined` (go-to-k/cdkd#5489). Before that issue the mode was never sent,
+ * so a table deployed then holds DynamoDB's default
+ * (`ENABLED_WITH_OVERRIDES`, measured) under a record that names the mode.
+ * A table set to `DISABLED` reports no mode at all (measured), so an absent
+ * live mode reads as `DISABLED`. A changed or unusable declaration is not a
+ * correction: {@link replicationModeUpdate} and the refusal own those.
+ */
+export function replicationModeCorrection(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  liveMode: string | undefined
+): string | undefined {
+  const want = readReplicationMode(properties);
+  if (want.kind !== 'usable') return undefined;
+  if (replicationModeUpdate(properties, previousProperties) !== undefined) return undefined;
+  return (liveMode ?? 'DISABLED') === want.mode ? undefined : want.mode;
 }
 
 /**

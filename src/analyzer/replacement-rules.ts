@@ -242,6 +242,31 @@ export function attributeTypeChangedForSharedAttribute(
 }
 
 /**
+ * Conditional-replacement predicate for
+ * `AWS::DynamoDB::GlobalTable.LocalSecondaryIndexes` (go-to-k/cdkd#5489).
+ *
+ * The CFn schema lists the property as `conditionalCreateOnlyProperties`, and
+ * a CloudFormation A/B (us-east-1 + us-west-2, 2026-10-28) measured both
+ * directions: REMOVING a declared list replaced the table, while ADDING one
+ * failed the update in place ("LocalSecondaryIndex template can be updated
+ * only to values matching existing resource"). So only a non-empty list going
+ * to absent / `[]` replaces; an added or changed list stays an update, which
+ * the provider refuses before any call.
+ */
+export function globalTableLocalSecondaryIndexesRemoved(
+  oldValue: unknown,
+  newValue: unknown
+): boolean {
+  const declares = (value: unknown): boolean => Array.isArray(value) && value.length > 0;
+  return (
+    declares(oldValue) &&
+    (newValue === undefined ||
+      newValue === null ||
+      (Array.isArray(newValue) && newValue.length === 0))
+  );
+}
+
+/**
  * Conditional-replacement predicate for `AWS::Budgets::Budget.Budget`.
  *
  * The budget name (`Budget.BudgetName`, nested) is the physical id and is
@@ -777,6 +802,18 @@ export class ReplacementRulesRegistry {
         'MaximumEventAgeInSeconds',
         'MaximumRetryAttempts',
         'DestinationConfig',
+      ]),
+    });
+
+    // DynamoDB GlobalTable (go-to-k/cdkd#5489). No property is listed outright:
+    // the schema's `createOnlyProperties` fallback still covers `TableName`,
+    // since it applies to every property this rule leaves unclassified. The
+    // type is stateful, so the replacement still needs
+    // `--force-stateful-recreation`.
+    this.rules.set('AWS::DynamoDB::GlobalTable', {
+      replacementProperties: new Set(),
+      conditionalReplacements: new Map([
+        ['LocalSecondaryIndexes', globalTableLocalSecondaryIndexesRemoved],
       ]),
     });
 
