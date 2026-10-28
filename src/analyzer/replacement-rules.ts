@@ -388,6 +388,42 @@ function emrInstancesReplacingPart(value: unknown): unknown {
 }
 
 /**
+ * Conditional-replacement predicate for
+ * `AWS::ElastiCache::CacheCluster.PreferredAvailabilityZones` (issue #5458).
+ *
+ * True when the list moves to zones that share NONE with the previous list.
+ * Real CloudFormation change-set executions (memcached, us-east-1), each a
+ * `Replacement: Conditional` change set:
+ *
+ *  - REPLACED: `[1c, 1a]` -> `[1b]` (2 -> 1 nodes); `[1b]` -> `[1c]`
+ *    (1 -> 1); `[1a]` -> `[1b]` with the cluster's only live node ALREADY in
+ *    1b (moved there outside the template), so the comparison is with the
+ *    previous TEMPLATE list, not the live nodes.
+ *  - IN PLACE: `[1c, 1b]` -> `[1b, 1b]`; `[1a, 1b, 1c]` -> `[1a, 1c]`;
+ *    absent -> `[1b]` and absent -> `[1c, 1b]`; `[1c, 1b]` -> absent.
+ *
+ * So an absent or empty list on either side never replaces, nor does any
+ * list sharing a zone with the previous one (order and repeats are
+ * irrelevant). A list holding a value still unresolved at diff time (an
+ * intrinsic object) cannot be compared zone by zone: it replaces when the
+ * two lists differ at all, the conservative direction for a change
+ * CloudFormation may only make by replacing (the type is in the
+ * stateful-recreate guard set, so the replacement still needs
+ * `--force-stateful-recreation`).
+ */
+export function elastiCachePreferredAvailabilityZonesMovedToDisjoint(
+  oldValue: unknown,
+  newValue: unknown
+): boolean {
+  if (!Array.isArray(oldValue) || !Array.isArray(newValue)) return false;
+  if (oldValue.length === 0 || newValue.length === 0) return false;
+  if (![...oldValue, ...newValue].every((z) => typeof z === 'string')) {
+    return !isDeepStrictEqual(oldValue, newValue);
+  }
+  return !newValue.some((z) => oldValue.includes(z));
+}
+
+/**
  * Conditional-replacement predicate for `AWS::EMR::Cluster.Instances` (issue
  * [#5418](https://github.com/go-to-k/cdkd/issues/5418)).
  *
@@ -1158,6 +1194,16 @@ export class ReplacementRulesRegistry {
     this.rules.set('AWS::ECS::Service', {
       replacementProperties: new Set(),
       conditionalReplacements: new Map([['LaunchType', ecsServiceLaunchTypeSetOrChanged]]),
+    });
+
+    // ElastiCache CacheCluster — a `PreferredAvailabilityZones` move to zones
+    // the previous list does not name replaces the cluster (issue #5458; see
+    // the predicate). Every other property stays with the schema fallback.
+    this.rules.set('AWS::ElastiCache::CacheCluster', {
+      replacementProperties: new Set(),
+      conditionalReplacements: new Map([
+        ['PreferredAvailabilityZones', elastiCachePreferredAvailabilityZonesMovedToDisjoint],
+      ]),
     });
 
     // EMR Cluster — an `Instances` change replaces unless only members

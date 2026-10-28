@@ -12,7 +12,7 @@ import * as sns from 'aws-cdk-lib/aws-sns';
  * Cache and Streaming pattern stack
  *
  * Demonstrates:
- * - VPC with 1 AZ, public subnet only (no NAT to save cost)
+ * - VPC with 2 AZs, public subnets only (no NAT to save cost)
  * - ElastiCache Redis cluster (L1 CfnCacheCluster)
  * - ElastiCache Subnet Group (L1 CfnSubnetGroup)
  * - Security Group for Redis access
@@ -25,7 +25,9 @@ import * as sns from 'aws-cdk-lib/aws-sns';
  * - CDKD_TEST_NODETYPE=true: the cluster's CacheNodeType moves cache.t3.micro
  *   -> cache.t3.small, an in-place ModifyCacheCluster (issue #5438)
  * - A 2-node Memcached cluster on its own subnet group; CDKD_TEST_NODEREMOVE=true
- *   lowers it to 1 node, which needs CacheNodeIdsToRemove (issue #5441)
+ *   lowers it to 1 node, which needs CacheNodeIdsToRemove (issue #5441), and
+ *   CDKD_TEST_PAZMOVE=true moves its PreferredAvailabilityZones to a zone the
+ *   previous list does not name, which replaces the cluster (issue #5458)
  */
 export class CacheStreamingStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -36,9 +38,10 @@ export class CacheStreamingStack extends cdk.Stack {
       Example: 'cache-streaming',
     };
 
-    // VPC with 1 AZ, public subnet only (no NAT to save cost)
+    // VPC with 2 AZs (the Memcached zone move of issue #5458 needs a second
+    // one), public subnets only (no NAT to save cost)
     const vpc = new ec2.Vpc(this, 'Vpc', {
-      maxAzs: 1,
+      maxAzs: 2,
       natGateways: 0,
       subnetConfiguration: [
         {
@@ -129,6 +132,12 @@ export class CacheStreamingStack extends cdk.Stack {
     // (same subnet), so the Redis assertions that find their cluster by
     // subnet group keep finding exactly one.
     const nodeRemoval = process.env.CDKD_TEST_NODEREMOVE === 'true';
+    // CDKD_TEST_PAZMOVE (issue #5458): real CloudFormation REPLACES the
+    // cluster when PreferredAvailabilityZones moves to zones the previous list
+    // does not name ([az0] -> [az1]); the #5441 removal ([az0, az0] -> [az0])
+    // shares az0 and stays in place.
+    const pazMove = process.env.CDKD_TEST_PAZMOVE === 'true';
+    const [az0, az1] = vpc.availabilityZones;
     const memcachedSubnetGroup = new elasticache.CfnSubnetGroup(this, 'MemcachedSubnetGroup', {
       description: 'Subnet group for the Memcached cluster',
       subnetIds: vpc.publicSubnets.map((s) => s.subnetId),
@@ -137,7 +146,9 @@ export class CacheStreamingStack extends cdk.Stack {
     const memcached = new elasticache.CfnCacheCluster(this, 'MemcachedCluster', {
       cacheNodeType: 'cache.t3.micro',
       engine: 'memcached',
-      numCacheNodes: nodeRemoval ? 1 : 2,
+      numCacheNodes: nodeRemoval || pazMove ? 1 : 2,
+      azMode: 'single-az',
+      preferredAvailabilityZones: pazMove ? [az1] : nodeRemoval ? [az0] : [az0, az0],
       vpcSecurityGroupIds: [redisSg.securityGroupId],
       cacheSubnetGroupName: memcachedSubnetGroup.ref,
     });

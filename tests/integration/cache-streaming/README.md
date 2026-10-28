@@ -4,7 +4,7 @@ This example demonstrates cdkd deployment of a caching and streaming pattern.
 
 ## Resources
 
-- **VPC** - VPC with 1 AZ, public subnet only (no NAT to save cost)
+- **VPC** - VPC with 2 AZs, public subnets only (no NAT to save cost)
 - **Security Group** - Allows Redis access (port 6379) from within the VPC
 - **ElastiCache Subnet Group** - Subnet group for Redis cluster
 - **ElastiCache Redis Cluster** - Single-node cache.t3.micro Redis cluster
@@ -57,5 +57,8 @@ AWS_REGION=us-east-1 STATE_BUCKET=cdkd-state-<accountId> bash verify.sh
 - the `CDKD_TEST_NODEREMOVE=true` redeploy lowers the Memcached cluster from 2
   nodes to 1 in place, removing node `0001` and keeping `0002` as CloudFormation
   does (issue #5441),
+- the `CDKD_TEST_PAZMOVE=true` redeploy (with `--force-stateful-recreation`)
+  moves the Memcached cluster's `PreferredAvailabilityZones` to the VPC's other
+  zone, which replaces the cluster as CloudFormation does (issue #5458),
 - after destroy: state file, Kinesis stream, Lambda, and ElastiCache cluster
   are all gone (0 orphans).
