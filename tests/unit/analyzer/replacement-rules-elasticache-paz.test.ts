@@ -39,6 +39,12 @@ describe('ReplacementRulesRegistry — AWS::ElastiCache::CacheCluster.PreferredA
     expect(replaces([], ['us-east-1b'])).toBe(false);
     expect(replaces(['us-east-1b'], [])).toBe(false);
     expect(replaces(undefined, undefined)).toBe(false);
+    // The predicate itself too: the registry may answer an absent side
+    // before consulting it.
+    const moved = elastiCachePreferredAvailabilityZonesMovedToDisjoint;
+    expect(moved(undefined, ['us-east-1b'])).toBe(false);
+    expect(moved(['us-east-1b'], undefined)).toBe(false);
+    expect(moved(undefined, undefined)).toBe(false);
   });
 
   it('ignores order and repeats', () => {
