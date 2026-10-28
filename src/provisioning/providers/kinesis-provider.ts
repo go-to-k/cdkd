@@ -1343,6 +1343,8 @@ export class KinesisStreamProvider implements ResourceProvider {
       target = desired.strategy;
     } else {
       if (recorded === undefined || recorded === DEFAULT_RECORD_DISTRIBUTION_STRATEGY) return;
+      // A PROVISIONED stream has no distribution strategy to reset: the
+      // property applies to ON_DEMAND streams only (#2762), so nothing is sent.
       if (streamMode !== 'ON_DEMAND') return;
       target = DEFAULT_RECORD_DISTRIBUTION_STRATEGY;
     }

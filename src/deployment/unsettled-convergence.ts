@@ -102,7 +102,11 @@ export async function settleUnsettledPrevious(
       names,
       args.recordedProperties
     );
-    if (moving.size > 0) throw refusal(args, moving, 'AWS is still changing it');
+    // The hook answers every name when its own read fails, so the message
+    // covers both causes rather than claiming the resource is moving.
+    if (moving.size > 0) {
+      throw refusal(args, moving, 'AWS is still changing it or cdkd could not confirm it settled');
+    }
   }
   const substituted = new Set([...names].filter((name) => !MERGE_SEMANTICS_KEYS.has(name)));
   if (substituted.size === 0) return previous;
@@ -222,4 +226,34 @@ export async function withUnprovenUnsettled<R extends ResourceState>(
     safeMsg`${args.logicalId} (${args.resourceType}): the update succeeded, but AWS does not yet show the requested ${kept.join(', ')}; cdkd keeps ${kept.length === 1 ? 'it' : 'them'} unsettled and converges again on the next deploy.`
   );
   return withUnsettledProperties(record, kept);
+}
+
+/**
+ * go-to-k/cdkd#5487: `prepareRemovalForUpdate`'s unhandled removals, split by
+ * cause. A name the convergence step put on the previous side from AWS — the
+ * record never held it, so no template declared it — was not "removed from the
+ * template": a failed update added it. Each list gets its own warning.
+ */
+export function splitUnhandledRemovals(
+  unhandled: readonly string[],
+  recordedPrevious: Record<string, unknown>,
+  unsettled: ReadonlySet<string>
+): { removedFromTemplate: string[]; addedByFailedUpdate: string[] } {
+  const addedByFailedUpdate = unhandled.filter(
+    (name) => unsettled.has(name) && !Object.hasOwn(recordedPrevious, name)
+  );
+  return {
+    removedFromTemplate: unhandled.filter((name) => !addedByFailedUpdate.includes(name)),
+    addedByFailedUpdate,
+  };
+}
+
+/** The warning for {@link splitUnhandledRemovals}' `addedByFailedUpdate`. */
+export function addedByFailedUpdateWarning(
+  logicalId: string,
+  resourceType: string,
+  names: readonly string[]
+): string {
+  const one = names.length === 1;
+  return safeMsg`${logicalId} (${resourceType}): ${one ? 'property' : 'properties'} ${names.join(', ')} ${one ? 'is' : 'are'} set on the resource but in no template: an earlier failed update applied ${one ? 'it' : 'them'}. cdkd has no default to reset ${one ? 'it' : 'them'} to, so the value stays; remove it by hand if it should not be there.`;
 }
