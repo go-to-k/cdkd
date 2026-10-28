@@ -11,7 +11,9 @@
 # (the SDK call log, issue #5070). It also drops `VPCs` whole from a private
 # hosted zone: CloudFormation keeps every association (A/B, us-east-1), so
 # cdkd must send no DisassociateVPCFromHostedZone, keep the zone on the VPC,
-# and print one warning naming the kept associations (issue #1160). Then
+# and print one warning naming the kept associations (issue #1160). It also
+# changes one tag and drops another on the IGW, the public RouteTable and the
+# custom NACL, asserted in place on the same physical ids (issue #5448). Then
 # destroys clean.
 #
 # Required env vars:
@@ -196,6 +198,37 @@ if [ "$(entry_field "${P1_ENTRY}" RuleAction)" != "allow" ] || [ "$(entry_field 
 fi
 echo "    OK: baseline NACL entry ${ENTRY_ID} allows 0.0.0.0/0"
 
+# Issue #5448 baseline: the IGW, the public RouteTable and the custom NACL
+# carry cdkd-5448=one and cdkd-5448-gone=x first, so 'two' and no
+# cdkd-5448-gone afterwards are the Phase 2 update's doing.
+TAGGED_LOGICAL_IDS="VpcIGWD7BA715C VpcPublicSubnet1RouteTable6C95E38E CustomNacl7930CF70"
+# Prints "<cdkd-5448>/<cdkd-5448-gone>" for a resource, '' for an absent tag.
+tag_pair() { # usage: tag_pair <resource-id>
+  local v g
+  v=$(aws ec2 describe-tags --region "${REGION}" --filters "Name=resource-id,Values=$1" "Name=key,Values=cdkd-5448" \
+    --query 'Tags[0].Value' --output text) || return 1
+  g=$(aws ec2 describe-tags --region "${REGION}" --filters "Name=resource-id,Values=$1" "Name=key,Values=cdkd-5448-gone" \
+    --query 'Tags[0].Value' --output text) || return 1
+  [ "${v}" = "None" ] && v=""
+  [ "${g}" = "None" ] && g=""
+  printf '%s/%s' "${v}" "${g}"
+}
+P1_TAGGED_IDS=""
+for lid in ${TAGGED_LOGICAL_IDS}; do
+  pid=$(physical_id "${lid}")
+  if [ -z "${pid}" ]; then
+    echo "FAIL: ${lid} physical id missing from state (issue #5448)" >&2
+    exit 1
+  fi
+  pair=$(tag_pair "${pid}")
+  if [ "${pair}" != "one/x" ]; then
+    echo "FAIL: ${lid} (${pid}) after create: cdkd-5448/cdkd-5448-gone='${pair}', expected 'one/x' (issue #5448)" >&2
+    exit 1
+  fi
+  P1_TAGGED_IDS="${P1_TAGGED_IDS}${P1_TAGGED_IDS:+ }${pid}"
+done
+echo "    OK: baseline tags one/x on ${P1_TAGGED_IDS}"
+
 # --- Phase 2: REMOVAL drops both DNS attributes (issue #1160) ---------
 echo "==> Phase 2: removal (drop EnableDnsHostnames, EnableDnsSupport from both VPCs; change the NACL entry; drop the private zone's VPCs)"
 # A private directory, so nothing can pre-place the path cdkd appends to; the
@@ -205,10 +238,22 @@ P2_CALLS="${P2_CALLS_DIR}/calls.jsonl"
 # The deploy's own output too, for the issue #1160 warning (pipefail keeps
 # the deploy's exit code).
 P2_LOG="${P2_CALLS_DIR}/deploy.log"
+set +e
 CDKD_SDK_CALL_LOG="${P2_CALLS}" CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes 2>&1 | tee "${P2_LOG}"
+P2_RC=${PIPESTATUS[0]}
+set -e
+if [ "${P2_RC}" -ne 0 ]; then
+  # Issue #5448: a tag change on these three was refused as not updatable.
+  if grep -qE 'AWS::EC2::(InternetGateway|RouteTable|NetworkAcl) \([^)]*\) cannot be updated in place' "${P2_LOG}"; then
+    echo "FAIL: Phase 2 refused an in-place tag change on an InternetGateway / RouteTable / NetworkAcl; CloudFormation applies it in place (issue #5448)" >&2
+    exit 1
+  fi
+  echo "FAIL: Phase 2 deploy exited ${P2_RC}" >&2
+  exit 1
+fi
 
 RM_MAIN_VPC=$(physical_id Vpc8378EB38)
 RM_OFF_VPC=$(physical_id DnsOffVpc)
@@ -296,6 +341,31 @@ if [ "$(entry_field "${P2_ENTRY}" RuleAction)" != "deny" ] || [ "$(entry_field "
 fi
 echo "    OK: NACL entry ${ENTRY_ID} changed to deny 10.0.0.0/8 with one ReplaceNetworkAclEntry (issue #5070)"
 
+# Issue #5448: the same physical ids, cdkd-5448 changed to 'two' and
+# cdkd-5448-gone removed. Bounded read: EC2's describe APIs are eventually
+# consistent.
+P2_TAGGED_IDS=""
+for lid in ${TAGGED_LOGICAL_IDS}; do
+  P2_TAGGED_IDS="${P2_TAGGED_IDS}${P2_TAGGED_IDS:+ }$(physical_id "${lid}")"
+done
+if [ "${P2_TAGGED_IDS}" != "${P1_TAGGED_IDS}" ]; then
+  echo "FAIL: a tag change replaced a resource (must update in place, issue #5448): '${P1_TAGGED_IDS}' -> '${P2_TAGGED_IDS}'" >&2
+  exit 1
+fi
+for pid in ${P2_TAGGED_IDS}; do
+  pair=""
+  for _ in 1 2 3 4 5 6; do
+    pair=$(tag_pair "${pid}")
+    [ "${pair}" = "two/" ] && break
+    sleep 5
+  done
+  if [ "${pair}" != "two/" ]; then
+    echo "FAIL: ${pid} after the tag update: cdkd-5448/cdkd-5448-gone='${pair}', expected 'two/' (changed, removed; issue #5448)" >&2
+    exit 1
+  fi
+done
+echo "    OK: cdkd-5448 changed to two and cdkd-5448-gone removed in place on ${P2_TAGGED_IDS} (issue #5448)"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -313,4 +383,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ec2-vpc test passed (removed VPC DNS attributes reset + in-place NACL entry change + kept private zone VPCs + clean destroy)"
+echo "==> ec2-vpc test passed (removed VPC DNS attributes reset + in-place NACL entry change + kept private zone VPCs + in-place IGW / RouteTable / NACL tags + clean destroy)"

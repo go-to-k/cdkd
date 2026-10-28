@@ -17,6 +17,7 @@ import * as route53 from 'aws-cdk-lib/aws-route53';
  * - Launch Template
  * - Removal of the VPC DNS attributes (CDKD_TEST_REMOVAL, issue #1160)
  * - An in-place NACL entry rule change in the same deploy (issue #5070)
+ * - In-place tag changes on the IGW, public RouteTable and NACL (issue #5448)
  * - A private hosted zone whose `VPCs` the removal phase drops (issue #1160)
  * - Fn::GetAtt for outputs (VPC ID, Security Group ID, Subnet IDs, NACL ID, EIP, Launch Template)
  *
@@ -124,6 +125,20 @@ export class Ec2VpcStack extends cdk.Stack {
       traffic: ec2.AclTraffic.allTraffic(),
       direction: ec2.TrafficDirection.EGRESS,
     });
+
+    // Issue #5448: the same deploy (CDKD_TEST_REMOVAL) changes one tag and
+    // drops another on the InternetGateway, the public RouteTable and the
+    // custom NACL. CloudFormation applies both in place (a raw change set
+    // reads Modify / Replacement False for each); cdkd refused the update.
+    const tagged = [
+      vpc.node.findChild('IGW') as ec2.CfnInternetGateway,
+      vpc.publicSubnets[0]!.node.findChild('RouteTable') as ec2.CfnRouteTable,
+      nacl.node.defaultChild as ec2.CfnNetworkAcl,
+    ];
+    for (const resource of tagged) {
+      cdk.Tags.of(resource).add('cdkd-5448', isRemoval ? 'two' : 'one');
+      if (!isRemoval) cdk.Tags.of(resource).add('cdkd-5448-gone', 'x');
+    }
 
     // Elastic IP
     const eip = new ec2.CfnEIP(this, 'TestEip', {

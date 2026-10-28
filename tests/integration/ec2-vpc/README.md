@@ -24,6 +24,8 @@ No EC2 instances are created to avoid costs.
   default, as CloudFormation does (`verify.sh`, `CDKD_TEST_REMOVAL=true`, issue #1160)
 - Removing a private hosted zone's `VPCs` keeps every association, as
   CloudFormation does, and warns once (same phase, issue #1160)
+- Changing and removing a tag on the Internet Gateway, the public Route Table
+  and the custom Network ACL updates each in place (same phase, issue #5448)
 
 ## Deploy
 
