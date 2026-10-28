@@ -268,6 +268,19 @@ const INSTANCE_STATE_POLL_MS = 5000;
  * `stopped` that outlives three polls is not a lagging read.
  */
 const STOPPED_AFTER_START_READS = 3;
+/** How long a profile change waits out a `disassociating` association. */
+const PROFILE_DISASSOCIATING_POLLS = 15;
+const PROFILE_DISASSOCIATING_DELAY_MS = 2000;
+
+/**
+ * A refusal raised before any call of an EC2 Instance update (issue #5446):
+ * non-retryable, and marked so the engine journals the failed update without
+ * its attempted properties (a later `rollback --revert-failed` then has
+ * nothing to "undo" on an instance this update never touched).
+ */
+function refusedBeforeApplying<E extends Error>(error: E): E {
+  return markRefusedBeforeApplying(markNonRetryable(error));
+}
 /** The states a stop -> modify -> start can begin from (issue #5446). */
 const STOPPABLE_INSTANCE_STATES = new Set(['pending', 'running', 'stopping', 'stopped']);
 /**
@@ -7943,6 +7956,10 @@ export class EC2Provider implements ResourceProvider {
       // Issue #5446: the stop/start waits throw their own non-retryable
       // ProvisioningError, and Ctrl-C an InterruptedWaitError; both pass
       // through unwrapped so the engine sees what they are.
+      // A CdkdError here is cdkd-authored (a refusal, a wait's own error) and
+      // carries no AWS text, so skipping wrapCaughtError's masking is safe for
+      // every helper this try calls today; a helper that rethrows a CdkdError
+      // built from AWS text must mask it itself.
       if (error instanceof CdkdError || isInterruptedWaitError(error)) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
@@ -8152,7 +8169,16 @@ export class EC2Provider implements ResourceProvider {
       // compares two state records redacted alike). Otherwise two equivalent
       // values are no change unless one is a stand-in: a redacted record
       // cannot say whether the value behind it moved.
-      if (isDeepStrictEqual(before, after)) return false;
+      if (isDeepStrictEqual(before, after)) {
+        // Two stand-ins alike on a rollback revert: whether the value behind
+        // them moved is unknowable, so the member keeps its live value; say so.
+        if (context?.replayingState === true && isRecordedStandIn(after)) {
+          this.logger.warn(
+            safeMsg`${logicalId} (${resourceType}): both sides of the rollback record ${key} as a stand-in (an unresolved {{resolve:...}} reference or the redaction mask), so cdkd cannot tell whether it changed; the rollback leaves ${key} at its current AWS value.`
+          );
+        }
+        return false;
+      }
       const comparable = !isRecordedStandIn(before) && !isRecordedStandIn(after);
       return !(comparable && same(before, after));
     };
@@ -8167,7 +8193,7 @@ export class EC2Provider implements ResourceProvider {
         );
         return true;
       }
-      throw markNonRetryable(
+      throw refusedBeforeApplying(
         new ProvisioningError(
           `${logicalId} (${resourceType}): ${key} holds a recorded stand-in (an unresolved {{resolve:...}} reference or the redaction mask), not a value cdkd can send. The instance was not updated; deploy from the template so the value resolves.`,
           resourceType,
@@ -8185,7 +8211,7 @@ export class EC2Provider implements ResourceProvider {
             safeMsg`${logicalId} (${resourceType}): the state being restored does not declare InstanceType; the rollback leaves the instance type at its current AWS value.`
           );
         } else {
-          throw markNonRetryable(
+          throw refusedBeforeApplying(
             new ProvisioningError(
               safeMsg`${logicalId} (${resourceType}): InstanceType was removed from the template, and CloudFormation fails that update for an existing instance. Keep it declared (set it to the instance's current type to leave it unchanged). The instance was not updated.`,
               resourceType,
@@ -8210,7 +8236,7 @@ export class EC2Provider implements ResourceProvider {
         plan.userData = new Uint8Array(0);
       } else if (!standInSkips('UserData')) {
         if (typeof userData !== 'string') {
-          throw markNonRetryable(
+          throw refusedBeforeApplying(
             new ProvisioningError(
               `${logicalId} (${resourceType}): UserData must be a base64 string (Fn::Base64), got a ${Array.isArray(userData) ? 'list' : typeof userData}. The instance was not updated.`,
               resourceType,
@@ -8235,7 +8261,7 @@ export class EC2Provider implements ResourceProvider {
       } else if (!standInSkips('IamInstanceProfile')) {
         const desired = this.normalizeIamInstanceProfile(properties['IamInstanceProfile']);
         if (desired === undefined) {
-          throw markNonRetryable(
+          throw refusedBeforeApplying(
             new ProvisioningError(
               `${logicalId} (${resourceType}): IamInstanceProfile is neither a profile name, an ARN, nor an {Arn,Name} object. The instance was not updated.`,
               resourceType,
@@ -8260,7 +8286,7 @@ export class EC2Provider implements ResourceProvider {
           ids.length === 0 ||
           !ids.every((g) => typeof g === 'string' && g !== '')
         ) {
-          throw markNonRetryable(
+          throw refusedBeforeApplying(
             new ProvisioningError(
               `${logicalId} (${resourceType}): SecurityGroupIds must be a non-empty list of security group ids. The instance was not updated.`,
               resourceType,
@@ -8336,15 +8362,17 @@ export class EC2Provider implements ResourceProvider {
         .filter(Boolean)
         .join(' and ');
       if (instance?.RootDeviceType === 'instance-store') {
-        throw new ResourceUpdateNotSupportedError(
-          resourceType,
-          logicalId,
-          `${members} can change only on a stopped instance, and an instance-store-backed instance cannot be stopped; CloudFormation replaces it. Re-deploy with cdkd deploy --replace.`
+        throw markRefusedBeforeApplying(
+          new ResourceUpdateNotSupportedError(
+            resourceType,
+            logicalId,
+            `${members} can change only on a stopped instance, and an instance-store-backed instance cannot be stopped; CloudFormation replaces it. Re-deploy with cdkd deploy --replace.`
+          )
         );
       }
       const state = instance?.State?.Name;
       if (!STOPPABLE_INSTANCE_STATES.has(state ?? '')) {
-        throw markNonRetryable(
+        throw refusedBeforeApplying(
           new ProvisioningError(
             `${logicalId} (${resourceType}): instance ${physicalId} is ${state ?? 'not returned by DescribeInstances'}, so its ${members} cannot be changed. The instance was not updated.`,
             resourceType,
@@ -8392,6 +8420,9 @@ export class EC2Provider implements ResourceProvider {
     resourceType: string,
     plan: InstanceMemberPlan
   ): Promise<void> {
+    // What this update has already changed on the instance, for a warning
+    // after a failure to name (never more than was sent).
+    const applied: string[] = [];
     if (plan.securityGroups?.kind === 'set') {
       await this.ec2Client.send(
         new ModifyInstanceAttributeCommand({
@@ -8399,10 +8430,16 @@ export class EC2Provider implements ResourceProvider {
           Groups: plan.securityGroups.ids,
         })
       );
+      applied.push('the new SecurityGroupIds');
     }
 
     if (plan.profile !== undefined) {
       await this.applyInstanceProfileChange(logicalId, physicalId, plan.profile);
+      applied.push(
+        plan.profile.kind === 'remove'
+          ? 'the IamInstanceProfile removed'
+          : 'the new IamInstanceProfile'
+      );
     }
 
     if (plan.deleteOnTermination !== undefined) {
@@ -8415,13 +8452,21 @@ export class EC2Provider implements ResourceProvider {
           })),
         })
       );
+      applied.push('the new DeleteOnTermination');
     }
 
     if (plan.instanceType === undefined && plan.userData === undefined) {
       // An instance cdkd stopped and could not start again earlier in this
-      // process (a rollback whose only stop member was skipped) is started.
+      // process (a rollback whose only stop member was skipped) is started,
+      // once it has finished stopping; one already running is left alone.
       if (instancesLeftStoppedByCdkd.has(physicalId)) {
-        await this.ec2Client.send(new StartInstancesCommand({ InstanceIds: [physicalId] }));
+        let state = await this.readInstanceState(physicalId);
+        if (state === 'stopping') {
+          state = await this.waitForInstanceState(logicalId, physicalId, resourceType, 'stopped');
+        }
+        if (state === 'stopped') {
+          await this.ec2Client.send(new StartInstancesCommand({ InstanceIds: [physicalId] }));
+        }
         instancesLeftStoppedByCdkd.delete(physicalId);
       }
       return;
@@ -8445,7 +8490,6 @@ export class EC2Provider implements ResourceProvider {
     }
     const startAfter = state === 'running' || instancesLeftStoppedByCdkd.has(physicalId);
 
-    const applied: string[] = [];
     let phase: 'stop' | 'modify' | 'start' | 'wait' = 'stop';
     let stopIssued = false;
     try {
@@ -8494,6 +8538,9 @@ export class EC2Provider implements ResourceProvider {
       const carries =
         applied.length === 0 ? 'its previous settings' : `${applied.join(' and ')} already applied`;
       const startCommand = `aws ec2 start-instances --instance-ids ${physicalId}`;
+      // The stop itself failed (stop protection, a one-time Spot request):
+      // nothing was stopped, so there is nothing to start or warn about.
+      if (phase === 'stop' && !stopIssued) throw error;
       if (phase === 'wait') {
         // Started; only a start AWS undid leaves it down.
         if (instanceStoppedAfterStart.has(error as object)) {
@@ -8639,7 +8686,7 @@ export class EC2Provider implements ResourceProvider {
           );
     const id = groups?.SecurityGroups?.[0]?.GroupId;
     if (id === undefined) {
-      throw markNonRetryable(
+      throw refusedBeforeApplying(
         new ProvisioningError(
           `${logicalId} (${resourceType}): SecurityGroupIds was removed, and the default security group of instance ${physicalId}'s VPC (${vpcId ?? 'unknown'}) could not be found to put in its place. The instance was not updated.`,
           resourceType,
@@ -8662,11 +8709,26 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     change: NonNullable<InstanceMemberPlan['profile']>
   ): Promise<void> {
-    const assoc = await this.ec2Client.send(
+    // An association still `disassociating` (a removal moments ago) makes a
+    // new associate fail with IncorrectState; let it finish first.
+    let assoc = await this.ec2Client.send(
       new DescribeIamInstanceProfileAssociationsCommand({
         Filters: [{ Name: 'instance-id', Values: [physicalId] }],
       })
     );
+    for (
+      let poll = 1;
+      poll <= PROFILE_DISASSOCIATING_POLLS &&
+      (assoc.IamInstanceProfileAssociations ?? []).some((a) => a.State === 'disassociating');
+      poll++
+    ) {
+      await this.sleep(PROFILE_DISASSOCIATING_DELAY_MS);
+      assoc = await this.ec2Client.send(
+        new DescribeIamInstanceProfileAssociationsCommand({
+          Filters: [{ Name: 'instance-id', Values: [physicalId] }],
+        })
+      );
+    }
     const current = assoc.IamInstanceProfileAssociations?.find(
       (a) => a.State === 'associated' || a.State === 'associating'
     );

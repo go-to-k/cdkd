@@ -136,6 +136,11 @@ export type CanonicalizePropertiesFn = (
  */
 const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   'AWS::EC2::LaunchTemplate': new Set(['LatestVersionNumber', 'DefaultVersionNumber']),
+  // Issue #5446: an InstanceType / UserData update stops and starts the
+  // instance, which gives an instance without an Elastic IP a new public
+  // address and DNS name (its private address and DNS name stay). The update
+  // records the new pair, so a reader re-resolves against it.
+  'AWS::EC2::Instance': new Set(['PublicIp', 'PublicDnsName']),
 });
 
 /**

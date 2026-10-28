@@ -1410,6 +1410,74 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
     expect(ltChange?.requiresReplacement).toBe(false);
   });
 
+  it.each([['PublicIp'], ['PublicDnsName']])(
+    'promotes a reader of an Instance %s when the instance is updated in place (issue #5446: a stop/start moves it)',
+    async (attr) => {
+      const state = baseState();
+      state.resources['Inst'] = {
+        physicalId: 'i-1',
+        resourceType: 'AWS::EC2::Instance',
+        properties: { ImageId: 'ami-1', InstanceType: 't3.micro', SubnetId: 'subnet-1' },
+        attributes: { PublicIp: '1.2.3.4', PublicDnsName: 'ec2-1-2-3-4.example' },
+      };
+      const stale = attr === 'PublicIp' ? '1.2.3.4' : 'ec2-1-2-3-4.example';
+      state.resources['Param'] = {
+        physicalId: 'p',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Name: 'p', Type: 'String', Value: stale },
+        attributes: {},
+      };
+      const template: CloudFormationTemplate = {
+        Resources: {
+          Inst: {
+            Type: 'AWS::EC2::Instance',
+            Properties: { ImageId: 'ami-1', InstanceType: 't3.small', SubnetId: 'subnet-1' },
+          },
+          Param: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Name: 'p', Type: 'String', Value: { 'Fn::GetAtt': ['Inst', attr] } },
+          },
+        },
+      };
+      const changes = await new DiffCalculator().calculateDiff(state, template, makeResolver(state));
+      expect(changes.get('Inst')?.changeType).toBe('UPDATE');
+      expect(changes.get('Param')?.changeType).toBe('UPDATE');
+      expect(
+        changes.get('Param')?.propertyChanges?.find((pc) => pc.path === 'Value')?.requiresReplacement
+      ).toBe(false);
+    }
+  );
+
+  it('does not promote a reader of an Instance PrivateIp (a stop/start keeps it; issue #5446)', async () => {
+    const state = baseState();
+    state.resources['Inst'] = {
+      physicalId: 'i-1',
+      resourceType: 'AWS::EC2::Instance',
+      properties: { ImageId: 'ami-1', InstanceType: 't3.micro', SubnetId: 'subnet-1' },
+      attributes: { PrivateIp: '10.0.0.5' },
+    };
+    state.resources['Param'] = {
+      physicalId: 'p',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: 'p', Type: 'String', Value: '10.0.0.5' },
+      attributes: {},
+    };
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Inst: {
+          Type: 'AWS::EC2::Instance',
+          Properties: { ImageId: 'ami-1', InstanceType: 't3.small', SubnetId: 'subnet-1' },
+        },
+        Param: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: 'p', Type: 'String', Value: { 'Fn::GetAtt': ['Inst', 'PrivateIp'] } },
+        },
+      },
+    };
+    const changes = await new DiffCalculator().calculateDiff(state, template, makeResolver(state));
+    expect(changes.get('Param')?.changeType).toBe('NO_CHANGE');
+  });
+
   it('still promotes an ASG when the LaunchTemplate is REPLACED (via the replacement arm, not double-promoted; issue #985 guard)', async () => {
     // The in-place derived-attr arm (Arm 2) is populated ONLY for non-replacement
     // UPDATEs (`if (!isReplacement)`), so a REPLACED LaunchTemplate is excluded

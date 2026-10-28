@@ -1349,6 +1349,9 @@ case "${UPDATE_SG_ID}" in
   sg-*) ;;
   *) echo "FAIL: issue #5446 -- .outputs.UpdateSgId is '${UPDATE_SG_ID}', expected a security group id" >&2; exit 1 ;;
 esac
+P1H_IP_BEFORE=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
+  --query 'Reservations[0].Instances[0].PublicIpAddress' --output text 2>&1) \
+  || P1H_IP_BEFORE="<read error>"
 removal_deploy P1H_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE_5446=true
 P1H_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>&1) || {
   echo "FAIL: issue #5446 -- could not read the state after the Phase 1h deploy: $(sanitize_aws_output "${P1H_STATE}")" >&2
@@ -1391,6 +1394,20 @@ if [ "${P1H_USERDATA}" != "${P1H_WANT_USERDATA}" ]; then
   exit 1
 fi
 echo "    OK: #5446 same instance ${INSTANCE_ID} is t3.small, in ${UPDATE_SG_ID} only, running, with the template's user data"
+# The stop/start gives the instance (no Elastic IP) a new public address. The
+# update records it, so the `PublicIp` Output (Fn::GetAtt Instance.PublicIp)
+# must read the NEW live address, not the one the instance had before.
+P1H_IP_AFTER=$(echo "${P1H_INSTANCE}" | jq -r '.PublicIpAddress // ""')
+P1H_IP_OUTPUT=$(echo "${P1H_STATE}" | jq -r '.outputs.PublicIp // ""')
+if [ -z "${P1H_IP_AFTER}" ] || [ "${P1H_IP_OUTPUT}" != "${P1H_IP_AFTER}" ]; then
+  echo "FAIL: issue #5446 -- .outputs.PublicIp is '${P1H_IP_OUTPUT}' after the stop/start, expected the live address '${P1H_IP_AFTER}' (before: ${P1H_IP_BEFORE}); the update did not record the new public address" >&2
+  exit 1
+fi
+if [ "${P1H_IP_AFTER}" = "${P1H_IP_BEFORE}" ]; then
+  echo "    NOTE: #5446 the public address did not change across the stop/start (${P1H_IP_AFTER}); the Output check above holds but does not discriminate this run"
+else
+  echo "    OK: #5446 .outputs.PublicIp moved with the stop/start (${P1H_IP_BEFORE} -> ${P1H_IP_AFTER})"
+fi
 
 # --- Phase 2: destroy (--remove-protection required) ------------------
 echo "==> Phase 2: destroy with --remove-protection (instance is termination-protected)"

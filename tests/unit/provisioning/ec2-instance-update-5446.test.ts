@@ -76,6 +76,7 @@ import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js
 import { isInterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors/marks.js';
+import { isRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
 import type { UpdateContext } from '../../../src/types/resource.js';
 
 // A fresh id per test: the provider remembers, per process, an instance it
@@ -97,8 +98,10 @@ interface World {
   states: string[]; // successive State.Name answers to DescribeInstances
   rootDeviceType?: string;
   association?: { AssociationId: string; State: string };
+  associationSeq?: Array<Array<{ AssociationId: string; State: string }>>; // successive describe answers
   failModify?: (input: Record<string, unknown>) => Error | undefined;
   failStart?: number; // reject the first N StartInstances calls
+  failStop?: Error;
   associateErrors?: Error[]; // rejections for successive associate / replace calls
   vpcId?: string | null;
   defaultGroups?: Array<{ GroupId: string }>;
@@ -129,6 +132,9 @@ function install(): void {
       });
     }
     if (command instanceof DescribeIamInstanceProfileAssociationsCommand) {
+      if (world.associationSeq && world.associationSeq.length > 0) {
+        return Promise.resolve({ IamInstanceProfileAssociations: world.associationSeq.shift() });
+      }
       return Promise.resolve({
         IamInstanceProfileAssociations: world.association ? [world.association] : [],
       });
@@ -137,6 +143,9 @@ function install(): void {
       return Promise.resolve({
         SecurityGroups: world.defaultGroups ?? [{ GroupId: 'sg-default', GroupName: 'default' }],
       });
+    }
+    if (command instanceof StopInstancesCommand && world.failStop) {
+      return Promise.reject(world.failStop);
     }
     if (command instanceof StartInstancesCommand && (world.failStart ?? 0) > 0) {
       world.failStart!--;
@@ -446,8 +455,10 @@ describe('what counts as a change', () => {
     const rec = { ...BASE, UserData: '***' };
     await update(rec, rec, { removedProperties: new Set(), replayingState: true });
     expect(mutatingCalls()).toEqual([]);
-    // No change at all, so not even the stand-in warning.
-    expect(logs.warn).not.toHaveBeenCalled();
+    // Unknowable whether the value behind the two masks moved: said, not sent.
+    expect(logs.warn.mock.calls.flat().join('\n')).toContain(
+      'both sides of the rollback record UserData as a stand-in'
+    );
   });
 
   it('a key both sides lack is never cleared (drift --revert readback)', async () => {
@@ -524,13 +535,14 @@ describe('fix round (#5457 review)', () => {
     );
   });
 
-  it.each([
-    ['pending', ['pending', 'pending', 'running', 'running', 'stopped', 'running']],
-    ['stopping', ['stopping', 'stopping', 'stopped']],
-  ])('starts from %s by waiting first', async (_name, states) => {
-    world.states = [...states];
+  it('starts from pending by waiting for running, then stops, modifies and starts', async () => {
+    world.states = ['pending', 'pending', 'running', 'running', 'stopped', 'running'];
     await update({ ...BASE, InstanceType: 't3.micro' });
-    expect(mutatingCalls().map((c) => c.name)).toContain('ModifyInstanceAttributeCommand');
+    expect(mutatingCalls().map((c) => c.name)).toEqual([
+      'StopInstancesCommand',
+      'ModifyInstanceAttributeCommand',
+      'StartInstancesCommand',
+    ]);
   });
 
   it('a stopping instance is modified and left stopped', async () => {
@@ -678,5 +690,181 @@ describe('fix round 2 (#5457 re-review)', () => {
       { replayingState: true }
     );
     expect(mutatingCalls().map((c) => c.name)).toEqual(['StartInstancesCommand']);
+  });
+});
+
+describe('parent review round (#5457)', () => {
+  it('a user-stopped instance whose modify fails is neither started nor warned about', async () => {
+    world.states = ['stopped'];
+    world.failModify = () => new Error('bad type');
+    await expect(update({ ...BASE, InstanceType: 't3.bogus' })).rejects.toThrow(/bad type/);
+    expect(mutatingCalls().map((c) => c.name)).toEqual(['ModifyInstanceAttributeCommand']);
+    expect(logs.warn).not.toHaveBeenCalled();
+  });
+
+  it('tolerates stale stopped reads right after the start (fewer than three)', async () => {
+    world.states = ['running', 'running', 'stopped', 'stopped', 'stopped', 'pending', 'running'];
+    await update({ ...BASE, InstanceType: 't3.micro' });
+    expect(mutatingCalls().map((c) => c.name)).toEqual([
+      'StopInstancesCommand',
+      'ModifyInstanceAttributeCommand',
+      'StartInstancesCommand',
+    ]);
+  });
+
+  it('remembers an instance AWS stopped right after the start, so the rollback starts it', async () => {
+    world.states = ['running', 'running', 'stopped', 'pending', 'stopped'];
+    await expect(update({ ...BASE, InstanceType: 't3.micro' })).rejects.toThrow(
+      /stopped again right after it was started/
+    );
+    mockSend.mockClear();
+    world.states = ['stopped', 'stopped', 'pending', 'running'];
+    await update(BASE, { ...BASE, InstanceType: 't3.micro' }, { replayingState: true });
+    expect(mutatingCalls().map((c) => c.name)).toEqual([
+      'ModifyInstanceAttributeCommand',
+      'StartInstancesCommand',
+    ]);
+  });
+
+  it('a modify failing at the deadline leaves the instance stopped and says so', async () => {
+    world.states = ['running', 'running', 'stopped'];
+    world.failModify = () => {
+      deadline.expired = true;
+      deadline.remainingMs = 0;
+      return new Error('deadline hit');
+    };
+    await expect(update({ ...BASE, InstanceType: 't3.micro' })).rejects.toThrow(/deadline hit/);
+    expect(mutatingCalls().map((c) => c.name)).toEqual([
+      'StopInstancesCommand',
+      'ModifyInstanceAttributeCommand',
+    ]);
+    expect(logs.warn.mock.calls.flat().join('\n')).toMatch(
+      /is stopped, with its previous settings; cdkd did not start it again\. Start it with: aws ec2 start-instances/
+    );
+  });
+
+  it('sends the no-interruption changes before the stop', async () => {
+    world.states = ['running', 'running', 'stopped', 'running'];
+    world.association = { AssociationId: 'iip-assoc-1', State: 'associated' };
+    const bdm = (dot: boolean) => [{ DeviceName: '/dev/sdf', Ebs: { VolumeSize: 8, DeleteOnTermination: dot } }];
+    await update(
+      {
+        ...BASE,
+        InstanceType: 't3.micro',
+        SecurityGroupIds: ['sg-b'],
+        IamInstanceProfile: 'profile-2',
+        BlockDeviceMappings: bdm(false),
+      },
+      { ...BASE, BlockDeviceMappings: bdm(true) }
+    );
+    expect(mutatingCalls().map((c) => c.name)).toEqual([
+      'ModifyInstanceAttributeCommand', // Groups
+      'ReplaceIamInstanceProfileAssociationCommand',
+      'ModifyInstanceAttributeCommand', // BlockDeviceMappings
+      'StopInstancesCommand',
+      'ModifyInstanceAttributeCommand', // InstanceType
+      'StartInstancesCommand',
+    ]);
+  });
+
+  it('the restart warning names the changes already sent before the stop', async () => {
+    world.states = ['running', 'running', 'stopped'];
+    world.failModify = (input) => (input['InstanceType'] ? new Error('bad type') : undefined);
+    await expect(
+      update({ ...BASE, InstanceType: 't3.bogus', SecurityGroupIds: ['sg-b'] })
+    ).rejects.toThrow(/bad type/);
+    expect(logs.warn.mock.calls.flat().join('\n')).toContain(
+      'cdkd started it again, with the new SecurityGroupIds already applied'
+    );
+  });
+
+  it('a stop AWS refuses (stop protection) issues nothing more and warns nothing', async () => {
+    world.states = ['running', 'running'];
+    world.failStop = Object.assign(new Error('stop protection'), { name: 'OperationNotPermitted' });
+    await expect(update({ ...BASE, InstanceType: 't3.micro' })).rejects.toThrow(/stop protection/);
+    expect(mutatingCalls().map((c) => c.name)).toEqual(['StopInstancesCommand']);
+    expect(logs.warn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['still stopping: waits, then starts', ['stopping', 'stopped'], ['StartInstancesCommand']],
+    ['already running: leaves it', ['running'], []],
+  ])(
+    'a no-stop-member rollback of an instance cdkd left stopped, %s',
+    async (_n, rollbackStates, expected) => {
+      world.states = ['running', 'running', 'stopped'];
+      world.failStart = 1;
+      await expect(update({ ...BASE, InstanceType: 't3.micro' })).rejects.toThrow();
+      mockSend.mockClear();
+      world.states = [...rollbackStates];
+      await update(
+        { ...BASE, InstanceType: '***' },
+        { ...BASE, InstanceType: 't3.micro' },
+        { replayingState: true }
+      );
+      expect(mutatingCalls().map((c) => c.name)).toEqual(expected);
+    }
+  );
+
+  it('waits out a disassociating association before associating', async () => {
+    world.associationSeq = [[{ AssociationId: 'iip-old', State: 'disassociating' }], []];
+    const { IamInstanceProfile: _none, ...rest } = BASE;
+    await update({ ...BASE, IamInstanceProfile: 'profile-2' }, rest);
+    expect(mutatingCalls().map((c) => c.name)).toEqual(['AssociateIamInstanceProfileCommand']);
+    expect(
+      mockSend.mock.calls.filter((c) => c[0] instanceof DescribeIamInstanceProfileAssociationsCommand)
+    ).toHaveLength(2);
+  });
+
+  it.each([
+    [
+      'a removed InstanceType',
+      () => {
+        const { InstanceType: _g, ...rest } = BASE;
+        return update(rest, BASE, { removedProperties: new Set(['InstanceType']) });
+      },
+    ],
+    ['a stand-in', () => update({ ...BASE, UserData: '***' })],
+    ['a malformed UserData', () => update({ ...BASE, UserData: 42 })],
+    [
+      'an instance-store root',
+      () => {
+        world.rootDeviceType = 'instance-store';
+        return update({ ...BASE, InstanceType: 't3.micro' });
+      },
+    ],
+    [
+      'an unstoppable state',
+      () => {
+        world.states = ['shutting-down'];
+        return update({ ...BASE, InstanceType: 't3.micro' });
+      },
+    ],
+    [
+      'a missing default group',
+      () => {
+        world.defaultGroups = [];
+        const { SecurityGroupIds: _g, ...rest } = BASE;
+        return update(rest, BASE, { removedProperties: new Set(['SecurityGroupIds']) });
+      },
+    ],
+  ])('marks %s refused before applying', async (_n, run) => {
+    const err = await run().then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(isRefusedBeforeApplying(err, 'Inst')).toBe(true);
+    expect(mutatingCalls()).toEqual([]);
+  });
+
+  it('a failure after a call was sent is NOT marked refused', async () => {
+    world.states = ['running', 'running', 'stopped'];
+    world.failModify = () => new Error('bad type');
+    const err = await update({ ...BASE, InstanceType: 't3.bogus' }).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(isRefusedBeforeApplying(err, 'Inst')).toBe(false);
   });
 });
