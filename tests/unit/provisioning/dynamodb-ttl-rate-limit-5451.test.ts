@@ -124,6 +124,27 @@ describe('sendTtlWaitingOutRateLimit (issue #5451)', () => {
     expect(s.calls()).toBe(2);
   });
 
+  it('ends a minute-long retry sleep within a second of Ctrl-C', async () => {
+    const s = sender(['refuse', 'ok']);
+    const announce = vi.fn(() => {
+      setTimeout(() => {
+        ctl.interrupted = true;
+      }, 50);
+    });
+    const started = Date.now();
+    const err = await sendTtlWaitingOutRateLimit(s.send, {
+      what: 'w',
+      announce,
+      retryMs: 60_000,
+    }).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(isInterruptedWaitError(err)).toBe(true);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(s.calls()).toBe(1);
+  });
+
   it('ends the wait on Ctrl-C without re-sending', async () => {
     const s = sender(['refuse', 'ok']);
     const announce = vi.fn(() => {
