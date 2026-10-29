@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vite-plus/test';
 import type { ResourceProvider, UpdateContext } from '../../../src/types/resource.js';
-import { FLATTENED, MEMBER_RENAMES, type TypeRenames } from './sdk-wire-member-renames.js';
+import { MEMBER_RENAMES, type TypeRenames } from './sdk-wire-member-renames.js';
 
 /**
  * The differential wire harness behind `sdk-wire-coverage.test.ts` (#3723).
@@ -438,17 +438,30 @@ function chainsAt(loc: Location, flat: Map<string, unknown>): Chain[] {
 }
 
 /**
+ * Names which of several same-command calls a request is (`table` / `stream`
+ * for a `PutResourcePolicyCommand`), from its input: the chain's root is then
+ * `<command>:<name>`, so a value sent in the other call does not match.
+ */
+export type CommandRoot = (input: Record<string, unknown>) => string;
+
+/**
  * Every member chain whose value differs between two runs' inputs. Requests
  * pair up by command and occurrence; an unpaired one (a vary that switches
  * StartLogging to StopLogging) contributes every chain it has, so a leaf whose
  * name and parent happen to occur in it passes whatever it carries: a bound.
  */
-function landingChains(from: readonly string[], to: readonly string[]): Chain[] {
+function landingChains(
+  from: readonly string[],
+  to: readonly string[],
+  roots: Readonly<Record<string, CommandRoot>> = {}
+): Chain[] {
   const byCommand = (lines: readonly string[]) => {
     const m = new Map<string, unknown[]>();
     for (const line of lines) {
-      const [command, input] = JSON.parse(line) as [string, unknown];
-      m.set(command, [...(m.get(command) ?? []), input]);
+      const [command, input] = JSON.parse(line) as [string, Record<string, unknown>];
+      const which = roots[command];
+      const root = which === undefined ? command : `${command}:${which(input)}`;
+      m.set(root, [...(m.get(root) ?? []), input]);
     }
     return m;
   };
@@ -462,7 +475,10 @@ function landingChains(from: readonly string[], to: readonly string[]): Chain[] 
       if (i < lb.length) flattenJson(lb[i], [], fb);
       for (const loc of changedLocations(fa, fb)) {
         for (const c of chainsAt(loc, fb.has(JSON.stringify(loc)) ? fb : fa)) {
-          chains.set(c.join('.'), c);
+          // Rooted at the COMMAND: a leaf the SDK input spreads at its top
+          // level is told apart by which call carries it.
+          const rooted = [command, ...c];
+          chains.set(rooted.join('.'), rooted);
         }
       }
     }
@@ -550,17 +566,16 @@ function levelAt(landed: Chain, pos: number, name: string): number {
  * a value cannot land under an extra parent (`S3BackupConfiguration`) that
  * only happens to sit below the right grandparent. A level may instead match
  * a `containers` name for its bag path (dotted when the SDK adds a level of
- * its own: `Destination.S3BucketDestination`), or be absent from the input
- * (`FLATTENED`, keyed `<leaf path>@<prefix>` so it skips that level for the
- * one leaf that needs it); a named container is tried first, so a
- * `FLATTENED` beside one still goes stale.
+ * its own: `Destination.S3BucketDestination`), or the COMMAND at the chain's
+ * root when the SDK spreads that parent's children at the top of a call
+ * (`MethodResponses` -> `PutMethodResponseCommand`), which then stands for
+ * every ancestor above it.
  */
 function chainNeeds(
   e: Chain,
   landed: Chain,
   leaf: [string, string | undefined],
-  containers: Readonly<Record<string, readonly string[]>>,
-  key: string
+  containers: Readonly<Record<string, readonly string[]>>
 ): string[] | undefined {
   const j = memberAt(landed, leaf[0], leaf[1] !== undefined);
   if (j < 0) return undefined;
@@ -577,16 +592,14 @@ function chainNeeds(
       continue;
     }
     const renamed = (containers[prefix] ?? [])
-      .filter((r) => r !== FLATTENED)
       .map((r) => [r, levelAt(landed, pos, r)] as const)
       .find(([, at]) => at >= 0);
     if (renamed !== undefined) {
       needed.push(`${prefix}=>${renamed[0]}`);
       pos = renamed[1];
-    } else if ((containers[`${key}@${prefix}`] ?? []).includes(FLATTENED)) {
-      // Scoped to the leaf: `FLATTENED` on the whole prefix would let every
-      // child skip the level (a GSI's throughput landing as the table's).
-      needed.push(`${key}@${prefix}=>${FLATTENED}`);
+      // The command itself (`PutMethodResponseCommand`): the call carries
+      // this subtree, so the ancestors above it have no member to compare.
+      if (pos === 0) return needed;
     } else {
       return undefined;
     }
@@ -619,7 +632,7 @@ function wrongMember(
     ];
     for (const l of landed) {
       for (const leaf of leaves) {
-        const needed = chainNeeds(e, l, leaf, renames.containers ?? {}, key);
+        const needed = chainNeeds(e, l, leaf, renames.containers ?? {});
         if (needed !== undefined) matches.push(needed);
       }
     }
@@ -688,6 +701,8 @@ export interface ProbeCase {
   updateContext?: UpdateContext;
   /** CFn leaf name -> the SDK members it may land in under another name. */
   renames?: TypeRenames;
+  /** Command -> which of its calls a request is (`CommandRoot`). */
+  roots?: Readonly<Record<string, CommandRoot>>;
 }
 
 export interface ProbeResult {
@@ -742,10 +757,11 @@ export interface ProbeResult {
  * exceptions. Bounds: only a vary probe is traced, so a container whose
  * removal is the only evidence (an empty list) is not; a TOP-LEVEL leaf has no
  * parent to compare, so it matches a same-named member anywhere, and the
- * outermost CFn ancestor may sit under any SDK member; a
- * `FLATTENED` level is not compared, and is keyed by bag path rather than by
- * command (Lambda's `Code` nests on CreateFunction and flattens on
- * UpdateFunctionCode); a `transformed` path is not traced at all; and a
+ * outermost CFn ancestor may sit under any SDK member (or command); a
+ * container named by its command accepts any child of that parent at the
+ * top of that call, and several calls of one command are told apart only
+ * where the case declares `roots`; a `transformed` path is not traced at
+ * all; and a
  * value landing in its own member AND another passes (the other's own value,
  * then lost, is what its removal and vary probes report silent).
  */
@@ -796,7 +812,7 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
   const wrongMembers: Record<string, string> = {};
   const usedRenames = new Set<string>();
   const trace = (label: string, path: Path, alt: Bag, from: Outcome, to: Outcome): void => {
-    const landed = landingChains(inputsOf.get(from) ?? [], inputsOf.get(to) ?? []);
+    const landed = landingChains(inputsOf.get(from) ?? [], inputsOf.get(to) ?? [], c.roots);
     const expected = expectedChains(c.bag, alt, path);
     const wrong = wrongMember(path, expected, landed, c.renames ?? {}, usedRenames);
     if (wrong !== undefined) wrongMembers[label] = wrong;
@@ -910,6 +926,12 @@ export interface TypeCase {
   arm?: (physicalId: string, bag: Bag) => void;
   /** What every `update()` receives as its context (the record's attributes). */
   updateContext?: UpdateContext;
+  /**
+   * Command -> which of its calls a request is, for a command the provider
+   * sends for more than one CFn subtree (a table's and its stream's
+   * `PutResourcePolicyCommand`); see `CommandRoot`.
+   */
+  roots?: Readonly<Record<string, CommandRoot>>;
   /**
    * Top-levels whose `update()` re-sends the WHOLE value from `next` and never
    * reads `prev`: every `update-remove` probe at or under such a key is silent

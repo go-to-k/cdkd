@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { describe, it, expect } from 'vite-plus/test';
-import { FLATTENED, MEMBER_RENAMES } from './sdk-wire-member-renames.js';
+import { MEMBER_RENAMES } from './sdk-wire-member-renames.js';
 
 /**
  * Fences around the sdk-wire suites' inputs that no single case file sees
@@ -37,17 +37,16 @@ describe('sdk-wire inputs', () => {
     expect(Object.keys(MEMBER_RENAMES).filter((t) => !types.has(t))).toEqual([]);
   });
 
-  it('scopes every FLATTENED to one leaf beneath the parent it skips', () => {
-    // A parent-wide FLATTENED lets every child skip that level, so a GSI's
-    // throughput could land as the table's and still match.
+  it('names a command only as a whole container, at the root', () => {
+    // A command is the chain's first element, so a dotted name carrying one
+    // could never match and would sit in the table excusing nothing.
     const bad: string[] = [];
     for (const [type, { containers = {} }] of Object.entries(MEMBER_RENAMES)) {
       for (const [key, names] of Object.entries(containers)) {
-        const [leaf, parent, extra] = key.split('@');
-        const scoped = parent !== undefined && extra === undefined;
-        const flat = names.includes(FLATTENED);
-        if (flat !== scoped || (scoped && (names.length !== 1 || !leaf!.startsWith(`${parent}.`)))) {
-          bad.push(`${type} ${key}`);
+        for (const n of names) {
+          if (/Command\b/.test(n) && !/^[A-Za-z0-9]+Command(:[a-z0-9-]+)?$/.test(n)) {
+            bad.push(`${type} ${key} ${n}`);
+          }
         }
       }
     }
