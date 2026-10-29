@@ -44,6 +44,10 @@ import {
   createdBeforeFailure,
   isAuxiliaryFailure,
 } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 const TYPE = 'AWS::CodeBuild::Project';
 const ARN = 'arn:aws:codebuild:us-east-1:111122223333:project/proj';
@@ -197,6 +201,36 @@ describe('CodeBuildProvider Visibility / ResourceAccessRole (go-to-k/cdkd#2762)'
       .create('L', TYPE, { ...BASE, Visibility: 'PUBLIC_READ' })
       .catch((e: unknown) => e);
     expect(createdBeforeFailure(error, 'L', TYPE)).toBeUndefined();
+  });
+
+  // go-to-k/cdkd#5511: the sink holds the project name once CreateProject
+  // returned, before the visibility call.
+  it('reports the project name before the visibility call', async () => {
+    const sink = new CreatedResourceSink('L', TYPE);
+    let atVisibility: unknown = 'unset';
+    mockSend.mockImplementation((cmd) => {
+      if (cmd instanceof UpdateProjectVisibilityCommand) {
+        atVisibility = sink.report;
+        return Promise.reject(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }));
+      }
+      return Promise.resolve({ project: { name: 'proj', arn: ARN } });
+    });
+    await collectCreatedResources(sink, () =>
+      provider.create('L', TYPE, { ...BASE, Visibility: 'PUBLIC_READ' }).catch((e: unknown) => e)
+    );
+    expect(atVisibility).toEqual({ physicalId: 'proj' });
+    expect(sink.report).toEqual({ physicalId: 'proj' });
+  });
+
+  it("reports nothing when CreateProject's own call fails", async () => {
+    const sink = new CreatedResourceSink('L', TYPE);
+    mockSend.mockRejectedValue(
+      Object.assign(new Error('exists'), { name: 'ResourceAlreadyExistsException' })
+    );
+    await collectCreatedResources(sink, () =>
+      provider.create('L', TYPE, { ...BASE, Visibility: 'PUBLIC_READ' }).catch((e: unknown) => e)
+    );
+    expect(sink.report).toBeUndefined();
   });
 
   it('updates the pair when it changed, using the ARN UpdateProject returned', async () => {

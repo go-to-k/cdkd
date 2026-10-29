@@ -207,6 +207,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
   isRedactedRecordedValue,
   REDACTED_DELETE_ADDRESS_SKIP_REASON,
@@ -2308,6 +2309,8 @@ export class EC2Provider implements ResourceProvider {
 
       const vpcId = response.Vpc!.VpcId!;
       ec2IdsCreatedByThisProcess.add(vpcId);
+      // go-to-k/cdkd#5511: report before the replay lookup and wiring.
+      reportCreatedResource(logicalId, resourceType, vpcId);
       // Issue #4687: the SDK replayed this CreateVpc inside its `send`, so
       // an earlier attempt may have made one too. Detection only.
       const vpcReplayWindow = replayedSendWindow(response, attemptStartMs);
@@ -2390,6 +2393,7 @@ export class EC2Provider implements ResourceProvider {
       } catch (innerError) {
         try {
           await this.ec2Client.send(new DeleteVpcCommand({ VpcId: vpcId }));
+          retractCreatedResource(logicalId, resourceType, vpcId);
           this.logger.debug(
             `Cleaned up partially-created VPC ${logicalId} (${vpcId}) after wiring failure`
           );
@@ -2771,6 +2775,8 @@ export class EC2Provider implements ResourceProvider {
 
       const subnetId = response.Subnet!.SubnetId!;
       ec2IdsCreatedByThisProcess.add(subnetId);
+      // go-to-k/cdkd#5511: report before the replay lookup and wiring.
+      reportCreatedResource(logicalId, resourceType, subnetId);
       // Issue #4687: the SDK replayed this CreateSubnet inside its `send`, so
       // an earlier attempt may have made one too. Detection only.
       const subnetReplayWindow = replayedSendWindow(response, attemptStartMs);
@@ -2823,6 +2829,7 @@ export class EC2Provider implements ResourceProvider {
       } catch (innerError) {
         try {
           await this.ec2Client.send(new DeleteSubnetCommand({ SubnetId: subnetId }));
+          retractCreatedResource(logicalId, resourceType, subnetId);
           this.logger.debug(
             `Cleaned up partially-created Subnet ${logicalId} (${subnetId}) after wiring failure`
           );
@@ -3443,6 +3450,8 @@ export class EC2Provider implements ResourceProvider {
       } catch {
         createdId = allocationId;
       }
+      // go-to-k/cdkd#5511: report before the replay lookup, tags and association.
+      reportCreatedResource(logicalId, resourceType, createdId);
       ec2IdsCreatedByThisProcess.add(allocationId);
       // Issue #4687: the SDK replayed this AllocateAddress inside its `send`, so
       // an earlier attempt may have made one too. Detection only.
@@ -3529,6 +3538,7 @@ export class EC2Provider implements ResourceProvider {
           } finally {
             watch.dispose();
           }
+          retractCreatedResource(logicalId, resourceType, createdId);
           createdId = undefined;
           this.logger.debug(safeMsg`Released partially-created EIP ${logicalId} (${allocatedId})`);
         } catch (cleanupError) {
@@ -3847,6 +3857,8 @@ export class EC2Provider implements ResourceProvider {
           new AttachVpnGatewayCommand({ VpcId: vpcId, VpnGatewayId: gatewayId })
         );
         attachSent = true;
+        // go-to-k/cdkd#5511: report before the attachment wait.
+        reportCreatedResource(logicalId, resourceType, physicalId);
         await this.waitForVpnGatewayAttachment(gatewayId, vpcId, 'attached', logicalId);
       }
 
@@ -4557,6 +4569,8 @@ export class EC2Provider implements ResourceProvider {
       );
       const natGatewayId = response.NatGateway!.NatGatewayId!;
       createdId = natGatewayId;
+      // go-to-k/cdkd#5511: report before the tags and the available wait.
+      reportCreatedResource(logicalId, resourceType, natGatewayId);
 
       // Tags the create did not carry (go-to-k/cdkd#4971)
       if (!tagsApplied)
@@ -5839,6 +5853,8 @@ export class EC2Provider implements ResourceProvider {
       );
 
       const groupId = response.GroupId!;
+      // go-to-k/cdkd#5511: report before the wiring calls.
+      reportCreatedResource(logicalId, resourceType, groupId);
 
       // CreateSecurityGroupCommand has succeeded — AWS has now committed
       // the SG. If applyTags / Authorize* / Revoke* throws, the SG exists
@@ -5919,6 +5935,7 @@ export class EC2Provider implements ResourceProvider {
       } catch (innerError) {
         try {
           await this.ec2Client.send(new DeleteSecurityGroupCommand({ GroupId: groupId }));
+          retractCreatedResource(logicalId, resourceType, groupId);
           this.logger.debug(
             `Cleaned up partially-created SecurityGroup ${logicalId} (${groupId}) after wiring failure`
           );
@@ -7553,6 +7570,8 @@ export class EC2Provider implements ResourceProvider {
       }
 
       const instanceId = instance.InstanceId;
+      // go-to-k/cdkd#5511: report before the tags and the running wait.
+      reportCreatedResource(logicalId, resourceType, instanceId);
 
       // RunInstancesCommand has succeeded — AWS has now launched the
       // instance and BILLING HAS STARTED. This is the **cost-leak class**
@@ -7699,6 +7718,7 @@ export class EC2Provider implements ResourceProvider {
       } catch (innerError) {
         try {
           await this.ec2Client.send(new TerminateInstancesCommand({ InstanceIds: [instanceId] }));
+          retractCreatedResource(logicalId, resourceType, instanceId);
           // Released only now, because only now is the instance this token
           // names actually going away: a retry reusing it would be handed back
           // a terminated instance. The ordering is load-bearing in the other

@@ -39,6 +39,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { isPlainImportValue, VALUE_NOT_SHOWN } from '../import-helpers.js';
 import { logicalIdShown } from '../composite-id.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
   markNonRetryable,
   markRedactedCause,
@@ -177,7 +178,11 @@ export class LambdaWebFunctionRevisionProvider implements ResourceProvider {
         throw error;
       }
       createdArn = response.revisionArn;
-      if (createdArn) revisionsCreatedByThisProcess.add(createdArn);
+      if (createdArn) {
+        revisionsCreatedByThisProcess.add(createdArn);
+        // go-to-k/cdkd#5511: reported before any wait.
+        reportCreatedResource(logicalId, resourceType, createdArn);
+      }
       // The SDK replayed the create inside its `send`, so an earlier attempt
       // may have made one too (issue #4687). Detection only.
       const replayWindow = replayedSendWindow(response, attemptStartMs);
@@ -214,6 +219,7 @@ export class LambdaWebFunctionRevisionProvider implements ResourceProvider {
             undefined,
             context?.maskSecrets ? { maskSecrets: context.maskSecrets } : undefined
           );
+          retractCreatedResource(logicalId, resourceType, leftBehindArn);
           leftBehindArn = undefined;
         } catch (cleanupError) {
           log.warn(

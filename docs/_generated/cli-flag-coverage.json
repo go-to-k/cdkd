@@ -1349,6 +1349,7 @@
     {
       "flag": "--resource-timeout",
       "integs": [
+        "created-before-failure-revert",
         "docdb-fix-forward-orphan",
         "docdb-neptune",
         "dynamodb-globaltable-replica-settings",
@@ -1366,6 +1367,7 @@
     {
       "flag": "--resource-warn-after",
       "integs": [
+        "created-before-failure-revert",
         "dynamodb-globaltable-replica-settings",
         "dynamodb-gsi-update",
         "emr-instance-configs",
@@ -2395,6 +2397,7 @@
     "--include-deprecated",
     "--include-non-importable",
     "--include-planned-deletion",
+    "--includes",
     "--index-name",
     "--input",
     "--input-type",

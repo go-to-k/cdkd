@@ -30,6 +30,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 
 import type {
   ResourceProvider,
@@ -279,6 +280,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
       const accessKeyId = response.AccessKey?.AccessKeyId;
       const secretAccessKey = response.AccessKey?.SecretAccessKey;
       leftBehindKeyId = accessKeyId;
+      reportCreatedResource(logicalId, resourceType, accessKeyId ?? ''); // go-to-k/cdkd#5511
       if (!accessKeyId || !secretAccessKey) {
         // A partial response with an AccessKeyId means a real key WAS minted —
         // clean it up best-effort before failing, or the retry / next deploy
@@ -288,6 +290,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
             await this.iamClient.send(
               new DeleteAccessKeyCommand({ UserName: userName, AccessKeyId: accessKeyId })
             );
+            retractCreatedResource(logicalId, resourceType, accessKeyId);
             leftBehindKeyId = undefined;
           } catch (cleanupError) {
             const lead = `Failed to clean up IAM access key ${logicalId} (${v(accessKeyId)}) minted by a partial CreateAccessKey response`;
@@ -313,6 +316,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
             await this.iamClient.send(
               new DeleteAccessKeyCommand({ UserName: userName, AccessKeyId: accessKeyId })
             );
+            retractCreatedResource(logicalId, resourceType, accessKeyId);
             leftBehindKeyId = undefined;
             log.debug(
               `Cleaned up partially-created IAM access key ${logicalId} (${v(accessKeyId)}) after status wiring failure`
@@ -384,6 +388,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
         log
       );
       if (leftBehindKeyId !== undefined && reconciled.has(leftBehindKeyId)) {
+        retractCreatedResource(logicalId, resourceType, leftBehindKeyId);
         leftBehindKeyId = undefined;
       }
       const cause = error instanceof Error ? error : undefined;

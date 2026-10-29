@@ -39,6 +39,7 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { markRedactedCause, relayedNameCollision } from '../../deployment/retryable-errors.js';
 
@@ -198,6 +199,8 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
           logicalId
         );
       }
+      // go-to-k/cdkd#5511: reported before any wait.
+      reportCreatedResource(logicalId, resourceType, imageArn);
       this.logger.debug(
         `Created MicroVM image ${logicalId}: ${imageArn} (state=${response.state})`
       );

@@ -42,6 +42,10 @@ import {
 } from '@aws-sdk/client-appsync';
 import { AppSyncProvider } from '../../../src/provisioning/providers/appsync-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 const TYPE = 'AWS::AppSync::GraphQLApi';
@@ -107,5 +111,36 @@ describe('AppSyncProvider GraphQLApi createdBeforeFailure mark (go-to-k/cdkd#458
   it('does not mark when CreateGraphqlApi itself fails', async () => {
     mockSend.mockRejectedValue(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }));
     expect(createdBeforeFailure(await failure(provider), 'Api', TYPE)).toBeUndefined();
+  });
+
+  // go-to-k/cdkd#5511: the engine-owned sink holds the API id once
+  // CreateGraphqlApi returned, before the follow-up calls.
+  it('reports the API id before the env-var put (rollback delete fails)', async () => {
+    const sink = new CreatedResourceSink('Api', TYPE);
+    let atPut: unknown = 'unset';
+    prime('fail');
+    const base = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation(async (command: unknown) => {
+      if (command instanceof PutGraphqlApiEnvironmentVariablesCommand) atPut = sink.report;
+      return base(command);
+    });
+    await collectCreatedResources(sink, () => failure(provider));
+    expect(atPut).toEqual({ physicalId: 'api-1' });
+    expect(sink.report).toEqual({ physicalId: 'api-1' });
+  });
+
+  it('leaves nothing reported when the rollback delete succeeded', async () => {
+    const sink = new CreatedResourceSink('Api', TYPE);
+    prime('ok');
+    await collectCreatedResources(sink, () => failure(provider));
+    expect(mockSend.mock.calls.some((c) => c[0] instanceof DeleteGraphqlApiCommand)).toBe(true);
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('reports nothing when CreateGraphqlApi itself fails', async () => {
+    const sink = new CreatedResourceSink('Api', TYPE);
+    mockSend.mockRejectedValue(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }));
+    await collectCreatedResources(sink, () => failure(provider));
+    expect(sink.report).toBeUndefined();
   });
 });

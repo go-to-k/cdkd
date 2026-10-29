@@ -47,6 +47,10 @@ vi.mock('../../../src/provisioning/providers/lambda-web-function-arns.js', async
 import { LambdaNetworkConnectorProvider } from '../../../src/provisioning/providers/lambda-network-connector-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { resetIdempotencyTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 
@@ -533,5 +537,41 @@ describe('LambdaNetworkConnectorProvider — review round gaps', () => {
     await expect(provider.delete('Nc', ARN, TYPE)).rejects.toThrow(
       'Failed to delete Lambda network connector Nc: throttled'
     );
+  });
+});
+
+describe('LambdaNetworkConnectorProvider — created-resource sink (#5511)', () => {
+  const provider = new LambdaNetworkConnectorProvider();
+
+  it('reports the ARN before the settle wait', async () => {
+    const sink = new CreatedResourceSink('Nc', TYPE);
+    respond(
+      new Map<string, unknown[]>([
+        ['CreateNetworkConnectorCommand', [{ Arn: ARN }]],
+        ['GetNetworkConnectorCommand', [new Error('socket hang up')]],
+      ])
+    );
+    let atWait: unknown = 'not-called';
+    const impl = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation(async (cmd: object) => {
+      if (cmd.constructor.name === 'GetNetworkConnectorCommand' && atWait === 'not-called') {
+        atWait = sink.report;
+      }
+      return impl(cmd);
+    });
+    await collectCreatedResources(sink, () => provider.create('Nc', TYPE, props)).catch(
+      () => undefined
+    );
+    expect(atWait).toEqual({ physicalId: ARN });
+    expect(sink.report).toEqual({ physicalId: ARN });
+  });
+
+  it('reports nothing when the create call fails before an ARN', async () => {
+    const sink = new CreatedResourceSink('Nc', TYPE);
+    respond(new Map<string, unknown[]>([['CreateNetworkConnectorCommand', [new Error('denied')]]]));
+    await collectCreatedResources(sink, () => provider.create('Nc', TYPE, props)).catch(
+      () => undefined
+    );
+    expect(sink.report).toBeUndefined();
   });
 });

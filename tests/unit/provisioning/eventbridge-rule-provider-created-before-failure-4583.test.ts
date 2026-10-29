@@ -39,6 +39,10 @@ import {
 } from '@aws-sdk/client-eventbridge';
 import { EventBridgeRuleProvider } from '../../../src/provisioning/providers/eventbridge-rule-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { provenNothingCreated } from '../../../src/deployment/generated-name-guard.js';
 
 // go-to-k/cdkd#4583: create() self-cleans a PutTargets failure; only a rule
@@ -106,6 +110,35 @@ describe('EventBridgeRuleProvider.create created-before-failure mark (#4583)', (
     const err = await caught(provider.create('Rule', TYPE, PROPS));
     expect(mockSend.mock.calls.some((c) => c[0] instanceof DeleteRuleCommand)).toBe(false);
     expect(createdBeforeFailure(err, 'Rule', TYPE)).toBeUndefined();
+  });
+
+  it('reports the rule ARN before PutTargets; a failed cleanup leaves it (#5511)', async () => {
+    fakeAws({ held: false, deleteFails: true });
+    const sink = new CreatedResourceSink('Rule', TYPE);
+    let atPutTargets: unknown = 'unset';
+    const inner = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof PutTargetsCommand) atPutTargets = sink.report;
+      return inner(cmd);
+    });
+    await caught(collectCreatedResources(sink, () => provider.create('Rule', TYPE, PROPS)));
+    expect(atPutTargets).toEqual({ physicalId: ARN });
+    expect(sink.report).toEqual({ physicalId: ARN });
+  });
+
+  it('retracts the report when the wiring cleanup deleted the rule (#5511)', async () => {
+    fakeAws({ held: false, deleteFails: false });
+    const sink = new CreatedResourceSink('Rule', TYPE);
+    await caught(collectCreatedResources(sink, () => provider.create('Rule', TYPE, PROPS)));
+    expect(mockSend.mock.calls.some((c) => c[0] instanceof DeleteRuleCommand)).toBe(true);
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('reports nothing for a rule that held the name before PutRule (#5511)', async () => {
+    fakeAws({ held: true, deleteFails: false });
+    const sink = new CreatedResourceSink('Rule', TYPE);
+    await caught(collectCreatedResources(sink, () => provider.create('Rule', TYPE, PROPS)));
+    expect(sink.report).toBeUndefined();
   });
 
   it('does not mark when PutRule itself fails', async () => {

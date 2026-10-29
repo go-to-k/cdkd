@@ -1,3 +1,4 @@
+import { clearCreatedReport } from '../../provisioning/created-resource-sink.js';
 import {
   currentNameGeneration,
   getCurrentStackInstanceId,
@@ -365,6 +366,9 @@ export async function provisionCreate(
     ...templateAttrs,
     provisionedBy: createDecision.provisionedBy,
   };
+  // go-to-k/cdkd#5511: state now holds the resource, so no failure after
+  // this point journals it as an orphan.
+  clearCreatedReport();
   engine.recordInlinePolicyWrite(logicalId, 'create');
   // go-to-k/cdkd#4656: does the provider echo a create-only value a `NoEcho`
   // parameter fed exactly? Read once, against the masked record.

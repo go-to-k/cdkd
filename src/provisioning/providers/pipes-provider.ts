@@ -19,6 +19,7 @@ import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../types/resource.
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
 import {
@@ -631,6 +632,8 @@ export class PipesPipeProvider implements ResourceProvider {
         })
       );
       createdIdentity = pipeIdentityToken(name, created?.Arn, created?.CreationTime);
+      // go-to-k/cdkd#5511: reported before the settle wait.
+      reportCreatedResource(logicalId, resourceType, name, createdIdentity);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       // AWS echoes resolved inputs into its text: masked like the settle
@@ -1360,7 +1363,10 @@ export class PipesPipeProvider implements ResourceProvider {
     try {
       await this.getClient().send(new DeletePipeCommand({ Name: name }));
     } catch (cleanupError) {
-      if (cleanupError instanceof NotFoundException) return original;
+      if (cleanupError instanceof NotFoundException) {
+        retractCreatedResource(logicalId, resourceType, name);
+        return original;
+      }
       return orphaned(describeAwsFailure(cleanupError).summary);
     }
     let gone = false;
@@ -1387,6 +1393,7 @@ export class PipesPipeProvider implements ResourceProvider {
       return orphaned('its delete did not complete (AWS reports a failed or rolled-back delete)');
     }
     if (gone) {
+      retractCreatedResource(logicalId, resourceType, name);
       original.message += ' (cdkd deleted the pipe it had created, so nothing is left behind)';
       return original;
     }
@@ -1394,6 +1401,7 @@ export class PipesPipeProvider implements ResourceProvider {
     // no read at all), or a status read that failed. Only a DELETING read
     // shows the delete progressing; without one, cdkd cannot say it did.
     if (sawDeleting) {
+      retractCreatedResource(logicalId, resourceType, name);
       original.message +=
         ' (cdkd started deleting the pipe it had created; a re-deploy may report the ' +
         'name in use until AWS finishes)';

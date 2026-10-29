@@ -47,6 +47,10 @@ import {
 } from '@aws-sdk/client-codecommit';
 import { CodeCommitRepositoryProvider } from '../../../src/provisioning/providers/codecommit-repository-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 // go-to-k/cdkd#4583: create() self-cleans a post-create failure; only a
 // repository that cleanup failed to delete is named for the failed-CREATE
@@ -117,5 +121,38 @@ describe('CodeCommitRepositoryProvider.create created-before-failure mark (#4583
     const err = await caught(provider.create('Repo', TYPE, { RepositoryName: REPO, Triggers: 'x' }));
     expect(mockSend).not.toHaveBeenCalled();
     expect(createdBeforeFailure(err, 'Repo', TYPE)).toBeUndefined();
+  });
+
+  // go-to-k/cdkd#5511: the sink holds the repository name once CreateRepository
+  // returned, before the Code seed and triggers.
+  it('reports the repository name before the post-create steps', async () => {
+    const sink = new CreatedResourceSink('Repo', TYPE);
+    let atTriggers: unknown = 'unset';
+    fakeAws(true);
+    const base = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof PutRepositoryTriggersCommand) atTriggers = sink.report;
+      return base(cmd);
+    });
+    await collectCreatedResources(sink, () => caught(provider.create('Repo', TYPE, PROPS)));
+    expect(atTriggers).toEqual({ physicalId: REPO });
+    expect(sink.report).toEqual({ physicalId: REPO });
+  });
+
+  it('leaves nothing reported when the self-clean deleted the repository', async () => {
+    const sink = new CreatedResourceSink('Repo', TYPE);
+    fakeAws(false);
+    await collectCreatedResources(sink, () => caught(provider.create('Repo', TYPE, PROPS)));
+    expect(mockSend.mock.calls.some((c) => c[0] instanceof DeleteRepositoryCommand)).toBe(true);
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('reports nothing when CreateRepository itself fails', async () => {
+    const sink = new CreatedResourceSink('Repo', TYPE);
+    mockSend.mockRejectedValue(
+      new RepositoryNameExistsException({ message: 'exists', $metadata: {} })
+    );
+    await collectCreatedResources(sink, () => caught(provider.create('Repo', TYPE, PROPS)));
+    expect(sink.report).toBeUndefined();
   });
 });

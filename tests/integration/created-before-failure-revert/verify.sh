@@ -47,12 +47,27 @@
 #         AWS and no "State preserved" claim. Before the fix the parent kept
 #         its state and needed a second destroy. The fixture then deletes the
 #         repository by hand.
+#   PHASE K (go-to-k/cdkd#5511, the deadline drops the provider's marked error):
+#     K1. Deploy the deadline stack --no-rollback --verbose under a 30s ACM
+#         deadline, with the provider's poll interval at 10 minutes.
+#         RequestCertificate returns at once; the provider's ISSUED wait polls
+#         once right away (PENDING_VALIDATION) and then sleeps, so the deadline
+#         always fires inside that sleep, and the marked error the wait would
+#         throw is dropped. The deploy fails with the timeout; the certificate
+#         EXISTS (proof the create returned); state has no record of it; the
+#         journal's failed op carries physicalId = that ARN and
+#         physicalIdRecoveredFromError = true, from the id the provider
+#         reported to the engine's created-resource sink.
+#     K2. `cdkd rollback --force --revert-failed` exits 0 and deletes the
+#         certificate (describe-certificate answers ResourceNotFoundException),
+#         and the journal and state.json are gone.
 #
 # After a run killed with SIGKILL (no trap runs), delete by hand the ECR
 # repositories `cdkdcreatedbeforefailurerevertecrexample-orphan-repo` and
-# `cdkdcreatedbeforefailurerevertnestedexample-orphan-repo` and the SNS topic
-# `CdkdCreatedBeforeFailureRevertSnsExample-topic` — the next run's pre-run
-# sweep also removes them.
+# `cdkdcreatedbeforefailurerevertnestedexample-orphan-repo`, the SNS topic
+# `CdkdCreatedBeforeFailureRevertSnsExample-topic` and every ACM certificate
+# for `cdkd-cbfr-deadline.example.test` — the next run's pre-run sweep also
+# removes them.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -101,10 +116,14 @@ ECR_STACK="CdkdCreatedBeforeFailureRevertEcrExample"
 SNS_STACK="CdkdCreatedBeforeFailureRevertSnsExample"
 NESTED_STACK="CdkdCreatedBeforeFailureRevertNestedExample"
 NESTED_CHILD="${NESTED_STACK}~Child"
+DEADLINE_STACK="CdkdCreatedBeforeFailureRevertDeadlineExample"
 # The names the stacks derive from their own ids (lib/*-stack.ts).
 REPO_NAME="cdkdcreatedbeforefailurerevertecrexample-orphan-repo"
 TOPIC_NAME="${SNS_STACK}-topic"
 NESTED_REPO_NAME="cdkdcreatedbeforefailurerevertnestedexample-orphan-repo"
+# The deadline stack's certificate domain (lib/*-stack.ts): `.test` is a
+# reserved TLD, so nobody can ever validate it.
+CERT_DOMAIN="cdkd-cbfr-deadline.example.test"
 ECR_STATE_KEY="cdkd/${ECR_STACK}/${REGION}/state.json"
 ECR_JOURNAL_KEY="cdkd/${ECR_STACK}/${REGION}/rollback-journal.json"
 SNS_STATE_KEY="cdkd/${SNS_STACK}/${REGION}/state.json"
@@ -113,6 +132,8 @@ NESTED_STATE_KEY="cdkd/${NESTED_STACK}/${REGION}/state.json"
 NESTED_JOURNAL_KEY="cdkd/${NESTED_STACK}/${REGION}/rollback-journal.json"
 CHILD_STATE_KEY="cdkd/${NESTED_CHILD}/${REGION}/state.json"
 CHILD_JOURNAL_KEY="cdkd/${NESTED_CHILD}/${REGION}/rollback-journal.json"
+DEADLINE_STATE_KEY="cdkd/${DEADLINE_STACK}/${REGION}/state.json"
+DEADLINE_JOURNAL_KEY="cdkd/${DEADLINE_STACK}/${REGION}/rollback-journal.json"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cbf-revert.XXXXXX")"
@@ -138,9 +159,55 @@ if [ -z "${ACCOUNT_ID}" ] || [ -z "${PARTITION}" ]; then
 fi
 TOPIC_ARN="arn:${PARTITION}:sns:${REGION}:${ACCOUNT_ID}:${TOPIC_NAME}"
 
-echo "[verify] region=${REGION} stacks=${ECR_STACK},${SNS_STACK},${NESTED_STACK} state-bucket=${STATE_BUCKET}"
+echo "[verify] region=${REGION} stacks=${ECR_STACK},${SNS_STACK},${NESTED_STACK},${DEADLINE_STACK} state-bucket=${STATE_BUCKET}"
 
-# Best-effort removal of everything this fixture can leave: the two named
+# The ARNs of every certificate for CERT_DOMAIN, one per line. A failed
+# listing returns non-zero, so a caller never reads it as "none".
+cert_arns() {
+  local listed
+  listed="$(aws acm list-certificates --region "${REGION}" \
+    --certificate-statuses PENDING_VALIDATION ISSUED INACTIVE EXPIRED VALIDATION_TIMED_OUT REVOKED FAILED \
+    --includes keyTypes=RSA_1024,RSA_2048,RSA_3072,RSA_4096,EC_prime256v1,EC_secp384r1,EC_secp521r1 \
+    --output json)" || return 1
+  printf '%s' "${listed}" | jq -r --arg d "${CERT_DOMAIN}" \
+    '.CertificateSummaryList[] | select(.DomainName == $d) | .CertificateArn'
+}
+
+# Every certificate for CERT_DOMAIN is deleted, and then proven gone: the
+# listing is the exact domain this fixture alone uses. Errors are shown, never
+# discarded; returns non-zero, naming the certificate, when one survives.
+sweep_certs() {
+  local arns arn out rc=0
+  if ! arns="$(cert_arns)"; then
+    echo "[verify] FAIL: sweep: could not list ACM certificates for ${CERT_DOMAIN}" >&2
+    return 1
+  fi
+  for arn in ${arns}; do
+    if ! out="$(aws acm delete-certificate --certificate-arn "${arn}" --region "${REGION}" 2>&1)"; then
+      echo "[verify] sweep: delete-certificate ${arn} failed: ${out}" >&2
+    fi
+  done
+  for arn in ${arns}; do
+    if ! wait_gone_quiet aws acm describe-certificate --certificate-arn "${arn}" --region "${REGION}"; then
+      echo "[verify] FAIL: sweep: ACM certificate ${arn} (${CERT_DOMAIN}) still exists; delete it by hand" >&2
+      rc=1
+    fi
+  done
+  return "${rc}"
+}
+
+# gone_probe, polled for up to 60s; returns non-zero instead of exiting.
+wait_gone_quiet() { # usage: wait_gone_quiet aws <service> <read-verb> [args...]
+  local deadline
+  deadline=$(( $(date +%s) + 60 ))
+  while ! gone_probe "$@"; do
+    [ "$(date +%s)" -ge "${deadline}" ] && return 1
+    sleep 3
+  done
+  return 0
+}
+
+# Best-effort removal of everything this fixture can leave: the named
 # resources first (neither is ever in state, so the state destroy cannot reach
 # them), then both stacks' state and their whole state prefixes (journal,
 # lock, events). Every name is a literal of this fixture, so no listing is
@@ -151,12 +218,14 @@ sweep() {
   aws ecr delete-repository --repository-name "${REPO_NAME}" --force --region "${REGION}" >/dev/null 2>&1
   aws ecr delete-repository --repository-name "${NESTED_REPO_NAME}" --force --region "${REGION}" >/dev/null 2>&1
   aws sns delete-topic --topic-arn "${TOPIC_ARN}" --region "${REGION}" >/dev/null 2>&1
-  for s in "${ECR_STACK}" "${SNS_STACK}" "${NESTED_STACK}" "${NESTED_CHILD}"; do
+  certs_rc=0
+  sweep_certs || certs_rc=1
+  for s in "${ECR_STACK}" "${SNS_STACK}" "${NESTED_STACK}" "${NESTED_CHILD}" "${DEADLINE_STACK}"; do
     node "${LOCAL_DIST}" state destroy "${s}" --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" --yes >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${s}/" --recursive >/dev/null 2>&1
   done
-  true
+  exit "${certs_rc}"
   )
 }
 
@@ -166,7 +235,9 @@ cleanup() {
   # the EXIT trap and sweep a second time.
   trap - EXIT INT TERM
   echo "[verify] cleanup (rc=${rc})"
-  sweep
+  if ! sweep && [ "${rc}" -eq 0 ]; then
+    rc=1
+  fi
   rm -rf "${LOG_DIR}"
   exit "${rc}"
 }
@@ -222,8 +293,17 @@ wait_gone "pre-run: ${REPO_NAME} still exists after the sweep" $(repo_probe)
 wait_gone "pre-run: ${TOPIC_ARN} still exists after the sweep" $(topic_probe)
 # shellcheck disable=SC2046
 wait_gone "pre-run: ${NESTED_REPO_NAME} still exists after the sweep" $(nested_repo_probe)
+if ! PRE_CERTS="$(cert_arns)"; then
+  echo "[verify] FAIL: pre-run: could not list ACM certificates for ${CERT_DOMAIN}" >&2
+  exit 1
+fi
+if [ -n "${PRE_CERTS}" ]; then
+  echo "[verify] FAIL: pre-run: an ACM certificate for ${CERT_DOMAIN} still exists after the sweep: ${PRE_CERTS}" >&2
+  exit 1
+fi
 for key in "${ECR_STATE_KEY}" "${ECR_JOURNAL_KEY}" "${SNS_STATE_KEY}" "${SNS_JOURNAL_KEY}" \
-  "${NESTED_STATE_KEY}" "${NESTED_JOURNAL_KEY}" "${CHILD_STATE_KEY}" "${CHILD_JOURNAL_KEY}"; do
+  "${NESTED_STATE_KEY}" "${NESTED_JOURNAL_KEY}" "${CHILD_STATE_KEY}" "${CHILD_JOURNAL_KEY}" \
+  "${DEADLINE_STATE_KEY}" "${DEADLINE_JOURNAL_KEY}"; do
   assert_gone "pre-run: s3://${STATE_BUCKET}/${key} still exists after the sweep" \
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
 done
@@ -536,6 +616,89 @@ wait_gone "phase N3: ${NESTED_REPO_NAME} still exists after the fixture deleted 
 echo "[verify] phase N3 ok: one destroy deleted both states, kept the unproven repository (exit 2)"
 
 # ---------------------------------------------------------------------------
+# PHASE K: ACM — the deadline drops the marked error; the sink journals it
+# ---------------------------------------------------------------------------
+# Measured: ACM marks this certificate FAILED about 11s after
+# RequestCertificate (`.test` is no public domain), and the provider's wait
+# polls DescribeCertificate once right away, then every
+# CDKD_ACM_POLL_INTERVAL_MS (10s by default). So at the default the second
+# poll can read FAILED and the provider throws on its own before a 30s
+# deadline. With the interval at 10 minutes, the only poll before the
+# deadline is the first one (about 1s in, PENDING_VALIDATION), and the 30s
+# deadline, which RequestCertificate's answer beats by a wide margin even
+# under load, always fires in the sleep after it. The provider has no
+# deadline margin of its own.
+echo "[verify] phase K1: deploy ${DEADLINE_STACK} --no-rollback --verbose under a 30s ACM deadline (expect FAILURE in the ISSUED wait)"
+export CDKD_ACM_POLL_INTERVAL_MS=600000
+deploy_expect_failure "${DEADLINE_STACK}" "${LOG_DIR}/k1.log" --verbose \
+  --resource-warn-after AWS::CertificateManager::Certificate=10s \
+  --resource-timeout AWS::CertificateManager::Certificate=30s
+unset CDKD_ACM_POLL_INTERVAL_MS
+if ! grep -qE "DeadlineCert \(AWS::CertificateManager::Certificate\) in ${REGION} timed out after" "${LOG_DIR}/k1.log"; then
+  echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): the deploy did not fail on DeadlineCert's 30s deadline (or the wording drifted)" >&2
+  exit 1
+fi
+# PREMISE: RequestCertificate returned before the deadline. The provider logs
+# this line right after it reports the certificate, before the ISSUED wait.
+K1_ARN="$(sed -n 's/.*Requested ACM certificate: \(arn:[^[:space:]]*\).*/\1/p' "${LOG_DIR}/k1.log" | head -n 1)"
+if [ -z "${K1_ARN}" ]; then
+  echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): no 'Requested ACM certificate: <arn>' line, so RequestCertificate had not returned when the deadline fired" >&2
+  exit 1
+fi
+if ! K1_STATUS="$(aws acm describe-certificate --certificate-arn "${K1_ARN}" --region "${REGION}" \
+    --query 'Certificate.Status' --output text 2>&1)"; then
+  echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): describe-certificate for the requested certificate failed: ${K1_STATUS}" >&2
+  exit 1
+fi
+# FAILED is expected too: ACM fails this domain about 11s in, after the
+# provider's only poll. Either way the certificate exists and needs deleting.
+case "${K1_STATUS}" in
+  PENDING_VALIDATION | FAILED) ;;
+  *)
+    echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): the requested certificate is ${K1_STATUS}, not PENDING_VALIDATION or FAILED" >&2
+    exit 1
+    ;;
+esac
+if [ "$(state_has_resource "${DEADLINE_STATE_KEY}" DeadlineCert)" != "false" ]; then
+  echo "[verify] FAIL: phase K1: state records DeadlineCert (expected no record for a CREATE the deadline failed)" >&2
+  exit 1
+fi
+DEADLINE_OP="$(journal_failed_op "${DEADLINE_JOURNAL_KEY}" DeadlineCert)"
+if [ -z "${DEADLINE_OP}" ]; then
+  echo "[verify] FAIL: phase K1: the journal records no failed op for DeadlineCert" >&2
+  exit 1
+fi
+DEADLINE_OP_FIELDS="$(printf '%s' "${DEADLINE_OP}" \
+  | jq -r '[.changeType // "<absent>", .physicalId // "<absent>", (.physicalIdRecoveredFromError | tostring)] | join(" ")')"
+# Before #5511 the deadline dropped the provider's marked error, so the failed
+# CREATE journaled no physical id and the certificate was an orphan nothing
+# recorded.
+if [ "${DEADLINE_OP_FIELDS}" != "CREATE ${K1_ARN} true" ]; then
+  echo "[verify] FAIL: phase K1: failed DeadlineCert op journaled changeType/physicalId/physicalIdRecoveredFromError = '${DEADLINE_OP_FIELDS}' (expected 'CREATE ${K1_ARN} true')" >&2
+  echo "${DEADLINE_OP}" | jq . | sed 's/^/  /' >&2
+  exit 1
+fi
+echo "[verify] phase K1 ok: the certificate exists (${K1_STATUS}), the deadline failed its CREATE, and the journal names it"
+
+echo "[verify] phase K2: cdkd rollback ${DEADLINE_STACK} --force --revert-failed (expect exit 0, the certificate DELETED)"
+K2_RC="$(run_rollback "${DEADLINE_STACK}" "${LOG_DIR}/k2.log")"
+if [ "${K2_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: phase K2: the rollback exited ${K2_RC} (expected 0 -- output above)" >&2
+  exit 1
+fi
+if ! grep -qF "deleting partially-created DeadlineCert" "${LOG_DIR}/k2.log"; then
+  echo "[verify] FAIL: phase K2: the rollback did not delete DeadlineCert as a partially-created resource" >&2
+  exit 1
+fi
+wait_gone "phase K2: ${K1_ARN} still exists after the rollback that deleted it" \
+  aws acm describe-certificate --certificate-arn "${K1_ARN}" --region "${REGION}"
+assert_gone "phase K2: the rollback journal is still present" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${DEADLINE_JOURNAL_KEY}"
+assert_gone "phase K2: state.json is still present after the initial-deploy rollback" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${DEADLINE_STATE_KEY}"
+echo "[verify] phase K2 ok: the rollback deleted the journaled certificate (exit 0), journal and state gone"
+
+# ---------------------------------------------------------------------------
 # FINAL: nothing left
 # ---------------------------------------------------------------------------
 # shellcheck disable=SC2046
@@ -544,10 +707,18 @@ assert_gone "${REPO_NAME} still exists at the end of the run" $(repo_probe)
 assert_gone "${TOPIC_ARN} still exists at the end of the run" $(topic_probe)
 # shellcheck disable=SC2046
 assert_gone "${NESTED_REPO_NAME} still exists at the end of the run" $(nested_repo_probe)
-for s in "${ECR_STACK}" "${SNS_STACK}" "${NESTED_STACK}" "${NESTED_CHILD}"; do
+if ! FINAL_CERTS="$(cert_arns)"; then
+  echo "[verify] FAIL: could not list ACM certificates for ${CERT_DOMAIN} at the end of the run" >&2
+  exit 1
+fi
+if [ -n "${FINAL_CERTS}" ]; then
+  echo "[verify] FAIL: an ACM certificate for ${CERT_DOMAIN} still exists at the end of the run: ${FINAL_CERTS}" >&2
+  exit 1
+fi
+for s in "${ECR_STACK}" "${SNS_STACK}" "${NESTED_STACK}" "${NESTED_CHILD}" "${DEADLINE_STACK}"; do
   aws s3 rm "s3://${STATE_BUCKET}/cdkd/${s}/" --recursive >/dev/null 2>&1 || true
 done
 
 rm -rf "${LOG_DIR}"
 trap - EXIT INT TERM
-echo "[verify] PASS — a created-before-failure resource is journaled and reverted; a self-cleaned one is left alone; a nested child's kept orphan does not keep its parent's state"
+echo "[verify] PASS — a created-before-failure resource is journaled and reverted; a self-cleaned one is left alone; a nested child's kept orphan does not keep its parent's state; a create the deadline cut short is journaled from the sink and reverted"

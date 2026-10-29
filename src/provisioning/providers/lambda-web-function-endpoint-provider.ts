@@ -19,6 +19,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { isPlainImportValue, VALUE_NOT_SHOWN } from '../import-helpers.js';
 import { logicalIdShown } from '../composite-id.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
 import { markRedactedCause, relayedNameCollision } from '../../deployment/retryable-errors.js';
 import { definedAttributes } from '../attribute-map.js';
@@ -189,6 +190,8 @@ export class LambdaWebFunctionEndpointProvider implements ResourceProvider {
           logicalId
         );
       }
+      // go-to-k/cdkd#5511: reported before the settle wait.
+      reportCreatedResource(logicalId, resourceType, createdArn);
       const settled = await this.waitForSettled(
         input.functionName!,
         input.endpointName!,

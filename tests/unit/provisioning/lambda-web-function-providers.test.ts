@@ -64,6 +64,10 @@ import {
 } from '../../../src/provisioning/providers/lambda-web-function-arns.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { isInUseRefusal } from '../../../src/deployment/superseded-resources.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
@@ -1199,5 +1203,105 @@ describe('Lambda Web providers — re-review round 2 gaps', () => {
     );
     await endpoint.update('Ep', EP_ARN, EP_TYPE, { ...epBase, RevisionWeights: sent }, epBase);
     expect(callsOf(GetWebFunctionEndpointCommand)).toHaveLength(1);
+  });
+});
+
+describe('Lambda Web providers — created-resource sink (#5511)', () => {
+  const revision = new LambdaWebFunctionRevisionProvider();
+  const endpoint = new LambdaWebFunctionEndpointProvider();
+  const revProps = {
+    FunctionName: FN_ARN,
+    BuildConfig: {
+      CodeConfig: { S3Object: { Bucket: 'code-bucket', Key: 'app.zip', VersionId: 'v1' } },
+      RuntimeConfig: { Runtime: 'nodejs24.x' },
+    },
+    ServiceConfig: { ExecutionRoleArn: ROLE, TimeoutSeconds: '30' },
+  };
+  const epProps = {
+    FunctionName: FN_ARN,
+    EndpointName: 'prod',
+    EndpointType: 'HomeRegion',
+    AuthType: 'IamAuth',
+    RevisionWeights: [{ RevisionId: 'rev-abc12', Weight: 100 }],
+  };
+
+  /** Records `sink.report` at the first call of `commandName`, then answers as before. */
+  function captureAt(commandName: string, sink: CreatedResourceSink): { value: unknown } {
+    const captured = { value: 'not-called' as unknown };
+    const impl = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation(async (cmd: object) => {
+      if (cmd.constructor.name === commandName && captured.value === 'not-called') {
+        captured.value = sink.report;
+      }
+      return impl(cmd);
+    });
+    return captured;
+  }
+
+  it('revision: reports the ARN before the readiness wait and keeps it when the cleanup delete failed', async () => {
+    const sink = new CreatedResourceSink('Rev', REV_TYPE);
+    respond(
+      new Map<string, unknown[]>([
+        ['CreateWebFunctionRevisionCommand', [{ revisionArn: REV_ARN, revisionId: 'rev-abc12' }]],
+        ['GetWebFunctionRevisionCommand', [{ state: 'Failed', stateReason: 'build failed' }]],
+      ])
+    );
+    const atWait = captureAt('GetWebFunctionRevisionCommand', sink);
+    await collectCreatedResources(sink, () => revision.create('Rev', REV_TYPE, revProps)).catch(
+      () => undefined
+    );
+    expect(atWait.value).toEqual({ physicalId: REV_ARN });
+    expect(sink.report).toEqual({ physicalId: REV_ARN });
+  });
+
+  it('revision: retracts the report when the cleanup deleted the revision', async () => {
+    const sink = new CreatedResourceSink('Rev', REV_TYPE);
+    const throttled = Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+    respond(
+      new Map<string, unknown[]>([
+        ['CreateWebFunctionRevisionCommand', [{ revisionArn: REV_ARN, revisionId: 'rev-abc12' }]],
+        ['GetWebFunctionRevisionCommand', [throttled, notFound()]],
+        ['DeleteWebFunctionRevisionCommand', [{}]],
+      ])
+    );
+    await collectCreatedResources(sink, () => revision.create('Rev', REV_TYPE, revProps)).catch(
+      () => undefined
+    );
+    expect(callsOf(DeleteWebFunctionRevisionCommand)).toHaveLength(1);
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('revision: reports nothing when CreateWebFunctionRevision itself fails', async () => {
+    const sink = new CreatedResourceSink('Rev', REV_TYPE);
+    respond(new Map<string, unknown[]>([['CreateWebFunctionRevisionCommand', [new Error('denied')]]]));
+    await collectCreatedResources(sink, () => revision.create('Rev', REV_TYPE, revProps)).catch(
+      () => undefined
+    );
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('endpoint: reports the ARN before the settle wait', async () => {
+    const sink = new CreatedResourceSink('Ep', EP_TYPE);
+    respond(
+      new Map<string, unknown[]>([
+        ['CreateWebFunctionEndpointCommand', [{ endpointArn: EP_ARN }]],
+        ['GetWebFunctionEndpointCommand', [{ state: 'Failed', stateReason: 'no capacity' }]],
+      ])
+    );
+    const atWait = captureAt('GetWebFunctionEndpointCommand', sink);
+    await collectCreatedResources(sink, () => endpoint.create('Ep', EP_TYPE, epProps)).catch(
+      () => undefined
+    );
+    expect(atWait.value).toEqual({ physicalId: EP_ARN });
+    expect(sink.report).toEqual({ physicalId: EP_ARN });
+  });
+
+  it('endpoint: reports nothing when CreateWebFunctionEndpoint itself fails', async () => {
+    const sink = new CreatedResourceSink('Ep', EP_TYPE);
+    respond(new Map<string, unknown[]>([['CreateWebFunctionEndpointCommand', [new Error('denied')]]]));
+    await collectCreatedResources(sink, () => endpoint.create('Ep', EP_TYPE, epProps)).catch(
+      () => undefined
+    );
+    expect(sink.report).toBeUndefined();
   });
 });

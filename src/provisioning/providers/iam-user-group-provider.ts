@@ -65,6 +65,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import {
   onlySecretDerived,
@@ -602,6 +603,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       const response = await createClient.send(new CreateUserCommand(createParams));
       leftBehind = true;
       createdUserIdentity = userOrGroupIdentityToken(response.User?.UserId);
+      reportCreatedResource(logicalId, resourceType, userName, createdUserIdentity); // go-to-k/cdkd#5511
 
       // CreateUserCommand has succeeded — AWS has now committed the User
       // (and the inline `Tags` from `createParams` if any). Every
@@ -709,6 +711,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
             if (!(err instanceof NoSuchEntityException)) throw err;
           }
           await this.iamClient.send(new DeleteUserCommand({ UserName: userName }));
+          retractCreatedResource(logicalId, resourceType, userName);
           leftBehind = false;
           log.debug(
             `Cleaned up partially-created IAM user ${logicalId} (${v(userName)}) after wiring failure`
@@ -1433,6 +1436,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       const response = await createClient.send(new CreateGroupCommand(createParams));
       leftBehind = true;
       createdGroupIdentity = userOrGroupIdentityToken(response.Group?.GroupId);
+      reportCreatedResource(logicalId, resourceType, groupName, createdGroupIdentity); // go-to-k/cdkd#5511
 
       // CreateGroupCommand has succeeded — AWS has now committed the
       // Group. Every subsequent call wires sub-resources onto it
@@ -1486,6 +1490,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
           await this.detachAllGroupPolicies(groupName, log);
           await this.deleteAllGroupInlinePolicies(groupName, log);
           await this.iamClient.send(new DeleteGroupCommand({ GroupName: groupName }));
+          retractCreatedResource(logicalId, resourceType, groupName);
           leftBehind = false;
           log.debug(
             `Cleaned up partially-created IAM group ${logicalId} (${v(groupName)}) after wiring failure`

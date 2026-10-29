@@ -49,6 +49,7 @@ import {
   relayedNameCollision,
 } from '../../deployment/retryable-errors.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 
 /**
  * The stream ARN and consumer name a consumer ARN carries
@@ -231,6 +232,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
       // Poll until ACTIVE.
       const consumerArn = consumer.ConsumerARN;
       createdArn = consumerArn;
+      reportCreatedResource(logicalId, resourceType, consumerArn);
       await this.waitForConsumerActive(consumerArn);
 
       this.logger.debug(`Successfully registered Kinesis stream consumer ${logicalId}`);

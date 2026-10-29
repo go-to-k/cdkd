@@ -50,6 +50,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { provenNothingCreated } from '../../../src/deployment/generated-name-guard.js';
 
 const RESOURCE_TYPE = 'AWS::S3::Bucket';
@@ -215,6 +219,54 @@ describe('S3BucketProvider partial-create cleanup (Issue #376)', () => {
         'PutBucketVersioningCommand'
       );
       expect(createdBeforeFailure(error, 'MyBucket', RESOURCE_TYPE)).toBeUndefined();
+    });
+
+    it('reports the bucket name to the sink before the wiring calls (#5511)', async () => {
+      const sink = new CreatedResourceSink('MyBucket', RESOURCE_TYPE);
+      let reportAtWiring: unknown = 'not-called';
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockImplementationOnce(async () => {
+        reportAtWiring = sink.report;
+        throw new Error('wiring boom');
+      });
+      mockSend.mockRejectedValueOnce(new Error('DeleteBucket boom'));
+      await collectCreatedResources(sink, () => provider.create('MyBucket', RESOURCE_TYPE, props)).catch(
+        () => undefined
+      );
+      expect(reportAtWiring).toEqual({ physicalId: 'my-test-bucket-xxx' });
+      expect(sink.report).toEqual({ physicalId: 'my-test-bucket-xxx' });
+    });
+
+    it('retracts the report when the cleanup delete succeeded (#5511)', async () => {
+      const sink = new CreatedResourceSink('MyBucket', RESOURCE_TYPE);
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockRejectedValueOnce(new Error('wiring boom'));
+      mockSend.mockResolvedValueOnce({});
+      await collectCreatedResources(sink, () => provider.create('MyBucket', RESOURCE_TYPE, props)).catch(
+        () => undefined
+      );
+      expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toContain('DeleteBucketCommand');
+      expect(sink.report).toBeUndefined();
+    });
+
+    it('reports nothing for an adopted pre-existing bucket (#5511)', async () => {
+      const sink = new CreatedResourceSink('MyBucket', RESOURCE_TYPE);
+      mockSend.mockRejectedValueOnce(new BucketAlreadyOwnedByYou('you already own it'));
+      mockSend.mockResolvedValueOnce({ LocationConstraint: 'eu-west-1' });
+      mockSend.mockRejectedValueOnce(new Error('wiring boom'));
+      await collectCreatedResources(sink, () =>
+        provider.create('MyBucket', RESOURCE_TYPE, { VersioningConfiguration: { Status: 'Enabled' } })
+      ).catch(() => undefined);
+      expect(sink.report).toBeUndefined();
+    });
+
+    it('reports nothing when CreateBucket itself fails (#5511)', async () => {
+      const sink = new CreatedResourceSink('MyBucket', RESOURCE_TYPE);
+      mockSend.mockRejectedValueOnce(new Error('CreateBucket boom'));
+      await collectCreatedResources(sink, () => provider.create('MyBucket', RESOURCE_TYPE, props)).catch(
+        () => undefined
+      );
+      expect(sink.report).toBeUndefined();
     });
 
     it('does not mark when CreateBucket itself fails', async () => {

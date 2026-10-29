@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import type { Construct } from 'constructs';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 
@@ -104,5 +105,33 @@ export class CreatedBeforeFailureSnsStack extends cdk.Stack {
       dataProtectionPolicy: { Name: 'cdkd-invalid' },
     });
     topic.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+  }
+}
+
+/**
+ * Deadline arm of go-to-k/cdkd#5511: a CREATE whose create call returned and
+ * whose post-create wait outlives the per-resource deadline.
+ *
+ * covers: AWS::CertificateManager::Certificate
+ *
+ * verify.sh deploys it under a 30s ACM deadline with the provider's poll
+ * interval at 10 minutes. RequestCertificate returns at once; the provider's
+ * ISSUED wait polls once right away and then sleeps, so the deadline always
+ * fires in that sleep (ACM marks this `.test` domain FAILED about 11s in,
+ * which the provider never gets to read). The marked error the provider
+ * would throw is dropped, so only the ARN it reported to the engine's
+ * created-resource sink can
+ * journal the certificate. No DomainValidationOptions: nothing writes a DNS
+ * record.
+ */
+export class CreatedBeforeFailureDeadlineStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    const cert = new acm.CfnCertificate(this, 'DeadlineCert', {
+      domainName: 'cdkd-cbfr-deadline.example.test',
+      validationMethod: 'DNS',
+    });
+    cert.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
   }
 }

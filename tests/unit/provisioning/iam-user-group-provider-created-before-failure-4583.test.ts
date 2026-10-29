@@ -29,7 +29,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { NoSuchEntityException } from '@aws-sdk/client-iam';
 import { IAMUserGroupProvider } from '../../../src/provisioning/providers/iam-user-group-provider.js';
-import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  createdBeforeFailure,
+  createdResourceIdentityBeforeFailure,
+} from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 const POLICY_ARN = 'arn:aws:iam::aws:policy/ReadOnlyAccess';
 
@@ -109,6 +116,49 @@ describe('IAMUserGroupProvider created-before-failure mark (go-to-k/cdkd#4583)',
       expect(createdBeforeFailure(error, 'MyUser', TYPE)).toBeUndefined();
     });
 
+    it('reports the user name and identity before the wiring; a failed DeleteUser leaves it (#5511)', async () => {
+      const sink = new CreatedResourceSink('MyUser', TYPE);
+      let atAttach: unknown = 'unset';
+      script({
+        AttachUserPolicyCommand: new Error('AttachUserPolicy boom'),
+        DeleteUserCommand: new Error('DeleteUser boom'),
+      });
+      const inner = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'CreateUserCommand') {
+          return Promise.resolve({ User: { Arn: 'arn:aws:iam::123:user/u', UserId: 'AIDAEXAMPLE' } });
+        }
+        if (command.constructor.name === 'AttachUserPolicyCommand') atAttach = sink.report;
+        return inner(command);
+      });
+
+      const error = await collectCreatedResources(sink, () =>
+        createError(provider, 'MyUser', TYPE, props)
+      );
+
+      const identity = createdResourceIdentityBeforeFailure(error, 'MyUser', TYPE);
+      expect(identity).toBeDefined();
+      expect(atAttach).toEqual({ physicalId: NAME, createdResourceIdentity: identity });
+      expect(sink.report).toEqual({ physicalId: NAME, createdResourceIdentity: identity });
+    });
+
+    it('retracts the report when the cleanup deleted the user (#5511)', async () => {
+      const sink = new CreatedResourceSink('MyUser', TYPE);
+      script({ AttachUserPolicyCommand: new Error('AttachUserPolicy boom') });
+
+      await collectCreatedResources(sink, () => createError(provider, 'MyUser', TYPE, props));
+
+      expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toContain('DeleteUserCommand');
+      expect(sink.report).toBeUndefined();
+    });
+
+    it('reports nothing when CreateUser itself failed (#5511)', async () => {
+      const sink = new CreatedResourceSink('MyUser', TYPE);
+      script({ CreateUserCommand: new Error('EntityAlreadyExists: User already exists') });
+      await collectCreatedResources(sink, () => createError(provider, 'MyUser', TYPE, props));
+      expect(sink.report).toBeUndefined();
+    });
+
     it('does not mark when CreateUser itself failed', async () => {
       script({ CreateUserCommand: new Error('EntityAlreadyExists: User already exists') });
 
@@ -149,6 +199,51 @@ describe('IAMUserGroupProvider created-before-failure mark (go-to-k/cdkd#4583)',
         'DeleteGroupCommand'
       );
       expect(createdBeforeFailure(error, 'MyGroup', TYPE)).toBeUndefined();
+    });
+
+    it('reports the group name and identity before the wiring; a failed DeleteGroup leaves it (#5511)', async () => {
+      const sink = new CreatedResourceSink('MyGroup', TYPE);
+      let atAttach: unknown = 'unset';
+      script({
+        AttachGroupPolicyCommand: new Error('AttachGroupPolicy boom'),
+        DeleteGroupCommand: new Error('DeleteGroup boom'),
+      });
+      const inner = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'CreateGroupCommand') {
+          return Promise.resolve({
+            Group: { Arn: 'arn:aws:iam::123:group/g', GroupId: 'AGPAEXAMPLE' },
+          });
+        }
+        if (command.constructor.name === 'AttachGroupPolicyCommand') atAttach = sink.report;
+        return inner(command);
+      });
+
+      const error = await collectCreatedResources(sink, () =>
+        createError(provider, 'MyGroup', TYPE, props)
+      );
+
+      const identity = createdResourceIdentityBeforeFailure(error, 'MyGroup', TYPE);
+      expect(identity).toBeDefined();
+      expect(atAttach).toEqual({ physicalId: NAME, createdResourceIdentity: identity });
+      expect(sink.report).toEqual({ physicalId: NAME, createdResourceIdentity: identity });
+    });
+
+    it('retracts the report when the cleanup deleted the group (#5511)', async () => {
+      const sink = new CreatedResourceSink('MyGroup', TYPE);
+      script({ AttachGroupPolicyCommand: new Error('AttachGroupPolicy boom') });
+
+      await collectCreatedResources(sink, () => createError(provider, 'MyGroup', TYPE, props));
+
+      expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toContain('DeleteGroupCommand');
+      expect(sink.report).toBeUndefined();
+    });
+
+    it('reports nothing when CreateGroup itself failed (#5511)', async () => {
+      const sink = new CreatedResourceSink('MyGroup', TYPE);
+      script({ CreateGroupCommand: new Error('EntityAlreadyExists: Group already exists') });
+      await collectCreatedResources(sink, () => createError(provider, 'MyGroup', TYPE, props));
+      expect(sink.report).toBeUndefined();
     });
 
     it('does not mark when CreateGroup itself failed', async () => {

@@ -47,6 +47,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import {
   isAmbiguousOutcomeError,
@@ -459,6 +460,8 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       }
       const createdName = metadata.repositoryName;
       leftLiveName = createdName;
+      // go-to-k/cdkd#5511: report before the Code seed and triggers.
+      reportCreatedResource(logicalId, resourceType, createdName);
 
       // Post-create orchestration (`Code` seed + `Triggers`). If either
       // fails, the repository already exists on AWS but the deploy engine's
@@ -487,6 +490,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
             `just-created repository ${createdName} to avoid an orphan`
         );
         if (await this.bestEffortDelete(createdName, maskerOrIdentity(context?.maskSecrets))) {
+          retractCreatedResource(logicalId, resourceType, leftLiveName);
           leftLiveName = undefined;
         }
         // The repository itself was created: an "already exists" from here is

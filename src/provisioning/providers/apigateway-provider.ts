@@ -84,6 +84,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
@@ -1705,6 +1706,8 @@ export class ApiGatewayProvider implements ResourceProvider {
           ),
         })
       );
+      // go-to-k/cdkd#5511: report before the post-create patch.
+      reportCreatedResource(logicalId, resourceType, stageName);
 
       // MethodSettings (issue #966), AccessLogSetting and ClientCertificateId
       // (#609 backfill): CreateStage does not accept any of these — they are
@@ -1756,6 +1759,7 @@ export class ApiGatewayProvider implements ResourceProvider {
           // then rethrow the original failure.
           try {
             await this.apiGatewayClient.send(new DeleteStageCommand({ restApiId, stageName }));
+            retractCreatedResource(logicalId, resourceType, stageName);
           } catch (cleanupError) {
             stageLeftBehind = true;
             // An AWS-authored failure is named by its class at warn, and AWS's
@@ -2403,6 +2407,8 @@ export class ApiGatewayProvider implements ResourceProvider {
         }
         await putMethod();
       }
+      // go-to-k/cdkd#5511: report before the wiring calls.
+      reportCreatedResource(logicalId, resourceType, physicalId);
 
       // PutMethodCommand has succeeded — AWS has now committed the
       // Method resource. Every subsequent call wires sub-resources onto
@@ -2477,6 +2483,7 @@ export class ApiGatewayProvider implements ResourceProvider {
           await this.apiGatewayClient.send(
             new DeleteMethodCommand({ restApiId, resourceId, httpMethod })
           );
+          retractCreatedResource(logicalId, resourceType, physicalId);
           log.debug(
             `Cleaned up partially-created API Gateway Method ${logicalId} (${methodPath}) after wiring failure`
           );

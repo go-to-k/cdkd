@@ -47,6 +47,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { EFSProvider } from '../../../src/provisioning/providers/efs-provider.js';
 import { allowUnscopedCreateTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 const FS = 'AWS::EFS::FileSystem';
@@ -142,6 +146,28 @@ describe('EFSProvider createdBeforeFailure mark (go-to-k/cdkd#4583)', () => {
       }
     });
 
+    it('reports the file system id before the available-wait; a failed rollback leaves it (#5511)', async () => {
+      prime('fail');
+      const sink = new CreatedResourceSink('Res', FS);
+      let atWait: unknown = 'unset';
+      const inner = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation(async (cmd: unknown) => {
+        if (cmd instanceof DescribeFileSystemsCommand) atWait = sink.report;
+        return inner(cmd);
+      });
+      await collectCreatedResources(sink, () => failure(provider, FS, props));
+      expect(atWait).toEqual({ physicalId: 'fs-1' });
+      expect(sink.report).toEqual({ physicalId: 'fs-1' });
+    });
+
+    it('retracts the report when the rollback delete succeeded (#5511)', async () => {
+      prime('ok');
+      const sink = new CreatedResourceSink('Res', FS);
+      await collectCreatedResources(sink, () => failure(provider, FS, props));
+      expect(mockSend.mock.calls.some((c) => c[0] instanceof DeleteFileSystemCommand)).toBe(true);
+      expect(sink.report).toBeUndefined();
+    });
+
     it('does not mark when CreateFileSystem itself fails', async () => {
       mockSend.mockRejectedValue(new Error('AccessDenied: CreateFileSystem'));
       expect(createdBeforeFailure(await failure(provider, FS, props), 'Res', FS)).toBeUndefined();
@@ -177,6 +203,22 @@ describe('EFSProvider createdBeforeFailure mark (go-to-k/cdkd#4583)', () => {
       } finally {
         vi.restoreAllMocks();
       }
+    });
+
+    it('reports the mount target id before the available-wait (#5511)', async () => {
+      const sink = new CreatedResourceSink('Res', MT);
+      let atWait: unknown = 'unset';
+      mockSend.mockImplementation(async (cmd: unknown) => {
+        if (cmd instanceof CreateMountTargetCommand) return { MountTargetId: 'fsmt-1' };
+        if (cmd instanceof DescribeMountTargetsCommand) {
+          atWait = sink.report;
+          throw new Error('AccessDenied: describe');
+        }
+        return {};
+      });
+      await collectCreatedResources(sink, () => failure(provider, MT, props));
+      expect(atWait).toEqual({ physicalId: 'fsmt-1' });
+      expect(sink.report).toEqual({ physicalId: 'fsmt-1' });
     });
 
     it('does not mark when CreateMountTarget itself fails', async () => {

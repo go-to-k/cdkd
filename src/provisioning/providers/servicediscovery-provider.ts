@@ -83,6 +83,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 
 /**
  * Reset targets for a REMOVED `Properties.DnsProperties.SOA.TTL` (issue
@@ -1315,6 +1316,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       const serviceId = service.Id;
       // go-to-k/cdkd#4583: AWS holds this service; cleared once the cleanup deletes it.
       leftBehindServiceId = serviceId;
+      reportCreatedResource(logicalId, resourceType, serviceId);
 
       this.logger.debug(
         `Successfully created service discovery service ${logicalId}: ${serviceId}`
@@ -1391,6 +1393,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         try {
           await client.send(new DeleteServiceCommand({ Id: serviceId }));
           leftBehindServiceId = undefined;
+          retractCreatedResource(logicalId, resourceType, serviceId);
           this.logger.debug(
             `Cleaned up partially-created ServiceDiscovery Service ${logicalId} (${serviceId}) after ServiceAttributes wiring failure`
           );

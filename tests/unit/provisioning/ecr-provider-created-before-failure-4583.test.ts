@@ -39,6 +39,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ECRProvider } from '../../../src/provisioning/providers/ecr-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 // go-to-k/cdkd#4583: a failure after CreateRepository returned names the
 // repository for the failed-CREATE journal; CreateRepository's own failure
@@ -104,5 +108,36 @@ describe('ECRProvider.create created-before-failure mark (#4583)', () => {
     const err = await caught(provider.create('Repo', TYPE, { RepositoryName: REPO, Tags: 'x' }));
     expect(mockSend).not.toHaveBeenCalled();
     expect(createdBeforeFailure(err, 'Repo', TYPE)).toBeUndefined();
+  });
+
+  // go-to-k/cdkd#5511: the sink holds the repository name once CreateRepository
+  // returned, before the policy calls.
+  it('reports the repository name before the follow-up calls', async () => {
+    const sink = new CreatedResourceSink('Repo', TYPE);
+    let atPolicy: unknown = 'unset';
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof CreateRepositoryCommand) return { repository: { repositoryName: REPO } };
+      if (cmd instanceof SetRepositoryPolicyCommand) {
+        atPolicy = sink.report;
+        throw new Error('InvalidParameter');
+      }
+      return {};
+    });
+    await collectCreatedResources(sink, () =>
+      caught(provider.create('Repo', TYPE, { RepositoryName: REPO, RepositoryPolicyText: { a: 1 } }))
+    );
+    expect(atPolicy).toEqual({ physicalId: REPO });
+    expect(sink.report).toEqual({ physicalId: REPO });
+  });
+
+  it('reports nothing when CreateRepository itself fails', async () => {
+    const sink = new CreatedResourceSink('Repo', TYPE);
+    mockSend.mockRejectedValue(
+      Object.assign(new Error('exists'), { name: 'RepositoryAlreadyExistsException' })
+    );
+    await collectCreatedResources(sink, () =>
+      caught(provider.create('Repo', TYPE, { RepositoryName: REPO }))
+    );
+    expect(sink.report).toBeUndefined();
   });
 });

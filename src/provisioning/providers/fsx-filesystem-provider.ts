@@ -57,6 +57,7 @@ import {
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { markNotGone } from '../not-gone.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { earliestOwnCreationTime, serverClockReading, withServerClock } from './server-clock.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../types/resource.js';
@@ -981,6 +982,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
         );
       }
       fileSystemId = returnedId;
+      reportCreatedResource(logicalId, resourceType, returnedId); // go-to-k/cdkd#5511
 
       // FSx creation is async (typically 5-10 min for Lustre SCRATCH,
       // longer for PERSISTENT) — poll until AVAILABLE.
@@ -1012,6 +1014,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
       if (fileSystemId !== undefined) {
         try {
           await this.getClient().send(new DeleteFileSystemCommand({ FileSystemId: fileSystemId }));
+          retractCreatedResource(logicalId, resourceType, fileSystemId);
           this.createTokenFirstSentAt.delete(clientRequestToken);
           this.logger.warn(`Rolled back partially-created FSx FileSystem ${fileSystemId}`);
         } catch (cleanupError) {

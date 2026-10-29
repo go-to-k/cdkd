@@ -37,6 +37,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generatedNameFor } from '../resource-name.js';
@@ -607,6 +608,8 @@ export class KinesisStreamProvider implements ResourceProvider {
         })
       );
       streamCreated = true;
+      // go-to-k/cdkd#5511: reported before the ACTIVE wait.
+      reportCreatedResource(logicalId, resourceType, streamName);
 
       this.logger.debug(`CreateStream initiated for ${streamName}, waiting for ACTIVE status`);
 

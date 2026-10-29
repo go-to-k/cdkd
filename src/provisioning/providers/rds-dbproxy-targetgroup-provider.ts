@@ -44,6 +44,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { holdsSecretDerivedEntry, recordedPrincipalsRepair } from '../iam-policy-targets.js';
 import {
   DBPROXY_TAG_OPTIONS,
@@ -400,6 +401,12 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         dbInstanceIdentifiers,
         context?.maskSecrets
       );
+    }
+
+    // go-to-k/cdkd#5511: the id the mark uses is known only here, after the
+    // describe; reported before the tagging call, when targets were registered.
+    if (dbClusterIdentifiers.length > 0 || dbInstanceIdentifiers.length > 0) {
+      reportCreatedResource(logicalId, resourceType, targetGroupArn);
     }
 
     if (tags.length > 0) {
@@ -1257,6 +1264,13 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           DBInstanceIdentifiers: instances,
         })
       );
+      if (leftBehind) {
+        retractCreatedResource(
+          leftBehind.logicalId,
+          leftBehind.resourceType,
+          leftBehind.physicalId
+        );
+      }
       return original;
     } catch (cleanupError) {
       // Template-chosen names, so the command renders through
