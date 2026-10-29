@@ -440,6 +440,8 @@ cleanup() {
   retire_stream "${REGION}" "${LOCAL_KINESIS}"
   retire_stream "${SECOND_REGION}" "${REPLICA_KINESIS}"
   if [ -n "${stuck}" ]; then
+    # Read by the EXIT trap: a run that strands resources must not pass.
+    CLEANUP_STRANDED=1
     echo "WARN: cleanup: ${stuck} still exists after the 15 min bound, so NO key was retired (a table deleting on a key pending deletion stays in DELETING indefinitely). Left enabled: ${LOCAL_ALIAS}, ${LOCAL_ALIAS}2, ${OOB_ALIAS} (${OOB_KEY_ARN:-no ARN}) in ${REGION}; ${REPLICA_ALIAS} (${REPLICA_KEY_ARN:-no ARN}), ${REPLICA_ALIAS}2 (${REPLICA_KEY2_ARN:-no ARN}) in ${SECOND_REGION}. Schedule their deletion once the table is gone; a later run's sweep also does." >&2
   else
     # The local keys (stack-managed) when the destroy did not schedule them,
@@ -555,7 +557,10 @@ sweep_previous_runs() {
   set -eu
 }
 
-trap cleanup EXIT
+# EXIT: a run whose cleanup stranded a table (and so kept its keys) exits 1
+# even when every phase passed; a non-zero status (INT/TERM's 130/143, a FAIL)
+# is kept as it is.
+trap 'rc=$?; cleanup; if [ "${rc}" = 0 ] && [ "${CLEANUP_STRANDED:-0}" = 1 ]; then exit 1; fi' EXIT
 trap '(exit 130); cleanup; exit 130' INT
 trap '(exit 143); cleanup; exit 143' TERM
 
