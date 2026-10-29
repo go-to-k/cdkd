@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 89,
-    "declaredProperties": 1187,
-    "wiredProperties": 1185,
+    "declaredProperties": 1189,
+    "wiredProperties": 1187,
     "wired": 87,
     "gap": 0,
     "allowListed": 2,
@@ -3827,8 +3827,24 @@
       "file": "cloudwatch-alarm-provider.ts",
       "className": "CloudWatchAlarmProvider",
       "bucket": "wired",
-      "declaredCount": 22,
+      "declaredCount": 24,
       "properties": [
+        {
+          "name": "ActionConfiguration",
+          "status": "wired",
+          "types": [
+            "AWS::CloudWatch::Alarm"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "buildAlarmParams",
+            "create",
+            "update"
+          ]
+        },
         {
           "name": "ActionsEnabled",
           "status": "wired",
@@ -4164,6 +4180,22 @@
         },
         {
           "name": "Unit",
+          "status": "wired",
+          "types": [
+            "AWS::CloudWatch::Alarm"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "buildAlarmParams",
+            "create",
+            "update"
+          ]
+        },
+        {
+          "name": "WarmUpConfiguration",
           "status": "wired",
           "types": [
             "AWS::CloudWatch::Alarm"

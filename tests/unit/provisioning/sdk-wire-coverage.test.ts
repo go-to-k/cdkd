@@ -720,6 +720,44 @@ const CASES: TypeCase[] = [
           ])
         ),
       },
+      {
+        // go-to-k/cdkd#2762. AWS refuses IncludedTagKeys beside
+        // ExcludedTagKeys, so each list has its own bag.
+        name: 'warm-up and included tag propagation',
+        bag: {
+          AlarmName: 'a',
+          ComparisonOperator: 'GreaterThanThreshold',
+          EvaluationPeriods: 1,
+          Threshold: 1,
+          MetricName: 'm',
+          Namespace: 'ns',
+          Period: 60,
+          Statistic: 'Sum',
+          WarmUpConfiguration: {
+            WarmUpPeriodDurationInMinutes: 15,
+            OnlyStartEvaluatingAfterWarmUpPeriodEnds: true,
+          },
+          ActionConfiguration: {
+            AlarmTagsPropagation: { Enabled: true, IncludedTagKeys: ['k1', 'k2'] },
+          },
+        },
+      },
+      {
+        name: 'excluded tag propagation',
+        bag: {
+          AlarmName: 'a',
+          ComparisonOperator: 'GreaterThanThreshold',
+          EvaluationPeriods: 1,
+          Threshold: 1,
+          MetricName: 'm',
+          Namespace: 'ns',
+          Period: 60,
+          Statistic: 'Sum',
+          ActionConfiguration: {
+            AlarmTagsPropagation: { Enabled: false, ExcludedTagKeys: ['k1', 'k2'] },
+          },
+        },
+      },
     ],
   },
 ];

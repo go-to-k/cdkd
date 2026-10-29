@@ -67,6 +67,24 @@ export class CloudWatchStack extends cdk.Stack {
     // create + TagResource/UntagResource diff on update).
     cdk.Tags.of(alarm).add('Team', 'Platform');
 
+    // go-to-k/cdkd#2762: WarmUpConfiguration / ActionConfiguration ride
+    // PutMetricAlarm. Set through addPropertyOverride: the L1 of the pinned
+    // aws-cdk-lib does not carry ActionConfiguration. verify.sh reads both back
+    // from DescribeAlarms. CDKD_TEST_UPDATE=true is its second phase: a
+    // changed warm-up and a REMOVED ActionConfiguration, which PutMetricAlarm
+    // (a full replace) must clear on AWS.
+    const updatePhase = process.env['CDKD_TEST_UPDATE'] === 'true';
+    const cfnAlarm = alarm.node.defaultChild as cloudwatch.CfnAlarm;
+    cfnAlarm.addPropertyOverride('WarmUpConfiguration', {
+      WarmUpPeriodDurationInMinutes: updatePhase ? 30 : 15,
+      OnlyStartEvaluatingAfterWarmUpPeriodEnds: !updatePhase,
+    });
+    if (!updatePhase) {
+      cfnAlarm.addPropertyOverride('ActionConfiguration', {
+        AlarmTagsPropagation: { Enabled: true, IncludedTagKeys: ['Team'] },
+      });
+    }
+
     // Add SNS action to alarm
     alarm.addAlarmAction(new cloudwatch_actions.SnsAction(alarmTopic));
 

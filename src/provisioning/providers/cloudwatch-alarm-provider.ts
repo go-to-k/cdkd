@@ -123,36 +123,9 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
         'ExtendedStatistic',
         'EvaluateLowSampleCountPercentile',
         'ThresholdMetricId',
-      ]),
-    ],
-  ]);
-
-  /**
-   * Properties this provider deliberately does NOT wire through to the SDK,
-   * with a one-line rationale per entry (consumed by the property-coverage
-   * check, issue #391).
-   *
-   * `EvaluationCriteria` / `EvaluationInterval` appear in the CloudFormation
-   * `AWS::CloudWatch::Alarm` registry schema but are absent from BOTH the AWS
-   * SDK `PutMetricAlarm` input (`@aws-sdk/client-cloudwatch`) AND the
-   * aws-cdk-lib `CfnAlarm` L1 — a newer CFn-schema surface ahead of SDK / CDK
-   * support, so there is no wire path to forward them and no CDK app can emit
-   * them. Per the #609 backfillability rule (a property absent from EITHER the
-   * SDK create input OR the CDK L1 is not backfillable), they are classified
-   * unhandled-by-design rather than left as a "not yet implemented" TODO.
-   */
-  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
-    [
-      'AWS::CloudWatch::Alarm',
-      new Map([
-        [
-          'EvaluationCriteria',
-          'Absent from both the SDK PutMetricAlarm input and the aws-cdk-lib CfnAlarm L1 (a newer CFn-schema-only property ahead of SDK/CDK support); no wire path to forward it and no CDK app can emit it.',
-        ],
-        [
-          'EvaluationInterval',
-          'Absent from both the SDK PutMetricAlarm input and the aws-cdk-lib CfnAlarm L1 (a newer CFn-schema-only property ahead of SDK/CDK support); no wire path to forward it and no CDK app can emit it.',
-        ],
+        // go-to-k/cdkd#2762: PutMetricAlarm members with the CFn spelling.
+        'ActionConfiguration',
+        'WarmUpConfiguration',
       ]),
     ],
   ]);
@@ -561,6 +534,13 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
         properties['EvaluateLowSampleCountPercentile']
       ),
       ThresholdMetricId: emptyToUndefined(properties['ThresholdMetricId']),
+      // go-to-k/cdkd#2762: the CFn spelling of both is the SDK member's, down
+      // to every nested key, so the declared value is forwarded as is.
+      // PutMetricAlarm replaces the whole alarm configuration, so a member
+      // left out (a removal) stores the alarm without it: no warm-up, no tag
+      // propagation.
+      ActionConfiguration: properties['ActionConfiguration'],
+      WarmUpConfiguration: properties['WarmUpConfiguration'],
     };
 
     // Metrics array (math expressions / composite metrics).
@@ -628,7 +608,9 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
    * `ComparisonOperator`, `Threshold`, `EvaluationPeriods`, `Period`,
    * `DatapointsToAlarm`, `ActionsEnabled`, `AlarmActions`,
    * `OKActions`, `InsufficientDataActions`, `TreatMissingData`, `Unit`,
-   * `Dimensions`, `Metrics`).
+   * `Dimensions`, `Metrics`), plus, when AWS reports them,
+   * `ExtendedStatistic`, `EvaluateLowSampleCountPercentile`,
+   * `ThresholdMetricId`, `ActionConfiguration` and `WarmUpConfiguration`.
    *
    * `DescribeAlarms` returns the result via either `MetricAlarms` (single-
    * metric form) or `CompositeAlarms` (composite form). cdkd's provider
@@ -701,6 +683,14 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     }
     if (alarm.ThresholdMetricId !== undefined) {
       result['ThresholdMetricId'] = alarm.ThresholdMetricId;
+    }
+    // go-to-k/cdkd#2762: emit-when-present, as the three above. The SDK shape
+    // of both is the CFn one, so the value is carried as read.
+    if (alarm.ActionConfiguration !== undefined) {
+      result['ActionConfiguration'] = alarm.ActionConfiguration;
+    }
+    if (alarm.WarmUpConfiguration !== undefined) {
+      result['WarmUpConfiguration'] = alarm.WarmUpConfiguration;
     }
 
     // Tags via ListTagsForResource (uses the alarm ARN from DescribeAlarms).
