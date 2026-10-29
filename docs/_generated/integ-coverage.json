@@ -704,11 +704,15 @@
       "resourceType": "AWS::CertificateManager::Certificate",
       "integs": [
         "acm-certificate",
+        "created-before-failure-revert",
         "replaced-delete-failed-rollback"
       ],
       "signals": {
         "acm-certificate": [
           "l2"
+        ],
+        "created-before-failure-revert": [
+          "literal"
         ],
         "replaced-delete-failed-rollback": [
           "literal"
@@ -5479,7 +5483,6 @@
       "integs": [
         "cache-streaming",
         "cc-write-only-create-only",
-        "created-before-failure-revert",
         "destroy-nested-cross-region",
         "dynamodb-globaltable-replica-settings",
         "dynamodb-ondemand",
@@ -5500,10 +5503,6 @@
         ],
         "cc-write-only-create-only": [
           "l2"
-        ],
-        "created-before-failure-revert": [
-          "l1",
-          "literal"
         ],
         "destroy-nested-cross-region": [
           "l2",

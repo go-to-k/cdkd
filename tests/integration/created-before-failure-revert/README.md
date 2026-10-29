@@ -39,24 +39,28 @@ failure would decide whether the other arm's create ever ran.
   `cdkd rollback --force --revert-failed` deletes nothing — it skips the
   id-less failed CREATE with a warning and so exits 2 — and removes the journal
   and `state.json`.
-- **Phase K — `CdkdCreatedBeforeFailureRevertKinesisExample`** (the deadline
+- **Phase K — `CdkdCreatedBeforeFailureRevertDeadlineExample`** (the deadline
   drops the provider's marked error, go-to-k/cdkd#5511): an
-  `AWS::Kinesis::Stream` with an explicit name, deployed under
-  `--resource-timeout AWS::Kinesis::Stream=5s`. `CreateStream` returns and the
-  deadline fires inside the provider's ACTIVE wait. Asserts the stream exists,
-  state has no record of it, and the journal's failed op carries the stream
-  name with `physicalIdRecoveredFromError: true` and a creation identity, all
-  from the id the provider reported to the engine's created-resource sink.
-  Once the stream is ACTIVE, `cdkd rollback --force --revert-failed` exits 0
-  and deletes it, `describe-stream-summary` answers not found, and the journal
-  and `state.json` are gone.
+  `AWS::CertificateManager::Certificate`, DNS-validated for
+  `cdkd-cbfr-deadline.example.test` (a reserved TLD nobody can validate),
+  deployed with `--verbose` under
+  `--resource-timeout AWS::CertificateManager::Certificate=30s`.
+  `RequestCertificate` returns at once and the provider's ISSUED wait never
+  ends, so the deadline always fires inside it. Asserts (premises first) the
+  timeout, the provider's `Requested ACM certificate: <arn>` line, and the
+  certificate existing PENDING_VALIDATION; then that state has no record of it
+  and the journal's failed op carries that ARN with
+  `physicalIdRecoveredFromError: true`, from the id the provider reported to
+  the engine's created-resource sink. `cdkd rollback --force --revert-failed`
+  then exits 0 and deletes it, `describe-certificate` answers not found, and
+  the journal and `state.json` are gone.
 
 ## Cleanup
 
-The EXIT trap, and a sweep at the start of every run, delete the repositories,
-the topic and the stream by name and remove both stacks' state prefixes. After a run
+The EXIT trap, and a sweep at the start of every run, delete the repositories
+and the topic by name and every ACM certificate for the deadline arm's domain,
+and remove every stack's state prefix. After a run
 killed with SIGKILL, delete by hand the ECR repository
 `cdkdcreatedbeforefailurerevertecrexample-orphan-repo`, the SNS topic
-`CdkdCreatedBeforeFailureRevertSnsExample-topic` and the Kinesis stream
-`CdkdCreatedBeforeFailureRevertKinesisExample-deadline-stream`, or simply run
-the fixture again.
+`CdkdCreatedBeforeFailureRevertSnsExample-topic` and every ACM certificate for
+`cdkd-cbfr-deadline.example.test`, or simply run the fixture again.

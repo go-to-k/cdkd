@@ -48,24 +48,26 @@
 #         its state and needed a second destroy. The fixture then deletes the
 #         repository by hand.
 #   PHASE K (go-to-k/cdkd#5511, the deadline drops the provider's marked error):
-#     K1. Deploy the Kinesis stack --no-rollback under a 5s Kinesis deadline:
-#         CreateStream returns, and the deadline fires inside the provider's
-#         ACTIVE wait, so the marked error the wait would throw is dropped. The
-#         deploy fails with the timeout; the stream EXISTS (proof the create
-#         returned); state has no record of it; the journal's failed op
-#         carries physicalId = the stream name, physicalIdRecoveredFromError
-#         = true and a creation identity, all from the id the provider
+#     K1. Deploy the deadline stack --no-rollback --verbose under a 30s ACM
+#         deadline. Its DNS-validated certificate names a domain nobody can
+#         validate, so RequestCertificate returns at once and the provider's
+#         ISSUED wait can never finish: the deadline always fires inside it,
+#         and the marked error the wait would throw is dropped. The deploy
+#         fails with the timeout; the certificate EXISTS, PENDING_VALIDATION
+#         (proof the create returned); state has no record of it; the
+#         journal's failed op carries physicalId = that ARN and
+#         physicalIdRecoveredFromError = true, from the id the provider
 #         reported to the engine's created-resource sink.
-#     K2. Once the stream is ACTIVE, `cdkd rollback --force --revert-failed`
-#         exits 0 and deletes it (describe-stream-summary answers
-#         ResourceNotFoundException), and the journal and state.json are gone.
+#     K2. `cdkd rollback --force --revert-failed` exits 0 and deletes the
+#         certificate (describe-certificate answers ResourceNotFoundException),
+#         and the journal and state.json are gone.
 #
 # After a run killed with SIGKILL (no trap runs), delete by hand the ECR
 # repositories `cdkdcreatedbeforefailurerevertecrexample-orphan-repo` and
 # `cdkdcreatedbeforefailurerevertnestedexample-orphan-repo`, the SNS topic
-# `CdkdCreatedBeforeFailureRevertSnsExample-topic` and the Kinesis stream
-# `CdkdCreatedBeforeFailureRevertKinesisExample-deadline-stream` — the next
-# run's pre-run sweep also removes them.
+# `CdkdCreatedBeforeFailureRevertSnsExample-topic` and every ACM certificate
+# for `cdkd-cbfr-deadline.example.test` — the next run's pre-run sweep also
+# removes them.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -114,12 +116,14 @@ ECR_STACK="CdkdCreatedBeforeFailureRevertEcrExample"
 SNS_STACK="CdkdCreatedBeforeFailureRevertSnsExample"
 NESTED_STACK="CdkdCreatedBeforeFailureRevertNestedExample"
 NESTED_CHILD="${NESTED_STACK}~Child"
-KINESIS_STACK="CdkdCreatedBeforeFailureRevertKinesisExample"
+DEADLINE_STACK="CdkdCreatedBeforeFailureRevertDeadlineExample"
 # The names the stacks derive from their own ids (lib/*-stack.ts).
 REPO_NAME="cdkdcreatedbeforefailurerevertecrexample-orphan-repo"
 TOPIC_NAME="${SNS_STACK}-topic"
 NESTED_REPO_NAME="cdkdcreatedbeforefailurerevertnestedexample-orphan-repo"
-STREAM_NAME="${KINESIS_STACK}-deadline-stream"
+# The deadline stack's certificate domain (lib/*-stack.ts): `.test` is a
+# reserved TLD, so nobody can ever validate it.
+CERT_DOMAIN="cdkd-cbfr-deadline.example.test"
 ECR_STATE_KEY="cdkd/${ECR_STACK}/${REGION}/state.json"
 ECR_JOURNAL_KEY="cdkd/${ECR_STACK}/${REGION}/rollback-journal.json"
 SNS_STATE_KEY="cdkd/${SNS_STACK}/${REGION}/state.json"
@@ -128,8 +132,8 @@ NESTED_STATE_KEY="cdkd/${NESTED_STACK}/${REGION}/state.json"
 NESTED_JOURNAL_KEY="cdkd/${NESTED_STACK}/${REGION}/rollback-journal.json"
 CHILD_STATE_KEY="cdkd/${NESTED_CHILD}/${REGION}/state.json"
 CHILD_JOURNAL_KEY="cdkd/${NESTED_CHILD}/${REGION}/rollback-journal.json"
-KINESIS_STATE_KEY="cdkd/${KINESIS_STACK}/${REGION}/state.json"
-KINESIS_JOURNAL_KEY="cdkd/${KINESIS_STACK}/${REGION}/rollback-journal.json"
+DEADLINE_STATE_KEY="cdkd/${DEADLINE_STACK}/${REGION}/state.json"
+DEADLINE_JOURNAL_KEY="cdkd/${DEADLINE_STACK}/${REGION}/rollback-journal.json"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cbf-revert.XXXXXX")"
@@ -155,40 +159,51 @@ if [ -z "${ACCOUNT_ID}" ] || [ -z "${PARTITION}" ]; then
 fi
 TOPIC_ARN="arn:${PARTITION}:sns:${REGION}:${ACCOUNT_ID}:${TOPIC_NAME}"
 
-echo "[verify] region=${REGION} stacks=${ECR_STACK},${SNS_STACK},${NESTED_STACK},${KINESIS_STACK} state-bucket=${STATE_BUCKET}"
+echo "[verify] region=${REGION} stacks=${ECR_STACK},${SNS_STACK},${NESTED_STACK},${DEADLINE_STACK} state-bucket=${STATE_BUCKET}"
 
-# The Kinesis stream bills per shard hour, so it is never left to chance:
-# DeleteStream refuses a stream still CREATING (the deadline phase leaves it
-# so), so the sweep waits it out, deletes it, and then proves it gone. Returns
-# non-zero, naming the stream, when it cannot.
-sweep_stream() {
-  local deadline out status
-  deadline=$(( $(date +%s) + 180 ))
-  while [ "$(date +%s)" -lt "${deadline}" ]; do
-    if ! out="$(aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}" \
-        --query 'StreamDescriptionSummary.StreamStatus' --output text 2>&1)"; then
-      if printf '%s' "${out}" | grep -qF 'ResourceNotFoundException'; then
-        return 0
-      fi
-      echo "[verify] sweep: describe-stream-summary ${STREAM_NAME} failed: ${out}" >&2
-      sleep 5
-      continue
-    fi
-    status="${out}"
-    case "${status}" in
-      ACTIVE)
-        if ! out="$(aws kinesis delete-stream --stream-name "${STREAM_NAME}" --enforce-consumer-deletion \
-            --region "${REGION}" 2>&1)"; then
-          echo "[verify] sweep: delete-stream ${STREAM_NAME} failed: ${out}" >&2
-        fi
-        ;;
-    esac
-    sleep 5
-  done
-  if ! gone_probe aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}"; then
-    echo "[verify] FAIL: sweep: Kinesis stream ${STREAM_NAME} still exists (billed per shard); delete it by hand" >&2
+# The ARNs of every certificate for CERT_DOMAIN, one per line. A failed
+# listing returns non-zero, so a caller never reads it as "none".
+cert_arns() {
+  local listed
+  listed="$(aws acm list-certificates --region "${REGION}" \
+    --certificate-statuses PENDING_VALIDATION ISSUED INACTIVE EXPIRED VALIDATION_TIMED_OUT REVOKED FAILED \
+    --includes keyTypes=RSA_1024,RSA_2048,RSA_3072,RSA_4096,EC_prime256v1,EC_secp384r1,EC_secp521r1 \
+    --output json)" || return 1
+  printf '%s' "${listed}" | jq -r --arg d "${CERT_DOMAIN}" \
+    '.CertificateSummaryList[] | select(.DomainName == $d) | .CertificateArn'
+}
+
+# Every certificate for CERT_DOMAIN is deleted, and then proven gone: the
+# listing is the exact domain this fixture alone uses. Errors are shown, never
+# discarded; returns non-zero, naming the certificate, when one survives.
+sweep_certs() {
+  local arns arn out rc=0
+  if ! arns="$(cert_arns)"; then
+    echo "[verify] FAIL: sweep: could not list ACM certificates for ${CERT_DOMAIN}" >&2
     return 1
   fi
+  for arn in ${arns}; do
+    if ! out="$(aws acm delete-certificate --certificate-arn "${arn}" --region "${REGION}" 2>&1)"; then
+      echo "[verify] sweep: delete-certificate ${arn} failed: ${out}" >&2
+    fi
+  done
+  for arn in ${arns}; do
+    if ! wait_gone_quiet aws acm describe-certificate --certificate-arn "${arn}" --region "${REGION}"; then
+      echo "[verify] FAIL: sweep: ACM certificate ${arn} (${CERT_DOMAIN}) still exists; delete it by hand" >&2
+      rc=1
+    fi
+  done
+  return "${rc}"
+}
+
+# gone_probe, polled for up to 60s; returns non-zero instead of exiting.
+wait_gone_quiet() { # usage: wait_gone_quiet aws <service> <read-verb> [args...]
+  local deadline
+  deadline=$(( $(date +%s) + 60 ))
+  while ! gone_probe "$@"; do
+    [ "$(date +%s)" -ge "${deadline}" ] && return 1
+    sleep 3
+  done
   return 0
 }
 
@@ -203,14 +218,14 @@ sweep() {
   aws ecr delete-repository --repository-name "${REPO_NAME}" --force --region "${REGION}" >/dev/null 2>&1
   aws ecr delete-repository --repository-name "${NESTED_REPO_NAME}" --force --region "${REGION}" >/dev/null 2>&1
   aws sns delete-topic --topic-arn "${TOPIC_ARN}" --region "${REGION}" >/dev/null 2>&1
-  stream_rc=0
-  sweep_stream || stream_rc=1
-  for s in "${ECR_STACK}" "${SNS_STACK}" "${NESTED_STACK}" "${NESTED_CHILD}" "${KINESIS_STACK}"; do
+  certs_rc=0
+  sweep_certs || certs_rc=1
+  for s in "${ECR_STACK}" "${SNS_STACK}" "${NESTED_STACK}" "${NESTED_CHILD}" "${DEADLINE_STACK}"; do
     node "${LOCAL_DIST}" state destroy "${s}" --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" --yes >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${s}/" --recursive >/dev/null 2>&1
   done
-  exit "${stream_rc}"
+  exit "${certs_rc}"
   )
 }
 
@@ -245,7 +260,6 @@ wait_gone() { # usage: wait_gone <description> aws <service> <read-verb> [args..
 repo_probe() { echo "aws ecr describe-repositories --repository-names ${REPO_NAME} --region ${REGION}"; }
 nested_repo_probe() { echo "aws ecr describe-repositories --repository-names ${NESTED_REPO_NAME} --region ${REGION}"; }
 topic_probe() { echo "aws sns get-topic-attributes --topic-arn ${TOPIC_ARN} --region ${REGION}"; }
-stream_probe() { echo "aws kinesis describe-stream-summary --stream-name ${STREAM_NAME} --region ${REGION}"; }
 
 # cdkd colours its output whatever the terminal, so every grep reads a copy
 # with the ANSI sequences stripped.
@@ -279,11 +293,17 @@ wait_gone "pre-run: ${REPO_NAME} still exists after the sweep" $(repo_probe)
 wait_gone "pre-run: ${TOPIC_ARN} still exists after the sweep" $(topic_probe)
 # shellcheck disable=SC2046
 wait_gone "pre-run: ${NESTED_REPO_NAME} still exists after the sweep" $(nested_repo_probe)
-# shellcheck disable=SC2046
-wait_gone "pre-run: ${STREAM_NAME} still exists after the sweep" $(stream_probe)
+if ! PRE_CERTS="$(cert_arns)"; then
+  echo "[verify] FAIL: pre-run: could not list ACM certificates for ${CERT_DOMAIN}" >&2
+  exit 1
+fi
+if [ -n "${PRE_CERTS}" ]; then
+  echo "[verify] FAIL: pre-run: an ACM certificate for ${CERT_DOMAIN} still exists after the sweep: ${PRE_CERTS}" >&2
+  exit 1
+fi
 for key in "${ECR_STATE_KEY}" "${ECR_JOURNAL_KEY}" "${SNS_STATE_KEY}" "${SNS_JOURNAL_KEY}" \
   "${NESTED_STATE_KEY}" "${NESTED_JOURNAL_KEY}" "${CHILD_STATE_KEY}" "${CHILD_JOURNAL_KEY}" \
-  "${KINESIS_STATE_KEY}" "${KINESIS_JOURNAL_KEY}"; do
+  "${DEADLINE_STATE_KEY}" "${DEADLINE_JOURNAL_KEY}"; do
   assert_gone "pre-run: s3://${STATE_BUCKET}/${key} still exists after the sweep" \
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
 done
@@ -596,88 +616,74 @@ wait_gone "phase N3: ${NESTED_REPO_NAME} still exists after the fixture deleted 
 echo "[verify] phase N3 ok: one destroy deleted both states, kept the unproven repository (exit 2)"
 
 # ---------------------------------------------------------------------------
-# PHASE K: Kinesis — the deadline drops the marked error; the sink journals it
+# PHASE K: ACM — the deadline drops the marked error; the sink journals it
 # ---------------------------------------------------------------------------
-# 5s: CreateStream answers in well under a second, and a PROVISIONED 1-shard
-# stream takes 10s or more to reach ACTIVE, so the deadline lands in the wait.
-echo "[verify] phase K1: deploy ${KINESIS_STACK} --no-rollback --verbose under a 5s Kinesis deadline (expect FAILURE in the ACTIVE wait)"
-deploy_expect_failure "${KINESIS_STACK}" "${LOG_DIR}/k1.log" --verbose \
-  --resource-warn-after AWS::Kinesis::Stream=1s \
-  --resource-timeout AWS::Kinesis::Stream=5s
-if ! grep -qE "DeadlineStream \(AWS::Kinesis::Stream\) in ${REGION} timed out after" "${LOG_DIR}/k1.log"; then
-  echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): the deploy did not fail on DeadlineStream's 5s deadline (the stream reached ACTIVE first, or the wording drifted)" >&2
+# 30s: RequestCertificate answers in about a second even under load, and the
+# ISSUED wait never ends for a domain nobody can validate, so the deadline
+# always lands in the wait. The provider has no deadline margin of its own:
+# its wait is bounded only by its own poll budget, far past 30s.
+echo "[verify] phase K1: deploy ${DEADLINE_STACK} --no-rollback --verbose under a 30s ACM deadline (expect FAILURE in the ISSUED wait)"
+deploy_expect_failure "${DEADLINE_STACK}" "${LOG_DIR}/k1.log" --verbose \
+  --resource-warn-after AWS::CertificateManager::Certificate=10s \
+  --resource-timeout AWS::CertificateManager::Certificate=30s
+if ! grep -qE "DeadlineCert \(AWS::CertificateManager::Certificate\) in ${REGION} timed out after" "${LOG_DIR}/k1.log"; then
+  echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): the deploy did not fail on DeadlineCert's 30s deadline (or the wording drifted)" >&2
   exit 1
 fi
-# PREMISE: CreateStream returned before the deadline. The provider logs this
-# line right after it reports the stream, before the ACTIVE wait. Without it
-# the deadline fired in the create call and nothing below tests #5511.
-if ! grep -qF "CreateStream initiated for ${STREAM_NAME}" "${LOG_DIR}/k1.log"; then
-  echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): no 'CreateStream initiated for ${STREAM_NAME}' line, so CreateStream had not returned when the 5s deadline fired; rerun, or widen the deadline" >&2
+# PREMISE: RequestCertificate returned before the deadline. The provider logs
+# this line right after it reports the certificate, before the ISSUED wait.
+K1_ARN="$(sed -n 's/.*Requested ACM certificate: \(arn:[^[:space:]]*\).*/\1/p' "${LOG_DIR}/k1.log" | head -n 1)"
+if [ -z "${K1_ARN}" ]; then
+  echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): no 'Requested ACM certificate: <arn>' line, so RequestCertificate had not returned when the deadline fired" >&2
   exit 1
 fi
-if ! K1_DESCRIBE="$(aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}" 2>&1)"; then
-  if printf '%s' "${K1_DESCRIBE}" | grep -qF 'ResourceNotFoundException'; then
-    echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): ${STREAM_NAME} does not exist after the failed deploy, so CreateStream never made it and this phase tests nothing" >&2
-  else
-    echo "[verify] FAIL: phase K1: describe-stream-summary for ${STREAM_NAME} failed for another reason, so the premise is undetermined: ${K1_DESCRIBE}" >&2
-  fi
+if ! K1_STATUS="$(aws acm describe-certificate --certificate-arn "${K1_ARN}" --region "${REGION}" \
+    --query 'Certificate.Status' --output text 2>&1)"; then
+  echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): describe-certificate for the requested certificate failed: ${K1_STATUS}" >&2
   exit 1
 fi
-if [ "$(state_has_resource "${KINESIS_STATE_KEY}" DeadlineStream)" != "false" ]; then
-  echo "[verify] FAIL: phase K1: state records DeadlineStream (expected no record for a CREATE the deadline failed)" >&2
+if [ "${K1_STATUS}" != "PENDING_VALIDATION" ]; then
+  echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): the requested certificate is ${K1_STATUS}, not PENDING_VALIDATION" >&2
   exit 1
 fi
-KINESIS_OP="$(journal_failed_op "${KINESIS_JOURNAL_KEY}" DeadlineStream)"
-if [ -z "${KINESIS_OP}" ]; then
-  echo "[verify] FAIL: phase K1: the journal records no failed op for DeadlineStream" >&2
+if [ "$(state_has_resource "${DEADLINE_STATE_KEY}" DeadlineCert)" != "false" ]; then
+  echo "[verify] FAIL: phase K1: state records DeadlineCert (expected no record for a CREATE the deadline failed)" >&2
   exit 1
 fi
-KINESIS_OP_FIELDS="$(printf '%s' "${KINESIS_OP}" \
-  | jq -r '[.changeType // "<absent>", .physicalId // "<absent>", (.physicalIdRecoveredFromError | tostring), (if (.createdResourceIdentity // "") != "" then "identity" else "<no-identity>" end)] | join(" ")')"
+DEADLINE_OP="$(journal_failed_op "${DEADLINE_JOURNAL_KEY}" DeadlineCert)"
+if [ -z "${DEADLINE_OP}" ]; then
+  echo "[verify] FAIL: phase K1: the journal records no failed op for DeadlineCert" >&2
+  exit 1
+fi
+DEADLINE_OP_FIELDS="$(printf '%s' "${DEADLINE_OP}" \
+  | jq -r '[.changeType // "<absent>", .physicalId // "<absent>", (.physicalIdRecoveredFromError | tostring)] | join(" ")')"
 # Before #5511 the deadline dropped the provider's marked error, so the failed
-# CREATE journaled no physical id and the stream was an orphan nothing recorded.
-if [ "${KINESIS_OP_FIELDS}" != "CREATE ${STREAM_NAME} true identity" ]; then
-  echo "[verify] FAIL: phase K1: failed DeadlineStream op journaled changeType/physicalId/physicalIdRecoveredFromError/identity = '${KINESIS_OP_FIELDS}' (expected 'CREATE ${STREAM_NAME} true identity')" >&2
-  echo "${KINESIS_OP}" | jq . | sed 's/^/  /' >&2
+# CREATE journaled no physical id and the certificate was an orphan nothing
+# recorded.
+if [ "${DEADLINE_OP_FIELDS}" != "CREATE ${K1_ARN} true" ]; then
+  echo "[verify] FAIL: phase K1: failed DeadlineCert op journaled changeType/physicalId/physicalIdRecoveredFromError = '${DEADLINE_OP_FIELDS}' (expected 'CREATE ${K1_ARN} true')" >&2
+  echo "${DEADLINE_OP}" | jq . | sed 's/^/  /' >&2
   exit 1
 fi
-echo "[verify] phase K1 ok: the stream exists, the deadline failed its CREATE, and the journal names it with its identity"
+echo "[verify] phase K1 ok: the certificate exists PENDING_VALIDATION, the deadline failed its CREATE, and the journal names it"
 
-# DeleteStream refuses a stream still CREATING, which the abandoned wait was
-# watching, so the rollback runs once it is ACTIVE.
-K2_STATUS=""
-for _ in $(seq 1 60); do
-  if ! K2_STATUS="$(aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}" \
-      --query 'StreamDescriptionSummary.StreamStatus' --output text 2>&1)"; then
-    echo "[verify] FAIL: phase K2: describe-stream-summary for ${STREAM_NAME} failed while waiting for ACTIVE: ${K2_STATUS}" >&2
-    exit 1
-  fi
-  [ "${K2_STATUS}" = "ACTIVE" ] && break
-  sleep 2
-done
-if [ "${K2_STATUS}" != "ACTIVE" ]; then
-  echo "[verify] FAIL: phase K2: ${STREAM_NAME} did not reach ACTIVE (last status: ${K2_STATUS})" >&2
-  exit 1
-fi
-echo "[verify] phase K2: cdkd rollback ${KINESIS_STACK} --force --revert-failed (expect exit 0, the stream DELETED)"
-K2_RC="$(run_rollback "${KINESIS_STACK}" "${LOG_DIR}/k2.log")"
+echo "[verify] phase K2: cdkd rollback ${DEADLINE_STACK} --force --revert-failed (expect exit 0, the certificate DELETED)"
+K2_RC="$(run_rollback "${DEADLINE_STACK}" "${LOG_DIR}/k2.log")"
 if [ "${K2_RC}" -ne 0 ]; then
   echo "[verify] FAIL: phase K2: the rollback exited ${K2_RC} (expected 0 -- output above)" >&2
   exit 1
 fi
-if ! grep -qF "deleting partially-created DeadlineStream" "${LOG_DIR}/k2.log"; then
-  echo "[verify] FAIL: phase K2: the rollback did not delete DeadlineStream as a partially-created resource" >&2
+if ! grep -qF "deleting partially-created DeadlineCert" "${LOG_DIR}/k2.log"; then
+  echo "[verify] FAIL: phase K2: the rollback did not delete DeadlineCert as a partially-created resource" >&2
   exit 1
 fi
-# No polling: the provider's delete returns only once the stream is gone
-# (issue #3872).
-# shellcheck disable=SC2046
-assert_gone "phase K2: ${STREAM_NAME} still exists after the rollback that deleted it" $(stream_probe)
+wait_gone "phase K2: ${K1_ARN} still exists after the rollback that deleted it" \
+  aws acm describe-certificate --certificate-arn "${K1_ARN}" --region "${REGION}"
 assert_gone "phase K2: the rollback journal is still present" \
-  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${KINESIS_JOURNAL_KEY}"
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${DEADLINE_JOURNAL_KEY}"
 assert_gone "phase K2: state.json is still present after the initial-deploy rollback" \
-  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${KINESIS_STATE_KEY}"
-echo "[verify] phase K2 ok: the rollback deleted the journaled stream (exit 0), journal and state gone"
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${DEADLINE_STATE_KEY}"
+echo "[verify] phase K2 ok: the rollback deleted the journaled certificate (exit 0), journal and state gone"
 
 # ---------------------------------------------------------------------------
 # FINAL: nothing left
@@ -688,9 +694,15 @@ assert_gone "${REPO_NAME} still exists at the end of the run" $(repo_probe)
 assert_gone "${TOPIC_ARN} still exists at the end of the run" $(topic_probe)
 # shellcheck disable=SC2046
 assert_gone "${NESTED_REPO_NAME} still exists at the end of the run" $(nested_repo_probe)
-# shellcheck disable=SC2046
-assert_gone "${STREAM_NAME} still exists at the end of the run" $(stream_probe)
-for s in "${ECR_STACK}" "${SNS_STACK}" "${NESTED_STACK}" "${NESTED_CHILD}" "${KINESIS_STACK}"; do
+if ! FINAL_CERTS="$(cert_arns)"; then
+  echo "[verify] FAIL: could not list ACM certificates for ${CERT_DOMAIN} at the end of the run" >&2
+  exit 1
+fi
+if [ -n "${FINAL_CERTS}" ]; then
+  echo "[verify] FAIL: an ACM certificate for ${CERT_DOMAIN} still exists at the end of the run: ${FINAL_CERTS}" >&2
+  exit 1
+fi
+for s in "${ECR_STACK}" "${SNS_STACK}" "${NESTED_STACK}" "${NESTED_CHILD}" "${DEADLINE_STACK}"; do
   aws s3 rm "s3://${STATE_BUCKET}/cdkd/${s}/" --recursive >/dev/null 2>&1 || true
 done
 

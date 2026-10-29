@@ -2397,6 +2397,7 @@
     "--include-deprecated",
     "--include-non-importable",
     "--include-planned-deletion",
+    "--includes",
     "--index-name",
     "--input",
     "--input-type",

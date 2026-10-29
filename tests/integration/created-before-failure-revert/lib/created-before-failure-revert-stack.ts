@@ -1,7 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import type { Construct } from 'constructs';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
-import * as kinesis from 'aws-cdk-lib/aws-kinesis';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 
@@ -112,24 +112,26 @@ export class CreatedBeforeFailureSnsStack extends cdk.Stack {
  * Deadline arm of go-to-k/cdkd#5511: a CREATE whose create call returned and
  * whose post-create wait outlives the per-resource deadline.
  *
- * covers: AWS::Kinesis::Stream
+ * covers: AWS::CertificateManager::Certificate
  *
- * verify.sh deploys it under `--resource-timeout AWS::Kinesis::Stream=5s`.
- * CreateStream returns at once and the stream takes longer than 5s to reach
- * ACTIVE, so the deadline fires inside the provider's ACTIVE wait. The marked
- * error the provider would throw is dropped, so only the id it reported to the
- * engine's created-resource sink can journal the stream. Explicitly named so
- * verify.sh can probe and sweep it by name.
+ * verify.sh deploys it under a 30s ACM deadline. The certificate is
+ * DNS-validated for a domain under the reserved `.test` TLD, so nobody can
+ * ever validate it: RequestCertificate returns at once with
+ * PENDING_VALIDATION, and the provider's ISSUED wait (bounded only by its own
+ * poll budget, far past 30s) never ends. The deadline therefore always fires
+ * inside the wait, and the marked error the provider would throw is dropped,
+ * so only the ARN it reported to the engine's created-resource sink can
+ * journal the certificate. No DomainValidationOptions: nothing writes a DNS
+ * record.
  */
-export class CreatedBeforeFailureKinesisStack extends cdk.Stack {
+export class CreatedBeforeFailureDeadlineStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const stream = new kinesis.CfnStream(this, 'DeadlineStream', {
-      name: `${id}-deadline-stream`,
-      shardCount: 1,
-      streamModeDetails: { streamMode: 'PROVISIONED' },
+    const cert = new acm.CfnCertificate(this, 'DeadlineCert', {
+      domainName: 'cdkd-cbfr-deadline.example.test',
+      validationMethod: 'DNS',
     });
-    stream.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    cert.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
   }
 }

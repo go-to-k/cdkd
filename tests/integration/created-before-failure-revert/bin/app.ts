@@ -2,7 +2,7 @@
 import * as cdk from 'aws-cdk-lib';
 import {
   CreatedBeforeFailureEcrStack,
-  CreatedBeforeFailureKinesisStack,
+  CreatedBeforeFailureDeadlineStack,
   CreatedBeforeFailureNestedStack,
   CreatedBeforeFailureSnsStack,
 } from '../lib/created-before-failure-revert-stack.ts';
@@ -31,8 +31,8 @@ new CreatedBeforeFailureNestedStack(app, 'CdkdCreatedBeforeFailureRevertNestedEx
     'cdkd integ: a nested child whose only skip on destroy is the ECR repository its failed CREATE journaled (go-to-k/cdkd#4738)',
 });
 
-new CreatedBeforeFailureKinesisStack(app, 'CdkdCreatedBeforeFailureRevertKinesisExample', {
+new CreatedBeforeFailureDeadlineStack(app, 'CdkdCreatedBeforeFailureRevertDeadlineExample', {
   env,
   description:
-    'cdkd integ: a Kinesis stream whose ACTIVE wait outlives a 5s resource deadline after CreateStream returned (journaled orphan, deleted by rollback --revert-failed, go-to-k/cdkd#5511)',
+    'cdkd integ: an ACM certificate whose ISSUED wait outlives a 30s resource deadline after RequestCertificate returned (journaled orphan, deleted by rollback --revert-failed, go-to-k/cdkd#5511)',
 });
