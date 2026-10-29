@@ -2451,17 +2451,30 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
 
       /**
        * `B` (and any other bucket) times out at 60ms. `C`, a queue with the
-       * default budget, keeps the deploy running for 250ms, so the failure is
+       * default budget, keeps the deploy running for 400ms, so the failure is
        * saved after whatever `B`'s abandoned call does at ~100ms.
        */
       function deadlineEngine(
         ids: string[],
         create: (logicalId: string) => Promise<unknown>,
-        opts: { slowSibling?: boolean; bucketTimeoutMs?: number } = {}
+        opts: {
+          slowSibling?: boolean;
+          bucketTimeoutMs?: number;
+          /** `B` is an in-place UPDATE of `b-old` whose `update()` runs this. */
+          updateB?: () => Promise<unknown>;
+        } = {}
       ) {
         const changes = new Map<string, ResourceChange>(
           ids.map((id) => [id, { ...makeChange(id), desiredProperties: { p: 'new' } } as ResourceChange])
         );
+        if (opts.updateB !== undefined) {
+          changes.set('B', {
+            ...makeChange('B'),
+            changeType: 'UPDATE',
+            desiredProperties: { p: 'new' },
+            propertyChanges: [{ path: 'p', oldValue: 'old', newValue: 'new', requiresReplacement: false }],
+          } as unknown as ResourceChange);
+        }
         if (opts.slowSibling === true) {
           changes.set('C', { ...makeChange('C'), resourceType: QUEUE } as ResourceChange);
         }
@@ -2471,6 +2484,17 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
           deps,
           noRollback: true,
           currentEtag: 'e0',
+          ...(opts.updateB !== undefined && {
+            currentResources: {
+              B: {
+                physicalId: 'b-old',
+                resourceType: BUCKET,
+                properties: { p: 'old' },
+                attributes: {},
+                dependencies: [],
+              },
+            },
+          }),
           engineOptions: {
             resourceWarnAfterMs: 10,
             resourceTimeoutByType: { [BUCKET]: opts.bucketTimeoutMs ?? 60 },
@@ -2478,12 +2502,17 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         });
         const provider = (
           engine as unknown as {
-            providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+            providerRegistry: {
+              getProviderFor: () => {
+                provider: { create: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
+              };
+            };
           }
         ).providerRegistry.getProviderFor().provider;
+        if (opts.updateB !== undefined) provider.update.mockImplementation(opts.updateB);
         provider.create.mockImplementation(async (logicalId: string) => {
           if (logicalId === 'C') {
-            await sleep(250);
+            await sleep(400);
             return { physicalId: 'phys-C', attributes: {} };
           }
           return create(logicalId);
@@ -2525,6 +2554,56 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         expect(ops.find((o) => o.logicalId === 'B')).toMatchObject({
           physicalId: 'b-late',
           physicalIdRecoveredFromError: true,
+        });
+      });
+
+      // The abandoned call goes on to write the resource to state before the
+      // failure is saved: state holds it, so the journal must not as well.
+      it('journals no id for a create the engine recorded before the failure was saved', async () => {
+        const { engine, tmpl: t } = deadlineEngine(
+          ['B'],
+          async () => {
+            await sleep(100);
+            reportCreatedResource('B', BUCKET, 'b-late');
+            return { physicalId: 'b-late', attributes: {} };
+          },
+          { slowSibling: true }
+        );
+        const ops = await failedOps(engine, t);
+        const op = ops.find((o) => o.logicalId === 'B')!;
+        expect(op.physicalId).toBeUndefined();
+        expect(op).not.toHaveProperty('physicalIdRecoveredFromError');
+      });
+
+      // An in-place `update()` that replaces internally (`this.create()`)
+      // reports its new resource like any create.
+      describe('an in-place update that re-creates internally', () => {
+        it('journals no orphan once the engine recorded the update result', async () => {
+          const { engine, tmpl: t } = deadlineEngine([], async () => ({}), {
+            slowSibling: true,
+            updateB: async () => {
+              reportCreatedResource('B', BUCKET, 'b-new');
+              await sleep(100);
+              return { physicalId: 'b-new', wasReplaced: true };
+            },
+          });
+          const ops = await failedOps(engine, t);
+          expect(ops.filter((o) => o.logicalId === 'B').map((o) => o.changeType)).toEqual(['UPDATE']);
+        });
+
+        it('journals the new resource while the update is still running', async () => {
+          const { engine, tmpl: t } = deadlineEngine([], async () => ({}), {
+            slowSibling: true,
+            updateB: async () => {
+              reportCreatedResource('B', BUCKET, 'b-new');
+              return hang();
+            },
+          });
+          const ops = await failedOps(engine, t);
+          expect(ops.filter((o) => o.logicalId === 'B').map((o) => [o.changeType, o.physicalId])).toEqual([
+            ['UPDATE', 'b-old'],
+            ['CREATE', 'b-new'],
+          ]);
         });
       });
 
@@ -2738,7 +2817,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
           desiredProperties: { p: 'new' },
           propertyChanges: [{ path: 'p', oldValue: 'old', newValue: 'new', requiresReplacement: true }],
         } as unknown as ResourceChange;
-        // `C` (a bucket, default budget) keeps the deploy running for 250ms.
+        // `C` (a bucket, default budget) keeps the deploy running for 400ms.
         const changes = new Map([
           ['B', change],
           ['C', makeChange('C')],
@@ -2765,7 +2844,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         ).providerRegistry.getProviderFor().provider;
         provider.create.mockImplementation(async (logicalId: string) => {
           if (logicalId === 'C') {
-            await sleep(250);
+            await sleep(400);
             return { physicalId: 'phys-C', attributes: {} };
           }
           reportCreatedResource('B', 'AWS::SQS::Queue', 'b-new');
