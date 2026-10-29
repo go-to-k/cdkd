@@ -55,6 +55,10 @@ interface Live {
   tags?: Array<{ Key: string; Value: string }>;
   failInsights?: boolean;
   failTtl?: boolean;
+  /** A live replica entry with no RegionName (an unkeyable entry). */
+  replicaUnnamed?: boolean;
+  /** The live index's key attribute. */
+  gsiKey?: string;
   /** The local replica's live CMK (with `sse: 'ENABLED'`). */
   kmsKey?: string;
   billing?: 'PAY_PER_REQUEST' | 'PROVISIONED';
@@ -99,18 +103,20 @@ function serve(live: Live): void {
               ...(live.remote !== undefined
                 ? [{ RegionName: 'eu-west-1', ReplicaStatus: live.remote.status }]
                 : []),
+              ...(live.replicaUnnamed === true ? [{ ReplicaStatus: 'ACTIVE' }] : []),
             ],
             ...(live.gsiStatus !== undefined && {
               GlobalSecondaryIndexes: [
                 {
                   IndexName: 'g',
                   IndexStatus: live.gsiStatus,
-                  KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+                  KeySchema: [{ AttributeName: live.gsiKey ?? 'pk', KeyType: 'HASH' }],
                   Projection: { ProjectionType: 'ALL' },
                   // A per-replica read ceiling, which the readback lists in the
                   // local replica's own index entries.
                   OnDemandThroughput: { MaxReadRequestUnits: 10 },
                 },
+
               ],
             }),
             ...(live.sse !== undefined && {
@@ -439,6 +445,62 @@ describe('GlobalTable unsettled properties (go-to-k/cdkd#5487)', () => {
       const live = (await provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded, recorded)) as Record<string, any>;
       const replicaIndexes = (live['Replicas'][0]['GlobalSecondaryIndexes'] ?? []) as Array<{ IndexName: string }>;
       expect(replicaIndexes.map((g) => g.IndexName)).not.toContain('g');
+    });
+  });
+
+  describe('the projection fails closed on a collection it cannot key (go-to-k/cdkd#5487)', () => {
+    const recordedGsi = props({
+      GlobalSecondaryIndexes: [
+        { IndexName: 'g', KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }], Projection: { ProjectionType: 'ALL' } },
+      ],
+    });
+
+    it('a live replica list with an unkeyable entry keeps the RECORD value, and warns once', async () => {
+      serve({ replicaUnnamed: true, remote: { status: 'ACTIVE' } });
+      const recorded = props({}, { Tags: [{ Key: 'a', Value: '1' }] });
+      // Premise: the readback carries the entry with no Region.
+      const snapshot = (await provider.readCurrentState(TABLE, 'T', TYPE, recorded)) as Record<string, any>;
+      expect(snapshot['Replicas'].some((r: any) => typeof r.Region !== 'string')).toBe(true);
+      const before = warned().length;
+      const live = (await provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded, recorded)) as Record<
+        string,
+        any
+      >;
+      // Neither the live-only eu-west-1 replica nor the unkeyable entry reaches the previous side.
+      expect(live['Replicas']).toEqual(recorded['Replicas']);
+      const lines = warned().slice(before).filter((l) => l.includes('cannot key by an identity'));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('Replicas');
+    });
+
+    it('a fully keyed list is projected from the live entries (no fail-closed warning)', async () => {
+      serve({ gsiStatus: 'ACTIVE' });
+      const before = warned().length;
+      const live = (await provider.readUnsettled(
+        TABLE,
+        'T',
+        TYPE,
+        new Set(['GlobalSecondaryIndexes']),
+        recordedGsi,
+        recordedGsi
+      )) as Record<string, any>;
+      expect(live['GlobalSecondaryIndexes'].map((g: any) => g.IndexName)).toEqual(['g']);
+      expect(warned().slice(before).some((l) => l.includes('cannot key by an identity'))).toBe(false);
+    });
+
+    it('KeySchema is positional, never keyed by AttributeName (no unnamed-AttributeName warning)', async () => {
+      serve({ gsiStatus: 'ACTIVE', gsiKey: 'other' });
+      const before = warned().length;
+      const live = (await provider.readUnsettled(
+        TABLE,
+        'T',
+        TYPE,
+        new Set(['GlobalSecondaryIndexes']),
+        recordedGsi,
+        recordedGsi
+      )) as Record<string, any>;
+      expect(live['GlobalSecondaryIndexes'][0]['KeySchema']).toEqual([{ AttributeName: 'other', KeyType: 'HASH' }]);
+      expect(warned().slice(before).some((l) => l.includes('AttributeName'))).toBe(false);
     });
   });
 });

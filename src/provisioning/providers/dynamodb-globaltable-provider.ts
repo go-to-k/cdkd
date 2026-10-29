@@ -329,13 +329,29 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  */
 const IDENTITY_KEYS = ['Region', 'IndexName', 'AttributeName'] as const;
 
-function identityKeyOf(...lists: unknown[][]): string | undefined {
+/**
+ * The identity a collection is keyed by: `{ key }` when every entry carries
+ * it; `'ambiguous'` when some entry carries a candidate identity but not every
+ * entry does (the projection cannot tell named entries apart, so it fails
+ * CLOSED); `undefined` for an ordinary list (no entry carries one).
+ */
+function identityKeyOf(...lists: unknown[][]): { key: string } | 'ambiguous' | undefined {
   const entries = lists.flat();
   if (entries.length === 0) return undefined;
-  return IDENTITY_KEYS.find((key) =>
-    entries.every((entry) => isPlainObject(entry) && typeof entry[key] === 'string')
+  const key = IDENTITY_KEYS.find((candidate) =>
+    entries.every((entry) => isPlainObject(entry) && typeof entry[candidate] === 'string')
   );
+  if (key !== undefined) return { key };
+  const partial = entries.some(
+    (entry) =>
+      isPlainObject(entry) &&
+      IDENTITY_KEYS.some((candidate) => typeof entry[candidate] === 'string')
+  );
+  return partial ? 'ambiguous' : undefined;
 }
+
+/** Positional lists whose entries happen to carry an `AttributeName`, never collections. */
+const POSITIONAL_LIST_KEYS: ReadonlySet<string> = new Set(['KeySchema']);
 
 /** A live entry the projection left out: no record or template names it. */
 export interface UnnamedLiveEntry {
@@ -344,6 +360,8 @@ export interface UnnamedLiveEntry {
   value: string;
   /** Where it sits, as a member path (`Replicas`, `Replicas[us-east-1].GlobalSecondaryIndexes`). */
   path: string;
+  /** The whole list was left at the record's value: its entries could not be keyed. */
+  ambiguous?: true;
 }
 
 /**
@@ -382,21 +400,24 @@ function projectNamed(
         continue;
       }
       if (!Object.hasOwn(live, key) || live[key] === undefined) continue;
-      out[key] = projectNamed(
-        live[key],
-        ownBag?.[key],
-        wantedBag?.[key],
-        `${path}.${key}`,
-        unnamed
-      );
+      out[key] = POSITIONAL_LIST_KEYS.has(key)
+        ? live[key]
+        : projectNamed(live[key], ownBag?.[key], wantedBag?.[key], `${path}.${key}`, unnamed);
     }
     return out;
   }
   if (Array.isArray(live)) {
     const ownList = Array.isArray(own) ? own : [];
     const wantedList = Array.isArray(wanted) ? wanted : [];
-    const id = identityKeyOf(live, ownList, wantedList);
-    if (id === undefined) return live;
+    const identity = identityKeyOf(live, ownList, wantedList);
+    if (identity === undefined) return live;
+    if (identity === 'ambiguous') {
+      // Fail CLOSED: some entry has no identity, so a live-only entry cannot be
+      // told from a named one. The record's value stands (nothing removed).
+      unnamed.push({ identity: 'unkeyed entries', value: 'some', path, ambiguous: true });
+      return own;
+    }
+    const id = identity.key;
     const byId = (list: unknown[]): Map<string, Record<string, unknown>> =>
       new Map(
         list.map((entry) => [
@@ -8122,7 +8143,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         unnamed
       );
     }
-    for (const entry of unnamed) {
+    for (const entry of unnamed.filter((e) => e.ambiguous === true)) {
+      this.logger.warn(
+        safeMsg`${logicalId} (${resourceType}): ${entry.path} on AWS has entries cdkd cannot key by an identity, so convergence keeps the recorded ${entry.path} rather than risk removing an entry neither the record nor the template declares. Check it with 'cdkd drift'.`
+      );
+    }
+    for (const entry of unnamed.filter((e) => e.ambiguous !== true)) {
       this.logger.warn(
         safeMsg`${logicalId} (${resourceType}): ${entry.path} on AWS holds ${entry.identity} ${entry.value}, which neither the record nor the template declares, so cdkd leaves it in place. If the failed update added it and it should not be there, remove it by hand (for a replica: aws dynamodb update-table --replica-updates Delete; for an index: --global-secondary-index-updates Delete).`
       );
