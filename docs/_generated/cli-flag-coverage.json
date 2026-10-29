@@ -1351,6 +1351,7 @@
       "integs": [
         "docdb-fix-forward-orphan",
         "docdb-neptune",
+        "dynamodb-globaltable-replica-settings",
         "dynamodb-gsi-update",
         "emr-instance-configs",
         "eventbridge-pipes",
@@ -1365,6 +1366,7 @@
     {
       "flag": "--resource-warn-after",
       "integs": [
+        "dynamodb-globaltable-replica-settings",
         "dynamodb-gsi-update",
         "emr-instance-configs",
         "eventbridge-pipes",

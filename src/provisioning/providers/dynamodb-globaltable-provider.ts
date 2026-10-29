@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   DynamoDBClient,
   CreateTableCommand,
@@ -309,6 +310,180 @@ const DRIFT_STRIPPED_INDEX_MEMBERS: ReadonlyArray<{ listKey: string; member: str
  */
 function maskLeafValue(value: unknown, maskSecrets: SecretMasker): unknown {
   return maskDeep(value, maskSecrets);
+}
+
+/**
+ * go-to-k/cdkd#5487: the running update's `UpdateContext.markUnsettled` and
+ * `unsettledProperties`, for the helpers that make its sends. Absent outside
+ * an update (create, delete, a read), where marking does nothing.
+ */
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * go-to-k/cdkd#5487: the identities a collection's entries are keyed by. A list
+ * whose every entry (live, recorded and declared) is an object carrying one of
+ * these is projected entry by entry; any other list is an ordinary value.
+ */
+const IDENTITY_KEYS = ['Region', 'IndexName', 'AttributeName'] as const;
+
+/**
+ * The identity a collection is keyed by: `{ key }` when every entry carries
+ * it; `'ambiguous'` when some entry carries a candidate identity but not every
+ * entry does (the projection cannot tell named entries apart, so it fails
+ * CLOSED); `undefined` for an ordinary list (no entry carries one).
+ */
+function identityKeyOf(...lists: unknown[][]): { key: string } | 'ambiguous' | undefined {
+  const entries = lists.flat();
+  if (entries.length === 0) return undefined;
+  const key = IDENTITY_KEYS.find((candidate) =>
+    entries.every((entry) => isPlainObject(entry) && typeof entry[candidate] === 'string')
+  );
+  if (key !== undefined) return { key };
+  const partial = entries.some(
+    (entry) =>
+      isPlainObject(entry) &&
+      IDENTITY_KEYS.some((candidate) => typeof entry[candidate] === 'string')
+  );
+  return partial ? 'ambiguous' : undefined;
+}
+
+/** Positional lists whose entries happen to carry an `AttributeName`, never collections. */
+const POSITIONAL_LIST_KEYS: ReadonlySet<string> = new Set(['KeySchema']);
+
+/** A live entry the projection left out: no record or template names it. */
+export interface UnnamedLiveEntry {
+  /** The identity key (`Region`, `IndexName`, ...) and its value. */
+  identity: string;
+  value: string;
+  /** Where it sits, as a member path (`Replicas`, `Replicas[us-east-1].GlobalSecondaryIndexes`). */
+  path: string;
+  /** The whole list was left at the record's value: its entries could not be keyed. */
+  ambiguous?: true;
+}
+
+/**
+ * go-to-k/cdkd#5487: the ONE projection every value `readUnsettled` returns
+ * goes through, so convergence never removes or resets what neither the record
+ * (`own`) nor the template (`wanted`) names:
+ *
+ * - a plain object keeps only the members `own` or `wanted` names, each
+ *   projected in turn; a member neither names keeps the record's value, absent
+ *   staying absent; `Tags` always keep the record's (tags merge);
+ * - a list keyed by an identity (`IDENTITY_KEYS`: replicas by `Region`,
+ *   indexes by `IndexName`, ...) keeps only the live entries whose identity
+ *   `own` or `wanted` names, each projected against its named counterparts; an
+ *   entry only the template names is ADOPTED (on the previous side, so it is
+ *   not created again); a live entry neither names is left out (never removed)
+ *   and reported in `unnamed`;
+ * - anything else is the live value.
+ */
+function projectNamed(
+  live: unknown,
+  own: unknown,
+  wanted: unknown,
+  path: string,
+  unnamed: UnnamedLiveEntry[]
+): unknown {
+  if (isPlainObject(live) && (isPlainObject(own) || isPlainObject(wanted))) {
+    const ownBag = isPlainObject(own) ? own : undefined;
+    const wantedBag = isPlainObject(wanted) ? wanted : undefined;
+    const out: Record<string, unknown> = {};
+    for (const key of IDENTITY_KEYS) if (Object.hasOwn(live, key)) out[key] = live[key];
+    const named = new Set([...Object.keys(ownBag ?? {}), ...Object.keys(wantedBag ?? {})]);
+    for (const key of named) {
+      if ((IDENTITY_KEYS as readonly string[]).includes(key)) continue;
+      if (key === 'Tags') {
+        if (ownBag !== undefined && Object.hasOwn(ownBag, 'Tags')) out['Tags'] = ownBag['Tags'];
+        continue;
+      }
+      if (!Object.hasOwn(live, key) || live[key] === undefined) continue;
+      out[key] = POSITIONAL_LIST_KEYS.has(key)
+        ? live[key]
+        : projectNamed(live[key], ownBag?.[key], wantedBag?.[key], `${path}.${key}`, unnamed);
+    }
+    return out;
+  }
+  if (Array.isArray(live)) {
+    const ownList = Array.isArray(own) ? own : [];
+    const wantedList = Array.isArray(wanted) ? wanted : [];
+    const identity = identityKeyOf(live, ownList, wantedList);
+    if (identity === undefined) return live;
+    if (identity === 'ambiguous') {
+      // Fail CLOSED: some entry has no identity, so a live-only entry cannot be
+      // told from a named one. The record's value stands (nothing removed).
+      unnamed.push({ identity: 'unkeyed entries', value: 'some', path, ambiguous: true });
+      return own;
+    }
+    const id = identity.key;
+    const byId = (list: unknown[]): Map<string, Record<string, unknown>> =>
+      new Map(
+        list.map((entry) => [
+          (entry as Record<string, string>)[id]!,
+          entry as Record<string, unknown>,
+        ])
+      );
+    const ownById = byId(ownList);
+    const wantedById = byId(wantedList);
+    return live.flatMap((entry) => {
+      const value = (entry as Record<string, string>)[id]!;
+      const ownEntry = ownById.get(value);
+      const wantedEntry = wantedById.get(value);
+      if (ownEntry === undefined && wantedEntry === undefined) {
+        unnamed.push({ identity: id, value, path });
+        return [];
+      }
+      return [projectNamed(entry, ownEntry, wantedEntry, `${path}[${value}]`, unnamed)];
+    });
+  }
+  return live;
+}
+
+/**
+ * go-to-k/cdkd#5487: set while `readUnsettled` reads, so each best-effort read
+ * of `readCurrentState` throws instead of omitting a key (an omitted key would
+ * converge the setting to "not set").
+ */
+const strictReadScope = new AsyncLocalStorage<ReadonlySet<string>>();
+
+/**
+ * Whether a read feeding `key` must throw rather than omit (go-to-k/cdkd#5487):
+ * only when `readUnsettled` reads and `key` is one of the unsettled names, so a
+ * read feeding a settled key keeps `readCurrentState`'s tolerance.
+ */
+function strictFor(key: string): boolean {
+  return strictReadScope.getStore()?.has(key) === true;
+}
+
+/**
+ * The strict set for one replica's reads: a replica AWS is not serving
+ * (CREATION_FAILED, REGION_DISABLED, an inaccessible key, ...) keeps the
+ * tolerant reads, so its regional not-found or region error never blocks the
+ * deploy that recovers it.
+ */
+function replicaStrictness(status: string | undefined): ReadonlySet<string> {
+  const current = strictReadScope.getStore() ?? new Set<string>();
+  if (status === undefined || status === 'ACTIVE' || status === 'UPDATING') return current;
+  return new Set([...current].filter((key) => key !== 'Replicas'));
+}
+
+const unsettledScope = new AsyncLocalStorage<{
+  mark: (key: string) => void;
+  unsettled: ReadonlySet<string>;
+}>();
+
+/** Mark `keys` unsettled, immediately before the send that changes them. */
+function markUnsettled(...keys: string[]): void {
+  const scope = unsettledScope.getStore();
+  if (scope === undefined) return;
+  for (const key of keys) scope.mark(key);
+}
+
+/** Whether the running update converges `key` (an earlier failure left it unsettled). */
+function isUnsettled(key: string): boolean {
+  return unsettledScope.getStore()?.unsettled.has(key) === true;
 }
 
 /** `text` closed as a sentence, for a wrap that continues after it. */
@@ -1891,6 +2066,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // of that name is not cdkd's to wait out, let alone remove.
     for (let attempt = 1; ; attempt++) {
       try {
+        markUnsettled('Replicas');
         await this.dynamoDBClient.send(
           new UpdateTableCommand({
             TableName: tableName,
@@ -1977,6 +2153,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     region: string,
     enabled: boolean
   ): Promise<void> {
+    markUnsettled('Replicas');
     await this.getRegionalClient(region).send(
       new UpdateTableCommand({ TableName: tableName, DeletionProtectionEnabled: enabled })
     );
@@ -2186,6 +2363,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // a refusal must not fail a deploy that would otherwise succeed. It is
       // reported; this pass runs again on the table's next update.
       try {
+        markUnsettled('Replicas');
         await this.dynamoDBClient.send(
           new UpdateTableCommand({
             TableName: tableName,
@@ -2318,6 +2496,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       request = built;
     }
     try {
+      markUnsettled('SSESpecification', 'Replicas');
       await this.dynamoDBClient.send(new UpdateTableCommand(request));
       await this.waitForGlobalTableSettled(tableName, logicalId, maskSecrets);
     } catch (keyError) {
@@ -2930,6 +3109,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     maskSecrets: SecretMasker
   ): Promise<void> {
     try {
+      markUnsettled('Replicas');
       await this.retrySettlingRefusal(
         () => client.send(new DeleteResourcePolicyCommand({ ResourceArn: streamArn })),
         `delete the policy of the retired stream of ${tableName}`,
@@ -3089,8 +3269,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
       return arn;
     };
-    const send = (call: () => Promise<unknown>): Promise<void> =>
-      this.retrySettlingRefusal(call, `${op.kind} on ${scope}`, maskSecrets);
+    const send = (call: () => Promise<unknown>): Promise<void> => {
+      // go-to-k/cdkd#5487: every op here changes a replica member.
+      markUnsettled('Replicas');
+      return this.retrySettlingRefusal(call, `${op.kind} on ${scope}`, maskSecrets);
+    };
     switch (op.kind) {
       case 'pitr':
         await send(() =>
@@ -3299,6 +3482,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     maskSecrets: SecretMasker
   ): Promise<void> {
     try {
+      // go-to-k/cdkd#5487: SSE is a table key; the other local settings sent
+      // here (TableClass, the replication mode) are replica members.
+      markUnsettled(input.SSESpecification !== undefined ? 'SSESpecification' : 'Replicas');
       await this.dynamoDBClient.send(new UpdateTableCommand(input));
       await this.waitForGlobalTableSettled(tableName, logicalId, maskSecrets);
     } catch (error) {
@@ -3628,6 +3814,35 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * but the guard is defense-in-depth.
    */
   async update(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
+  ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#5487: the sends below are spread over many helpers (some
+    // shared with create / delete), so the update's marks reach them through
+    // an async-local scope rather than a parameter on each: only a send made
+    // inside THIS update marks, and concurrent updates never share a scope.
+    return unsettledScope.run(
+      {
+        mark: (key) => context?.markUnsettled?.(key),
+        unsettled: context?.unsettledProperties ?? new Set(),
+      },
+      () =>
+        this.updateInScope(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          context
+        )
+    );
+  }
+
+  private async updateInScope(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -4888,6 +5103,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         flatChanged = true;
       }
       if (flatChanged) {
+        // go-to-k/cdkd#5487: the keys this one call changes, before it.
+        if (flatUpdate.DeletionProtectionEnabled !== undefined) markUnsettled('Replicas');
+        if (flatUpdate.StreamSpecification !== undefined) markUnsettled('StreamSpecification');
+        if (flatUpdate.OnDemandThroughput !== undefined) {
+          markUnsettled('WriteOnDemandThroughputSettings');
+        }
         await this.dynamoDBClient.send(new UpdateTableCommand(flatUpdate));
         await this.waitForTableActiveAfterUpdate(
           physicalId,
@@ -5114,6 +5335,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             billingUpdate.GlobalSecondaryIndexUpdates = indexUpdates;
           }
         }
+        markUnsettled('BillingMode', 'WriteProvisionedThroughputSettings');
+        if (billingUpdate.GlobalSecondaryIndexUpdates !== undefined) {
+          markUnsettled('GlobalSecondaryIndexes');
+        }
         await this.dynamoDBClient.send(new UpdateTableCommand(billingUpdate));
         await this.waitForTableActiveAfterUpdate(
           physicalId,
@@ -5131,6 +5356,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // wants the flip call to carry the flip, and the well-probed payload
       // shape here is the same one step 3 sends on a non-flip deploy.
       if (deferCeilingsPastFlip) {
+        markUnsettled('WriteOnDemandThroughputSettings');
         await this.dynamoDBClient.send(
           new UpdateTableCommand({ TableName: physicalId, OnDemandThroughput: onDemandPayload })
         );
@@ -5242,6 +5468,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           );
         }
 
+        markUnsettled('Replicas');
         await this.dynamoDBClient.send(
           new UpdateTableCommand({
             TableName: physicalId,
@@ -5494,6 +5721,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           );
           continue;
         }
+        markUnsettled('Replicas');
         await this.dynamoDBClient.send(
           new UpdateTableCommand({
             TableName: physicalId,
@@ -5719,6 +5947,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         const gsiUpdate: GlobalSecondaryIndexUpdate = {
           Delete: { IndexName: gsi.IndexName },
         };
+        markUnsettled('GlobalSecondaryIndexes');
         await this.dynamoDBClient.send(
           new UpdateTableCommand({
             TableName: physicalId,
@@ -5768,6 +5997,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             ...(addedWarmToSend && { WarmThroughput: addedWarmToSend }),
           },
         };
+        markUnsettled('GlobalSecondaryIndexes');
         await this.dynamoDBClient.send(
           new UpdateTableCommand({
             TableName: physicalId,
@@ -5938,6 +6168,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           continue;
         }
         const gsiUpdate: GlobalSecondaryIndexUpdate = { Update: update };
+        markUnsettled('GlobalSecondaryIndexes');
         await this.dynamoDBClient.send(
           new UpdateTableCommand({
             TableName: physicalId,
@@ -6143,6 +6374,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           }
         }
         if (ttlTarget) {
+          markUnsettled('TimeToLiveSpecification');
           await sendTtl(
             new UpdateTimeToLiveCommand({
               TableName: physicalId,
@@ -6273,7 +6505,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   ): Promise<void> {
     // ONE masked sink for every line in this method (issue #1997).
     const warn = (message: string): void => this.logger.warn(maskSecrets(message));
-    if (deepEqual(oldTags, newTags)) return;
+    // go-to-k/cdkd#5487: unsettled `Replicas` re-send the tags even when the bags agree.
+    if (deepEqual(oldTags, newTags) && !isUnsettled('Replicas')) return;
     if (!tableArn) {
       warn(
         `Local DescribeTable returned no TableArn — cannot propagate Tags to cross-region replica ${region} of ${physicalIdForLogs}`
@@ -6327,8 +6560,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     if (tagWarning !== undefined) {
       this.logger.warn(maskSecrets(tagWarning));
     }
-    const tagsToAdd = [...plan.set].map(([k, v]) => ({ Key: k, Value: v }));
+    // go-to-k/cdkd#5487: a replica's tags are a member of `Replicas`. When an
+    // earlier failure left it unsettled, every template tag is re-sent and only
+    // the recorded tags the template dropped are removed (the previous side
+    // keeps the record's tags, never the live ones).
+    const toSet = isUnsettled('Replicas') ? planTagDiff(undefined, newTagsRaw).set : plan.set;
+    const tagsToAdd = [...toSet].map(([k, v]) => ({ Key: k, Value: v }));
     const tagsToRemove = plan.remove;
+    if (tagsToRemove.length > 0 || tagsToAdd.length > 0) markUnsettled('Replicas');
 
     if (tagsToRemove.length > 0) {
       await client.send(new UntagResourceCommand({ ResourceArn: tableArn, TagKeys: tagsToRemove }));
@@ -6402,6 +6641,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // removed a policy or target. Absent on every create / update caller.
     progress?: DeleteProgress
   ): Promise<void> {
+    // go-to-k/cdkd#5487: the top-level key these settings belong to — an
+    // index's, the table's write side, or a replica's read side.
+    const autoScalingKey =
+      indexName !== undefined
+        ? 'GlobalSecondaryIndexes'
+        : dimension.includes('Write')
+          ? 'WriteProvisionedThroughputSettings'
+          : 'Replicas';
     // ONE masked sink (issue #1997) — see `update()` for why both layers.
     const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     // Issue #1955: the DELETE path calls this in a BURST — table-level plus one
@@ -6501,6 +6748,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // unregistered *silently* — re-introducing, under load, exactly the
           // never-registered gap this change closes. Non-throttle failures
           // still fall straight through to the WARN below.
+          markUnsettled(autoScalingKey);
           await withRetry(
             () =>
               asClient.send(
@@ -6587,6 +6835,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // Same throttle-only retry as the register above — a swallowed
           // throttle here leaves a registered target with NO policy, which
           // scales nothing.
+          markUnsettled(autoScalingKey);
           await withRetry(
             () =>
               asClient.send(
@@ -6661,6 +6910,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // absent budget (every CREATE / UPDATE caller) gets the default schedule.
         // `ObjectNotFoundException` is not a throttle, so the idempotent
         // already-gone arm below still fires on the FIRST attempt.
+        markUnsettled(autoScalingKey);
         await withRetry(
           () =>
             asClient.send(
@@ -6705,6 +6955,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
       try {
         // Same throttle-only retry and the same bound as the policy delete above.
+        markUnsettled(autoScalingKey);
         await withRetry(
           () =>
             asClient.send(
@@ -7844,6 +8095,128 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
+   * go-to-k/cdkd#5487: the live values of a record's unsettled properties in
+   * the template's shape, for the engine's convergence step:
+   * `readCurrentState` shaped against the record (every replica read in its
+   * own region), read STRICTLY so a failed read throws rather than omitting a
+   * key, with two corrections:
+   *
+   * - a PAY_PER_REQUEST table reports no `WriteProvisionedThroughputSettings`
+   *   (the readback's `{}` placeholder, which no template declares);
+   * - every unsettled value goes through ONE projection (`projectNamed`) onto
+   *   what the record or the template names, so convergence never removes or
+   *   resets what neither named. Collections keyed by an identity — `Replicas`
+   *   (by `Region`), `GlobalSecondaryIndexes` and each replica's
+   *   `GlobalSecondaryIndexes` (by `IndexName`), `AttributeDefinitions` (by
+   *   `AttributeName`) — keep only named entries (a live-only one is left in
+   *   place, never deleted, and warned about); within an entry or object a live
+   *   member (deletion protection, a KMS key, a policy, autoscaling settings, at
+   *   any depth) is kept only when named, else the record's value stands.
+   *   `Tags` always keep the record's value: tags merge (CloudFormation removes
+   *   only the recorded tags a template dropped).
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>,
+    desiredProperties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const live = await strictReadScope.run(names, () =>
+      this.readCurrentState(physicalId, logicalId, resourceType, recordedProperties)
+    );
+    if (typeof live !== 'object' || live === null) return live;
+    const out: Record<string, unknown> = { ...live };
+    if (out['BillingMode'] === 'PAY_PER_REQUEST') delete out['WriteProvisionedThroughputSettings'];
+    // Every unsettled value goes through the one projection (`projectNamed`):
+    // a collection keyed by an identity (replicas, indexes, each replica's
+    // indexes, attribute definitions) and every object member below it.
+    const unnamed: UnnamedLiveEntry[] = [];
+    for (const name of names) {
+      if (!Object.hasOwn(out, name)) continue;
+      out[name] = projectNamed(
+        out[name],
+        recordedProperties?.[name],
+        desiredProperties?.[name],
+        name,
+        unnamed
+      );
+    }
+    for (const entry of unnamed.filter((e) => e.ambiguous === true)) {
+      this.logger.warn(
+        safeMsg`${logicalId} (${resourceType}): ${entry.path} on AWS has entries cdkd cannot key by an identity, so convergence keeps the recorded ${entry.path} rather than risk removing an entry neither the record nor the template declares. Check it with 'cdkd drift'.`
+      );
+    }
+    for (const entry of unnamed.filter((e) => e.ambiguous !== true)) {
+      this.logger.warn(
+        safeMsg`${logicalId} (${resourceType}): ${entry.path} on AWS holds ${entry.identity} ${entry.value}, which neither the record nor the template declares, so cdkd leaves it in place. If the failed update added it and it should not be there, remove it by hand (for a replica: aws dynamodb update-table --replica-updates Delete; for an index: --global-secondary-index-updates Delete).`
+      );
+    }
+    return out;
+  }
+
+  /**
+   * go-to-k/cdkd#5487: the unsettled names AWS is still changing. Only states
+   * it is moving through count: a table CREATING / UPDATING / DELETING moves
+   * every name but `TimeToLiveSpecification`; a replica in one of those states
+   * moves `Replicas`; an index in one moves `GlobalSecondaryIndexes`; SSE
+   * ENABLING / DISABLING / UPDATING moves `SSESpecification`; TTL ENABLING
+   * moves `TimeToLiveSpecification` (DISABLING reads as its destination). A
+   * state at rest (an inaccessible key, an archived or disabled region) lets
+   * the update run, so AWS's error names it. A failed read keeps every name.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>> {
+    const MOVING = new Set(['CREATING', 'UPDATING', 'DELETING']);
+    try {
+      const table = (
+        await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId }))
+      ).Table;
+      const moving = new Set<string>();
+      if (table?.TableStatus !== undefined && MOVING.has(table.TableStatus)) {
+        for (const name of names) if (name !== 'TimeToLiveSpecification') moving.add(name);
+      }
+      if (
+        names.has('Replicas') &&
+        (table?.Replicas ?? []).some(
+          (replica) => replica.ReplicaStatus !== undefined && MOVING.has(replica.ReplicaStatus)
+        )
+      ) {
+        moving.add('Replicas');
+      }
+      if (
+        names.has('GlobalSecondaryIndexes') &&
+        (table?.GlobalSecondaryIndexes ?? []).some(
+          (index) => index.IndexStatus !== undefined && MOVING.has(index.IndexStatus)
+        )
+      ) {
+        moving.add('GlobalSecondaryIndexes');
+      }
+      const sse = table?.SSEDescription?.Status;
+      if (
+        names.has('SSESpecification') &&
+        (sse === 'ENABLING' || sse === 'DISABLING' || sse === 'UPDATING')
+      ) {
+        moving.add('SSESpecification');
+      }
+      if (names.has('TimeToLiveSpecification')) {
+        const ttl = (
+          await this.dynamoDBClient.send(new DescribeTimeToLiveCommand({ TableName: physicalId }))
+        ).TimeToLiveDescription?.TimeToLiveStatus;
+        if (ttl === 'ENABLING') moving.add('TimeToLiveSpecification');
+      }
+      return moving;
+    } catch {
+      return names;
+    }
+  }
+
+  /**
    * Read the AWS-current DynamoDB GlobalTable configuration in CFn-property shape.
    *
    * Reverse-maps `DescribeTable` + `ListTagsOfResource` + `DescribeTimeToLive`
@@ -7986,156 +8359,163 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             : table.Replicas
           : [{ RegionName: currentRegion }];
       const replicas = await Promise.all(
-        sdkReplicas.map(async (r) => {
-          const entry: Record<string, unknown> = { Region: r.RegionName };
-          if (!r.RegionName) return entry;
+        sdkReplicas.map(async (r) =>
+          strictReadScope.run(replicaStrictness(r.ReplicaStatus), async () => {
+            const entry: Record<string, unknown> = { Region: r.RegionName };
+            if (!r.RegionName) return entry;
 
-          const isLocal = r.RegionName === currentRegion;
-          // go-to-k/cdkd#5381: the replica's key, class and protection in the
-          // CFn spellings `create()` / `update()` read. The key used to be a
-          // flat `KMSMasterKeyId` (cross-region only), and the local table's
-          // class and protection went top-level.
-          const kmsKey = isLocal
-            ? table.SSEDescription?.Status === 'ENABLED'
-              ? table.SSEDescription.KMSMasterKeyArn
-              : undefined
-            : r.KMSMasterKeyId;
-          if (kmsKey !== undefined && kmsKey !== '') {
-            entry['SSESpecification'] = { KMSMasterKeyId: kmsKey };
-          }
-          // A replica without its own class summary inherits the source
-          // table's, and a table that never set one is STANDARD — the same
-          // reading `update()`'s class passes take.
-          entry['TableClass'] =
-            (isLocal ? undefined : r.ReplicaTableClassSummary?.TableClass) ??
-            table.TableClassSummary?.TableClass ??
-            'STANDARD';
-          const declaredReplica = properties
-            ? localReplicaEntry(properties, r.RegionName)
-            : undefined;
-          const client = isLocal ? this.dynamoDBClient : this.getRegionalClient(r.RegionName);
-          const regionLabel = r.RegionName;
-          const replicaArn = isLocal
-            ? table.TableArn
-            : table.TableArn
-              ? this.replicaArnForRegion(table.TableArn, r.RegionName)
+            const isLocal = r.RegionName === currentRegion;
+            // go-to-k/cdkd#5381: the replica's key, class and protection in the
+            // CFn spellings `create()` / `update()` read. The key used to be a
+            // flat `KMSMasterKeyId` (cross-region only), and the local table's
+            // class and protection went top-level.
+            const kmsKey = isLocal
+              ? table.SSEDescription?.Status === 'ENABLED'
+                ? table.SSEDescription.KMSMasterKeyArn
+                : undefined
+              : r.KMSMasterKeyId;
+            if (kmsKey !== undefined && kmsKey !== '') {
+              entry['SSESpecification'] = { KMSMasterKeyId: kmsKey };
+            }
+            // A replica without its own class summary inherits the source
+            // table's, and a table that never set one is STANDARD — the same
+            // reading `update()`'s class passes take.
+            entry['TableClass'] =
+              (isLocal ? undefined : r.ReplicaTableClassSummary?.TableClass) ??
+              table.TableClassSummary?.TableClass ??
+              'STANDARD';
+            const declaredReplica = properties
+              ? localReplicaEntry(properties, r.RegionName)
               : undefined;
+            const client = isLocal ? this.dynamoDBClient : this.getRegionalClient(r.RegionName);
+            const regionLabel = r.RegionName;
+            const replicaArn = isLocal
+              ? table.TableArn
+              : table.TableArn
+                ? this.replicaArnForRegion(table.TableArn, r.RegionName)
+                : undefined;
 
-          // Per-replica sub-specs (PITR / Kinesis / ContributorInsights).
-          // Best-effort: errors per region per sub-spec omit the offending
-          // key — a permissions gap in one region must NOT abort the
-          // whole drift read.
-          const subs = await this.readReplicaSubSpecs(
-            client,
-            tableNameForSubs,
-            regionLabel,
-            declaredReplica
-          );
-          Object.assign(entry, subs);
-
-          // Protection, and the stream arn the stream policy lives on: the
-          // local table's are in hand; a cross-region replica's come from its
-          // own region (best-effort — a failed read omits the members, and
-          // `update()` never reads that absence as "unprotect").
-          let protection: boolean | undefined;
-          let streamArn: string | undefined;
-          if (isLocal) {
-            protection = table.DeletionProtectionEnabled;
-            streamArn = table.LatestStreamArn;
-          } else {
-            try {
-              const regional = await client.send(
-                new DescribeTableCommand({ TableName: tableNameForSubs })
-              );
-              protection = regional.Table?.DeletionProtectionEnabled;
-              streamArn = regional.Table?.LatestStreamArn;
-            } catch (err) {
-              if (err instanceof ResourceNotFoundException) {
-                this.logger.debug(
-                  safeMsg`Cross-region replica ${regionLabel} returned RNF on DescribeTable; omitting its protection and stream policy`
-                );
-              } else {
-                this.logger.debug(
-                  safeMsg`Could not read the ${regionLabel} replica of ${tableNameForSubs}: ${describeAwsFailure(err).detail}`
-                );
-              }
-            }
-          }
-          if (typeof protection === 'boolean') entry['DeletionProtectionEnabled'] = protection;
-          await this.readReplicaPolicies(
-            client,
-            tableNameForSubs,
-            regionLabel,
-            replicaArn,
-            streamArn,
-            declaredReplica,
-            afterOwnWrite,
-            entry
-          );
-
-          // Per-replica Tags. CFn `GlobalTable` schema places Tags
-          // inside `Replicas[]` (no top-level `Tags`), so they MUST be
-          // surfaced here — not at the top level of `result`.
-          if (replicaArn) {
-            try {
-              const tagsResp = await client.send(
-                new ListTagsOfResourceCommand({ ResourceArn: replicaArn })
-              );
-              entry['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
-            } catch (tagErr) {
-              if (tagErr instanceof ResourceNotFoundException) {
-                // Only the LOCAL replica's RNF can be a real "table gone"
-                // signal. A cross-region RNF more likely means the
-                // replica is in CREATING / DELETING — treat as transient
-                // and omit the Tags key for that replica.
-                if (isLocal) throw tagErr;
-                this.logger.debug(
-                  `Cross-region replica ${regionLabel} returned RNF on ListTagsOfResource; omitting Tags`
-                );
-                entry['Tags'] = [];
-              } else {
-                this.logger.warn(
-                  `Could not fetch tags for DynamoDB GlobalTable ${tableNameForSubs} in ${regionLabel}: ${describeAwsFailure(tagErr).detail}`
-                );
-                entry['Tags'] = [];
-              }
-            }
-          } else {
-            entry['Tags'] = [];
-          }
-
-          // Per-replica ReadProvisionedThroughputSettings (Issue #395).
-          // Type-discriminator-gated: only meaningful on PROVISIONED
-          // tables. Probes application-autoscaling in the REPLICA'S
-          // region — each replica registers its own scaling target +
-          // policy in its own region, so the local-region client can
-          // only see the local replica's settings.
-          //
-          // No flat `{ReadCapacityUnits: <n>}` fallback is emitted here:
-          // `DescribeTable` returns ONE `ProvisionedThroughput` block for
-          // the table, not one per replica, so cdkd cannot synthesize
-          // per-replica flat read capacity from the local read. When
-          // autoscaling owns the replica's read dimension the full
-          // settings shape is surfaced; otherwise the key is omitted
-          // entirely (drift will not fire on missing key, matching the
-          // pre-#395 behavior for non-autoscaled replicas).
-          if (billingMode === 'PROVISIONED') {
-            const replicaAutoScalingClient = isLocal
-              ? undefined
-              : this.getRegionalAutoScalingClient(regionLabel);
-            const readAutoScaling = await this.readAutoScalingSettings(
+            // Per-replica sub-specs (PITR / Kinesis / ContributorInsights).
+            // Best-effort: errors per region per sub-spec omit the offending
+            // key — a permissions gap in one region must NOT abort the
+            // whole drift read.
+            const subs = await this.readReplicaSubSpecs(
+              client,
               tableNameForSubs,
-              'dynamodb:table:ReadCapacityUnits',
-              replicaAutoScalingClient
+              regionLabel,
+              declaredReplica
             );
-            if (readAutoScaling) {
-              entry['ReadProvisionedThroughputSettings'] = {
-                ReadCapacityAutoScalingSettings: readAutoScaling,
-              };
+            Object.assign(entry, subs);
+
+            // Protection, and the stream arn the stream policy lives on: the
+            // local table's are in hand; a cross-region replica's come from its
+            // own region (best-effort — a failed read omits the members, and
+            // `update()` never reads that absence as "unprotect").
+            let protection: boolean | undefined;
+            let streamArn: string | undefined;
+            if (isLocal) {
+              protection = table.DeletionProtectionEnabled;
+              streamArn = table.LatestStreamArn;
+            } else {
+              try {
+                const regional = await client.send(
+                  new DescribeTableCommand({ TableName: tableNameForSubs })
+                );
+                protection = regional.Table?.DeletionProtectionEnabled;
+                streamArn = regional.Table?.LatestStreamArn;
+              } catch (err) {
+                // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
+                if (strictFor('Replicas') && !(err instanceof ResourceNotFoundException)) throw err;
+                if (err instanceof ResourceNotFoundException) {
+                  this.logger.debug(
+                    safeMsg`Cross-region replica ${regionLabel} returned RNF on DescribeTable; omitting its protection and stream policy`
+                  );
+                } else {
+                  this.logger.debug(
+                    safeMsg`Could not read the ${regionLabel} replica of ${tableNameForSubs}: ${describeAwsFailure(err).detail}`
+                  );
+                }
+              }
             }
-          }
-          return entry;
-        })
+            if (typeof protection === 'boolean') entry['DeletionProtectionEnabled'] = protection;
+            await this.readReplicaPolicies(
+              client,
+              tableNameForSubs,
+              regionLabel,
+              replicaArn,
+              streamArn,
+              declaredReplica,
+              afterOwnWrite,
+              entry
+            );
+
+            // Per-replica Tags. CFn `GlobalTable` schema places Tags
+            // inside `Replicas[]` (no top-level `Tags`), so they MUST be
+            // surfaced here — not at the top level of `result`.
+            if (replicaArn) {
+              try {
+                const tagsResp = await client.send(
+                  new ListTagsOfResourceCommand({ ResourceArn: replicaArn })
+                );
+                entry['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
+              } catch (tagErr) {
+                // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
+                if (strictFor('Replicas') && !(tagErr instanceof ResourceNotFoundException))
+                  throw tagErr;
+                if (tagErr instanceof ResourceNotFoundException) {
+                  // Only the LOCAL replica's RNF can be a real "table gone"
+                  // signal. A cross-region RNF more likely means the
+                  // replica is in CREATING / DELETING — treat as transient
+                  // and omit the Tags key for that replica.
+                  if (isLocal) throw tagErr;
+                  this.logger.debug(
+                    `Cross-region replica ${regionLabel} returned RNF on ListTagsOfResource; omitting Tags`
+                  );
+                  entry['Tags'] = [];
+                } else {
+                  this.logger.warn(
+                    `Could not fetch tags for DynamoDB GlobalTable ${tableNameForSubs} in ${regionLabel}: ${describeAwsFailure(tagErr).detail}`
+                  );
+                  entry['Tags'] = [];
+                }
+              }
+            } else {
+              entry['Tags'] = [];
+            }
+
+            // Per-replica ReadProvisionedThroughputSettings (Issue #395).
+            // Type-discriminator-gated: only meaningful on PROVISIONED
+            // tables. Probes application-autoscaling in the REPLICA'S
+            // region — each replica registers its own scaling target +
+            // policy in its own region, so the local-region client can
+            // only see the local replica's settings.
+            //
+            // No flat `{ReadCapacityUnits: <n>}` fallback is emitted here:
+            // `DescribeTable` returns ONE `ProvisionedThroughput` block for
+            // the table, not one per replica, so cdkd cannot synthesize
+            // per-replica flat read capacity from the local read. When
+            // autoscaling owns the replica's read dimension the full
+            // settings shape is surfaced; otherwise the key is omitted
+            // entirely (drift will not fire on missing key, matching the
+            // pre-#395 behavior for non-autoscaled replicas).
+            if (billingMode === 'PROVISIONED') {
+              const replicaAutoScalingClient = isLocal
+                ? undefined
+                : this.getRegionalAutoScalingClient(regionLabel);
+              const readAutoScaling = await this.readAutoScalingSettings(
+                tableNameForSubs,
+                'dynamodb:table:ReadCapacityUnits',
+                replicaAutoScalingClient
+              );
+              if (readAutoScaling) {
+                entry['ReadProvisionedThroughputSettings'] = {
+                  ReadCapacityAutoScalingSettings: readAutoScaling,
+                };
+              }
+            }
+            return entry;
+          })
+        )
       );
       result['Replicas'] = replicas;
 
@@ -8369,6 +8749,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // ENABLING / DISABLING: transient — omit so drift doesn't fire
         // on a momentary state.
       } catch (ttlErr) {
+        // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
+        if (strictFor('TimeToLiveSpecification')) throw ttlErr;
         this.logger.debug(
           `Could not read TimeToLive for ${tableNameForSubs}: ${describeAwsFailure(ttlErr).detail}`
         );
@@ -8428,6 +8810,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       );
       if (block !== undefined) out['ContributorInsightsSpecification'] = block;
     } catch (err) {
+      // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
+      // A replica region's not-found omits the member, strict or not: the replica
+      // is being created or removed, which `unsettledInTransition` reports.
+      if (strictFor('Replicas') && !(err instanceof ResourceNotFoundException)) throw err;
       this.logger.debug(
         `Could not read ContributorInsights for ${tableName} in ${regionLabel}: ${describeAwsFailure(err).detail}`
       );
@@ -8450,6 +8836,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       );
       if (block !== undefined) out['PointInTimeRecoverySpecification'] = block;
     } catch (err) {
+      // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
+      // A replica region's not-found omits the member, strict or not: the replica
+      // is being created or removed, which `unsettledInTransition` reports.
+      if (strictFor('Replicas') && !(err instanceof ResourceNotFoundException)) throw err;
       this.logger.debug(
         `Could not read PointInTimeRecovery for ${tableName} in ${regionLabel}: ${describeAwsFailure(err).detail}`
       );
@@ -8474,6 +8864,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         out['KinesisStreamSpecification'] = ksOut;
       }
     } catch (err) {
+      // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
+      // A replica region's not-found omits the member, strict or not: the replica
+      // is being created or removed, which `unsettledInTransition` reports.
+      if (strictFor('Replicas') && !(err instanceof ResourceNotFoundException)) throw err;
       this.logger.debug(
         `Could not read KinesisStreamingDestination for ${tableName} in ${regionLabel}: ${describeAwsFailure(err).detail}`
       );
@@ -8556,6 +8950,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         }
         return reverseMapPolicyMember(live, container);
       } catch (err) {
+        // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
+        // A replica region's not-found omits the member, strict or not: the replica
+        // is being created or removed, which `unsettledInTransition` reports.
+        if (strictFor('Replicas') && !(err instanceof ResourceNotFoundException)) throw err;
         this.logger.debug(
           safeMsg`Could not read the ${what} of the ${regionLabel} replica of ${tableName}: ${describeAwsFailure(err).detail}`
         );
@@ -8708,6 +9106,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         TargetTrackingScalingPolicyConfiguration: tttConfig,
       };
     } catch (err) {
+      // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
+      if (
+        strictFor(
+          indexName !== undefined
+            ? 'GlobalSecondaryIndexes'
+            : scalableDimension.includes('Write')
+              ? 'WriteProvisionedThroughputSettings'
+              : 'Replicas'
+        )
+      )
+        throw err;
       this.logger.debug(
         `Could not read application-autoscaling settings for ${resourceId} (${scalableDimension}): ${describeAwsFailure(err).detail}`
       );

@@ -22,6 +22,17 @@
 #      fails every one of these). Assert each region holds point-in-time
 #      recovery (10 days), Contributor Insights, streaming to ITS region's
 #      Kinesis stream and a stream resource policy (#5365).
+#  1a. `gsi` under a 15s per-type deadline (go-to-k/cdkd#5487): the GSI add
+#      fails mid backfill and the record must name GlobalSecondaryIndexes
+#      unsettled; a same-template retry right after must either be refused
+#      (gsi1 still CREATING, name kept) or converge (gsi1 ACTIVE, name cleared,
+#      nothing sent). The base redeploy then clears the name: after (a) it
+#      keeps gsi1 (named by neither the record nor the template) and warns with
+#      its delete command, which the arm then runs by hand; after (b) gsi1 is
+#      recorded, so the redeploy deletes it as an ordinary update.
+#  1a2. With `Replicas` marked unsettled on the record and the template
+#      unchanged, the converging deploy must send no replica change, keep both
+#      replicas and the second replica's protection, and clear the name.
 #  1b. `idx` (issue #5489): add a global secondary index whose per-replica
 #      Contributor Insights is on, a tag on each replica's stream, and a
 #      single-region `ModeTable` declaring GlobalTableSettingsReplicationMode
@@ -550,6 +561,200 @@ await_replica "${REGION}" "^ENABLED	10	ENABLED	${LOCAL_KINESIS_ARN}	absent	prese
   "Phase 1: the ${REGION} table lacks its point-in-time recovery, Contributor Insights, Kinesis stream or stream policy (issue #5365)"
 await_replica "${SECOND_REGION}" "^ENABLED	10	ENABLED	${REPLICA_KINESIS_ARN}	absent	present$" \
   "Phase 1: the ${SECOND_REGION} replica lacks its point-in-time recovery, Contributor Insights, Kinesis stream or stream policy (issue #5365)"
+
+# --- Phase 1a: a GSI add the deadline cut short (go-to-k/cdkd#5487) ------
+# UpdateTable's GSI Create is accepted at once and the index backfills in both
+# regions for minutes, so a 15s per-type deadline fails the update after the
+# call. Before the fix the record kept "no GSI" and nothing named gsi1
+# unsettled. Now the record names GlobalSecondaryIndexes unsettled; a
+# same-template retry right after is refused while gsi1 moves, or converges;
+# the base redeploy clears the name, keeping a gsi1 neither the record nor the
+# template names (with a warning carrying its delete command).
+gt_unsettled() { # the GlobalTable record's unsettledProperties, comma-joined
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+    | jq -r --arg name "${TABLE}" '[.resources[]
+        | select(.resourceType == "AWS::DynamoDB::GlobalTable" and .physicalId == $name)
+        | (.unsettledProperties // [])[]] | join(",")'
+}
+gsi1_status() {
+  aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
+    --query "Table.GlobalSecondaryIndexes[?IndexName=='gsi1'].IndexStatus | [0]" --output text
+}
+echo "==> Phase 1a: add gsi1 under a 15s GlobalTable deadline (must fail while the index backfills)"
+# UpdateTable calls summed over a CDKD_SDK_CALL_LOG file (every region's client
+# is a DynamoDBClient; one line per cdkd process; 0 when absent).
+update_table_calls() { # usage: update_table_calls <call log>
+  node -e 'const fs=require("fs");let n=0;for(const l of fs.readFileSync(process.argv[1],"utf8").split("\n")){if(l.trim()==="")continue;n+=JSON.parse(l).counts["DynamoDBClient.UpdateTableCommand"]??0}process.stdout.write(String(n))' "$1"
+}
+P1A_CALLS="${LOG_DIR}/phase1a-calls.jsonl"
+rm -f "${P1A_CALLS}"
+set +e
+CDKD_SDK_CALL_LOG="${P1A_CALLS}" CDKD_TEST_UPDATE="gsi" node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --resource-warn-after AWS::DynamoDB::GlobalTable=5s \
+  --resource-timeout AWS::DynamoDB::GlobalTable=15s >"${LOG_DIR}/phase1a.log" 2>&1
+P1A_EXIT=$?
+set -e
+if [ "${P1A_EXIT}" -eq 0 ]; then
+  echo "FAIL: Phase 1a's deploy succeeded; the 15s deadline must cut the gsi1 backfill short (premise of the arm)" >&2
+  exit 1
+fi
+# Positive control for Phase 1a2's zero-UpdateTable check: the same counter
+# must see the GSI Create this deploy sent.
+if [ ! -s "${P1A_CALLS}" ] || [ "$(update_table_calls "${P1A_CALLS}")" -lt 1 ]; then
+  echo "FAIL: the SDK call log did not record the cut-short deploy's UpdateTable (the Phase 1a2 zero check would be vacuous)" >&2
+  exit 1
+fi
+case ",$(gt_unsettled)," in
+  *,GlobalSecondaryIndexes,*) : ;;
+  *) echo "FAIL: GlobalTable record's unsettledProperties after the cut-short add is '$(gt_unsettled)', expected it to name GlobalSecondaryIndexes (go-to-k/cdkd#5487)" >&2; exit 1 ;;
+esac
+# Same-template RETRY at once, with no wait in between. Exactly one of two
+# outcomes must hold, and which one is printed:
+#   (a) gsi1 still CREATING: the retry is refused as in transition and the
+#       record keeps the name;
+#   (b) gsi1 already ACTIVE: the retry converges (nothing to send — gsi1 is
+#       what the template declares) and clears the name.
+set +e
+CDKD_TEST_UPDATE="gsi" node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${LOG_DIR}/phase1a-retry.log" 2>&1
+P1A_RETRY_EXIT=$?
+set -e
+P1A_CONVERGED_BY_RETRY=false
+if [ "${P1A_RETRY_EXIT}" -ne 0 ]; then
+  echo "    Phase 1a retry outcome: (a) refused while gsi1 was moving"
+  if ! grep -q "AWS is still changing it" "${LOG_DIR}/phase1a-retry.log"; then
+    echo "FAIL: the same-template retry failed, but not with the in-transition refusal:" >&2
+    cat "${LOG_DIR}/phase1a-retry.log" >&2
+    exit 1
+  fi
+  case ",$(gt_unsettled)," in
+    *,GlobalSecondaryIndexes,*) : ;;
+    *) echo "FAIL: the refused retry dropped the unsettled name ('$(gt_unsettled)')" >&2; exit 1 ;;
+  esac
+else
+  echo "    Phase 1a retry outcome: (b) gsi1 had settled; the retry converged"
+  P1A_CONVERGED_BY_RETRY=true
+  if [ -n "$(gt_unsettled)" ]; then
+    echo "FAIL: the converging retry left '$(gt_unsettled)' unsettled" >&2
+    exit 1
+  fi
+  P1A_RETRY_GSIS="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
+    --query '[length(Table.GlobalSecondaryIndexes || `[]`), Table.GlobalSecondaryIndexes[0].IndexName, Table.GlobalSecondaryIndexes[0].IndexStatus]' --output text)"
+  if [ "${P1A_RETRY_GSIS}" != "$(printf '1\tgsi1\tACTIVE')" ]; then
+    echo "FAIL: after the converging retry the table's indexes are '${P1A_RETRY_GSIS}', expected exactly gsi1 ACTIVE (a spurious index send?)" >&2
+    exit 1
+  fi
+  if grep -qE "GlobalSecondaryIndexUpdates|already exists" "${LOG_DIR}/phase1a-retry.log"; then
+    echo "FAIL: the converging retry sent an index change for an index AWS already holds:" >&2
+    grep -nE "GlobalSecondaryIndexUpdates|already exists" "${LOG_DIR}/phase1a-retry.log" >&2
+    exit 1
+  fi
+fi
+P1A_STATUS=""
+for _ in $(seq 1 180); do
+  P1A_STATUS="$(gsi1_status)"
+  [ "${P1A_STATUS}" = "ACTIVE" ] && break
+  sleep 5
+done
+if [ "${P1A_STATUS}" != "ACTIVE" ]; then
+  echo "FAIL: gsi1 is '${P1A_STATUS}' after the cut-short add, expected it to reach ACTIVE" >&2
+  exit 1
+fi
+wait_settled
+echo "==> Phase 1a: redeploy the base template (no GSI, the record's own value)"
+deploy "" "${LOG_DIR}/phase1a-converge.log"
+gsi_count() {
+  aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
+    --query 'length(Table.GlobalSecondaryIndexes || `[]`)' --output text
+}
+if [ -n "$(gt_unsettled)" ]; then
+  echo "FAIL: GlobalTable record still names unsettled properties after the converging deploy: $(gt_unsettled)" >&2
+  exit 1
+fi
+if [ "${P1A_CONVERGED_BY_RETRY}" = "true" ]; then
+  # (b): the retry recorded gsi1, so the base template's omission is an
+  # ordinary removal and the deploy deletes it.
+  if [ "$(gsi_count)" != "0" ]; then
+    echo "FAIL: $(gsi_count) GSI(s) after the base redeploy, expected 0 (the retry had recorded gsi1, so its removal is an ordinary update)" >&2
+    exit 1
+  fi
+  echo "    base redeploy removed gsi1 as an ordinary update (the retry had already settled the name)"
+else
+  # (a): gsi1 is named by neither the record nor the base template, so the
+  # convergence keeps it (it never removes what neither names) and warns with
+  # its delete command; the exact cleanup arrives with go-to-k/cdkd#5498.
+  if [ "$(gsi1_status)" != "ACTIVE" ]; then
+    echo "FAIL: gsi1 is '$(gsi1_status)' after the converging deploy, expected it kept (neither the record nor the template names it)" >&2
+    exit 1
+  fi
+  if ! grep -q "IndexName gsi1" "${LOG_DIR}/phase1a-converge.log" \
+    || ! grep -q -- "--global-secondary-index-updates Delete" "${LOG_DIR}/phase1a-converge.log"; then
+    echo "FAIL: the converging deploy did not warn about the kept gsi1 with its delete command (go-to-k/cdkd#5487)" >&2
+    exit 1
+  fi
+  echo "    the convergence kept the unnamed gsi1 and warned how to delete it (go-to-k/cdkd#5487)"
+  echo "==> Phase 1a: delete gsi1 by hand, as the warning says"
+  aws dynamodb update-table --table-name "${TABLE}" --region "${REGION}" \
+    --global-secondary-index-updates '[{"Delete":{"IndexName":"gsi1"}}]' >/dev/null
+  P1A_LEFT=""
+  for _ in $(seq 1 180); do
+    P1A_LEFT="$(gsi_count)"
+    [ "${P1A_LEFT}" = "0" ] && break
+    sleep 5
+  done
+  if [ "${P1A_LEFT}" != "0" ]; then
+    echo "FAIL: ${P1A_LEFT} GSI(s) remain after deleting gsi1 by hand" >&2
+    exit 1
+  fi
+  wait_settled
+fi
+
+# --- Phase 1a2: converging an unsettled `Replicas` changes nothing (go-to-k/cdkd#5487)
+# A record whose `Replicas` a failed update left unsettled, while AWS already
+# holds the template: the converging deploy must send no replica change (no
+# ReplicaUpdates, no dropped-override warning), keep both replicas and the
+# second replica's deletion protection, and clear the name. The mark is put on
+# the record directly: no replica-level call waits long enough to cut it short
+# reliably.
+echo "==> Phase 1a2: converge an unsettled Replicas on an unchanged template"
+P1A2_STATE="${LOG_DIR}/phase1a2-state.json"
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${P1A2_STATE}" --region "${REGION}" >/dev/null
+jq --arg name "${TABLE}" '(.resources[] | select(.resourceType == "AWS::DynamoDB::GlobalTable" and .physicalId == $name)) |= (.unsettledProperties = ["Replicas"])' \
+  "${P1A2_STATE}" > "${P1A2_STATE}.new"
+aws s3 cp "${P1A2_STATE}.new" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+[ "$(gt_unsettled)" = "Replicas" ] || { echo "FAIL: Phase 1a2 could not mark Replicas unsettled on the record ('$(gt_unsettled)')" >&2; exit 1; }
+P1A2_BEFORE="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
+  --query '[sort_by(Table.Replicas,&RegionName)[].RegionName, Table.TableClassSummary.TableClass]' --output json)"
+P1A2_PROT_BEFORE="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${SECOND_REGION}" \
+  --query 'Table.DeletionProtectionEnabled' --output text)"
+P1A2_CALLS="${LOG_DIR}/phase1a2-calls.jsonl"
+rm -f "${P1A2_CALLS}"
+CDKD_SDK_CALL_LOG="${P1A2_CALLS}" deploy "" "${LOG_DIR}/phase1a2.log"
+if [ ! -s "${P1A2_CALLS}" ]; then
+  echo "FAIL: the SDK call log ${P1A2_CALLS} was not written — CDKD_SDK_CALL_LOG did not take effect" >&2
+  exit 1
+fi
+# Zero UpdateTable in ANY region (the counter is proven to see one in Phase 1a):
+# a same-value replica re-send is invisible to describe-table, not to this.
+P1A2_UPDATES="$(update_table_calls "${P1A2_CALLS}")"
+if [ "${P1A2_UPDATES}" != "0" ]; then
+  echo "FAIL: the converging deploy sent ${P1A2_UPDATES} UpdateTable call(s) for a template AWS already holds (go-to-k/cdkd#5487)" >&2
+  exit 1
+fi
+if grep -qE "no longer declares .* but DynamoDB offers no way" "${LOG_DIR}/phase1a2.log"; then
+  echo "FAIL: the converging deploy warned of a dropped override (go-to-k/cdkd#5487):" >&2
+  grep -nE "no longer declares" "${LOG_DIR}/phase1a2.log" >&2
+  exit 1
+fi
+P1A2_AFTER="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
+  --query '[sort_by(Table.Replicas,&RegionName)[].RegionName, Table.TableClassSummary.TableClass]' --output json)"
+[ "${P1A2_AFTER}" = "${P1A2_BEFORE}" ] || { echo "FAIL: the converging deploy changed the replicas or table class: ${P1A2_BEFORE} -> ${P1A2_AFTER}" >&2; exit 1; }
+P1A2_PROT_AFTER="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${SECOND_REGION}" \
+  --query 'Table.DeletionProtectionEnabled' --output text)"
+[ "${P1A2_PROT_AFTER}" = "${P1A2_PROT_BEFORE}" ] || { echo "FAIL: the converging deploy changed the ${SECOND_REGION} replica's deletion protection (${P1A2_PROT_BEFORE} -> ${P1A2_PROT_AFTER})" >&2; exit 1; }
+[ -z "$(gt_unsettled)" ] || { echo "FAIL: the GlobalTable record still names unsettled properties after converging: $(gt_unsettled)" >&2; exit 1; }
+echo "    the unsettled Replicas converged with no replica change (go-to-k/cdkd#5487)"
 
 # --- Phase 1b: per-index insights, stream tags, replication mode (#5489) ---
 echo "==> Phase 1b: add gsi1 with per-replica insights, stream tags, and a one-replica ModeTable"
