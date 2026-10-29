@@ -26,7 +26,10 @@
 #      fails mid backfill and the record must name GlobalSecondaryIndexes
 #      unsettled; a same-template retry right after must either be refused
 #      (gsi1 still CREATING, name kept) or converge (gsi1 ACTIVE, name cleared,
-#      nothing sent); then a redeploy of the base template deletes gsi1.
+#      nothing sent). The base redeploy then clears the name: after (a) it
+#      keeps gsi1 (named by neither the record nor the template) and warns with
+#      its delete command, which the arm then runs by hand; after (b) gsi1 is
+#      recorded, so the redeploy deletes it as an ordinary update.
 #  1a2. With `Replicas` marked unsettled on the record and the template
 #      unchanged, the converging deploy must send no replica change, keep both
 #      replicas and the second replica's protection, and clear the name.
@@ -562,10 +565,11 @@ await_replica "${SECOND_REGION}" "^ENABLED	10	ENABLED	${REPLICA_KINESIS_ARN}	abs
 # --- Phase 1a: a GSI add the deadline cut short (go-to-k/cdkd#5487) ------
 # UpdateTable's GSI Create is accepted at once and the index backfills in both
 # regions for minutes, so a 15s per-type deadline fails the update after the
-# call. Before the fix the record kept "no GSI", so the redeploy of the base
-# template below diffed empty and gsi1 stayed. Now the record names
-# GlobalSecondaryIndexes unsettled; a same-template retry while the index is
-# CREATING is refused; once ACTIVE, the base redeploy deletes it.
+# call. Before the fix the record kept "no GSI" and nothing named gsi1
+# unsettled. Now the record names GlobalSecondaryIndexes unsettled; a
+# same-template retry right after is refused while gsi1 moves, or converges;
+# the base redeploy clears the name, keeping a gsi1 neither the record nor the
+# template names (with a warning carrying its delete command).
 gt_unsettled() { # the GlobalTable record's unsettledProperties, comma-joined
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
     | jq -r --arg name "${TABLE}" '[.resources[]
@@ -660,20 +664,50 @@ fi
 wait_settled
 echo "==> Phase 1a: redeploy the base template (no GSI, the record's own value)"
 deploy "" "${LOG_DIR}/phase1a-converge.log"
-P1A_COUNT="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
-  --query 'length(Table.GlobalSecondaryIndexes || `[]`)' --output text)"
-if [ "${P1A_COUNT}" != "0" ]; then
-  echo "FAIL: ${P1A_COUNT} GSI(s) after redeploying the base template, expected 0 (go-to-k/cdkd#5487: the redeploy diffed empty and left gsi1)" >&2
-  exit 1
-fi
+gsi_count() {
+  aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
+    --query 'length(Table.GlobalSecondaryIndexes || `[]`)' --output text
+}
 if [ -n "$(gt_unsettled)" ]; then
   echo "FAIL: GlobalTable record still names unsettled properties after the converging deploy: $(gt_unsettled)" >&2
   exit 1
 fi
 if [ "${P1A_CONVERGED_BY_RETRY}" = "true" ]; then
+  # (b): the retry recorded gsi1, so the base template's omission is an
+  # ordinary removal and the deploy deletes it.
+  if [ "$(gsi_count)" != "0" ]; then
+    echo "FAIL: $(gsi_count) GSI(s) after the base redeploy, expected 0 (the retry had recorded gsi1, so its removal is an ordinary update)" >&2
+    exit 1
+  fi
   echo "    base redeploy removed gsi1 as an ordinary update (the retry had already settled the name)"
 else
-  echo "    the unsettled GSI add converged on redeploy (go-to-k/cdkd#5487)"
+  # (a): gsi1 is named by neither the record nor the base template, so the
+  # convergence keeps it (it never removes what neither names) and warns with
+  # its delete command; the exact cleanup arrives with go-to-k/cdkd#5498.
+  if [ "$(gsi1_status)" != "ACTIVE" ]; then
+    echo "FAIL: gsi1 is '$(gsi1_status)' after the converging deploy, expected it kept (neither the record nor the template names it)" >&2
+    exit 1
+  fi
+  if ! grep -q "IndexName gsi1" "${LOG_DIR}/phase1a-converge.log" \
+    || ! grep -q -- "--global-secondary-index-updates Delete" "${LOG_DIR}/phase1a-converge.log"; then
+    echo "FAIL: the converging deploy did not warn about the kept gsi1 with its delete command (go-to-k/cdkd#5487)" >&2
+    exit 1
+  fi
+  echo "    the convergence kept the unnamed gsi1 and warned how to delete it (go-to-k/cdkd#5487)"
+  echo "==> Phase 1a: delete gsi1 by hand, as the warning says"
+  aws dynamodb update-table --table-name "${TABLE}" --region "${REGION}" \
+    --global-secondary-index-updates '[{"Delete":{"IndexName":"gsi1"}}]' >/dev/null
+  P1A_LEFT=""
+  for _ in $(seq 1 180); do
+    P1A_LEFT="$(gsi_count)"
+    [ "${P1A_LEFT}" = "0" ] && break
+    sleep 5
+  done
+  if [ "${P1A_LEFT}" != "0" ]; then
+    echo "FAIL: ${P1A_LEFT} GSI(s) remain after deleting gsi1 by hand" >&2
+    exit 1
+  fi
+  wait_settled
 fi
 
 # --- Phase 1a2: converging an unsettled `Replicas` changes nothing (go-to-k/cdkd#5487)
