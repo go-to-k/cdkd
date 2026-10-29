@@ -1,8 +1,8 @@
 // issue #1160: absent-field removal, matched to CloudFormation per property.
 // ModifyDBCluster / ModifyDBInstance use merge semantics, so a field DROPPED
-// from the template is sent as its reset value only where a real CFn A/B
-// showed CloudFormation resets it (#5004, #1160 comment 6401151077); every
-// other removal sends nothing, which keeps the live value as CFn does.
+// from the template is sent as a value only where a real CFn A/B showed
+// CloudFormation sends one (#5004, #1160 comment 6401151077 and later A/Bs);
+// every other removal sends nothing, which keeps the live value as CFn does.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockSend = vi.fn();
@@ -106,7 +106,8 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       expect(modifyCall.input.EngineVersion).toBeUndefined();
       expect(modifyCall.input.MonitoringRoleArn).toBeUndefined();
       expect(modifyCall.input.ServerlessV2ScalingConfiguration).toBeUndefined();
-      // Unmeasured alone: a removed KMS key sends nothing.
+      // A removed KMS key is never sent: removed alone, CFn sends no key and
+      // the secret stays on it (#1160 A/B).
       expect(modifyCall.input.MasterUserSecretKmsKeyId).toBeUndefined();
     });
 
@@ -184,15 +185,55 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       expect(mockSend).toHaveBeenCalledTimes(2);
     });
 
-    it('sends no Port when a Multi-AZ DB cluster engine drops it (unmeasured)', async () => {
+    // CloudFormation sends 3306 for a removed Port on a Multi-AZ DB cluster,
+    // postgres included, and RDS refuses it (#1160 A/B on postgres).
+    it.each(['postgres', 'mysql', 'PostgreS'])(
+      'sends 3306 when a Multi-AZ DB cluster (%s) drops its Port, as CFn does (#1160 A/B)',
+      async (engine) => {
+        mockClusterUpdate();
+
+        await provider.update(
+          'MyCluster',
+          'my-cluster',
+          'AWS::RDS::DBCluster',
+          { Engine: engine },
+          { Engine: engine, Port: 5433 }
+        );
+
+        expect(mockSend.mock.calls[0][0].input.Port).toBe(3306);
+      }
+    );
+
+    it("fails the update with RDS's refusal when a Multi-AZ DB cluster drops its Port, as CFn does (#1160 A/B)", async () => {
+      const refusal = Object.assign(
+        new Error("You can't modify the port for a Multi-AZ DB cluster."),
+        { name: 'InvalidParameterCombination' }
+      );
+      mockSend.mockRejectedValueOnce(refusal);
+
+      await expect(
+        provider.update(
+          'MyCluster',
+          'my-cluster',
+          'AWS::RDS::DBCluster',
+          { Engine: 'postgres' },
+          { Engine: 'postgres', Port: 5433 }
+        )
+      ).rejects.toThrow(/can't modify the port for a Multi-AZ DB cluster/);
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      // The refusal answers the port this removal sends.
+      expect(mockSend.mock.calls[0][0].input.Port).toBe(3306);
+    });
+
+    it('sends no Port when a Multi-AZ DB cluster drops a declared 3306', async () => {
       mockClusterUpdate();
 
       await provider.update(
         'MyCluster',
         'my-cluster',
         'AWS::RDS::DBCluster',
-        { Engine: 'postgres' },
-        { Engine: 'postgres', Port: 5433 }
+        { Engine: 'mysql' },
+        { Engine: 'mysql', Port: 3306 }
       );
 
       expect(mockSend.mock.calls[0][0].input.Port).toBeUndefined();
@@ -422,6 +463,40 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       expect(modifyCall.input.MonitoringInterval).toBeUndefined();
       expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBeUndefined();
       expect(modifyCall.input.ManageMasterUserPassword).toBeUndefined();
+    });
+
+    it('sends no DBInstanceClass when it is removed, so the live class stays, as CFn does (#1160 A/B)', async () => {
+      mockInstanceUpdate();
+
+      await provider.update(
+        'MyInstance',
+        'my-instance',
+        'AWS::RDS::DBInstance',
+        { Engine: 'postgres' },
+        { Engine: 'postgres', DBInstanceClass: 'db.t4g.micro' }
+      );
+
+      expect(mockSend.mock.calls[0][0].input.DBInstanceClass).toBeUndefined();
+    });
+
+    it('sends ManageMasterUserPassword=true and no key when only MasterUserSecret is removed; the secret stays on its key (#1160 A/B)', async () => {
+      mockInstanceUpdate();
+
+      await provider.update(
+        'MyInstance',
+        'my-instance',
+        'AWS::RDS::DBInstance',
+        { Engine: 'postgres', ManageMasterUserPassword: true },
+        {
+          Engine: 'postgres',
+          ManageMasterUserPassword: true,
+          MasterUserSecret: { KmsKeyId: 'arn:aws:kms:us-east-1:123:key/k1' },
+        }
+      );
+
+      const input = mockSend.mock.calls[0][0].input;
+      expect(input.ManageMasterUserPassword).toBe(true);
+      expect(input.MasterUserSecretKmsKeyId).toBeUndefined();
     });
 
     it('turns the managed password off when ManageMasterUserPassword is removed with a new MasterUserPassword (#1160 A/B)', async () => {

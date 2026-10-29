@@ -4086,6 +4086,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // flip to PROVISIONED (issue #1617); `currentLiveIndexNames` is the
       // post-removal live set, so the Delete arm skips both those names and any
       // index the record still lists that AWS no longer has.
+      // go-to-k/cdkd#5503: converging an unsettled GlobalSecondaryIndexes
+      // leaves every live index that neither the record nor the template names
+      // (`readUnsettled` keeps them off the previous side, so nothing deletes
+      // them), as CloudFormation would. Say so: one of them may be an index the
+      // failed update itself created, which cdkd cannot tell from another
+      // tool's.
+      if (
+        context?.unsettledProperties?.has('GlobalSecondaryIndexes') === true &&
+        currentLiveIndexNames !== undefined
+      ) {
+        this.warnUndeclaredLiveIndexes(
+          physicalId,
+          currentLiveIndexNames,
+          [previousProperties['GlobalSecondaryIndexes'], properties['GlobalSecondaryIndexes']],
+          maskSecrets
+        );
+      }
       if (
         JSON.stringify(properties['GlobalSecondaryIndexes']) !==
         JSON.stringify(previousProperties['GlobalSecondaryIndexes'])
@@ -6591,6 +6608,50 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * crash on an ordinary PROVISIONED capacity update with a non-empty secret
    * bag (found by the review of that round).
    */
+  /**
+   * go-to-k/cdkd#5503: warn about each live index that none of `lists` (the
+   * previous side and the template) names. It is left in place, and the
+   * warning says how to remove it, because it may be one an earlier failed
+   * update created, and the record cannot tell that from another tool's. The
+   * command is withheld when the table or index name is secret-derived.
+   */
+  private warnUndeclaredLiveIndexes(
+    physicalId: string,
+    liveIndexNames: ReadonlySet<string>,
+    lists: readonly unknown[],
+    maskSecrets: SecretMasker
+  ): void {
+    const named = new Set<string>();
+    for (const list of lists) {
+      if (!Array.isArray(list)) continue;
+      for (const entry of list as unknown[]) {
+        const name =
+          typeof entry === 'object' && entry !== null
+            ? (entry as Record<string, unknown>)['IndexName']
+            : undefined;
+        if (typeof name === 'string') named.add(name);
+      }
+    }
+    for (const name of liveIndexNames) {
+      if (named.has(name)) continue;
+      const secretDerived = maskSecrets(name) !== name || maskSecrets(physicalId) !== physicalId;
+      this.logger.warn(
+        maskSecrets(
+          `${this.indexScopeAt(name, physicalId, maskSecrets)} is live, but neither cdkd's ` +
+            `record nor the template declares it, so cdkd left it in place while converging ` +
+            `the unsettled GlobalSecondaryIndexes (CloudFormation never deletes an index it did ` +
+            `not record). It may belong to another tool, or an earlier failed cdkd update may ` +
+            `have created it; cdkd cannot tell which. If it should not exist, delete it ` +
+            (secretDerived
+              ? `with an UpdateTable GlobalSecondaryIndexUpdates Delete for the index.`
+              : `with: aws dynamodb update-table --table-name ${physicalId} ` +
+                `--global-secondary-index-updates '[{"Delete":{"IndexName":"${name}"}}]' ` +
+                `(in the table's region)`)
+        )
+      );
+    }
+  }
+
   private indexScopeAt(indexName: unknown, physicalId: string, maskSecrets: SecretMasker): string {
     const name = typeof indexName === 'string' ? maskSecrets(indexName) : '<unnamed>';
     return `GSI ${name} on DynamoDB table ${physicalId}`;
@@ -8085,7 +8146,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     names: ReadonlySet<string>,
-    recordedProperties?: Record<string, unknown>
+    recordedProperties?: Record<string, unknown>,
+    desiredProperties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const live = await this.readCurrentState(
       physicalId,
@@ -8096,6 +8158,22 @@ export class DynamoDBTableProvider implements ResourceProvider {
     if (typeof live !== 'object' || live === null) return live;
     const out: Record<string, unknown> = { ...live };
     if (out['BillingMode'] === 'PAY_PER_REQUEST') delete out['ProvisionedThroughput'];
+    // go-to-k/cdkd#5503: the live indexes, projected onto the names the record
+    // or the template declares. This value becomes the previous side, and
+    // `applyGsiUpdates` deletes every previous index the template lacks, so an
+    // index neither names (one another tool added) would be DELETED, where
+    // CloudFormation, which diffs recorded models, leaves it alone. A recorded
+    // index the template dropped is still on the previous side, and still
+    // deleted. One the template adds that is already live (a failed update
+    // created it) keeps its live value, so it is compared, not re-created.
+    if (names.has('GlobalSecondaryIndexes')) {
+      out['GlobalSecondaryIndexes'] = projectIndexesOnto(
+        out['GlobalSecondaryIndexes'],
+        recordedProperties?.['GlobalSecondaryIndexes'],
+        desiredProperties?.['GlobalSecondaryIndexes']
+      );
+      if (out['GlobalSecondaryIndexes'] === undefined) delete out['GlobalSecondaryIndexes'];
+    }
     const strict = async (key: string, read: () => Promise<unknown>): Promise<void> => {
       if (!names.has(key)) return;
       const value = await read();
@@ -8919,4 +8997,36 @@ function isTransientStreamReadFailure(err: unknown): boolean {
     isAmbiguousOutcomeError(err) ||
     err instanceof ResourceNotFoundException
   );
+}
+
+/**
+ * go-to-k/cdkd#5503: the entries of a live `GlobalSecondaryIndexes` list whose
+ * `IndexName` the record or the template names, or `undefined` when none is
+ * left. An entry without a string `IndexName` names nothing and is dropped.
+ */
+export function projectIndexesOnto(
+  live: unknown,
+  recorded: unknown,
+  desired: unknown
+): unknown[] | undefined {
+  if (!Array.isArray(live)) return undefined;
+  const named = new Set<string>();
+  for (const list of [recorded, desired]) {
+    if (!Array.isArray(list)) continue;
+    for (const entry of list as unknown[]) {
+      const name =
+        typeof entry === 'object' && entry !== null
+          ? (entry as Record<string, unknown>)['IndexName']
+          : undefined;
+      if (typeof name === 'string') named.add(name);
+    }
+  }
+  const kept = (live as unknown[]).filter((entry) => {
+    const name =
+      typeof entry === 'object' && entry !== null
+        ? (entry as Record<string, unknown>)['IndexName']
+        : undefined;
+    return typeof name === 'string' && named.has(name);
+  });
+  return kept.length > 0 ? kept : undefined;
 }
