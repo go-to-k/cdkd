@@ -313,8 +313,8 @@ never clears one. It has two blocking findings:
 | Fix the provider | cdkd starts sending the key in the shape the SDK models | The SDK models the member, under another shape or location |
 | Add a `NESTED_KEY_ALLOW_LIST` entry | cdkd never sends it | The SDK genuinely has no such member |
 
-A nested key whose spelling is fine but which the provider never forwards is
-not this check's finding: the `sdk-wire-coverage` suites catch it, and the pull
+A new nested key the provider never forwards, or sends in a spelling the SDK
+does not model, is not this check's finding: the `sdk-wire-coverage` suites catch it, and the pull
 request's `sdk-wire-coverage` section lists the paths (see the table above).
 
 For a `definition-member-missing`, rule out the installed SDK

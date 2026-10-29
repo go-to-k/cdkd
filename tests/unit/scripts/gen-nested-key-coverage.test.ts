@@ -1,6 +1,7 @@
 import { afterAll, describe, it, expect, vi } from 'vite-plus/test';
 import {
   cpSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -2548,8 +2549,8 @@ describe('shape pass (synthetic)', () => {
       new Map()
     );
     expect(result.entries[0]?.bucket).toBe('provider-handled');
-    // The KEY pass's strict set would NOT credit this (segment expansion is
-    // shape-pass-only).
+    // Segment expansion is the shape pass's own literal set; the raw set would
+    // NOT credit this.
     expect(expandLiteralSegments(new Set(['SomeParent.Aliases'])).has('Aliases')).toBe(true);
   });
 
@@ -2612,7 +2613,7 @@ describe('shape pass (synthetic)', () => {
     ).toBeUndefined();
   });
 
-  it('skips keys with no same-spelled SDK member anywhere (the KEY pass domain)', () => {
+  it('skips keys with no same-spelled SDK member anywhere (no interface to ask)', () => {
     const result = classifyTargetShapes(
       exactTarget,
       { DistributionConfig: { NoSuchKeyAnywhere: 'array' } },
@@ -2820,6 +2821,79 @@ describe('shape pass: a literal does not vouch for a member a generic converter 
     expect(
       latticeBucket(withPair, ['VpcLatticeConfigurations.AdvancedConfiguration'])
     ).toBe('definition-member-missing');
+  });
+
+  // End to end through `loadReport`, so the PLUMBING is pinned too: the real
+  // tree withdraws no rescue today, so a `loadReport` that stopped handing the
+  // whole-delivered paths to the shape pass would otherwise stay green.
+  describe('through loadReport (synthetic provider, fixture and SDK model)', () => {
+    const fakeTarget: NestedKeyTarget = {
+      resourceType: 'AWS::Fake::Thing',
+      providerFile: 'fake-provider.ts',
+      sdkClientPackage: '@aws-sdk/client-fake',
+      keyStyle: 'exact',
+      minNestedKeys: 3,
+    };
+    const filler = Array.from({ length: 60 }, (_, i) => `M${i}?: string;`).join(' ');
+    const providerSource = (outerWrite: string): string => `
+export class FakeProvider {
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['AWS::Fake::Thing', new Set(['Outer', 'Other'])],
+  ]);
+  async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+    const outer = properties['Outer'] as Record<string, unknown>;
+    const other = properties['Other'] as Record<string, unknown>;
+    await this.client.send(new CreateThingCommand({ Outer: ${outerWrite}, Other: { Extra: other['Extra'] } }));
+  }
+}
+`;
+    const run = (outerWrite: string) => {
+      const root = mkdtempSync(join(tmpdir(), 'cdkd-nkc-4324-'));
+      try {
+        const models = join(root, 'models');
+        const fixtures = join(root, 'fixtures');
+        const providers = join(root, 'providers');
+        for (const d of [models, fixtures, providers]) mkdirSync(d, { recursive: true });
+        writeFileSync(
+          join(models, 'models_0.d.ts'),
+          'export interface CreateThingRequest { Outer?: Outer; Other?: Other; }\n' +
+            'export interface Outer { Name?: string; }\n' +
+            'export interface Other { Extra?: string; }\n' +
+            `export interface Filler { ${filler} }\n`
+        );
+        writeFileSync(
+          join(fixtures, 'AWS-Fake-Thing.json'),
+          JSON.stringify({
+            nestedPropertyPaths: { Outer: ['Name', 'Extra'], Other: ['Extra'] },
+            definitionShapes: {
+              Outer: { Name: 'scalar', Extra: 'scalar' },
+              Other: { Extra: 'scalar' },
+            },
+          })
+        );
+        writeFileSync(join(providers, 'fake-provider.ts'), providerSource(outerWrite));
+        const target = loadReport([fakeTarget], () => models, providers, fixtures).targets[0]!;
+        return {
+          whole: target.wholeDeliveredPaths,
+          bucket: target.shapeEntries.find((e) => e.definition === 'Outer' && e.nestedKey === 'Extra')
+            ?.bucket,
+        };
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    };
+
+    it('a verbatim forward of the definition withdraws the literal rescue', () => {
+      const { whole, bucket } = run("properties['Outer']");
+      expect(whole).toContain('Outer.Extra');
+      expect(bucket).toBe('definition-member-missing');
+    });
+
+    it('a per-member write keeps the rescue (control)', () => {
+      const { whole, bucket } = run("{ Name: outer['Name'], Extra: outer['Extra'] }");
+      expect(whole).not.toContain('Outer.Extra');
+      expect(bucket).toBe('provider-handled');
+    });
   });
 });
 

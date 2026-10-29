@@ -77,8 +77,8 @@ name: CFn schema fixture refresh
 # `AWS::Route53::RecordSet.GeoProximityLocation` — the case that motivated this
 # — is settled that way. Everything else still lands RED: a removal whose SDK
 # member is gone (retiring it is a behaviour change), a possible rename, and new
-# nested keys on `AWS::Glue::Connection` taking
-# `audit:nested-key-coverage:check` from rc=0 to rc=1.
+# nested keys on `AWS::Glue::Connection` that no wire bag carries yet, which
+# redden the sdk-wire suites.
 on:
   schedule:
     # 04:37 UTC daily. Off the hour on purpose — the top of the hour is heavily

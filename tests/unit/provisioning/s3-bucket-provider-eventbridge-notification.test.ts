@@ -19,7 +19,8 @@ import {
  *   (`@aws-sdk/client-s3` `models_0.d.ts`) — PRESENCE enables delivery,
  *   ABSENCE disables it. There is no member for the boolean to land on.
  *
- * So the critic bucketed `EventBridgeEnabled` as `no-sdk-member`, and both
+ * So the nested-key critic's (since retired) key pass bucketed
+ * `EventBridgeEnabled` as `no-sdk-member`, and both
  * directions of the translation were wrong:
  *
  * 1. WRITE — the provider emitted the SDK block whenever the CFn block

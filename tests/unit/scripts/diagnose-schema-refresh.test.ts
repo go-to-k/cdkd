@@ -774,7 +774,8 @@ describe('renderDiagnosis', () => {
     expect(md).toContain('npm view @aws-sdk/client-');
     expect(md).toContain('audit:nested-key-coverage:check');
     // An unforwarded NEW nested member is the wire suites' finding, not this
-    // check's; with no failed check listed, only the procedure can name them.
+    // check's; the procedure points there too (on a refresh with no shape
+    // divergence the `sdk-wire-coverage` failed-check section is the pointer).
     expect(md).toContain('vp test run sdk-wire-coverage');
   });
 
