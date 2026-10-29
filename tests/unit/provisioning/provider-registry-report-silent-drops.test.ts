@@ -368,9 +368,9 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     const registry = new ProviderRegistry();
     expect(registry.getAllowedUnsupportedProperties()).toBeInstanceOf(Set);
     expect(registry.getAllowedUnsupportedProperties().size).toBe(0);
-    registry.allowUnsupportedProperties(['AWS::CloudWatch::Alarm:EvaluationWindow']);
+    registry.allowUnsupportedProperties(['AWS::Logs::LogGroup:ResourcePolicyDocument']);
     expect(Array.from(registry.getAllowedUnsupportedProperties())).toEqual([
-      'AWS::CloudWatch::Alarm:EvaluationWindow',
+      'AWS::Logs::LogGroup:ResourcePolicyDocument',
     ]);
   });
 

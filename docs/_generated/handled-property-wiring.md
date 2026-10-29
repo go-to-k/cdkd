@@ -15,10 +15,10 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **89**
-- Declared properties: **1202** (**1200** with read evidence)
+- Declared properties: **1205** (**1203** with read evidence)
 - Fully wired classes: **87**
 - Allow-listed classes (visible, non-blocking): **2**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **39**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **40**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
@@ -46,6 +46,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `AppSyncProvider` (appsync-provider.ts) | `computed key in applyGraphQLApiConfig()`, `computed key in refuseChangedMalformedGraphQLApiBlocks()`, `computed key in updateDataSource()`, `computed key in updateGraphQLApi()`, `computed key in updateResolver()`, `object spread in withEnvironmentVariablesRecord()` |
 | `ASGProvider` (asg-provider.ts) | `computed key in canonicalizeDriftProperties()`, `object spread in canonicalizeDriftProperties()`, `withRemovalDefaults(...) in update()` |
 | `CloudTrailProvider` (cloudtrail-provider.ts) | `Object.entries(...) in retainPreviousLists()`, `withRemovalDefaults(...) in update()` |
+| `CloudWatchAlarmProvider` (cloudwatch-alarm-provider.ts) | `computed key in getDriftAbsentMeansDefaultKeys()` |
 | `CognitoUserPoolProvider` (cognito-provider.ts) | `object spread in narrowMfaConfiguration()` |
 | `DynamoDBGlobalTableProvider` (dynamodb-globaltable-provider.ts) | `computed key in canonicalizeDriftProperties()`, `computed key in collectDesiredKeyAttributeNames()`, `computed key in readUnsettled()`, `computed key in replicationImpliedStreamSpecification()`, `computed key in updateInScope()`, `extractLocalTags(...) in updateInScope()`, `keepUnreadReplicaMembers(...) in updateInScope()`, `object spread in canonicalizeDesiredProperties()`, `object spread in canonicalizeDriftProperties()`, `object spread in create()`, `object spread in stripProvisionedCapacityKeys()` |
 | `DynamoDBTableProvider` (dynamodb-table-provider.ts) | `computed key in canonicalizeDriftPair()`, `object spread in canonicalizeDriftProperties()` |
@@ -98,7 +99,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `CloudFrontOACProvider` | cloudfront-oac-provider.ts | wired | 1 | 1 |
 | `CloudFrontOAIProvider` | cloudfront-oai-provider.ts | wired | 1 | 1 |
 | `CloudTrailProvider` | cloudtrail-provider.ts | wired | 17 | 17 |
-| `CloudWatchAlarmProvider` | cloudwatch-alarm-provider.ts | wired | 24 | 24 |
+| `CloudWatchAlarmProvider` | cloudwatch-alarm-provider.ts | wired | 27 | 27 |
 | `CloudWatchAnomalyDetectorProvider` | cloudwatch-anomaly-detector-provider.ts | wired | 8 | 8 |
 | `CodeBuildProvider` | codebuild-provider.ts | wired | 24 | 24 |
 | `CodeCommitRepositoryProvider` | codecommit-repository-provider.ts | wired | 6 | 6 |

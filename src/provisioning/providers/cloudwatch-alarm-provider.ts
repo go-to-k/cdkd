@@ -50,6 +50,47 @@ import { safeMsg } from '../../utils/display-safe.js';
  * prose; an AWS message quoting an alarm whose NAME holds that text costs at
  * most the bounded retry budget before it fails as it would have.
  */
+/**
+ * go-to-k/cdkd#5524: `{ SlidingWindow: {} }` exactly -- the evaluation window
+ * an alarm uses when none is set. A sliding window has no options, so any
+ * other member (or a non-empty `SlidingWindow`) is not the default.
+ */
+function isDefaultEvaluationWindow(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== 1 || keys[0] !== 'SlidingWindow') return false;
+  const sliding = (value as Record<string, unknown>)['SlidingWindow'];
+  return (
+    sliding !== null &&
+    typeof sliding === 'object' &&
+    !Array.isArray(sliding) &&
+    Object.keys(sliding).length === 0
+  );
+}
+
+/**
+ * go-to-k/cdkd#5524: every PutMetricAlarm member AWS refuses beside
+ * `EvaluationCriteria` (the PromQL form), per `PutMetricAlarmInput`'s
+ * documentation in @aws-sdk/client-cloudwatch 3.1156.0, plus
+ * `EvaluationWindow`, which that documentation excludes for PromQL alarms.
+ */
+const PROMQL_EXCLUDED_MEMBERS: readonly string[] = [
+  'Namespace',
+  'MetricName',
+  'Dimensions',
+  'Period',
+  'Unit',
+  'Statistic',
+  'ExtendedStatistic',
+  'Metrics',
+  'Threshold',
+  'ComparisonOperator',
+  'ThresholdMetricId',
+  'EvaluationPeriods',
+  'DatapointsToAlarm',
+  'EvaluationWindow',
+];
+
 function isAlarmWriteThrottle(error: unknown): boolean {
   return (
     isThrottlingError(error) || (error instanceof Error && error.message.includes('Rate exceeded'))
@@ -126,6 +167,10 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
         // go-to-k/cdkd#2762: PutMetricAlarm members with the CFn spelling.
         'ActionConfiguration',
         'WarmUpConfiguration',
+        // go-to-k/cdkd#5524: the last three, also with the CFn spelling.
+        'EvaluationWindow',
+        'EvaluationCriteria',
+        'EvaluationInterval',
       ]),
     ],
   ]);
@@ -541,6 +586,15 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       // propagation.
       ActionConfiguration: properties['ActionConfiguration'],
       WarmUpConfiguration: properties['WarmUpConfiguration'],
+      // go-to-k/cdkd#5524: the same holds for these three. EvaluationWindow is
+      // a union (`SlidingWindow: {}` or `WallClockWindow: { Timezone }`) and
+      // EvaluationCriteria one (`PromQLCriteria: { Query, PendingPeriod,
+      // RecoveryPeriod }`), both spelled as the SDK spells them. A removal
+      // stores the alarm on AWS's default: a sliding window, or the metric
+      // form.
+      EvaluationWindow: properties['EvaluationWindow'],
+      EvaluationCriteria: properties['EvaluationCriteria'],
+      EvaluationInterval: properties['EvaluationInterval'] as number | undefined,
     };
 
     // Metrics array (math expressions / composite metrics).
@@ -586,6 +640,19 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       params['Dimensions'] = properties['Dimensions'] as
         | Array<{ Name: string; Value: string }>
         | undefined;
+      // go-to-k/cdkd#5524, Class 1: a PromQL alarm (EvaluationCriteria) takes
+      // none of the metric members, and PutMetricAlarm refuses `Dimensions`
+      // beside it even when empty. An EMPTY list adds nothing to any alarm
+      // (PutMetricAlarm replaces the whole configuration either way), so it
+      // is dropped there; a non-empty one is a template error and goes to AWS
+      // as declared, to be refused as CloudFormation would.
+      if (
+        properties['EvaluationCriteria'] !== undefined &&
+        Array.isArray(params['Dimensions']) &&
+        (params['Dimensions'] as unknown[]).length === 0
+      ) {
+        delete params['Dimensions'];
+      }
     }
 
     return params as unknown as PutMetricAlarmCommandInput;
@@ -610,7 +677,10 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
    * `OKActions`, `InsufficientDataActions`, `TreatMissingData`, `Unit`,
    * `Dimensions`, `Metrics`), plus, when AWS reports them,
    * `ExtendedStatistic`, `EvaluateLowSampleCountPercentile`,
-   * `ThresholdMetricId`, `ActionConfiguration` and `WarmUpConfiguration`.
+   * `ThresholdMetricId`, `ActionConfiguration`, `WarmUpConfiguration`,
+   * `EvaluationWindow`, `EvaluationCriteria` and `EvaluationInterval`. A
+   * PromQL alarm (one with `EvaluationCriteria`) gets none of the metric
+   * members, placeholders included.
    *
    * `DescribeAlarms` returns the result via either `MetricAlarms` (single-
    * metric form) or `CompositeAlarms` (composite form). cdkd's provider
@@ -638,21 +708,35 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     // sets get placeholders so a user switching from one form to the
     // other on the same alarm is detected.
     const result: Record<string, unknown> = {};
+    // go-to-k/cdkd#5524, Class 1 (docs/provider-rules.md): a PromQL alarm
+    // carries `EvaluationCriteria`, and PutMetricAlarm refuses every metric
+    // member beside it -- Namespace, MetricName, Dimensions, Period, Unit,
+    // Statistic, ExtendedStatistic, Metrics, Threshold, ComparisonOperator,
+    // ThresholdMetricId, EvaluationPeriods, DatapointsToAlarm -- and
+    // EvaluationWindow too. None of them is emitted for such an alarm, the
+    // always-emit placeholders included: `cdkd drift --revert` sends this bag
+    // to update(). A console-side ADD of one of them beside the criteria is
+    // impossible; a console SWITCH of the whole alarm to the metric form is
+    // not, and getDriftAbsentMeansDefaultKeys below names those members for a
+    // PromQL template so the switch is reported and reverted.
+    const promql = alarm.EvaluationCriteria !== undefined;
     if (alarm.AlarmName !== undefined) result['AlarmName'] = alarm.AlarmName;
     result['AlarmDescription'] = alarm.AlarmDescription ?? '';
-    result['MetricName'] = alarm.MetricName ?? '';
-    result['Namespace'] = alarm.Namespace ?? '';
-    result['Statistic'] = alarm.Statistic ?? '';
-    if (alarm.ComparisonOperator !== undefined) {
-      result['ComparisonOperator'] = alarm.ComparisonOperator;
-    }
-    if (alarm.Threshold !== undefined) result['Threshold'] = alarm.Threshold;
-    if (alarm.EvaluationPeriods !== undefined) {
-      result['EvaluationPeriods'] = alarm.EvaluationPeriods;
-    }
-    if (alarm.Period !== undefined) result['Period'] = alarm.Period;
-    if (alarm.DatapointsToAlarm !== undefined) {
-      result['DatapointsToAlarm'] = alarm.DatapointsToAlarm;
+    if (!promql) {
+      result['MetricName'] = alarm.MetricName ?? '';
+      result['Namespace'] = alarm.Namespace ?? '';
+      result['Statistic'] = alarm.Statistic ?? '';
+      if (alarm.ComparisonOperator !== undefined) {
+        result['ComparisonOperator'] = alarm.ComparisonOperator;
+      }
+      if (alarm.Threshold !== undefined) result['Threshold'] = alarm.Threshold;
+      if (alarm.EvaluationPeriods !== undefined) {
+        result['EvaluationPeriods'] = alarm.EvaluationPeriods;
+      }
+      if (alarm.Period !== undefined) result['Period'] = alarm.Period;
+      if (alarm.DatapointsToAlarm !== undefined) {
+        result['DatapointsToAlarm'] = alarm.DatapointsToAlarm;
+      }
     }
     result['ActionsEnabled'] = alarm.ActionsEnabled ?? true;
     result['AlarmActions'] = alarm.AlarmActions ? [...alarm.AlarmActions] : [];
@@ -661,12 +745,14 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       ? [...alarm.InsufficientDataActions]
       : [];
     result['TreatMissingData'] = alarm.TreatMissingData ?? '';
-    result['Unit'] = alarm.Unit ?? '';
-    result['Dimensions'] = (alarm.Dimensions ?? []).map((d) => ({
-      ...(d.Name !== undefined ? { Name: d.Name } : {}),
-      ...(d.Value !== undefined ? { Value: d.Value } : {}),
-    }));
-    result['Metrics'] = (alarm.Metrics ?? []).map((m) => m as unknown as Record<string, unknown>);
+    if (!promql) {
+      result['Unit'] = alarm.Unit ?? '';
+      result['Dimensions'] = (alarm.Dimensions ?? []).map((d) => ({
+        ...(d.Name !== undefined ? { Name: d.Name } : {}),
+        ...(d.Value !== undefined ? { Value: d.Value } : {}),
+      }));
+      result['Metrics'] = (alarm.Metrics ?? []).map((m) => m as unknown as Record<string, unknown>);
+    }
 
     // Emit-when-present (NOT always-emit) for the extended-statistic /
     // anomaly-detection / low-sample-count fields. Unlike the always-emit
@@ -675,13 +761,13 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     // emit-when-present can't drop a templated value, and emitting them
     // unconditionally would break the "AWS minimum response" key-set
     // regression test (cloudwatch-alarm-provider-readcurrentstate.test.ts).
-    if (alarm.ExtendedStatistic !== undefined) {
+    if (!promql && alarm.ExtendedStatistic !== undefined) {
       result['ExtendedStatistic'] = alarm.ExtendedStatistic;
     }
     if (alarm.EvaluateLowSampleCountPercentile !== undefined) {
       result['EvaluateLowSampleCountPercentile'] = alarm.EvaluateLowSampleCountPercentile;
     }
-    if (alarm.ThresholdMetricId !== undefined) {
+    if (!promql && alarm.ThresholdMetricId !== undefined) {
       result['ThresholdMetricId'] = alarm.ThresholdMetricId;
     }
     // go-to-k/cdkd#2762: emit-when-present, as the three above. The SDK shape
@@ -691,6 +777,28 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     }
     if (alarm.WarmUpConfiguration !== undefined) {
       result['WarmUpConfiguration'] = alarm.WarmUpConfiguration;
+    }
+    // go-to-k/cdkd#5524: emit-when-present too, in the SDK shape, which is
+    // the CFn one -- except at the default. AWS may report `SlidingWindow: {}`
+    // on an alarm that declares no window, or omit it on one that declares
+    // it, so the default is omitted either way and the two read the same.
+    // getDriftAbsentMeansDefaultKeys below keeps the key compared, the shape
+    // docs/provider-rules.md gives for a readback that omits its default.
+    if (
+      !promql &&
+      alarm.EvaluationWindow !== undefined &&
+      !isDefaultEvaluationWindow(alarm.EvaluationWindow)
+    ) {
+      result['EvaluationWindow'] = alarm.EvaluationWindow;
+    }
+    if (alarm.EvaluationCriteria !== undefined) {
+      result['EvaluationCriteria'] = alarm.EvaluationCriteria;
+    }
+    // PromQL-only: PutMetricAlarm refuses EvaluationInterval on an alarm
+    // configured with MetricName or Metrics, so a value AWS might report on a
+    // metric alarm must not reach `drift --revert`'s update().
+    if (promql && alarm.EvaluationInterval !== undefined) {
+      result['EvaluationInterval'] = alarm.EvaluationInterval;
     }
 
     // Tags via ListTagsForResource (uses the alarm ARN from DescribeAlarms).
@@ -708,6 +816,69 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       }
     }
     return result;
+  }
+
+  /**
+   * go-to-k/cdkd#5524: the readback omits the default window, so a BASELINE
+   * that spells it -- the template bag, on a record with no
+   * `observedProperties` -- would otherwise report `{ SlidingWindow: {} }`
+   * against an absent readback as drift. That baseline member is dropped,
+   * keyed on the baseline itself being exactly the default and the readback
+   * carrying no window. Dropping it is safe for `drift --revert`, which sends
+   * the returned baseline: PutMetricAlarm stores an absent window as the same
+   * sliding window. Every other pair is returned by identity.
+   */
+  async canonicalizeDriftPair(
+    resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    if (
+      resourceType !== 'AWS::CloudWatch::Alarm' ||
+      !isDefaultEvaluationWindow(baseline['EvaluationWindow']) ||
+      aws['EvaluationWindow'] !== undefined
+    ) {
+      return { baseline, aws };
+    }
+    const trimmed = { ...baseline };
+    delete trimmed['EvaluationWindow'];
+    return { baseline: trimmed, aws };
+  }
+
+  /**
+   * go-to-k/cdkd#5524: the readback omits the default window, so a baseline on
+   * the default carries no `EvaluationWindow`, and the baseline-keys-only walk
+   * would never notice a wall-clock window set in the console. Naming the key
+   * keeps it compared, and `drift --revert` sends it absent, which
+   * PutMetricAlarm (a full replace) stores as the default sliding window.
+   * Only while the template is on the default too, and never for a PromQL
+   * alarm, which takes no window at all. A metric alarm also names
+   * `EvaluationCriteria` / `EvaluationInterval`, the PromQL-only pair.
+   */
+  getDriftAbsentMeansDefaultKeys(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): readonly string[] {
+    if (resourceType !== 'AWS::CloudWatch::Alarm') return [];
+    if (properties['EvaluationCriteria'] !== undefined) {
+      // A PromQL template: a console switch to the metric form surfaces the
+      // metric members on the AWS side only, and `drift --revert` builds its
+      // bag on that readback, so without this it would send them beside
+      // EvaluationCriteria, which PutMetricAlarm refuses. Named, each is
+      // compared and sent absent, which stores the PromQL alarm the template
+      // declares. A member the template itself declares is left out: that
+      // template is refused by AWS anyway, and it is not on its default.
+      return [...PROMQL_EXCLUDED_MEMBERS].filter((key) => properties[key] === undefined);
+    }
+    // A metric alarm: a console switch to PromQL would surface only as the
+    // metric members' drift, and the revert would then send them beside the
+    // PromQL members. Naming both keeps them compared and sends them absent,
+    // which PutMetricAlarm stores as the metric alarm the template declares.
+    const keys = ['EvaluationCriteria', 'EvaluationInterval'];
+    const declared = properties['EvaluationWindow'];
+    if (declared === undefined || isDefaultEvaluationWindow(declared))
+      keys.push('EvaluationWindow');
+    return keys;
   }
 
   /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */

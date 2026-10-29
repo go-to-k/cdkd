@@ -26,7 +26,7 @@ provider does not send, cdkd provisions that resource through the Cloud
 Control API, which forwards every property. The deploy says so:
 
 ```
-MyAlarm (AWS::CloudWatch::Alarm): routing via Cloud Control API (cdkd's SDK Provider does not yet wire EvaluationWindow — CC API will forward the full property map. Override via --prefer-sdk-route AWS::CloudWatch::Alarm:EvaluationWindow.)
+MyLogGroup (AWS::Logs::LogGroup): routing via Cloud Control API (cdkd's SDK Provider does not yet wire ResourcePolicyDocument — CC API will forward the full property map. Override via --prefer-sdk-route AWS::Logs::LogGroup:ResourcePolicyDocument.)
 ```
 
 A missing field therefore means the resource stayed on the SDK provider.

@@ -758,6 +758,47 @@ const CASES: TypeCase[] = [
           },
         },
       },
+      {
+        // go-to-k/cdkd#5524. EvaluationWindow is a union, so each member has
+        // its own bag.
+        name: 'wall-clock evaluation window',
+        bag: {
+          AlarmName: 'a',
+          ComparisonOperator: 'GreaterThanThreshold',
+          EvaluationPeriods: 1,
+          Threshold: 1,
+          MetricName: 'm',
+          Namespace: 'ns',
+          Period: 60,
+          Statistic: 'Sum',
+          EvaluationWindow: { WallClockWindow: { Timezone: 'UTC' } },
+        },
+      },
+      {
+        name: 'sliding evaluation window',
+        bag: {
+          AlarmName: 'a',
+          ComparisonOperator: 'GreaterThanThreshold',
+          EvaluationPeriods: 1,
+          Threshold: 1,
+          MetricName: 'm',
+          Namespace: 'ns',
+          Period: 60,
+          Statistic: 'Sum',
+          EvaluationWindow: { SlidingWindow: {} },
+        },
+      },
+      {
+        // A PromQL alarm takes none of the metric members.
+        name: 'PromQL criteria and evaluation interval',
+        bag: {
+          AlarmName: 'a',
+          EvaluationCriteria: {
+            PromQLCriteria: { Query: 'avg(up) < 1', PendingPeriod: 60, RecoveryPeriod: 120 },
+          },
+          EvaluationInterval: 60,
+        },
+      },
     ],
   },
 ];

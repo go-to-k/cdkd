@@ -911,7 +911,6 @@
         "perf-cross-backend-check",
         "replacement-immutable-name",
         "scheduled-task",
-        "sdk-to-cc-autoroute",
         "throttle-wide-dag"
       ],
       "signals": {
@@ -942,10 +941,6 @@
         ],
         "scheduled-task": [
           "l2"
-        ],
-        "sdk-to-cc-autoroute": [
-          "l1",
-          "literal"
         ],
         "throttle-wide-dag": [
           "l1",
@@ -6393,6 +6388,7 @@
         "rollback-same-id-recreate",
         "route53",
         "scheduled-task",
+        "sdk-to-cc-autoroute",
         "secret-derived-immutable-names",
         "stepfunctions-logging",
         "tags-propagation",
@@ -6518,6 +6514,10 @@
         ],
         "scheduled-task": [
           "l2"
+        ],
+        "sdk-to-cc-autoroute": [
+          "l1",
+          "literal"
         ],
         "secret-derived-immutable-names": [
           "l1",

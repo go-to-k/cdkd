@@ -118,7 +118,7 @@ describe('ProviderRegistry.getProviderFor', () => {
     // asserting only the layer would let the route go silent and still pass.
     // The PROPERTY LIST, not just presence: `toBeDefined()` passes on an empty
     // list, and that list is exactly what the integ greps for
-    // (`via CC API: EvaluationWindow`).
+    // (`via CC API: ResourcePolicyDocument`).
     expect(decision.ccRouteReason?.properties).toEqual([fx.property]);
   });
 
