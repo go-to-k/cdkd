@@ -56,6 +56,11 @@ cdkd rollback MyStack --revert-failed
 If you do not want to, a plain `cdkd rollback` clears that journal, and so
 does the next successful deploy.
 
+A failed update that left properties unsettled is the exception: the
+automatic rollback reverts it itself and drops its entry
+([The resource whose update failed](rollback.md#the-resource-whose-update-failed)).
+Its entry stays for `--revert-failed` only when that revert did not happen.
+
 An automatic rollback that failed or skipped an operation keeps the whole
 segment instead.
 

@@ -740,7 +740,7 @@ P1A_CALLS="${LOG_DIR}/phase1a-calls.jsonl"
 rm -f "${P1A_CALLS}"
 set +e
 CDKD_SDK_CALL_LOG="${P1A_CALLS}" CDKD_TEST_UPDATE="gsi" node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback \
   --resource-warn-after AWS::DynamoDB::GlobalTable=5s \
   --resource-timeout AWS::DynamoDB::GlobalTable=15s >"${LOG_DIR}/phase1a.log" 2>&1
 P1A_EXIT=$?

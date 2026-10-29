@@ -20,9 +20,13 @@
 #      The first stream also drops MaxRecordSizeInKiB (4096) and must reset
 #      to 1024 (go-to-k/cdkd#1160).
 #   2d. Raise the second stream's retention to 48h under a 2s per-type
-#      deadline: the deploy fails mid-update and the record must name
+#      deadline, with --no-rollback: the deploy fails mid-update and the record must name
 #      RetentionPeriodHours unsettled; once ACTIVE at 48h, a redeploy of the
 #      24h template must decrease it and clear the name (go-to-k/cdkd#5487).
+#   2e. The same cut-short raise WITHOUT --no-rollback (go-to-k/cdkd#5505):
+#      the automatic rollback waits for the stream to leave UPDATING and
+#      reverts it, so right after the failed deploy returns retention reads 24h
+#      and the record names nothing unsettled, with no further deploy.
 #   3. Destroy + assert both streams are gone and the cdkd state file is removed.
 #
 # Required env vars:
@@ -82,9 +86,13 @@ STRATEGY_STREAM_NAME="${STREAM_NAME}-rds"
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# Phase 2e's auto-rolled-back deploy (go-to-k/cdkd#5505); removed by cleanup().
+P2E_LOG="${TMPDIR:-/tmp}/cdkd-5505-kinesis-rollback.$$.log"
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  rm -f "${P2E_LOG}"
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -331,7 +339,7 @@ assert_eq "retention on ${STRATEGY_STREAM_NAME} before Phase 2d" "24" "$(retenti
 echo "==> Phase 2d: raise retention on ${STRATEGY_STREAM_NAME} to 48h under a 2s Kinesis deadline (must fail mid-update)"
 set +e
 CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_RETENTION=48 node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback \
   --resource-warn-after AWS::Kinesis::Stream=1s \
   --resource-timeout AWS::Kinesis::Stream=2s
 P2D_EXIT=$?
@@ -358,6 +366,59 @@ assert_eq "retention on ${STRATEGY_STREAM_NAME} after redeploying the recorded t
 assert_eq "${STRATEGY_STREAM_NAME} record's unsettledProperties after the converging deploy" \
   "" "$(unsettled_of "${STRATEGY_STREAM_NAME}")"
 echo "    the unsettled retention converged on redeploy (go-to-k/cdkd#5487)"
+
+# --- Phase 2e: the automatic rollback reverts the cut-short raise (go-to-k/cdkd#5505)
+# Phase 2d's raise again, WITHOUT --no-rollback. The rollback waits for the
+# deadline-abandoned call and for the stream to leave UPDATING, then puts the
+# retention back to 24h, as CloudFormation rolls a failed update back. Before
+# the fix the stream stayed at 48h and the record kept the name (Phase 2d's
+# --no-rollback run still asserts that path). CDKD_NO_WAIT / CDKD_FULL_WAIT
+# are dropped: a no-wait revert would return mid-UPDATING.
+assert_eq "retention on ${STRATEGY_STREAM_NAME} before Phase 2e" "24" "$(retention_of "${STRATEGY_STREAM_NAME}")"
+echo "==> Phase 2e: raise retention on ${STRATEGY_STREAM_NAME} to 48h under a 2s Kinesis deadline, with the automatic rollback"
+set +e
+env -u CDKD_NO_WAIT -u CDKD_FULL_WAIT \
+  CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_RETENTION=48 node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --resource-warn-after AWS::Kinesis::Stream=1s \
+  --resource-timeout AWS::Kinesis::Stream=2s >"${P2E_LOG}" 2>&1
+P2E_EXIT=$?
+set -e
+cat "${P2E_LOG}"
+if [ "${P2E_EXIT}" -eq 0 ]; then
+  echo "FAIL: Phase 2e's deploy succeeded; the 2s deadline must cut the UPDATING transition short (premise of the arm)" >&2
+  exit 1
+fi
+# AWS first, the moment the deploy returned: the subject of the arm.
+assert_eq "retention on ${STRATEGY_STREAM_NAME} right after the auto-rolled-back deploy (go-to-k/cdkd#5505: the rollback must revert the cut-short raise)" \
+  "24" "$(retention_of "${STRATEGY_STREAM_NAME}")"
+# The record checks read "nothing unsettled" off an empty result, so first
+# prove the state file was read and holds exactly one record for the stream.
+P2E_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+P2E_RECORDS="$(jq -r --arg name "${STRATEGY_STREAM_NAME}" '[.resources[]
+    | select(.resourceType == "AWS::Kinesis::Stream" and .physicalId == $name)] | length' <<<"${P2E_STATE}")"
+assert_eq "${STRATEGY_STREAM_NAME} records in the state after the automatic rollback" "1" "${P2E_RECORDS}"
+P2E_UNSETTLED="$(jq -r --arg name "${STRATEGY_STREAM_NAME}" '[.resources[]
+    | select(.resourceType == "AWS::Kinesis::Stream" and .physicalId == $name)
+    | (.unsettledProperties // [])[]] | join(",")' <<<"${P2E_STATE}")"
+assert_eq "${STRATEGY_STREAM_NAME} record's unsettledProperties after the automatic rollback reverted them (go-to-k/cdkd#5505)" "" "${P2E_UNSETTLED}"
+P2E_ITEMS="$(jq -r --arg name "${STRATEGY_STREAM_NAME}" '[.resources[]
+    | select(.resourceType == "AWS::Kinesis::Stream" and .physicalId == $name)
+    | has("unsettledItems")] | any' <<<"${P2E_STATE}")"
+assert_eq "${STRATEGY_STREAM_NAME} record carries unsettledItems after the automatic rollback" "false" "${P2E_ITEMS}"
+# Premise: the revert is cdkd's. Either line of the arm: the call the
+# deadline abandoned may complete once ACTIVE ("... whose call completed after
+# the deploy gave up on it, to its pre-deploy properties"), else the line
+# names what it left unsettled. The shared tail is the sentinel.
+if ! grep -qE 'Rollback: reverting (what )?the failed UPDATE of .*to its pre-deploy properties' "${P2E_LOG}"; then
+  if grep -q 'to its pre-deploy properties' "${P2E_LOG}"; then
+    echo "FAIL: the rollback's revert line changed wording; update this arm's needle (go-to-k/cdkd#5505)" >&2
+  else
+    echo "FAIL: the automatic rollback logged no revert of the cut-short retention raise (go-to-k/cdkd#5505)" >&2
+  fi
+  exit 1
+fi
+echo "    the automatic rollback reverted the cut-short raise: 24h and the name cleared right after the failed deploy (go-to-k/cdkd#5505)"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"

@@ -37,12 +37,16 @@
 #      S3DestinationConfiguration (issue #5439: cdkd refused the update, while
 #      a measured CloudFormation change set updates it in place). The change
 #      must apply with the stream's CreateTimestamp unchanged.
-#   3g. Redeploy adding the encryption block under a 30s Firehose deadline:
-#      the Start is sent and the deploy fails mid-transition. The record must
+#   3g. Redeploy adding the encryption block under a 30s Firehose deadline,
+#      with --no-rollback: the Start is sent and the deploy fails mid-transition. The record must
 #      name the key unsettled (and `cdkd drift --json` list it); once the
 #      stream reads ENABLED, a redeploy of the unencrypted template must
 #      converge it to DISABLED and clear the name (issue #5380: the record
 #      kept the old block, so that redeploy diffed empty and sent nothing).
+#   3h. The same cut-short add WITHOUT --no-rollback (go-to-k/cdkd#5505): the
+#      automatic rollback waits for the transition and reverts it, so right
+#      after the failed deploy returns encryption reads DISABLED and the record
+#      names nothing unsettled, with no further deploy.
 #   4. Destroy, assert the streams, both buckets, the role and the cdkd state
 #      file are gone -- immediately, with no polling.
 #
@@ -102,9 +106,13 @@ ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
 BUCKET_A="cdkd-stream-redeploy-${ACCOUNT}-${RUN_ID}-a"
 BUCKET_B="cdkd-stream-redeploy-${ACCOUNT}-${RUN_ID}-b"
 
+# Phase 3h's auto-rolled-back deploy (go-to-k/cdkd#5505); removed by cleanup().
+P3H_LOG="${TMPDIR:-/tmp}/cdkd-5505-firehose-rollback.$$.log"
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  rm -f "${P3H_LOG}"
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -386,7 +394,7 @@ assert_eq "Firehose encryption before Phase 3g" "DISABLED" "${P3G_PRE}"
 echo "==> Phase 3g: redeploy adding encryption under a 30s Firehose deadline (must fail mid-transition)"
 set +e
 CDKD_SRD_PHASE=b CDKD_SRD_TAG=updated CDKD_SRD_FILE_EXT=.ndjson CDKD_SRD_TRIM=1 CDKD_SRD_LEGACY_V2=1 CDKD_SRD_ENC=1 \
-  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback \
   --resource-warn-after AWS::KinesisFirehose::DeliveryStream=10s \
   --resource-timeout AWS::KinesisFirehose::DeliveryStream=30s
 P3G_EXIT=$?
@@ -425,6 +433,63 @@ assert_eq "stream record's unsettledProperties after the converging deploy" "" "
 P3G_CREATED="$(firehose_created)"
 assert_eq "Firehose CreateTimestamp after Phase 3g (encryption must converge in place)" "${PRE_CREATED}" "${P3G_CREATED}"
 echo "    the unsettled encryption converged on redeploy (issue #5380)"
+
+# --- Phase 3h: the automatic rollback reverts the cut-short add (go-to-k/cdkd#5505)
+# Phase 3g's add again, WITHOUT --no-rollback. The rollback waits for the
+# deadline-abandoned call and for the ENABLING transition to end, then stops
+# encryption, as CloudFormation rolls a failed update back. Before the fix
+# the stream stayed ENABLING/ENABLED and the record kept the name (Phase 3g's
+# --no-rollback run still asserts that path). CDKD_NO_WAIT / CDKD_FULL_WAIT
+# are dropped: a no-wait revert would return mid-DISABLING.
+echo "==> Phase 3h: redeploy adding encryption under a 30s Firehose deadline, with the automatic rollback"
+P3H_PRE="$(firehose_enc Status)"
+assert_eq "Firehose encryption before Phase 3h" "DISABLED" "${P3H_PRE}"
+set +e
+env -u CDKD_NO_WAIT -u CDKD_FULL_WAIT \
+  CDKD_SRD_PHASE=b CDKD_SRD_TAG=updated CDKD_SRD_FILE_EXT=.ndjson CDKD_SRD_TRIM=1 CDKD_SRD_LEGACY_V2=1 CDKD_SRD_ENC=1 \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --resource-warn-after AWS::KinesisFirehose::DeliveryStream=10s \
+  --resource-timeout AWS::KinesisFirehose::DeliveryStream=30s >"${P3H_LOG}" 2>&1
+P3H_EXIT=$?
+set -e
+cat "${P3H_LOG}"
+if [ "${P3H_EXIT}" -eq 0 ]; then
+  echo "FAIL: Phase 3h's deploy succeeded; the 30s deadline must cut the ENABLING transition short (premise of the arm)" >&2
+  exit 1
+fi
+# AWS first, the moment the deploy returned: the subject of the arm.
+P3H_STATUS="$(firehose_enc Status)"
+assert_eq "Firehose encryption right after the auto-rolled-back deploy (go-to-k/cdkd#5505: the rollback must revert the cut-short encryption)" \
+  "DISABLED" "${P3H_STATUS}"
+# The record checks read "nothing unsettled" off an empty result, so first
+# prove the state file was read and holds exactly one record for the stream.
+P3H_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+P3H_RECORDS="$(jq -r --arg name "${NAME}" '[.resources[]
+    | select(.resourceType == "AWS::KinesisFirehose::DeliveryStream" and .physicalId == $name)] | length' <<<"${P3H_STATE}")"
+assert_eq "delivery stream records in the state after the automatic rollback" "1" "${P3H_RECORDS}"
+P3H_UNSETTLED="$(jq -r --arg name "${NAME}" '[.resources[]
+    | select(.resourceType == "AWS::KinesisFirehose::DeliveryStream" and .physicalId == $name)
+    | (.unsettledProperties // [])[]] | join(",")' <<<"${P3H_STATE}")"
+assert_eq "stream record's unsettledProperties after the automatic rollback reverted them (go-to-k/cdkd#5505)" "" "${P3H_UNSETTLED}"
+P3H_ITEMS="$(jq -r --arg name "${NAME}" '[.resources[]
+    | select(.resourceType == "AWS::KinesisFirehose::DeliveryStream" and .physicalId == $name)
+    | has("unsettledItems")] | any' <<<"${P3H_STATE}")"
+assert_eq "stream record carries unsettledItems after the automatic rollback" "false" "${P3H_ITEMS}"
+# Premise: the revert is cdkd's. Either line of the arm: the call the
+# deadline abandoned usually completes once ENABLED ("... whose call completed
+# after the deploy gave up on it, to its pre-deploy properties"), else the
+# line names what it left unsettled. The shared tail is the sentinel.
+if ! grep -qE 'Rollback: reverting (what )?the failed UPDATE of .*to its pre-deploy properties' "${P3H_LOG}"; then
+  if grep -q 'to its pre-deploy properties' "${P3H_LOG}"; then
+    echo "FAIL: the rollback's revert line changed wording; update this arm's needle (go-to-k/cdkd#5505)" >&2
+  else
+    echo "FAIL: the automatic rollback logged no revert of the cut-short encryption (go-to-k/cdkd#5505)" >&2
+  fi
+  exit 1
+fi
+P3H_CREATED="$(firehose_created)"
+assert_eq "Firehose CreateTimestamp after Phase 3h (the revert must apply in place)" "${PRE_CREATED}" "${P3H_CREATED}"
+echo "    the automatic rollback reverted the cut-short encryption: DISABLED and the name cleared right after the failed deploy (go-to-k/cdkd#5505)"
 
 # --- Phase 4: destroy, everything gone at once ---------------------------
 STREAM_ARN="$(stream_arn)"

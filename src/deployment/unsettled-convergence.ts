@@ -325,6 +325,75 @@ export async function withUnprovenUnsettled<R extends ResourceState>(
 }
 
 /**
+ * go-to-k/cdkd#5505: the automatic rollback's bounded wait before it reverts
+ * what a failed update left unsettled. Polls `unsettledInTransition` until no
+ * name is moving (`'settled'`), the bound passes (`'moving'`), or
+ * `isInterrupted` answers true (`'interrupted'`). A provider without the hook
+ * has nothing to wait for. A hook that throws counts as moving: the revert
+ * never diffs a value it could not confirm at rest. `running` (the failed
+ * update's own call, when the deadline abandoned it) is waited for first,
+ * inside the same bound: until it returns it may still write.
+ */
+export async function waitForUnsettledSettled(
+  args: Identity & {
+    names: ReadonlySet<string>;
+    timeoutMs: number;
+    pollMs: number;
+    isInterrupted: () => boolean;
+    running?: Promise<unknown> | undefined;
+  }
+): Promise<'settled' | 'moving' | 'interrupted'> {
+  const { provider, names } = args;
+  const deadline = Date.now() + args.timeoutMs;
+  if (args.running !== undefined) {
+    let returned = false;
+    const done = args.running.then(
+      () => {
+        returned = true;
+      },
+      () => {
+        returned = true;
+      }
+    );
+    while (!returned) {
+      if (args.isInterrupted()) return 'interrupted';
+      const left = deadline - Date.now();
+      if (left <= 0) return 'moving';
+      await Promise.race([
+        done,
+        new Promise((resolve) => setTimeout(resolve, Math.min(250, left))),
+      ]);
+    }
+  }
+  if (provider.unsettledInTransition === undefined || names.size === 0) return 'settled';
+  for (;;) {
+    if (args.isInterrupted()) return 'interrupted';
+    let moving = true;
+    try {
+      const inTransition = await provider.unsettledInTransition(
+        args.physicalId,
+        args.logicalId,
+        args.resourceType,
+        names,
+        args.recordedProperties
+      );
+      moving = inTransition.size > 0;
+    } catch {
+      // Unconfirmed: keep waiting, then keep the names.
+    }
+    if (!moving) return 'settled';
+    const left = deadline - Date.now();
+    if (left <= 0) return 'moving';
+    // Slept in short slices so a Ctrl-C ends the wait promptly.
+    const until = Date.now() + Math.min(args.pollMs, left);
+    while (Date.now() < until) {
+      if (args.isInterrupted()) return 'interrupted';
+      await new Promise((resolve) => setTimeout(resolve, Math.min(250, until - Date.now())));
+    }
+  }
+}
+
+/**
  * go-to-k/cdkd#5487: `prepareRemovalForUpdate`'s unhandled removals, split by
  * cause. A name the convergence step put on the previous side from AWS — the
  * record never held it, so no template declared it — was not "removed from the

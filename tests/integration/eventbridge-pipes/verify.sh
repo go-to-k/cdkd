@@ -128,7 +128,7 @@ pipe_unsettled() { # the pipe record's unsettledProperties, comma-joined
 }
 echo "==> Cut-short UPDATE (BatchSize 1 -> 2 under a 5s Pipes deadline; must fail mid-update)"
 set +e
-env -u CDKD_TEST_SOURCE_SWITCH CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+env -u CDKD_TEST_SOURCE_SWITCH CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback \
   --resource-warn-after AWS::Pipes::Pipe=2s --resource-timeout AWS::Pipes::Pipe=5s
 CUT_EXIT=$?
 set -e
