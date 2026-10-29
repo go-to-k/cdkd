@@ -551,10 +551,17 @@ for _ in $(seq 1 60); do
     TABLE_GONE=true
     break
   fi
-  TABLE_STATUS="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
-    --query 'Table.TableStatus' --output text 2>/dev/null || echo unknown)"
-  [ "${TABLE_STATUS}" = "DELETING" ] || [ "${TABLE_STATUS}" = "unknown" ] \
-    || fail "table ${TABLE_NAME} is ${TABLE_STATUS} after the destroy, expected DELETING or gone"
+  if TABLE_STATUS="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query 'Table.TableStatus' --output text 2>&1)"; then
+    [ "${TABLE_STATUS}" = "DELETING" ] \
+      || fail "table ${TABLE_NAME} is ${TABLE_STATUS} after the destroy, expected DELETING or gone"
+  else
+    # Gone between the probe and this read: the next gone_probe confirms it.
+    case "${TABLE_STATUS}" in
+      *ResourceNotFoundException*) ;;
+      *) fail "describe-table ${TABLE_NAME} failed after the destroy: ${TABLE_STATUS}" ;;
+    esac
+  fi
   sleep 5
 done
 [ "${TABLE_GONE}" = "true" ] || fail "table ${TABLE_NAME} still exists 5 min after the destroy"
