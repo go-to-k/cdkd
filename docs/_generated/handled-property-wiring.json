@@ -6159,6 +6159,7 @@
             "getDriftUnknownPaths",
             "readCurrentState",
             "readIndexContributorInsights",
+            "readUnsettled",
             "update"
           ]
         },

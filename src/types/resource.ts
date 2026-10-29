@@ -1400,7 +1400,13 @@ export interface ResourceProvider {
     logicalId: string,
     resourceType: string,
     names: ReadonlySet<string>,
-    recordedProperties?: Record<string, unknown>
+    recordedProperties?: Record<string, unknown>,
+    /**
+     * The bag the update sends, so a read can project the live value onto what
+     * the record or the template names (a GlobalTable's replicas): the
+     * convergence must never remove or reset what neither names.
+     */
+    desiredProperties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined>;
 
   unsettledInTransition?(
