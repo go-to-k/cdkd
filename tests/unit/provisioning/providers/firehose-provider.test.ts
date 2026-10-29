@@ -307,6 +307,44 @@ describe('FirehoseProvider', () => {
       }
     });
 
+    it('a read still in flight near the deadline is aborted, so the created-stream mark still wins the race', async () => {
+      // SDK retries or a slow connection hold the read: the mock answers only
+      // through the abort signal, so without the bound the deadline fires first.
+      mockSend.mockImplementation(
+        async (cmd: { constructor: { name: string } }, opts?: { abortSignal?: AbortSignal }) => {
+          if (cmd.constructor.name === 'CreateDeliveryStreamCommand') {
+            return {
+              DeliveryStreamARN: 'arn:aws:firehose:us-east-1:123456789012:deliverystream/wait-stream',
+            };
+          }
+          return new Promise((_resolve, reject) => {
+            opts?.abortSignal?.addEventListener('abort', () =>
+              reject(Object.assign(new Error('Request aborted'), { name: 'AbortError' }))
+            );
+          });
+        }
+      );
+      vi.useFakeTimers();
+      try {
+        const outer = withResourceDeadline(() => provider.create('S', TYPE, props), {
+          warnAfterMs: 1000,
+          timeoutMs: 60_000,
+          onTimeout: () => new Error('deadline fired'),
+        }).then(
+          (): { err?: unknown } => ({}),
+          (err: unknown) => ({ err })
+        );
+        await vi.runAllTimersAsync();
+        const { err } = await outer;
+        expect((err as Error).message).toContain('The resource timeout would expire while waiting');
+        expect((err as Error).message).toContain('last status: none reported');
+        expect(createdBeforeFailure(err, 'S', TYPE)).toBe('wait-stream');
+        expect(isMarkedNonRetryable(err)).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('a Ctrl-C during the wait stops it, and the create still records the stream', async () => {
       disarmInterruptWatchForTests();
       interruptWatchTestSeam.commandOwnsInterrupts = () => true;

@@ -3,6 +3,7 @@ import {
   CreateDeliveryStreamCommand,
   DeleteDeliveryStreamCommand,
   DescribeDeliveryStreamCommand,
+  type DescribeDeliveryStreamCommandOutput,
   ListTagsForDeliveryStreamCommand,
   ResourceNotFoundException,
   UpdateDestinationCommand,
@@ -3000,12 +3001,43 @@ export class FirehoseProvider implements ResourceProvider {
    * exists, so a retried create would only collide with it. `create()` records
    * the stream through `markCreatedBeforeFailure`, so it is not orphaned.
    *
-   * The deadline error is thrown while time is still left, never after:
+   * The wait aims to throw its deadline error while time is still left:
    * `withResourceDeadline` rejects with its own timeout error the moment it
    * fires and drops a later provider error, and the created-id mark rides
-   * only on the provider's error, so a wait that slept into the deadline
-   * would leave the stream recorded nowhere.
+   * only on the provider's error, so a wait that ran into the deadline
+   * would leave the stream recorded nowhere. It stops sleeping
+   * {@link ACTIVE_DEADLINE_MARGIN_MS} before the deadline, and each read is
+   * aborted at that same point, so a read held up by SDK retries or a slow
+   * connection ends in the same error. The margin is what the throw has to
+   * reach the wrapper; an event loop stalled for longer still loses the race
+   * (the engine-level gap is go-to-k/cdkd#5511).
    */
+  /**
+   * One `DescribeDeliveryStream` read for {@link waitForActive}, aborted
+   * {@link ACTIVE_DEADLINE_MARGIN_MS} before the enclosing resource deadline
+   * (`'deadline'` then). Outside any deadline the read is unbounded.
+   */
+  private async describeBeforeDeadline(
+    streamName: string
+  ): Promise<DescribeDeliveryStreamCommandOutput | 'deadline'> {
+    const command = new DescribeDeliveryStreamCommand({ DeliveryStreamName: streamName });
+    const remaining = enclosingDeadlineRemainingMs();
+    if (!Number.isFinite(remaining)) return this.getClient().send(command);
+    const abort = new AbortController();
+    const timer = setTimeout(
+      () => abort.abort(),
+      Math.max(0, remaining - ACTIVE_DEADLINE_MARGIN_MS)
+    );
+    try {
+      return await this.getClient().send(command, { abortSignal: abort.signal });
+    } catch (error) {
+      if (abort.signal.aborted) return 'deadline';
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async waitForActive(
     streamName: string,
     logicalId: string,
@@ -3024,9 +3056,11 @@ export class FirehoseProvider implements ResourceProvider {
           deadlineNear = true;
           break;
         }
-        const resp = await this.getClient().send(
-          new DescribeDeliveryStreamCommand({ DeliveryStreamName: streamName })
-        );
+        const resp = await this.describeBeforeDeadline(streamName);
+        if (resp === 'deadline') {
+          deadlineNear = true;
+          break;
+        }
         const description = resp.DeliveryStreamDescription;
         last = description?.DeliveryStreamStatus;
         if (last === 'ACTIVE') {
