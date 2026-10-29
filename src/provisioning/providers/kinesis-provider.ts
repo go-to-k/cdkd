@@ -1034,7 +1034,12 @@ export class KinesisStreamProvider implements ResourceProvider {
         // CloudFormation does. Say so: one may be a metric the failed update
         // itself enabled.
         if (context?.unsettledProperties?.has('DesiredShardLevelMetrics') === true) {
-          await this.warnUndeclaredLiveMetrics(physicalId, [...previousSet, ...desiredSet], warn);
+          await this.warnUndeclaredLiveMetrics(
+            physicalId,
+            [...previousSet, ...desiredSet],
+            warn,
+            mask
+          );
         }
         const toEnable = desiredSet.filter((m) => !previousSet.includes(m));
         if (toDisable.length > 0 || toEnable.length > 0) markUnsettled('DesiredShardLevelMetrics');
@@ -1490,7 +1495,8 @@ export class KinesisStreamProvider implements ResourceProvider {
   private async warnUndeclaredLiveMetrics(
     physicalId: string,
     named: readonly string[],
-    warn: (message: string) => void
+    warn: (message: string) => void,
+    mask: MaskerFn
   ): Promise<void> {
     let live: string[];
     try {
@@ -1503,16 +1509,24 @@ export class KinesisStreamProvider implements ResourceProvider {
     } catch {
       return;
     }
-    const undeclared = live.filter((metric) => metric !== 'ALL' && !named.includes(metric));
+    const expandedLive = expandShardLevelMetrics(live);
+    const undeclared = (Array.isArray(expandedLive) ? (expandedLive as string[]) : live).filter(
+      (metric) => metric !== 'ALL' && !named.includes(metric)
+    );
     if (undeclared.length === 0) return;
+    // A secret-derived stream name is masked in the message, so a command
+    // carrying it would not run: it is withheld, as the DynamoDB warning does.
+    const secretDerived = mask(physicalId) !== physicalId;
     warn(
       `Kinesis stream ${physicalId} has shard-level metrics enabled that neither cdkd's record ` +
         `nor the template declares (${undeclared.join(', ')}), so cdkd left them enabled while ` +
         `converging the unsettled DesiredShardLevelMetrics (CloudFormation never disables a ` +
         `metric it did not record). Another tool may have enabled them, or an earlier failed ` +
-        `cdkd update may have; cdkd cannot tell which. If they should be off, disable them with: ` +
-        `aws kinesis disable-enhanced-monitoring --stream-name ${physicalId} ` +
-        `--shard-level-metrics ${undeclared.join(' ')} (in the stream's region)`
+        `cdkd update may have; cdkd cannot tell which. If they should be off, disable them ` +
+        (secretDerived
+          ? `with DisableEnhancedMonitoring for those metrics.`
+          : `with: aws kinesis disable-enhanced-monitoring --stream-name ${physicalId} ` +
+            `--shard-level-metrics ${undeclared.join(' ')} (in the stream's region)`)
     );
   }
 
@@ -1541,9 +1555,13 @@ export class KinesisStreamProvider implements ResourceProvider {
           return isUsableMetricsList(expanded) ? expanded : [];
         })
       );
-      out['DesiredShardLevelMetrics'] = (out['DesiredShardLevelMetrics'] as unknown[]).filter(
-        (metric) => typeof metric === 'string' && named.has(metric)
-      );
+      // The live list is expanded too: a stream enabled with `ALL` can report
+      // the literal, which would otherwise be projected away and read as
+      // "nothing enabled".
+      const liveMetrics = expandShardLevelMetrics(out['DesiredShardLevelMetrics']);
+      out['DesiredShardLevelMetrics'] = (
+        Array.isArray(liveMetrics) ? (liveMetrics as unknown[]) : []
+      ).filter((metric) => typeof metric === 'string' && named.has(metric));
     }
     if (!names.has('ShardCount')) return out;
     return { ...out, ShardCount: await this.getOpenShardCount(physicalId) };

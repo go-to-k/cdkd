@@ -265,6 +265,55 @@ describe('converging an unsettled DesiredShardLevelMetrics (go-to-k/cdkd#5503)',
     expect(metricCalls('DisableEnhancedMonitoringCommand')).toEqual([['IncomingRecords']]);
   });
 
+  const ALL7 = [
+    'IncomingBytes',
+    'IncomingRecords',
+    'OutgoingBytes',
+    'OutgoingRecords',
+    'WriteProvisionedThroughputExceeded',
+    'ReadProvisionedThroughputExceeded',
+    'IteratorAgeMilliseconds',
+  ];
+
+  it('expands a live literal ALL: an ALL record narrowed by the template disables the rest', async () => {
+    serve({ metrics: ['ALL'] });
+    await converge(bag('ALL'), bag('IncomingBytes'));
+    expect(metricCalls('DisableEnhancedMonitoringCommand').map((m) => [...m].sort())).toEqual([
+      ALL7.filter((m) => m !== 'IncomingBytes').sort(),
+    ]);
+  });
+
+  it('expands a live literal ALL: metrics nobody names are kept and named in the warning', async () => {
+    serve({ metrics: ['ALL'] });
+    await converge(bag('IncomingBytes'), bag('IncomingBytes'));
+    expect(metricCalls('DisableEnhancedMonitoringCommand')).toEqual([]);
+    const warned = warnSpy.mock.calls.flat().join('\n');
+    expect(warned).toContain('OutgoingBytes');
+    expect(warned).not.toMatch(/\(ALL|, ALL/);
+  });
+
+  it('withholds the CLI command when the stream name is secret-derived', async () => {
+    serve({ metrics: ['IncomingBytes', 'OutgoingBytes'] });
+    const previous = await settleUnsettledPrevious({
+      provider,
+      logicalId: 'S',
+      physicalId: 'sekrit-stream',
+      resourceType: TYPE,
+      recordedProperties: bag('IncomingBytes'),
+      desired: bag('IncomingBytes'),
+      names: NAMES,
+      previous: bag('IncomingBytes'),
+    });
+    await provider.update('S', 'sekrit-stream', TYPE, bag('IncomingBytes'), previous, {
+      unsettledProperties: NAMES,
+      maskSecrets: (text: string) => text.replaceAll('sekrit-stream', '***'),
+    });
+    const warned = warnSpy.mock.calls.flat().join('\n');
+    expect(warned).toContain('(OutgoingBytes), so cdkd left them enabled');
+    expect(warned).not.toContain('aws kinesis disable-enhanced-monitoring');
+    expect(warned).not.toContain('sekrit-stream');
+  });
+
   it('reads an ALL record as naming every metric', async () => {
     serve({ metrics: ['IncomingBytes', 'OutgoingBytes'] });
     const live = (await provider.readUnsettled('s', 'S', TYPE, NAMES, bag('ALL'), bag())) as Record<
