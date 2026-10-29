@@ -279,12 +279,6 @@
       "MetadataConfiguration",
       "MetadataTableConfiguration"
     ],
-    "AWS::S3Express::DirectoryBucket": [
-      "BucketEncryption",
-      "InventoryConfigurations",
-      "LifecycleConfiguration",
-      "MetricsConfigurations"
-    ],
     "AWS::S3Tables::Table": [
       "Compaction",
       "IcebergMetadata",

@@ -34,6 +34,33 @@ const ALL_DIRECTIONS = ['create', 'update-add', 'update-remove'];
 // and the removal comparison observes a bag CloudFormation would refuse.
 const REQUIRED_BY_SCHEMA = 'required by the schema: no valid template removes it';
 
+/**
+ * go-to-k/cdkd#2762: a directory bucket configuration missing a member the
+ * schema requires, and which the provider cannot do without, is refused before
+ * any call: the rule list of `BucketEncryption` / `LifecycleConfiguration`, an
+ * inventory item's `Destination`, and the `Id` that names a metrics or
+ * inventory item to its Put and its Delete.
+ */
+const DIRECTORY_BUCKET_CONFIG_THROWS: Record<string, Throw> = Object.fromEntries(
+  ALL_DIRECTIONS.flatMap((d) =>
+    (
+      [
+        ['BucketEncryption.ServerSideEncryptionConfiguration', /ServerSideEncryptionConfiguration of .* is not a list/],
+        ['LifecycleConfiguration.Rules', /LifecycleConfiguration\.Rules of .* is not a list/],
+        ['InventoryConfigurations.0.Destination', /Destination of .* is not an object/],
+        ['InventoryConfigurations.1.Destination', /Destination of .* is not an object/],
+        ['InventoryConfigurations.0.Id', /InventoryConfigurations\[0\]\.Id of .* is not a non-empty string/],
+        ['InventoryConfigurations.1.Id', /InventoryConfigurations\[1\]\.Id of .* is not a non-empty string/],
+        ['MetricsConfigurations.0.Id', /MetricsConfigurations\[0\]\.Id of .* is not a non-empty string/],
+        ['MetricsConfigurations.1.Id', /MetricsConfigurations\[1\]\.Id of .* is not a non-empty string/],
+      ] as const
+    ).map(([path, says]) => [
+      `${d}:${path}`,
+      { why: `${path} is required by the schema and refused when absent, before any call`, says },
+    ])
+  )
+);
+
 const LOG_GROUP_CLASS: Throw = {
   why: 'LogGroupClass cannot change after creation; every change refuses before any call',
   says: /LogGroupClass \(from \S+ to \S+\) cannot be changed after creation/,
@@ -95,6 +122,31 @@ export const CASES_4: TypeCase[] = [
     targets: [
       { path: ['Tags', 0], command: 'UntagResourceCommand', names: 'k1', notNames: 'k2' },
       { path: ['Tags', 1], command: 'UntagResourceCommand', names: 'k2', notNames: 'k1' },
+      // go-to-k/cdkd#2762: a removed item's Delete names only its own Id.
+      {
+        path: ['MetricsConfigurations', 0],
+        command: 'DeleteBucketMetricsConfigurationCommand',
+        names: 'metrics-one',
+        notNames: 'metrics-two',
+      },
+      {
+        path: ['MetricsConfigurations', 1],
+        command: 'DeleteBucketMetricsConfigurationCommand',
+        names: 'metrics-two',
+        notNames: 'metrics-one',
+      },
+      {
+        path: ['InventoryConfigurations', 0],
+        command: 'DeleteBucketInventoryConfigurationCommand',
+        names: 'inventory-one',
+        notNames: 'inventory-two',
+      },
+      {
+        path: ['InventoryConfigurations', 1],
+        command: 'DeleteBucketInventoryConfigurationCommand',
+        names: 'inventory-two',
+        notNames: 'inventory-one',
+      },
     ],
     bags: [
       {
@@ -104,6 +156,63 @@ export const CASES_4: TypeCase[] = [
           LocationName: 'use1-az4',
           DataRedundancy: 'SingleAvailabilityZone',
           Tags: TAGS,
+          BucketEncryption: {
+            ServerSideEncryptionConfiguration: [
+              {
+                ServerSideEncryptionByDefault: { SSEAlgorithm: 'aws:kms', KMSMasterKeyID: KEY_ARN },
+                BucketKeyEnabled: true,
+              },
+            ],
+          },
+          LifecycleConfiguration: {
+            Rules: [
+              {
+                Id: 'expire-logs',
+                Status: 'Enabled',
+                Prefix: 'logs/',
+                ObjectSizeGreaterThan: '100',
+                ObjectSizeLessThan: '5000',
+                ExpirationInDays: 7,
+                AbortIncompleteMultipartUpload: { DaysAfterInitiation: 3 },
+              },
+            ],
+          },
+          MetricsConfigurations: [
+            {
+              Id: 'metrics-one',
+              Prefix: 'p/',
+              AccessPointArn: `arn:aws:s3express:us-east-1:${ACCOUNT}:accesspoint/ap--use1-az4--xa-s3`,
+            },
+            { Id: 'metrics-two', Prefix: 'q/' },
+          ],
+          InventoryConfigurations: [
+            {
+              Id: 'inventory-one',
+              Enabled: true,
+              IncludedObjectVersions: 'Current',
+              ScheduleFrequency: 'Daily',
+              Prefix: 'inv/',
+              OptionalFields: ['Size', 'ETag'],
+              Destination: {
+                BucketArn: 'arn:aws:s3:::inventory-dest',
+                BucketAccountId: ACCOUNT,
+                Format: 'CSV',
+                Prefix: 'reports/',
+              },
+            },
+            {
+              Id: 'inventory-two',
+              Enabled: false,
+              IncludedObjectVersions: 'Current',
+              ScheduleFrequency: 'Weekly',
+              Destination: { BucketArn: 'arn:aws:s3:::inventory-dest', Format: 'Parquet' },
+            },
+          ],
+        },
+        variants: {
+          // A size bound is a decimal string; `-alt` would be refused.
+          'LifecycleConfiguration.Rules.0.ObjectSizeGreaterThan': '200',
+          'LifecycleConfiguration.Rules.0.ObjectSizeLessThan': '6000',
         },
         expectedSilent: {
           // An absent DataRedundancy is filled with SingleAvailabilityZone,
@@ -111,7 +220,10 @@ export const CASES_4: TypeCase[] = [
           // probe reads the value itself.
           'create:DataRedundancy': REQUIRED_BY_SCHEMA,
         },
-        expectedRemovalThrows: TAG_THROWS(ALL_DIRECTIONS, 2),
+        expectedRemovalThrows: {
+          ...TAG_THROWS(ALL_DIRECTIONS, 2),
+          ...DIRECTORY_BUCKET_CONFIG_THROWS,
+        },
       },
       {
         // Removing DataRedundancy here changes the wire through the

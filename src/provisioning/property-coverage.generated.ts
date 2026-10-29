@@ -3050,13 +3050,17 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::S3Express::DirectoryBucket',
     {
-      handled: new Set<string>(['BucketName', 'DataRedundancy', 'LocationName', 'Tags']),
-      silentDrop: new Map<string, string>([
-        ['BucketEncryption', 'not yet implemented by cdkd'],
-        ['InventoryConfigurations', 'not yet implemented by cdkd'],
-        ['LifecycleConfiguration', 'not yet implemented by cdkd'],
-        ['MetricsConfigurations', 'not yet implemented by cdkd'],
+      handled: new Set<string>([
+        'BucketEncryption',
+        'BucketName',
+        'DataRedundancy',
+        'InventoryConfigurations',
+        'LifecycleConfiguration',
+        'LocationName',
+        'MetricsConfigurations',
+        'Tags',
       ]),
+      silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'AvailabilityZoneName']),
       ccRouteUnavailable: false,
