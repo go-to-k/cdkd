@@ -197,14 +197,20 @@ function managedPasswordOnRemoval(
 }
 
 /**
- * Issue #1160: the port CloudFormation resets a removed DBCluster `Port` to,
- * per engine. Measured on Aurora only (#1160 comment 6401151077); a Multi-AZ
- * DB cluster engine (`mysql` / `postgres`) is absent, so its removal sends
- * nothing.
+ * Issue #1160: the port CloudFormation sends for a removed DBCluster `Port`,
+ * per engine. Aurora was measured to reset (#1160 comment 6401151077). On a
+ * Multi-AZ DB cluster (`mysql` / `postgres`) CloudFormation sends 3306 for
+ * either engine, its handler's fallback default, and RDS refuses the update
+ * ("You can't modify the port for a Multi-AZ DB cluster"), so the stack update
+ * fails (measured on `postgres`, #1160 comment 6484915102). cdkd
+ * sends the same port, so the removal fails the same way instead of keeping
+ * the old port without a word.
  */
-const AURORA_DEFAULT_PORT: ReadonlyMap<string, number> = new Map([
+const CLUSTER_REMOVED_PORT: ReadonlyMap<string, number> = new Map([
   ['aurora-postgresql', 5432],
   ['aurora-mysql', 3306],
+  ['mysql', 3306],
+  ['postgres', 3306],
 ]);
 
 /** A template number (CFn numbers may arrive as strings), or `undefined` when absent. */
@@ -253,8 +259,8 @@ function clusterPortToSend(
   if (previousProperties['Port'] == null) return undefined;
   const engine = properties['Engine'] ?? previousProperties['Engine'];
   const reset =
-    typeof engine === 'string' ? AURORA_DEFAULT_PORT.get(engine.toLowerCase()) : undefined;
-  // The removed value already was the default: nothing to change.
+    typeof engine === 'string' ? CLUSTER_REMOVED_PORT.get(engine.toLowerCase()) : undefined;
+  // Already the reset value: send nothing (an equal Multi-AZ port is unmeasured).
   return reset === Number(previousProperties['Port']) ? undefined : reset;
 }
 
@@ -1160,17 +1166,20 @@ export class RDSProvider implements ResourceProvider {
       // sent as its CFn reset value only where CloudFormation resets it, per
       // real A/Bs (#5004, #1160 comment 6401151077):
       //   * RESET: BackupRetentionPeriod (to 1), Port (to the engine default
-      //     on Aurora, `AURORA_DEFAULT_PORT`), ManageMasterUserPassword (to
-      //     false, `managedPasswordOnRemoval`), VpcSecurityGroupIds (to the
+      //     on Aurora; on a Multi-AZ DB cluster CloudFormation sends 3306,
+      //     which RDS refuses: `CLUSTER_REMOVED_PORT`), ManageMasterUserPassword
+      //     (to false, `managedPasswordOnRemoval`), VpcSecurityGroupIds (to the
       //     VPC's default security group, `dbClusterSecurityGroupsToSend`).
       //   * KEPT (omitted = unchanged): DeletionProtection,
       //     EnableIAMDatabaseAuthentication, EngineVersion, MonitoringInterval,
       //     MonitoringRoleArn, ServerlessV2ScalingConfiguration.
-      // MasterUserSecret removed while the managed password stays on, and Port
-      // on a Multi-AZ DB cluster (`mysql` / `postgres`), are unmeasured and
-      // send nothing. Also unmeasured: ManageMasterUserPassword removed while
-      // MasterUserSecret { KmsKeyId } stays declared, which sends `false` plus
-      // MasterUserSecretKmsKeyId (RDS accepts a key only when enabling).
+      // MasterUserSecret removed while the managed password stays on: the
+      // credential gate re-sends ManageMasterUserPassword=true with no key, as
+      // CloudFormation does, and the secret stays on its customer key
+      // (#1160 comment 6484915102). Unmeasured: ManageMasterUserPassword
+      // removed while MasterUserSecret { KmsKeyId } stays declared, which sends
+      // `false` plus MasterUserSecretKmsKeyId (RDS accepts a key only when
+      // enabling).
       // A changed MasterUsername sends nothing, and ModifyDBCluster has no such
       // member. Measured against CloudFormation (us-east-1, 2026-10-28, #5467):
       // the stack update completes in place and the live user stays the old one.
@@ -1749,11 +1758,14 @@ export class RDSProvider implements ResourceProvider {
       //   * KEPT (omitted = unchanged): DeletionProtection,
       //     EnableIAMDatabaseAuthentication, MonitoringInterval, EngineVersion,
       //     Port, PubliclyAccessible, AllocatedStorage, MonitoringRoleArn.
-      // MasterUserSecret removed while the managed password stays on is
-      // unmeasured and sends nothing. VPCSecurityGroups is classified
-      // UNCERTAIN in the #1160 audit and sends nothing. DBInstanceClass is
-      // required by the CloudFormation schema, so no deployable template
-      // removes it, and its removal sends nothing (#5467).
+      // MasterUserSecret removed while the managed password stays on: the
+      // credential gate re-sends ManageMasterUserPassword=true with no key.
+      // CloudFormation sends neither, and the secret stays on its customer key
+      // either way (#1160 comment 6484915102). VPCSecurityGroups is
+      // classified UNCERTAIN in the #1160 audit and sends nothing.
+      // DBInstanceClass is not required by the registry schema (no top-level
+      // `required`), and a removal sends nothing: CloudFormation sends no class
+      // either, and the update keeps the live one (same comment).
       const manageMasterUserPasswordOff = managedPasswordOnRemoval(properties, previousProperties);
       // #5194: a cluster change in the same deploy can leave this member not
       // `available` for a moment; only that refusal is waited out and resent.
