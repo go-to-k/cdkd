@@ -10,11 +10,14 @@ import { adoptDeprecatedRegionFlag } from '../region-options.js';
 /**
  * `cdkd local start-cloudfront <distribution>` — serve a CloudFront distribution
  * locally: its S3 origin content (resolved from the BucketDeployment source in
- * the cloud assembly) AND its Lambda Function URL origins (the backing Lambda is
- * run locally via RIE), plus its viewer-request / viewer-response CloudFront
- * Functions, reproducing the distribution routing so a rewrite / routing change
- * is verifiable in seconds. Inherited from cdk-local (go-to-k/cdk-local#363,
- * Lambda Function URL + deployed-S3 origins added in #380).
+ * the cloud assembly), its Lambda Function URL origins (the backing Lambda is
+ * run locally via RIE) AND its Lambda Web Function endpoint origins (the
+ * endpoint's revision run as `start-web-function` runs it), plus its
+ * viewer-request / viewer-response CloudFront Functions, reproducing the
+ * distribution routing so a rewrite / routing change is verifiable in seconds.
+ * Inherited from cdk-local (go-to-k/cdk-local#363, Lambda Function URL +
+ * deployed-S3 origins added in #380, Web Function endpoint origins in #842 /
+ * cdk-local 0.157.0, cdkd #5516).
  *
  * Like the `start-agentcore` wrapper, this command is a THIN pass-through to
  * cdk-local's factory. The serve behavior and the option block (`--port` /
@@ -66,7 +69,8 @@ export function createLocalStartCloudFrontCommand(): Command {
       '--from-state',
       "Read cdkd's S3 state for the target stack: resolve a deployed S3 origin's bucket and the " +
         'KeyValueStores cf.kvs() reads, and substitute Ref / Fn::GetAtt / Fn::Sub / Fn::ImportValue / ' +
-        'Fn::GetStackOutput intrinsics in the Function URL origin and Lambda@Edge environment variables. ' +
+        'Fn::GetStackOutput intrinsics in the Function URL origin, Web Function endpoint origin and ' +
+        'Lambda@Edge environment variables. ' +
         'Mutually exclusive with --from-cfn-stack.'
     ).default(false)
   );

@@ -152,7 +152,16 @@ Supported runtimes:
 
 The code must come from a CDK asset in this app, a directory or a `.zip`
 file, so that its bundle is staged in `cdk.out`. cdkd does not download
-deployed code.
+deployed code. The revision's `CodeConfig.S3Object.Key` can be:
+
+| Key | Code served |
+| --- | --- |
+| The asset's object key (`asset.s3ObjectKey`) | That asset's bundle |
+| `Fn.select(i, deployment.objectKeys)` of a `BucketDeployment` with `extract: false` | The deployment's i-th source asset |
+
+A `BucketDeployment` key is refused when the deployment extracts its sources
+(the default), sets a `destinationKeyPrefix` or `outputObjectKeys: false`, or
+when the index is past its sources.
 
 The container's output is streamed to your terminal. When the server exits
 while serving, the command stops with an error quoting the container's last
@@ -225,6 +234,8 @@ command.
 
 ## Related
 
+- [`cdkd local start-cloudfront`](local-start-cloudfront.md): serve a
+  CloudFront distribution whose origin is a Web Function endpoint
 - [`cdkd local start-api`](local-start-api.md): serve API Gateway APIs and
   Function URLs backed by ordinary Lambda functions
 - [`cdkd local invoke`](local-invoke.md): run a Lambda function once
