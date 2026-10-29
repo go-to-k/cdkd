@@ -42,7 +42,7 @@ failure would decide whether the other arm's create ever ran.
 - **Phase K — `CdkdCreatedBeforeFailureRevertKinesisExample`** (the deadline
   drops the provider's marked error, go-to-k/cdkd#5511): an
   `AWS::Kinesis::Stream` with an explicit name, deployed under
-  `--resource-timeout AWS::Kinesis::Stream=2s`. `CreateStream` returns and the
+  `--resource-timeout AWS::Kinesis::Stream=5s`. `CreateStream` returns and the
   deadline fires inside the provider's ACTIVE wait. Asserts the stream exists,
   state has no record of it, and the journal's failed op carries the stream
   name with `physicalIdRecoveredFromError: true` and a creation identity, all

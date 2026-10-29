@@ -34,5 +34,5 @@ new CreatedBeforeFailureNestedStack(app, 'CdkdCreatedBeforeFailureRevertNestedEx
 new CreatedBeforeFailureKinesisStack(app, 'CdkdCreatedBeforeFailureRevertKinesisExample', {
   env,
   description:
-    'cdkd integ: a Kinesis stream whose ACTIVE wait outlives a 2s resource deadline after CreateStream returned (journaled orphan, deleted by rollback --revert-failed, go-to-k/cdkd#5511)',
+    'cdkd integ: a Kinesis stream whose ACTIVE wait outlives a 5s resource deadline after CreateStream returned (journaled orphan, deleted by rollback --revert-failed, go-to-k/cdkd#5511)',
 });

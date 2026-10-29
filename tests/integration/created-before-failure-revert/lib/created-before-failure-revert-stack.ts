@@ -114,8 +114,8 @@ export class CreatedBeforeFailureSnsStack extends cdk.Stack {
  *
  * covers: AWS::Kinesis::Stream
  *
- * verify.sh deploys it under `--resource-timeout AWS::Kinesis::Stream=2s`.
- * CreateStream returns at once and the stream takes longer than 2s to reach
+ * verify.sh deploys it under `--resource-timeout AWS::Kinesis::Stream=5s`.
+ * CreateStream returns at once and the stream takes longer than 5s to reach
  * ACTIVE, so the deadline fires inside the provider's ACTIVE wait. The marked
  * error the provider would throw is dropped, so only the id it reported to the
  * engine's created-resource sink can journal the stream. Explicitly named so

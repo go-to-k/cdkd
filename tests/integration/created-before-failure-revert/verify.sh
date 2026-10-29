@@ -48,7 +48,7 @@
 #         its state and needed a second destroy. The fixture then deletes the
 #         repository by hand.
 #   PHASE K (go-to-k/cdkd#5511, the deadline drops the provider's marked error):
-#     K1. Deploy the Kinesis stack --no-rollback under a 2s Kinesis deadline:
+#     K1. Deploy the Kinesis stack --no-rollback under a 5s Kinesis deadline:
 #         CreateStream returns, and the deadline fires inside the provider's
 #         ACTIVE wait, so the marked error the wait would throw is dropped. The
 #         deploy fails with the timeout; the stream EXISTS (proof the create
@@ -157,7 +157,42 @@ TOPIC_ARN="arn:${PARTITION}:sns:${REGION}:${ACCOUNT_ID}:${TOPIC_NAME}"
 
 echo "[verify] region=${REGION} stacks=${ECR_STACK},${SNS_STACK},${NESTED_STACK},${KINESIS_STACK} state-bucket=${STATE_BUCKET}"
 
-# Best-effort removal of everything this fixture can leave: the two named
+# The Kinesis stream bills per shard hour, so it is never left to chance:
+# DeleteStream refuses a stream still CREATING (the deadline phase leaves it
+# so), so the sweep waits it out, deletes it, and then proves it gone. Returns
+# non-zero, naming the stream, when it cannot.
+sweep_stream() {
+  local deadline out status
+  deadline=$(( $(date +%s) + 180 ))
+  while [ "$(date +%s)" -lt "${deadline}" ]; do
+    if ! out="$(aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}" \
+        --query 'StreamDescriptionSummary.StreamStatus' --output text 2>&1)"; then
+      if printf '%s' "${out}" | grep -qF 'ResourceNotFoundException'; then
+        return 0
+      fi
+      echo "[verify] sweep: describe-stream-summary ${STREAM_NAME} failed: ${out}" >&2
+      sleep 5
+      continue
+    fi
+    status="${out}"
+    case "${status}" in
+      ACTIVE)
+        if ! out="$(aws kinesis delete-stream --stream-name "${STREAM_NAME}" --enforce-consumer-deletion \
+            --region "${REGION}" 2>&1)"; then
+          echo "[verify] sweep: delete-stream ${STREAM_NAME} failed: ${out}" >&2
+        fi
+        ;;
+    esac
+    sleep 5
+  done
+  if ! gone_probe aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}"; then
+    echo "[verify] FAIL: sweep: Kinesis stream ${STREAM_NAME} still exists (billed per shard); delete it by hand" >&2
+    return 1
+  fi
+  return 0
+}
+
+# Best-effort removal of everything this fixture can leave: the named
 # resources first (neither is ever in state, so the state destroy cannot reach
 # them), then both stacks' state and their whole state prefixes (journal,
 # lock, events). Every name is a literal of this fixture, so no listing is
@@ -168,14 +203,14 @@ sweep() {
   aws ecr delete-repository --repository-name "${REPO_NAME}" --force --region "${REGION}" >/dev/null 2>&1
   aws ecr delete-repository --repository-name "${NESTED_REPO_NAME}" --force --region "${REGION}" >/dev/null 2>&1
   aws sns delete-topic --topic-arn "${TOPIC_ARN}" --region "${REGION}" >/dev/null 2>&1
-  aws kinesis delete-stream --stream-name "${STREAM_NAME}" --enforce-consumer-deletion \
-    --region "${REGION}" >/dev/null 2>&1
+  stream_rc=0
+  sweep_stream || stream_rc=1
   for s in "${ECR_STACK}" "${SNS_STACK}" "${NESTED_STACK}" "${NESTED_CHILD}" "${KINESIS_STACK}"; do
     node "${LOCAL_DIST}" state destroy "${s}" --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" --yes >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${s}/" --recursive >/dev/null 2>&1
   done
-  true
+  exit "${stream_rc}"
   )
 }
 
@@ -185,7 +220,9 @@ cleanup() {
   # the EXIT trap and sweep a second time.
   trap - EXIT INT TERM
   echo "[verify] cleanup (rc=${rc})"
-  sweep
+  if ! sweep && [ "${rc}" -eq 0 ]; then
+    rc=1
+  fi
   rm -rf "${LOG_DIR}"
   exit "${rc}"
 }
@@ -561,19 +598,26 @@ echo "[verify] phase N3 ok: one destroy deleted both states, kept the unproven r
 # ---------------------------------------------------------------------------
 # PHASE K: Kinesis — the deadline drops the marked error; the sink journals it
 # ---------------------------------------------------------------------------
-echo "[verify] phase K1: deploy ${KINESIS_STACK} --no-rollback under a 2s Kinesis deadline (expect FAILURE in the ACTIVE wait)"
-deploy_expect_failure "${KINESIS_STACK}" "${LOG_DIR}/k1.log" \
+# 5s: CreateStream answers in well under a second, and a PROVISIONED 1-shard
+# stream takes 10s or more to reach ACTIVE, so the deadline lands in the wait.
+echo "[verify] phase K1: deploy ${KINESIS_STACK} --no-rollback --verbose under a 5s Kinesis deadline (expect FAILURE in the ACTIVE wait)"
+deploy_expect_failure "${KINESIS_STACK}" "${LOG_DIR}/k1.log" --verbose \
   --resource-warn-after AWS::Kinesis::Stream=1s \
-  --resource-timeout AWS::Kinesis::Stream=2s
+  --resource-timeout AWS::Kinesis::Stream=5s
 if ! grep -qE "DeadlineStream \(AWS::Kinesis::Stream\) in ${REGION} timed out after" "${LOG_DIR}/k1.log"; then
-  echo "[verify] FAIL: phase K1: the deploy did not fail on DeadlineStream's 2s deadline (or the wording drifted)" >&2
+  echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): the deploy did not fail on DeadlineStream's 5s deadline (the stream reached ACTIVE first, or the wording drifted)" >&2
   exit 1
 fi
-# PREMISE: CreateStream returned before the deadline. Without it the deadline
-# fired in the create call and nothing below tests #5511.
+# PREMISE: CreateStream returned before the deadline. The provider logs this
+# line right after it reports the stream, before the ACTIVE wait. Without it
+# the deadline fired in the create call and nothing below tests #5511.
+if ! grep -qF "CreateStream initiated for ${STREAM_NAME}" "${LOG_DIR}/k1.log"; then
+  echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): no 'CreateStream initiated for ${STREAM_NAME}' line, so CreateStream had not returned when the 5s deadline fired; rerun, or widen the deadline" >&2
+  exit 1
+fi
 if ! K1_DESCRIBE="$(aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}" 2>&1)"; then
   if printf '%s' "${K1_DESCRIBE}" | grep -qF 'ResourceNotFoundException'; then
-    echo "[verify] FAIL: phase K1: ${STREAM_NAME} does not exist after the failed deploy — the deadline fired before CreateStream returned, so this phase tests nothing" >&2
+    echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): ${STREAM_NAME} does not exist after the failed deploy, so CreateStream never made it and this phase tests nothing" >&2
   else
     echo "[verify] FAIL: phase K1: describe-stream-summary for ${STREAM_NAME} failed for another reason, so the premise is undetermined: ${K1_DESCRIBE}" >&2
   fi
@@ -603,8 +647,11 @@ echo "[verify] phase K1 ok: the stream exists, the deadline failed its CREATE, a
 # watching, so the rollback runs once it is ACTIVE.
 K2_STATUS=""
 for _ in $(seq 1 60); do
-  K2_STATUS="$(aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}" \
-    --query 'StreamDescriptionSummary.StreamStatus' --output text)"
+  if ! K2_STATUS="$(aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}" \
+      --query 'StreamDescriptionSummary.StreamStatus' --output text 2>&1)"; then
+    echo "[verify] FAIL: phase K2: describe-stream-summary for ${STREAM_NAME} failed while waiting for ACTIVE: ${K2_STATUS}" >&2
+    exit 1
+  fi
   [ "${K2_STATUS}" = "ACTIVE" ] && break
   sleep 2
 done
