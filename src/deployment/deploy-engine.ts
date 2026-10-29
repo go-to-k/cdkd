@@ -567,6 +567,16 @@ export class DeployEngine {
   unsettledItemMarks = new Map<string, Map<string, Set<string>>>();
 
   /**
+   * go-to-k/cdkd#5505: per logical id, the provisioning body still running,
+   * including one the per-resource deadline abandoned (it keeps running after
+   * the race rejects). The automatic rollback's revert of a failed update's
+   * unsettled keys waits for it, so the abandoned call cannot write after the
+   * revert. Each entry removes itself when its body settles.
+   */
+  /** @internal */
+  inFlightBodies = new Map<string, Promise<unknown>>();
+
+  /**
    * go-to-k/cdkd#3252: the Cloud Control CREATEs an earlier run stopped
    * waiting for that completed in AWS, by logical id, which this deploy's
    * CREATE of that logical id takes over instead of making another

@@ -24,6 +24,16 @@ export const DEFAULT_RESOURCE_WARN_AFTER_MS = 5 * 60 * 1000;
 export const DEFAULT_RESOURCE_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
+ * go-to-k/cdkd#5505: the automatic rollback's wait for a failed update's
+ * unsettled keys to stop moving: the per-resource default, since a GSI
+ * backfill or an encryption transition can take that long.
+ */
+export const DEFAULT_UNSETTLED_REVERT_WAIT = {
+  timeoutMs: DEFAULT_RESOURCE_TIMEOUT_MS,
+  pollMs: 10_000,
+} as const;
+
+/**
  * Deploy engine options
  */
 export interface DeployEngineOptions {
@@ -86,6 +96,13 @@ export interface DeployEngineOptions {
    * the call site for matching types.
    */
   resourceTimeoutByType?: Record<string, number>;
+  /**
+   * go-to-k/cdkd#5505: how long the automatic rollback waits for a failed
+   * update's in-transition unsettled keys to settle before reverting them, and
+   * how often it polls. Not a CLI flag; tests shorten it. Defaults to
+   * {@link DEFAULT_UNSETTLED_REVERT_WAIT}.
+   */
+  unsettledRevertWait?: { timeoutMs: number; pollMs: number };
   /**
    * When true, kick off `provider.readCurrentState` immediately after
    * each successful create / update so its result lands in

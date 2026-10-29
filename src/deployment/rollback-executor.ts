@@ -139,7 +139,7 @@ import {
 } from './rollback-executor/replay-orphan-delete.js';
 import { replayReadopt, replayRevert } from './rollback-executor/replay-revert.js';
 import { replayReverseReplacement } from './rollback-executor/replay-reverse-replacement.js';
-import { unsettledContextOf } from '../state/unsettled-properties.js';
+import { unsettledContextOf, unsettledPropertiesOf } from '../state/unsettled-properties.js';
 import { withUnprovenUnsettled } from './unsettled-convergence.js';
 
 /** `undefined` for an empty list, so an absent field stays absent. */
@@ -840,6 +840,16 @@ async function replayFailedOperationsUnbound(
      * says what happens next in that run, not in a later deploy.
      */
     forDestroy?: boolean;
+    /**
+     * go-to-k/cdkd#5505: the automatic rollback's revert of what a failed
+     * UPDATE left unsettled. The `revert-failed-update` arm then takes the
+     * RECORD (the pre-failure bag the failed deploy kept, plus its unsettled
+     * names) as the previous side instead of the attempted bag, so only the
+     * unsettled keys differ: each converges from AWS, and an item goes on the
+     * previous side only when its name is one the failed update's accepted
+     * calls added (`unsettledItems`) and the restored bag does not declare it.
+     */
+    previousFromRecord?: boolean;
   } = {}
 ): Promise<FailedOpReplayResult> {
   const inlinePolicyWriters = options.inlinePolicyWriters ?? new RollbackInlinePolicyWriters();
@@ -1408,9 +1418,22 @@ async function replayFailedOperationsUnbound(
             skipUnaddressableReplay(skipScope, logger, op, 'force-revert failed UPDATE of');
             break;
           }
+          // go-to-k/cdkd#5505: the automatic rollback's revert names its own
+          // cause, not a flag the user never passed.
+          const fromRecord = options.previousFromRecord === true;
+          const attemptedBag = fromRecord ? undefined : op.attemptedProperties;
+          // A record naming none is the late success of a call the deadline
+          // abandoned, which rewrote it: the whole update is undone.
+          const leftUnsettled = [...unsettledPropertiesOf(current)].map(safe).join(', ');
           logger.info(
-            `  Rollback: force-reverting failed UPDATE of ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
-              `to its pre-deploy properties (--revert-failed; remote state is unknown)`
+            !fromRecord
+              ? `  Rollback: force-reverting failed UPDATE of ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
+                  `to its pre-deploy properties (--revert-failed; remote state is unknown)`
+              : leftUnsettled !== ''
+                ? `  Rollback: reverting what the failed UPDATE of ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
+                  `left unsettled (${leftUnsettled}) to its pre-deploy properties`
+                : `  Rollback: reverting the failed UPDATE of ${safe(op.logicalId)} (${safe(op.resourceType)}), ` +
+                  `whose call completed after the deploy gave up on it, to its pre-deploy properties`
           );
           const { provider, provisionedBy: revertVia } = ctx.providerRegistry.getProviderFor({
             resourceType: op.resourceType,
@@ -1451,13 +1474,13 @@ async function replayFailedOperationsUnbound(
           refuseMaskedReplayBaseline(desiredProps, op.logicalId, noEcho.inert);
           const attemptedProps = noEcho.onPreviousSide(
             await resolveReplayProps(
-              op.attemptedProperties ?? current.properties,
+              attemptedBag ?? current.properties,
               resolver,
               secrets,
               ctx,
               op.logicalId,
               // The record's provenance describes its own bag only.
-              op.attemptedProperties === undefined ? current : undefined
+              attemptedBag === undefined ? current : undefined
             )
           );
           // Issue #2291, the `--revert-failed` twin of the two arms in
@@ -1600,7 +1623,7 @@ async function replayFailedOperationsUnbound(
               stateResources[op.logicalId]!,
               !deepEqual(
                 prev.properties?.['Policies'],
-                (op.attemptedProperties ?? current.properties)?.['Policies']
+                (attemptedBag ?? current.properties)?.['Policies']
               ),
               revertVia
             );

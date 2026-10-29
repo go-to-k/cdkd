@@ -64,6 +64,7 @@ const AUDITED_MEMBERS = [
   'resourceTimeoutMs',
   'resourceWarnAfterByType',
   'resourceTimeoutByType',
+  'unsettledRevertWait', // a wait bound, the same for every child (#5505)
   'captureObservedState',
   'assetRedirect',
   'inheritedSecrets',

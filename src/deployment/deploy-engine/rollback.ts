@@ -41,6 +41,7 @@ import {
   type CompletedOperation,
   type FailedOperation,
   type RollbackExecutorContext,
+  classifyFailedOp,
   demoteSupersededOrphans,
   isJournaledOrphan,
   replacementNeverSwapped,
@@ -48,6 +49,10 @@ import {
   replayFailedOperations,
   replayRollback,
 } from '../rollback-executor.js';
+import { failedOpOwnRecord } from '../rollback-executor/plan.js';
+import { unsettledPropertiesOf } from '../../state/unsettled-properties.js';
+import { waitForUnsettledSettled } from '../unsettled-convergence.js';
+import { DEFAULT_UNSETTLED_REVERT_WAIT } from './options.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import { addSuperseded, removeSuperseded } from '../superseded-resources.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
@@ -434,7 +439,9 @@ export async function performRollback(
    * The pre-deploy rollback-orphan records, read by the caller below the
    * deploy flow's orphans guard: one holding an orphan's id may own it.
    */
-  priorOrphans: readonly StackOrphanRecord[] = []
+  priorOrphans: readonly StackOrphanRecord[] = [],
+  /** go-to-k/cdkd#5505: the engine's side of {@link revertUnsettledFailedUpdates}. */
+  unsettledRevert?: UnsettledRevertHooks
 ): Promise<{
   failures: number;
   warnings: number;
@@ -536,7 +543,7 @@ export async function performRollback(
   // journal segments for THIS run, which `NestedStackProvider` reads from
   // the scope, and reports back into it.
   const runId = deps.options.eventRecorder?.runId;
-  const { result, failed, run } = await withNestedRevertRun(runId, async (scope) => {
+  const { result, failed, unsettled, run } = await withNestedRevertRun(runId, async (scope) => {
     // The failed op is the newest work of the failed deploy, so it goes first
     // — as in `cdkd rollback`: it may depend on what the completed CREATEs
     // made, never the reverse.
@@ -560,8 +567,26 @@ export async function performRollback(
               })
           )
         : undefined;
+    // go-to-k/cdkd#5505: CloudFormation rolls the failed update back too. A
+    // failed UPDATE that left keys unsettled is reverted here, after its keys
+    // stop moving, through the `--revert-failed` arm. Before the completed ops,
+    // as above: the failed resource may still use what a completed CREATE made.
+    const unsettled = await revertUnsettledFailedUpdates(
+      deps,
+      ctx,
+      stackName,
+      stateResources,
+      failedOperations,
+      new Set(orphanIndexes),
+      {
+        emitEnvelope: completedOperations.length === 0 && orphanOps.length === 0,
+        inlinePolicyWriters,
+        hooks: unsettledRevert,
+      }
+    );
     return {
       failed: failedResult,
+      unsettled,
       // go-to-k/cdkd#3869: the completed ops revert under the same kind of
       // bag, judged from each op's record and the one it replaced, so a
       // provider's delete of a CREATE this deploy made masks its name.
@@ -584,6 +609,7 @@ export async function performRollback(
   });
   const pendingOrphans = new Set(failed?.remainingFailedOps ?? []);
   const handled = new Set(orphanIndexes.filter((_, k) => !pendingOrphans.has(orphanOps[k]!)));
+  for (const index of unsettled.handled) handled.add(index);
 
   // `orphaned` is relayed rather than persisted here: this function holds no
   // state save. Its caller merges it into the post-rollback record (issue
@@ -594,15 +620,194 @@ export async function performRollback(
     failures: result.failures + (failed?.failures ?? 0),
     // A child replay's skips surface on its row as a `partial` outcome,
     // which the executor does not count; the scope does.
-    warnings: result.warnings + run.warnings + (failed?.warnings ?? 0),
+    warnings: result.warnings + run.warnings + (failed?.warnings ?? 0) + unsettled.warnings,
     skipped: result.skipped + (failed?.skipped ?? 0),
-    interrupted: result.interrupted,
+    interrupted: result.interrupted || unsettled.interrupted,
     orphaned: [...(failed?.orphaned ?? []), ...result.orphaned],
     rolledBackCreates: [...(failed?.rolledBackCreates ?? []), ...result.rolledBackCreates],
     superseded: supersededHost.supersededResources ?? [],
     settledNested: run.settled,
     remainingFailedOps: failedOperations.filter((_, i) => !handled.has(i)),
   };
+}
+
+/** go-to-k/cdkd#5505: what the engine lends the unsettled revert. */
+export interface UnsettledRevertHooks {
+  /** The failed update's own call, still running when the deadline abandoned it. */
+  stillRunning: (logicalId: string) => Promise<unknown> | undefined;
+  /** Put the engine's pending marks for `logicalId` on its record (a late mark). */
+  recordMarks: (logicalId: string) => void;
+  /** The names the revert proved settled: no longer the failed update's marks. */
+  onReverted: (logicalId: string, settled: ReadonlySet<string>) => void;
+}
+
+/** A wait bound as the warning quotes it. */
+function waitText(ms: number): string {
+  return ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.max(1, Math.round(ms / 1000))}s`;
+}
+
+/**
+ * go-to-k/cdkd#5505: the automatic rollback's revert of what failed UPDATEs
+ * left unsettled (`unsettledProperties`), as CloudFormation rolls a failed
+ * update back. Only a failed UPDATE whose own record names unsettled keys and
+ * that `--revert-failed` would force-revert (`revert-failed-update`) is
+ * considered; any other failed op stays opt-in, as before.
+ *
+ * Each waits (bounded, interruptible) for its keys to stop moving, then goes
+ * through the `--revert-failed` arm with the record as the previous side
+ * (`previousFromRecord`): the unsettled keys converge from AWS, and only an
+ * item the failed update's accepted calls added (`unsettledItems`) and the
+ * restored bag does not declare is removed. The arm's own post-check
+ * (`withUnprovenUnsettled`) clears a name only on proof.
+ *
+ * A key still moving at the bound, or a revert that fails or is skipped,
+ * keeps the record's names and its journal entry, with a warning: the next
+ * deploy converges it, or `cdkd rollback --revert-failed` retries it. Neither
+ * is counted as a rollback failure: the failed update was not reverted before
+ * this change either.
+ */
+async function revertUnsettledFailedUpdates(
+  deps: RollbackDeps,
+  ctx: RollbackExecutorContext,
+  stackName: string,
+  stateResources: Record<string, ResourceState>,
+  failedOperations: readonly FailedOperation[],
+  alreadyReplayed: ReadonlySet<number>,
+  options: {
+    emitEnvelope: boolean;
+    inlinePolicyWriters: RollbackInlinePolicyWriters;
+    hooks: UnsettledRevertHooks | undefined;
+  }
+): Promise<{ handled: number[]; warnings: number; interrupted: boolean }> {
+  const out = { handled: [] as number[], warnings: 0, interrupted: false };
+  const candidates: Array<{ index: number; op: FailedOperation; names: ReadonlySet<string> }> = [];
+  failedOperations.forEach((op, index) => {
+    if (alreadyReplayed.has(index) || op.changeType !== 'UPDATE') return;
+    const names = unsettledPropertiesOf(failedOpOwnRecord(op, stateResources));
+    if (names.size === 0) return;
+    if (classifyFailedOp(op, stateResources, [...failedOperations]) !== 'revert-failed-update') {
+      return;
+    }
+    candidates.push({ index, op, names });
+  });
+  if (candidates.length === 0) return out;
+
+  const { logger } = deps;
+  const isInterrupted = (): boolean => deps.userInterrupted();
+  const fallback = (names: ReadonlySet<string>): string => {
+    const one = names.size === 1;
+    const retry =
+      deps.options.parentStackInfo === undefined
+        ? `, or revert ${one ? 'it' : 'them'} now with: ${
+            pasteableCommand('cdkd rollback', [
+              { value: stackName, hole: 'stack' },
+              { literal: '--revert-failed' },
+            ]).command
+          }`
+        : '';
+    return `cdkd keeps ${one ? 'it' : 'them'} unsettled: the next deploy converges ${one ? 'it' : 'them'}${retry}`;
+  };
+  const wait = deps.options.unsettledRevertWait ?? DEFAULT_UNSETTLED_REVERT_WAIT;
+  const verdicts = await Promise.all(
+    candidates.map(async (candidate) => {
+      const { op } = candidate;
+      try {
+        const { provider } = ctx.providerRegistry.getProviderFor({
+          resourceType: op.resourceType,
+          provisionedBy: op.provisionedBy ?? stateResources[op.logicalId]!.provisionedBy,
+        });
+        logger.info(
+          safeMsg`  Rollback: waiting for ${op.logicalId} (${op.resourceType}) to settle ${[...candidate.names].join(', ')} before reverting the failed update`
+        );
+        const started = Date.now();
+        const identity = (): Parameters<typeof waitForUnsettledSettled>[0] => {
+          const record = stateResources[op.logicalId]!;
+          return {
+            provider,
+            logicalId: op.logicalId,
+            physicalId: record.physicalId,
+            resourceType: op.resourceType,
+            recordedProperties: record.properties ?? {},
+            names: candidate.names,
+            timeoutMs: Math.max(0, wait.timeoutMs - (Date.now() - started)),
+            pollMs: wait.pollMs,
+            isInterrupted,
+          };
+        };
+        // First the failed update's own call, if the deadline abandoned it:
+        // it may still write, and mark what it is about to change.
+        const running = options.hooks?.stillRunning(op.logicalId);
+        if (running !== undefined) {
+          const returned = await waitForUnsettledSettled({
+            ...identity(),
+            names: new Set(),
+            running,
+          });
+          if (returned !== 'settled') return returned;
+          options.hooks?.recordMarks(op.logicalId);
+          candidate.names = unsettledPropertiesOf(stateResources[op.logicalId]);
+        }
+        return await waitForUnsettledSettled(identity());
+      } catch {
+        return 'moving' as const;
+      }
+    })
+  );
+  const ready: typeof candidates = [];
+  candidates.forEach((candidate, k) => {
+    const verdict = verdicts[k];
+    if (verdict === 'settled') {
+      ready.push(candidate);
+      return;
+    }
+    if (verdict === 'interrupted') {
+      out.interrupted = true;
+      return;
+    }
+    const { op, names } = candidate;
+    logger.warn(
+      safeMsg`${op.logicalId} (${op.resourceType}): the failed update left ${[...names].join(', ')} unsettled, and AWS had not settled ${names.size === 1 ? 'it' : 'them'} after ${waitText(wait.timeoutMs)}, so the automatic rollback did not revert ${names.size === 1 ? 'it' : 'them'}. ${fallback(names)}`
+    );
+    out.warnings++;
+  });
+  if (ready.length === 0 || out.interrupted) return out;
+
+  // Copies, as for the orphans above: the journal records the originals.
+  const ops = ready.map(({ op }) => ({ ...op }));
+  const replay = await withPrintingSecrets(
+    replayPrintingBag(
+      deps,
+      ops.map((op) => ({ ...op, properties: op.attemptedProperties })),
+      stateResources
+    ),
+    () =>
+      replayFailedOperations(ops, stateResources, stackName, ctx, {
+        emitEnvelope: options.emitEnvelope,
+        inlinePolicyWriters: options.inlinePolicyWriters,
+        isInterrupted,
+        previousFromRecord: true,
+      })
+  );
+  // The arm's own lines already said why an op failed or was skipped.
+  out.warnings += replay.warnings + replay.failures;
+  if (replay.interrupted) out.interrupted = true;
+  const pending = new Set(replay.remainingFailedOps);
+  const skipped = new Set(replay.skippedOps ?? []);
+  ops.forEach((op, k) => {
+    const { index, names } = ready[k]!;
+    if (pending.has(op) || skipped.has(op)) {
+      if (!replay.interrupted) {
+        logger.warn(
+          safeMsg`${op.logicalId} (${op.resourceType}): the automatic rollback could not revert what the failed update left unsettled (${[...names].join(', ')}; see above). ${fallback(names)}`
+        );
+      }
+      return;
+    }
+    out.handled.push(index);
+    const left = unsettledPropertiesOf(stateResources[op.logicalId]);
+    options.hooks?.onReverted(op.logicalId, new Set([...names].filter((name) => !left.has(name))));
+  });
+  return out;
 }
 
 /**

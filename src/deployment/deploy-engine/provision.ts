@@ -267,7 +267,7 @@ export async function provisionResource(
   try {
     await withPrintingSecrets(printingRegistry, () =>
       withResourceDeadline(
-        async () => {
+        trackInFlightBody(engine, logicalId, async () => {
           try {
             const { value: bodyResult, unaddressed } = await collectDeleteGuards(deleteGuards, () =>
               collectNestedChildUnaddressed(() =>
@@ -350,7 +350,7 @@ export async function provisionResource(
               });
             }
           }
-        },
+        }),
         {
           warnAfterMs,
           timeoutMs,
@@ -553,6 +553,29 @@ export async function provisionResource(
     // above is a no-op.
     renderer.removeTask(logicalId);
   }
+}
+
+/**
+ * go-to-k/cdkd#5505: `body`, recorded in `engine.inFlightBodies` until it
+ * settles, so a caller can wait for one the deadline abandoned.
+ */
+function trackInFlightBody<T>(
+  engine: DeployEngine,
+  logicalId: string,
+  body: () => Promise<T>
+): () => Promise<T> {
+  return () => {
+    const running = body();
+    const entry: Promise<unknown> = running.then(
+      () => undefined,
+      () => undefined
+    );
+    engine.inFlightBodies.set(logicalId, entry);
+    void entry.then(() => {
+      if (engine.inFlightBodies.get(logicalId) === entry) engine.inFlightBodies.delete(logicalId);
+    });
+    return running;
+  };
 }
 
 /**

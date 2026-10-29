@@ -81,7 +81,11 @@ import { orphanNeedsIdentity, readResourceIdentity } from '../rollback-executor/
 import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
 import { resolveOutputs } from './outputs.js';
 import { provisionResource } from './provision.js';
-import { withUnsettledItems, withUnsettledProperties } from '../../state/unsettled-properties.js';
+import {
+  unsettledItemsTopKey,
+  withUnsettledItems,
+  withUnsettledProperties,
+} from '../../state/unsettled-properties.js';
 import {
   retiredAfterRollback,
   type RolledBackCreate,
@@ -1211,7 +1215,17 @@ export async function executeDeployment(
         stackName,
         currentState,
         failedOperations,
-        currentState.orphans ?? []
+        currentState.orphans ?? [],
+        // go-to-k/cdkd#5505: the revert waits for an abandoned call of the
+        // failed update and records its late marks first. A name the revert
+        // proved settled is no longer the failed update's mark, so the
+        // post-rollback save below does not put it back; a mark that arrives
+        // later still records.
+        {
+          stillRunning: (logicalId) => engine.inFlightBodies.get(logicalId),
+          recordMarks: (logicalId) => recordUnsettledMarks(engine, newResources, logicalId),
+          onReverted: (logicalId, settled) => dropUnsettledMarks(engine, logicalId, settled),
+        }
       );
       // go-to-k/cdkd#3338: a SKIPPED op was never reverted, so the segment
       // recording it is kept, as for a failure: settling it would delete the
@@ -1685,6 +1699,25 @@ function recordUnsettledMarks(
     const items = engine.unsettledItemMarks.get(logicalId);
     if (items !== undefined && items.size > 0) {
       newResources[logicalId] = withUnsettledItems(newResources[logicalId]!, items);
+    }
+  }
+}
+
+/**
+ * go-to-k/cdkd#5505: drop `names` (and the attempted items under them) from
+ * the engine's pending marks for `logicalId`, once a revert proved them.
+ */
+function dropUnsettledMarks(
+  engine: DeployEngine,
+  logicalId: string,
+  names: ReadonlySet<string>
+): void {
+  const marks = engine.unsettledMarks.get(logicalId);
+  if (marks !== undefined) for (const name of names) marks.delete(name);
+  const items = engine.unsettledItemMarks.get(logicalId);
+  if (items !== undefined) {
+    for (const path of [...items.keys()]) {
+      if (names.has(unsettledItemsTopKey(path))) items.delete(path);
     }
   }
 }
