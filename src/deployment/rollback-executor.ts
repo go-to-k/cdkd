@@ -1585,6 +1585,9 @@ async function replayFailedOperationsUnbound(
               recordedProperties: current.properties ?? {},
               names: unsettledContextOf(current, prev).unsettledProperties ?? new Set(),
               desired: desiredProps ?? {},
+              ...(unsettledContextOf(current, prev).unsettledItems !== undefined && {
+                attemptedItems: unsettledContextOf(current, prev).unsettledItems,
+              }),
             },
             (message) => logger.warn(mask(message))
           );

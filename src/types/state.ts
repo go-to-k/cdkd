@@ -210,14 +210,25 @@
  *       diff empty and leave AWS on the other side. A v13 document is read
  *       unchanged (nothing unsettled).
  *
+ * - 15 — adds `ResourceState.unsettledItems` (issue
+ *       [#5498](https://github.com/go-to-k/cdkd/issues/5498)): per unsettled
+ *       collection, the IDENTITY NAMES (an index name, a replica region, a
+ *       metric, a tag key — never a value) a failed update's call had been
+ *       ACCEPTED for adding, so the next convergence (and the automatic
+ *       revert) can remove exactly what cdkd started. Read through
+ *       `unsettledItemsOf` (only paths under an unsettled key; malformed or
+ *       over-cap = none). A bump, for v10's reason: an older binary rewriting
+ *       the record would drop the names, and the item would be kept instead of
+ *       removed. A v14 document is read unchanged (nothing attempted).
+ *
  * cdkd readers handle every prior version. Writers always emit
  * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
  * version, rather than silently mishandling the new format.
  */
-export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
+export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 14;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 15;
 
 /**
  * Every schema version this binary can read. Writers always emit
@@ -226,7 +237,7 @@ export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 14;
  * "upgrade cdkd" error in the parser.
  */
 export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
 ];
 
 /**
@@ -807,6 +818,18 @@ export interface ResourceState {
    * `unsettledPropertiesOf` (`src/state/unsettled-properties.ts`).
    */
   unsettledProperties?: string[];
+
+  /**
+   * State schema v15 (go-to-k/cdkd#5498): per member path of an unsettled
+   * collection (`GlobalSecondaryIndexes`, `Tags`, `DesiredShardLevelMetrics`,
+   * `Replicas[eu-west-1].GlobalSecondaryIndexes` — closed-vocabulary segments
+   * only), the identity names a failed update's call was ACCEPTED for adding.
+   * Names only, redacted like `properties`; a name holding `{{resolve:` or
+   * `***` never matches a live item. Written only by the deploy's failure
+   * save; stripped with `unsettledProperties`. Read through `unsettledItemsOf`
+   * (`src/state/unsettled-properties.ts`).
+   */
+  unsettledItems?: Record<string, string[]>;
 
   /** CloudFormation resource type (e.g., AWS::Lambda::Function) */
   resourceType: string;

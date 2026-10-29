@@ -1,5 +1,5 @@
 ---
-description: cdkd S3 state schema - StackState v1-v14 and per-field semantics
+description: cdkd S3 state schema - StackState v1-v15 and per-field semantics
 paths:
   - 'src/state/**'
   - 'src/types/state.ts'
@@ -11,7 +11,7 @@ The S3 state record is the user contract: **migration must be transparent** — 
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | ... | 14;      // each bump is its fields' `vN+`
+  version: 1 | 2 | ... | 15;      // each bump is its fields' `vN+`
   stackName: string;
   region?: string;      // required on v2+ (the S3 key); on READ the KEY wins and a disagreeing body warns
   resources: Record<string, ResourceState>;
@@ -63,6 +63,7 @@ interface ResourceState {
   nameGeneration?: number;                  // v13+: absent = 0
   nameGenerationHigh?: number;              // v13+: set by a rollback
   unsettledProperties?: string[];           // v14+: names a failed update had started changing (#5380)
+  unsettledItems?: Record<string, string[]>; // v15+: item names its ACCEPTED calls added, per path under an unsettled name (#5498)
 }
 ```
 
@@ -137,6 +138,10 @@ Per `{{resolve:` token: region, version ids (never a value), READ-route `readVer
 ## `unsettledProperties` (v14+, #5380)
 
 Top-level property NAMES only, read via `unsettledPropertiesOf` (malformed = none). Written only by the deploy's failure path from `UpdateContext.markUnsettled` marks (`execute.ts`), unioned. The next deploy forces each name changed (diff, both no-change skips, `changedProperties`) and hands it as `UpdateContext.unsettledProperties`; the update's rebuilt record clears it, as do `recordAfterRollbackUpdate` (whose two rollback callers pass the names as `unsettledProperties`) and `drift --accept` / `--revert`, which keep a name `ResourceProvider.unsettledInTransition` reports still changing. Spreading writers carry it.
+
+## `unsettledItems` (v15+, #5498)
+
+Per member path (closed vocabulary: `GlobalSecondaryIndexes`, `Tags`, `DesiredShardLevelMetrics`), the item names (index name, tag key, metric) a failed update's calls were ACCEPTED for adding: `UpdateContext.markAttempted(path, items)` right after the send resolves, never before it or for a call that throws. Read via `unsettledItemsOf` only, which keeps a path only under a name in `unsettledProperties` (items ⊆ unsettled) and drops an entry over 255 chars, a path over 100 entries, and any malformed field. Written only by `recordUnsettledMarks` (`execute.ts`, unioned via `withUnsettledItems`); a rebuilt record carries only the still-unsettled names' items (`unsettledItemsField`), `withoutUnsettledProperties` strips both fields. The next deploy hands them as `UpdateContext.unsettledItems` and to `readUnsettled`'s 7th parameter: a live item named here EXACTLY joins the previous side, so the template's omission removes it (live ∩ attempted ∖ template). Secret-derived names are rewritten on persist (`scrubResourceRecord` value scan, the `NoEcho` persist arm by value) and by `cdkd scrub`; a name containing `{{resolve:` or `***` never matches (`isUsableAttemptedName`), so its item is kept.
 
 ## `observedProperties` (v3+)
 

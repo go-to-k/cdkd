@@ -184,9 +184,11 @@ import {
   withUnprovenUnsettled,
 } from '../../deployment/unsettled-convergence.js';
 import {
+  unsettledItemsOf,
   unsettledPropertiesOf,
   withUnsettledProperties,
   withoutUnsettledProperties,
+  unsettledItemsField,
 } from '../../state/unsettled-properties.js';
 import {
   secretNamedRecordNeedles,
@@ -7538,6 +7540,7 @@ async function runRevert(
                     resourceType: outcome.resourceType,
                     recordedProperties: stateResource.properties ?? {},
                     names: unsettledPropertiesOf(stateResource),
+                    attemptedItems: unsettledItemsOf(stateResource),
                     previous: outcome.awsProperties,
                     desired: newProperties,
                   });
@@ -7648,6 +7651,7 @@ async function runRevert(
                         recordedProperties: stateResource.properties ?? {},
                         names: unsettledNames,
                         desired: newProperties,
+                        attemptedItems: unsettledItemsOf(stateResource),
                       },
                       (message) => logger.warn(maskSecretsInText(message, secrets))
                     );
@@ -8830,7 +8834,11 @@ async function settleUnsettled(
   }
   const keep = [...names].filter((name) => kept.has(name));
   if (keep.length === names.size) return record;
-  return withUnsettledProperties(withoutUnsettledProperties(record), keep);
+  // go-to-k/cdkd#5498: a kept name keeps its attempted items; a cleared one's go.
+  return {
+    ...withUnsettledProperties(withoutUnsettledProperties(record), keep),
+    ...unsettledItemsField(record, keep),
+  };
 }
 
 /**

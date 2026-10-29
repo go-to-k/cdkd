@@ -2418,6 +2418,13 @@
       ]
     },
     {
+      "name": "schema-v14-to-v15-migration",
+      "annotated": true,
+      "scenarios": [
+        "state-schema-migration"
+      ]
+    },
+    {
       "name": "schema-v5-to-v6-migration",
       "annotated": true,
       "scenarios": [
@@ -3426,6 +3433,7 @@
         "schema-v10-to-v11-migration",
         "schema-v11-to-v12-migration",
         "schema-v12-to-v13-migration",
+        "schema-v14-to-v15-migration",
         "schema-v5-to-v6-migration",
         "schema-v8-to-v9-migration",
         "schema-v9-to-v10-migration"

@@ -17,12 +17,11 @@
 #      CreationDateTime + assert no GSI.
 #   1c. Add `gsi1` under a 10s per-type deadline: the deploy fails mid
 #      backfill and the record must name GlobalSecondaryIndexes unsettled; a
-#      same-template retry while CREATING must be refused; once ACTIVE, a
-#      redeploy of the base template must clear the name and KEEP the index,
-#      warning that it is undeclared and how to delete it: neither the record
-#      nor the template names it, and cdkd cannot tell it from another tool's
-#      index (go-to-k/cdkd#5503; exact recovery of what cdkd attempted is
-#      go-to-k/cdkd#5498). The script then deletes it by hand.
+#      same-template retry while CREATING must be refused; the record also
+#      names gsi1 as the index the accepted Create added (`unsettledItems`,
+#      go-to-k/cdkd#5498). Once ACTIVE, a redeploy of the base template must
+#      clear both and DELETE gsi1, as CloudFormation would: the failed update
+#      created it, and the template no longer names it.
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (adds GSI `gsi1` on `gsipk`).
 #      Assert: deploy succeeds, the table's CreationDateTime is UNCHANGED (no
 #      replacement), GSI `gsi1` exists and reaches ACTIVE, and the table routes
@@ -281,17 +280,30 @@ echo "    baseline WarmThroughput=${WARM_P1}"
 # (CREATING) for minutes, so a 10s per-type deadline fails the update after
 # the call. Before the fix the record kept "no GSI", so the redeploy of the
 # base template below diffed empty and the index stayed. Now the record names
-# GlobalSecondaryIndexes unsettled; a same-template retry while the index is
-# CREATING is refused (a moving index is never diffed); once it is ACTIVE, the
-# base redeploy converges the name. It KEEPS the index (go-to-k/cdkd#5503):
-# neither the record nor the template names it, the same as an index another
-# tool added, which CloudFormation never deletes. It warns, naming the index
-# and the delete command, and the script then runs that delete itself.
+# GlobalSecondaryIndexes unsettled and gsi1 as the index the accepted Create
+# added (go-to-k/cdkd#5498); a same-template retry while the index is CREATING
+# is refused (a moving index is never diffed); once it is ACTIVE, the base
+# redeploy converges the name and DELETES gsi1: the failed update created it
+# and the template no longer names it, which CloudFormation would delete too.
+# An index another tool added is still kept (go-to-k/cdkd#5503; the unit
+# tests and the I-phase arms cover that side).
 table_unsettled() { # the table record's unsettledProperties, comma-joined
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
     | jq -r --arg name "${TABLE_NAME}" '[.resources[]
         | select(.resourceType == "AWS::DynamoDB::Table" and .physicalId == $name)
         | (.unsettledProperties // [])[]] | join(",")'
+}
+table_attempted_gsis() { # the table record's attempted index names, comma-joined
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+    | jq -r --arg name "${TABLE_NAME}" '[.resources[]
+        | select(.resourceType == "AWS::DynamoDB::Table" and .physicalId == $name)
+        | (.unsettledItems.GlobalSecondaryIndexes // [])[]] | join(",")'
+}
+table_has_items_field() {
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+    | jq -r --arg name "${TABLE_NAME}" '[.resources[]
+        | select(.resourceType == "AWS::DynamoDB::Table" and .physicalId == $name)
+        | has("unsettledItems")] | any'
 }
 gsi_status() {
   aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
@@ -312,6 +324,11 @@ case ",$(table_unsettled)," in
   *,GlobalSecondaryIndexes,*) : ;;
   *) echo "FAIL: table record's unsettledProperties after the cut-short GSI add is '$(table_unsettled)', expected it to name GlobalSecondaryIndexes (go-to-k/cdkd#5487)" >&2; exit 1 ;;
 esac
+if [ "$(table_attempted_gsis)" != "${GSI_NAME}" ]; then
+  echo "FAIL: table record's attempted indexes after the cut-short GSI add are '$(table_attempted_gsis)', expected exactly '${GSI_NAME}' (go-to-k/cdkd#5498)" >&2
+  exit 1
+fi
+echo "    the record names GlobalSecondaryIndexes unsettled and ${GSI_NAME} as the accepted Create"
 if [ "$(gsi_status)" = "CREATING" ]; then
   set +e
   CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -340,34 +357,31 @@ echo "    ${GSI_NAME} reached ACTIVE $(( $(date +%s) - P1C_T0 ))s after the cut-
 echo "==> Phase 1c: redeploy the base template (no GSI, the record's own value)"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${P1C_CONVERGE_LOG}"
-if [ "$(gsi_status)" != "ACTIVE" ]; then
-  echo "FAIL: ${GSI_NAME} is '$(gsi_status)' after the converging deploy, expected it KEPT (ACTIVE): neither the record nor the template names it (go-to-k/cdkd#5503)" >&2
+# The Delete is cdkd's; a DELETING index may still be listed briefly.
+for _ in $(seq 1 120); do
+  P1C_COUNT="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query 'length(Table.GlobalSecondaryIndexes || `[]`)' --output text)"
+  [ "${P1C_COUNT}" = "0" ] && break
+  [ "$(gsi_status)" = "DELETING" ] || break
+  sleep 5
+done
+if [ "${P1C_COUNT}" != "0" ]; then
+  echo "FAIL: ${GSI_NAME} is still on the table after the converging deploy (${P1C_COUNT} GSI(s), status '$(gsi_status)'): the failed update created it and the template dropped it, so the redeploy must delete it (go-to-k/cdkd#5498)" >&2
   exit 1
 fi
-if ! grep -qF "GSI ${GSI_NAME} on DynamoDB table ${TABLE_NAME} is live, but neither cdkd's record nor the template declares it" "${P1C_CONVERGE_LOG}" ||
-  ! grep -qF -e "--global-secondary-index-updates '[{\"Delete\":{\"IndexName\":\"${GSI_NAME}\"}}]'" "${P1C_CONVERGE_LOG}"; then
-  echo "FAIL: the converging deploy did not warn that ${GSI_NAME} was left in place with its delete command (go-to-k/cdkd#5503)" >&2
+if grep -qF "GSI ${GSI_NAME} on DynamoDB table ${TABLE_NAME} is live, but neither" "${P1C_CONVERGE_LOG}"; then
+  echo "FAIL: the converging deploy warned ${GSI_NAME} is undeclared, but the record names it as attempted (go-to-k/cdkd#5498)" >&2
   exit 1
 fi
 if [ -n "$(table_unsettled)" ]; then
   echo "FAIL: table record still names unsettled properties after the converging deploy: $(table_unsettled)" >&2
   exit 1
 fi
-echo "    the unsettled GSI add converged: the name cleared, ${GSI_NAME} kept with the delete warning (go-to-k/cdkd#5503)"
-# The warning's own remedy, so Phase 2 starts from a table without the index.
-aws dynamodb update-table --table-name "${TABLE_NAME}" --region "${REGION}" \
-  --global-secondary-index-updates "[{\"Delete\":{\"IndexName\":\"${GSI_NAME}\"}}]" >/dev/null
-for _ in $(seq 1 120); do
-  P1C_COUNT="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
-    --query 'length(Table.GlobalSecondaryIndexes || `[]`)' --output text)"
-  [ "${P1C_COUNT}" = "0" ] && break
-  sleep 5
-done
-if [ "${P1C_COUNT}" != "0" ]; then
-  echo "FAIL: ${GSI_NAME} was not gone 10 min after the hand delete (${P1C_COUNT} GSI(s) left)" >&2
+if [ "$(table_has_items_field)" != "false" ]; then
+  echo "FAIL: table record still carries unsettledItems after the converging deploy" >&2
   exit 1
 fi
-echo "    ${GSI_NAME} deleted by hand, as the warning says"
+echo "    the unsettled GSI add converged: the redeploy deleted ${GSI_NAME} and cleared the names and items (go-to-k/cdkd#5498)"
 
 # --- Phase 2: add a GSI (in-place UPDATE, must NOT replace) ------------
 echo "==> Phase 2: re-deploy adding GSI ${GSI_NAME} (in-place UpdateTable)"

@@ -1,4 +1,5 @@
 import { timePhase } from '../../utils/phase-timings.js';
+import { isUsableAttemptedName } from '../../state/unsettled-properties.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
   DynamoDBClient,
@@ -2869,6 +2870,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
           {
             forceUpsert: context?.unsettledProperties?.has('Tags') === true,
             beforeWrite: () => markUnsettled('Tags'),
+            afterAdded: (keys) => {
+              if (keys.length > 0) context?.markAttempted?.('Tags', keys);
+            },
           }
         );
       }
@@ -4120,7 +4124,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
           currentLiveIndexByName,
           liveCapacityComparable,
           effectiveBillingMode === 'PAY_PER_REQUEST',
-          maskSecrets
+          maskSecrets,
+          (indexName) => context?.markAttempted?.('GlobalSecondaryIndexes', [indexName])
         );
       }
 
@@ -4806,7 +4811,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
     logicalId: string,
     oldTagsRaw: unknown,
     newTagsRaw: unknown,
-    unsettled: { forceUpsert: boolean; beforeWrite: () => void } = {
+    unsettled: {
+      forceUpsert: boolean;
+      beforeWrite: () => void;
+      // go-to-k/cdkd#5498: the tag keys an accepted TagResource added that the
+      // record lacked (never before the call; a call that throws added nothing).
+      afterAdded?: (keys: string[]) => void;
+    } = {
       forceUpsert: false,
       beforeWrite: () => undefined,
     }
@@ -4832,6 +4843,19 @@ export class DynamoDBTableProvider implements ResourceProvider {
     if (tagsToAdd.length > 0) {
       await this.dynamoDBClient.send(
         new TagResourceCommand({ ResourceArn: tableArn, Tags: tagsToAdd })
+      );
+      // A malformed recorded tag list cannot say which keys are new: record none
+      // (a missing name only keeps a tag, never removes one).
+      let recordedKeys: Set<string> | undefined;
+      try {
+        recordedKeys = new Set([...planTagDiff(undefined, oldTagsRaw).set.keys()]);
+      } catch {
+        recordedKeys = undefined;
+      }
+      unsettled.afterAdded?.(
+        tagsToAdd
+          .map((t) => t.Key)
+          .filter((key) => recordedKeys !== undefined && !recordedKeys.has(key))
       );
       this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on DynamoDB table ${tableArn}`);
     }
@@ -6174,7 +6198,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // REQUIRED, with no identity default: see
     // {@link DynamoDBTableProvider.coerceOnDemandCeilingsForSend} for why the
     // typechecker is the only fence (issue #3364).
-    maskSecrets: SecretMasker
+    maskSecrets: SecretMasker,
+    // go-to-k/cdkd#5498: called with each index name a Create was ACCEPTED for.
+    onCreated: (indexName: string) => void = () => undefined
   ): Promise<void> {
     // ONE masked sink for the warnings this method emits directly (issue
     // #1997); the helpers below take the masker itself so they can also mask
@@ -6518,7 +6544,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
     }
 
-    await this.runGsiOps(physicalId, ops, desiredAttributeDefinitions, maskSecrets);
+    await this.runGsiOps(physicalId, ops, desiredAttributeDefinitions, maskSecrets, onCreated);
   }
 
   /**
@@ -7664,7 +7690,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // identity default: see
     // {@link DynamoDBTableProvider.coerceOnDemandCeilingsForSend} for why the
     // typechecker is the only fence (issue #3364).
-    maskSecrets: SecretMasker
+    maskSecrets: SecretMasker,
+    // go-to-k/cdkd#5498: called with each index name a Create was ACCEPTED for.
+    onCreated: (indexName: string) => void = () => undefined
   ): Promise<void> {
     // ONE sink for this method, per `.claude/rules/provider-masking.md`: the
     // next debug line added here is masked by construction.
@@ -7682,6 +7710,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
         input.AttributeDefinitions = desiredAttributeDefinitions;
       }
       await this.dynamoDBClient.send(new UpdateTableCommand(input));
+      // go-to-k/cdkd#5498: AFTER the call resolved: AWS accepted the Create, so
+      // this index is one cdkd started (a call that throws added nothing).
+      if (op.Create?.IndexName !== undefined) onCreated(op.Create.IndexName);
       // GSI create/delete is async: the table returns to ACTIVE quickly while a
       // new index is still CREATING -> BACKFILLING. AWS rejects the next GSI op
       // until every index is fully ACTIVE, and CloudFormation likewise waits for
@@ -8147,7 +8178,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
     resourceType: string,
     names: ReadonlySet<string>,
     recordedProperties?: Record<string, unknown>,
-    desiredProperties?: Record<string, unknown>
+    desiredProperties?: Record<string, unknown>,
+    attemptedItems?: ReadonlyMap<string, ReadonlySet<string>>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const live = await this.readCurrentState(
       physicalId,
@@ -8170,7 +8202,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
       out['GlobalSecondaryIndexes'] = projectIndexesOnto(
         out['GlobalSecondaryIndexes'],
         recordedProperties?.['GlobalSecondaryIndexes'],
-        desiredProperties?.['GlobalSecondaryIndexes']
+        desiredProperties?.['GlobalSecondaryIndexes'],
+        attemptedItems?.get('GlobalSecondaryIndexes')
       );
       if (out['GlobalSecondaryIndexes'] === undefined) delete out['GlobalSecondaryIndexes'];
     }
@@ -9007,10 +9040,14 @@ function isTransientStreamReadFailure(err: unknown): boolean {
 export function projectIndexesOnto(
   live: unknown,
   recorded: unknown,
-  desired: unknown
+  desired: unknown,
+  // go-to-k/cdkd#5498: the names a failed update's accepted Create added. A
+  // live index named here (exactly, not redacted) joins the previous side, so
+  // the template's omission removes it; nothing else does.
+  attempted: ReadonlySet<string> = new Set()
 ): unknown[] | undefined {
   if (!Array.isArray(live)) return undefined;
-  const named = new Set<string>();
+  const named = new Set<string>([...attempted].filter(isUsableAttemptedName));
   for (const list of [recorded, desired]) {
     if (!Array.isArray(list)) continue;
     for (const entry of list as unknown[]) {

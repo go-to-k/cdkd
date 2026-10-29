@@ -559,6 +559,14 @@ export class DeployEngine {
   unsettledMarks = new Map<string, Set<string>>();
 
   /**
+   * go-to-k/cdkd#5498: per logical id, the item names (per member path) this
+   * deploy's `update()` declared ACCEPTED for adding (`markAttempted`). Kept
+   * beside {@link unsettledMarks} and dropped with it.
+   */
+  /** @internal */
+  unsettledItemMarks = new Map<string, Map<string, Set<string>>>();
+
+  /**
    * go-to-k/cdkd#3252: the Cloud Control CREATEs an earlier run stopped
    * waiting for that completed in AWS, by logical id, which this deploy's
    * CREATE of that logical id takes over instead of making another
@@ -1006,6 +1014,7 @@ export class DeployEngine {
     // pairs — and now mark it as today's.
     this.attemptedResolvedProps = new Map();
     this.unsettledMarks = new Map();
+    this.unsettledItemMarks = new Map();
     this.resumedCreates = new Map();
     this.generatedNameGuard = undefined;
     this.liveTaskLabels = new Map();

@@ -411,7 +411,7 @@ region the CDK app declares.
 ## Schema version history
 
 
-Writers always emit the current version, `version: 14`. Readers accept every
+Writers always emit the current version, `version: 15`. Readers accept every
 earlier version and upgrade it in memory; the next write persists the current
 shape. A binary that meets a version newer than it knows refuses the record
 with an "Upgrade cdkd" error.
@@ -432,6 +432,7 @@ with an "Upgrade cdkd" error.
 | 12 | `referenceProvenance` on each resource, `outputReferenceProvenance` on the stack |
 | 13 | `stackInstanceId` and `retiredNameGenerations` on the stack, `nameGeneration` / `nameGenerationHigh` on each resource |
 | 14 | `unsettledProperties` on each resource |
+| 15 | `unsettledItems` on each resource |
 
 `version: 2` and `version: 4` have no section of their own below: the first is
 the key layout every later section assumes, and the second is described with
@@ -1385,7 +1386,7 @@ stack (no id) forever, through every later write. The bump exists because an
 older binary rebuilds a record field by field and would drop the id; it
 refuses a `version: 13` record with the "Upgrade cdkd" error instead.
 
-### `version: 14` adds `unsettledProperties` (current writers)
+### `version: 14` adds `unsettledProperties`
 
 Schema `version: 14` adds `ResourceState.unsettledProperties` (issue
 [#5380](https://github.com/go-to-k/cdkd/issues/5380)): the top-level property
@@ -1430,6 +1431,46 @@ A bump, for v10's reason: an older binary rewriting the record would drop the
 names, and a later deploy back to the recorded template would diff empty and
 leave AWS on the other side. A v13 document is read unchanged (nothing
 unsettled).
+
+### `version: 15` adds `unsettledItems` (current writers)
+
+Schema `version: 15` adds `ResourceState.unsettledItems` (issue
+[#5498](https://github.com/go-to-k/cdkd/issues/5498)): per member path, the
+item names a failed `update()` had added with a call AWS accepted: a DynamoDB
+table's index (`GlobalSecondaryIndexes`) or tag key (`Tags`), a Kinesis
+stream's metric (`DesiredShardLevelMetrics`) or tag key. Without it the next
+deploy's convergence (#5503) could not tell an index the failed update created
+from one another tool added, so it kept both; CloudFormation would delete the
+one it created.
+
+A provider calls `UpdateContext.markAttempted(path, items)` right AFTER the
+call resolves (a call that throws added nothing): the index a `Create` was
+accepted for, the metrics `EnableEnhancedMonitoring` turned on that its
+response's `CurrentShardLevelMetrics` did not already list, the tag keys a tag
+call added that the record lacked (none when the record's tags are
+malformed). The engine holds the marks beside `unsettledMarks` and writes them
+in `execute.ts` only under a name the same failure left unsettled; a
+successful update and the replacement fallback discard them.
+
+The reader (`unsettledItemsOf`) keeps a path only under a name in
+`unsettledProperties`, and treats a malformed field as none, an entry over 255
+characters as absent and a path over 100 entries as absent. The next deploy
+hands the items to the provider (`UpdateContext.unsettledItems`) and to
+`readUnsettled`: a live item whose name equals an attempted one EXACTLY joins
+the previous side, so the provider's own diff removes it when the template no
+longer names it; an item only AWS holds is still left, with the #5503 warning.
+A rebuilt record keeps only the items of names still unsettled after the
+proof, and every path that clears the names (`withoutUnsettledProperties`:
+success, `drift --accept` / `--revert`, a rollback revert) clears the items.
+
+A name can be secret-derived. The persist pass rewrites it (the
+`scrubResourceRecord` value scan, and the `NoEcho` persist arm by value), as
+does `cdkd scrub`; a name holding `{{resolve:` or `***` never matches a live
+item, so the item it named is kept rather than removed.
+
+A bump: an older binary rewriting the record would drop the items, and the
+next deploy would keep an index or metric the failed update added. A v14
+document is read unchanged (no items).
 
 ## Fields added without a version bump
 

@@ -536,6 +536,52 @@ function noEchoAttributeNamesFor(
 }
 
 /**
+ * go-to-k/cdkd#5498: an attempted item name (`unsettledItems`, an index name or
+ * a tag key) a `NoEcho` parameter served is `***` in the persisted record, by
+ * VALUE: the names sit in no template position, and a mask-only plaintext (or
+ * one under the needle floor) is not value-scanned by `scrubResourceRecord`.
+ * A masked name never matches a live item (`isUsableAttemptedName`), so the
+ * item it named is kept, never removed.
+ */
+function withNoEchoItemsMasked(
+  run: NoEchoRunState,
+  deps: NoEchoDeps,
+  logicalId: string,
+  record: ResourceState
+): ResourceState {
+  const items = (record as { unsettledItems?: unknown }).unsettledItems;
+  if (typeof items !== 'object' || items === null || Array.isArray(items)) return record;
+  const secrets = deps.perResourceSecrets().get(logicalId);
+  const plaintexts =
+    secrets === undefined
+      ? []
+      : noEchoParameterPlaintextsOf(secrets).filter((plaintext) => plaintext !== '');
+  const positioned = run.noEchoPositionedValues.get(logicalId) ?? new Set<string>();
+  if (plaintexts.length === 0 && positioned.size === 0) return record;
+  let changed = false;
+  const masked: Record<string, unknown> = {};
+  for (const [path, entries] of Object.entries(items as Record<string, unknown>)) {
+    if (!Array.isArray(entries)) {
+      masked[path] = entries;
+      continue;
+    }
+    masked[path] = [
+      ...new Set(
+        entries.map((entry) => {
+          if (typeof entry !== 'string') return entry;
+          const served =
+            positioned.has(keyOrderFreeJson(entry)) ||
+            plaintexts.some((plaintext) => entry.includes(plaintext));
+          if (served) changed = true;
+          return served ? '***' : entry;
+        })
+      ),
+    ];
+  }
+  return changed ? ({ ...record, unsettledItems: masked } as ResourceState) : record;
+}
+
+/**
  * The `NoEcho` half of a save (go-to-k/cdkd#4043, #2449), applied to a record
  * the dynamic-reference scrub already redacted (`scrubbed`) from its
  * in-memory form (`record`, whose `properties` still hold what was resolved):
@@ -557,6 +603,7 @@ export function applyNoEchoPersist(
   secrets?: RecordedSecretValues,
   carried = false
 ): ResourceState {
+  scrubbed = withNoEchoItemsMasked(run, deps, logicalId, scrubbed);
   const sources = noEchoPositionSources(run, resources);
   if (sources === undefined) return scrubbed;
   const leaves = noEchoLeavesFor(run, deps, logicalId, record, templateProps, sources);
