@@ -7965,7 +7965,7 @@ async function runRevert(
             const existing = resources[logicalId];
             if (!existing) continue;
             // go-to-k/cdkd#5498: a name the revert kept keeps its attempted
-            // items (`settleUnsettled` carried them onto `settled`).
+            // items (`withUnprovenUnsettled` carried them onto `settled`).
             resources[logicalId] = {
               ...withUnsettledProperties(
                 withoutUnsettledProperties(existing),

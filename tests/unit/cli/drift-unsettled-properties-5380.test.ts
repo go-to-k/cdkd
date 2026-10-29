@@ -118,16 +118,29 @@ async function runDrift(
     recordedProperties?: Record<string, unknown>
   ) => Promise<ReadonlySet<string>>,
   revertLands = true
-): Promise<{ stdout: string; saved: StackState | undefined; updates: number }> {
+): Promise<{
+  stdout: string;
+  saved: StackState | undefined;
+  updates: number;
+  attempted: Array<Record<string, string[]>>;
+}> {
   let updates = 0;
+  /** go-to-k/cdkd#5498: each convergence read's attemptedItems, as plain objects. */
+  const attempted: Array<Record<string, string[]>> = [];
   // AWS reverts to the baseline once update() succeeds, unless told not to.
   let reverted = false;
   mockGetState.mockResolvedValue({ state, etag: '"etag-1"' });
+  const read = async (physicalId: string) =>
+    physicalId === 'drifted' && !(reverted && revertLands)
+      ? { DeliveryStreamName: 'drifted', DeliveryStreamType: 'KinesisStreamAsSource' }
+      : { DeliveryStreamName: physicalId, DeliveryStreamType: 'DirectPut' };
   mockGetProvider.mockImplementation(() => ({
-    readCurrentState: async (physicalId: string) =>
-      physicalId === 'drifted' && !(reverted && revertLands)
-        ? { DeliveryStreamName: 'drifted', DeliveryStreamType: 'KinesisStreamAsSource' }
-        : { DeliveryStreamName: physicalId, DeliveryStreamType: 'DirectPut' },
+    readCurrentState: read,
+    readUnsettled: async (physicalId: string, ...rest: unknown[]) => {
+      const items = rest[5] as ReadonlyMap<string, ReadonlySet<string>> | undefined;
+      attempted.push(Object.fromEntries([...(items ?? [])].map(([k, v]) => [k, [...v]])));
+      return read(physicalId);
+    },
     update: vi.fn(async () => {
       updates++;
       const result = await update();
@@ -162,7 +175,7 @@ async function runDrift(
     process.stdout.write = original;
   }
   const saved = mockSaveState.mock.calls.at(-1)?.[2] as StackState | undefined;
-  return { stdout: chunks.join(''), saved, updates };
+  return { stdout: chunks.join(''), saved, updates, attempted };
 }
 
 describe('cdkd drift and unsettled properties (go-to-k/cdkd#5380)', () => {
@@ -344,7 +357,7 @@ describe('cdkd drift and unsettled properties (go-to-k/cdkd#5380)', () => {
   // go-to-k/cdkd#5498: a name drift keeps unsettled keeps its attempted items;
   // a name it settles drops them.
   it('--revert with two names, one unproven: the kept name keeps its items, the settled one\'s go', async () => {
-    const { saved } = await runDrift(
+    const { saved, attempted } = await runDrift(
       stateWith({
         drifted: {
           unsettledProperties: ['DeliveryStreamType', ENC],
@@ -356,6 +369,12 @@ describe('cdkd drift and unsettled properties (go-to-k/cdkd#5380)', () => {
       undefined,
       false
     );
+    // Both the convergence read before the update and the proof after it see
+    // the record's attempted items.
+    expect(attempted.length).toBeGreaterThanOrEqual(2);
+    for (const items of attempted) {
+      expect(items).toEqual({ DeliveryStreamType: ['x'], [ENC]: ['y'] });
+    }
     expect(saved?.resources['Drifted']?.unsettledProperties).toEqual(['DeliveryStreamType']);
     expect(saved?.resources['Drifted']?.unsettledItems).toEqual({ DeliveryStreamType: ['x'] });
   });
