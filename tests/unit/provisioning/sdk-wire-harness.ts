@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vite-plus/test';
 import type { ResourceProvider, UpdateContext } from '../../../src/types/resource.js';
+import { MEMBER_RENAMES } from './sdk-wire-member-renames.js';
 
 /**
  * The differential wire harness behind `sdk-wire-coverage.test.ts` (#3723).
@@ -32,6 +33,9 @@ export const wire: string[] = [];
  * what a case with no properties pins (`TypeCase.noProperties`).
  */
 export const calls: string[] = [];
+
+/** The write sequence's command inputs, `[command, input]` JSON, beside `wire`. */
+const inputs: string[] = [];
 
 /**
  * Command name (`CreateTopicCommand`) -> what it answers, merged over the
@@ -195,6 +199,14 @@ function capturing<T extends Capturable>(client: T): T {
       };
       calls.push(`${command} ${req.path}`);
       if (READ_COMMAND.test(command)) return { output, response: {} };
+      // The command INPUT as the provider built it, in SDK member names and
+      // before any protocol wrapping (`member.N`, XML, URI labels): what
+      // `landingNames` reads to say WHICH member a value went to.
+      // Bytes as their text: a code blob is one value, not a member per byte.
+      const text = JSON.stringify([command, args.input], (_k, v: unknown) =>
+        v instanceof Uint8Array ? new TextDecoder().decode(v) : v
+      );
+      inputs.push(text.replace(SDK_TOKEN, '$1<token>"'));
       wire.push(
         JSON.stringify([
           command,
@@ -324,17 +336,202 @@ function varied(bag: Bag, path: Path, variant?: { value: unknown }): Bag | undef
   return copy;
 }
 
+// --- Where a varied value lands ----------------------------------------------
+//
+// Removal and variation see THAT the wire changed, not WHERE: a provider
+// writing a property into a sibling member (`ReadCapacityUnits` sent as
+// `WriteCapacityUnits`) changes the wire exactly as the right mapping does.
+// So each vary probe that is not silent also diffs the two runs' command
+// INPUTS and names the members whose value changed; one of them must be the
+// varied leaf's own member (`wrongMember`).
+
+/** A location in a command input: member names and list indices. */
+type Location = (string | number)[];
+
+/** Every leaf of a JSON value, by location. */
+function flattenJson(value: unknown, prefix: Location, out: Map<string, unknown>): void {
+  // An empty container is a leaf: `{}` is a value (S3's EventBridge switch).
+  if (Array.isArray(value) && value.length > 0) {
+    value.forEach((v, i) => flattenJson(v, [...prefix, i], out));
+  } else if (value !== null && typeof value === 'object' && Object.keys(value).length > 0) {
+    for (const [k, v] of Object.entries(value)) flattenJson(v, [...prefix, k], out);
+  } else if (value !== null && typeof value === 'object') {
+    out.set(JSON.stringify(prefix), Array.isArray(value) ? '[]' : '{}');
+  } else {
+    out.set(JSON.stringify(prefix), value);
+  }
+}
+
+/** A JSON document carried as a string (a policy), parsed; else undefined. */
+function embeddedJson(value: unknown): unknown {
+  if (typeof value !== 'string' || !/^\s*[{[]/.test(value)) return undefined;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Locations whose value differs between two flattened inputs (either side). */
+function changedLocations(a: Map<string, unknown>, b: Map<string, unknown>): Location[] {
+  const changed: Location[] = [];
+  for (const key of new Set([...a.keys(), ...b.keys()])) {
+    const [va, vb] = [a.get(key), b.get(key)];
+    if (va === vb) continue;
+    const loc = JSON.parse(key) as Location;
+    const [ja, jb] = [embeddedJson(va), embeddedJson(vb)];
+    if (ja !== undefined && jb !== undefined) {
+      // A policy document's statement changed: name the member INSIDE it.
+      const [fa, fb] = [new Map<string, unknown>(), new Map<string, unknown>()];
+      flattenJson(ja, loc, fa);
+      flattenJson(jb, loc, fb);
+      changed.push(...changedLocations(fa, fb));
+    } else {
+      changed.push(loc);
+    }
+  }
+  return changed;
+}
+
+/**
+ * The sibling members naming the entry a `<base>Value` member belongs to
+ * (`Key` / `Name` for `Value`, `AttributeName` for `AttributeValue`, `path`
+ * for an API Gateway patch operation's `value`); none for any other member.
+ */
+function entryKeys(member: string): string[] {
+  const m = /^(.*)(Value|value)$/.exec(member);
+  if (!m) return [];
+  const base = m[1]!;
+  const keys = [`${base}Key`, `${base}Name`, `${base}key`, `${base}name`];
+  return base === '' ? [...keys, 'path'] : keys;
+}
+
+/**
+ * The member names a changed location stands for: every member on its way
+ * (a list's items sit under `Items`, a filter's values under `Values`), and
+ * for an entry spelled `{Key | Name | path, Value}` (a tag, an API Gateway
+ * patch operation) what that sibling names.
+ */
+function namesAt(loc: Location, flat: Map<string, unknown>): string[] {
+  const names = loc.filter((s): s is string => typeof s === 'string');
+  let at = loc.length - 1;
+  while (at >= 0 && typeof loc[at] === 'number') at--;
+  for (const sibling of entryKeys(at >= 0 ? (loc[at] as string) : '')) {
+    const v = flat.get(JSON.stringify([...loc.slice(0, at), sibling, ...loc.slice(at + 1)]));
+    if (typeof v !== 'string') continue;
+    // A patch path (`/*/*/caching/enabled`) names the member by its tail.
+    const segs = v.split('/');
+    names.push(v, ...segs.map((_, i) => segs.slice(i).join('')));
+  }
+  return names;
+}
+
+/**
+ * Every member name whose value differs between two runs' inputs. Requests
+ * pair up by command and occurrence; an unpaired one contributes all of its
+ * members.
+ */
+export function landingNames(from: readonly string[], to: readonly string[]): string[] {
+  const byCommand = (lines: readonly string[]) => {
+    const m = new Map<string, unknown[]>();
+    for (const line of lines) {
+      const [command, input] = JSON.parse(line) as [string, unknown];
+      m.set(command, [...(m.get(command) ?? []), input]);
+    }
+    return m;
+  };
+  const [a, b] = [byCommand(from), byCommand(to)];
+  const names = new Set<string>();
+  for (const command of new Set([...a.keys(), ...b.keys()])) {
+    const [la, lb] = [a.get(command) ?? [], b.get(command) ?? []];
+    for (let i = 0; i < Math.max(la.length, lb.length); i++) {
+      const [fa, fb] = [new Map<string, unknown>(), new Map<string, unknown>()];
+      if (i < la.length) flattenJson(la[i], [], fa);
+      if (i < lb.length) flattenJson(lb[i], [], fb);
+      for (const loc of changedLocations(fa, fb)) {
+        for (const n of namesAt(loc, fb.has(JSON.stringify(loc)) ? fb : fa)) names.add(n);
+      }
+    }
+  }
+  return [...names].sort();
+}
+
+/** Member names compared case- and punctuation-blind: REST JSON spells `functionName`. */
+const memberKey = (name: string): string => name.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * The names the leaf at `path` of `bag` may land under: its own member name;
+ * for an entry's `Value`, what its `Key` / `Name` sibling names (a map keyed
+ * by it); for a `Key` / `Name`, its value before and after (it IS a map key).
+ */
+function expectedNames(bag: Bag, alt: Bag, path: Path): string[] {
+  const leaf = [...path].reverse().find((s) => typeof s === 'string') as string | undefined;
+  if (leaf === undefined) return [];
+  // A list element is the list's own member.
+  if (typeof path[path.length - 1] !== 'string') return [leaf];
+  const parent = parentOf(bag, path);
+  const names = [leaf];
+  for (const s of entryKeys(leaf)) {
+    if (typeof parent[s] === 'string') names.push(parent[s] as string);
+  }
+  if (/^(key|name)$/i.test(leaf)) {
+    for (const v of [parent[leaf], parentOf(alt, path)[leaf]]) {
+      if (typeof v === 'string') names.push(v);
+    }
+  }
+  return names;
+}
+
+/** A bag path as `MEMBER_RENAMES` keys it: its member names, indices dropped. */
+export const renameKey = (path: Path): string =>
+  path.filter((s) => typeof s === 'string').join('.');
+
+/**
+ * Whether the varied leaf at `path` landed in a member of an expected name,
+ * or of one `renames` accepts for that path (recorded in `used` as
+ * `<path>-><member>`). Undefined when it did; else the members it did land
+ * in, which is what an accepted rename would have to name.
+ */
+function wrongMember(
+  path: Path,
+  expected: string[],
+  landed: string[],
+  renames: Readonly<Record<string, readonly string[]>>,
+  used: Set<string>
+): string | undefined {
+  if (expected.length === 0) return undefined;
+  const landedKeys = new Set(landed.map(memberKey));
+  if (expected.some((n) => landedKeys.has(memberKey(n)))) return undefined;
+  const key = renameKey(path);
+  const hit = (renames[key] ?? []).find((r) => landedKeys.has(memberKey(r)));
+  if (hit !== undefined) {
+    used.add(`${key}->${hit}`);
+    return undefined;
+  }
+  return landed.length === 0 ? '(nothing)' : landed.join(',');
+}
+
 export type Outcome = { threw: false; wire: string } | { threw: true; message: string };
+
+/**
+ * A recorded run's command inputs, for `landingNames`. Kept beside the
+ * outcome rather than on it: suites compare outcomes whole (`{ threw: false,
+ * wire: '' }`), and the wire is what they pin.
+ */
+const inputsOf = new WeakMap<Outcome, string[]>();
 
 export async function record(run: () => Promise<unknown>): Promise<Outcome> {
   wire.length = 0;
   calls.length = 0;
+  inputs.length = 0;
   try {
     await run();
   } catch (error) {
     return { threw: true, message: (error as Error).message };
   }
-  return { threw: false, wire: wire.join('\n') };
+  const outcome: Outcome = { threw: false, wire: wire.join('\n') };
+  inputsOf.set(outcome, [...inputs]);
+  return outcome;
 }
 
 export interface ProbeCase {
@@ -362,6 +559,8 @@ export interface ProbeCase {
    * arms are outside what the template-path comparisons observe.
    */
   updateContext?: UpdateContext;
+  /** CFn leaf name -> the SDK members it may land in under another name. */
+  renames?: Readonly<Record<string, readonly string[]>>;
 }
 
 export interface ProbeResult {
@@ -371,6 +570,13 @@ export interface ProbeResult {
   removalThrows: string[];
   /** The message of each removal throw, for diagnosing an unexpected entry. */
   messages: Record<string, string>;
+  /**
+   * Vary probes whose value landed in no member of the leaf's name nor an
+   * accepted rename: probe label -> the members it did land in.
+   */
+  wrongMembers: Record<string, string>;
+  /** The renames (`<leaf>-><member>`) some probe needed. */
+  usedRenames: Set<string>;
 }
 
 /**
@@ -444,6 +650,14 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
   const silent: string[] = [];
   const removalThrows: string[] = [];
   const messages: Record<string, string> = {};
+  const wrongMembers: Record<string, string> = {};
+  const usedRenames = new Set<string>();
+  const trace = (label: string, path: Path, alt: Bag, from: Outcome, to: Outcome): void => {
+    const landed = landingNames(inputsOf.get(from) ?? [], inputsOf.get(to) ?? []);
+    const expected = expectedNames(c.bag, alt, path);
+    const wrong = wrongMember(path, expected, landed, c.renames ?? {}, usedRenames);
+    if (wrong !== undefined) wrongMembers[label] = wrong;
+  };
   const compare = (direction: string, label: string, a: Outcome, b: Outcome): boolean => {
     if (a.threw || b.threw) {
       removalThrows.push(`${direction}:${label}`);
@@ -502,6 +716,8 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
       const altOutcome = alt === undefined ? undefined : await record(create(alt));
       if (altOutcome === undefined || altOutcome.threw || altOutcome.wire === fullWire) {
         silent.push(`create-vary:${label}`);
+      } else {
+        trace(`create-vary:${label}`, path, alt!, full, altOutcome);
       }
     }
     if (varyOnUpdate) {
@@ -510,10 +726,12 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
       const after = alt === undefined ? undefined : await record(update(alt, base));
       if (before.threw || after === undefined || after.threw || after.wire === before.wire) {
         silent.push(`update-vary:${label}`);
+      } else {
+        trace(`update-vary:${label}`, path, alt!, before, after);
       }
     }
   }
-  return { silent, removalThrows, messages };
+  return { silent, removalThrows, messages, wrongMembers, usedRenames };
 }
 
 // --- Cases and the suite that runs them ---------------------------------------
@@ -636,6 +854,8 @@ export const DECLARED_DEFAULT = 'the declared value is what an unset member read
 /** The per-type wire suite over `cases`: property coverage, path delivery, targets. */
 export function describeWireCases(cases: TypeCase[]): void {
   describe.each(cases)('$resourceType', (t) => {
+    const renames = MEMBER_RENAMES[t.resourceType] ?? {};
+    const usedRenames = new Set<string>();
     it('its bags carry every handledProperties entry not exempted', () => {
       const handled = [...(t.provider().handledProperties?.get(t.resourceType) ?? [])].sort();
       // An empty set is a case only when the case says so, with its reason;
@@ -718,12 +938,17 @@ export function describeWireCases(cases: TypeCase[]): void {
     }
 
     it.each(t.bags)('delivers every path of the $name bag', async (b) => {
-      const { silent, removalThrows, messages } = await probe({
+      const { silent, removalThrows, messages, wrongMembers, ...rest } = await probe({
         ...t,
         bag: b.bag,
         variants: b.variants,
         arm: b.arm ?? t.arm,
+        renames,
       });
+      for (const r of rest.usedRenames) usedRenames.add(r);
+      // A varied value must land in its own member (or an accepted rename):
+      // probe label -> the members it landed in instead.
+      expect(wrongMembers, 'landed in another member; see sdk-wire-member-renames.ts').toEqual({});
       const byDesign = t.wholeFromNext;
       const wholeFromNext = byDesign
         ? paths(b.bag)
@@ -778,6 +1003,17 @@ export function describeWireCases(cases: TypeCase[]): void {
       const named = `${requests[0]!.query}\n${requests[0]!.body}`;
       expect(named).toContain(target.names);
       expect(named).not.toContain(target.notNames);
+    });
+
+    // After the bag probes, which record what they needed: a rename no probe
+    // reached is stale (the mapping now uses the member's own name, or the
+    // bag no longer carries the path), and staying listed it would excuse a
+    // regression into that member.
+    it('uses every accepted rename', () => {
+      const listed = Object.entries(renames).flatMap(([path, names]) =>
+        names.map((n) => `${path}->${n}`)
+      );
+      expect(listed.filter((r) => !usedRenames.has(r))).toEqual([]);
     });
   });
 }
