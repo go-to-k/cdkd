@@ -24,8 +24,9 @@
 #      Kinesis stream and a stream resource policy (#5365).
 #  1a. `gsi` under a 15s per-type deadline (go-to-k/cdkd#5487): the GSI add
 #      fails mid backfill and the record must name GlobalSecondaryIndexes
-#      unsettled; a same-template retry while CREATING must be refused; once
-#      ACTIVE, a redeploy of the base template must delete gsi1 and clear it.
+#      unsettled; a same-template retry right after must either be refused
+#      (gsi1 still CREATING, name kept) or converge (gsi1 ACTIVE, name cleared,
+#      nothing sent); then a redeploy of the base template deletes gsi1.
 #  1a2. With `Replicas` marked unsettled on the record and the template
 #      unchanged, the converging deploy must send no replica change, keep both
 #      replicas and the second replica's protection, and clear the name.
@@ -576,8 +577,15 @@ gsi1_status() {
     --query "Table.GlobalSecondaryIndexes[?IndexName=='gsi1'].IndexStatus | [0]" --output text
 }
 echo "==> Phase 1a: add gsi1 under a 15s GlobalTable deadline (must fail while the index backfills)"
+# UpdateTable calls summed over a CDKD_SDK_CALL_LOG file (every region's client
+# is a DynamoDBClient; one line per cdkd process; 0 when absent).
+update_table_calls() { # usage: update_table_calls <call log>
+  node -e 'const fs=require("fs");let n=0;for(const l of fs.readFileSync(process.argv[1],"utf8").split("\n")){if(l.trim()==="")continue;n+=JSON.parse(l).counts["DynamoDBClient.UpdateTableCommand"]??0}process.stdout.write(String(n))' "$1"
+}
+P1A_CALLS="${LOG_DIR}/phase1a-calls.jsonl"
+rm -f "${P1A_CALLS}"
 set +e
-CDKD_TEST_UPDATE="gsi" node "${LOCAL_DIST}" deploy "${STACK}" \
+CDKD_SDK_CALL_LOG="${P1A_CALLS}" CDKD_TEST_UPDATE="gsi" node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
   --resource-warn-after AWS::DynamoDB::GlobalTable=5s \
   --resource-timeout AWS::DynamoDB::GlobalTable=15s >"${LOG_DIR}/phase1a.log" 2>&1
@@ -587,22 +595,57 @@ if [ "${P1A_EXIT}" -eq 0 ]; then
   echo "FAIL: Phase 1a's deploy succeeded; the 15s deadline must cut the gsi1 backfill short (premise of the arm)" >&2
   exit 1
 fi
+# Positive control for Phase 1a2's zero-UpdateTable check: the same counter
+# must see the GSI Create this deploy sent.
+if [ ! -s "${P1A_CALLS}" ] || [ "$(update_table_calls "${P1A_CALLS}")" -lt 1 ]; then
+  echo "FAIL: the SDK call log did not record the cut-short deploy's UpdateTable (the Phase 1a2 zero check would be vacuous)" >&2
+  exit 1
+fi
 case ",$(gt_unsettled)," in
   *,GlobalSecondaryIndexes,*) : ;;
   *) echo "FAIL: GlobalTable record's unsettledProperties after the cut-short add is '$(gt_unsettled)', expected it to name GlobalSecondaryIndexes (go-to-k/cdkd#5487)" >&2; exit 1 ;;
 esac
-if [ "$(gsi1_status)" = "CREATING" ]; then
-  set +e
-  CDKD_TEST_UPDATE="gsi" node "${LOCAL_DIST}" deploy "${STACK}" \
-    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${LOG_DIR}/phase1a-retry.log" 2>&1
-  P1A_RETRY_EXIT=$?
-  set -e
-  if [ "${P1A_RETRY_EXIT}" -eq 0 ] || ! grep -q "AWS is still changing it" "${LOG_DIR}/phase1a-retry.log"; then
-    echo "FAIL: the same-template retry while gsi1 is CREATING must be refused as in transition (exit ${P1A_RETRY_EXIT})" >&2
+# Same-template RETRY at once, with no wait in between. Exactly one of two
+# outcomes must hold, and which one is printed:
+#   (a) gsi1 still CREATING: the retry is refused as in transition and the
+#       record keeps the name;
+#   (b) gsi1 already ACTIVE: the retry converges (nothing to send — gsi1 is
+#       what the template declares) and clears the name.
+set +e
+CDKD_TEST_UPDATE="gsi" node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${LOG_DIR}/phase1a-retry.log" 2>&1
+P1A_RETRY_EXIT=$?
+set -e
+P1A_CONVERGED_BY_RETRY=false
+if [ "${P1A_RETRY_EXIT}" -ne 0 ]; then
+  echo "    Phase 1a retry outcome: (a) refused while gsi1 was moving"
+  if ! grep -q "AWS is still changing it" "${LOG_DIR}/phase1a-retry.log"; then
+    echo "FAIL: the same-template retry failed, but not with the in-transition refusal:" >&2
     cat "${LOG_DIR}/phase1a-retry.log" >&2
     exit 1
   fi
-  echo "    the same-template retry during the backfill was refused and kept the name"
+  case ",$(gt_unsettled)," in
+    *,GlobalSecondaryIndexes,*) : ;;
+    *) echo "FAIL: the refused retry dropped the unsettled name ('$(gt_unsettled)')" >&2; exit 1 ;;
+  esac
+else
+  echo "    Phase 1a retry outcome: (b) gsi1 had settled; the retry converged"
+  P1A_CONVERGED_BY_RETRY=true
+  if [ -n "$(gt_unsettled)" ]; then
+    echo "FAIL: the converging retry left '$(gt_unsettled)' unsettled" >&2
+    exit 1
+  fi
+  P1A_RETRY_GSIS="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
+    --query '[length(Table.GlobalSecondaryIndexes || `[]`), Table.GlobalSecondaryIndexes[0].IndexName, Table.GlobalSecondaryIndexes[0].IndexStatus]' --output text)"
+  if [ "${P1A_RETRY_GSIS}" != "$(printf '1\tgsi1\tACTIVE')" ]; then
+    echo "FAIL: after the converging retry the table's indexes are '${P1A_RETRY_GSIS}', expected exactly gsi1 ACTIVE (a spurious index send?)" >&2
+    exit 1
+  fi
+  if grep -qE "GlobalSecondaryIndexUpdates|already exists" "${LOG_DIR}/phase1a-retry.log"; then
+    echo "FAIL: the converging retry sent an index change for an index AWS already holds:" >&2
+    grep -nE "GlobalSecondaryIndexUpdates|already exists" "${LOG_DIR}/phase1a-retry.log" >&2
+    exit 1
+  fi
 fi
 P1A_STATUS=""
 for _ in $(seq 1 180); do
@@ -627,7 +670,11 @@ if [ -n "$(gt_unsettled)" ]; then
   echo "FAIL: GlobalTable record still names unsettled properties after the converging deploy: $(gt_unsettled)" >&2
   exit 1
 fi
-echo "    the unsettled GSI add converged on redeploy (go-to-k/cdkd#5487)"
+if [ "${P1A_CONVERGED_BY_RETRY}" = "true" ]; then
+  echo "    base redeploy removed gsi1 as an ordinary update (the retry had already settled the name)"
+else
+  echo "    the unsettled GSI add converged on redeploy (go-to-k/cdkd#5487)"
+fi
 
 # --- Phase 1a2: converging an unsettled `Replicas` changes nothing (go-to-k/cdkd#5487)
 # A record whose `Replicas` a failed update left unsettled, while AWS already
@@ -647,10 +694,23 @@ P1A2_BEFORE="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${R
   --query '[sort_by(Table.Replicas,&RegionName)[].RegionName, Table.TableClassSummary.TableClass]' --output json)"
 P1A2_PROT_BEFORE="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${SECOND_REGION}" \
   --query 'Table.DeletionProtectionEnabled' --output text)"
-deploy "" "${LOG_DIR}/phase1a2.log"
-if grep -qE "ReplicaUpdates|no longer declares .* but DynamoDB offers no way" "${LOG_DIR}/phase1a2.log"; then
-  echo "FAIL: the converging deploy sent a replica change or warned of a dropped override (go-to-k/cdkd#5487):" >&2
-  grep -nE "ReplicaUpdates|no longer declares" "${LOG_DIR}/phase1a2.log" >&2
+P1A2_CALLS="${LOG_DIR}/phase1a2-calls.jsonl"
+rm -f "${P1A2_CALLS}"
+CDKD_SDK_CALL_LOG="${P1A2_CALLS}" deploy "" "${LOG_DIR}/phase1a2.log"
+if [ ! -s "${P1A2_CALLS}" ]; then
+  echo "FAIL: the SDK call log ${P1A2_CALLS} was not written — CDKD_SDK_CALL_LOG did not take effect" >&2
+  exit 1
+fi
+# Zero UpdateTable in ANY region (the counter is proven to see one in Phase 1a):
+# a same-value replica re-send is invisible to describe-table, not to this.
+P1A2_UPDATES="$(update_table_calls "${P1A2_CALLS}")"
+if [ "${P1A2_UPDATES}" != "0" ]; then
+  echo "FAIL: the converging deploy sent ${P1A2_UPDATES} UpdateTable call(s) for a template AWS already holds (go-to-k/cdkd#5487)" >&2
+  exit 1
+fi
+if grep -qE "no longer declares .* but DynamoDB offers no way" "${LOG_DIR}/phase1a2.log"; then
+  echo "FAIL: the converging deploy warned of a dropped override (go-to-k/cdkd#5487):" >&2
+  grep -nE "no longer declares" "${LOG_DIR}/phase1a2.log" >&2
   exit 1
 fi
 P1A2_AFTER="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \

@@ -37,6 +37,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ResourceNotFoundException } from '@aws-sdk/client-dynamodb';
 import { DynamoDBGlobalTableProvider } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
+import { getLogger } from '../../../src/utils/logger.js';
+
+const warned = (): string[] =>
+  (getLogger().warn as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => String(c[0]));
 
 const TYPE = 'AWS::DynamoDB::GlobalTable';
 const TABLE = 'gt';
@@ -103,6 +107,9 @@ function serve(live: Live): void {
                   IndexStatus: live.gsiStatus,
                   KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
                   Projection: { ProjectionType: 'ALL' },
+                  // A per-replica read ceiling, which the readback lists in the
+                  // local replica's own index entries.
+                  OnDemandThroughput: { MaxReadRequestUnits: 10 },
                 },
               ],
             }),
@@ -381,6 +388,57 @@ describe('GlobalTable unsettled properties (go-to-k/cdkd#5487)', () => {
       await expect(
         provider.readUnsettled(TABLE, 'T', TYPE, new Set(['TimeToLiveSpecification']), recorded, recorded)
       ).rejects.toThrow('ttl throttled');
+    });
+  });
+
+  describe('every collection readUnsettled returns is projected by identity (go-to-k/cdkd#5487)', () => {
+    it('a live-only top-level GSI is left out and warned about; one only the template names is adopted', async () => {
+      serve({ gsiStatus: 'ACTIVE' });
+      const recorded = props();
+      const before = warned().length;
+      const left = (await provider.readUnsettled(
+        TABLE,
+        'T',
+        TYPE,
+        new Set(['GlobalSecondaryIndexes']),
+        recorded,
+        recorded
+      )) as Record<string, any>;
+      expect(left['GlobalSecondaryIndexes']).toEqual([]);
+      expect(warned().slice(before).some((l) => l.includes('IndexName g') && l.includes('leaves it in place'))).toBe(true);
+      const template = props({
+        GlobalSecondaryIndexes: [
+          { IndexName: 'g', KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }], Projection: { ProjectionType: 'ALL' } },
+        ],
+      });
+      const adopted = (await provider.readUnsettled(
+        TABLE,
+        'T',
+        TYPE,
+        new Set(['GlobalSecondaryIndexes']),
+        recorded,
+        template
+      )) as Record<string, any>;
+      expect(adopted['GlobalSecondaryIndexes'].map((g: any) => g.IndexName)).toEqual(['g']);
+    });
+
+    it('a live-only replica region is warned about', async () => {
+      serve({ remote: { status: 'ACTIVE' } });
+      const recorded = props();
+      const before = warned().length;
+      await provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded, recorded);
+      expect(warned().slice(before).some((l) => l.includes('Region eu-west-1') && l.includes('--replica-updates Delete'))).toBe(true);
+    });
+
+    it("a live-only entry in a replica's own index list is left out", async () => {
+      serve({ gsiStatus: 'ACTIVE' });
+      const recorded = props({}, { GlobalSecondaryIndexes: [{ IndexName: 'other', ContributorInsightsSpecification: { Enabled: false } }] });
+      // Premise: the readback itself lists g on the replica.
+      const snapshot = (await provider.readCurrentState(TABLE, 'T', TYPE, recorded)) as Record<string, any>;
+      expect(((snapshot['Replicas'][0]['GlobalSecondaryIndexes'] ?? []) as Array<{ IndexName: string }>).map((g) => g.IndexName)).toContain('g');
+      const live = (await provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded, recorded)) as Record<string, any>;
+      const replicaIndexes = (live['Replicas'][0]['GlobalSecondaryIndexes'] ?? []) as Array<{ IndexName: string }>;
+      expect(replicaIndexes.map((g) => g.IndexName)).not.toContain('g');
     });
   });
 });

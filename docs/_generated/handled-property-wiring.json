@@ -5966,7 +5966,6 @@
             "convergeReplicaSettings",
             "create",
             "readCurrentState",
-            "readUnsettled",
             "update",
             "updateInScope"
           ]
@@ -6090,6 +6089,7 @@
       "blindSpots": [
         "computed key in canonicalizeDriftProperties()",
         "computed key in collectDesiredKeyAttributeNames()",
+        "computed key in readUnsettled()",
         "computed key in replicationImpliedStreamSpecification()",
         "computed key in updateInScope()",
         "extractLocalTags(...) in updateInScope()",

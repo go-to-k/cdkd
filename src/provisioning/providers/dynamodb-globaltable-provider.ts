@@ -317,59 +317,107 @@ function maskLeafValue(value: unknown, maskSecrets: SecretMasker): unknown {
  * `unsettledProperties`, for the helpers that make its sends. Absent outside
  * an update (create, delete, a read), where marking does nothing.
  */
-/** go-to-k/cdkd#5487: a bag's `Replicas` entries by `Region`. */
-function replicasByRegion(
-  properties: Record<string, unknown> | undefined
-): Map<string, Record<string, unknown>> {
-  const out = new Map<string, Record<string, unknown>>();
-  const replicas = properties?.['Replicas'];
-  if (!Array.isArray(replicas)) return out;
-  for (const entry of replicas) {
-    const record = asRecord(entry);
-    if (record !== undefined && typeof record['Region'] === 'string')
-      out.set(record['Region'], record);
-  }
-  return out;
-}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
- * go-to-k/cdkd#5487: `live` restricted to the members `own` (the record) or
- * `wanted` (the template) names, recursively through plain objects. A member
- * neither names keeps the record's value (absent stays absent); `Tags` at any
- * depth always keep the record's value (tags merge).
+ * go-to-k/cdkd#5487: the identities a collection's entries are keyed by. A list
+ * whose every entry (live, recorded and declared) is an object carrying one of
+ * these is projected entry by entry; any other list is an ordinary value.
  */
-function projectNamedMembers(
-  live: Record<string, unknown>,
-  own: Record<string, unknown> | undefined,
-  wanted: Record<string, unknown> | undefined
-): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  if (Object.hasOwn(live, 'Region')) out['Region'] = live['Region'];
-  const named = new Set([...Object.keys(own ?? {}), ...Object.keys(wanted ?? {})]);
-  for (const key of named) {
-    if (key === 'Region') continue;
-    if (key === 'Tags') {
-      if (own !== undefined && Object.hasOwn(own, 'Tags')) out['Tags'] = own['Tags'];
-      continue;
+const IDENTITY_KEYS = ['Region', 'IndexName', 'AttributeName'] as const;
+
+function identityKeyOf(...lists: unknown[][]): string | undefined {
+  const entries = lists.flat();
+  if (entries.length === 0) return undefined;
+  return IDENTITY_KEYS.find((key) =>
+    entries.every((entry) => isPlainObject(entry) && typeof entry[key] === 'string')
+  );
+}
+
+/** A live entry the projection left out: no record or template names it. */
+export interface UnnamedLiveEntry {
+  /** The identity key (`Region`, `IndexName`, ...) and its value. */
+  identity: string;
+  value: string;
+  /** Where it sits, as a member path (`Replicas`, `Replicas[us-east-1].GlobalSecondaryIndexes`). */
+  path: string;
+}
+
+/**
+ * go-to-k/cdkd#5487: the ONE projection every value `readUnsettled` returns
+ * goes through, so convergence never removes or resets what neither the record
+ * (`own`) nor the template (`wanted`) names:
+ *
+ * - a plain object keeps only the members `own` or `wanted` names, each
+ *   projected in turn; a member neither names keeps the record's value, absent
+ *   staying absent; `Tags` always keep the record's (tags merge);
+ * - a list keyed by an identity (`IDENTITY_KEYS`: replicas by `Region`,
+ *   indexes by `IndexName`, ...) keeps only the live entries whose identity
+ *   `own` or `wanted` names, each projected against its named counterparts; an
+ *   entry only the template names is ADOPTED (on the previous side, so it is
+ *   not created again); a live entry neither names is left out (never removed)
+ *   and reported in `unnamed`;
+ * - anything else is the live value.
+ */
+function projectNamed(
+  live: unknown,
+  own: unknown,
+  wanted: unknown,
+  path: string,
+  unnamed: UnnamedLiveEntry[]
+): unknown {
+  if (isPlainObject(live) && (isPlainObject(own) || isPlainObject(wanted))) {
+    const ownBag = isPlainObject(own) ? own : undefined;
+    const wantedBag = isPlainObject(wanted) ? wanted : undefined;
+    const out: Record<string, unknown> = {};
+    for (const key of IDENTITY_KEYS) if (Object.hasOwn(live, key)) out[key] = live[key];
+    const named = new Set([...Object.keys(ownBag ?? {}), ...Object.keys(wantedBag ?? {})]);
+    for (const key of named) {
+      if ((IDENTITY_KEYS as readonly string[]).includes(key)) continue;
+      if (key === 'Tags') {
+        if (ownBag !== undefined && Object.hasOwn(ownBag, 'Tags')) out['Tags'] = ownBag['Tags'];
+        continue;
+      }
+      if (!Object.hasOwn(live, key) || live[key] === undefined) continue;
+      out[key] = projectNamed(
+        live[key],
+        ownBag?.[key],
+        wantedBag?.[key],
+        `${path}.${key}`,
+        unnamed
+      );
     }
-    if (!Object.hasOwn(live, key) || live[key] === undefined) continue;
-    const value = live[key];
-    const ownValue = own?.[key];
-    const wantedValue = wanted?.[key];
-    out[key] =
-      isPlainObject(value) && (isPlainObject(ownValue) || isPlainObject(wantedValue))
-        ? projectNamedMembers(
-            value,
-            isPlainObject(ownValue) ? ownValue : undefined,
-            isPlainObject(wantedValue) ? wantedValue : undefined
-          )
-        : value;
+    return out;
   }
-  return out;
+  if (Array.isArray(live)) {
+    const ownList = Array.isArray(own) ? own : [];
+    const wantedList = Array.isArray(wanted) ? wanted : [];
+    const id = identityKeyOf(live, ownList, wantedList);
+    if (id === undefined) return live;
+    const byId = (list: unknown[]): Map<string, Record<string, unknown>> =>
+      new Map(
+        list.map((entry) => [
+          (entry as Record<string, string>)[id]!,
+          entry as Record<string, unknown>,
+        ])
+      );
+    const ownById = byId(ownList);
+    const wantedById = byId(wantedList);
+    return live.flatMap((entry) => {
+      const value = (entry as Record<string, string>)[id]!;
+      const ownEntry = ownById.get(value);
+      const wantedEntry = wantedById.get(value);
+      if (ownEntry === undefined && wantedEntry === undefined) {
+        unnamed.push({ identity: id, value, path });
+        return [];
+      }
+      return [projectNamed(entry, ownEntry, wantedEntry, `${path}[${value}]`, unnamed)];
+    });
+  }
+  return live;
 }
 
 /**
@@ -8034,14 +8082,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    *
    * - a PAY_PER_REQUEST table reports no `WriteProvisionedThroughputSettings`
    *   (the readback's `{}` placeholder, which no template declares);
-   * - `Replicas` is PROJECTED onto what the record or the template names, so
-   *   convergence never removes or resets what neither named: a live-only
-   *   region is left out (never deleted), and within a replica a live member
-   *   (deletion protection, a KMS key, a policy, at any depth) is kept only
-   *   when the record or the template names it — otherwise the record's
-   *   value stands, absent staying absent. `Tags` always keep the record's
-   *   value: tags merge (CloudFormation removes only the recorded tags a
-   *   template dropped), so a live-only tag must never become a removal.
+   * - every unsettled value goes through ONE projection (`projectNamed`) onto
+   *   what the record or the template names, so convergence never removes or
+   *   resets what neither named. Collections keyed by an identity — `Replicas`
+   *   (by `Region`), `GlobalSecondaryIndexes` and each replica's
+   *   `GlobalSecondaryIndexes` (by `IndexName`), `AttributeDefinitions` (by
+   *   `AttributeName`) — keep only named entries (a live-only one is left in
+   *   place, never deleted, and warned about); within an entry or object a live
+   *   member (deletion protection, a KMS key, a policy, autoscaling settings, at
+   *   any depth) is kept only when named, else the record's value stands.
+   *   `Tags` always keep the record's value: tags merge (CloudFormation removes
+   *   only the recorded tags a template dropped).
    */
   async readUnsettled(
     physicalId: string,
@@ -8057,20 +8108,24 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     if (typeof live !== 'object' || live === null) return live;
     const out: Record<string, unknown> = { ...live };
     if (out['BillingMode'] === 'PAY_PER_REQUEST') delete out['WriteProvisionedThroughputSettings'];
-    if (names.has('Replicas') && Array.isArray(out['Replicas'])) {
-      const recorded = replicasByRegion(recordedProperties);
-      const desired = replicasByRegion(desiredProperties);
-      out['Replicas'] = (out['Replicas'] as unknown[]).flatMap((entry) => {
-        const live = asRecord(entry);
-        const region = live?.['Region'];
-        if (live === undefined || typeof region !== 'string') return [];
-        const own = recorded.get(region);
-        const wanted = desired.get(region);
-        // A region neither the record nor the template names (a replica added
-        // out of band) is not on the previous side, so it is never removed.
-        if (own === undefined && wanted === undefined) return [];
-        return [projectNamedMembers(live, own, wanted)];
-      });
+    // Every unsettled value goes through the one projection (`projectNamed`):
+    // a collection keyed by an identity (replicas, indexes, each replica's
+    // indexes, attribute definitions) and every object member below it.
+    const unnamed: UnnamedLiveEntry[] = [];
+    for (const name of names) {
+      if (!Object.hasOwn(out, name)) continue;
+      out[name] = projectNamed(
+        out[name],
+        recordedProperties?.[name],
+        desiredProperties?.[name],
+        name,
+        unnamed
+      );
+    }
+    for (const entry of unnamed) {
+      this.logger.warn(
+        safeMsg`${logicalId} (${resourceType}): ${entry.path} on AWS holds ${entry.identity} ${entry.value}, which neither the record nor the template declares, so cdkd leaves it in place. If the failed update added it and it should not be there, remove it by hand (for a replica: aws dynamodb update-table --replica-updates Delete; for an index: --global-secondary-index-updates Delete).`
+      );
     }
     return out;
   }
