@@ -105,8 +105,8 @@ unreached ones stood down with a four-field comment.
 
 **Resolve every premise against the tree at CLAIM time**, the issue's OWN
 record included (its comments; a body's "conditional on #N": read N's `state`;
-an umbrella's row ticks lag its claim-release comments (`ship.md`'s "Release
-the claims"), so read those and the PRs they name BEFORE ranking a row, #1160) —
+an umbrella's row ticks lag its claim-release comments — `ship.md`'s "Release
+the claims" — so read those and the PRs they name BEFORE ranking a row, #1160) —
 already-done, not-yet-true and WRONG look identical from the title. Grep the
 asserted SYMBOL, not the body's paths or line numbers; a body PROPOSING a mechanism has no symbol, so resolve its EFFECT — what on
 `origin/main` already produces it (#2286). On an empty grep,
