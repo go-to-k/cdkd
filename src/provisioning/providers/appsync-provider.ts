@@ -107,6 +107,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { markNotGone } from '../not-gone.js';
 import {
   AmbiguousCreateLatch,
@@ -3002,6 +3003,8 @@ export class AppSyncProvider implements ResourceProvider {
       // malformed the API may still exist, and the rollback below is the only
       // thing that keeps it from orphaning.
       createdApiId = response.graphqlApi?.apiId;
+      // go-to-k/cdkd#5511: report before the follow-up calls.
+      if (createdApiId) reportCreatedResource(logicalId, resourceType, createdApiId);
 
       const apiId = response.graphqlApi!.apiId!;
       // Issue #4687: the SDK replayed this CreateGraphqlApi inside its `send`,
@@ -3058,6 +3061,7 @@ export class AppSyncProvider implements ResourceProvider {
         markAuxiliaryFailure(error, logicalId);
         try {
           await this.getClient().send(new DeleteGraphqlApiCommand({ apiId: createdApiId }));
+          retractCreatedResource(logicalId, resourceType, createdApiId);
           this.logger.debug(`Rolled back partially-created GraphQL API ${createdApiId}`);
         } catch (rollbackError) {
           apiLeftBehind = true;

@@ -12,6 +12,11 @@ import {
 } from '../../../src/provisioning/resource-name.js';
 import { markRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
 import { markCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  reportCreatedResource,
+  retractCreatedResource,
+} from '../../../src/provisioning/created-resource-sink.js';
+import { classifyFailedOp } from '../../../src/deployment/rollback-executor.js';
 import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { RESOURCE_NOT_FOUND, type CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -2299,6 +2304,151 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     });
   });
 
+  // go-to-k/cdkd#5511: the per-resource deadline rejects while the provider
+  // keeps running and drops the marked error it throws later, so the proof
+  // must already be on the engine's sink when the deadline fires.
+  describe('a CREATE that outlives its resource deadline (go-to-k/cdkd#5511)', () => {
+    const tmpl: CloudFormationTemplate = { Resources: { B: { Type: 'AWS::S3::Bucket', Properties: {} } } };
+
+    /**
+     * `create` runs `beforeWait`, then waits until the test releases it, then
+     * throws `markCreatedBeforeFailure` of `b-1` (the error the deadline drops).
+     */
+    function racingCreateEngine(beforeWait: () => void) {
+      const changes = new Map([['B', { ...makeChange('B'), desiredProperties: { p: 'new' } } as ResourceChange]]);
+      const engine = buildEngine({
+        changes,
+        deps: { B: [] },
+        noRollback: true,
+        currentEtag: 'e0',
+        engineOptions: { resourceWarnAfterMs: 10, resourceTimeoutMs: 60 },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: {
+            getProviderFor: () => {
+              provider: { create: ReturnType<typeof vi.fn>; resourceIdentity: ReturnType<typeof vi.fn> };
+            };
+          };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const lateThrow = vi.fn();
+      provider.create.mockImplementation(async () => {
+        beforeWait();
+        await gate;
+        lateThrow();
+        throw markCreatedBeforeFailure(new Error('wait failed'), 'B', 'AWS::S3::Bucket', 'b-1');
+      });
+      return { engine, provider, release, lateThrow };
+    }
+
+    async function journaledAfterDeadline(beforeWait: () => void) {
+      const { engine, provider, release, lateThrow } = racingCreateEngine(beforeWait);
+      try {
+        await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+      } finally {
+        release();
+      }
+      // The deadline won: the provider's marked error had not been thrown.
+      expect(lateThrow).not.toHaveBeenCalled();
+      const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      return { op: seg.failedOperations.find((o: { logicalId: string }) => o.logicalId === 'B'), provider };
+    }
+
+    it('journals the id the provider reported when its create call returned', async () => {
+      const { op } = await journaledAfterDeadline(() =>
+        reportCreatedResource('B', 'AWS::S3::Bucket', 'b-1')
+      );
+      expect(op.physicalId).toBe('b-1');
+      expect(op.physicalIdRecoveredFromError).toBe(true);
+      expect(op.provisionedBy).toBe('sdk');
+      // `cdkd rollback --revert-failed` deletes it.
+      expect(classifyFailedOp(op, {})).toBe('delete-failed-create');
+    });
+
+    it("journals the report's identity token without a live read", async () => {
+      const { op, provider } = await journaledAfterDeadline(() =>
+        reportCreatedResource('B', 'AWS::S3::Bucket', 'b-1', 'reported-token')
+      );
+      expect(op.createdResourceIdentity).toBe('reported-token');
+      expect(provider.resourceIdentity).not.toHaveBeenCalled();
+    });
+
+    it('journals no id when the create call itself had not returned', async () => {
+      const { op } = await journaledAfterDeadline(() => {});
+      expect(op).toBeDefined();
+      expect(op.physicalId).toBeUndefined();
+      expect(op).not.toHaveProperty('physicalIdRecoveredFromError');
+      expect(classifyFailedOp(op, {})).not.toBe('delete-failed-create');
+    });
+
+    it('journals no id for a withdrawn report (the provider deleted its own resource)', async () => {
+      const { op } = await journaledAfterDeadline(() => {
+        reportCreatedResource('B', 'AWS::S3::Bucket', 'b-1');
+        retractCreatedResource('B', 'AWS::S3::Bucket', 'b-1');
+      });
+      expect(op.physicalId).toBeUndefined();
+    });
+
+    it.each([
+      ['another logical id', 'Other', 'AWS::S3::Bucket'],
+      ['another type (a nested child sharing the row id)', 'B', 'AWS::Kinesis::Stream'],
+    ])('ignores a report naming %s', async (_label, logicalId, resourceType) => {
+      const { op } = await journaledAfterDeadline(() =>
+        reportCreatedResource(logicalId, resourceType, 'b-1')
+      );
+      expect(op.physicalId).toBeUndefined();
+    });
+
+    // The error's mark wins, and the resource is journaled once.
+    it('journals one entry under the mark when both the mark and a report reach the engine', async () => {
+      const changes = new Map([['B', { ...makeChange('B'), desiredProperties: { p: 'new' } } as ResourceChange]]);
+      const engine = buildEngine({ changes, deps: { B: [] }, noRollback: true, currentEtag: 'e0' });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.create.mockImplementation(() => {
+        reportCreatedResource('B', 'AWS::S3::Bucket', 'b-reported');
+        return Promise.reject(markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::S3::Bucket', 'b-marked'));
+      });
+      await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+      const ops = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations;
+      expect(ops).toHaveLength(1);
+      expect(ops[0].physicalId).toBe('b-marked');
+    });
+
+    // Only the deadline drops the provider's error: any other error is the
+    // provider's own, and its lack of a mark is deliberate (a catch that
+    // deleted its resource), so a report it left standing is not journaled.
+    it('journals no id from a report when the provider itself threw unmarked', async () => {
+      const changes = new Map([['B', { ...makeChange('B'), desiredProperties: { p: 'new' } } as ResourceChange]]);
+      const engine = buildEngine({ changes, deps: { B: [] }, noRollback: true, currentEtag: 'e0' });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.create.mockImplementation(() => {
+        reportCreatedResource('B', 'AWS::S3::Bucket', 'b-1');
+        return Promise.reject(new Error('cleaned up after the wait failed'));
+      });
+      await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+      const op = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations[0];
+      expect(op.physicalId).toBeUndefined();
+      expect(op).not.toHaveProperty('physicalIdRecoveredFromError');
+    });
+
+    it('control: a report outside any deploy operation is a no-op', () => {
+      expect(() => reportCreatedResource('B', 'AWS::S3::Bucket', 'b-1')).not.toThrow();
+    });
+  });
+
   // go-to-k/cdkd#4604: a replacement runs the same `create()`, journaled as an
   // UPDATE naming the OLD resource; the new one its create made is journaled
   // beside it as a proven orphan of the same logical id.
@@ -2322,6 +2472,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         inPlace?: boolean;
         prevType?: string;
         prevPhysicalId?: string;
+        engineOptions?: Record<string, unknown>;
       } = {}
     ) {
       const type = opts.type ?? 'AWS::SQS::Queue';
@@ -2345,6 +2496,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
             ...(opts.prevPhysicalId !== undefined && { physicalId: opts.prevPhysicalId }),
           },
         },
+        ...(opts.engineOptions && { engineOptions: opts.engineOptions }),
       });
       const internals = engine as unknown as {
         stateBackend: { saveState: ReturnType<typeof vi.fn> };
@@ -2366,6 +2518,36 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         Record<string, unknown>
       >;
     }
+
+    // go-to-k/cdkd#5511: a replacement create that reported its new resource
+    // and then outlived the deadline journals the orphan from the sink.
+    it('journals the replacement orphan from a report when the deadline dropped the marked error', async () => {
+      const { engine, provider } = replacingEngine(new Error('unused'), {
+        engineOptions: { resourceWarnAfterMs: 10, resourceTimeoutMs: 60 },
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      provider.create.mockImplementation(async () => {
+        reportCreatedResource('B', 'AWS::SQS::Queue', 'b-new');
+        await gate;
+        throw markCreatedBeforeFailure(new Error('wait failed'), 'B', 'AWS::SQS::Queue', 'b-new');
+      });
+      try {
+        await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      } finally {
+        release();
+      }
+      const ops = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations as Array<
+        Record<string, unknown>
+      >;
+      expect(ops.map((o) => [o.changeType, o.physicalId])).toEqual([
+        ['UPDATE', 'b-old'],
+        ['CREATE', 'b-new'],
+      ]);
+      expect(ops[1]).toMatchObject({ physicalIdRecoveredFromError: true, replacedPhysicalId: 'b-old' });
+    });
 
     // go-to-k/cdkd#4655: the replacement's new resource carries its token too;
     // the UPDATE naming the replaced record does not.

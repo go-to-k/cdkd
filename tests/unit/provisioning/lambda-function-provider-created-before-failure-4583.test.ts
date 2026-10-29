@@ -39,6 +39,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { LambdaFunctionProvider } from '../../../src/provisioning/providers/lambda-function-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 // go-to-k/cdkd#4583: a post-create call failing after CreateFunction returned
 // names the function for the failed-CREATE journal, unless the atomicity
@@ -111,5 +115,54 @@ describe('LambdaFunctionProvider.create created-before-failure mark (#4583)', ()
     const err = await caught(provider.create('Fn', TYPE, noRole));
     expect(mockLambdaSend).not.toHaveBeenCalled();
     expect(createdBeforeFailure(err, 'Fn', TYPE)).toBeUndefined();
+  });
+
+  it('reports the function to the sink before the first post-create call (#5511)', async () => {
+    const sink = new CreatedResourceSink('Fn', TYPE);
+    let reportAtFollowUp: unknown = 'not-called';
+    mockLambdaSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof CreateFunctionCommand) {
+        return { FunctionName: FN, FunctionArn: `arn:aws:lambda:us-east-1:1:function:${FN}` };
+      }
+      if (cmd instanceof PutFunctionConcurrencyCommand) {
+        reportAtFollowUp = sink.report;
+        throw new Error('InvalidParameterValue');
+      }
+      if (cmd instanceof DeleteFunctionCommand) throw new Error('AccessDeniedException');
+      return {};
+    });
+    await expect(
+      collectCreatedResources(sink, () =>
+        provider.create('Fn', TYPE, { ...BASE, ReservedConcurrentExecutions: 5 })
+      )
+    ).rejects.toThrow();
+    expect(reportAtFollowUp).toMatchObject({ physicalId: FN });
+    expect(sink.report).toMatchObject({ physicalId: FN });
+  });
+
+  it('retracts the report when the post-create cleanup deleted the function (#5511)', async () => {
+    const sink = new CreatedResourceSink('Fn', TYPE);
+    mockLambdaSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof CreateFunctionCommand) return { FunctionName: FN };
+      if (cmd instanceof PutFunctionRecursionConfigCommand) throw new Error('InvalidParameterValue');
+      return {};
+    });
+    await expect(
+      collectCreatedResources(sink, () =>
+        provider.create('Fn', TYPE, { ...BASE, RecursiveLoop: 'Allow' })
+      )
+    ).rejects.toThrow();
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('reports nothing when CreateFunction itself fails (#5511)', async () => {
+    const sink = new CreatedResourceSink('Fn', TYPE);
+    mockLambdaSend.mockRejectedValue(
+      Object.assign(new Error('Function already exist'), { name: 'ResourceConflictException' })
+    );
+    await expect(
+      collectCreatedResources(sink, () => provider.create('Fn', TYPE, BASE))
+    ).rejects.toThrow();
+    expect(sink.report).toBeUndefined();
   });
 });

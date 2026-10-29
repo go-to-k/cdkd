@@ -57,6 +57,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import {
   markNonRetryable,
@@ -296,6 +297,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       }
       leftBehindArn = policyArn;
       createdPolicyIdentity = policyIdentityToken(response.Policy?.PolicyId);
+      reportCreatedResource(logicalId, resourceType, policyArn, createdPolicyIdentity); // go-to-k/cdkd#5511
       log.debug(`Created IAM managed policy: ${v(policyArn)}`);
 
       // CreatePolicy has succeeded — AWS has committed the policy. Wire up
@@ -315,6 +317,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           await this.detachAllPrincipals(policyArn);
           await this.deleteAllNonDefaultVersions(policyArn);
           await this.iamClient.send(new DeletePolicyCommand({ PolicyArn: policyArn }));
+          retractCreatedResource(logicalId, resourceType, policyArn);
           leftBehindArn = undefined;
           log.debug(
             `Cleaned up partially-created managed policy ${logicalId} (${v(policyArn)}) after attachment failure`

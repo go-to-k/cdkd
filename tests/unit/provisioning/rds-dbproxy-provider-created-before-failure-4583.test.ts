@@ -34,6 +34,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { RDSDBProxyProvider } from '../../../src/provisioning/providers/rds-dbproxy-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 const TYPE = 'AWS::RDS::DBProxy';
 const PROXY_NAME = 'AuroraProxy';
@@ -106,5 +110,33 @@ describe('RDSDBProxyProvider create marks a created-before-failure proxy (#4583)
     const error = await createError(rest);
     expect(mockSend).not.toHaveBeenCalled();
     expect(createdBeforeFailure(error, 'Proxy', TYPE)).toBeUndefined();
+  });
+
+  it('reports the name to the sink before the available poll (#5511)', async () => {
+    const sink = new CreatedResourceSink('Proxy', TYPE);
+    let reportAtPoll: unknown = 'not-called';
+    mockSend.mockResolvedValueOnce({}); // create
+    mockSend.mockImplementationOnce(() => {
+      reportAtPoll = sink.report;
+      return Promise.reject(
+        Object.assign(new Error('not authorized'), { name: 'AccessDenied' })
+      );
+    });
+    await expect(
+      collectCreatedResources(sink, () => new RDSDBProxyProvider().create('Proxy', TYPE, PROPS))
+    ).rejects.toThrow();
+    expect(reportAtPoll).toEqual({ physicalId: PROXY_NAME });
+    expect(sink.report).toEqual({ physicalId: PROXY_NAME });
+  });
+
+  it('reports nothing when the create call itself fails (#5511)', async () => {
+    const sink = new CreatedResourceSink('Proxy', TYPE);
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('already exists'), { name: 'DBProxyAlreadyExistsFault' })
+    );
+    await expect(
+      collectCreatedResources(sink, () => new RDSDBProxyProvider().create('Proxy', TYPE, PROPS))
+    ).rejects.toThrow();
+    expect(sink.report).toBeUndefined();
   });
 });

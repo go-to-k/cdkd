@@ -50,6 +50,7 @@ import {
 } from '../../deployment/retryable-errors.js';
 import { markNotGone } from '../not-gone.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { generatedNameFor } from '../resource-name.js';
 
@@ -576,6 +577,8 @@ export class CodeBuildProvider implements ResourceProvider {
       const projectName = result.project!.name!;
       const projectArn = result.project!.arn!;
       createdName = projectName;
+      // go-to-k/cdkd#5511: report before the visibility call.
+      reportCreatedResource(logicalId, resourceType, createdName);
 
       // Only a declaration other than the default needs the call: a new
       // project is already PRIVATE with no role.

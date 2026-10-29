@@ -1,3 +1,4 @@
+import { clearCreatedReportOnReturn } from '../../provisioning/created-resource-sink.js';
 import type { NoEchoDeleteValues } from '../noecho-delete-reresolution.js';
 import { type RollbackRetainedCopy } from '../kept-in-history.js';
 import { type DeployEngine, EMPTY_SECRETS, InterruptedError } from '../deploy-engine.js';
@@ -546,8 +547,10 @@ export async function replaceDeleteFirstAndRecreate(
           // resolved-secrets bag around every provider create, so no
           // replacement route can silently skip the nested-stack seed.
           () =>
-            withCurrentResourceSecrets(secrets, () =>
-              replaceProvider.create(logicalId, resourceType, replaceProps, createContext)
+            clearCreatedReportOnReturn(() =>
+              withCurrentResourceSecrets(secrets, () =>
+                replaceProvider.create(logicalId, resourceType, replaceProps, createContext)
+              )
             ),
           logicalId,
           undefined,
@@ -984,10 +987,12 @@ export async function createFirstThenDeleteOld(
       () =>
         deps.withRetry(
           () =>
-            withCurrentResourceSecrets(secrets, () =>
-              input.createProvider.create(logicalId, resourceType, input.createProps, {
-                maskSecrets: createSecretMasker(secrets),
-              })
+            clearCreatedReportOnReturn(() =>
+              withCurrentResourceSecrets(secrets, () =>
+                input.createProvider.create(logicalId, resourceType, input.createProps, {
+                  maskSecrets: createSecretMasker(secrets),
+                })
+              )
             ),
           logicalId,
           undefined,

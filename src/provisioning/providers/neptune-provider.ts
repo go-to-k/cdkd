@@ -30,6 +30,7 @@ import {
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generatedNameFor } from '../resource-name.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
@@ -600,6 +601,8 @@ export class NeptuneProvider implements ResourceProvider {
       );
       clusterCreated = true;
       createdResourceId = response.DBCluster?.DbClusterResourceId;
+      // go-to-k/cdkd#5511: reported before the available wait.
+      reportCreatedResource(logicalId, resourceType, dbClusterIdentifier, createdResourceId);
 
       const cluster = response.DBCluster;
       if (!cluster) {
@@ -995,6 +998,8 @@ export class NeptuneProvider implements ResourceProvider {
       );
       instanceCreated = true;
       createdResourceId = response.DBInstance?.DbiResourceId;
+      // go-to-k/cdkd#5511: reported before the available wait.
+      reportCreatedResource(logicalId, resourceType, dbInstanceIdentifier, createdResourceId);
 
       const instance = response.DBInstance;
       if (!instance) {

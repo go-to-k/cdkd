@@ -34,6 +34,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { NeptuneProvider } from '../../../src/provisioning/providers/neptune-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 /** Route each SDK command by its class name to a handler. */
@@ -134,6 +138,35 @@ describe('NeptuneProvider create marks the resource it made before failing (#458
       expect(createdBeforeFailure(error, 'Cluster', TYPE)).toBeUndefined();
     });
 
+    it('reports the identifier and resource id to the sink before the describe (#5511)', async () => {
+      const sink = new CreatedResourceSink('Cluster', TYPE);
+      let reportAtDescribe: unknown = 'not-called';
+      route({
+        CreateDBClusterCommand: () => ({
+          DBCluster: { DBClusterIdentifier: 'my-cluster', DbClusterResourceId: 'cluster-RES' },
+        }),
+        DescribeDBClustersCommand: () => {
+          reportAtDescribe = sink.report;
+          throw new Error('describe throttled');
+        },
+      });
+      await caught(
+        collectCreatedResources(sink, () => new NeptuneProvider().create('Cluster', TYPE, props))
+      );
+      const expected = { physicalId: 'my-cluster', createdResourceIdentity: 'cluster-RES' };
+      expect(reportAtDescribe).toEqual(expected);
+      expect(sink.report).toEqual(expected);
+    });
+
+    it('reports nothing when CreateDBCluster itself fails (#5511)', async () => {
+      const sink = new CreatedResourceSink('Cluster', TYPE);
+      route({ CreateDBClusterCommand: fail('DBClusterAlreadyExistsFault') });
+      await caught(
+        collectCreatedResources(sink, () => new NeptuneProvider().create('Cluster', TYPE, props))
+      );
+      expect(sink.report).toBeUndefined();
+    });
+
     it('does not mark a malformed-Tags pre-flight refusal', async () => {
       const error = await caught(
         new NeptuneProvider().create('Cluster', TYPE, { ...props, Tags: 'not-a-list' })
@@ -177,6 +210,31 @@ describe('NeptuneProvider create marks the resource it made before failing (#458
         'Timed out waiting for Neptune DBInstance my-db to become available'
       );
       expect(createdBeforeFailure(error, 'Db', TYPE)).toBe(physicalId);
+    });
+
+    it('reports the identifier and resource id to the sink before the describe (#5511)', async () => {
+      const sink = new CreatedResourceSink('Db', TYPE);
+      let reportAtDescribe: unknown = 'not-called';
+      route({
+        CreateDBInstanceCommand: () => ({
+          DBInstance: { DBInstanceIdentifier: 'my-db', DbiResourceId: 'db-RES' },
+        }),
+        DescribeDBInstancesCommand: () => {
+          reportAtDescribe = sink.report;
+          throw new Error('describe throttled');
+        },
+      });
+      await caught(collectCreatedResources(sink, () => new NeptuneProvider().create('Db', TYPE, props)));
+      const expected = { physicalId: 'my-db', createdResourceIdentity: 'db-RES' };
+      expect(reportAtDescribe).toEqual(expected);
+      expect(sink.report).toEqual(expected);
+    });
+
+    it('reports nothing when CreateDBInstance itself fails (#5511)', async () => {
+      const sink = new CreatedResourceSink('Db', TYPE);
+      route({ CreateDBInstanceCommand: fail('DBInstanceAlreadyExists') });
+      await caught(collectCreatedResources(sink, () => new NeptuneProvider().create('Db', TYPE, props)));
+      expect(sink.report).toBeUndefined();
     });
 
     it('does not mark when CreateDBInstance itself fails', async () => {

@@ -37,6 +37,10 @@ import {
 } from '../../../src/deployment/retryable-errors.js';
 import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 // go-to-k/cdkd#2319: every create / update / delete wrap is persisted to
 // `deployments/{runId}.jsonl`, so an AWS-authored failure is named by its class
@@ -197,5 +201,33 @@ describe('KinesisStreamProvider thrown wraps withhold AWS text (#2319)', () => {
     expect(createdBeforeFailure(failure, 'Stream', TYPE)).toBe('orders');
     const warns = warn.mock.calls.map((w) => String(w[0]));
     expect([...warns, ...debugLines()].join('\n')).not.toContain('s3cr3t');
+  });
+
+  it('reports the stream name to the sink before the ACTIVE wait (#5511)', async () => {
+    const sink = new CreatedResourceSink('Stream', TYPE);
+    let reportAtWait: unknown = 'not-called';
+    mockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name === 'CreateStreamCommand') return {};
+      if (reportAtWait === 'not-called') reportAtWait = sink.report;
+      throw denied();
+    });
+
+    await caught(
+      collectCreatedResources(sink, () => provider.create('Stream', TYPE, PROPS, { maskSecrets: mask }))
+    );
+
+    expect(reportAtWait).toEqual({ physicalId: 'orders' });
+    expect(sink.report).toEqual({ physicalId: 'orders' });
+  });
+
+  it('reports nothing when CreateStream itself fails (#5511)', async () => {
+    const sink = new CreatedResourceSink('Stream', TYPE);
+    mockSend.mockRejectedValue(denied());
+
+    await caught(
+      collectCreatedResources(sink, () => provider.create('Stream', TYPE, PROPS, { maskSecrets: mask }))
+    );
+
+    expect(sink.report).toBeUndefined();
   });
 });

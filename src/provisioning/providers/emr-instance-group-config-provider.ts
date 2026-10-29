@@ -45,6 +45,7 @@ import { isRedactedRecordedValue } from '../redacted-delete-address.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
   markNonRetryable,
   markRedactedCause,
@@ -399,6 +400,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
       if (groupId) groupsCreatedByThisProcess.add(groupId);
       // Before the lookup below, so a throw in it still marks the group created.
       createdGroupId = groupId;
+      reportCreatedResource(logicalId, resourceType, groupId ?? ''); // go-to-k/cdkd#5511
       // Issue #4687: the SDK replayed this AddInstanceGroups inside its `send`, so
       // an earlier attempt may have made one too. Detection only.
       const replayWindow = replayedSendWindow(response, attemptStartMs);
@@ -460,6 +462,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
           log.warn(
             safeMsg`Scaled partially-created EMR TASK instance group ${logicalId} (${leftBehindGroupId}) to 0; EMR has no delete API, so the empty group stays on cluster ${log.value(jobFlowId)} until it terminates`
           );
+          retractCreatedResource(logicalId, resourceType, leftBehindGroupId);
           leftBehindGroupId = undefined;
         } catch (cleanupError) {
           const cleanupHead = safeMsg`Failed to scale partially-created EMR TASK instance group ${logicalId} (${leftBehindGroupId}) to 0: `;

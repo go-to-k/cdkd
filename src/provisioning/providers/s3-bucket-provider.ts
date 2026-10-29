@@ -112,6 +112,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
   AMBIGUOUS_LATCH_TTL_MS,
   AmbiguousCreateLatch,
@@ -7404,6 +7405,8 @@ export class S3BucketProvider implements ResourceProvider {
         }
         createdNewBucket = adoptedOwnLeftover || preflight.kind === 'absent';
         bucketLeftBehind = createdNewBucket;
+        // go-to-k/cdkd#5511: reported before the configuration calls.
+        if (createdNewBucket) reportCreatedResource(logicalId, resourceType, bucketName);
         // A fresh create answers the question: the earlier attempt made nothing.
         if (createdNewBucket) windowSpent = true;
         if (preflight.kind === 'region' && preflight.region !== 'us-east-1') {
@@ -7559,6 +7562,7 @@ export class S3BucketProvider implements ResourceProvider {
           try {
             await this.s3Client.send(new DeleteBucketCommand({ Bucket: bucketName }));
             bucketLeftBehind = false;
+            retractCreatedResource(logicalId, resourceType, bucketName);
             this.logger.debug(
               `Cleaned up partially-created S3 bucket ${displaySafe(logicalId)} (${this.shown(bucketName)}) after wiring failure`
             );

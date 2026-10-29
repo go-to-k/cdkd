@@ -34,6 +34,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 /**
@@ -132,6 +136,31 @@ describe('RDSProvider create marks the resource it made before failing (#4583)',
       expect(createdBeforeFailure(error, 'Db', TYPE)).toBeUndefined();
     });
 
+    it('reports the identifier and resource id to the sink before the describe (#5511)', async () => {
+      const sink = new CreatedResourceSink('Db', TYPE);
+      let reportAtDescribe: unknown = 'not-called';
+      route({
+        CreateDBInstanceCommand: () => ({
+          DBInstance: { DBInstanceIdentifier: 'my-db', DbiResourceId: 'db-RES' },
+        }),
+        DescribeDBInstancesCommand: () => {
+          reportAtDescribe = sink.report;
+          throw new Error('describe throttled');
+        },
+      });
+      await caught(collectCreatedResources(sink, () => new RDSProvider().create('Db', TYPE, props)));
+      const expected = { physicalId: 'my-db', createdResourceIdentity: 'db-RES' };
+      expect(reportAtDescribe).toEqual(expected);
+      expect(sink.report).toEqual(expected);
+    });
+
+    it('reports nothing when CreateDBInstance itself fails (#5511)', async () => {
+      const sink = new CreatedResourceSink('Db', TYPE);
+      route({ CreateDBInstanceCommand: fail('DBInstanceAlreadyExists') });
+      await caught(collectCreatedResources(sink, () => new RDSProvider().create('Db', TYPE, props)));
+      expect(sink.report).toBeUndefined();
+    });
+
     it('does not mark a malformed-Tags pre-flight refusal', async () => {
       const error = await caught(
         new RDSProvider().create('Db', TYPE, { ...props, Tags: 'not-a-list' })
@@ -184,6 +213,40 @@ describe('RDSProvider create marks the resource it made before failing (#4583)',
       } finally {
         vi.restoreAllMocks();
       }
+    });
+
+    it('reports the identifier and resource id to the sink before the describe (#5511)', async () => {
+      const sink = new CreatedResourceSink('Cluster', TYPE);
+      let reportAtDescribe: unknown = 'not-called';
+      route({
+        CreateDBClusterCommand: () => ({
+          DBCluster: { DBClusterIdentifier: 'my-cluster', DbClusterResourceId: 'cluster-RES' },
+        }),
+        DescribeDBClustersCommand: () => {
+          reportAtDescribe = sink.report;
+          throw new Error('describe throttled');
+        },
+        DeleteDBClusterCommand: fail('delete refused'),
+      });
+      await caught(
+        collectCreatedResources(sink, () => new RDSProvider().create('Cluster', TYPE, props))
+      );
+      const expected = { physicalId: 'my-cluster', createdResourceIdentity: 'cluster-RES' };
+      expect(reportAtDescribe).toEqual(expected);
+      expect(sink.report).toEqual(expected);
+    });
+
+    it('retracts the report when the self-cleanup DeleteDBCluster succeeded (#5511)', async () => {
+      const sink = new CreatedResourceSink('Cluster', TYPE);
+      route({
+        CreateDBClusterCommand: () => ({ DBCluster: { DBClusterIdentifier: 'my-cluster' } }),
+        DescribeDBClustersCommand: fail('describe throttled'),
+        DeleteDBClusterCommand: () => ({}),
+      });
+      await caught(
+        collectCreatedResources(sink, () => new RDSProvider().create('Cluster', TYPE, props))
+      );
+      expect(sink.report).toBeUndefined();
     });
 
     it('does not mark when the self-cleanup DeleteDBCluster succeeded', async () => {

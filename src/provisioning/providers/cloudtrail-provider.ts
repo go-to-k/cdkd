@@ -62,6 +62,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { markNotGone } from '../not-gone.js';
 import { generatedNameFor } from '../resource-name.js';
 
@@ -589,6 +590,8 @@ export class CloudTrailProvider implements ResourceProvider {
       trailCreated = true;
       const trailArn = result.TrailARN!;
       createdTrailArn = result.TrailARN;
+      // go-to-k/cdkd#5511: report before the selectors and StartLogging.
+      if (createdTrailArn) reportCreatedResource(logicalId, resourceType, createdTrailArn);
 
       // Apply EventSelectors / AdvancedEventSelectors if specified (one
       // separate call carrying both lists; see `eventSelectorRequest`). With

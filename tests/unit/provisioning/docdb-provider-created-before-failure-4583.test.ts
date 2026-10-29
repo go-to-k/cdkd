@@ -35,6 +35,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { DocDBProvider } from '../../../src/provisioning/providers/docdb-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 /** Route each SDK command by its class name to a handler. */
 function route(handlers: Record<string, () => unknown>): void {
@@ -128,6 +132,36 @@ describe('DocDBProvider create marks the resource it made before failing (#4583)
       expect(createdBeforeFailure(error, 'Cluster', TYPE)).toBe(physicalId);
     });
 
+    // go-to-k/cdkd#5511: reported (with the resource id) before the available-wait.
+    it('reports the identifier and resource id before the available-wait', async () => {
+      const sink = new CreatedResourceSink('Cluster', TYPE);
+      let atDescribe: unknown = 'unset';
+      route({
+        CreateDBClusterCommand: () => ({
+          DBCluster: { DBClusterIdentifier: 'my-cluster', DbClusterResourceId: 'cluster-RES1' },
+        }),
+        DescribeDBClustersCommand: () => {
+          atDescribe = sink.report;
+          throw new Error('describe throttled');
+        },
+      });
+      await collectCreatedResources(sink, () =>
+        caught(new DocDBProvider().create('Cluster', TYPE, props))
+      );
+      const expected = { physicalId: 'my-cluster', createdResourceIdentity: 'cluster-RES1' };
+      expect(atDescribe).toEqual(expected);
+      expect(sink.report).toEqual(expected);
+    });
+
+    it('reports nothing when CreateDBCluster itself fails', async () => {
+      const sink = new CreatedResourceSink('Cluster', TYPE);
+      route({ CreateDBClusterCommand: fail('DBClusterAlreadyExistsFault') });
+      await collectCreatedResources(sink, () =>
+        caught(new DocDBProvider().create('Cluster', TYPE, props))
+      );
+      expect(sink.report).toBeUndefined();
+    });
+
     it('does not mark when CreateDBCluster itself fails', async () => {
       route({ CreateDBClusterCommand: fail('DBClusterAlreadyExistsFault') });
       const error = await caught(new DocDBProvider().create('Cluster', TYPE, props));
@@ -177,6 +211,32 @@ describe('DocDBProvider create marks the resource it made before failing (#4583)
         'Timed out waiting for DocDB DBInstance my-db to become available'
       );
       expect(createdBeforeFailure(error, 'Db', TYPE)).toBe(physicalId);
+    });
+
+    // go-to-k/cdkd#5511: reported (with the resource id) before the available-wait.
+    it('reports the identifier and resource id before the available-wait', async () => {
+      const sink = new CreatedResourceSink('Db', TYPE);
+      let atDescribe: unknown = 'unset';
+      route({
+        CreateDBInstanceCommand: () => ({
+          DBInstance: { DBInstanceIdentifier: 'my-db', DbiResourceId: 'db-RES1' },
+        }),
+        DescribeDBInstancesCommand: () => {
+          atDescribe = sink.report;
+          throw new Error('describe throttled');
+        },
+      });
+      await collectCreatedResources(sink, () => caught(new DocDBProvider().create('Db', TYPE, props)));
+      const expected = { physicalId: 'my-db', createdResourceIdentity: 'db-RES1' };
+      expect(atDescribe).toEqual(expected);
+      expect(sink.report).toEqual(expected);
+    });
+
+    it('reports nothing when CreateDBInstance itself fails', async () => {
+      const sink = new CreatedResourceSink('Db', TYPE);
+      route({ CreateDBInstanceCommand: fail('DBInstanceAlreadyExists') });
+      await collectCreatedResources(sink, () => caught(new DocDBProvider().create('Db', TYPE, props)));
+      expect(sink.report).toBeUndefined();
     });
 
     it('does not mark when CreateDBInstance itself fails', async () => {

@@ -90,6 +90,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { markNotGone } from '../not-gone.js';
 import { earliestOwnCreationTime, serverClockReading, withServerClock } from './server-clock.js';
 import { withRemovalDefaults } from '../update-removal.js';
@@ -936,6 +937,8 @@ export class EFSProvider implements ResourceProvider {
       });
 
       fileSystemId = created.fileSystemId;
+      // go-to-k/cdkd#5511: report before the availability wait.
+      reportCreatedResource(logicalId, resourceType, fileSystemId);
 
       // Wait for FileSystem to become available
       const available = await this.waitForFileSystemAvailable(
@@ -987,6 +990,7 @@ export class EFSProvider implements ResourceProvider {
           await this.getClient().send(new DeleteFileSystemCommand({ FileSystemId: fileSystemId }));
           // Deleted, so no longer a file system a replay may adopt.
           this.unconfirmedCreationTokens.delete(creationToken);
+          retractCreatedResource(logicalId, resourceType, fileSystemId);
           log.debug(`Rolled back partially-created EFS FileSystem ${fileSystemId}`);
         } catch (cleanupError) {
           fileSystemLeftBehind = true;
@@ -1559,6 +1563,7 @@ export class EFSProvider implements ResourceProvider {
 
       const mountTargetId = response.MountTargetId!;
       createdMountTargetId = mountTargetId;
+      reportCreatedResource(logicalId, resourceType, mountTargetId); // go-to-k/cdkd#5511
       log.debug(
         `Created EFS MountTarget ${logicalId}: ${mountTargetId}, waiting for available state`
       );

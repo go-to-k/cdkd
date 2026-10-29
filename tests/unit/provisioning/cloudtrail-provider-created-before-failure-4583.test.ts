@@ -37,6 +37,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { CloudTrailProvider } from '../../../src/provisioning/providers/cloudtrail-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 // go-to-k/cdkd#4583: a failure after CreateTrail returned names the trail ARN
 // (delete()'s physical id) for the failed-CREATE journal.
@@ -86,5 +90,36 @@ describe('CloudTrailProvider.create created-before-failure mark (#4583)', () => 
     const err = await caught(provider.create('Trail', TYPE, { TrailName: 'my-trail' }));
     expect(mockSend).not.toHaveBeenCalled();
     expect(createdBeforeFailure(err, 'Trail', TYPE)).toBeUndefined();
+  });
+
+  // go-to-k/cdkd#5511: the sink holds the ARN once CreateTrail returned, before
+  // the follow-up calls.
+  it('reports the trail ARN before StartLogging', async () => {
+    const sink = new CreatedResourceSink('Trail', TYPE);
+    let atStart: unknown = 'unset';
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof CreateTrailCommand) return { TrailARN: ARN };
+      if (cmd instanceof StartLoggingCommand) {
+        atStart = sink.report;
+        throw new Error('AccessDenied');
+      }
+      return {};
+    });
+    await collectCreatedResources(sink, () =>
+      caught(provider.create('Trail', TYPE, { TrailName: 'my-trail', S3BucketName: 'b' }))
+    );
+    expect(atStart).toEqual({ physicalId: ARN });
+    expect(sink.report).toEqual({ physicalId: ARN });
+  });
+
+  it('reports nothing when CreateTrail itself fails', async () => {
+    const sink = new CreatedResourceSink('Trail', TYPE);
+    mockSend.mockRejectedValue(
+      Object.assign(new Error('exists'), { name: 'TrailAlreadyExistsException' })
+    );
+    await collectCreatedResources(sink, () =>
+      caught(provider.create('Trail', TYPE, { TrailName: 'my-trail', S3BucketName: 'b' }))
+    );
+    expect(sink.report).toBeUndefined();
   });
 });

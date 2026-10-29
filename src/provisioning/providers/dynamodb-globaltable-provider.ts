@@ -78,6 +78,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { markNotGone } from '../not-gone.js';
 import { generatedNameFor } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -1571,6 +1572,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       ).send(new CreateTableCommand(createParams));
       // An absent or empty id is dropped by `markCreatedBeforeFailure`.
       createdTableId = createOut?.TableDescription?.TableId;
+      // go-to-k/cdkd#5511: report before the ACTIVE wait.
+      reportCreatedResource(logicalId, resourceType, tableName, createdTableId);
       log.debug(`CreateTable initiated for ${log.value(tableName)}, waiting for ACTIVE`);
     } catch (error) {
       // CreateTable itself failed: no table this create can attribute to
@@ -1841,6 +1844,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           }
         }
         await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: tableName }));
+        retractCreatedResource(logicalId, resourceType, tableName);
       } catch (cleanupErr) {
         tableLeftBehind = true;
         const cleanupMsg = this.cleanupFailureText(

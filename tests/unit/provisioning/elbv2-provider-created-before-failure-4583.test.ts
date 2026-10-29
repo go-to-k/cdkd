@@ -69,6 +69,10 @@ import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provide
 import { getLogger } from '../../../src/utils/logger.js';
 import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { provenNothingCreated } from '../../../src/deployment/generated-name-guard.js';
 
 const LB_TYPE = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
@@ -255,6 +259,49 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
       expect(createdBeforeFailure(error, 'Res', c.type)).toBeUndefined();
     });
 
+    it('reports the ARN before the first wiring call; a failed cleanup leaves it (#5511)', async () => {
+      const sink = new CreatedResourceSink('Res', c.type);
+      let atWiring: unknown = 'unset';
+      mockSend.mockResolvedValueOnce(c.created);
+      mockSend.mockImplementationOnce(() => {
+        atWiring = sink.report;
+        return Promise.reject(nonRetryable('wiring boom'));
+      });
+      mockSend.mockRejectedValueOnce(new Error('cleanup delete refused'));
+
+      await failure(() =>
+        collectCreatedResources(sink, () => provider.create('Res', c.type, c.props))
+      );
+
+      expect(atWiring).toEqual({ physicalId: c.arn });
+      expect(sink.report).toEqual({ physicalId: c.arn });
+    });
+
+    it('retracts the report when the cleanup delete succeeded (#5511)', async () => {
+      const sink = new CreatedResourceSink('Res', c.type);
+      mockSend.mockResolvedValueOnce(c.created);
+      mockSend.mockRejectedValueOnce(nonRetryable('wiring boom'));
+      mockSend.mockResolvedValueOnce({});
+
+      await failure(() =>
+        collectCreatedResources(sink, () => provider.create('Res', c.type, c.props))
+      );
+
+      expect(sentDeletes(c.deleteCommand)).toEqual([deleteInput(c)]);
+      expect(sink.report).toBeUndefined();
+    });
+
+    it("reports nothing when the create call's own failure is thrown (#5511)", async () => {
+      const sink = new CreatedResourceSink('Res', c.type);
+      mockSend.mockRejectedValueOnce(nonRetryable('create boom'));
+
+      await failure(() =>
+        collectCreatedResources(sink, () => provider.create('Res', c.type, c.props))
+      );
+
+      expect(sink.report).toBeUndefined();
+    });
+
     it("names nothing when the create call's own failure is thrown", async () => {
       mockSend.mockRejectedValueOnce(nonRetryable('create boom'));
 
@@ -279,6 +326,20 @@ describe('ELBv2Provider create marks a resource its cleanup left behind (go-to-k
         expect(mockSend).toHaveBeenCalledTimes(2);
         expect(sentDeletes(c.deleteCommand)).toEqual([]);
         expect(createdBeforeFailure(error, 'Res', c.type)).toBeUndefined();
+      });
+
+      it('reports nothing for a resource that held the name before the create (#5511)', async () => {
+        const sink = new CreatedResourceSink('Res', c.type);
+        ownershipSend.mockReset();
+        ownershipSend.mockResolvedValue(held);
+        mockSend.mockResolvedValueOnce(c.created);
+        mockSend.mockRejectedValueOnce(nonRetryable('wiring boom'));
+
+        await failure(() =>
+          collectCreatedResources(sink, () => provider.create('Res', c.type, c.props))
+        );
+
+        expect(sink.report).toBeUndefined();
       });
 
       it('names nothing and deletes nothing when the lookup before the create cannot answer', async () => {

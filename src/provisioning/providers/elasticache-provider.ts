@@ -29,6 +29,7 @@ import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { generatedNameFor } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -639,6 +640,7 @@ export class ElastiCacheProvider implements ResourceProvider {
         })
       );
       clusterCreated = true;
+      reportCreatedResource(logicalId, resourceType, cacheClusterId); // go-to-k/cdkd#5511
 
       this.logger.debug(`Successfully created CacheCluster ${logicalId}: ${cacheClusterId}`);
 

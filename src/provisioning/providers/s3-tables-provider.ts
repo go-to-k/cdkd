@@ -23,6 +23,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { markRedactedCause, relayedNameCollision } from '../../deployment/retryable-errors.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
@@ -910,6 +911,7 @@ export class S3TablesProvider implements ResourceProvider {
         })
       );
       tableCreated = true;
+      reportCreatedResource(logicalId, resourceType, physicalId);
 
       // Capture the REAL table ARN AWS returns — its actual format is
       // NOT inferrable from the compound parts (we tried; AWS rejected

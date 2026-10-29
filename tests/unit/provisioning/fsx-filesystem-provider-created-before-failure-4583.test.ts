@@ -28,6 +28,10 @@ import { FSxFileSystemProvider } from '../../../src/provisioning/providers/fsx-f
 import { DeleteFileSystemCommand } from '@aws-sdk/client-fsx';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { allowUnscopedCreateTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 beforeAll(() => allowUnscopedCreateTokensForTests(true));
 afterAll(() => allowUnscopedCreateTokensForTests(false));
@@ -129,6 +133,49 @@ describe('FSxFileSystemProvider.create — created-before-failure mark (#4583)',
     expect((error as Error).message).toMatch(/^Failed to create FSx FileSystem MyFs/);
     expect(deleteCalls()).toHaveLength(1);
     expect(createdBeforeFailure(error, 'MyFs', TYPE)).toBeUndefined();
+  });
+
+  it('reports the file system id before the available-wait; a failed rollback leaves it (#5511)', async () => {
+    const sink = new CreatedResourceSink('MyFs', TYPE);
+    let atDescribe: unknown = 'unset';
+    routeSend({
+      CreateFileSystemCommand: CREATED,
+      DescribeFileSystemsCommand: new Error('AccessDeniedException: no describe'),
+      DeleteFileSystemCommand: new Error('AccessDenied'),
+    });
+    const inner = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation((command: object) => {
+      if (command.constructor.name === 'DescribeFileSystemsCommand') atDescribe = sink.report;
+      return inner(command);
+    });
+
+    await collectCreatedResources(sink, () => failedCreate());
+
+    expect(atDescribe).toEqual({ physicalId: FS_ID });
+    expect(sink.report).toEqual({ physicalId: FS_ID });
+  });
+
+  it('retracts the report when the rollback delete succeeded (#5511)', async () => {
+    const sink = new CreatedResourceSink('MyFs', TYPE);
+    routeSend({
+      CreateFileSystemCommand: CREATED,
+      DescribeFileSystemsCommand: WENT_FAILED,
+      DeleteFileSystemCommand: {},
+    });
+
+    await collectCreatedResources(sink, () => failedCreate());
+
+    expect(deleteCalls()).toHaveLength(1);
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('reports nothing for a file system refused as not this create\'s (#5511)', async () => {
+    const sink = new CreatedResourceSink('MyFs', TYPE);
+    routeSend({ CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID } } });
+
+    await collectCreatedResources(sink, () => failedCreate());
+
+    expect(sink.report).toBeUndefined();
   });
 
   it("does not mark CreateFileSystem's own failure", async () => {

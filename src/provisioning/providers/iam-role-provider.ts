@@ -47,6 +47,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import {
   markNonRetryable,
@@ -292,6 +293,7 @@ export class IAMRoleProvider implements ResourceProvider {
       const response = await createClient.send(new CreateRoleCommand(createParams));
       leftBehind = true;
       createdRoleIdentity = roleIdentityToken(response.Role?.RoleId);
+      reportCreatedResource(logicalId, resourceType, roleName, createdRoleIdentity); // go-to-k/cdkd#5511
 
       log.debug(`Created IAM role: ${v(roleName)}`);
 
@@ -348,6 +350,7 @@ export class IAMRoleProvider implements ResourceProvider {
           await this.detachAllManagedPolicies(roleName, log);
           await this.deleteAllInlinePolicies(roleName, log);
           await this.iamClient.send(new DeleteRoleCommand({ RoleName: roleName }));
+          retractCreatedResource(logicalId, resourceType, roleName);
           leftBehind = false;
           log.debug(
             `Cleaned up partially-created IAM role ${logicalId} (${v(roleName)}) after wiring failure`

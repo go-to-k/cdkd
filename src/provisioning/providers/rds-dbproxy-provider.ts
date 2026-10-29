@@ -57,6 +57,7 @@ import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 
 const POLL_INTERVAL_MS = 5000;
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
@@ -285,6 +286,8 @@ export class RDSDBProxyProvider implements ResourceProvider {
     } catch (error) {
       throw this.wrapCaughtError(error, 'CREATE', resourceType, logicalId, undefined, mask);
     }
+    // go-to-k/cdkd#5511: reported before the available poll.
+    reportCreatedResource(logicalId, resourceType, dbProxyName);
 
     // Wait until DBProxyStatus = 'available'. Post-create wiring (Targets via
     // RDSDBProxyTargetGroupProvider.create()) requires the proxy to be

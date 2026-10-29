@@ -28,7 +28,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
-import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  createdBeforeFailure,
+  createdResourceIdentityBeforeFailure,
+} from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 const RESOURCE_TYPE = 'AWS::IAM::Role';
 const NAME = 'my-test-role-xxx';
@@ -97,6 +104,44 @@ describe('IAMRoleProvider created-before-failure mark (go-to-k/cdkd#4583)', () =
     expect(error).toBeInstanceOf(Error);
     expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toContain('DeleteRoleCommand');
     expect(createdBeforeFailure(error, 'MyRole', RESOURCE_TYPE)).toBeUndefined();
+  });
+
+  it('reports the role name and identity before the wiring; a failed DeleteRole leaves it (#5511)', async () => {
+    const sink = new CreatedResourceSink('MyRole', RESOURCE_TYPE);
+    let atAttach: unknown = 'unset';
+    script({
+      AttachRolePolicyCommand: new Error('AttachRolePolicy boom'),
+      DeleteRoleCommand: new Error('DeleteRole boom'),
+    });
+    const inner = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'AttachRolePolicyCommand') atAttach = sink.report;
+      return inner(command);
+    });
+
+    const error = await collectCreatedResources(sink, () => createError(provider));
+
+    const identity = createdResourceIdentityBeforeFailure(error, 'MyRole', RESOURCE_TYPE);
+    expect(identity).toBeDefined();
+    expect(atAttach).toEqual({ physicalId: NAME, createdResourceIdentity: identity });
+    expect(sink.report).toEqual({ physicalId: NAME, createdResourceIdentity: identity });
+  });
+
+  it('retracts the report when the cleanup deleted the role (#5511)', async () => {
+    const sink = new CreatedResourceSink('MyRole', RESOURCE_TYPE);
+    script({ AttachRolePolicyCommand: new Error('AttachRolePolicy boom') });
+
+    await collectCreatedResources(sink, () => createError(provider));
+
+    expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toContain('DeleteRoleCommand');
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('reports nothing when CreateRole itself failed (#5511)', async () => {
+    const sink = new CreatedResourceSink('MyRole', RESOURCE_TYPE);
+    script({ CreateRoleCommand: new Error('EntityAlreadyExists: Role already exists') });
+    await collectCreatedResources(sink, () => createError(provider));
+    expect(sink.report).toBeUndefined();
   });
 
   it('does not mark when CreateRole itself failed', async () => {

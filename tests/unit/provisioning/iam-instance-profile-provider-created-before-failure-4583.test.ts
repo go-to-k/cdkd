@@ -28,7 +28,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMInstanceProfileProvider } from '../../../src/provisioning/providers/iam-instance-profile-provider.js';
-import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  createdBeforeFailure,
+  createdResourceIdentityBeforeFailure,
+} from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 const RESOURCE_TYPE = 'AWS::IAM::InstanceProfile';
 const NAME = 'my-test-profile-xxx';
@@ -75,6 +82,42 @@ describe('IAMInstanceProfileProvider created-before-failure mark (go-to-k/cdkd#4
     );
     expect(deleteCall?.[0].input).toEqual({ InstanceProfileName: NAME });
     expect(createdBeforeFailure(error, 'MyProfile', RESOURCE_TYPE)).toBeUndefined();
+  });
+
+  it('reports the profile name and identity before the role wiring; a failed delete leaves it (#5511)', async () => {
+    const sink = new CreatedResourceSink('MyProfile', RESOURCE_TYPE);
+    let atAddRole: unknown = 'unset';
+    mockSend.mockResolvedValueOnce({ InstanceProfile: { Arn: 'arn', InstanceProfileId: 'AIPAEXAMPLE' } });
+    mockSend.mockImplementationOnce(() => {
+      atAddRole = sink.report;
+      return Promise.reject(new Error('AddRole boom'));
+    });
+    mockSend.mockRejectedValueOnce(new Error('DeleteInstanceProfile boom'));
+
+    const error = await collectCreatedResources(sink, () => createError(provider));
+
+    const identity = createdResourceIdentityBeforeFailure(error, 'MyProfile', RESOURCE_TYPE);
+    expect(identity).toBeDefined();
+    expect(atAddRole).toEqual({ physicalId: NAME, createdResourceIdentity: identity });
+    expect(sink.report).toEqual({ physicalId: NAME, createdResourceIdentity: identity });
+  });
+
+  it('retracts the report when the cleanup deleted the profile (#5511)', async () => {
+    const sink = new CreatedResourceSink('MyProfile', RESOURCE_TYPE);
+    mockSend.mockResolvedValueOnce({ InstanceProfile: { Arn: 'arn' } });
+    mockSend.mockRejectedValueOnce(new Error('AddRole boom'));
+    mockSend.mockResolvedValueOnce({});
+
+    await collectCreatedResources(sink, () => createError(provider));
+
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('reports nothing when CreateInstanceProfile itself failed (#5511)', async () => {
+    const sink = new CreatedResourceSink('MyProfile', RESOURCE_TYPE);
+    mockSend.mockRejectedValueOnce(new Error('EntityAlreadyExists: already exists'));
+    await collectCreatedResources(sink, () => createError(provider));
+    expect(sink.report).toBeUndefined();
   });
 
   it('does not mark when CreateInstanceProfile itself failed', async () => {

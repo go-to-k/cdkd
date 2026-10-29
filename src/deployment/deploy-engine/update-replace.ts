@@ -1,3 +1,4 @@
+import { clearCreatedReportOnReturn } from '../../provisioning/created-resource-sink.js';
 import { updatePartialMessage } from '../update-outcome.js';
 import { guardedReplacementCreate } from './create.js';
 import { noEchoDeleteValuesFromResolved } from '../noecho-delete-reresolution.js';
@@ -615,10 +616,12 @@ export async function updateByReplacement(
           () =>
             engine.withRetry(
               () =>
-                withCurrentResourceSecrets(updateSecrets, () =>
-                  replaceProvider.create(logicalId, resourceType, replaceProps, {
-                    maskSecrets: createSecretMasker(updateSecrets),
-                  })
+                clearCreatedReportOnReturn(() =>
+                  withCurrentResourceSecrets(updateSecrets, () =>
+                    replaceProvider.create(logicalId, resourceType, replaceProps, {
+                      maskSecrets: createSecretMasker(updateSecrets),
+                    })
+                  )
                 ),
               logicalId,
               undefined,
@@ -706,10 +709,12 @@ export async function updateByReplacement(
         () =>
           engine.withRetry(
             () =>
-              withCurrentResourceSecrets(updateSecrets, () =>
-                replaceProvider.create(logicalId, resourceType, replaceProps, {
-                  maskSecrets: createSecretMasker(updateSecrets),
-                })
+              clearCreatedReportOnReturn(() =>
+                withCurrentResourceSecrets(updateSecrets, () =>
+                  replaceProvider.create(logicalId, resourceType, replaceProps, {
+                    maskSecrets: createSecretMasker(updateSecrets),
+                  })
+                )
               ),
             logicalId,
             undefined,

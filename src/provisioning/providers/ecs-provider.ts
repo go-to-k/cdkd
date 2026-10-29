@@ -93,6 +93,7 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { markDeleteStarted } from '../delete-started.js';
 import { markNotGone } from '../not-gone.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
   markRedactedCause,
   relayedNameCollision,
@@ -1566,6 +1567,10 @@ export class ECSProvider implements ResourceProvider {
       }
 
       log.debug(`Successfully created ECS service ${logicalId}: ${service.serviceArn}`);
+      // go-to-k/cdkd#5511: only a service this create made (not a held one).
+      if (heldBefore === 'free') {
+        reportCreatedResource(logicalId, resourceType, service.serviceArn);
+      }
 
       // Under --full-wait a steady-state timeout has to fail the resource,
       // which means throwing AFTER AWS has already created the service. The
@@ -1641,6 +1646,7 @@ export class ECSProvider implements ResourceProvider {
                 force: true,
               })
             );
+            retractCreatedResource(logicalId, resourceType, service.serviceArn);
             // warn, not debug: the dominant --full-wait failure is a crashing
             // container, and this delete removes the service the user would
             // reach for first when asking "why". Say where the evidence

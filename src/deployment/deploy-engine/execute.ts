@@ -72,6 +72,11 @@ import {
   createdBeforeFailure,
   createdResourceIdentityBeforeFailure,
 } from '../../provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../provisioning/created-resource-sink.js';
+import { ResourceTimeoutError } from '../../utils/error-handler.js';
 import { orphanNeedsIdentity, readResourceIdentity } from '../rollback-executor/orphan-identity.js';
 import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
 import { resolveOutputs } from './outputs.js';
@@ -380,23 +385,31 @@ export async function executeDeployment(
         // Settled on EVERY exit (a `finally`), so a twin waiting on this write
         // can never hang on bookkeeping that throws below.
         let succeeded = false;
+        // go-to-k/cdkd#5511: what this operation's provider reported its create
+        // call made, read below when the deadline fired: it rejects while the
+        // provider keeps running and drops the error its
+        // `markCreatedBeforeFailure` would have carried. Fresh per operation;
+        // its retries share it, as they share the carried mark.
+        const createdSink = new CreatedResourceSink(logicalId, change.resourceType);
         try {
           try {
             await timePhase(
               phaseScope,
               `resource ${change.changeType.toLowerCase()}`,
               () =>
-                provisionResource(
-                  engine,
-                  logicalId,
-                  change,
-                  newResources,
-                  stackName,
-                  template,
-                  parameterValues,
-                  conditions,
-                  actualCounts,
-                  progress
+                collectCreatedResources(createdSink, () =>
+                  provisionResource(
+                    engine,
+                    logicalId,
+                    change,
+                    newResources,
+                    stackName,
+                    template,
+                    parameterValues,
+                    conditions,
+                    actualCounts,
+                    progress
+                  )
                 ),
               `${logicalId} ${change.resourceType}`
             );
@@ -449,9 +462,24 @@ export async function executeDeployment(
           // collided with or never made. Only SDK providers mark (the Cloud
           // Control route deletes its own remnant), hence the route. A refused
           // CREATE with no state id never reaches here (thrown above).
+          //
+          // go-to-k/cdkd#5511: the error's own mark first. Else, only when this
+          // operation's deadline fired (it drops the provider's later, marked
+          // error), what the provider reported to `createdSink` when its create
+          // call returned. Any other error is the provider's own, whose mark
+          // (or deliberate lack of one) stays the only proof.
+          const markedCreatedId = createdBeforeFailure(
+            provisionError,
+            logicalId,
+            change.resourceType
+          );
+          const reportedCreate =
+            markedCreatedId === undefined && deadlineFiredFor(provisionError, logicalId)
+              ? createdSink.report
+              : undefined;
           const createdId =
             change.changeType === 'CREATE' && statePhysicalId === undefined
-              ? createdBeforeFailure(provisionError, logicalId, change.resourceType)
+              ? (markedCreatedId ?? reportedCreate?.physicalId)
               : undefined;
           // go-to-k/cdkd#4604: the same proof on a REPLACEMENT — the UPDATE
           // above names the resource being replaced, and the new one its
@@ -477,7 +505,7 @@ export async function executeDeployment(
               ? heldRecord
               : undefined;
           const replacementCreatedId = replaced
-            ? createdBeforeFailure(provisionError, logicalId, change.resourceType)
+            ? (markedCreatedId ?? reportedCreate?.physicalId)
             : undefined;
           const orphanedBy =
             replaced !== undefined &&
@@ -619,11 +647,14 @@ export async function executeDeployment(
             orphanOp.deletionPolicy !== 'Retain' &&
             orphanNeedsIdentity(orphanOp)
           ) {
-            const markedIdentity = createdResourceIdentityBeforeFailure(
-              provisionError,
-              logicalId,
-              change.resourceType
-            );
+            const markedIdentity =
+              reportedCreate !== undefined
+                ? reportedCreate.createdResourceIdentity
+                : createdResourceIdentityBeforeFailure(
+                    provisionError,
+                    logicalId,
+                    change.resourceType
+                  );
             if (markedIdentity !== undefined) {
               orphanOp.createdResourceIdentity = markedIdentity;
             } else if (engine.interruptCause !== 'user') {
@@ -1677,4 +1708,22 @@ function recordUnsettledMarks(
     if (marks.size === 0 || !Object.hasOwn(newResources, logicalId)) continue;
     newResources[logicalId] = withUnsettledProperties(newResources[logicalId]!, marks);
   }
+}
+
+/**
+ * go-to-k/cdkd#5511: whether `error` is (or wraps) the `ResourceTimeoutError`
+ * this logical id's own deadline raised: `provisionResource` wraps it as the
+ * `cause` of its `ProvisioningError`. Bounded; never throws.
+ */
+function deadlineFiredFor(error: unknown, logicalId: string): boolean {
+  try {
+    let current: unknown = error;
+    for (let depth = 0; depth < 5 && typeof current === 'object' && current !== null; depth++) {
+      if (current instanceof ResourceTimeoutError) return current.logicalId === logicalId;
+      current = (current as { cause?: unknown }).cause;
+    }
+  } catch {
+    // Unreadable chain: not a deadline.
+  }
+  return false;
 }

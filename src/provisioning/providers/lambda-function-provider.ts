@@ -72,6 +72,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   CreateContext,
@@ -853,6 +854,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
       functionCreated = true;
       createdFunctionName = response.FunctionName || functionName;
       createdFunctionIdentity = functionIdentityToken(response.FunctionArn, response.LastModified);
+      // go-to-k/cdkd#5511: reported before any post-create wait.
+      reportCreatedResource(logicalId, resourceType, createdFunctionName, createdFunctionIdentity);
 
       // RecursiveLoop is a post-create control-plane prop: AWS sets it via
       // a SEPARATE `PutFunctionRecursionConfig` API, NOT on `CreateFunction`.
@@ -967,6 +970,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
             // function. Dropped, so a failure after this point marks the name
             // alone and the engine journals a live `resourceIdentity` read.
             createdFunctionIdentity = undefined;
+            reportCreatedResource(logicalId, resourceType, createdFunctionName!);
           },
           {
             apiName: 'PutRuntimeManagementConfig',
@@ -1037,6 +1041,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
           createdFunctionName,
           createdFunctionIdentity
         );
+      } else if (createdFunctionName !== undefined) {
+        // The atomicity cleanup deleted the function: nothing is left to journal.
+        retractCreatedResource(logicalId, resourceType, createdFunctionName);
       }
       throw thrown;
     }

@@ -28,6 +28,8 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **auxiliary-failure.ts** - `markAuxiliaryFailure`: a failing AUXILIARY write inside a provider's `create()` is anchored to a logical id no template can spell, so the name-collision classifier never credits it to the resource ([name-collision-classification.md](name-collision-classification.md), #3826); `isAuxiliaryFailure` is what `withRetry` latches on to carry the mark forward (#3972); `isAuxiliaryMarkOf(link, RETRY_AUXILIARY_OWNER)` tells `withRetry`'s mark from a provider's (#3984). A LEAF.
 
+- **created-resource-sink.ts** - `reportCreatedResource` / `retractCreatedResource`: the `markCreatedBeforeFailure` proof, written to an engine-owned AsyncLocalStorage sink the moment the create call returns, so it survives the per-resource deadline dropping the provider's late marked error (#5511). `execute.ts` scopes one sink per CREATE / UPDATE operation and reads it only for that operation's own `ResourceTimeoutError` with no mark; the engine's create / update call sites clear it when the provider call resolves (`clearCreatedReportOnReturn`). Anchored on logical id and type.
+
 - **delete-started.ts** - `markDeleteStarted`: a `delete()` that changed the resource (a detach, a disable) before a refused terminal call marks its error, so a replacement's `replacedDeleteFailureVerdict` reads `'unconfirmed'` and a rollback never re-adopts the stripped survivor (#4946). Mark after a strip whose failure propagates, before one whose failure is swallowed. A LEAF.
 
 - **not-gone.ts** - `markNotGone`: a delete failure not the resource's own not-found; the already-deleted classifiers refuse it, retries untouched (#5228). A LEAF.

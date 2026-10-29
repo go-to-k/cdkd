@@ -46,6 +46,7 @@ import {
   type NameHeldBefore,
 } from './create-ownership.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { markDeleteStarted } from '../delete-started.js';
 
 /**
@@ -315,6 +316,8 @@ export class EventBridgeRuleProvider implements ResourceProvider {
 
       const ruleArn = response.RuleArn!;
       this.logger.debug(`Created EventBridge rule: ${ruleName} (${ruleArn})`);
+      // go-to-k/cdkd#5511: only a rule the name was free for.
+      if (heldBefore === 'free') reportCreatedResource(logicalId, resourceType, ruleArn);
 
       // PutRuleCommand has succeeded — AWS has now committed the Rule
       // (and any inline Tags). If the subsequent PutTargetsCommand throws,
@@ -391,6 +394,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
             await this.eventBridgeClient.send(
               new DeleteRuleCommand({ Name: ruleName, EventBusName: eventBusName })
             );
+            retractCreatedResource(logicalId, resourceType, ruleArn);
             this.logger.debug(
               `Cleaned up partially-created EventBridge rule ${logicalId} (${ruleName}) after wiring failure`
             );

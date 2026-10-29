@@ -28,7 +28,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMManagedPolicyProvider } from '../../../src/provisioning/providers/iam-managed-policy-provider.js';
-import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  createdBeforeFailure,
+  createdResourceIdentityBeforeFailure,
+} from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 const RESOURCE_TYPE = 'AWS::IAM::ManagedPolicy';
 const ARN = 'arn:aws:iam::123456789012:policy/my-test-policy';
@@ -94,6 +101,47 @@ describe('IAMManagedPolicyProvider created-before-failure mark (go-to-k/cdkd#458
       'DeletePolicyCommand'
     );
     expect(createdBeforeFailure(error, 'MyPolicy', RESOURCE_TYPE)).toBeUndefined();
+  });
+
+  it('reports the policy ARN and identity before the attachment; a failed DeletePolicy leaves it (#5511)', async () => {
+    const sink = new CreatedResourceSink('MyPolicy', RESOURCE_TYPE);
+    let atAttach: unknown = 'unset';
+    script(
+      {
+        AttachRolePolicyCommand: new Error('AttachRolePolicy boom'),
+        DeletePolicyCommand: new Error('DeletePolicy boom'),
+      },
+      { Policy: { Arn: ARN, PolicyId: 'ANPAEXAMPLE' } }
+    );
+    const inner = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'AttachRolePolicyCommand') atAttach = sink.report;
+      return inner(command);
+    });
+
+    const error = await collectCreatedResources(sink, () => createError(provider));
+
+    const identity = createdResourceIdentityBeforeFailure(error, 'MyPolicy', RESOURCE_TYPE);
+    expect(identity).toBeDefined();
+    expect(atAttach).toEqual({ physicalId: ARN, createdResourceIdentity: identity });
+    expect(sink.report).toEqual({ physicalId: ARN, createdResourceIdentity: identity });
+  });
+
+  it('retracts the report when the cleanup deleted the policy (#5511)', async () => {
+    const sink = new CreatedResourceSink('MyPolicy', RESOURCE_TYPE);
+    script({ AttachRolePolicyCommand: new Error('AttachRolePolicy boom') });
+
+    await collectCreatedResources(sink, () => createError(provider));
+
+    expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toContain('DeletePolicyCommand');
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('reports nothing when CreatePolicy returned no ARN (#5511)', async () => {
+    const sink = new CreatedResourceSink('MyPolicy', RESOURCE_TYPE);
+    script({}, { Policy: {} });
+    await collectCreatedResources(sink, () => createError(provider));
+    expect(sink.report).toBeUndefined();
   });
 
   it('does not mark when CreatePolicy itself failed', async () => {

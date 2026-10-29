@@ -46,6 +46,10 @@ import {
   resetEMRInstanceGroupCreateRetryStateForTests,
 } from '../../../src/provisioning/providers/emr-instance-group-config-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 const TYPE = 'AWS::EMR::InstanceGroupConfig';
@@ -149,6 +153,69 @@ describe('EMRInstanceGroupConfigProvider create marks a created-before-failure g
     const error = await createError();
     expect(createdBeforeFailure(error, 'Group', TYPE)).toBe(GROUP_ID);
     expect(isMarkedNonRetryable(error)).toBe(true); // go-to-k/cdkd#4945
+  });
+
+  it('reports the group id before the readiness poll; a CORE group stays reported (#5511)', async () => {
+    const sink = new CreatedResourceSink('Group', TYPE);
+    let atPoll: unknown = 'unset';
+    routeSend(
+      () => ({ InstanceGroupIds: [GROUP_ID] }),
+      () => {
+        atPoll = sink.report;
+        throw Object.assign(new Error('not authorized to perform ListInstanceGroups'), {
+          name: 'AccessDeniedException',
+        });
+      }
+    );
+    await collectCreatedResources(sink, () => createError({ ...PROPS, InstanceRole: 'CORE' }));
+    expect(atPoll).toEqual({ physicalId: GROUP_ID });
+    expect(sink.report).toEqual({ physicalId: GROUP_ID });
+  });
+
+  it('retracts the report when the TASK group was scaled to 0 (#5511)', async () => {
+    const sink = new CreatedResourceSink('Group', TYPE);
+    mockSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'AddInstanceGroupsCommand') {
+        return { InstanceGroupIds: [GROUP_ID] };
+      }
+      if (command.constructor.name === 'ListInstanceGroupsCommand') {
+        return {
+          InstanceGroups: [
+            { Id: GROUP_ID, Status: { State: 'ARRESTED', StateChangeReason: { Message: 'boom' } } },
+          ],
+        };
+      }
+      if (command.constructor.name === 'ModifyInstanceGroupsCommand') return {};
+      throw new Error(`unexpected command ${command.constructor.name}`);
+    });
+    await collectCreatedResources(sink, () => createError());
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('keeps the report when the TASK scale-to-0 fails (#5511)', async () => {
+    const sink = new CreatedResourceSink('Group', TYPE);
+    routeSend(
+      () => ({ InstanceGroupIds: [GROUP_ID] }),
+      () => ({
+        InstanceGroups: [
+          { Id: GROUP_ID, Status: { State: 'ARRESTED', StateChangeReason: { Message: 'boom' } } },
+        ],
+      })
+    );
+    await collectCreatedResources(sink, () => createError());
+    expect(sink.report).toEqual({ physicalId: GROUP_ID });
+  });
+
+  it('reports nothing when AddInstanceGroups itself fails (#5511)', async () => {
+    const sink = new CreatedResourceSink('Group', TYPE);
+    routeSend(
+      () => {
+        throw Object.assign(new Error('Cluster is terminated'), { name: 'InvalidRequestException' });
+      },
+      () => ({ InstanceGroups: [] })
+    );
+    await collectCreatedResources(sink, () => createError());
+    expect(sink.report).toBeUndefined();
   });
 
   it('leaves no mark when AddInstanceGroups itself fails', async () => {
