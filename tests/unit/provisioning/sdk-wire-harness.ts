@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vite-plus/test';
 import type { ResourceProvider, UpdateContext } from '../../../src/types/resource.js';
-import { MEMBER_RENAMES } from './sdk-wire-member-renames.js';
+import { FLATTENED, MEMBER_RENAMES, type TypeRenames } from './sdk-wire-member-renames.js';
 
 /**
  * The differential wire harness behind `sdk-wire-coverage.test.ts` (#3723).
@@ -201,11 +201,13 @@ function capturing<T extends Capturable>(client: T): T {
       if (READ_COMMAND.test(command)) return { output, response: {} };
       // The command INPUT as the provider built it, in SDK member names and
       // before any protocol wrapping (`member.N`, XML, URI labels): what
-      // `landingNames` reads to say WHICH member a value went to.
+      // `landingChains` reads to say WHICH member a value went to.
       // Bytes as their text: a code blob is one value, not a member per byte.
-      const text = JSON.stringify([command, args.input], (_k, v: unknown) =>
-        v instanceof Uint8Array ? new TextDecoder().decode(v) : v
-      );
+      // Read off the HOLDER: by the replacer, a Buffer is already its toJSON.
+      const text = JSON.stringify([command, args.input], function (this: unknown, k, v: unknown) {
+        const raw = (this as Record<string, unknown>)[k];
+        return raw instanceof Uint8Array ? new TextDecoder().decode(raw) : v;
+      });
       inputs.push(text.replace(SDK_TOKEN, '$1<token>"'));
       wire.push(
         JSON.stringify([
@@ -407,31 +409,41 @@ function entryKeys(member: string): string[] {
 }
 
 /**
- * The member names a changed location stands for: every member on its way
- * (a list's items sit under `Items`, a filter's values under `Values`), and
- * for an entry spelled `{Key | Name | path, Value}` (a tag, an API Gateway
- * patch operation) what that sibling names.
+ * A member chain: the member names on a location's way, indices dropped.
+ * Compared by its LAST member and that member's parent, so a value landing
+ * in a same-named member under ANOTHER parent (`S3Configuration.Prefix` sent
+ * as `S3BackupConfiguration.Prefix`) is told apart.
  */
-function namesAt(loc: Location, flat: Map<string, unknown>): string[] {
-  const names = loc.filter((s): s is string => typeof s === 'string');
+type Chain = string[];
+
+/**
+ * The chains a changed location stands for: its own, and for an entry spelled
+ * `{Key | Name | path, Value}` (a tag, an SNS attribute, an API Gateway patch
+ * operation) the chain with the entry's key in place of `Value`.
+ */
+function chainsAt(loc: Location, flat: Map<string, unknown>): Chain[] {
+  const members = loc.filter((s): s is string => typeof s === 'string');
+  const chains: Chain[] = [members];
   let at = loc.length - 1;
   while (at >= 0 && typeof loc[at] === 'number') at--;
   for (const sibling of entryKeys(at >= 0 ? (loc[at] as string) : '')) {
     const v = flat.get(JSON.stringify([...loc.slice(0, at), sibling, ...loc.slice(at + 1)]));
     if (typeof v !== 'string') continue;
+    const parents = members.slice(0, -1);
     // A patch path (`/*/*/caching/enabled`) names the member by its tail.
     const segs = v.split('/');
-    names.push(v, ...segs.map((_, i) => segs.slice(i).join('')));
+    chains.push([...parents, v], ...segs.map((_, i) => [...parents, segs.slice(i).join('')]));
   }
-  return names;
+  return chains;
 }
 
 /**
- * Every member name whose value differs between two runs' inputs. Requests
- * pair up by command and occurrence; an unpaired one contributes all of its
- * members.
+ * Every member chain whose value differs between two runs' inputs. Requests
+ * pair up by command and occurrence; an unpaired one (a vary that switches
+ * StartLogging to StopLogging) contributes every chain it has, so a leaf whose
+ * name and parent happen to occur in it passes whatever it carries: a bound.
  */
-function landingNames(from: readonly string[], to: readonly string[]): string[] {
+function landingChains(from: readonly string[], to: readonly string[]): Chain[] {
   const byCommand = (lines: readonly string[]) => {
     const m = new Map<string, unknown[]>();
     for (const line of lines) {
@@ -441,7 +453,7 @@ function landingNames(from: readonly string[], to: readonly string[]): string[] 
     return m;
   };
   const [a, b] = [byCommand(from), byCommand(to)];
-  const names = new Set<string>();
+  const chains = new Map<string, Chain>();
   for (const command of new Set([...a.keys(), ...b.keys()])) {
     const [la, lb] = [a.get(command) ?? [], b.get(command) ?? []];
     for (let i = 0; i < Math.max(la.length, lb.length); i++) {
@@ -449,37 +461,60 @@ function landingNames(from: readonly string[], to: readonly string[]): string[] 
       if (i < la.length) flattenJson(la[i], [], fa);
       if (i < lb.length) flattenJson(lb[i], [], fb);
       for (const loc of changedLocations(fa, fb)) {
-        for (const n of namesAt(loc, fb.has(JSON.stringify(loc)) ? fb : fa)) names.add(n);
+        for (const c of chainsAt(loc, fb.has(JSON.stringify(loc)) ? fb : fa)) {
+          chains.set(c.join('.'), c);
+        }
       }
     }
   }
-  return [...names].sort();
+  return [...chains.values()];
 }
 
 /** Member names compared case- and punctuation-blind: REST JSON spells `functionName`. */
 const memberKey = (name: string): string => name.toLowerCase().replace(/[^a-z0-9]/g, '');
 
+/** Members a protocol or model wraps a list or map in, beneath the member itself. */
+const WRAPPERS = new Set(['items', 'item', 'member', 'values', 'entry', 'value']);
+
 /**
- * The names the leaf at `path` of `bag` may land under: its own member name;
- * for an entry's `Value`, what its `Key` / `Name` sibling names (a map keyed
- * by it); for a `Key` / `Name`, its value before and after (it IS a map key).
+ * Where `landed`'s own member sits once trailing wrappers are skipped, when it
+ * is `name`; else -1. `Aliases.Items` is `Aliases`.
  */
-function expectedNames(bag: Bag, alt: Bag, path: Path): string[] {
-  const leaf = [...path].reverse().find((s) => typeof s === 'string') as string | undefined;
-  if (leaf === undefined) return [];
-  // A list element is the list's own member.
-  if (typeof path[path.length - 1] !== 'string') return [leaf];
-  const parent = parentOf(bag, path);
-  const names = [leaf];
-  for (const s of entryKeys(leaf)) {
-    if (typeof parent[s] === 'string') names.push(parent[s] as string);
+function memberAt(landed: Chain, name: string): number {
+  const want = memberKey(name);
+  for (let j = landed.length - 1; j >= 0; j--) {
+    const k = memberKey(landed[j]!);
+    if (k === want) return j;
+    if (!WRAPPERS.has(k)) return -1;
   }
+  return -1;
+}
+
+/**
+ * The chains the leaf at `path` of `bag` may land as: its own; for an entry's
+ * `<base>Value` with a string key sibling, ONLY the chain the key names (the
+ * bare `Value` is in every entry, so it would accept another entry's); for a
+ * `Key` / `Name`, also its value before and after (it may BE a map key).
+ */
+function expectedChains(bag: Bag, alt: Bag, path: Path): Chain[] {
+  const chain = path.filter((s): s is string => typeof s === 'string');
+  if (chain.length === 0) return [];
+  // A list element is the list's own member.
+  if (typeof path[path.length - 1] !== 'string') return [chain];
+  const leaf = chain[chain.length - 1]!;
+  const parents = chain.slice(0, -1);
+  const parent = parentOf(bag, path);
+  const keyed = entryKeys(leaf)
+    .map((s) => parent[s])
+    .filter((v): v is string => typeof v === 'string');
+  if (keyed.length > 0) return keyed.map((k) => [...parents, k]);
+  const chains = [chain];
   if (/^(key|name)$/i.test(leaf)) {
     for (const v of [parent[leaf], parentOf(alt, path)[leaf]]) {
-      if (typeof v === 'string') names.push(v);
+      if (typeof v === 'string') chains.push([...parents, v]);
     }
   }
-  return names;
+  return chains;
 }
 
 /** A bag path as `MEMBER_RENAMES` keys it: its member names, indices dropped. */
@@ -487,34 +522,64 @@ const renameKey = (path: Path): string =>
   path.filter((s) => typeof s === 'string').join('.');
 
 /**
- * Whether the varied leaf at `path` landed in a member of an expected name,
- * or of one `renames` accepts for that path (recorded in `used` as
- * `<path>-><member>`). Undefined when it did; else the members it did land
- * in, which is what an accepted rename would have to name.
+ * Whether the varied leaf at `path` landed as one of its expected chains: its
+ * last member (or a `renames.members` name for that path), under its parent
+ * (or a `renames.containers` name for the parent's path, `(flattened)` when
+ * the SDK input has no such parent). Each accepted rename that matched is
+ * recorded in `used`. Undefined when it landed right; else the chains it did
+ * land as, which is what a rename would have to name.
  */
 function wrongMember(
   path: Path,
-  expected: string[],
-  landed: string[],
-  renames: Readonly<Record<string, readonly string[]>>,
+  expected: Chain[],
+  landed: Chain[],
+  renames: TypeRenames,
   used: Set<string>
 ): string | undefined {
   if (expected.length === 0) return undefined;
-  const landedKeys = new Set(landed.map(memberKey));
-  if (expected.some((n) => landedKeys.has(memberKey(n)))) return undefined;
   const key = renameKey(path);
-  const hit = (renames[key] ?? []).find((r) => landedKeys.has(memberKey(r)));
-  if (hit !== undefined) {
-    used.add(`${key}->${hit}`);
+  if (renames.transformed?.[key] !== undefined) {
+    used.add(`${key}~`);
     return undefined;
   }
-  return landed.length === 0 ? '(nothing)' : landed.join(',');
+  // Each match with the renames it needed. A rename is recorded only when NO
+  // match needs none: one the mapping no longer needs must go stale.
+  const matches: string[][] = [];
+  for (const e of expected) {
+    const container = e.slice(0, -1).join('.');
+    const leafNames: [string, string | undefined][] = [
+      [e[e.length - 1]!, undefined],
+      ...(renames.members?.[key] ?? []).map((r): [string, string] => [r, `${key}->${r}`]),
+    ];
+    for (const l of landed) {
+      for (const [name, leafRename] of leafNames) {
+        const j = memberAt(l, name);
+        if (j < 0) continue;
+        const above = l.slice(0, j).map(memberKey);
+        const needed = leafRename === undefined ? [] : [leafRename];
+        if (e.length > 1 && !above.includes(memberKey(e[e.length - 2]!))) {
+          const parents = (renames.containers?.[container] ?? []).filter(
+            (r) => r === FLATTENED || above.includes(memberKey(r))
+          );
+          if (parents.length === 0) continue;
+          needed.push(...parents.map((r) => `${container}=>${r}`));
+        }
+        matches.push(needed);
+      }
+    }
+  }
+  const right = matches.length > 0;
+  if (!matches.some((m) => m.length === 0)) {
+    for (const r of matches.flat()) used.add(r);
+  }
+  if (right) return undefined;
+  return landed.length === 0 ? '(nothing)' : landed.map((l) => l.join('.')).join(',');
 }
 
 export type Outcome = { threw: false; wire: string } | { threw: true; message: string };
 
 /**
- * A recorded run's command inputs, for `landingNames`. Kept beside the
+ * A recorded run's command inputs, for `landingChains`. Kept beside the
  * outcome rather than on it: suites compare outcomes whole (`{ threw: false,
  * wire: '' }`), and the wire is what they pin.
  */
@@ -560,7 +625,7 @@ export interface ProbeCase {
    */
   updateContext?: UpdateContext;
   /** CFn leaf name -> the SDK members it may land in under another name. */
-  renames?: Readonly<Record<string, readonly string[]>>;
+  renames?: TypeRenames;
 }
 
 export interface ProbeResult {
@@ -606,11 +671,16 @@ export interface ProbeResult {
  * An update probe whose change touches a create-only path (at, under or above
  * it) is skipped: the engine replaces instead of calling `update()`.
  *
- * Every vary probe that is NOT silent is also traced: the members whose value
- * changed between the two runs' command inputs must include the leaf's own
- * (`wrongMembers` otherwise), so a value sent in a sibling member fails even
- * though the wire changed. Bound: only a vary probe is traced, so a container
- * whose removal is the only evidence (an empty list) is not.
+ * Every vary probe that is NOT silent is also traced: among the member chains
+ * whose value changed between the two runs' command inputs, one must end in
+ * the leaf's own member UNDER its own parent (`wrongMembers` otherwise), so a
+ * value sent in a sibling member, or in a same-named member of another parent
+ * (`S3Configuration.Prefix` as `S3BackupConfiguration.Prefix`), fails even
+ * though the wire changed. `sdk-wire-member-renames.ts` names the accepted
+ * exceptions. Bounds: only a vary probe is traced, so a container whose
+ * removal is the only evidence (an empty list) is not; only the immediate
+ * parent is compared; and a value under a `FLATTENED` or `transformed` path
+ * is matched by its leaf alone, or not at all.
  */
 /** Arm the fake reads for `bag`: the case's own `arm`, else no overrides. */
 export function armFor(c: Pick<ProbeCase, 'arm' | 'physicalId'>, bag: Bag): void {
@@ -659,8 +729,8 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
   const wrongMembers: Record<string, string> = {};
   const usedRenames = new Set<string>();
   const trace = (label: string, path: Path, alt: Bag, from: Outcome, to: Outcome): void => {
-    const landed = landingNames(inputsOf.get(from) ?? [], inputsOf.get(to) ?? []);
-    const expected = expectedNames(c.bag, alt, path);
+    const landed = landingChains(inputsOf.get(from) ?? [], inputsOf.get(to) ?? []);
+    const expected = expectedChains(c.bag, alt, path);
     const wrong = wrongMember(path, expected, landed, c.renames ?? {}, usedRenames);
     if (wrong !== undefined) wrongMembers[label] = wrong;
   };
@@ -869,6 +939,7 @@ export function describeWireCases(cases: TypeCase[]): void {
   describe.each(cases)('$resourceType', (t) => {
     const renames = MEMBER_RENAMES[t.resourceType] ?? {};
     const usedRenames = new Set<string>();
+    let bagsProbed = 0;
     it('its bags carry every handledProperties entry not exempted', () => {
       const handled = [...(t.provider().handledProperties?.get(t.resourceType) ?? [])].sort();
       // An empty set is a case only when the case says so, with its reason;
@@ -964,6 +1035,7 @@ export function describeWireCases(cases: TypeCase[]): void {
         renames,
       });
       for (const r of rest.usedRenames) usedRenames.add(r);
+      bagsProbed++;
       // A varied value must land in its own member (or an accepted rename):
       // probe label -> the members it landed in instead.
       expect(wrongMembers, 'landed in another member; see sdk-wire-member-renames.ts').toEqual({});
@@ -1027,10 +1099,18 @@ export function describeWireCases(cases: TypeCase[]): void {
     // reached is stale (the mapping now uses the member's own name, or the
     // bag no longer carries the path), and staying listed it would excuse a
     // regression into that member.
-    it('uses every accepted rename', () => {
-      const listed = Object.entries(renames).flatMap(([path, names]) =>
-        names.map((n) => `${path}->${n}`)
-      );
+    it('uses every accepted rename', (ctx) => {
+      // A filtered run (`-t`) probes only some bags; their usage says nothing.
+      if (bagsProbed < t.bags.length) ctx.skip();
+      const listed = [
+        ...Object.entries(renames.members ?? {}).flatMap(([path, names]) =>
+          names.map((n) => `${path}->${n}`)
+        ),
+        ...Object.entries(renames.containers ?? {}).flatMap(([path, names]) =>
+          names.map((n) => `${path}=>${n}`)
+        ),
+        ...Object.keys(renames.transformed ?? {}).map((path) => `${path}~`),
+      ];
       expect(listed.filter((r) => !usedRenames.has(r))).toEqual([]);
     });
   });

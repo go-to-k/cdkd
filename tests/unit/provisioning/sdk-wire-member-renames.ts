@@ -1,319 +1,806 @@
 /**
- * Where a varied CFn leaf may land under ANOTHER member name (#3723).
+ * Where a varied CFn leaf may land under ANOTHER member or parent (#3723).
  *
  * Each vary probe in `sdk-wire-harness.ts` diffs the two runs' command inputs
  * and requires the varied leaf to land in a member of its own name (compared
- * case- and punctuation-blind), a map entry it keys, or a name listed here for
- * that type and bag path (member names joined by `.`, list indices dropped).
- * This is what stands in for `gen-nested-key-coverage.ts`'s write pass: a
+ * case- and punctuation-blind, wrappers such as `Items` / `member` / `Value`
+ * skipped) under a member named like its CFn parent, or as the map entry it
+ * keys. This stands in for `gen-nested-key-coverage.ts`'s write pass: a
  * provider writing a value into a SIBLING member changes the wire exactly as
  * the right mapping does, so wire comparison alone cannot see it.
  *
+ * Per type, keyed by bag path (member names joined by `.`, list indices
+ * dropped):
+ *
+ * - `members`: the leaf's SDK member has another name (`TopicName` is `Name`).
+ * - `containers`: the children of that CFn parent sit under another SDK
+ *   member (an update's `ExtendedS3DestinationUpdate`, a patch operation's
+ *   `patchOperations`), or under none (`FLATTENED`: the SDK input spreads
+ *   them at its top level, so those leaves are matched by name alone).
+ * - `transformed`: the value is not sent as-is (fetched from S3, generated,
+ *   re-keyed), so no member can be traced; the reason says what happens.
+ *
  * Shrink-only in spirit: every entry must still be needed (the per-type
- * `uses every accepted rename` case fails on one no probe reached), and a new
- * entry is a claim that the provider's mapping is RIGHT. An entry naming a
- * structural parent (`Groups`, `Items`) is weaker than one naming the member
- * itself; where the input carries the member's own name, that is the one used.
+ * `uses every accepted rename` case fails on one that no probe needed), and a
+ * new entry is a claim that the provider's mapping is RIGHT.
  */
-export const MEMBER_RENAMES: Record<string, Record<string, readonly string[]>> = {
+/** `containers` value: the SDK input has no member for that CFn parent. */
+export const FLATTENED = '(flattened)';
+
+export interface TypeRenames {
+  /** Bag path (indices dropped) -> the SDK members its value may land in. */
+  members?: Record<string, readonly string[]>;
+  /** Bag path of a parent -> the SDK members its children may sit under. */
+  containers?: Record<string, readonly string[]>;
+  /** Bag path -> why its value is not sent as-is, so no member can be traced. */
+  transformed?: Record<string, string>;
+}
+
+export const MEMBER_RENAMES: Record<string, TypeRenames> = {
   'AWS::ApiGateway::Method': {
-    // A model map's media-type key is a JSON-pointer segment in the patch path.
-    'RequestModels.application/json': ['application~1json'],
-    'RequestModels.text/plain': ['text~1plain'],
+    members: {
+      // A model map's media-type key is a JSON-pointer segment in the patch path.
+      'RequestModels.application/json': ['application~1json'],
+      'RequestModels.text/plain': ['text~1plain'],
+    },
+    containers: {
+      Integration: [FLATTENED],
+      'Integration.IntegrationResponses': [FLATTENED],
+      MethodResponses: [FLATTENED],
+      RequestModels: ['patchOperations'],
+      RequestParameters: ['patchOperations'],
+    },
   },
   'AWS::ApiGateway::Stage': {
-    // A method setting is a patch operation: `/{resource}/{method}/caching/...`.
-    'MethodSettings.CacheDataEncrypted': ['caching/dataEncrypted'],
-    'MethodSettings.CacheTtlInSeconds': ['caching/ttlInSeconds'],
-    'MethodSettings.DataTraceEnabled': ['logging/dataTrace'],
-    'MethodSettings.HttpMethod': ['path'],
-    'MethodSettings.LoggingLevel': ['logging/loglevel'],
-    'MethodSettings.ResourcePath': ['path'],
+    members: {
+      // A method setting is a patch operation: `/{resource}/{method}/caching/...`.
+      'MethodSettings.CacheDataEncrypted': ['caching/dataEncrypted'],
+      'MethodSettings.CacheTtlInSeconds': ['caching/ttlInSeconds'],
+      'MethodSettings.DataTraceEnabled': ['logging/dataTrace'],
+      'MethodSettings.HttpMethod': ['path'],
+      'MethodSettings.LoggingLevel': ['logging/loglevel'],
+      'MethodSettings.ResourcePath': ['path'],
+    },
+    containers: {
+      AccessLogSetting: ['patchOperations'],
+      CanarySetting: ['canarySettings', 'patchOperations'],
+      'CanarySetting.StageVariableOverrides': ['patchOperations'],
+      MethodSettings: ['patchOperations'],
+      Variables: ['patchOperations'],
+    },
   },
   'AWS::ApiGatewayV2::Integration': {
-    // Each mapping becomes a map entry keyed `<Destination>` -> `<Source>`
-    // under the status code (the map keys, `200` / `404`, stay in the path).
-    'ResponseParameters.200.ResponseParameters.Destination': ['ResponseParameters'],
-    'ResponseParameters.200.ResponseParameters.Source': ['ResponseParameters'],
-    'ResponseParameters.404.ResponseParameters.Destination': ['ResponseParameters'],
-    'ResponseParameters.404.ResponseParameters.Source': ['ResponseParameters'],
+    transformed: {
+      'ResponseParameters.200.ResponseParameters.Destination':
+        'each mapping becomes one map entry, keyed by its Destination and valued by its Source',
+      'ResponseParameters.200.ResponseParameters.Source':
+        'each mapping becomes one map entry, keyed by its Destination and valued by its Source',
+      'ResponseParameters.404.ResponseParameters.Destination':
+        'each mapping becomes one map entry, keyed by its Destination and valued by its Source',
+      'ResponseParameters.404.ResponseParameters.Source':
+        'each mapping becomes one map entry, keyed by its Destination and valued by its Source',
+    },
   },
   'AWS::AppSync::GraphQLSchema': {
-    // The S3 object is fetched and its content sent.
-    DefinitionS3Location: ['definition'],
+    transformed: {
+      DefinitionS3Location:
+        'the S3 object is fetched and its content sent as `definition`',
+    },
   },
   'AWS::AppSync::Resolver': {
-    CodeS3Location: ['code'],
-    RequestMappingTemplateS3Location: ['requestMappingTemplate'],
-    ResponseMappingTemplateS3Location: ['responseMappingTemplate'],
+    transformed: {
+      CodeS3Location:
+        'the S3 object is fetched and its content sent',
+      RequestMappingTemplateS3Location:
+        'the S3 object is fetched and its content sent',
+      ResponseMappingTemplateS3Location:
+        'the S3 object is fetched and its content sent',
+    },
   },
   'AWS::AutoScaling::AutoScalingGroup': {
-    Cooldown: ['DefaultCooldown'],
+    members: {
+      Cooldown: ['DefaultCooldown'],
+    },
+    containers: {
+      LifecycleHookSpecificationList: [FLATTENED],
+      MetricsCollection: [FLATTENED],
+      NotificationConfigurations: [FLATTENED],
+    },
+  },
+  'AWS::BedrockAgentCore::Runtime': {
+    members: {
+      ProtocolConfiguration: ['serverProtocol'],
+    },
+  },
+  'AWS::Budgets::Budget': {
+    containers: {
+      Budget: ['NewBudget'],
+    },
   },
   'AWS::CertificateManager::Certificate': {
-    CertificateExport: ['Export'],
+    members: {
+      CertificateExport: ['Export'],
+    },
+    containers: {
+      DomainValidationOptions: [FLATTENED],
+    },
   },
   'AWS::CloudFormation::Stack': {
-    'Parameters.Display': ['DisplayName'],
-    'Parameters.TagValue': ['Value'],
+    members: {
+      'Parameters.Display': ['DisplayName'],
+      'Parameters.TagValue': ['Value'],
+    },
+    containers: {
+      Parameters: [FLATTENED, 'Attributes', 'Tags'],
+    },
   },
   'AWS::CloudFront::Distribution': {
-    'DistributionConfig.IPV6Enabled': ['IsIPV6Enabled'],
-    'DistributionConfig.Restrictions.GeoRestriction.Locations': ['Items'],
+    members: {
+      'DistributionConfig.IPV6Enabled': ['IsIPV6Enabled'],
+      'DistributionConfig.Restrictions.GeoRestriction.Locations': ['Items'],
+    },
+    containers: {
+      'DistributionConfig.Origins.OriginCustomHeaders': ['Items'],
+    },
   },
   'AWS::CloudTrail::Trail': {
-    // StartLogging versus StopLogging: the command changes, carrying `Name`.
-    IsLogging: ['Name'],
-    TrailName: ['Name'],
+    members: {
+      // StartLogging versus StopLogging: the command changes, carrying `Name`.
+      IsLogging: ['Name'],
+      TrailName: ['Name'],
+    },
+    containers: {
+      Tags: ['TagsList'],
+    },
   },
   'AWS::CodeBuild::Project': {
-    Visibility: ['projectVisibility'],
+    members: {
+      Visibility: ['projectVisibility'],
+    },
   },
   'AWS::CodeCommit::Repository': {
-    // The S3 object is fetched and committed as file content.
-    'Code.S3.Bucket': ['fileContent'],
-    'Code.S3.Key': ['fileContent'],
-    'Code.S3.ObjectVersion': ['fileContent'],
-    RepositoryName: ['newName'],
+    members: {
+      RepositoryName: ['newName'],
+    },
+    containers: {
+      Code: [FLATTENED],
+    },
+    transformed: {
+      'Code.S3.Bucket':
+        'the S3 object is fetched and committed as file content',
+      'Code.S3.Key':
+        'the S3 object is fetched and committed as file content',
+      'Code.S3.ObjectVersion':
+        'the S3 object is fetched and committed as file content',
+    },
   },
   'AWS::Cognito::UserPool': {
-    EmailAuthenticationMessage: ['Message'],
-    EmailAuthenticationSubject: ['Subject'],
-    // Each enabled factor is its own configuration block.
-    EnabledMfas: ['EmailMfaConfiguration', 'SmsMfaConfiguration', 'SoftwareTokenMfaConfiguration'],
-    UserPoolName: ['PoolName'],
-    WebAuthnFactorConfiguration: ['FactorConfiguration'],
-    WebAuthnRelyingPartyID: ['RelyingPartyId'],
-    WebAuthnUserVerification: ['UserVerification'],
+    members: {
+      EmailAuthenticationMessage: ['Message'],
+      EmailAuthenticationSubject: ['Subject'],
+      UserPoolName: ['PoolName'],
+      WebAuthnFactorConfiguration: ['FactorConfiguration'],
+      WebAuthnRelyingPartyID: ['RelyingPartyId'],
+      WebAuthnUserVerification: ['UserVerification'],
+    },
+    containers: {
+      Schema: ['CustomAttributes'],
+    },
+    transformed: {
+      EnabledMfas:
+        'each enabled factor is sent as its own configuration block (EmailMfaConfiguration, SmsMfaConfiguration, SoftwareTokenMfaConfiguration)',
+    },
   },
   'AWS::DynamoDB::GlobalTable': {
-    'Replicas.ContributorInsightsSpecification.Enabled': ['ContributorInsightsAction'],
-    'Replicas.ContributorInsightsSpecification.Mode': ['ContributorInsightsMode'],
-    'Replicas.GlobalSecondaryIndexes.ContributorInsightsSpecification.Enabled': [
-      'ContributorInsightsAction',
-    ],
-    'Replicas.GlobalSecondaryIndexes.ContributorInsightsSpecification.Mode': [
-      'ContributorInsightsMode',
-    ],
-    // A replica override names its index; renaming it drops the override.
-    'Replicas.GlobalSecondaryIndexes.IndexName': ['GlobalSecondaryIndexes'],
-    'Replicas.Region': ['RegionName'],
-    // Table-level SSE also re-keys each replica (`KMSMasterKeyId`).
-    'SSESpecification.SSEEnabled': ['Enabled', 'KMSMasterKeyId'],
+    members: {
+      'Replicas.ContributorInsightsSpecification.Enabled': ['ContributorInsightsAction'],
+      'Replicas.ContributorInsightsSpecification.Mode': ['ContributorInsightsMode'],
+      'Replicas.GlobalSecondaryIndexes.ContributorInsightsSpecification.Enabled': ['ContributorInsightsAction'],
+      'Replicas.GlobalSecondaryIndexes.ContributorInsightsSpecification.Mode': ['ContributorInsightsMode'],
+      'Replicas.Region': ['RegionName'],
+      // Table-level SSE also re-keys each replica (`KMSMasterKeyId`).
+      'SSESpecification.SSEEnabled': ['Enabled', 'KMSMasterKeyId'],
+    },
+    containers: {
+      GlobalSecondaryIndexes: ['Create'],
+      'GlobalSecondaryIndexes.WriteOnDemandThroughputSettings': ['OnDemandThroughput'],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
+      Replicas: [FLATTENED],
+      'Replicas.ContributorInsightsSpecification': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ContributorInsightsSpecification': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadOnDemandThroughputSettings': ['OnDemandThroughput'],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings': ['ProvisionedThroughputOverride'],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
+      'Replicas.KinesisStreamSpecification': [FLATTENED, 'EnableKinesisStreamingConfiguration'],
+      'Replicas.ReadOnDemandThroughputSettings': ['OnDemandThroughput'],
+      'Replicas.ReadProvisionedThroughputSettings': ['ProvisionedThroughputOverride'],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument': ['Policy'],
+      'Replicas.ResourcePolicy.PolicyDocument': ['Policy'],
+      'Replicas.SSESpecification': ['Create', 'Update'],
+      SSESpecification: ['Update'],
+      WriteOnDemandThroughputSettings: ['OnDemandThroughput'],
+      'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
+    },
+    transformed: {
+      'Replicas.GlobalSecondaryIndexes.IndexName':
+        'a replica override names its index: renaming it to an index the table lacks drops the override',
+    },
   },
   'AWS::DynamoDB::Table': {
-    'ContributorInsightsSpecification.Enabled': ['ContributorInsightsAction'],
-    'ContributorInsightsSpecification.Mode': ['ContributorInsightsMode'],
-    'GlobalSecondaryIndexes.ContributorInsightsSpecification.Enabled': [
-      'ContributorInsightsAction',
-    ],
-    'GlobalSecondaryIndexes.ContributorInsightsSpecification.Mode': ['ContributorInsightsMode'],
-    'SSESpecification.SSEEnabled': ['Enabled'],
+    members: {
+      'ContributorInsightsSpecification.Enabled': ['ContributorInsightsAction'],
+      'ContributorInsightsSpecification.Mode': ['ContributorInsightsMode'],
+      'GlobalSecondaryIndexes.ContributorInsightsSpecification.Enabled': ['ContributorInsightsAction'],
+      'GlobalSecondaryIndexes.ContributorInsightsSpecification.Mode': ['ContributorInsightsMode'],
+      'SSESpecification.SSEEnabled': ['Enabled'],
+    },
+    containers: {
+      ContributorInsightsSpecification: [FLATTENED],
+      GlobalSecondaryIndexes: ['Create'],
+      'GlobalSecondaryIndexes.ContributorInsightsSpecification': [FLATTENED],
+      KinesisStreamSpecification: [FLATTENED, 'EnableKinesisStreamingConfiguration'],
+      'ResourcePolicy.PolicyDocument': ['Policy', 'ResourcePolicy'],
+      'StreamSpecification.ResourcePolicy.PolicyDocument': ['Policy'],
+    },
   },
   'AWS::EC2::Instance': {
-    // MonitorInstances versus UnmonitorInstances.
-    Monitoring: ['InstanceIds'],
-    'NetworkInterfaces.GroupSet': ['Groups'],
-    SecurityGroupIds: ['Groups'],
+    members: {
+      IamInstanceProfile: ['Name'],
+      // MonitorInstances versus UnmonitorInstances.
+      Monitoring: ['Enabled', 'InstanceIds'],
+      'NetworkInterfaces.GroupSet': ['Groups'],
+      SecurityGroupIds: ['Groups'],
+    },
+    containers: {
+      CreditSpecification: ['InstanceCreditSpecifications'],
+      MetadataOptions: [FLATTENED],
+    },
+  },
+  'AWS::EC2::NatGateway': {
+    containers: {
+      AvailabilityZoneAddresses: [FLATTENED],
+    },
+  },
+  'AWS::EC2::NetworkAclEntry': {
+    containers: {
+      Icmp: ['IcmpTypeCode'],
+    },
   },
   'AWS::EC2::SecurityGroup': {
-    GroupDescription: ['Description'],
-    'SecurityGroupEgress.DestinationPrefixListId': ['PrefixListId'],
-    'SecurityGroupEgress.DestinationSecurityGroupId': ['GroupId'],
-    'SecurityGroupIngress.SourcePrefixListId': ['PrefixListId'],
-    'SecurityGroupIngress.SourceSecurityGroupId': ['GroupId'],
-    'SecurityGroupIngress.SourceSecurityGroupName': ['GroupName'],
-    'SecurityGroupIngress.SourceSecurityGroupOwnerId': ['UserId'],
+    members: {
+      GroupDescription: ['Description'],
+      'SecurityGroupEgress.DestinationPrefixListId': ['PrefixListId'],
+      'SecurityGroupEgress.DestinationSecurityGroupId': ['GroupId'],
+      'SecurityGroupIngress.SourcePrefixListId': ['PrefixListId'],
+      'SecurityGroupIngress.SourceSecurityGroupId': ['GroupId'],
+      'SecurityGroupIngress.SourceSecurityGroupName': ['GroupName'],
+      'SecurityGroupIngress.SourceSecurityGroupOwnerId': ['UserId'],
+    },
+    containers: {
+      SecurityGroupEgress: ['IpPermissions', 'IpRanges', 'Ipv6Ranges'],
+      SecurityGroupIngress: ['IpPermissions', 'IpRanges', 'Ipv6Ranges'],
+    },
   },
   'AWS::EC2::SecurityGroupIngress': {
-    SourcePrefixListId: ['PrefixListId'],
-    SourceSecurityGroupId: ['GroupId'],
-    SourceSecurityGroupOwnerId: ['UserId'],
+    members: {
+      SourcePrefixListId: ['PrefixListId'],
+      SourceSecurityGroupId: ['GroupId'],
+      SourceSecurityGroupOwnerId: ['UserId'],
+    },
   },
   'AWS::EC2::SubnetNetworkAclAssociation': {
-    // The subnet's current association is read, then replaced by its id.
-    SubnetId: ['AssociationId'],
+    members: {
+      // The subnet's current association is read, then replaced by its id.
+      SubnetId: ['AssociationId'],
+    },
   },
   'AWS::ECR::Repository': {
-    'ImageTagMutabilityExclusionFilters.ImageTagMutabilityExclusionFilterType': ['filterType'],
-    'ImageTagMutabilityExclusionFilters.ImageTagMutabilityExclusionFilterValue': ['filter'],
+    members: {
+      'ImageTagMutabilityExclusionFilters.ImageTagMutabilityExclusionFilterType': ['filterType'],
+      'ImageTagMutabilityExclusionFilters.ImageTagMutabilityExclusionFilterValue': ['filter'],
+    },
+    containers: {
+      LifecyclePolicy: [FLATTENED],
+      RepositoryPolicyText: ['policyText'],
+    },
+  },
+  'AWS::ECS::Cluster': {
+    containers: {
+      ClusterSettings: ['settings'],
+    },
   },
   'AWS::ECS::Service': {
-    'ForceNewDeployment.EnableForceNewDeployment': ['forceNewDeployment'],
+    members: {
+      'ForceNewDeployment.EnableForceNewDeployment': ['forceNewDeployment'],
+    },
+    containers: {
+      ForceNewDeployment: [FLATTENED],
+      PlacementStrategies: ['placementStrategy'],
+    },
+  },
+  'AWS::ECS::TaskDefinition': {
+    containers: {
+      'ProxyConfiguration.ProxyConfigurationProperties': ['properties'],
+    },
+  },
+  'AWS::EFS::AccessPoint': {
+    containers: {
+      AccessPointTags: ['Tags'],
+    },
+  },
+  'AWS::EFS::FileSystem': {
+    containers: {
+      FileSystemPolicy: ['Policy'],
+      FileSystemProtection: [FLATTENED],
+      FileSystemTags: ['Tags'],
+    },
+  },
+  'AWS::EMR::Cluster': {
+    containers: {
+      'Configurations.ConfigurationProperties': ['Properties'],
+      'Configurations.Configurations.ConfigurationProperties': ['Properties'],
+      Instances: [FLATTENED],
+      'Instances.CoreInstanceFleet': ['InstanceFleets'],
+      'Instances.CoreInstanceFleet.InstanceTypeConfigs.Configurations.ConfigurationProperties': ['Properties'],
+      'Instances.CoreInstanceFleet.InstanceTypeConfigs.Configurations.Configurations.ConfigurationProperties': ['Properties'],
+      'Instances.CoreInstanceGroup': ['InstanceGroups'],
+      'Instances.CoreInstanceGroup.Configurations.ConfigurationProperties': ['Properties'],
+      'Instances.CoreInstanceGroup.Configurations.Configurations.ConfigurationProperties': ['Properties'],
+      'Instances.MasterInstanceFleet': ['InstanceFleets'],
+      'Instances.MasterInstanceFleet.InstanceTypeConfigs.Configurations.ConfigurationProperties': ['Properties'],
+      'Instances.MasterInstanceFleet.InstanceTypeConfigs.Configurations.Configurations.ConfigurationProperties': ['Properties'],
+      'Instances.MasterInstanceGroup': ['InstanceGroups'],
+      'Instances.MasterInstanceGroup.Configurations.ConfigurationProperties': ['Properties'],
+      'Instances.MasterInstanceGroup.Configurations.Configurations.ConfigurationProperties': ['Properties'],
+      'Instances.TaskInstanceFleets': ['InstanceFleets'],
+      'Instances.TaskInstanceFleets.InstanceTypeConfigs.Configurations.ConfigurationProperties': ['Properties'],
+      'Instances.TaskInstanceFleets.InstanceTypeConfigs.Configurations.Configurations.ConfigurationProperties': ['Properties'],
+      'Instances.TaskInstanceGroups': ['InstanceGroups'],
+      'Instances.TaskInstanceGroups.Configurations.ConfigurationProperties': ['Properties'],
+      'Instances.TaskInstanceGroups.Configurations.Configurations.ConfigurationProperties': ['Properties'],
+      'Steps.HadoopJarStep.StepProperties': ['Properties'],
+    },
+  },
+  'AWS::EMR::InstanceFleetConfig': {
+    containers: {
+      'InstanceTypeConfigs.Configurations.ConfigurationProperties': ['Properties'],
+      'InstanceTypeConfigs.Configurations.Configurations.ConfigurationProperties': ['Properties'],
+    },
+  },
+  'AWS::EMR::InstanceGroupConfig': {
+    containers: {
+      'Configurations.ConfigurationProperties': ['Properties'],
+      'Configurations.Configurations.ConfigurationProperties': ['Properties'],
+    },
   },
   'AWS::ElastiCache::CacheCluster': {
-    ClusterName: ['CacheClusterId'],
-    PreferredAvailabilityZones: ['NewAvailabilityZones'],
-    VpcSecurityGroupIds: ['SecurityGroupIds'],
+    members: {
+      ClusterName: ['CacheClusterId'],
+      PreferredAvailabilityZones: ['NewAvailabilityZones'],
+      VpcSecurityGroupIds: ['SecurityGroupIds'],
+    },
   },
   'AWS::ElastiCache::SubnetGroup': {
-    Description: ['CacheSubnetGroupDescription'],
+    members: {
+      Description: ['CacheSubnetGroupDescription'],
+    },
+  },
+  'AWS::ElasticLoadBalancingV2::Listener': {
+    containers: {
+      ListenerAttributes: ['Attributes'],
+    },
+  },
+  'AWS::ElasticLoadBalancingV2::LoadBalancer': {
+    containers: {
+      LoadBalancerAttributes: ['Attributes'],
+    },
+  },
+  'AWS::ElasticLoadBalancingV2::TargetGroup': {
+    containers: {
+      TargetGroupAttributes: ['Attributes'],
+    },
+  },
+  'AWS::Events::Rule': {
+    containers: {
+      'Targets.EcsParameters.PlacementStrategies': ['PlacementStrategy'],
+      'Targets.EcsParameters.TagList': ['Tags'],
+    },
   },
   'AWS::FSx::FileSystem': {
-    // From a backup the type is the backup's and not a parameter of
-    // CreateFileSystemFromBackup; it reaches only the idempotency token.
-    FileSystemType: ['ClientRequestToken'],
-    'OntapConfiguration.RouteTableIds': ['AddRouteTableIds'],
-    'OpenZFSConfiguration.RouteTableIds': ['AddRouteTableIds'],
+    members: {
+      'OntapConfiguration.RouteTableIds': ['AddRouteTableIds'],
+      'OpenZFSConfiguration.RouteTableIds': ['AddRouteTableIds'],
+    },
+    containers: {
+      WindowsConfiguration: [FLATTENED],
+    },
+    transformed: {
+      FileSystemType:
+        'from a backup the type is the backup\'s, not a CreateFileSystemFromBackup parameter; it reaches only the idempotency token',
+    },
+  },
+  'AWS::Glue::Connection': {
+    containers: {
+      Tags: ['TagsToAdd'],
+    },
   },
   'AWS::Glue::Crawler': {
-    'Schedule.ScheduleExpression': ['Schedule'],
+    members: {
+      'Schedule.ScheduleExpression': ['Schedule'],
+    },
+    containers: {
+      Schedule: [FLATTENED],
+      Tags: ['TagsToAdd'],
+    },
   },
   'AWS::Glue::Database': {
-    DatabaseName: ['Name'],
+    members: {
+      DatabaseName: ['Name'],
+    },
+  },
+  'AWS::Glue::Job': {
+    containers: {
+      Tags: ['TagsToAdd'],
+    },
+  },
+  'AWS::Glue::SecurityConfiguration': {
+    containers: {
+      'EncryptionConfiguration.S3Encryptions': ['S3Encryption'],
+    },
+  },
+  'AWS::Glue::Trigger': {
+    containers: {
+      Tags: ['TagsToAdd'],
+    },
+  },
+  'AWS::Glue::Workflow': {
+    containers: {
+      Tags: ['TagsToAdd'],
+    },
   },
   'AWS::IAM::Group': {
-    ManagedPolicyArns: ['PolicyArn'],
-    Path: ['NewPath'],
+    members: {
+      ManagedPolicyArns: ['PolicyArn'],
+      Path: ['NewPath'],
+    },
+    containers: {
+      Policies: [FLATTENED],
+    },
   },
   'AWS::IAM::InstanceProfile': {
-    Roles: ['RoleName'],
+    members: {
+      Roles: ['RoleName'],
+    },
   },
   'AWS::IAM::ManagedPolicy': {
-    Groups: ['GroupName'],
-    ManagedPolicyName: ['PolicyName'],
-    Roles: ['RoleName'],
-    Users: ['UserName'],
+    members: {
+      Groups: ['GroupName'],
+      ManagedPolicyName: ['PolicyName'],
+      Roles: ['RoleName'],
+      Users: ['UserName'],
+    },
   },
   'AWS::IAM::Policy': {
-    Groups: ['GroupName'],
-    Roles: ['RoleName'],
-    Users: ['UserName'],
+    members: {
+      Groups: ['GroupName'],
+      Roles: ['RoleName'],
+      Users: ['UserName'],
+    },
   },
   'AWS::IAM::Role': {
-    ManagedPolicyArns: ['PolicyArn'],
+    members: {
+      ManagedPolicyArns: ['PolicyArn'],
+    },
+    containers: {
+      AssumeRolePolicyDocument: ['PolicyDocument'],
+      Policies: [FLATTENED],
+    },
   },
   'AWS::IAM::User': {
-    Groups: ['GroupName'],
-    ManagedPolicyArns: ['PolicyArn'],
-    Path: ['NewPath'],
+    members: {
+      Groups: ['GroupName'],
+      ManagedPolicyArns: ['PolicyArn'],
+      Path: ['NewPath'],
+    },
+    containers: {
+      LoginProfile: [FLATTENED],
+      Policies: [FLATTENED],
+    },
   },
   'AWS::IAM::UserToGroupAddition': {
-    Users: ['UserName'],
+    members: {
+      Users: ['UserName'],
+    },
   },
   'AWS::KMS::Key': {
-    // EnableKeyRotation versus DisableKeyRotation, EnableKey versus DisableKey.
-    EnableKeyRotation: ['KeyId'],
-    Enabled: ['KeyId'],
-    'Tags.Key': ['TagKey'],
+    members: {
+      // EnableKeyRotation versus DisableKeyRotation, EnableKey versus DisableKey.
+      EnableKeyRotation: ['KeyId'],
+      Enabled: ['KeyId'],
+      'Tags.Key': ['TagKey'],
+    },
+    containers: {
+      KeyPolicy: ['Policy'],
+    },
   },
   'AWS::Kinesis::Stream': {
-    DesiredShardLevelMetrics: ['ShardLevelMetrics'],
-    Name: ['StreamName'],
-    ShardCount: ['TargetShardCount'],
+    members: {
+      DesiredShardLevelMetrics: ['ShardLevelMetrics'],
+      Name: ['StreamName'],
+      ShardCount: ['TargetShardCount'],
+    },
+    containers: {
+      StreamEncryption: [FLATTENED],
+    },
+  },
+  'AWS::KinesisFirehose::DeliveryStream': {
+    containers: {
+      AmazonOpenSearchServerlessDestinationConfiguration: ['AmazonOpenSearchServerlessDestinationUpdate'],
+      'AmazonOpenSearchServerlessDestinationConfiguration.S3Configuration': ['S3Update'],
+      AmazonopensearchserviceDestinationConfiguration: ['AmazonopensearchserviceDestinationUpdate'],
+      'AmazonopensearchserviceDestinationConfiguration.S3Configuration': ['S3Update'],
+      ElasticsearchDestinationConfiguration: ['ElasticsearchDestinationUpdate'],
+      'ElasticsearchDestinationConfiguration.S3Configuration': ['S3Update'],
+      ExtendedS3DestinationConfiguration: ['ExtendedS3DestinationUpdate'],
+      'ExtendedS3DestinationConfiguration.S3BackupConfiguration': ['S3BackupUpdate'],
+      HttpEndpointDestinationConfiguration: ['HttpEndpointDestinationUpdate'],
+      'HttpEndpointDestinationConfiguration.S3Configuration': ['S3Update'],
+      RedshiftDestinationConfiguration: ['RedshiftDestinationUpdate'],
+      'RedshiftDestinationConfiguration.S3BackupConfiguration': ['S3BackupUpdate'],
+      'RedshiftDestinationConfiguration.S3Configuration': ['S3Update'],
+      S3DestinationConfiguration: ['S3DestinationUpdate'],
+      SplunkDestinationConfiguration: ['SplunkDestinationUpdate'],
+      'SplunkDestinationConfiguration.S3Configuration': ['S3Update'],
+    },
+  },
+  'AWS::Lambda::Function': {
+    containers: {
+      Code: [FLATTENED],
+      RuntimeManagementConfig: [FLATTENED],
+    },
   },
   'AWS::Lambda::Url': {
-    TargetFunctionArn: ['FunctionName'],
+    members: {
+      TargetFunctionArn: ['FunctionName'],
+    },
+  },
+  'AWS::Logs::LogGroup': {
+    containers: {
+      DataProtectionPolicy: ['policyDocument'],
+      FieldIndexPolicies: ['policyDocument'],
+    },
   },
   'AWS::Neptune::DBCluster': {
-    DBPort: ['Port'],
-    IamAuthEnabled: ['EnableIAMDatabaseAuthentication'],
+    members: {
+      DBPort: ['Port'],
+      IamAuthEnabled: ['EnableIAMDatabaseAuthentication'],
+    },
   },
   'AWS::RDS::DBCluster': {
-    'MasterUserSecret.KmsKeyId': ['MasterUserSecretKmsKeyId'],
+    members: {
+      'MasterUserSecret.KmsKeyId': ['MasterUserSecretKmsKeyId'],
+    },
+    containers: {
+      MasterUserSecret: [FLATTENED],
+    },
   },
   'AWS::RDS::DBInstance': {
-    'MasterUserSecret.KmsKeyId': ['MasterUserSecretKmsKeyId'],
-    Port: ['DBPortNumber'],
-    VPCSecurityGroups: ['VpcSecurityGroupIds'],
+    members: {
+      'MasterUserSecret.KmsKeyId': ['MasterUserSecretKmsKeyId'],
+      Port: ['DBPortNumber'],
+      VPCSecurityGroups: ['VpcSecurityGroupIds'],
+    },
+    containers: {
+      MasterUserSecret: [FLATTENED],
+    },
   },
   'AWS::RDS::DBProxy': {
-    VpcSecurityGroupIds: ['SecurityGroups'],
+    members: {
+      VpcSecurityGroupIds: ['SecurityGroups'],
+    },
+  },
+  'AWS::RDS::DBProxyTargetGroup': {
+    containers: {
+      ConnectionPoolConfigurationInfo: ['ConnectionPoolConfig'],
+    },
+  },
+  'AWS::Route53::HostedZone': {
+    containers: {
+      HostedZoneConfig: [FLATTENED],
+      HostedZoneFeatures: [FLATTENED],
+      HostedZoneTags: ['AddTags'],
+      QueryLoggingConfig: [FLATTENED],
+      VPCs: ['VPC'],
+    },
   },
   'AWS::Route53::RecordSet': {
-    // The zone is looked up by name and addressed by id.
-    HostedZoneName: ['HostedZoneId'],
+    members: {
+      // The zone is looked up by name and addressed by id.
+      HostedZoneName: ['HostedZoneId'],
+    },
   },
   'AWS::S3::Bucket': {
-    'AccelerateConfiguration.AccelerationStatus': ['Status'],
-    'AnalyticsConfigurations.StorageClassAnalysis.DataExport.Destination.BucketArn': ['Bucket'],
-    BucketName: ['Bucket'],
-    'CorsConfiguration.CorsRules.ExposedHeaders': ['ExposeHeaders'],
-    'CorsConfiguration.CorsRules.MaxAge': ['MaxAgeSeconds'],
-    'InventoryConfigurations.Destination.BucketAccountId': ['AccountId'],
-    'InventoryConfigurations.Destination.BucketArn': ['Bucket'],
-    'InventoryConfigurations.Enabled': ['IsEnabled'],
-    'InventoryConfigurations.ScheduleFrequency': ['Frequency'],
-    'LifecycleConfiguration.Rules.ExpirationDate': ['Date'],
-    'LifecycleConfiguration.Rules.ExpirationInDays': ['Days'],
-    'LifecycleConfiguration.Rules.NoncurrentVersionExpirationInDays': ['NoncurrentDays'],
-    'LifecycleConfiguration.Rules.NoncurrentVersionTransition.TransitionInDays': ['NoncurrentDays'],
-    'LifecycleConfiguration.Rules.NoncurrentVersionTransitions.TransitionInDays': [
-      'NoncurrentDays',
-    ],
-    'LifecycleConfiguration.Rules.Transition.TransitionDate': ['Date'],
-    'LifecycleConfiguration.Rules.Transition.TransitionInDays': ['Days'],
-    'LifecycleConfiguration.Rules.Transitions.TransitionDate': ['Date'],
-    'LifecycleConfiguration.Rules.Transitions.TransitionInDays': ['Days'],
-    'LoggingConfiguration.DestinationBucketName': ['TargetBucket'],
-    'LoggingConfiguration.LogFilePrefix': ['TargetPrefix'],
-    // `true` sends an empty `EventBridgeConfiguration: {}`.
-    'NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled': [
-      'EventBridgeConfiguration',
-    ],
-    'NotificationConfiguration.LambdaConfigurations.Event': ['Events'],
-    'NotificationConfiguration.LambdaConfigurations.Function': ['LambdaFunctionArn'],
-    'NotificationConfiguration.QueueConfigurations.Event': ['Events'],
-    'NotificationConfiguration.QueueConfigurations.Queue': ['QueueArn'],
-    'NotificationConfiguration.TopicConfigurations.Event': ['Events'],
-    'NotificationConfiguration.TopicConfigurations.Topic': ['TopicArn'],
-    ObjectLockEnabled: ['ObjectLockEnabledForBucket'],
+    members: {
+      'AccelerateConfiguration.AccelerationStatus': ['Status'],
+      'AnalyticsConfigurations.StorageClassAnalysis.DataExport.Destination.BucketArn': ['Bucket'],
+      BucketName: ['Bucket'],
+      'CorsConfiguration.CorsRules.ExposedHeaders': ['ExposeHeaders'],
+      'CorsConfiguration.CorsRules.MaxAge': ['MaxAgeSeconds'],
+      'InventoryConfigurations.Destination.BucketAccountId': ['AccountId'],
+      'InventoryConfigurations.Destination.BucketArn': ['Bucket'],
+      'InventoryConfigurations.Enabled': ['IsEnabled'],
+      'InventoryConfigurations.ScheduleFrequency': ['Frequency'],
+      'LifecycleConfiguration.Rules.ExpirationDate': ['Date'],
+      'LifecycleConfiguration.Rules.ExpirationInDays': ['Days'],
+      'LifecycleConfiguration.Rules.NoncurrentVersionExpirationInDays': ['NoncurrentDays'],
+      'LifecycleConfiguration.Rules.NoncurrentVersionTransition.TransitionInDays': ['NoncurrentDays'],
+      'LifecycleConfiguration.Rules.NoncurrentVersionTransitions.TransitionInDays': ['NoncurrentDays'],
+      'LifecycleConfiguration.Rules.Transition.TransitionDate': ['Date'],
+      'LifecycleConfiguration.Rules.Transition.TransitionInDays': ['Days'],
+      'LifecycleConfiguration.Rules.Transitions.TransitionDate': ['Date'],
+      'LifecycleConfiguration.Rules.Transitions.TransitionInDays': ['Days'],
+      'LoggingConfiguration.DestinationBucketName': ['TargetBucket'],
+      'LoggingConfiguration.LogFilePrefix': ['TargetPrefix'],
+      // `true` sends an empty `EventBridgeConfiguration: {}`.
+      'NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled': ['EventBridgeConfiguration'],
+      'NotificationConfiguration.LambdaConfigurations.Event': ['Events'],
+      'NotificationConfiguration.LambdaConfigurations.Function': ['LambdaFunctionArn'],
+      'NotificationConfiguration.QueueConfigurations.Event': ['Events'],
+      'NotificationConfiguration.QueueConfigurations.Queue': ['QueueArn'],
+      'NotificationConfiguration.TopicConfigurations.Event': ['Events'],
+      'NotificationConfiguration.TopicConfigurations.Topic': ['TopicArn'],
+      ObjectLockEnabled: ['ObjectLockEnabledForBucket'],
+      'WebsiteConfiguration.ErrorDocument': ['Key'],
+      'WebsiteConfiguration.IndexDocument': ['Suffix'],
+    },
+    containers: {
+      AnalyticsConfigurations: ['AnalyticsConfiguration', 'And'],
+      'AnalyticsConfigurations.TagFilters': ['Tags'],
+      'BucketEncryption.ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault': ['ApplyServerSideEncryptionByDefault'],
+      IntelligentTieringConfigurations: ['And', 'IntelligentTieringConfiguration'],
+      'IntelligentTieringConfigurations.TagFilters': ['Tags'],
+      InventoryConfigurations: ['Filter', 'InventoryConfiguration'],
+      LifecycleConfiguration: [FLATTENED],
+      'LifecycleConfiguration.Rules.NoncurrentVersionTransition': ['NoncurrentVersionTransitions'],
+      'LifecycleConfiguration.Rules.TagFilters': ['Tag'],
+      'LifecycleConfiguration.Rules.Transition': ['Transitions'],
+      LoggingConfiguration: ['LoggingEnabled'],
+      MetricsConfigurations: ['And', 'Filter', 'MetricsConfiguration'],
+      'MetricsConfigurations.TagFilters': ['Tags'],
+      'NotificationConfiguration.EventBridgeConfiguration': ['NotificationConfiguration'],
+      'NotificationConfiguration.LambdaConfigurations': ['LambdaFunctionConfigurations'],
+      'NotificationConfiguration.LambdaConfigurations.Filter.S3Key.Rules': ['FilterRules'],
+      'NotificationConfiguration.QueueConfigurations.Filter.S3Key.Rules': ['FilterRules'],
+      'NotificationConfiguration.TopicConfigurations.Filter.S3Key.Rules': ['FilterRules'],
+      'ReplicationConfiguration.Rules.Filter.And.TagFilters': ['Tags'],
+      'ReplicationConfiguration.Rules.Filter.TagFilter': ['Tag'],
+      Tags: ['TagSet'],
+      'WebsiteConfiguration.RoutingRules.RedirectRule': ['Redirect'],
+      'WebsiteConfiguration.RoutingRules.RoutingRuleCondition': ['Condition'],
+    },
+  },
+  'AWS::S3::BucketPolicy': {
+    containers: {
+      PolicyDocument: ['Policy'],
+    },
   },
   'AWS::S3Express::DirectoryBucket': {
-    BucketName: ['Bucket'],
-    LocationName: ['Name'],
+    members: {
+      BucketName: ['Bucket'],
+      LocationName: ['Name'],
+    },
   },
   'AWS::S3Tables::Table': {
-    Name: ['newName'],
-    Namespace: ['newNamespaceName'],
-    OpenTableFormat: ['format'],
-    TableName: ['name', 'newName'],
+    members: {
+      Name: ['newName'],
+      Namespace: ['newNamespaceName'],
+      OpenTableFormat: ['format'],
+      TableName: ['name', 'newName'],
+    },
   },
   'AWS::S3Tables::TableBucket': {
-    TableBucketName: ['name'],
+    members: {
+      TableBucketName: ['name'],
+    },
+  },
+  'AWS::SNS::Subscription': {
+    containers: {
+      FilterPolicy: ['AttributeValue'],
+      RedrivePolicy: ['AttributeValue'],
+      ReplayPolicy: ['AttributeValue'],
+    },
   },
   'AWS::SNS::Topic': {
-    // A delivery-status setting is a topic attribute named for its protocol.
-    'DeliveryStatusLogging.FailureFeedbackRoleArn': ['LambdaFailureFeedbackRoleArn'],
-    'DeliveryStatusLogging.Protocol': ['AttributeName'],
-    'DeliveryStatusLogging.SuccessFeedbackRoleArn': ['LambdaSuccessFeedbackRoleArn'],
-    'DeliveryStatusLogging.SuccessFeedbackSampleRate': ['LambdaSuccessFeedbackSampleRate'],
-    TopicName: ['Name'],
+    members: {
+      // A delivery-status setting is a topic attribute named for its protocol.
+      'DeliveryStatusLogging.FailureFeedbackRoleArn': ['LambdaFailureFeedbackRoleArn'],
+      'DeliveryStatusLogging.Protocol': ['AttributeName'],
+      'DeliveryStatusLogging.SuccessFeedbackRoleArn': ['LambdaSuccessFeedbackRoleArn'],
+      'DeliveryStatusLogging.SuccessFeedbackSampleRate': ['LambdaSuccessFeedbackSampleRate'],
+      TopicName: ['Name'],
+    },
+    containers: {
+      ArchivePolicy: ['AttributeValue'],
+      DataProtectionPolicy: ['AttributeValue'],
+      DeliveryStatusLogging: [FLATTENED],
+      Subscription: [FLATTENED],
+    },
   },
   'AWS::SNS::TopicPolicy': {
-    Topics: ['TopicArn'],
+    members: {
+      Topics: ['TopicArn'],
+    },
+    containers: {
+      PolicyDocument: ['AttributeValue'],
+    },
   },
   'AWS::SQS::QueuePolicy': {
-    Queues: ['QueueUrl'],
+    members: {
+      Queues: ['QueueUrl'],
+    },
+    containers: {
+      PolicyDocument: ['Policy'],
+    },
   },
   'AWS::SecretsManager::Secret': {
-    // The password is generated here and sent as the secret string.
-    'GenerateSecretString.ExcludeCharacters': ['SecretString'],
-    'GenerateSecretString.ExcludeLowercase': ['SecretString'],
-    'GenerateSecretString.ExcludeNumbers': ['SecretString'],
-    'GenerateSecretString.ExcludePunctuation': ['SecretString'],
-    'GenerateSecretString.ExcludeUppercase': ['SecretString'],
-    'GenerateSecretString.GenerateStringKey': ['SecretString'],
-    'GenerateSecretString.IncludeSpace': ['SecretString'],
-    'GenerateSecretString.PasswordLength': ['SecretString'],
-    'GenerateSecretString.RequireEachIncludedType': ['SecretString'],
-    'GenerateSecretString.SecretStringTemplate': ['SecretString'],
+    containers: {
+      ReplicaRegions: ['AddReplicaRegions'],
+    },
+    transformed: {
+      'GenerateSecretString.ExcludeCharacters':
+        'the password is generated here and sent inside `SecretString`',
+      'GenerateSecretString.ExcludeLowercase':
+        'the password is generated here and sent inside `SecretString`',
+      'GenerateSecretString.ExcludeNumbers':
+        'the password is generated here and sent inside `SecretString`',
+      'GenerateSecretString.ExcludePunctuation':
+        'the password is generated here and sent inside `SecretString`',
+      'GenerateSecretString.ExcludeUppercase':
+        'the password is generated here and sent inside `SecretString`',
+      'GenerateSecretString.GenerateStringKey':
+        'the password is generated here and sent inside `SecretString`',
+      'GenerateSecretString.IncludeSpace':
+        'the password is generated here and sent inside `SecretString`',
+      'GenerateSecretString.PasswordLength':
+        'the password is generated here and sent inside `SecretString`',
+      'GenerateSecretString.RequireEachIncludedType':
+        'the password is generated here and sent inside `SecretString`',
+      'GenerateSecretString.SecretStringTemplate':
+        'the password is generated here and sent inside `SecretString`',
+    },
+  },
+  'AWS::ServiceDiscovery::Service': {
+    containers: {
+      ServiceAttributes: ['Attributes'],
+    },
   },
   'AWS::StepFunctions::StateMachine': {
-    // The S3 object is fetched and sent as the definition.
-    'DefinitionS3Location.Bucket': ['definition'],
-    'DefinitionS3Location.Key': ['definition'],
-    'DefinitionS3Location.Version': ['definition'],
-    DefinitionString: ['definition'],
-    'DefinitionSubstitutions.s': ['definition'],
-    StateMachineName: ['name'],
-    StateMachineType: ['type'],
+    members: {
+      StateMachineName: ['name'],
+      StateMachineType: ['type'],
+    },
+    containers: {
+      'Definition.States.${s}': ['P'],
+    },
+    transformed: {
+      'DefinitionS3Location.Bucket':
+        'the S3 object is fetched and sent as `definition`',
+      'DefinitionS3Location.Key':
+        'the S3 object is fetched and sent as `definition`',
+      'DefinitionS3Location.Version':
+        'the S3 object is fetched and sent as `definition`',
+      DefinitionString:
+        'parsed and sent as the `definition` document',
+      'DefinitionSubstitutions.s':
+        'substituted into the definition document',
+    },
   },
   'AWS::WAFv2::WebACL': {
-    // Decoded from base64 and sent as the bytes of `SearchString`.
-    'Rules.Statement.ByteMatchStatement.SearchStringBase64': ['SearchString'],
-    'Rules.Statement.OrStatement.Statements.ByteMatchStatement.SearchStringBase64': [
-      'SearchString',
-    ],
+    members: {
+      // Decoded from base64 and sent as the bytes of `SearchString`.
+      'Rules.Statement.ByteMatchStatement.SearchStringBase64': ['SearchString'],
+      'Rules.Statement.OrStatement.Statements.ByteMatchStatement.SearchStringBase64': ['SearchString'],
+    },
   },
 };
