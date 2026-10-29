@@ -713,7 +713,23 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
   'AWS::S3Express::DirectoryBucket': {
     members: {
       BucketName: ['Bucket'],
+      'InventoryConfigurations.Destination.BucketAccountId': ['AccountId'],
+      'InventoryConfigurations.Destination.BucketArn': ['Bucket'],
+      'InventoryConfigurations.Enabled': ['IsEnabled'],
+      'InventoryConfigurations.ScheduleFrequency': ['Schedule.Frequency'],
+      'LifecycleConfiguration.Rules.ExpirationInDays': ['Expiration.Days'],
+      'LifecycleConfiguration.Rules.ObjectSizeGreaterThan': ['Filter.And.ObjectSizeGreaterThan'],
+      'LifecycleConfiguration.Rules.ObjectSizeLessThan': ['Filter.And.ObjectSizeLessThan'],
+      'LifecycleConfiguration.Rules.Prefix': ['Filter.And.Prefix'],
       LocationName: ['Name'],
+    },
+    containers: {
+      BucketEncryption: ['PutBucketEncryptionCommand'],
+      'BucketEncryption.ServerSideEncryptionConfiguration': ['ServerSideEncryptionConfiguration.Rules'],
+      'BucketEncryption.ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault': ['ApplyServerSideEncryptionByDefault'],
+      InventoryConfigurations: ['Filter', 'InventoryConfiguration'],
+      'InventoryConfigurations.Destination': ['Destination.S3BucketDestination'],
+      MetricsConfigurations: ['And', 'Filter', 'MetricsConfiguration'],
     },
   },
   'AWS::S3Tables::Table': {

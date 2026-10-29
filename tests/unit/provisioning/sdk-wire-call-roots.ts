@@ -139,6 +139,12 @@ export const CALL_ROOTS: Record<string, CallRoots> = {
       PutBucketMetricsConfigurationCommand: PER_ITEM('MetricsConfigurations', 'Id'),
     },
   },
+  'AWS::S3Express::DirectoryBucket': {
+    repeated: {
+      PutBucketInventoryConfigurationCommand: PER_ITEM('InventoryConfigurations', 'Id'),
+      PutBucketMetricsConfigurationCommand: PER_ITEM('MetricsConfigurations', 'Id'),
+    },
+  },
   'AWS::SNS::Topic': {
     repeated: {
       SetTopicAttributesCommand:
