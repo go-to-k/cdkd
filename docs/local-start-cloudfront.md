@@ -144,7 +144,7 @@ content-delivery network itself, so nothing is cached at an edge.
 | S3 origins | From local files, or from the deployed bucket | No |
 | Path routing | By the cache behaviours' path patterns | No |
 | `DefaultRootObject`, `CustomErrorResponses` | Applied | No |
-| Response headers policies | Applied, except Server-Timing | No |
+| Response headers policies | Applied, except Server-Timing and AWS-managed policies | No |
 | Other custom origins | Not fetched | — |
 | CDN caching, edge locations, cache keys | Not reproduced | — |
 
@@ -166,7 +166,7 @@ viewer-response function and the Lambda@Edge response stages:
 
 | Policy section | Local behaviour |
 | --- | --- |
-| CORS | A matching `OPTIONS` preflight is answered before the origin; other responses get the CORS headers |
+| CORS | A matching `OPTIONS` preflight is answered before the origin, without the policy's other headers; other responses get the CORS headers |
 | Security headers | Added: `Strict-Transport-Security`, `Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `X-XSS-Protection` |
 | Custom headers | Added |
 | Remove headers | Removed first, so a header the policy also adds is still sent |
