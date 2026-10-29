@@ -114,13 +114,13 @@ export class CreatedBeforeFailureSnsStack extends cdk.Stack {
  *
  * covers: AWS::CertificateManager::Certificate
  *
- * verify.sh deploys it under a 30s ACM deadline. The certificate is
- * DNS-validated for a domain under the reserved `.test` TLD, so nobody can
- * ever validate it: RequestCertificate returns at once with
- * PENDING_VALIDATION, and the provider's ISSUED wait (bounded only by its own
- * poll budget, far past 30s) never ends. The deadline therefore always fires
- * inside the wait, and the marked error the provider would throw is dropped,
- * so only the ARN it reported to the engine's created-resource sink can
+ * verify.sh deploys it under a 30s ACM deadline with the provider's poll
+ * interval at 10 minutes. RequestCertificate returns at once; the provider's
+ * ISSUED wait polls once right away and then sleeps, so the deadline always
+ * fires in that sleep (ACM marks this `.test` domain FAILED about 11s in,
+ * which the provider never gets to read). The marked error the provider
+ * would throw is dropped, so only the ARN it reported to the engine's
+ * created-resource sink can
  * journal the certificate. No DomainValidationOptions: nothing writes a DNS
  * record.
  */

@@ -49,12 +49,12 @@
 #         repository by hand.
 #   PHASE K (go-to-k/cdkd#5511, the deadline drops the provider's marked error):
 #     K1. Deploy the deadline stack --no-rollback --verbose under a 30s ACM
-#         deadline. Its DNS-validated certificate names a domain nobody can
-#         validate, so RequestCertificate returns at once and the provider's
-#         ISSUED wait can never finish: the deadline always fires inside it,
-#         and the marked error the wait would throw is dropped. The deploy
-#         fails with the timeout; the certificate EXISTS, PENDING_VALIDATION
-#         (proof the create returned); state has no record of it; the
+#         deadline, with the provider's poll interval at 10 minutes.
+#         RequestCertificate returns at once; the provider's ISSUED wait polls
+#         once right away (PENDING_VALIDATION) and then sleeps, so the deadline
+#         always fires inside that sleep, and the marked error the wait would
+#         throw is dropped. The deploy fails with the timeout; the certificate
+#         EXISTS (proof the create returned); state has no record of it; the
 #         journal's failed op carries physicalId = that ARN and
 #         physicalIdRecoveredFromError = true, from the id the provider
 #         reported to the engine's created-resource sink.
@@ -618,14 +618,22 @@ echo "[verify] phase N3 ok: one destroy deleted both states, kept the unproven r
 # ---------------------------------------------------------------------------
 # PHASE K: ACM — the deadline drops the marked error; the sink journals it
 # ---------------------------------------------------------------------------
-# 30s: RequestCertificate answers in about a second even under load, and the
-# ISSUED wait never ends for a domain nobody can validate, so the deadline
-# always lands in the wait. The provider has no deadline margin of its own:
-# its wait is bounded only by its own poll budget, far past 30s.
+# Measured: ACM marks this certificate FAILED about 11s after
+# RequestCertificate (`.test` is no public domain), and the provider's wait
+# polls DescribeCertificate once right away, then every
+# CDKD_ACM_POLL_INTERVAL_MS (10s by default). So at the default the second
+# poll can read FAILED and the provider throws on its own before a 30s
+# deadline. With the interval at 10 minutes, the only poll before the
+# deadline is the first one (about 1s in, PENDING_VALIDATION), and the 30s
+# deadline, which RequestCertificate's answer beats by a wide margin even
+# under load, always fires in the sleep after it. The provider has no
+# deadline margin of its own.
 echo "[verify] phase K1: deploy ${DEADLINE_STACK} --no-rollback --verbose under a 30s ACM deadline (expect FAILURE in the ISSUED wait)"
+export CDKD_ACM_POLL_INTERVAL_MS=600000
 deploy_expect_failure "${DEADLINE_STACK}" "${LOG_DIR}/k1.log" --verbose \
   --resource-warn-after AWS::CertificateManager::Certificate=10s \
   --resource-timeout AWS::CertificateManager::Certificate=30s
+unset CDKD_ACM_POLL_INTERVAL_MS
 if ! grep -qE "DeadlineCert \(AWS::CertificateManager::Certificate\) in ${REGION} timed out after" "${LOG_DIR}/k1.log"; then
   echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): the deploy did not fail on DeadlineCert's 30s deadline (or the wording drifted)" >&2
   exit 1
@@ -642,10 +650,15 @@ if ! K1_STATUS="$(aws acm describe-certificate --certificate-arn "${K1_ARN}" --r
   echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): describe-certificate for the requested certificate failed: ${K1_STATUS}" >&2
   exit 1
 fi
-if [ "${K1_STATUS}" != "PENDING_VALIDATION" ]; then
-  echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): the requested certificate is ${K1_STATUS}, not PENDING_VALIDATION" >&2
-  exit 1
-fi
+# FAILED is expected too: ACM fails this domain about 11s in, after the
+# provider's only poll. Either way the certificate exists and needs deleting.
+case "${K1_STATUS}" in
+  PENDING_VALIDATION | FAILED) ;;
+  *)
+    echo "[verify] FAIL: phase K1: PREMISE NOT MET (not a regression): the requested certificate is ${K1_STATUS}, not PENDING_VALIDATION or FAILED" >&2
+    exit 1
+    ;;
+esac
 if [ "$(state_has_resource "${DEADLINE_STATE_KEY}" DeadlineCert)" != "false" ]; then
   echo "[verify] FAIL: phase K1: state records DeadlineCert (expected no record for a CREATE the deadline failed)" >&2
   exit 1
@@ -665,7 +678,7 @@ if [ "${DEADLINE_OP_FIELDS}" != "CREATE ${K1_ARN} true" ]; then
   echo "${DEADLINE_OP}" | jq . | sed 's/^/  /' >&2
   exit 1
 fi
-echo "[verify] phase K1 ok: the certificate exists PENDING_VALIDATION, the deadline failed its CREATE, and the journal names it"
+echo "[verify] phase K1 ok: the certificate exists (${K1_STATUS}), the deadline failed its CREATE, and the journal names it"
 
 echo "[verify] phase K2: cdkd rollback ${DEADLINE_STACK} --force --revert-failed (expect exit 0, the certificate DELETED)"
 K2_RC="$(run_rollback "${DEADLINE_STACK}" "${LOG_DIR}/k2.log")"

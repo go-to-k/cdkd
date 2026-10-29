@@ -42,13 +42,15 @@ failure would decide whether the other arm's create ever ran.
 - **Phase K — `CdkdCreatedBeforeFailureRevertDeadlineExample`** (the deadline
   drops the provider's marked error, go-to-k/cdkd#5511): an
   `AWS::CertificateManager::Certificate`, DNS-validated for
-  `cdkd-cbfr-deadline.example.test` (a reserved TLD nobody can validate),
-  deployed with `--verbose` under
-  `--resource-timeout AWS::CertificateManager::Certificate=30s`.
-  `RequestCertificate` returns at once and the provider's ISSUED wait never
-  ends, so the deadline always fires inside it. Asserts (premises first) the
+  `cdkd-cbfr-deadline.example.test`, deployed with `--verbose` under
+  `--resource-timeout AWS::CertificateManager::Certificate=30s` and
+  `CDKD_ACM_POLL_INTERVAL_MS=600000`. `RequestCertificate` returns at once.
+  The provider's ISSUED wait polls once right away and then sleeps 10
+  minutes, so the deadline always fires in that sleep. ACM fails this `.test`
+  domain about 11s in (measured), and at the default 10s interval the second
+  poll could read that first. Asserts (premises first) the
   timeout, the provider's `Requested ACM certificate: <arn>` line, and the
-  certificate existing PENDING_VALIDATION; then that state has no record of it
+  certificate existing (PENDING_VALIDATION or FAILED); then that state has no record of it
   and the journal's failed op carries that ARN with
   `physicalIdRecoveredFromError: true`, from the id the provider reported to
   the engine's created-resource sink. `cdkd rollback --force --revert-failed`
