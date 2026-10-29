@@ -364,9 +364,6 @@ importers:
       cdk-local:
         specifier: ^0.156.0
         version: 0.156.0(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@55.1.0)(aws-cdk-lib@2.273.0(constructs@10.8.1))(constructs@10.8.1)(supports-color@7.2.0)
-      chokidar:
-        specifier: ^5.0.0
-        version: 5.0.0
       commander:
         specifier: ^14.0.3
         version: 14.0.3
