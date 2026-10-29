@@ -134,6 +134,53 @@ describe('CloudWatchAlarmProvider.readCurrentState', () => {
     expect(result).not.toHaveProperty('ThresholdMetricId');
   });
 
+  it('surfaces ActionConfiguration / WarmUpConfiguration in CFn shape when present (go-to-k/cdkd#2762)', async () => {
+    const actionConfiguration = {
+      AlarmTagsPropagation: { Enabled: true, ExcludedTagKeys: ['Secret'] },
+    };
+    const warmUpConfiguration = {
+      WarmUpPeriodDurationInMinutes: 15,
+      OnlyStartEvaluatingAfterWarmUpPeriodEnds: false,
+    };
+    mockSend.mockResolvedValueOnce({
+      MetricAlarms: [
+        {
+          AlarmName: 'myalarm',
+          ComparisonOperator: 'GreaterThanThreshold',
+          Threshold: 80,
+          EvaluationPeriods: 2,
+          ActionConfiguration: actionConfiguration,
+          WarmUpConfiguration: warmUpConfiguration,
+        },
+      ],
+    });
+
+    const result = (await provider.readCurrentState('myalarm', 'L', 'AWS::CloudWatch::Alarm')) as
+      | Record<string, unknown>
+      | undefined;
+
+    expect(result?.['ActionConfiguration']).toEqual(actionConfiguration);
+    expect(result?.['WarmUpConfiguration']).toEqual(warmUpConfiguration);
+  });
+
+  it('omits ActionConfiguration / WarmUpConfiguration when AWS does not report them', async () => {
+    mockSend.mockResolvedValueOnce({
+      MetricAlarms: [
+        {
+          AlarmName: 'myalarm',
+          ComparisonOperator: 'GreaterThanThreshold',
+          Threshold: 80,
+          EvaluationPeriods: 2,
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState('myalarm', 'L', 'AWS::CloudWatch::Alarm');
+
+    expect(result).not.toHaveProperty('ActionConfiguration');
+    expect(result).not.toHaveProperty('WarmUpConfiguration');
+  });
+
   it('returns RESOURCE_NOT_FOUND when alarm is gone (empty MetricAlarms)', async () => {
     mockSend.mockResolvedValueOnce({ MetricAlarms: [] });
     const result = await provider.readCurrentState('myalarm', 'L', 'AWS::CloudWatch::Alarm');
