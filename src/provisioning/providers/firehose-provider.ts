@@ -3012,32 +3012,6 @@ export class FirehoseProvider implements ResourceProvider {
    * reach the wrapper; an event loop stalled for longer still loses the race
    * (the engine-level gap is go-to-k/cdkd#5511).
    */
-  /**
-   * One `DescribeDeliveryStream` read for {@link waitForActive}, aborted
-   * {@link ACTIVE_DEADLINE_MARGIN_MS} before the enclosing resource deadline
-   * (`'deadline'` then). Outside any deadline the read is unbounded.
-   */
-  private async describeBeforeDeadline(
-    streamName: string
-  ): Promise<DescribeDeliveryStreamCommandOutput | 'deadline'> {
-    const command = new DescribeDeliveryStreamCommand({ DeliveryStreamName: streamName });
-    const remaining = enclosingDeadlineRemainingMs();
-    if (!Number.isFinite(remaining)) return this.getClient().send(command);
-    const abort = new AbortController();
-    const timer = setTimeout(
-      () => abort.abort(),
-      Math.max(0, remaining - ACTIVE_DEADLINE_MARGIN_MS)
-    );
-    try {
-      return await this.getClient().send(command, { abortSignal: abort.signal });
-    } catch (error) {
-      if (abort.signal.aborted) return 'deadline';
-      throw error;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
   private async waitForActive(
     streamName: string,
     logicalId: string,
@@ -3102,6 +3076,32 @@ export class FirehoseProvider implements ResourceProvider {
       );
     } finally {
       watch.dispose();
+    }
+  }
+
+  /**
+   * One `DescribeDeliveryStream` read for {@link waitForActive}, aborted
+   * {@link ACTIVE_DEADLINE_MARGIN_MS} before the enclosing resource deadline
+   * (`'deadline'` then). Outside any deadline the read is unbounded.
+   */
+  private async describeBeforeDeadline(
+    streamName: string
+  ): Promise<DescribeDeliveryStreamCommandOutput | 'deadline'> {
+    const command = new DescribeDeliveryStreamCommand({ DeliveryStreamName: streamName });
+    const remaining = enclosingDeadlineRemainingMs();
+    if (!Number.isFinite(remaining)) return this.getClient().send(command);
+    const abort = new AbortController();
+    const timer = setTimeout(
+      () => abort.abort(),
+      Math.max(0, remaining - ACTIVE_DEADLINE_MARGIN_MS)
+    );
+    try {
+      return await this.getClient().send(command, { abortSignal: abort.signal });
+    } catch (error) {
+      if (abort.signal.aborted) return 'deadline';
+      throw error;
+    } finally {
+      clearTimeout(timer);
     }
   }
 }
