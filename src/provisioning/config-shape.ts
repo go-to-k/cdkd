@@ -266,13 +266,10 @@ export interface ConfigStringOptions {
  * only rules 3 and 4 can apply.
  *
  * Keep this form at top-level call sites rather than passing `properties` to
- * {@link readConfigString}: the `handled-property-wiring` critic
- * (`scripts/gen-handled-property-wiring.ts`) recognises a property as WIRED
- * from the `properties['X']` element-read at the call site, and deliberately
- * does not treat a whole-bag forward into a helper as evidence. Hiding the
- * read inside the helper made `S3DirectoryBucketProvider` and
- * `WAFv2WebACLProvider` report un-wired — a false handled claim, which is the
- * exact thing that critic exists to prevent.
+ * {@link readConfigString}: the `properties['X']` element-read stays visible
+ * at the call site, so a reader (or grep) can see which property is consumed
+ * there rather than having the read hidden inside a whole-bag forward into a
+ * helper.
  *
  * @param value The already-read field value.
  * @param fallback The value to use when the field is absent.

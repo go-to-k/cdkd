@@ -326,9 +326,10 @@ export class CodeBuildProvider implements ResourceProvider {
     // `Environment.HostKernel` IS mapped now. It was not, for the whole time
     // the installed `@aws-sdk/client-codebuild` had no member to map it onto
     // (issue #1386) — naming it then would have been a false claim of support.
-    // The SDK grew `ProjectEnvironment.hostKernel`, which the allow-list entry
-    // had named as its own expiry condition, and the nested-key checker's
-    // staleness pass is what surfaced that the condition had been met.
+    // The SDK grew `ProjectEnvironment.hostKernel`, which the (since retired)
+    // nested-key KEY-pass allow-list entry had named as its own expiry
+    // condition, and that checker's staleness pass is what surfaced that the
+    // condition had been met.
     const cfnFleet = environment?.['Fleet'] as Record<string, unknown> | undefined;
     const cfnDockerServer = environment?.['DockerServer'] as Record<string, unknown> | undefined;
 
@@ -487,8 +488,7 @@ export class CodeBuildProvider implements ResourceProvider {
         // registry declared the key while `ProjectEnvironment` had nothing to
         // put it on, so naming it here would have been a false claim of
         // support. `@aws-sdk/client-codebuild` 3.1126.0 declares
-        // `ProjectEnvironment.hostKernel`, which is exactly the condition the
-        // `NESTED_KEY_ALLOW_LIST` entry named as its own expiry.
+        // `ProjectEnvironment.hostKernel`.
         hostKernel: environment?.['HostKernel'] as HostKernel | undefined,
         fleet: cfnFleet ? { fleetArn: cfnFleet['FleetArn'] as string | undefined } : undefined,
         dockerServer: cfnDockerServer
@@ -695,8 +695,7 @@ export class CodeBuildProvider implements ResourceProvider {
       // clear value on the side it is given, and here the CFn side has no
       // spelling for "cleared" — the empty object is an SDK-shape value. It
       // is applied to the mapped input (instead of an adjusted property bag)
-      // so the whole-bag forward into `mapProperties` stays intact for the
-      // handled-property-wiring critic's taint walk.
+      // so the whole-bag forward into `mapProperties` stays intact.
       // Sub-key granularity, per docs/provider-rules.md#update-removal-semantics-clear-on-removal's
       // "test both shapes": a key dropped from a still-present
       // `BuildBatchConfig` needs no separate handling, because the block is

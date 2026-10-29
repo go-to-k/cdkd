@@ -670,14 +670,14 @@ const EVENTBRIDGE_CONFIG_PATH =
  * The block's own key, held in a CONST so the fold below writes it as a
  * COMPUTED key.
  *
- * Load-bearing, not style: `gen-nested-key-coverage`'s write-evidence walk reads
+ * Load-bearing, not style: `gen-nested-key-coverage`'s write-side walk reads
  * a bag-derived spread-and-patch literal that NAMES a member
  * (`{ ...config, EventBridgeConfiguration: … }`) as the #1475 whole-blob
- * HAND-OFF and wildcard-credits everything beneath that path as DELIVERED — so
- * a DIFF-side fold spelled that way would switch the write pass off for the
- * whole notification subtree, and the critic's only visible complaint would be
- * that some allow-list entries went "stale". Same reason
- * {@link canonicalizeBlock} exists.
+ * HAND-OFF and records everything beneath that path as DELIVERED WHOLE — so a
+ * DIFF-side fold spelled that way would mark the whole notification subtree as
+ * delivered whole, which can withdraw a literal's rescue of a shape-pass
+ * `definition-member-missing` verdict. Same reason {@link canonicalizeBlock}
+ * exists.
  */
 const EVENTBRIDGE_CONFIG_KEY = 'EventBridgeConfiguration';
 
@@ -1140,9 +1140,9 @@ function foldTransitionDate(item: Record<string, unknown>): Record<string, unkno
   if (iso === undefined || iso === declared) return item;
   // COMPUTED key, for the same #1475 reason {@link EVENTBRIDGE_CONFIG_KEY}
   // records: a DIFF-side literal naming the member reads as a whole-blob
-  // hand-off to `gen-nested-key-coverage`'s write-evidence walk, AND it
+  // hand-off to `gen-nested-key-coverage`'s write-side walk, AND it
   // withdraws the name from the reverse-map exclusion that keeps `readLifecycle`
-  // from vouching for the forward mapper. Measured both ways.
+  // from vouching for the forward mapper.
   const out = { ...item };
   out[TRANSITION_DATE_KEY] = iso;
   return out;
@@ -1493,16 +1493,15 @@ function effectiveLifecycleRule(
  *
  * The COMPUTED `[key]:` write is load-bearing and must not be "tidied" into a
  * named-member spread (`{ ...out, LifecycleConfiguration: folded }`), which is
- * how this was first written. `gen-nested-key-coverage`'s write-evidence walk
+ * how this was first written. `gen-nested-key-coverage`'s write-side walk
  * recognizes a bag-derived spread-and-patch literal as a whole-blob HAND-OFF
- * (its #1475 recognizer) and credits everything beneath the named path as
- * delivered — so naming the member here made a DIFF-side pure function vouch for
- * the forward mapper and retired three reviewed `AWS::S3::Bucket` allow-list
- * entries (`LifecycleConfiguration.TransitionDefaultMinimumObjectSize`,
- * `…Rules.TagFilters.Key` / `.Value`), i.e. it silently switched the write pass
- * off for that whole subtree. Measured both ways via the critic's
- * `--providers-dir=` seam. A computed key names no member, which is exactly why
- * the pre-existing folds in this file are spelled that way.
+ * (its #1475 recognizer) and records everything beneath the named path as
+ * delivered whole — so naming the member here makes a DIFF-side pure function
+ * mark that subtree as delivered whole, which can withdraw a literal's rescue
+ * of a shape-pass `definition-member-missing` verdict (when the critic still
+ * had a write pass, it also switched that pass off for the subtree). A computed
+ * key names no member, which is exactly why the pre-existing folds in this file
+ * are spelled that way.
  */
 function canonicalizeBlock(
   properties: Record<string, unknown>,
@@ -3677,12 +3676,9 @@ export class S3BucketProvider implements ResourceProvider {
     // behavior change on the replay path (skip instead of surface).
     const skipped: number[] = [];
     // A plain `for…of` over `configs` with a hand-kept index, NOT
-    // `configs.entries()`: the nested-key critic's write-evidence walk resolves
-    // `config` as a value read off the desired property BAG, and an
-    // array-destructuring pattern is not a binding shape it can follow — so the
-    // tidier spelling silently reports every member of this item's nested
-    // blocks as `no-write-evidence` (measured: 9 divergences across the four
-    // per-item appliers).
+    // `configs.entries()`: the nested-key critic's write pass (retired by issue
+    // #3723) could not follow an array-destructuring binding back to the
+    // desired property bag.
     let index = -1;
     for (const config of configs) {
       index += 1;
@@ -3702,10 +3698,9 @@ export class S3BucketProvider implements ResourceProvider {
       // item, since applying it WITHOUT its tag predicate would widen the
       // monitored scope, the very misbehavior being refused.
       // `tagFilters` stays bound to the bag read directly (not to the guard's
-      // return value): the nested-key critic's write-evidence walk follows the
-      // bag-read binding into the `And.Tags` write, and routing the value
-      // through the helper call would sever that hand-off and false-flag
-      // `TagFilters.Key` / `.Value` as never written.
+      // return value): the nested-key critic's write pass (retired by issue
+      // #3723) followed the bag-read binding into the `And.Tags` write, and
+      // routing the value through the helper call severed it.
       const tagFilters = config['TagFilters'] as Array<{ Key: string; Value: string }> | undefined;
       if (
         tagFilters != null &&
@@ -3855,12 +3850,9 @@ export class S3BucketProvider implements ResourceProvider {
     const skipped: number[] = [];
     const substituted = new Map<number, Record<string, unknown>>();
     // A plain `for…of` over `configs` with a hand-kept index, NOT
-    // `configs.entries()`: the nested-key critic's write-evidence walk resolves
-    // `config` as a value read off the desired property BAG, and an
-    // array-destructuring pattern is not a binding shape it can follow — so the
-    // tidier spelling silently reports every member of this item's nested
-    // blocks as `no-write-evidence` (measured: 9 divergences across the four
-    // per-item appliers).
+    // `configs.entries()`: the nested-key critic's write pass (retired by issue
+    // #3723) could not follow an array-destructuring binding back to the
+    // desired property bag.
     let index = -1;
     for (const config of configs) {
       index += 1;
@@ -4088,12 +4080,9 @@ export class S3BucketProvider implements ResourceProvider {
     const skipped: number[] = [];
     const substituted = new Map<number, Record<string, unknown>>();
     // A plain `for…of` over `configs` with a hand-kept index, NOT
-    // `configs.entries()`: the nested-key critic's write-evidence walk resolves
-    // `config` as a value read off the desired property BAG, and an
-    // array-destructuring pattern is not a binding shape it can follow — so the
-    // tidier spelling silently reports every member of this item's nested
-    // blocks as `no-write-evidence` (measured: 9 divergences across the four
-    // per-item appliers).
+    // `configs.entries()`: the nested-key critic's write pass (retired by issue
+    // #3723) could not follow an array-destructuring binding back to the
+    // desired property bag.
     let index = -1;
     for (const config of configs) {
       index += 1;
@@ -4204,12 +4193,9 @@ export class S3BucketProvider implements ResourceProvider {
     const skipped: number[] = [];
     const substituted = new Map<number, Record<string, unknown>>();
     // A plain `for…of` over `configs` with a hand-kept index, NOT
-    // `configs.entries()`: the nested-key critic's write-evidence walk resolves
-    // `config` as a value read off the desired property BAG, and an
-    // array-destructuring pattern is not a binding shape it can follow — so the
-    // tidier spelling silently reports every member of this item's nested
-    // blocks as `no-write-evidence` (measured: 9 divergences across the four
-    // per-item appliers).
+    // `configs.entries()`: the nested-key critic's write pass (retired by issue
+    // #3723) could not follow an array-destructuring binding back to the
+    // desired property bag.
     let index = -1;
     for (const config of configs) {
       index += 1;
@@ -4521,11 +4507,8 @@ export class S3BucketProvider implements ResourceProvider {
     // does not become `{Owner: undefined}` on the wire (AWS rejects that, where
     // the pre-fix code sent nothing at all).
     // Each block is written as a NAMED assignment rather than through a helper
-    // taking a string-literal key: `gen-nested-key-coverage`'s write-evidence
-    // pass recognises `sdkDest['X'] = { … }`, and routing these through a
-    // generic attach() made all 12 members invisible to it (measured: the S3
-    // residual went 93 instead of 81). The empty-block guard is therefore
-    // inlined per block.
+    // taking a string-literal key (a shape the nested-key critic's retired
+    // write pass needed), so the empty-block guard is inlined per block.
     const acl = dest['AccessControlTranslation'] as Record<string, unknown> | undefined;
     if (acl != null && acl['Owner'] !== undefined) {
       sdkDest['AccessControlTranslation'] = { Owner: acl['Owner'] as string };
@@ -5139,8 +5122,7 @@ export class S3BucketProvider implements ResourceProvider {
    * logs through the view's `this.logger` and a line added later is masked by
    * construction. Re-entering, rather than calling the appliers on a `view`
    * local, keeps every call spelled `this.<method>(...)`, which is what the
-   * repo's AST critics (`gen:update-wrap-coverage`, `handled-property-wiring`)
-   * follow. Meanwhile
+   * repo's AST critic (`gen:update-wrap-coverage`) follows. Meanwhile
    * {@link shown} masks each interpolated value RAW, the only arm a secret
    * shorter than `MIN_NEEDLE_LENGTH` reaches. A fresh object per call (its
    * prototype is `this`), like {@link noWriteProbe}, so concurrent resources on
@@ -5385,21 +5367,9 @@ export class S3BucketProvider implements ResourceProvider {
    * through `update()`) keeps working.
    *
    * `collectionPath` is the WHOLE dotted path as ONE literal
-   * (`'CorsConfiguration.CorsRules'`), never the bare terminal segment, and
-   * that is load-bearing rather than stylistic. `gen-nested-key-coverage`'s key
-   * pass takes the provider's bare string literals as evidence of explicit
-   * per-key handling and keeps the STRICT literal set (only the shape pass
-   * dot-expands), so the two spellings are not interchangeable here. Measured
-   * against the shipped critic: a bare `'CorsRules'` literal anywhere in this
-   * file turns the reviewed `AWS::S3::Bucket#CorsConfiguration.CorsRules`
-   * allow-list entry STALE, while the joined path leaves the audit unchanged.
-   * That entry's whole rationale is that the key is delivered by TYPED PROPERTY
-   * ACCESS in `applyCorsConfiguration` and that its only literal mention is
-   * `readCors`, excluded as a reverse map — so satisfying the critic by
-   * deleting the entry would leave the key classified as handled on nothing but
-   * a warning string, and a later real drop of `CorsRules` would pass in
-   * silence. That is the decoy-literal shape `.claude/rules/providers.md`
-   * forbids.
+   * (`'CorsConfiguration.CorsRules'`), never the bare terminal segment — a
+   * spelling chosen for `gen-nested-key-coverage`'s key pass (retired by issue
+   * #3723), which took a bare literal as evidence of per-key handling.
    */
   private emptyCollectionSkip(
     key: string,
@@ -8191,8 +8161,8 @@ export class S3BucketProvider implements ResourceProvider {
    * and warned that each piece is inert alone so only the combination trips it.
    * With the fold implemented as a MODULE-level pure function over an item
    * parameter, the shipped critic is green end to end — `vp run
-   * audit:nested-key-coverage:check` reports 0 divergences in all three passes,
-   * the committed matrix does not drift by a byte, and
+   * audit:nested-key-coverage:check` reported 0 divergences (then across all
+   * three passes; the shape pass is the only one left), the committed matrix does not drift by a byte, and
    * `InventoryConfigurations` is still listed in the target's
    * `usedSegmentRenames`, i.e. the entry is doing work and the fence is not
    * masking anything. So no `segmentRenames` entry was removed and no staleness

@@ -872,8 +872,8 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
   /**
    * Read the DESIRED lists of a create or update, refusing a malformed one
    * before any call (go-to-k/cdkd#3989). The caller passes its own literal read
-   * of each property so the handled-property wiring walk still sees which
-   * property feeds the calls. `physicalId` is set on the update path.
+   * of each property so the call site shows (and a grep finds) which property
+   * feeds the calls. `physicalId` is set on the update path.
    */
   private readDesiredLists(
     logicalId: string,

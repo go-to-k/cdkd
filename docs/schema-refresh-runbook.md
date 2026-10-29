@@ -170,8 +170,9 @@ what stops you.** `ci-ok` is a required status check on `main`, so the held stat
 above already blocks the merge button — a required check that has not reported
 is not a pass. Approve the workflows and the block holds for the opposite
 reason: nearly every decision the count can carry also reddens a check that
-`ci-ok` waits on (a nested key leaves `audit:nested-key-coverage:check` at exit
-1, an unsettled removal leaves a declaration `property-coverage` fails, and the
+`ci-ok` waits on (a nested-key shape divergence leaves
+`audit:nested-key-coverage:check` at exit 1, an unforwarded new nested key
+reddens `sdk-wire-coverage`, an unsettled removal leaves a declaration `property-coverage` fails, and the
 rest of the count IS that family of checks). So the label and the title are
 there to tell you the work exists, not to hold the gate.
 
@@ -297,47 +298,26 @@ authenticated capture on every type probed.
 
 ### A nested key diverged
 
-A `NESTED_KEY_TARGETS` type gained a nested key whose spelling does not match
-the AWS SDK model. The check reports divergences, not staleness, so
-regenerating never clears one.
+A `NESTED_KEY_TARGETS` type gained a nested key whose SHAPE does not match the
+AWS SDK model. The check reports divergences, not staleness, so regenerating
+never clears one. It has two blocking findings:
+
+- **`array-vs-wrapper`** — CFn declares a bare array where every same-named SDK
+  member is a `{Quantity, Items}` wrapper, so the SDK serializer drops the
+  unconverted array. Fix the provider's conversion.
+- **`definition-member-missing`** — the SDK interface of the same name lacks
+  the member (renamed or relocated, or an SDK that lags the service).
 
 | Option | Meaning | Choose it when |
 | --- | --- | --- |
-| Fix the provider | cdkd starts sending the key | The SDK models the key — under a different spelling, or under the same one the provider never writes |
+| Fix the provider | cdkd starts sending the key in the shape the SDK models | The SDK models the member, under another shape or location |
 | Add a `NESTED_KEY_ALLOW_LIST` entry | cdkd never sends it | The SDK genuinely has no such member |
 
-A `case-divergence` needs no judgement: the SDK models the key under a
-different capitalisation, so rename it in the provider.
+A nested key whose spelling is fine but which the provider never forwards is
+not this check's finding: the `sdk-wire-coverage` suites catch it, and the pull
+request's `sdk-wire-coverage` section lists the paths (see the table above).
 
-A **`no-write-evidence` is not an SDK question at all**: the SDK models the
-member and this provider builds fresh SDK objects, so the finding says the
-write pass could not see cdkd assemble the field at that path.
-
-That is usually because it genuinely never does — but not always, and the
-difference is a judgement. The pass has documented false-positive classes (a
-RENAMED intermediate segment, a member delivered one wrapper level below the
-CFn chain, a request-HOISTED member), enumerated in
-[.claude/rules/provider-nested-key-divergence.md](https://github.com/go-to-k/cdkd/blob/main/.claude/rules/provider-nested-key-divergence.md);
-`AWS::S3::Bucket` alone already carries reviewed `passes: ['write']`
-allow-list entries settling findings that way. So confirm the member is not
-already delivered by one of those shapes BEFORE writing a second forward for
-it — a duplicate write is the failure mode of following this section too
-literally.
-
-When it really is never assembled, write it, per member. Two things go with
-that, and neither is optional: a member the
-provider SENDS but its `readCurrentState` does not READ is permanent phantom
-drift that `cdkd drift --revert` re-applies forever, so the readback lands in
-the same change; and an OBJECT-valued member is forwarded only when the
-template declares one, or every resource of that type starts sending an empty
-block it never sent before. A bump can also MOVE a finding here — a
-`no-sdk-member` whose newer client models the member becomes a
-`no-write-evidence`, which reads like no progress and is the diagnosis
-changing from "AWS may not have this" to "cdkd does not send it". PR
-[#3002](https://github.com/go-to-k/cdkd/pull/3002) is the worked example
-(`AWS::S3::Bucket`'s `DefaultRetention.DefaultEventHold`).
-
-For `no-sdk-member` / `definition-member-missing`, rule out the installed SDK
+For a `definition-member-missing`, rule out the installed SDK
 simply lagging the service before allow-listing anything — an entry added over
 a stale SDK hides a real dropped value.
 
@@ -353,19 +333,6 @@ The exception is named in the pull request whenever it happens: if the published
 client could not be downloaded, that finding's SDK-lag reading is **unknown, not
 ruled out**, and the procedure lists it as such. Bump and re-check those by hand
 before allow-listing them.
-
-A **`no-sdk-member` carries no interface**, so there is nothing to re-ask
-automatically — it is a member-index question over the whole client. Check it by
-hand:
-
-```bash
-# What is installed, versus what npm publishes today.
-node -p "require('@aws-sdk/client-<service>/package.json').version"
-npm view @aws-sdk/client-<service> version
-
-# If a newer one exists, bump it and re-check before deciding.
-vp run audit:nested-key-coverage:check
-```
 
 Only when the SDK is current and still lacks the member — and the service's own
 API reference agrees — add a `NESTED_KEY_ALLOW_LIST` entry with a reason.
@@ -392,9 +359,9 @@ What is left is genuinely undecidable from the repository:
 
 - A **rename looks exactly like a removal** at the name level, which is why
   this repository carries hand-maintained rename maps at all.
-- `no-sdk-member` means the **installed** SDK version lacks the member. That
-  can be the SDK lagging the service rather than the service lacking it, and
-  the finding carries no interface for the job to re-ask.
+- A `definition-member-missing` the published client could not settle means
+  the **installed** SDK version lacks the member. That can be the SDK lagging
+  the service rather than the service lacking it.
 - Adding an allow-list entry is a promise that cdkd will never send the value.
   That is a policy choice, not a lookup.
 

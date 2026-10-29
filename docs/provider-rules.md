@@ -63,8 +63,8 @@ const status = readConfigString(
   'AWS::S3::Bucket VersioningConfiguration'
 );
 
-// top-level field — keep the `properties['X']` read at the call site so the
-// handled-property-wiring critic can still see the property is consumed
+// top-level field — keep the `properties['X']` read at the call site so it is
+// visible which property is consumed
 const scope = requireConfigString(properties['Scope'], 'REGIONAL', 'AWS::WAFv2::WebACL Scope');
 ```
 
@@ -2669,7 +2669,7 @@ still works when there is no pull request to read.
 That PR is **allowed to land red**, and the red is the hand-off rather than a bug. The job runs only the mechanical chain and hand-classifies nothing, so two classes still need you:
 
 1. A **removed or renamed** property turns a matching `handledProperties` / `unhandledByDesign` declaration into a bogus entry — retire the declaration or add a `bogusTolerated` rationale (see below).
-2. `audit:nested-key-coverage:check` reports **divergences, not staleness** — a new nested key on a `NESTED_KEY_TARGETS` type needs a provider fix or a `NESTED_KEY_ALLOW_LIST` entry with a rationale.
+2. `audit:nested-key-coverage:check` reports **shape divergences, not staleness** — a new array member the SDK wraps, or a member missing from its SDK interface, on a `NESTED_KEY_TARGETS` type needs a provider fix or a `NESTED_KEY_ALLOW_LIST` entry with a rationale. A new nested member the provider never forwards shows up in the sdk-wire suites (`vp test run sdk-wire-coverage`) instead.
 
 Newly unaccounted writable properties land in `_todo-backfill.json`; do not file an issue for any of them. `.github/workflows/backfill-umbrella-sync.yml` rewrites the standing backfill campaign's checklist from `main`'s coverage map once the refresh merges — ONE umbrella issue whose body carries a generated block between `<!-- backfill-types:start -->` and `<!-- backfill-types:end -->`, one row per resource type, which gains, loses and regains rows as the map moves. The audit provenance lives outside those markers and is never rewritten. (The campaign is the open issue carrying the `backfill-umbrella` label — [#2762](https://github.com/go-to-k/cdkd/issues/2762) today — which superseded the closed [#609](https://github.com/go-to-k/cdkd/issues/609); [#2949](https://github.com/go-to-k/cdkd/issues/2949) briefly fanned it into ~44 generated per-type sub-issues, since folded back into the block because a bot-filed slice is indistinguishable from an unfixed defect in a public open-issue count.) A pull request wiring a type writes `Refs`, and the type's row disappears once the coverage map says it is done. Types the public bundle does not carry are skipped with their fixtures left untouched and still need the authenticated path below.
 

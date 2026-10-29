@@ -64,8 +64,8 @@ export type PrincipalLists<K extends string> =
 /**
  * Read several principal lists of one bag (go-to-k/cdkd#3906,
  * go-to-k/cdkd#3888), each passed as the caller's own literal read of the bag
- * (`{ Roles: properties['Roles'] }`) so the handled-property wiring walk still
- * sees which property feeds the calls. `lists` holds each well-formed kind as
+ * (`{ Roles: properties['Roles'] }`) so the call site shows (and a grep finds)
+ * which property feeds the calls. `lists` holds each well-formed kind as
  * its names (an absent one as `undefined`); when any kind is `malformed`, the
  * result also names them, and `secretDerived` names the malformed kinds holding
  * a dynamic reference or its mask anywhere in the value: cdkd keeps

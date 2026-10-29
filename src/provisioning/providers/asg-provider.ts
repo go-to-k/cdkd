@@ -261,7 +261,7 @@ function listWhat(kind: ListKind): string {
 /**
  * Every list property of one bag, keyed by kind. The caller passes its own
  * literal read of each property (`{ Tags: properties['Tags'], ... }`) so the
- * handled-property wiring walk still sees which property feeds the calls.
+ * call site shows (and a grep finds) which property feeds the calls.
  */
 function readLists(values: Record<ListKind, unknown>, side: ListSide): Record<ListKind, ListRead> {
   const out = {} as Record<ListKind, ListRead>;

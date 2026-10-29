@@ -401,8 +401,8 @@ jobs:
               ecs-service-config-props
           # The differential wire suites (go-to-k/cdkd#3723) read each type's
           # nested and create-only paths from the fixtures, so a nested key AWS
-          # adds under a handled top-level reds them, which is what used to make
-          # the nested-key critic's key pass red. Their log is kept: the
+          # adds under a handled top-level reds them — the class the nested-key
+          # critic's retired key pass used to catch. Their log is kept: the
           # diagnosis lists the paths it names. `status` is read inside a
           # function `run_check` calls from an `if`, where `set -e` is off.
           sdk_wire_suites() {

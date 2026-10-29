@@ -5,7 +5,7 @@ import { probe, traceLanding, wrapClientModule, type Bag } from './sdk-wire-harn
 
 /**
  * The wrong-member tracer's own discrimination (go-to-k/cdkd#3723): it is what
- * stands in for `gen-nested-key-coverage.ts`'s write pass, and no wire case
+ * replaced `gen-nested-key-coverage.ts`'s retired write pass, and no wire case
  * goes red on it while the providers are right, so these cases are the only
  * evidence that it reports a value sent in the wrong member at all.
  */

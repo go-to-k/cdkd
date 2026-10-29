@@ -53,8 +53,8 @@ const DATASOURCE_TYPE = 'AWS::AppSync::DataSource';
  * Issue #1597: the two NESTED silent-drop families inside `AWS::AppSync::DataSource`
  * config blobs. Both were invisible to top-level property coverage because their
  * CONTAINERS (`HttpConfig` / `DynamoDBConfig`) have always been handled properties —
- * only the nested-key critic (`scripts/gen-nested-key-coverage.ts`, opted in for this
- * type by the same issue) can see one level down.
+ * only a nested check can see one level down (the nested-key critic's write pass,
+ * opted in for this type by the same issue; the sdk-wire harness since #3723).
  *
  * The failure shape is the usual one: the AWS SDK v3 serializer drops members it does
  * not know, so a dropped nested block deploys "successfully" with the config missing.

@@ -482,8 +482,8 @@ function refuseImageFunctionUnsupported(
   physicalId?: string
 ): void {
   if (properties['PackageType'] !== 'Image') return;
-  // Literal reads, not a loop over a name table: the handled-property wiring
-  // walk records a computed key as a whole-bag blind spot.
+  // Literal reads, not a loop over a name table: each consumed property stays
+  // visible (and greppable) as its own `properties['X']` read.
   const declared = [
     properties['CodeSigningConfigArn'] !== undefined ? 'CodeSigningConfigArn' : undefined,
     properties['RuntimeManagementConfig'] !== undefined ? 'RuntimeManagementConfig' : undefined,

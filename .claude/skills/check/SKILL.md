@@ -54,7 +54,7 @@ Run these sequentially and report results.
    `vp run gen:all-matrices && vp run audit:coverage:check && vp run format`.
    The suite carries a byte-for-byte guard per generated matrix, and the trigger
    set is wider than any condition you would write — renaming a private provider
-   method stales `handled-property-wiring.json`, and a `verify.sh` edit with no
+   method stales `update-wrap-coverage.json`, and a `verify.sh` edit with no
    src change stales `cli-flag-coverage`.
 
 4. `vp test run` — the whole unit suite. Prefer this over `vp run test`: nothing

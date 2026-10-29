@@ -1715,11 +1715,8 @@ function narrowMfaConfiguration(properties: Record<string, unknown>): Record<str
   const sent = resolveSentMfaConfiguration(properties, declared);
   if (sent === raw) return properties;
   if (sent === undefined) {
-    // Copy-and-`delete` rather than a rest-destructure: the
-    // handled-property-wiring walk recognizes a `{ X, ...rest }` destructure as
-    // a property READ, and the repo pins that recognizer at zero real-tree
-    // instances so it can never become the only evidence for a property (see
-    // `gen-handled-property-wiring.test.ts`). Same result, no new instance.
+    // Copy-and-`delete`: drops `MfaConfiguration` from a shallow copy, leaving
+    // the caller's bag untouched.
     const withoutMfaConfiguration = { ...properties };
     delete withoutMfaConfiguration['MfaConfiguration'];
     return withoutMfaConfiguration;
