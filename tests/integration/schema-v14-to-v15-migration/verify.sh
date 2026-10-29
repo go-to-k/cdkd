@@ -542,8 +542,22 @@ run_cdkd ok "local destroy" "${LOCAL_DIST}" destroy "${STACK}" \
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after the destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 pass "the state file is gone after the destroy"
-assert_gone "table ${TABLE_NAME} still exists after the destroy" \
-  aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}"
+# The table provider returns once AWS accepted the DeleteTable (the table is
+# DELETING), with no post-delete wait, so the probe polls a bounded 5 min
+# through DELETING; any other status is a leak, any probe error undetermined.
+TABLE_GONE=false
+for _ in $(seq 1 60); do
+  if gone_probe aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}"; then
+    TABLE_GONE=true
+    break
+  fi
+  TABLE_STATUS="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query 'Table.TableStatus' --output text 2>/dev/null || echo unknown)"
+  [ "${TABLE_STATUS}" = "DELETING" ] || [ "${TABLE_STATUS}" = "unknown" ] \
+    || fail "table ${TABLE_NAME} is ${TABLE_STATUS} after the destroy, expected DELETING or gone"
+  sleep 5
+done
+[ "${TABLE_GONE}" = "true" ] || fail "table ${TABLE_NAME} still exists 5 min after the destroy"
 pass "the table is gone after the destroy"
 
 cleanup
