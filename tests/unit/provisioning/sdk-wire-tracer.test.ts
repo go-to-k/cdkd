@@ -77,7 +77,7 @@ describe('traceLanding', () => {
     expect(traceLanding(bag, alt, path, right, rightAlt, { containers }, roots).wrong).toBeUndefined();
   });
 
-  it('records a command sent twice with no root, and not one with a root', () => {
+  it('records a command sent twice with no root or one root, and not with distinct roots', () => {
     const call = (arn: string, prefix: string) => line('PutCommand', { Arn: arn, Prefix: prefix });
     const from = [call('primary', 'a'), call('backup', 'b')];
     const to = [call('primary', 'a-alt'), call('backup', 'b')];
@@ -88,6 +88,10 @@ describe('traceLanding', () => {
     const roots = { PutCommand: (input: Record<string, unknown>) => String(input['Arn']) };
     traceLanding(bag, alt, path, from, to, {}, roots, rooted);
     expect([...rooted]).toEqual([]);
+    // A root naming two calls alike is a repeat too.
+    const alike = new Set<string>();
+    traceLanding(bag, alt, path, from, to, {}, { PutCommand: () => 'x' }, alike);
+    expect([...alike]).toEqual(['PutCommand:x']);
   });
 
   it('requires a keyed Value to land as the entry its key names', () => {

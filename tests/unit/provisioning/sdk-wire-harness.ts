@@ -460,10 +460,12 @@ function landingChains(
       const root = which === undefined ? command : `${command}:${which(input)}`;
       m.set(root, [...(m.get(root) ?? []), input]);
     }
-    // A command sent more than once with no root: a value in the other call
-    // would match (`sdk-wire-call-roots.ts`).
+    // A root (`<command>` or `<command>:<name>`) sent more than once: a value
+    // in the other call would match. A rooted one counts too, so a root that
+    // names two calls alike (two GSIs, both `:index`) must say so
+    // (`sdk-wire-call-roots.ts`).
     for (const [root, calls] of m) {
-      if (calls.length > 1 && roots[root] === undefined && !root.includes(':')) repeated?.add(root);
+      if (calls.length > 1) repeated?.add(root);
     }
     return m;
   };
@@ -792,8 +794,9 @@ export interface ProbeResult {
  * top of that call; several calls of one command are told apart by
  * `sdk-wire-call-roots.ts`'s roots, or carry a reason there why they need
  * not be (one call per list item: an item's value sent with another item is
- * not seen; a global table's remote replicas differ only by client region,
- * which no input carries); a `transformed` path is not
+ * not seen; a global table's replica settings that go out on a regional
+ * client's CreateTable / UpdateContinuousBackups / TagResource differ only by
+ * that client's region, which those inputs do not carry); a `transformed` path is not
  * traced at all; and a
  * value landing in its own member AND another passes (the other's own value,
  * then lost, is what its removal and vary probes report silent).

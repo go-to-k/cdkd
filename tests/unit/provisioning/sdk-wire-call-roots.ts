@@ -9,10 +9,12 @@
  * root becomes `<command>:<name>`, which `sdk-wire-member-renames.ts`
  * containers spell), or `repeated` says why the calls need no telling apart.
  *
- * The harness finds every command a traced probe saw sent more than once with
- * no root, and the per-type `declares roots or a reason for every repeated
- * command` case requires that set to EQUAL `repeated`'s keys: a new repeat
- * fails until it is rooted or reasoned, and a reason no probe needs is stale.
+ * The harness finds every root a traced probe saw sent more than once: a
+ * `<command>` with no `roots` function, or a `<command>:<name>` a function
+ * gave two calls alike (two GSIs, both `:index`). The per-type `declares
+ * roots or a reason for every repeated command` case requires that set to
+ * EQUAL `repeated`'s keys: a new repeat fails until it is rooted or reasoned,
+ * and a reason no probe needs is stale.
  */
 
 /** Names which of several same-command calls a request is, from its input. */
@@ -20,7 +22,7 @@ export type CommandRoot = (input: Record<string, unknown>) => string;
 
 export interface CallRoots {
   roots?: Record<string, CommandRoot>;
-  /** Command -> why its repeated calls need no root. */
+  /** Root (`<command>` or `<command>:<name>`) -> why its repeated calls need no telling apart. */
   repeated?: Record<string, string>;
 }
 
