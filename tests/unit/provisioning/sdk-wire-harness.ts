@@ -740,7 +740,9 @@ export interface ProbeResult {
  * parent to compare, so it matches a same-named member anywhere; a
  * `FLATTENED` level is not compared, and is keyed by bag path rather than by
  * command (Lambda's `Code` nests on CreateFunction and flattens on
- * UpdateFunctionCode); and a `transformed` path is not traced at all.
+ * UpdateFunctionCode); a `transformed` path is not traced at all; and a
+ * value landing in its own member AND another passes (the other's own value,
+ * then lost, is what its removal and vary probes report silent).
  */
 /** Arm the fake reads for `bag`: the case's own `arm`, else no overrides. */
 export function armFor(c: Pick<ProbeCase, 'arm' | 'physicalId'>, bag: Bag): void {
