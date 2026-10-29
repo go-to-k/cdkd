@@ -7,18 +7,23 @@ import {
   StopLoggingCommand,
   PutEventSelectorsCommand,
   PutInsightSelectorsCommand,
+  PutEventConfigurationCommand,
   GetTrailCommand,
   GetTrailStatusCommand,
   GetEventSelectorsCommand,
   GetInsightSelectorsCommand,
+  GetEventConfigurationCommand,
   ListTagsCommand,
   AddTagsCommand,
   RemoveTagsCommand,
   TrailNotFoundException,
+  type AdvancedEventSelector,
+  type AggregationConfiguration,
   type EventSelector,
   type InsightSelector,
 } from '@aws-sdk/client-cloudtrail';
 import { getLogger } from '../../utils/logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   markRedactedCause,
@@ -37,7 +42,7 @@ import {
   refuseMalformedDesiredTags,
 } from '../tag-list.js';
 import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
-import { requireConfigArray } from '../config-shape.js';
+import { replayWarn, requireConfigArray } from '../config-shape.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -162,6 +167,154 @@ function resolveCloudWatchLogsPair(properties: Record<string, unknown>): {
     };
   }
   return { logGroupArn: desiredGroup, roleArn: desiredRole };
+}
+
+/**
+ * An UPDATE-path read of a desired list block, with its three answers kept
+ * apart: `absent` (a template removal), `list`, and `unusable` (a
+ * present-but-non-array value, which must never read as a removal — the
+ * `malformed-value-must-not-read-as-removal` class, issue #1493).
+ */
+type ListBlockRead =
+  | { kind: 'absent' }
+  | { kind: 'list'; value: Array<Record<string, unknown>> }
+  | { kind: 'unusable'; detail: string };
+
+function readListBlock(raw: unknown, path: string): ListBlockRead {
+  if (raw == null) return { kind: 'absent' };
+  try {
+    return { kind: 'list', value: requireConfigArray(raw, path) };
+  } catch (error) {
+    return { kind: 'unusable', detail: describeAwsFailure(error).detail };
+  }
+}
+
+/** The list a read carries, `undefined` for absent or unusable. */
+function listOf(read: ListBlockRead): Array<Record<string, unknown>> | undefined {
+  return read.kind === 'list' ? read.value : undefined;
+}
+
+/**
+ * `desired` with each of `keys` replaced by what AWS still holds for a list
+ * block an update skipped (`.claude/rules/provider-replay-and-refusals.md`,
+ * "Update-path downgrades"): the PREVIOUS value when it is a list; the LIVE
+ * reading when the previous value is present but unusable; otherwise (an
+ * absent previous value, or no live reading) the key is removed. Values are
+ * copied, never aliased.
+ */
+function retainPreviousLists(
+  desired: Record<string, unknown>,
+  previous: Record<string, unknown>,
+  keys: readonly string[],
+  live?: Record<string, unknown>
+): Record<string, unknown> {
+  const out: Record<string, unknown> = Object.fromEntries(
+    Object.entries(desired).filter(([key]) => !keys.includes(key))
+  );
+  for (const key of keys) {
+    const prev = previous[key];
+    if (Array.isArray(prev)) out[key] = structuredClone(prev);
+    else if (prev != null && Array.isArray(live?.[key])) out[key] = structuredClone(live[key]);
+  }
+  return out;
+}
+
+/**
+ * The CloudTrail list blocks whose every list is a SET (issue #2762):
+ * `AdvancedEventSelectors` (the selectors are OR-ed, each selector's
+ * `FieldSelectors` AND-ed, and each operator's values OR-ed) and
+ * `AggregationConfigurations` (one entry per category, `Templates` a set).
+ * `GetEventSelectors` returns `FieldSelectors` sorted by `Field`, not in the
+ * order they were put (measured on a live trail), so these are compared
+ * without order: by `cdkd drift` through `getDriftUnorderedPaths`, and by
+ * `update()` through {@link setKey}.
+ */
+const UNORDERED_LIST_BLOCKS: readonly string[] = [
+  'AdvancedEventSelectors',
+  'AggregationConfigurations',
+];
+
+/**
+ * An order-insensitive comparison key for a set-valued block: every array is
+ * sorted by its elements' keys and every object's keys are sorted, so two
+ * spellings of one set compare equal. Used only to decide whether a Put is
+ * needed, never sent. `undefined` keeps its own key, distinct from `[]`.
+ */
+function setKey(value: unknown): string {
+  if (value === undefined) return 'undefined';
+  if (Array.isArray(value)) return ['[', value.map(setKey).sort().join(','), ']'].join('');
+  if (value !== null && typeof value === 'object') {
+    const bag = value as Record<string, unknown>;
+    const entries = Object.keys(bag)
+      .filter((k) => bag[k] !== undefined)
+      .sort()
+      .map((k) => [JSON.stringify(k), setKey(bag[k])].join(':'));
+    return ['{', entries.join(','), '}'].join('');
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/** The list a read carries when it has at least one entry. */
+function nonEmptyListOf(read: ListBlockRead): Array<Record<string, unknown>> | undefined {
+  return read.kind === 'list' && read.value.length > 0 ? read.value : undefined;
+}
+
+/**
+ * The `PutEventSelectors` members for a desired pair of selector lists.
+ *
+ * `EventSelectors` and `AdvancedEventSelectors` are two spellings of ONE
+ * selector set: `PutEventSelectors` replaces the trail's whole set with
+ * whichever it is sent, and AWS refuses a request carrying both. So the
+ * request is built from both together:
+ *
+ * - a non-empty `AdvancedEventSelectors` is sent as given, with a non-empty
+ *   `EventSelectors` beside it when the template declares both, so AWS
+ *   refuses the combination loudly rather than cdkd quietly picking one;
+ * - else a non-empty `EventSelectors` is sent as given;
+ * - else neither is declared, and the trail is RESET to
+ *   {@link DEFAULT_EVENT_SELECTORS}, the set a selector-less trail has (the
+ *   measured `EventSelectors` removal, issue #1549). A removed
+ *   `AdvancedEventSelectors` lands on the same default: with no selector
+ *   declared at all, the trail is the selector-less trail CloudFormation
+ *   creates (issue #2762).
+ */
+function eventSelectorRequest(
+  basic: Array<Record<string, unknown>> | undefined,
+  advanced: Array<Record<string, unknown>> | undefined
+): {
+  members: { EventSelectors?: EventSelector[]; AdvancedEventSelectors?: AdvancedEventSelector[] };
+  isReset: boolean;
+} {
+  const hasBasic = basic !== undefined && basic.length > 0;
+  if (advanced !== undefined && advanced.length > 0) {
+    return {
+      members: {
+        AdvancedEventSelectors: advanced as unknown as AdvancedEventSelector[],
+        ...(hasBasic ? { EventSelectors: basic as unknown as EventSelector[] } : {}),
+      },
+      isReset: false,
+    };
+  }
+  if (hasBasic) {
+    return { members: { EventSelectors: basic as unknown as EventSelector[] }, isReset: false };
+  }
+  return { members: { EventSelectors: [...DEFAULT_EVENT_SELECTORS] }, isReset: true };
+}
+
+/**
+ * `GetEventSelectors`' advanced selectors in the CFn shape: the same member
+ * names, with every member AWS left unset dropped so the snapshot carries no
+ * `undefined` keys.
+ */
+function advancedSelectorsToCfn(
+  selectors: readonly AdvancedEventSelector[]
+): Array<Record<string, unknown>> {
+  return selectors.map((s) => ({
+    ...(s.Name !== undefined && { Name: s.Name }),
+    FieldSelectors: (s.FieldSelectors ?? []).map((f) =>
+      Object.fromEntries(Object.entries(f).filter(([, v]) => v !== undefined))
+    ),
+  }));
 }
 
 /** Human-readable type for a warning, without echoing user data. */
@@ -289,6 +442,8 @@ export class CloudTrailProvider implements ResourceProvider {
         'EventSelectors',
         'InsightSelectors',
         'IsOrganizationTrail',
+        'AdvancedEventSelectors',
+        'AggregationConfigurations',
       ]),
     ],
   ]);
@@ -374,6 +529,35 @@ export class CloudTrailProvider implements ResourceProvider {
     const isOrganizationTrail = properties['IsOrganizationTrail'] as boolean | undefined;
     const eventSelectors = properties['EventSelectors'] as EventSelector[] | undefined;
     const insightSelectors = properties['InsightSelectors'] as InsightSelector[] | undefined;
+    // Issue #2762: a present-but-non-array value is refused before any call
+    // (a warning that leaves it unapplied on a state replay, which the template
+    // cannot fix).
+    const advancedEventSelectors =
+      properties['AdvancedEventSelectors'] == null
+        ? undefined
+        : requireConfigArray(
+            properties['AdvancedEventSelectors'],
+            'AWS::CloudTrail::Trail AdvancedEventSelectors',
+            replayWarn(this.logger, context)
+          );
+    const aggregationConfigurations =
+      properties['AggregationConfigurations'] == null
+        ? undefined
+        : requireConfigArray(
+            properties['AggregationConfigurations'],
+            'AWS::CloudTrail::Trail AggregationConfigurations',
+            replayWarn(this.logger, context)
+          );
+    // A replay that skipped one of them records the trail without it, since
+    // the call never went out.
+    const skippedOnReplay = [
+      ...(properties['AdvancedEventSelectors'] != null && advancedEventSelectors === undefined
+        ? ['AdvancedEventSelectors']
+        : []),
+      ...(properties['AggregationConfigurations'] != null && aggregationConfigurations === undefined
+        ? ['AggregationConfigurations']
+        : []),
+    ];
 
     // Set once CreateTrail returns: a later failure is an auxiliary call's and
     // must not classify as this trail's name collision (#3826).
@@ -406,13 +590,34 @@ export class CloudTrailProvider implements ResourceProvider {
       const trailArn = result.TrailARN!;
       createdTrailArn = result.TrailARN;
 
-      // Apply EventSelectors if specified (requires separate API call)
-      if (eventSelectors && eventSelectors.length > 0) {
+      // Apply EventSelectors / AdvancedEventSelectors if specified (one
+      // separate call carrying both lists; see `eventSelectorRequest`). With
+      // neither, the trail keeps the default a new trail has.
+      const basicForCreate =
+        eventSelectors && eventSelectors.length > 0
+          ? (eventSelectors as unknown as Array<Record<string, unknown>>)
+          : undefined;
+      if (basicForCreate || (advancedEventSelectors && advancedEventSelectors.length > 0)) {
         this.logger.debug(`Setting event selectors for CloudTrail Trail ${logicalId}`);
         await this.getClient().send(
           new PutEventSelectorsCommand({
             TrailName: trailArn,
-            EventSelectors: eventSelectors,
+            ...eventSelectorRequest(basicForCreate, advancedEventSelectors).members,
+          })
+        );
+      }
+
+      // Issue #2762: AggregationConfigurations ride PutEventConfiguration,
+      // sent after the selectors whose events they aggregate.
+      if (aggregationConfigurations && aggregationConfigurations.length > 0) {
+        this.logger.debug(
+          safeMsg`Setting aggregation configurations for CloudTrail Trail ${logicalId}`
+        );
+        await this.getClient().send(
+          new PutEventConfigurationCommand({
+            TrailName: trailArn,
+            AggregationConfigurations:
+              aggregationConfigurations as unknown as AggregationConfiguration[],
           })
         );
       }
@@ -446,6 +651,9 @@ export class CloudTrailProvider implements ResourceProvider {
         attributes: {
           Arn: trailArn,
         },
+        ...(skippedOnReplay.length > 0 && {
+          effectiveProperties: retainPreviousLists(properties, {}, skippedOnReplay),
+        }),
       };
     } catch (error) {
       if (trailCreated) markAuxiliaryFailure(error, logicalId);
@@ -478,6 +686,9 @@ export class CloudTrailProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // The bag the engine records when nothing is skipped; `effectiveProperties`
+    // patches a skipped list block into it (below).
+    const desiredProperties = properties;
     properties = withRemovalDefaults(
       this.removalDefaults,
       resourceType,
@@ -637,6 +848,10 @@ export class CloudTrailProvider implements ResourceProvider {
       ''
     );
     const isOrganizationTrail = properties['IsOrganizationTrail'] as boolean | undefined;
+    // What a later failure leaves applied (issue #2762): the selector and
+    // aggregation writes are separate calls, so the thrown message names the
+    // one that already landed.
+    const appliedBeforeFailure: string[] = [];
 
     try {
       await this.getClient().send(
@@ -697,34 +912,97 @@ export class CloudTrailProvider implements ResourceProvider {
       // fallback is to leave the live selectors ALONE — not to reset them,
       // which is the destructive direction, and not to send the malformed
       // value, which is what the guard exists to stop.
-      const rawEventSelectors = properties['EventSelectors'];
-      let eventSelectorsUnusable = false;
-      let newEventSelectors: EventSelector[] | undefined;
-      if (rawEventSelectors != null) {
-        try {
-          newEventSelectors = requireConfigArray(
-            rawEventSelectors,
-            'AWS::CloudTrail::Trail EventSelectors'
-          ) as EventSelector[];
-        } catch (error) {
-          eventSelectorsUnusable = true;
+      //
+      // `AdvancedEventSelectors` (issue #2762) shares the one
+      // `PutEventSelectors` call: it replaces the trail's WHOLE selector set,
+      // so the two lists are planned together (`eventSelectorRequest`), and an
+      // unusable value in EITHER skips the call — sending the other alone would
+      // overwrite the selectors the skipped one describes.
+      const basicRead = readListBlock(
+        properties['EventSelectors'],
+        'AWS::CloudTrail::Trail EventSelectors'
+      );
+      const advancedRead = readListBlock(
+        properties['AdvancedEventSelectors'],
+        'AWS::CloudTrail::Trail AdvancedEventSelectors'
+      );
+      for (const read of [basicRead, advancedRead]) {
+        if (read.kind === 'unusable') {
           this.logger.warn(
-            `${describeAwsFailure(error).detail} The trail's ` +
-              `existing event selectors are left untouched for this update rather ` +
-              `than reset to the AWS default.`
+            safeMsg`${read.detail} The trail's existing event selectors are left untouched for this update rather than reset to the AWS default.`
           );
         }
       }
-      const oldEventSelectors = previousProperties['EventSelectors'] as EventSelector[] | undefined;
+      const selectorsUnusable = basicRead.kind === 'unusable' || advancedRead.kind === 'unusable';
+      const newEventSelectors = listOf(basicRead);
+      const newAdvancedSelectors = listOf(advancedRead);
+      const oldEventSelectors = previousProperties['EventSelectors'];
+      const oldAdvancedSelectors = previousProperties['AdvancedEventSelectors'];
+      const hadAdvancedSelectors =
+        Array.isArray(oldAdvancedSelectors) && oldAdvancedSelectors.length > 0;
+
+      // Issue #2762: aggregation works on the events the selectors deliver,
+      // so an aggregation REMOVAL goes before a selector change and every
+      // other aggregation change after it.
+      const aggregationRead = readListBlock(
+        properties['AggregationConfigurations'],
+        'AWS::CloudTrail::Trail AggregationConfigurations'
+      );
+      if (aggregationRead.kind === 'unusable') {
+        this.logger.warn(
+          safeMsg`${aggregationRead.detail} The trail's existing aggregation configurations are left untouched for this update rather than cleared.`
+        );
+      }
+      const newAggregation = listOf(aggregationRead);
+      const aggregationChanged =
+        aggregationRead.kind !== 'unusable' &&
+        setKey(newAggregation) !== setKey(previousProperties['AggregationConfigurations']);
+      const aggregationCleared =
+        aggregationChanged && nonEmptyListOf(aggregationRead) === undefined;
+      const putAggregation = async (): Promise<void> => {
+        // AWS's own unset shape is the empty list (`GetEventConfiguration` on
+        // a trail with no aggregation answers `AggregationConfigurations: []`).
+        this.logger.debug(
+          safeMsg`Updating aggregation configurations for CloudTrail Trail ${logicalId}`
+        );
+        await this.getClient().send(
+          new PutEventConfigurationCommand({
+            TrailName: physicalId,
+            AggregationConfigurations: (newAggregation ??
+              []) as unknown as AggregationConfiguration[],
+          })
+        );
+      };
+      if (aggregationCleared) {
+        await putAggregation();
+        appliedBeforeFailure.push('AggregationConfigurations was cleared');
+      }
+
       if (
-        !eventSelectorsUnusable &&
-        JSON.stringify(newEventSelectors) !== JSON.stringify(oldEventSelectors)
+        !selectorsUnusable &&
+        (JSON.stringify(newEventSelectors) !== JSON.stringify(oldEventSelectors) ||
+          setKey(newAdvancedSelectors) !== setKey(oldAdvancedSelectors))
       ) {
-        const isRemoval = newEventSelectors === undefined || newEventSelectors.length === 0;
-        const eventSelectorsToSend: readonly EventSelector[] =
-          newEventSelectors === undefined || newEventSelectors.length === 0
-            ? DEFAULT_EVENT_SELECTORS
-            : newEventSelectors;
+        // A `drift --revert` desired bag is the live readback with the drifted
+        // list overlaid, so it can carry BOTH lists: the live one it started
+        // from and the baseline one being restored. The list equal to the live
+        // (previous) side is the one being replaced, so only the other is
+        // sent, which overwrites it. A template declaring both keeps sending
+        // both, for AWS to refuse.
+        let basicToSend = newEventSelectors;
+        let advancedToSend = newAdvancedSelectors;
+        if (
+          context?.desiredFromAwsReadback === true &&
+          nonEmptyListOf(basicRead) !== undefined &&
+          nonEmptyListOf(advancedRead) !== undefined
+        ) {
+          if (JSON.stringify(newEventSelectors) === JSON.stringify(oldEventSelectors)) {
+            basicToSend = undefined;
+          } else if (setKey(newAdvancedSelectors) === setKey(oldAdvancedSelectors)) {
+            advancedToSend = undefined;
+          }
+        }
+        const { members, isReset: isRemoval } = eventSelectorRequest(basicToSend, advancedToSend);
         this.logger.debug(
           isRemoval
             ? `Resetting event selectors to the AWS default for CloudTrail Trail ${logicalId}`
@@ -734,9 +1012,10 @@ export class CloudTrailProvider implements ResourceProvider {
           await this.getClient().send(
             new PutEventSelectorsCommand({
               TrailName: physicalId,
-              EventSelectors: [...eventSelectorsToSend],
+              ...members,
             })
           );
+          appliedBeforeFailure.push('the event selectors were updated');
         } catch (error) {
           // A trail switched to AdvancedEventSelectors out of band still has
           // the basic selectors recorded in cdkd state, so the diff fires and
@@ -762,8 +1041,11 @@ export class CloudTrailProvider implements ResourceProvider {
           const failure = describeAwsFailure(error);
           const message = withoutTrailIdentifiers(failure.detail, physicalId);
           const errorClass = error instanceof Error ? error.name : '';
+          // A reset REMOVING recorded advanced selectors (issue #2762) is the
+          // template asking for exactly that switch, so it fails loudly too.
           if (
             !isRemoval ||
+            hadAdvancedSelectors ||
             ACCESS_DENIAL_CLASS.test(errorClass) ||
             !ADVANCED_SELECTOR_PHRASE.test(message)
           ) {
@@ -778,6 +1060,11 @@ export class CloudTrailProvider implements ResourceProvider {
           if (failure.redacted) this.logger.debug(m(`${head}${m(failure.detail)})`));
           this.logger.warn(m(`${head}${failure.redacted ? failure.summary : failure.detail})`));
         }
+      }
+
+      if (aggregationChanged && !aggregationCleared) {
+        await putAggregation();
+        appliedBeforeFailure.push('AggregationConfigurations was updated');
       }
 
       // Update InsightSelectors if changed. AWS-documented way to
@@ -832,7 +1119,31 @@ export class CloudTrailProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully updated CloudTrail Trail ${logicalId}`);
 
-      return { physicalId, wasReplaced: false };
+      // A skipped list block is recorded as what AWS still holds, the PREVIOUS
+      // value, so the next deploy diffs the template against it again and the
+      // warning repeats until the template is fixed. An unusable previous
+      // value drops the key.
+      const skipped = [
+        ...(selectorsUnusable ? ['EventSelectors', 'AdvancedEventSelectors'] : []),
+        ...(aggregationRead.kind === 'unusable' ? ['AggregationConfigurations'] : []),
+      ];
+      if (skipped.length === 0) return { physicalId, wasReplaced: false };
+      // Only a present-but-unusable previous value needs the live reading,
+      // so the read runs on that malformed path alone.
+      const needsLive = skipped.some(
+        (key) => previousProperties[key] != null && !Array.isArray(previousProperties[key])
+      );
+      const live = needsLive ? await this.readLiveForRecord(physicalId, resourceType) : undefined;
+      return {
+        physicalId,
+        wasReplaced: false,
+        effectiveProperties: retainPreviousLists(
+          desiredProperties,
+          previousProperties,
+          skipped,
+          live
+        ),
+      };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
@@ -840,7 +1151,10 @@ export class CloudTrailProvider implements ResourceProvider {
         error,
         (text) =>
           new ProvisioningError(
-            `Failed to update CloudTrail Trail ${logicalId}: ${text}`,
+            `Failed to update CloudTrail Trail ${logicalId}: ${text}` +
+              (appliedBeforeFailure.length > 0
+                ? ` (selector/aggregation writes already applied before this failure: ${appliedBeforeFailure.join('; ')})`
+                : ''),
             resourceType,
             logicalId,
             physicalId,
@@ -911,6 +1225,37 @@ export class CloudTrailProvider implements ResourceProvider {
         error instanceof Error && error.name.includes('NotFound') ? markNotGone(failure) : failure;
       throw stripped ? markDeleteStarted(notGone) : notGone;
     }
+  }
+
+  /**
+   * The live read-back a skipped block is recorded from when its previous
+   * value is unusable. Best-effort: a failed read answers `undefined`, which
+   * drops the key rather than failing an update AWS already applied.
+   */
+  private async readLiveForRecord(
+    physicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      const live = await this.readCurrentState(physicalId, '', resourceType);
+      return live !== undefined && live !== RESOURCE_NOT_FOUND ? live : undefined;
+    } catch (error) {
+      this.logger.debug(
+        safeMsg`CloudTrail read-back for the record failed: ${describeAwsFailure(error).detail}`
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Both comparison sides of `cdkd drift` sort these blocks' lists
+   * ({@link UNORDERED_LIST_BLOCKS}): AWS reads `FieldSelectors` back sorted
+   * by `Field`, so a template declaring them in another order would otherwise
+   * report drift on every clean deploy.
+   */
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    if (resourceType !== 'AWS::CloudTrail::Trail') return [];
+    return [...UNORDERED_LIST_BLOCKS];
   }
 
   getAttribute(
@@ -997,6 +1342,9 @@ export class CloudTrailProvider implements ResourceProvider {
    * always emitted (`[]` when AWS reports none) so a console-side ADD
    * is detectable on the v3 observedProperties baseline.
    *
+   * `AdvancedEventSelectors` comes from the same `GetEventSelectors` call and
+   * `AggregationConfigurations` from `GetEventConfiguration` (issue #2762).
+   *
    * Returns `RESOURCE_NOT_FOUND` when the trail is gone (`TrailNotFoundException`).
    */
   async readCurrentState(
@@ -1080,8 +1428,7 @@ export class CloudTrailProvider implements ResourceProvider {
     }
 
     // EventSelectors — separate call. AWS returns either `EventSelectors`
-    // or `AdvancedEventSelectors` (mutually exclusive — Class 1). cdkd
-    // state's CFn shape is `EventSelectors` only.
+    // or `AdvancedEventSelectors` (mutually exclusive — Class 1).
     //
     // When AWS has AdvancedEventSelectors configured, surfacing
     // `EventSelectors: []` would round-trip through `update()` and
@@ -1101,6 +1448,13 @@ export class CloudTrailProvider implements ResourceProvider {
           (es) => es as unknown as Record<string, unknown>
         );
       }
+      // Issue #2762: always emitted (`[]` on a basic-selector trail). A
+      // console-side change is drift only where the template DECLARES the key:
+      // an undeclared key captured as `[]` is skipped by the comparator
+      // (`undeclaredEmptyObservedKeys`).
+      result['AdvancedEventSelectors'] = hasAdvanced
+        ? advancedSelectorsToCfn(sel.AdvancedEventSelectors ?? [])
+        : [];
     } catch {
       // Best-effort.
     }
@@ -1140,6 +1494,25 @@ export class CloudTrailProvider implements ResourceProvider {
       }
     }
     result['Tags'] = tags;
+
+    // AggregationConfigurations — separate call (issue #2762), same member
+    // names on both sides, `[]` being what AWS reports for a trail with none.
+    // As for AdvancedEventSelectors, a console-side add is drift only where
+    // the template declares the key (`undeclaredEmptyObservedKeys`). A failed
+    // read omits the key rather than claiming the trail has none.
+    try {
+      const config = await this.getClient().send(
+        new GetEventConfigurationCommand({ TrailName: physicalId })
+      );
+      result['AggregationConfigurations'] = (config.AggregationConfigurations ?? []).map((a) => ({
+        ...(a.EventCategory !== undefined && { EventCategory: a.EventCategory }),
+        ...(a.Templates !== undefined && { Templates: a.Templates }),
+      }));
+    } catch (err) {
+      this.logger.debug(
+        safeMsg`CloudTrail GetEventConfiguration(${physicalId}) failed: ${describeAwsFailure(err).detail}`
+      );
+    }
 
     return result;
   }

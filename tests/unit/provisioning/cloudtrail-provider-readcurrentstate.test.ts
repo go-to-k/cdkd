@@ -4,6 +4,7 @@ import {
   GetTrailStatusCommand,
   GetEventSelectorsCommand,
   GetInsightSelectorsCommand,
+  GetEventConfigurationCommand,
   ListTagsCommand,
   TrailNotFoundException,
 } from '@aws-sdk/client-cloudtrail';
@@ -74,7 +75,10 @@ describe('CloudTrailProvider.readCurrentState', () => {
       .mockResolvedValueOnce({
         InsightSelectors: [{ InsightType: 'ApiCallRateInsight' }],
       })
-      .mockResolvedValueOnce({ ResourceTagList: [] });
+      .mockResolvedValueOnce({ ResourceTagList: [] })
+      .mockResolvedValueOnce({
+        AggregationConfigurations: [{ EventCategory: 'Data', Templates: ['API_ACTIVITY'] }],
+      });
 
     const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
 
@@ -83,6 +87,7 @@ describe('CloudTrailProvider.readCurrentState', () => {
     expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(GetEventSelectorsCommand);
     expect(mockSend.mock.calls[3]?.[0]).toBeInstanceOf(GetInsightSelectorsCommand);
     expect(mockSend.mock.calls[4]?.[0]).toBeInstanceOf(ListTagsCommand);
+    expect(mockSend.mock.calls[5]?.[0]).toBeInstanceOf(GetEventConfigurationCommand);
     expect(result).toEqual({
       TrailName: 'mytrail',
       S3BucketName: 'mybucket',
@@ -98,8 +103,11 @@ describe('CloudTrailProvider.readCurrentState', () => {
       CloudWatchLogsRoleArn: '',
       IsLogging: true,
       EventSelectors: [{ ReadWriteType: 'All', IncludeManagementEvents: true }],
+      // Always-emitted since issue #2762: a basic-selector trail has none.
+      AdvancedEventSelectors: [],
       InsightSelectors: [{ InsightType: 'ApiCallRateInsight' }],
       Tags: [],
+      AggregationConfigurations: [{ EventCategory: 'Data', Templates: ['API_ACTIVITY'] }],
     });
   });
 
@@ -131,6 +139,9 @@ describe('CloudTrailProvider.readCurrentState', () => {
       // GetEventSelectors failure — EventSelectors key drops out
       .mockRejectedValueOnce(new Error('AccessDenied'))
       // GetInsightSelectors failure — InsightSelectors falls back to []
+      .mockRejectedValueOnce(new Error('AccessDenied'))
+      // GetEventConfiguration failure — AggregationConfigurations drops out
+      // (no ListTags call: this fixture has no TrailARN)
       .mockRejectedValueOnce(new Error('AccessDenied'));
 
     const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');

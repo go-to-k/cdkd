@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 89,
-    "declaredProperties": 1185,
-    "wiredProperties": 1183,
+    "declaredProperties": 1187,
+    "wiredProperties": 1185,
     "wired": 87,
     "gap": 0,
     "allowListed": 2,
@@ -3574,8 +3574,36 @@
       "file": "cloudtrail-provider.ts",
       "className": "CloudTrailProvider",
       "bucket": "wired",
-      "declaredCount": 15,
+      "declaredCount": 17,
       "properties": [
+        {
+          "name": "AdvancedEventSelectors",
+          "status": "wired",
+          "types": [
+            "AWS::CloudTrail::Trail"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
+          "name": "AggregationConfigurations",
+          "status": "wired",
+          "types": [
+            "AWS::CloudTrail::Trail"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
         {
           "name": "CloudWatchLogsLogGroupArn",
           "status": "wired",
@@ -3791,6 +3819,7 @@
       ],
       "gaps": [],
       "blindSpots": [
+        "Object.entries(...) in retainPreviousLists()",
         "withRemovalDefaults(...) in update()"
       ]
     },

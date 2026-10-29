@@ -710,6 +710,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::CloudTrail::Trail',
     {
       handled: new Set<string>([
+        'AdvancedEventSelectors',
+        'AggregationConfigurations',
         'CloudWatchLogsLogGroupArn',
         'CloudWatchLogsRoleArn',
         'EnableLogFileValidation',
@@ -726,10 +728,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'TrailName',
       ]),
-      silentDrop: new Map<string, string>([
-        ['AdvancedEventSelectors', 'not yet implemented by cdkd'],
-        ['AggregationConfigurations', 'not yet implemented by cdkd'],
-      ]),
+      silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'SnsTopicArn']),
       ccRouteUnavailable: false,
