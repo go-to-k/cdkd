@@ -18,6 +18,17 @@ This example demonstrates cdkd deployment of CloudWatch monitoring resources.
 - Alarm action linking alarm to SNS topic
 - Cross-resource references (Ref, Fn::GetAtt)
 - CfnOutputs for resource attributes
+- Alarm `WarmUpConfiguration` / `ActionConfiguration` on the SDK route (go-to-k/cdkd#2762):
+  `verify.sh` reads both back from `DescribeAlarms`, then redeploys with
+  `CDKD_TEST_UPDATE=true` (warm-up changed, `ActionConfiguration` removed) and
+  asserts AWS changed and cleared them; after each deploy `cdkd drift` must
+  report the stack clean
+
+## Run
+
+```bash
+AWS_REGION=us-east-1 STATE_BUCKET=<bucket> bash verify.sh
+```
 
 ## Deploy
 

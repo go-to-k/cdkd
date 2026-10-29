@@ -51,7 +51,7 @@ cdk-cross-account-lookup-role	2026-10-24T01:12:39Z	PASS	171	verify.sh	PR 5227 rc
 ci-cd	2026-10-11T09:33:22Z	PASS	75	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 cloudfront-function-url	2026-10-23T23:55:45Z	PASS	225	verify.sh	rc ok, orph clean, stmt-id fixture fixed
 cloudtrail-trail	2026-10-29T08:19:00Z	PASS	330	verify.sh	rc ok, advanced selectors + aggregation verified, orph clean (1 lambda log group routinely swept)
-cloudwatch	2026-10-20T05:58:30Z	PASS	65	standard	deploy+destroy clean, 0 orphans
+cloudwatch	2026-10-29T16:19:31Z	PASS	104	verify.sh	rc ok, orph clean; probe red at sdk-route assert
 cloudwatch-anomaly-detector	2026-10-26T05:42:10Z	PASS	61	verify.sh	rc ok, orph clean; TZ=Asia/Tokyo offset-less range read as UTC (5311)
 codebuild-project	2026-10-28T17:12:03Z	PASS	130	verify.sh	rc ok, orph clean; #5492 six keep arm + badge negative probe RED
 codecommit	2026-10-25T00:07:44Z	PASS	125	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
@@ -107,10 +107,10 @@ dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table 
 dynamodb-fix-forward-orphan	2026-10-19T10:52:49Z	PASS	170	verify.sh	rc ok, orph clean
 dynamodb-globaltable	2026-10-20T03:28:23Z	PASS	1478	verify.sh	deploy+destroy clean, 0 orphans
 dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc ok, orph clean (#4283 PR #4449)
-dynamodb-globaltable-replica-settings	2026-10-29T09:53:53Z	PASS	3843	verify.sh	rc ok, orph clean; fixture-owned oob key at 9fb504eed
+dynamodb-globaltable-replica-settings	2026-10-29T17:32:24Z	PASS	2858	verify.sh	rc ok, orph clean
 dynamodb-gsi-update	2026-10-29T17:10:07Z	PASS	2276	verify.sh	rc ok, orph clean
 dynamodb-ondemand	2026-10-27T17:47:12Z	PASS	560	verify.sh	rc ok, orph clean, KinesisRemovalTable arm (#5423) green, pre-fix probe red at Phase 1.5
-dynamodb-sse	2026-10-16T08:15:12Z	PASS	45	verify.sh	rc ok, orph clean (#3341 slice 4995)
+dynamodb-sse	2026-10-29T16:45:21Z	PASS	53	verify.sh	rc ok, orph clean; #5514 table gone straight after destroy, probe without wait RED
 dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-streams	2026-10-13T02:41:29Z	PASS	235	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 dynamodb-tableclass-switch	2026-10-03T04:27:40Z	PASS	67	verify.sh	rc ok, orph clean (#4283 PR #4449)

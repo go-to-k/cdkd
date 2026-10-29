@@ -37,9 +37,9 @@
       "Tags"
     ],
     "AWS::CloudWatch::Alarm": [
-      "ActionConfiguration",
-      "EvaluationWindow",
-      "WarmUpConfiguration"
+      "EvaluationCriteria",
+      "EvaluationInterval",
+      "EvaluationWindow"
     ],
     "AWS::CodeBuild::Project": [
       "Triggers"

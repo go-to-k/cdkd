@@ -15,7 +15,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **89**
-- Declared properties: **1187** (**1185** with read evidence)
+- Declared properties: **1189** (**1187** with read evidence)
 - Fully wired classes: **87**
 - Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **39**
@@ -98,7 +98,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `CloudFrontOACProvider` | cloudfront-oac-provider.ts | wired | 1 | 1 |
 | `CloudFrontOAIProvider` | cloudfront-oai-provider.ts | wired | 1 | 1 |
 | `CloudTrailProvider` | cloudtrail-provider.ts | wired | 17 | 17 |
-| `CloudWatchAlarmProvider` | cloudwatch-alarm-provider.ts | wired | 22 | 22 |
+| `CloudWatchAlarmProvider` | cloudwatch-alarm-provider.ts | wired | 24 | 24 |
 | `CloudWatchAnomalyDetectorProvider` | cloudwatch-anomaly-detector-provider.ts | wired | 8 | 8 |
 | `CodeBuildProvider` | codebuild-provider.ts | wired | 24 | 24 |
 | `CodeCommitRepositoryProvider` | codecommit-repository-provider.ts | wired | 6 | 6 |

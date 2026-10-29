@@ -205,6 +205,9 @@ export function relayedIndexBusyDelete(withheldText: string): string {
  * does NOT pay, because the loop THROWS when the budget runs out and the wait
  * never runs. It lands on the late-SUCCESS case instead; see
  * {@link GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES}.
+ * Since go-to-k/cdkd#5514 `Table` has one too (the shared
+ * `delete-gone-wait.ts`, ~12 min), clamped to what the delete budget has left
+ * and warning rather than throwing, so it cannot push the path past it.
  *
  * **Table: 14, raised from `withRetry`'s default of 8 by issue #1950.** A live
  * `dynamodb-gsi-update` destroy (us-east-1, 2026-08-18) measured a FIVE-item

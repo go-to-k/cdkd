@@ -150,14 +150,19 @@ function stubOneRefusalWithPoll(describe: (n: number) => Promise<unknown>): {
 } {
   let deletes = 0;
   let describes = 0;
+  let deleted = false;
   mockSend.mockImplementation((command: unknown) => {
     if (command instanceof DescribeTableCommand) {
+      // Once AWS took the delete the table is gone: the post-delete gone-wait
+      // (go-to-k/cdkd#5514) reads that, and is not the re-arm poll counted here.
+      if (deleted) return Promise.reject(newRnf());
       describes += 1;
       return describe(describes);
     }
     if (command instanceof DeleteTableCommand) {
       deletes += 1;
       if (deletes === 1) return Promise.reject(indexBusyError());
+      deleted = true;
       return Promise.resolve({});
     }
     return Promise.resolve({});
@@ -179,13 +184,17 @@ const LIVE_TABLE = {
  */
 function stubDeleteFailingTimes(failures: number, error: () => Error): { attempts: () => number } {
   let attempts = 0;
+  let deleted = false;
   mockSend.mockImplementation((command: unknown) => {
     if (command instanceof DescribeTableCommand) {
+      // Gone once AWS took the delete (the go-to-k/cdkd#5514 gone-wait).
+      if (deleted) return Promise.reject(newRnf());
       return Promise.resolve({ Table: LIVE_TABLE });
     }
     if (command instanceof DeleteTableCommand) {
       attempts += 1;
       if (attempts <= failures) return Promise.reject(error());
+      deleted = true;
       return Promise.resolve({});
     }
     return Promise.resolve({});
@@ -470,6 +479,8 @@ describe('DynamoDBTable delete retry on the index-busy refusal (issue #1931)', (
         }
         return Promise.resolve({});
       }
+      // Gone once AWS took the delete (the go-to-k/cdkd#5514 gone-wait).
+      if (attempts >= 2) return Promise.reject(newRnf());
       return Promise.resolve({ Table: LIVE_TABLE });
     });
 

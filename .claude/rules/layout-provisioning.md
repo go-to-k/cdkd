@@ -84,7 +84,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 - **guardduty-detector-patch.ts** - a GuardDuty detector's Cloud Control update patch (#4910).
 - **apigwv2-body-import-patch.ts** - an imported HTTP API's definition updates via `ReimportApi` (#5260).
 
-- **delete-gone-wait.ts** - The post-delete wait for a service that holds a NAME while `DELETING` and refuses a same-name create with its live-resource error (Kinesis, Firehose; #3872). The delete was ACCEPTED, so a cap, Ctrl-C or unreadable status warns and RETURNS; only a caller-named TERMINAL status (Firehose `DELETING_FAILED`) throws (marked abandoned, keeping the state record) — never on a first read alone.
+- **delete-gone-wait.ts** - The post-delete wait for a service that holds a NAME while `DELETING` and refuses a same-name create with its live-resource error (Kinesis, Firehose; #3872; DynamoDB `Table`, #5514). The delete was ACCEPTED, so a cap, Ctrl-C or unreadable status warns and RETURNS; only a caller-named TERMINAL status (Firehose `DELETING_FAILED`) throws (marked abandoned, keeping the state record) — never on a first read alone.
 
 - **unsupported-types.ts** + **.generated.ts** - Pre-flight unsupported-type rejection. The generated half ships the Tier 3 set (`NON_PROVISIONABLE`), codegen'd from the provider-coverage JSON. `--allow-unsupported-types` routes named types through CC. Hand-written `SDK_PROVIDER_NON_PROVISIONABLE_TYPES` lists the REGISTERED `NON_PROVISIONABLE` types the audit drops from Tier 3; the CC auto-route reads both, per TYPE, via `hasNoCloudControlHandlers` (#3871).
 
