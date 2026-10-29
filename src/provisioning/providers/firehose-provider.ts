@@ -166,6 +166,11 @@ const ENCRYPTION_POLL_MAX_ATTEMPTS = 120;
  */
 const ACTIVE_POLL_INTERVAL_MS = 5000;
 const ACTIVE_POLL_MAX_ATTEMPTS = 360;
+/**
+ * What the wait leaves of the resource deadline for its last read and its
+ * throw to settle before the deadline fires (go-to-k/cdkd#5509).
+ */
+const ACTIVE_DEADLINE_MARGIN_MS = 2000;
 
 /** Errors for an `ENABLING_FAILED` / `DISABLING_FAILED` report: AWS ended the transition. */
 const terminalEncryptionFailures = new WeakSet<object>();
@@ -2994,6 +2999,12 @@ export class FirehoseProvider implements ResourceProvider {
    * on Ctrl-C, or at the poll cap. Each throw is non-retryable: the stream
    * exists, so a retried create would only collide with it. `create()` records
    * the stream through `markCreatedBeforeFailure`, so it is not orphaned.
+   *
+   * The deadline error is thrown while time is still left, never after:
+   * `withResourceDeadline` rejects with its own timeout error the moment it
+   * fires and drops a later provider error, and the created-id mark rides
+   * only on the provider's error, so a wait that slept into the deadline
+   * would leave the stream recorded nowhere.
    */
   private async waitForActive(
     streamName: string,
@@ -3004,20 +3015,14 @@ export class FirehoseProvider implements ResourceProvider {
     const watch = startInterruptWatch(`Firehose ${logicalId} create`);
     try {
       let last: string | undefined;
+      // The engine's deadline does not cancel this create, so the wait ends
+      // itself before the deadline fires (see above).
+      let deadlineNear = false;
       for (let attempt = 1; attempt <= ACTIVE_POLL_MAX_ATTEMPTS; attempt++) {
         if (watch.isInterrupted()) throw watch.onInterrupted();
-        // The engine's deadline does not cancel this create, so a wait that
-        // outlived it would keep polling with nobody waiting on it.
-        if (enclosingDeadlineRemainingMs() <= 0) {
-          throw markNonRetryable(
-            new ProvisioningError(
-              `The resource timeout expired while waiting for Firehose delivery stream ` +
-                `${logicalId} to become ACTIVE (last status: ${last ?? 'none reported'})`,
-              resourceType,
-              logicalId,
-              streamName
-            )
-          );
+        if (enclosingDeadlineRemainingMs() <= ACTIVE_DEADLINE_MARGIN_MS) {
+          deadlineNear = true;
+          break;
         }
         const resp = await this.getClient().send(
           new DescribeDeliveryStreamCommand({ DeliveryStreamName: streamName })
@@ -3044,16 +3049,17 @@ export class FirehoseProvider implements ResourceProvider {
           `Firehose ${logicalId} status: ${last} (attempt ${attempt}/${ACTIVE_POLL_MAX_ATTEMPTS})`
         );
         if (watch.isInterrupted()) throw watch.onInterrupted();
-        await new Promise((resolve) =>
-          setTimeout(
-            resolve,
-            Math.max(0, Math.min(ACTIVE_POLL_INTERVAL_MS, enclosingDeadlineRemainingMs()))
-          )
-        );
+        if (enclosingDeadlineRemainingMs() <= ACTIVE_POLL_INTERVAL_MS + ACTIVE_DEADLINE_MARGIN_MS) {
+          deadlineNear = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, ACTIVE_POLL_INTERVAL_MS));
       }
       throw markNonRetryable(
         new ProvisioningError(
-          `Timed out waiting for Firehose delivery stream ${logicalId} to become ACTIVE ` +
+          (deadlineNear
+            ? `The resource timeout would expire while waiting for Firehose delivery stream ${logicalId} to become ACTIVE `
+            : `Timed out waiting for Firehose delivery stream ${logicalId} to become ACTIVE `) +
             `(last status: ${last ?? 'none reported'})`,
           resourceType,
           logicalId,

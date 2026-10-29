@@ -277,33 +277,64 @@ describe('FirehoseProvider', () => {
       expect(createdBeforeFailure(err, 'S', TYPE)).toBe('wait-stream');
     });
 
-    it('ends the wait when the engine\'s resource deadline runs out', async () => {
+    it('fails the create before the resource deadline fires, so the deadline wrapper relays the created-stream mark', async () => {
+      // withResourceDeadline drops a provider error that lands after it fired,
+      // and the created-id mark rides only on that error: the wait must throw
+      // while time is left, so the error the engine reads still names the stream.
       const reads = routeStatuses(['CREATING']);
       vi.useFakeTimers();
       try {
-        let inner: Promise<{ ok?: unknown; err?: unknown }> | undefined;
-        const outer = withResourceDeadline(
-          () => {
-            inner = provider.create('S', TYPE, props).then(
-              (ok) => ({ ok }),
-              (err: unknown) => ({ err })
-            );
-            return inner;
-          },
-          { warnAfterMs: 1000, timeoutMs: 60_000, onTimeout: () => new Error('deadline fired') }
-        ).then(
-          (r) => r,
-          (e: unknown) => e
+        const outer = withResourceDeadline(() => provider.create('S', TYPE, props), {
+          warnAfterMs: 1000,
+          timeoutMs: 60_000,
+          onTimeout: () => new Error('deadline fired'),
+        }).then(
+          (): { err?: unknown } => ({}),
+          (err: unknown) => ({ err })
         );
         await vi.runAllTimersAsync();
-        expect(((await outer) as Error).message).toBe('deadline fired');
-        const { err } = await inner!;
-        expect((err as Error).message).toContain('The resource timeout expired while waiting');
+        const { err } = await outer;
+        expect((err as Error).message).not.toBe('deadline fired');
+        expect(err).toBeInstanceOf(ProvisioningError);
+        expect((err as Error).message).toContain('The resource timeout would expire while waiting');
+        expect((err as Error).message).toContain('last status: CREATING');
+        expect(createdBeforeFailure(err, 'S', TYPE)).toBe('wait-stream');
         expect(isMarkedNonRetryable(err)).toBe(true);
         // 60 s at 5 s per read: the wait stopped with the deadline, not at the cap.
-        expect(reads()).toBeLessThanOrEqual(13);
+        expect(reads()).toBeLessThanOrEqual(12);
       } finally {
         vi.useRealTimers();
+      }
+    });
+
+    it('a Ctrl-C during the wait stops it, and the create still records the stream', async () => {
+      disarmInterruptWatchForTests();
+      interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+      try {
+        const baselineListeners = process.listeners('SIGINT');
+        let reads = 0;
+        mockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+          if (cmd.constructor.name === 'CreateDeliveryStreamCommand') {
+            return {
+              DeliveryStreamARN: 'arn:aws:firehose:us-east-1:123456789012:deliverystream/wait-stream',
+            };
+          }
+          reads += 1;
+          if (reads === 2) {
+            // The signal lands while the second report is in flight.
+            const ours = process.listeners('SIGINT').filter((l) => !baselineListeners.includes(l));
+            expect(ours.length).toBeGreaterThan(0);
+            for (const l of ours) (l as unknown as () => void)();
+          }
+          return { DeliveryStreamDescription: { DeliveryStreamStatus: 'CREATING' } };
+        });
+        const { err } = await settle(provider.create('S', TYPE, props));
+        expect(isInterruptedWaitError(err)).toBe(true);
+        expect(createdBeforeFailure(err, 'S', TYPE)).toBe('wait-stream');
+        expect(reads).toBe(2);
+      } finally {
+        interruptWatchTestSeam.commandOwnsInterrupts = undefined;
+        disarmInterruptWatchForTests();
       }
     });
   });
