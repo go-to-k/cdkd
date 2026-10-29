@@ -123,6 +123,7 @@ import {
   type ProtectionCompensationOutcome,
   type ProtectionFlipRecord,
   ProtectionFlipRegistry,
+  DYNAMODB_DELETE_POLL_COST_MS,
   beginDeleteWait,
   compensateRemovedDeletionProtection,
   deleteBudgetKey,
@@ -133,6 +134,7 @@ import {
 import { type ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
 import { maskDeep, maskerOrIdentity } from '../masked-retry-logger.js';
 import { startInterruptWatch } from '../interrupt-watch.js';
+import { waitForGoneAfterDelete } from '../delete-gone-wait.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import {
   isAmbiguousOutcomeError,
@@ -1910,6 +1912,18 @@ function maskLeafValue(value: unknown, maskSecrets: SecretMasker): unknown {
 export const tableNameReleaseWait = {
   maxPolls: TABLE_GONE_WAIT_ATTEMPTS,
   intervalMs: INDEX_SETTLE_POLL_INTERVAL_MS,
+};
+
+/**
+ * go-to-k/cdkd#5514: the post-delete gone-wait `delete()` runs once AWS has
+ * accepted `DeleteTable` -- the GlobalTable gone-wait's cap
+ * (`TABLE_GONE_WAIT_ATTEMPTS` polls at their measured cost, ~12 min) and
+ * interval. The shared delete budget clamps it further. Mutable for tests
+ * only.
+ */
+export const tableDeleteGoneWait = {
+  maxWaitMs: TABLE_GONE_WAIT_ATTEMPTS * DYNAMODB_DELETE_POLL_COST_MS,
+  pollIntervalMs: INDEX_SETTLE_POLL_INTERVAL_MS,
 };
 
 export class DynamoDBTableProvider implements ResourceProvider {
@@ -4280,7 +4294,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * after cdkd's own delete fails `ResourceInUseException`. Polls
    * `DescribeTable` until `ResourceNotFoundException`, as the GlobalTable
    * provider's gone-wait does, within its poll budget. Only the replacement
-   * that deleted the table asks; `delete()` itself still returns at once.
+   * that deleted the table asks. Since go-to-k/cdkd#5514 `delete()` itself
+   * waits for the table to be gone, so this normally answers on its first
+   * poll; it stays for a delete whose own wait was cut short (budget,
+   * interrupt, an unreadable status).
    */
   async waitForNameReleased(
     logicalId: string,
@@ -4658,9 +4675,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
           // — the table is `DELETING`, so a later throw on this path is a wait
           // failing rather than the delete (issue #1978). Recorded here rather
           // than inferred from the error, because a wait's own timeout message
-          // is indistinguishable from a terminal refusal. This type has no
-          // post-delete wait today; the sibling `GlobalTable` provider does,
-          // and the record is set on both so the halves cannot drift.
+          // is indistinguishable from a terminal refusal. The post-delete
+          // gone-wait below never throws, but the record is set on both
+          // DynamoDB types so the halves cannot drift.
           flip.deleteAccepted = true;
         },
         // Re-arm on the CONDITION, not on the clock: an index backfill outlasts
@@ -4722,6 +4739,35 @@ export class DynamoDBTableProvider implements ResourceProvider {
           return false;
         },
         sleepSeam: deleteTableRetryDelays,
+      });
+      // go-to-k/cdkd#5514: `DeleteTable` returns with the table `DELETING`,
+      // and CloudFormation reports DELETE_COMPLETE only once it is gone. A
+      // destroy that returned here let a same-name re-deploy hit
+      // `ResourceInUseException`, a dependent (a KMS key, a role) be deleted
+      // under a live table, and a gone-probe right after the destroy see it.
+      // The delete is ACCEPTED, so the wait never throws: a cap, a Ctrl-C or
+      // an unreadable status warns and returns (`delete-gone-wait.ts`). Only
+      // a typed `ResourceNotFoundException` reads as gone. Clamped to what
+      // the shared delete budget still has, so the path stays under the
+      // per-resource deadline (issue #1955).
+      const mask = maskerOrIdentity(context?.maskSecrets);
+      await waitForGoneAfterDelete({
+        what: mask(`DynamoDB table ${physicalId}`),
+        resourceType,
+        describe: async () => {
+          try {
+            const out = await this.dynamoDBClient.send(
+              new DescribeTableCommand({ TableName: physicalId })
+            );
+            return out.Table?.TableStatus ?? 'UNKNOWN';
+          } catch (describeError) {
+            if (describeError instanceof ResourceNotFoundException) return undefined;
+            throw describeError;
+          }
+        },
+        logger: loopLogger,
+        pollIntervalMs: tableDeleteGoneWait.pollIntervalMs,
+        maxWaitMs: Math.min(tableDeleteGoneWait.maxWaitMs, budget.remainingMs()),
       });
       this.logger.debug(`Successfully deleted DynamoDB table ${logicalId}`);
       // TERMINAL success — the allowance has no second pass to fund, and the
