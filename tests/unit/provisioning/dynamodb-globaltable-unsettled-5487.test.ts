@@ -17,9 +17,9 @@ vi.mock('@aws-sdk/client-dynamodb', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-dynamodb')>('@aws-sdk/client-dynamodb');
   return {
     ...actual,
-    DynamoDBClient: vi.fn().mockImplementation(() => ({
-      send: mockSend,
-      config: { region: () => Promise.resolve('us-east-1') },
+    DynamoDBClient: vi.fn().mockImplementation((cfg: { region?: string } | undefined) => ({
+      send: (command: unknown) => mockSend(command, cfg?.region ?? 'us-east-1'),
+      config: { region: () => Promise.resolve(cfg?.region ?? 'us-east-1') },
     })),
   };
 });
@@ -35,6 +35,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   return { getLogger: () => ({ ...child, child: () => child }) };
 });
 
+import { ResourceNotFoundException } from '@aws-sdk/client-dynamodb';
 import { DynamoDBGlobalTableProvider } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 
 const TYPE = 'AWS::DynamoDB::GlobalTable';
@@ -49,13 +50,37 @@ interface Live {
   ttl?: string;
   tags?: Array<{ Key: string; Value: string }>;
   failInsights?: boolean;
+  failTtl?: boolean;
+  /** The local replica's live CMK (with `sse: 'ENABLED'`). */
+  kmsKey?: string;
   billing?: 'PAY_PER_REQUEST' | 'PROVISIONED';
+  /** A cross-region replica, and what its own region answers. */
+  remote?: { status: string; notFound?: boolean; regionError?: boolean; deletionProtection?: boolean };
+  localDeletionProtection?: boolean;
 }
 
 function serve(live: Live): void {
-  mockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+  mockSend.mockImplementation(async (cmd: { constructor: { name: string } }, region = 'us-east-1') => {
+    if (region === 'eu-west-1' && live.remote?.notFound === true) {
+      throw new ResourceNotFoundException({ message: 'not found', $metadata: {} });
+    }
+    if (region === 'eu-west-1' && live.remote?.regionError === true) {
+      throw Object.assign(new Error('The security token included in the request is invalid'), {
+        name: 'UnrecognizedClientException',
+      });
+    }
     switch (cmd.constructor.name) {
       case 'DescribeTableCommand':
+        if (region === 'eu-west-1') {
+          return {
+            Table: {
+              TableName: TABLE,
+              TableArn: ARN.replace('us-east-1', 'eu-west-1'),
+              TableStatus: 'ACTIVE',
+              DeletionProtectionEnabled: live.remote?.deletionProtection ?? false,
+            },
+          };
+        }
         return {
           Table: {
             TableName: TABLE,
@@ -64,7 +89,13 @@ function serve(live: Live): void {
             KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
             AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
             BillingModeSummary: { BillingMode: live.billing ?? 'PAY_PER_REQUEST' },
-            Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: live.replicaStatus ?? 'ACTIVE' }],
+            DeletionProtectionEnabled: live.localDeletionProtection ?? false,
+            Replicas: [
+              { RegionName: 'us-east-1', ReplicaStatus: live.replicaStatus ?? 'ACTIVE' },
+              ...(live.remote !== undefined
+                ? [{ RegionName: 'eu-west-1', ReplicaStatus: live.remote.status }]
+                : []),
+            ],
             ...(live.gsiStatus !== undefined && {
               GlobalSecondaryIndexes: [
                 {
@@ -75,12 +106,18 @@ function serve(live: Live): void {
                 },
               ],
             }),
-            ...(live.sse !== undefined && { SSEDescription: { Status: live.sse } }),
+            ...(live.sse !== undefined && {
+              SSEDescription: {
+                Status: live.sse,
+                ...(live.kmsKey !== undefined && { SSEType: 'KMS', KMSMasterKeyArn: live.kmsKey }),
+              },
+            }),
           },
         };
       case 'ListTagsOfResourceCommand':
         return { Tags: live.tags ?? [] };
       case 'DescribeTimeToLiveCommand':
+        if (live.failTtl === true) throw new Error('ttl throttled');
         return { TimeToLiveDescription: { TimeToLiveStatus: live.ttl ?? 'DISABLED' } };
       case 'DescribeContributorInsightsCommand':
         if (live.failInsights === true) throw new Error('throttled');
@@ -263,5 +300,87 @@ describe('GlobalTable unsettled properties (go-to-k/cdkd#5487)', () => {
   it('unsettledInTransition: a failed read keeps every name', async () => {
     mockSend.mockRejectedValue(new Error('throttled'));
     expect((await provider.unsettledInTransition(TABLE, 'T', TYPE, new Set(['Replicas', 'BillingMode']))).size).toBe(2);
+  });
+
+  describe('readUnsettled never removes or resets what neither the record nor the template names', () => {
+    it('a live-only replica region is left out of the previous side (never deleted)', async () => {
+      serve({ remote: { status: 'ACTIVE' } });
+      const recorded = props();
+      const live = (await provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded, recorded)) as Record<string, any>;
+      expect(live['Replicas'].map((r: any) => r.Region)).toEqual(['us-east-1']);
+      // A region the template names is kept.
+      const wanted = { ...recorded, Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1' }] };
+      const both = (await provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded, wanted)) as Record<string, any>;
+      expect(both['Replicas'].map((r: any) => r.Region)).toEqual(['us-east-1', 'eu-west-1']);
+    });
+
+    it('a live-only DeletionProtectionEnabled=true is not on the previous side; a named one is', async () => {
+      serve({ localDeletionProtection: true });
+      const recorded = props();
+      const unnamed = (await provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded, recorded)) as Record<string, any>;
+      expect(unnamed['Replicas'][0]).not.toHaveProperty('DeletionProtectionEnabled');
+      const declared = props({}, { DeletionProtectionEnabled: false });
+      const named = (await provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded, declared)) as Record<string, any>;
+      expect(named['Replicas'][0]['DeletionProtectionEnabled']).toBe(true);
+    });
+
+    it('a live-only CMK is not on the previous side unless the record or template names the key', async () => {
+      const KEY = 'arn:aws:kms:us-east-1:123456789012:key/k';
+      serve({ sse: 'ENABLED', kmsKey: KEY });
+      const recorded = props();
+      const unnamed = (await provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded, recorded)) as Record<string, any>;
+      expect(unnamed['Replicas'][0]).not.toHaveProperty('SSESpecification');
+      // A replica SSESpecification object that names no key keeps the key out too.
+      const emptyBlock = props({}, { SSESpecification: {} });
+      const nested = (await provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), emptyBlock, emptyBlock)) as Record<string, any>;
+      expect(nested['Replicas'][0]['SSESpecification']).toEqual({});
+      const declared = props({}, { SSESpecification: { KMSMasterKeyId: 'other' } });
+      const named = (await provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded, declared)) as Record<string, any>;
+      expect(named['Replicas'][0]['SSESpecification']).toEqual({ KMSMasterKeyId: KEY });
+    });
+
+    it('a CREATION_FAILED replica whose region answers not-found does not refuse the converging read', async () => {
+      serve({ remote: { status: 'CREATION_FAILED', notFound: true } });
+      const recorded = { ...props(), Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1' }] };
+      const read = await provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded, recorded);
+      // A read (not the gone sentinel), with both replicas on it.
+      expect(typeof read).toBe('object');
+      expect((read as Record<string, any>)['Replicas'].map((r: any) => r.Region)).toEqual(['us-east-1', 'eu-west-1']);
+    });
+
+    it('an ACTIVE replica whose region answers not-found (the RNF-omit arm) does not refuse', async () => {
+      serve({ remote: { status: 'ACTIVE', notFound: true } });
+      const recorded = { ...props(), Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1' }] };
+      const read = await provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded, recorded);
+      // A read (not the gone sentinel), with both replicas on it.
+      expect(typeof read).toBe('object');
+      expect((read as Record<string, any>)['Replicas'].map((r: any) => r.Region)).toEqual(['us-east-1', 'eu-west-1']);
+    });
+
+    it.each(['CREATION_FAILED', 'REGION_DISABLED', 'INACCESSIBLE_ENCRYPTION_CREDENTIALS'])(
+      'a %s replica whose region errors keeps the tolerant reads; an ACTIVE one refuses',
+      async (status) => {
+        const recorded = { ...props(), Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1' }] };
+        serve({ remote: { status, regionError: true } });
+        const read = await provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded, recorded);
+        expect(typeof read).toBe('object');
+        serve({ remote: { status: 'ACTIVE', regionError: true } });
+        await expect(
+          provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded, recorded)
+        ).rejects.toThrow('security token');
+      }
+    );
+
+    it('strictness is per unsettled key: a TTL read failure throws only when TTL is unsettled', async () => {
+      serve({ failTtl: true });
+      const recorded = props();
+      const read = await provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded, recorded);
+      // A read (not the gone sentinel), with both replicas on it.
+      expect(typeof read).toBe('object');
+      expect((read as Record<string, any>)['Replicas'].map((r: any) => r.Region)).toEqual(['us-east-1']);
+      await expect(
+        provider.readUnsettled(TABLE, 'T', TYPE, new Set(['TimeToLiveSpecification']), recorded, recorded)
+      ).rejects.toThrow('ttl throttled');
+    });
   });
 });

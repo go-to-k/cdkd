@@ -342,6 +342,7 @@ export async function updateInPlace(
     ...unsettledIdentity,
     names: unsettled,
     previous: previousForUpdate,
+    desired: updateProps,
   });
   if (unsettled.has('Tags')) {
     engine.logger.warn(

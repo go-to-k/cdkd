@@ -47,7 +47,7 @@ interface Identity {
 }
 
 async function readLive(
-  args: Identity,
+  args: Identity & { desired?: Record<string, unknown> },
   names: ReadonlySet<string>
 ): Promise<Record<string, unknown> | 'unreadable' | undefined> {
   const { provider, physicalId, logicalId, resourceType, recordedProperties } = args;
@@ -58,7 +58,8 @@ async function readLive(
       logicalId,
       resourceType,
       names,
-      recordedProperties
+      recordedProperties,
+      args.desired
     );
   } else if (provider.readCurrentState !== undefined) {
     live = await provider.readCurrentState(physicalId, logicalId, resourceType, recordedProperties);
@@ -96,7 +97,12 @@ function refusal(args: Identity, names: Iterable<string>, why: string): Provisio
  * unsettled.
  */
 export async function settleUnsettledPrevious(
-  args: Identity & { names: ReadonlySet<string>; previous: Record<string, unknown> }
+  args: Identity & {
+    names: ReadonlySet<string>;
+    previous: Record<string, unknown>;
+    /** The bag the update sends, for a read that projects onto what it names. */
+    desired?: Record<string, unknown>;
+  }
 ): Promise<Record<string, unknown>> {
   const { names, previous, provider } = args;
   if (names.size === 0) return previous;

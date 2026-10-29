@@ -26,6 +26,9 @@
 #      fails mid backfill and the record must name GlobalSecondaryIndexes
 #      unsettled; a same-template retry while CREATING must be refused; once
 #      ACTIVE, a redeploy of the base template must delete gsi1 and clear it.
+#  1a2. With `Replicas` marked unsettled on the record and the template
+#      unchanged, the converging deploy must send no replica change, keep both
+#      replicas and the second replica's protection, and clear the name.
 #  1b. `idx` (issue #5489): add a global secondary index whose per-replica
 #      Contributor Insights is on, a tag on each replica's stream, and a
 #      single-region `ModeTable` declaring GlobalTableSettingsReplicationMode
@@ -625,6 +628,39 @@ if [ -n "$(gt_unsettled)" ]; then
   exit 1
 fi
 echo "    the unsettled GSI add converged on redeploy (go-to-k/cdkd#5487)"
+
+# --- Phase 1a2: converging an unsettled `Replicas` changes nothing (go-to-k/cdkd#5487)
+# A record whose `Replicas` a failed update left unsettled, while AWS already
+# holds the template: the converging deploy must send no replica change (no
+# ReplicaUpdates, no dropped-override warning), keep both replicas and the
+# second replica's deletion protection, and clear the name. The mark is put on
+# the record directly: no replica-level call waits long enough to cut it short
+# reliably.
+echo "==> Phase 1a2: converge an unsettled Replicas on an unchanged template"
+P1A2_STATE="${LOG_DIR}/phase1a2-state.json"
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${P1A2_STATE}" --region "${REGION}" >/dev/null
+jq --arg name "${TABLE}" '(.resources[] | select(.resourceType == "AWS::DynamoDB::GlobalTable" and .physicalId == $name)) |= (.unsettledProperties = ["Replicas"])' \
+  "${P1A2_STATE}" > "${P1A2_STATE}.new"
+aws s3 cp "${P1A2_STATE}.new" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+[ "$(gt_unsettled)" = "Replicas" ] || { echo "FAIL: Phase 1a2 could not mark Replicas unsettled on the record ('$(gt_unsettled)')" >&2; exit 1; }
+P1A2_BEFORE="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
+  --query '[sort_by(Table.Replicas,&RegionName)[].RegionName, Table.TableClassSummary.TableClass]' --output json)"
+P1A2_PROT_BEFORE="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${SECOND_REGION}" \
+  --query 'Table.DeletionProtectionEnabled' --output text)"
+deploy "" "${LOG_DIR}/phase1a2.log"
+if grep -qE "ReplicaUpdates|no longer declares .* but DynamoDB offers no way" "${LOG_DIR}/phase1a2.log"; then
+  echo "FAIL: the converging deploy sent a replica change or warned of a dropped override (go-to-k/cdkd#5487):" >&2
+  grep -nE "ReplicaUpdates|no longer declares" "${LOG_DIR}/phase1a2.log" >&2
+  exit 1
+fi
+P1A2_AFTER="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
+  --query '[sort_by(Table.Replicas,&RegionName)[].RegionName, Table.TableClassSummary.TableClass]' --output json)"
+[ "${P1A2_AFTER}" = "${P1A2_BEFORE}" ] || { echo "FAIL: the converging deploy changed the replicas or table class: ${P1A2_BEFORE} -> ${P1A2_AFTER}" >&2; exit 1; }
+P1A2_PROT_AFTER="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${SECOND_REGION}" \
+  --query 'Table.DeletionProtectionEnabled' --output text)"
+[ "${P1A2_PROT_AFTER}" = "${P1A2_PROT_BEFORE}" ] || { echo "FAIL: the converging deploy changed the ${SECOND_REGION} replica's deletion protection (${P1A2_PROT_BEFORE} -> ${P1A2_PROT_AFTER})" >&2; exit 1; }
+[ -z "$(gt_unsettled)" ] || { echo "FAIL: the GlobalTable record still names unsettled properties after converging: $(gt_unsettled)" >&2; exit 1; }
+echo "    the unsettled Replicas converged with no replica change (go-to-k/cdkd#5487)"
 
 # --- Phase 1b: per-index insights, stream tags, replication mode (#5489) ---
 echo "==> Phase 1b: add gsi1 with per-replica insights, stream tags, and a one-replica ModeTable"

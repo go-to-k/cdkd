@@ -317,12 +317,88 @@ function maskLeafValue(value: unknown, maskSecrets: SecretMasker): unknown {
  * `unsettledProperties`, for the helpers that make its sends. Absent outside
  * an update (create, delete, a read), where marking does nothing.
  */
+/** go-to-k/cdkd#5487: a bag's `Replicas` entries by `Region`. */
+function replicasByRegion(
+  properties: Record<string, unknown> | undefined
+): Map<string, Record<string, unknown>> {
+  const out = new Map<string, Record<string, unknown>>();
+  const replicas = properties?.['Replicas'];
+  if (!Array.isArray(replicas)) return out;
+  for (const entry of replicas) {
+    const record = asRecord(entry);
+    if (record !== undefined && typeof record['Region'] === 'string')
+      out.set(record['Region'], record);
+  }
+  return out;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * go-to-k/cdkd#5487: `live` restricted to the members `own` (the record) or
+ * `wanted` (the template) names, recursively through plain objects. A member
+ * neither names keeps the record's value (absent stays absent); `Tags` at any
+ * depth always keep the record's value (tags merge).
+ */
+function projectNamedMembers(
+  live: Record<string, unknown>,
+  own: Record<string, unknown> | undefined,
+  wanted: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (Object.hasOwn(live, 'Region')) out['Region'] = live['Region'];
+  const named = new Set([...Object.keys(own ?? {}), ...Object.keys(wanted ?? {})]);
+  for (const key of named) {
+    if (key === 'Region') continue;
+    if (key === 'Tags') {
+      if (own !== undefined && Object.hasOwn(own, 'Tags')) out['Tags'] = own['Tags'];
+      continue;
+    }
+    if (!Object.hasOwn(live, key) || live[key] === undefined) continue;
+    const value = live[key];
+    const ownValue = own?.[key];
+    const wantedValue = wanted?.[key];
+    out[key] =
+      isPlainObject(value) && (isPlainObject(ownValue) || isPlainObject(wantedValue))
+        ? projectNamedMembers(
+            value,
+            isPlainObject(ownValue) ? ownValue : undefined,
+            isPlainObject(wantedValue) ? wantedValue : undefined
+          )
+        : value;
+  }
+  return out;
+}
+
 /**
  * go-to-k/cdkd#5487: set while `readUnsettled` reads, so each best-effort read
  * of `readCurrentState` throws instead of omitting a key (an omitted key would
  * converge the setting to "not set").
  */
-const strictReadScope = new AsyncLocalStorage<boolean>();
+const strictReadScope = new AsyncLocalStorage<ReadonlySet<string>>();
+
+/**
+ * Whether a read feeding `key` must throw rather than omit (go-to-k/cdkd#5487):
+ * only when `readUnsettled` reads and `key` is one of the unsettled names, so a
+ * read feeding a settled key keeps `readCurrentState`'s tolerance.
+ */
+function strictFor(key: string): boolean {
+  return strictReadScope.getStore()?.has(key) === true;
+}
+
+/**
+ * The strict set for one replica's reads: a replica AWS is not serving
+ * (CREATION_FAILED, REGION_DISABLED, an inaccessible key, ...) keeps the
+ * tolerant reads, so its regional not-found or region error never blocks the
+ * deploy that recovers it.
+ */
+function replicaStrictness(status: string | undefined): ReadonlySet<string> {
+  const current = strictReadScope.getStore() ?? new Set<string>();
+  if (status === undefined || status === 'ACTIVE' || status === 'UPDATING') return current;
+  return new Set([...current].filter((key) => key !== 'Replicas'));
+}
 
 const unsettledScope = new AsyncLocalStorage<{
   mark: (key: string) => void;
@@ -7958,42 +8034,42 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    *
    * - a PAY_PER_REQUEST table reports no `WriteProvisionedThroughputSettings`
    *   (the readback's `{}` placeholder, which no template declares);
-   * - each replica keeps the RECORD's `Tags`, never the live ones: tags merge
-   *   (CloudFormation removes only the recorded tags a template dropped), so a
-   *   live-only tag must not become a removal.
+   * - `Replicas` is PROJECTED onto what the record or the template names, so
+   *   convergence never removes or resets what neither named: a live-only
+   *   region is left out (never deleted), and within a replica a live member
+   *   (deletion protection, a KMS key, a policy, at any depth) is kept only
+   *   when the record or the template names it — otherwise the record's
+   *   value stands, absent staying absent. `Tags` always keep the record's
+   *   value: tags merge (CloudFormation removes only the recorded tags a
+   *   template dropped), so a live-only tag must never become a removal.
    */
   async readUnsettled(
     physicalId: string,
     logicalId: string,
     resourceType: string,
-    _names: ReadonlySet<string>,
-    recordedProperties?: Record<string, unknown>
+    names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>,
+    desiredProperties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    const live = await strictReadScope.run(true, () =>
+    const live = await strictReadScope.run(names, () =>
       this.readCurrentState(physicalId, logicalId, resourceType, recordedProperties)
     );
     if (typeof live !== 'object' || live === null) return live;
     const out: Record<string, unknown> = { ...live };
     if (out['BillingMode'] === 'PAY_PER_REQUEST') delete out['WriteProvisionedThroughputSettings'];
-    if (Array.isArray(out['Replicas'])) {
-      const recorded = new Map<string, Record<string, unknown>>();
-      for (const entry of Array.isArray(recordedProperties?.['Replicas'])
-        ? (recordedProperties['Replicas'] as unknown[])
-        : []) {
-        const record = asRecord(entry);
-        if (record !== undefined && typeof record['Region'] === 'string') {
-          recorded.set(record['Region'], record);
-        }
-      }
-      out['Replicas'] = (out['Replicas'] as unknown[]).map((entry) => {
-        const replica = asRecord(entry);
-        if (replica === undefined) return entry;
-        const { Tags: _liveTags, ...rest } = replica;
-        const own =
-          typeof replica['Region'] === 'string' ? recorded.get(replica['Region']) : undefined;
-        return own !== undefined && own['Tags'] !== undefined
-          ? { ...rest, Tags: own['Tags'] }
-          : rest;
+    if (names.has('Replicas') && Array.isArray(out['Replicas'])) {
+      const recorded = replicasByRegion(recordedProperties);
+      const desired = replicasByRegion(desiredProperties);
+      out['Replicas'] = (out['Replicas'] as unknown[]).flatMap((entry) => {
+        const live = asRecord(entry);
+        const region = live?.['Region'];
+        if (live === undefined || typeof region !== 'string') return [];
+        const own = recorded.get(region);
+        const wanted = desired.get(region);
+        // A region neither the record nor the template names (a replica added
+        // out of band) is not on the previous side, so it is never removed.
+        if (own === undefined && wanted === undefined) return [];
+        return [projectNamedMembers(live, own, wanted)];
       });
     }
     return out;
@@ -8202,160 +8278,163 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             : table.Replicas
           : [{ RegionName: currentRegion }];
       const replicas = await Promise.all(
-        sdkReplicas.map(async (r) => {
-          const entry: Record<string, unknown> = { Region: r.RegionName };
-          if (!r.RegionName) return entry;
+        sdkReplicas.map(async (r) =>
+          strictReadScope.run(replicaStrictness(r.ReplicaStatus), async () => {
+            const entry: Record<string, unknown> = { Region: r.RegionName };
+            if (!r.RegionName) return entry;
 
-          const isLocal = r.RegionName === currentRegion;
-          // go-to-k/cdkd#5381: the replica's key, class and protection in the
-          // CFn spellings `create()` / `update()` read. The key used to be a
-          // flat `KMSMasterKeyId` (cross-region only), and the local table's
-          // class and protection went top-level.
-          const kmsKey = isLocal
-            ? table.SSEDescription?.Status === 'ENABLED'
-              ? table.SSEDescription.KMSMasterKeyArn
-              : undefined
-            : r.KMSMasterKeyId;
-          if (kmsKey !== undefined && kmsKey !== '') {
-            entry['SSESpecification'] = { KMSMasterKeyId: kmsKey };
-          }
-          // A replica without its own class summary inherits the source
-          // table's, and a table that never set one is STANDARD — the same
-          // reading `update()`'s class passes take.
-          entry['TableClass'] =
-            (isLocal ? undefined : r.ReplicaTableClassSummary?.TableClass) ??
-            table.TableClassSummary?.TableClass ??
-            'STANDARD';
-          const declaredReplica = properties
-            ? localReplicaEntry(properties, r.RegionName)
-            : undefined;
-          const client = isLocal ? this.dynamoDBClient : this.getRegionalClient(r.RegionName);
-          const regionLabel = r.RegionName;
-          const replicaArn = isLocal
-            ? table.TableArn
-            : table.TableArn
-              ? this.replicaArnForRegion(table.TableArn, r.RegionName)
+            const isLocal = r.RegionName === currentRegion;
+            // go-to-k/cdkd#5381: the replica's key, class and protection in the
+            // CFn spellings `create()` / `update()` read. The key used to be a
+            // flat `KMSMasterKeyId` (cross-region only), and the local table's
+            // class and protection went top-level.
+            const kmsKey = isLocal
+              ? table.SSEDescription?.Status === 'ENABLED'
+                ? table.SSEDescription.KMSMasterKeyArn
+                : undefined
+              : r.KMSMasterKeyId;
+            if (kmsKey !== undefined && kmsKey !== '') {
+              entry['SSESpecification'] = { KMSMasterKeyId: kmsKey };
+            }
+            // A replica without its own class summary inherits the source
+            // table's, and a table that never set one is STANDARD — the same
+            // reading `update()`'s class passes take.
+            entry['TableClass'] =
+              (isLocal ? undefined : r.ReplicaTableClassSummary?.TableClass) ??
+              table.TableClassSummary?.TableClass ??
+              'STANDARD';
+            const declaredReplica = properties
+              ? localReplicaEntry(properties, r.RegionName)
               : undefined;
+            const client = isLocal ? this.dynamoDBClient : this.getRegionalClient(r.RegionName);
+            const regionLabel = r.RegionName;
+            const replicaArn = isLocal
+              ? table.TableArn
+              : table.TableArn
+                ? this.replicaArnForRegion(table.TableArn, r.RegionName)
+                : undefined;
 
-          // Per-replica sub-specs (PITR / Kinesis / ContributorInsights).
-          // Best-effort: errors per region per sub-spec omit the offending
-          // key — a permissions gap in one region must NOT abort the
-          // whole drift read.
-          const subs = await this.readReplicaSubSpecs(
-            client,
-            tableNameForSubs,
-            regionLabel,
-            declaredReplica
-          );
-          Object.assign(entry, subs);
-
-          // Protection, and the stream arn the stream policy lives on: the
-          // local table's are in hand; a cross-region replica's come from its
-          // own region (best-effort — a failed read omits the members, and
-          // `update()` never reads that absence as "unprotect").
-          let protection: boolean | undefined;
-          let streamArn: string | undefined;
-          if (isLocal) {
-            protection = table.DeletionProtectionEnabled;
-            streamArn = table.LatestStreamArn;
-          } else {
-            try {
-              const regional = await client.send(
-                new DescribeTableCommand({ TableName: tableNameForSubs })
-              );
-              protection = regional.Table?.DeletionProtectionEnabled;
-              streamArn = regional.Table?.LatestStreamArn;
-            } catch (err) {
-              // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
-              if (strictReadScope.getStore() === true) throw err;
-              if (err instanceof ResourceNotFoundException) {
-                this.logger.debug(
-                  safeMsg`Cross-region replica ${regionLabel} returned RNF on DescribeTable; omitting its protection and stream policy`
-                );
-              } else {
-                this.logger.debug(
-                  safeMsg`Could not read the ${regionLabel} replica of ${tableNameForSubs}: ${describeAwsFailure(err).detail}`
-                );
-              }
-            }
-          }
-          if (typeof protection === 'boolean') entry['DeletionProtectionEnabled'] = protection;
-          await this.readReplicaPolicies(
-            client,
-            tableNameForSubs,
-            regionLabel,
-            replicaArn,
-            streamArn,
-            declaredReplica,
-            afterOwnWrite,
-            entry
-          );
-
-          // Per-replica Tags. CFn `GlobalTable` schema places Tags
-          // inside `Replicas[]` (no top-level `Tags`), so they MUST be
-          // surfaced here — not at the top level of `result`.
-          if (replicaArn) {
-            try {
-              const tagsResp = await client.send(
-                new ListTagsOfResourceCommand({ ResourceArn: replicaArn })
-              );
-              entry['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
-            } catch (tagErr) {
-              // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
-              if (strictReadScope.getStore() === true) throw tagErr;
-              if (tagErr instanceof ResourceNotFoundException) {
-                // Only the LOCAL replica's RNF can be a real "table gone"
-                // signal. A cross-region RNF more likely means the
-                // replica is in CREATING / DELETING — treat as transient
-                // and omit the Tags key for that replica.
-                if (isLocal) throw tagErr;
-                this.logger.debug(
-                  `Cross-region replica ${regionLabel} returned RNF on ListTagsOfResource; omitting Tags`
-                );
-                entry['Tags'] = [];
-              } else {
-                this.logger.warn(
-                  `Could not fetch tags for DynamoDB GlobalTable ${tableNameForSubs} in ${regionLabel}: ${describeAwsFailure(tagErr).detail}`
-                );
-                entry['Tags'] = [];
-              }
-            }
-          } else {
-            entry['Tags'] = [];
-          }
-
-          // Per-replica ReadProvisionedThroughputSettings (Issue #395).
-          // Type-discriminator-gated: only meaningful on PROVISIONED
-          // tables. Probes application-autoscaling in the REPLICA'S
-          // region — each replica registers its own scaling target +
-          // policy in its own region, so the local-region client can
-          // only see the local replica's settings.
-          //
-          // No flat `{ReadCapacityUnits: <n>}` fallback is emitted here:
-          // `DescribeTable` returns ONE `ProvisionedThroughput` block for
-          // the table, not one per replica, so cdkd cannot synthesize
-          // per-replica flat read capacity from the local read. When
-          // autoscaling owns the replica's read dimension the full
-          // settings shape is surfaced; otherwise the key is omitted
-          // entirely (drift will not fire on missing key, matching the
-          // pre-#395 behavior for non-autoscaled replicas).
-          if (billingMode === 'PROVISIONED') {
-            const replicaAutoScalingClient = isLocal
-              ? undefined
-              : this.getRegionalAutoScalingClient(regionLabel);
-            const readAutoScaling = await this.readAutoScalingSettings(
+            // Per-replica sub-specs (PITR / Kinesis / ContributorInsights).
+            // Best-effort: errors per region per sub-spec omit the offending
+            // key — a permissions gap in one region must NOT abort the
+            // whole drift read.
+            const subs = await this.readReplicaSubSpecs(
+              client,
               tableNameForSubs,
-              'dynamodb:table:ReadCapacityUnits',
-              replicaAutoScalingClient
+              regionLabel,
+              declaredReplica
             );
-            if (readAutoScaling) {
-              entry['ReadProvisionedThroughputSettings'] = {
-                ReadCapacityAutoScalingSettings: readAutoScaling,
-              };
+            Object.assign(entry, subs);
+
+            // Protection, and the stream arn the stream policy lives on: the
+            // local table's are in hand; a cross-region replica's come from its
+            // own region (best-effort — a failed read omits the members, and
+            // `update()` never reads that absence as "unprotect").
+            let protection: boolean | undefined;
+            let streamArn: string | undefined;
+            if (isLocal) {
+              protection = table.DeletionProtectionEnabled;
+              streamArn = table.LatestStreamArn;
+            } else {
+              try {
+                const regional = await client.send(
+                  new DescribeTableCommand({ TableName: tableNameForSubs })
+                );
+                protection = regional.Table?.DeletionProtectionEnabled;
+                streamArn = regional.Table?.LatestStreamArn;
+              } catch (err) {
+                // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
+                if (strictFor('Replicas') && !(err instanceof ResourceNotFoundException)) throw err;
+                if (err instanceof ResourceNotFoundException) {
+                  this.logger.debug(
+                    safeMsg`Cross-region replica ${regionLabel} returned RNF on DescribeTable; omitting its protection and stream policy`
+                  );
+                } else {
+                  this.logger.debug(
+                    safeMsg`Could not read the ${regionLabel} replica of ${tableNameForSubs}: ${describeAwsFailure(err).detail}`
+                  );
+                }
+              }
             }
-          }
-          return entry;
-        })
+            if (typeof protection === 'boolean') entry['DeletionProtectionEnabled'] = protection;
+            await this.readReplicaPolicies(
+              client,
+              tableNameForSubs,
+              regionLabel,
+              replicaArn,
+              streamArn,
+              declaredReplica,
+              afterOwnWrite,
+              entry
+            );
+
+            // Per-replica Tags. CFn `GlobalTable` schema places Tags
+            // inside `Replicas[]` (no top-level `Tags`), so they MUST be
+            // surfaced here — not at the top level of `result`.
+            if (replicaArn) {
+              try {
+                const tagsResp = await client.send(
+                  new ListTagsOfResourceCommand({ ResourceArn: replicaArn })
+                );
+                entry['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
+              } catch (tagErr) {
+                // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
+                if (strictFor('Replicas') && !(tagErr instanceof ResourceNotFoundException))
+                  throw tagErr;
+                if (tagErr instanceof ResourceNotFoundException) {
+                  // Only the LOCAL replica's RNF can be a real "table gone"
+                  // signal. A cross-region RNF more likely means the
+                  // replica is in CREATING / DELETING — treat as transient
+                  // and omit the Tags key for that replica.
+                  if (isLocal) throw tagErr;
+                  this.logger.debug(
+                    `Cross-region replica ${regionLabel} returned RNF on ListTagsOfResource; omitting Tags`
+                  );
+                  entry['Tags'] = [];
+                } else {
+                  this.logger.warn(
+                    `Could not fetch tags for DynamoDB GlobalTable ${tableNameForSubs} in ${regionLabel}: ${describeAwsFailure(tagErr).detail}`
+                  );
+                  entry['Tags'] = [];
+                }
+              }
+            } else {
+              entry['Tags'] = [];
+            }
+
+            // Per-replica ReadProvisionedThroughputSettings (Issue #395).
+            // Type-discriminator-gated: only meaningful on PROVISIONED
+            // tables. Probes application-autoscaling in the REPLICA'S
+            // region — each replica registers its own scaling target +
+            // policy in its own region, so the local-region client can
+            // only see the local replica's settings.
+            //
+            // No flat `{ReadCapacityUnits: <n>}` fallback is emitted here:
+            // `DescribeTable` returns ONE `ProvisionedThroughput` block for
+            // the table, not one per replica, so cdkd cannot synthesize
+            // per-replica flat read capacity from the local read. When
+            // autoscaling owns the replica's read dimension the full
+            // settings shape is surfaced; otherwise the key is omitted
+            // entirely (drift will not fire on missing key, matching the
+            // pre-#395 behavior for non-autoscaled replicas).
+            if (billingMode === 'PROVISIONED') {
+              const replicaAutoScalingClient = isLocal
+                ? undefined
+                : this.getRegionalAutoScalingClient(regionLabel);
+              const readAutoScaling = await this.readAutoScalingSettings(
+                tableNameForSubs,
+                'dynamodb:table:ReadCapacityUnits',
+                replicaAutoScalingClient
+              );
+              if (readAutoScaling) {
+                entry['ReadProvisionedThroughputSettings'] = {
+                  ReadCapacityAutoScalingSettings: readAutoScaling,
+                };
+              }
+            }
+            return entry;
+          })
+        )
       );
       result['Replicas'] = replicas;
 
@@ -8590,7 +8669,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // on a momentary state.
       } catch (ttlErr) {
         // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
-        if (strictReadScope.getStore() === true) throw ttlErr;
+        if (strictFor('TimeToLiveSpecification')) throw ttlErr;
         this.logger.debug(
           `Could not read TimeToLive for ${tableNameForSubs}: ${describeAwsFailure(ttlErr).detail}`
         );
@@ -8651,7 +8730,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       if (block !== undefined) out['ContributorInsightsSpecification'] = block;
     } catch (err) {
       // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
-      if (strictReadScope.getStore() === true) throw err;
+      // A replica region's not-found omits the member, strict or not: the replica
+      // is being created or removed, which `unsettledInTransition` reports.
+      if (strictFor('Replicas') && !(err instanceof ResourceNotFoundException)) throw err;
       this.logger.debug(
         `Could not read ContributorInsights for ${tableName} in ${regionLabel}: ${describeAwsFailure(err).detail}`
       );
@@ -8675,7 +8756,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       if (block !== undefined) out['PointInTimeRecoverySpecification'] = block;
     } catch (err) {
       // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
-      if (strictReadScope.getStore() === true) throw err;
+      // A replica region's not-found omits the member, strict or not: the replica
+      // is being created or removed, which `unsettledInTransition` reports.
+      if (strictFor('Replicas') && !(err instanceof ResourceNotFoundException)) throw err;
       this.logger.debug(
         `Could not read PointInTimeRecovery for ${tableName} in ${regionLabel}: ${describeAwsFailure(err).detail}`
       );
@@ -8701,7 +8784,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
     } catch (err) {
       // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
-      if (strictReadScope.getStore() === true) throw err;
+      // A replica region's not-found omits the member, strict or not: the replica
+      // is being created or removed, which `unsettledInTransition` reports.
+      if (strictFor('Replicas') && !(err instanceof ResourceNotFoundException)) throw err;
       this.logger.debug(
         `Could not read KinesisStreamingDestination for ${tableName} in ${regionLabel}: ${describeAwsFailure(err).detail}`
       );
@@ -8785,7 +8870,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         return reverseMapPolicyMember(live, container);
       } catch (err) {
         // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
-        if (strictReadScope.getStore() === true) throw err;
+        // A replica region's not-found omits the member, strict or not: the replica
+        // is being created or removed, which `unsettledInTransition` reports.
+        if (strictFor('Replicas') && !(err instanceof ResourceNotFoundException)) throw err;
         this.logger.debug(
           safeMsg`Could not read the ${what} of the ${regionLabel} replica of ${tableName}: ${describeAwsFailure(err).detail}`
         );
@@ -8939,7 +9026,16 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       };
     } catch (err) {
       // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
-      if (strictReadScope.getStore() === true) throw err;
+      if (
+        strictFor(
+          indexName !== undefined
+            ? 'GlobalSecondaryIndexes'
+            : scalableDimension.includes('Write')
+              ? 'WriteProvisionedThroughputSettings'
+              : 'Replicas'
+        )
+      )
+        throw err;
       this.logger.debug(
         `Could not read application-autoscaling settings for ${resourceId} (${scalableDimension}): ${describeAwsFailure(err).detail}`
       );

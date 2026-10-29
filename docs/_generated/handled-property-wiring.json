@@ -5966,6 +5966,7 @@
             "convergeReplicaSettings",
             "create",
             "readCurrentState",
+            "readUnsettled",
             "update",
             "updateInScope"
           ]
