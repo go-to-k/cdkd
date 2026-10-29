@@ -386,6 +386,7 @@ delete_table_logged() { # usage: delete_table_logged <table name> <region>
         --no-deletion-protection-enabled 2>&1 >/dev/null)" ||
         echo "    ${1} (${2}): turning deletion protection off was refused; retrying: $(printf '%s' "${flip}" | tr '\n' ' ')" >&2
       await_table_idle "$1" "$2" "${deadline}"
+      sleep 10
       continue
     fi
     if printf '%s' "${out}" | grep -qiE 'ResourceInUseException|LimitExceededException'; then
