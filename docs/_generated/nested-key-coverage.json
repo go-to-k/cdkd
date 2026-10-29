@@ -2,14 +2,14 @@
   "summary": {
     "targetCount": 28,
     "nestedKeyCount": 1471,
-    "sameSpelling": 1361,
+    "sameSpelling": 1363,
     "providerHandled": 80,
     "allowListed": 23,
     "caseDivergence": 0,
-    "noSdkMember": 6,
+    "noSdkMember": 4,
     "noWriteEvidence": 1,
     "freshObjectTargets": 18,
-    "shapeClean": 179,
+    "shapeClean": 182,
     "shapeHandled": 49,
     "shapeAllowListed": 9,
     "arrayVsWrapper": 0,
@@ -3616,14 +3616,14 @@
           "nestedKey": "ServiceConnectConfiguration.ContainerConfigurations",
           "topLevelProperty": "ServiceConnectConfiguration",
           "terminalKey": "ContainerConfigurations",
-          "bucket": "no-sdk-member"
+          "bucket": "same-spelling"
         },
         {
           "resourceType": "AWS::ECS::Service",
           "nestedKey": "ServiceConnectConfiguration.ContainerConfigurations.LogLevel",
           "topLevelProperty": "ServiceConnectConfiguration",
           "terminalKey": "LogLevel",
-          "bucket": "no-sdk-member"
+          "bucket": "same-spelling"
         },
         {
           "resourceType": "AWS::ECS::Service",
@@ -4048,13 +4048,9 @@
           "bucket": "provider-handled"
         }
       ],
-      "shapeCleanCount": 18,
+      "shapeCleanCount": 21,
       "unmatchedDefinitions": [
         "ForceNewDeployment",
-        "GatewayConnector",
-        "GatewayConnectorFilters",
-        "GatewayConnectorHealthCheck",
-        "GatewayConnectorHealthCheckMatcher",
         "HookTimeoutConfig",
         "ServiceConnectContainerConfiguration",
         "ServiceConnectTestTrafficRulesHeader",
