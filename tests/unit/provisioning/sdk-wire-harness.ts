@@ -651,6 +651,31 @@ function wrongMember(
   return landed.length === 0 ? '(nothing)' : landed.map((l) => l.join('.')).join(',');
 }
 
+/**
+ * The trace of one vary probe, from two runs' recorded command inputs
+ * (`[command, input]` JSON lines): what `probe` asserts on, exposed so the
+ * tracer's own discrimination is pinned (`sdk-wire-tracer.test.ts`).
+ */
+export function traceLanding(
+  bag: Bag,
+  alt: Bag,
+  path: Path,
+  from: readonly string[],
+  to: readonly string[],
+  renames: TypeRenames = {},
+  roots: Readonly<Record<string, CommandRoot>> = {}
+): { wrong: string | undefined; used: Set<string> } {
+  const used = new Set<string>();
+  const wrong = wrongMember(
+    path,
+    expectedChains(bag, alt, path),
+    landingChains(from, to, roots),
+    renames,
+    used
+  );
+  return { wrong, used };
+}
+
 export type Outcome = { threw: false; wire: string } | { threw: true; message: string };
 
 /**

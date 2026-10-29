@@ -129,12 +129,11 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
     },
   },
   'AWS::CloudFormation::Stack': {
-    members: {
-      'Parameters.Display': ['DisplayName'],
-      'Parameters.TagValue': ['Value'],
-    },
-    containers: {
-      Parameters: ['Attributes', 'SetTopicAttributesCommand', 'Tags'],
+    transformed: {
+      'Parameters.Display':
+        'a nested-stack parameter is substituted into the child template, so it reaches the child resource\'s own calls (its SNS topic\'s DisplayName / tag Value), not a member of this one',
+      'Parameters.TagValue':
+        'a nested-stack parameter is substituted into the child template, so it reaches the child resource\'s own calls (its SNS topic\'s DisplayName / tag Value), not a member of this one',
     },
   },
   'AWS::CloudFront::Distribution': {
@@ -209,18 +208,18 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
     containers: {
       GlobalSecondaryIndexes: ['GlobalSecondaryIndexUpdates.Create', 'GlobalSecondaryIndexUpdates.Update'],
       'GlobalSecondaryIndexes.WriteOnDemandThroughputSettings': ['OnDemandThroughput'],
-      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': ['PutScalingPolicyCommand', 'RegisterScalableTargetCommand'],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': ['PutScalingPolicyCommand:index-index-write', 'RegisterScalableTargetCommand:index-index-write'],
       Replicas: ['Create', 'CreateTableCommand', 'EnableKinesisStreamingDestinationCommand', 'GlobalSecondaryIndexUpdates', 'ReplicaUpdates', 'TagResourceCommand', 'Update', 'UpdateContinuousBackupsCommand', 'UpdateTableCommand'],
       'Replicas.ContributorInsightsSpecification': ['UpdateContributorInsightsCommand'],
       'Replicas.GlobalSecondaryIndexes': ['Update'],
       'Replicas.GlobalSecondaryIndexes.ContributorInsightsSpecification': ['UpdateContributorInsightsCommand'],
       'Replicas.GlobalSecondaryIndexes.ReadOnDemandThroughputSettings': ['OnDemandThroughput'],
       'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings': ['ProvisionedThroughputOverride'],
-      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': ['PutScalingPolicyCommand', 'RegisterScalableTargetCommand'],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': ['PutScalingPolicyCommand:index-index-read', 'RegisterScalableTargetCommand:index-index-read'],
       'Replicas.KinesisStreamSpecification': ['EnableKinesisStreamingConfiguration', 'EnableKinesisStreamingDestinationCommand'],
       'Replicas.ReadOnDemandThroughputSettings': ['OnDemandThroughput'],
       'Replicas.ReadProvisionedThroughputSettings': ['ProvisionedThroughputOverride'],
-      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': ['PutScalingPolicyCommand', 'RegisterScalableTargetCommand'],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': ['PutScalingPolicyCommand:table-table-read', 'RegisterScalableTargetCommand:table-table-read'],
       'Replicas.ReplicaStreamSpecification': ['TagResourceCommand'],
       'Replicas.ReplicaStreamSpecification.ResourcePolicy': ['PutResourcePolicyCommand'],
       'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument': ['Policy'],
@@ -229,7 +228,7 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'Replicas.SSESpecification': ['Create', 'Update'],
       SSESpecification: ['Update'],
       WriteOnDemandThroughputSettings: ['OnDemandThroughput'],
-      'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': ['PutScalingPolicyCommand', 'RegisterScalableTargetCommand'],
+      'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': ['PutScalingPolicyCommand:table-table-write', 'RegisterScalableTargetCommand:table-table-write'],
     },
     transformed: {
       'Replicas.GlobalSecondaryIndexes.IndexName':
