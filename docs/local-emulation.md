@@ -287,7 +287,8 @@ to finch:
 | `local run-task`, `local start-service` | A task with a `Secrets` entry |
 | `local start-alb` | A service with a `Secrets` entry, and a Lambda target with a decrypted SecureString |
 | `local invoke-agentcore`, `local start-agentcore` | A decrypted SecureString in the runtime's environment |
-| `local start-cloudfront` | A decrypted SecureString in a Lambda Function URL origin's environment |
+| `local start-cloudfront` | A decrypted SecureString in a Lambda Function URL or Web Function endpoint origin's environment |
+| `local start-web-function` | A decrypted SecureString in the revision's environment |
 | Any command | A resolved `{{resolve:...}}` value |
 
 The error names the secrets. You have two ways forward:
