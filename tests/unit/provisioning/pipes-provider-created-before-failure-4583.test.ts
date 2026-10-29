@@ -28,6 +28,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { PipesPipeProvider } from '../../../src/provisioning/providers/pipes-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 const TYPE = 'AWS::Pipes::Pipe';
 const NAME = 'my-pipe';
@@ -52,7 +56,7 @@ function deleteCalls(): unknown[] {
 
 const notFound = (): NotFoundException => new NotFoundException({ message: 'gone', $metadata: {} });
 
-async function failedCreate(): Promise<unknown> {
+async function failedCreate(sink?: CreatedResourceSink): Promise<unknown> {
   let clock = 0;
   const provider = new PipesPipeProvider({
     sleep: async (ms: number) => {
@@ -60,7 +64,8 @@ async function failedCreate(): Promise<unknown> {
     },
     now: () => clock,
   });
-  return provider.create('Pipe', TYPE, { ...PROPS }).then(
+  const run = () => provider.create('Pipe', TYPE, { ...PROPS });
+  return (sink ? collectCreatedResources(sink, run) : run()).then(
     () => {
       throw new Error('create unexpectedly succeeded');
     },
@@ -169,5 +174,65 @@ describe('PipesPipeProvider.create — created-before-failure mark (#4583)', () 
     expect((error as Error).message).toMatch(/Failed to create Pipe Pipe/);
     expect(deleteCalls()).toHaveLength(0);
     expect(createdBeforeFailure(error, 'Pipe', TYPE)).toBeUndefined();
+  });
+
+  it('reports the pipe name before the settle wait, and keeps it when the retire delete fails (#5511)', async () => {
+    const sink = new CreatedResourceSink('Pipe', TYPE);
+    let reportAtFirstRead: unknown = 'not-called';
+    let reads = 0;
+    route({
+      CreatePipeCommand: () => ({}),
+      DescribePipeCommand: () => {
+        if (reads++ === 0) reportAtFirstRead = sink.report;
+        return described('CREATE_FAILED');
+      },
+      DeletePipeCommand: () => {
+        throw Object.assign(new Error('busy'), { name: 'ConflictException' });
+      },
+    });
+
+    await failedCreate(sink);
+
+    expect(reportAtFirstRead).toEqual({ physicalId: NAME });
+    expect(sink.report).toEqual({ physicalId: NAME });
+  });
+
+  it('retracts the report when the retire confirmed the pipe gone (#5511)', async () => {
+    const sink = new CreatedResourceSink('Pipe', TYPE);
+    createFailsThen(() => {
+      throw notFound();
+    });
+    await failedCreate(sink);
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('retracts the report when the retire saw the pipe DELETING (#5511)', async () => {
+    const sink = new CreatedResourceSink('Pipe', TYPE);
+    createFailsThen(() => described('DELETING'));
+    await failedCreate(sink);
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('retracts the report when the retire delete answered NotFound (#5511)', async () => {
+    const sink = new CreatedResourceSink('Pipe', TYPE);
+    createFailsThen(
+      () => described('CREATE_FAILED'),
+      () => {
+        throw notFound();
+      }
+    );
+    await failedCreate(sink);
+    expect(sink.report).toBeUndefined();
+  });
+
+  it("reports nothing when CreatePipe's own call fails (#5511)", async () => {
+    const sink = new CreatedResourceSink('Pipe', TYPE);
+    route({
+      CreatePipeCommand: () => {
+        throw Object.assign(new Error('exists'), { name: 'ConflictException' });
+      },
+    });
+    await failedCreate(sink);
+    expect(sink.report).toBeUndefined();
   });
 });

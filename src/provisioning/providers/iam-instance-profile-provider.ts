@@ -35,6 +35,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
   onlySecretDerived,
   readPrincipalLists,
@@ -194,6 +195,8 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
       createdProfileIdentity = instanceProfileIdentityToken(
         response.InstanceProfile?.InstanceProfileId
       );
+      // go-to-k/cdkd#5511
+      reportCreatedResource(logicalId, resourceType, instanceProfileName, createdProfileIdentity);
 
       log.debug(`Created IAM instance profile: ${v(instanceProfileName)}`);
 
@@ -240,6 +243,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
           await this.iamClient.send(
             new DeleteInstanceProfileCommand({ InstanceProfileName: instanceProfileName })
           );
+          retractCreatedResource(logicalId, resourceType, instanceProfileName);
           leftBehind = false;
           log.debug(
             `Cleaned up partially-created IAM instance profile ${logicalId} (${v(instanceProfileName)}) after wiring failure`

@@ -72,6 +72,11 @@ import {
   createdBeforeFailure,
   createdResourceIdentityBeforeFailure,
 } from '../../provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../provisioning/created-resource-sink.js';
+import { ResourceTimeoutError } from '../../utils/error-handler.js';
 import { orphanNeedsIdentity, readResourceIdentity } from '../rollback-executor/orphan-identity.js';
 import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
 import { resolveOutputs } from './outputs.js';
@@ -140,6 +145,9 @@ export async function executeDeployment(
   // siblings can add more). Journaled alongside completedOperations so
   // `cdkd rollback --revert-failed` can optionally revert them.
   const failedOperations: FailedOperation[] = [];
+  // go-to-k/cdkd#5511: the failed operations whose deadline fired with no
+  // mark, completed from their provider's report when the failure is saved.
+  const reportedCreatesToSettle: ReportedCreateToSettle[] = [];
   // Tracked here so the FIRST per-resource save sweeps the legacy key; we
   // don't want to delete it on every save.
   let pendingMigration = migrationPending;
@@ -380,23 +388,32 @@ export async function executeDeployment(
         // Settled on EVERY exit (a `finally`), so a twin waiting on this write
         // can never hang on bookkeeping that throws below.
         let succeeded = false;
+        // go-to-k/cdkd#5511: what this operation's provider reported its create
+        // call made, for when the deadline fires: it rejects while the
+        // provider keeps running and drops the error its
+        // `markCreatedBeforeFailure` would have carried. Read when the failure
+        // is saved (`settleReportedCreates`). Fresh per operation;
+        // its retries share it, as they share the carried mark.
+        const createdSink = new CreatedResourceSink(logicalId, change.resourceType);
         try {
           try {
             await timePhase(
               phaseScope,
               `resource ${change.changeType.toLowerCase()}`,
               () =>
-                provisionResource(
-                  engine,
-                  logicalId,
-                  change,
-                  newResources,
-                  stackName,
-                  template,
-                  parameterValues,
-                  conditions,
-                  actualCounts,
-                  progress
+                collectCreatedResources(createdSink, () =>
+                  provisionResource(
+                    engine,
+                    logicalId,
+                    change,
+                    newResources,
+                    stackName,
+                    template,
+                    parameterValues,
+                    conditions,
+                    actualCounts,
+                    progress
+                  )
                 ),
               `${logicalId} ${change.resourceType}`
             );
@@ -449,9 +466,14 @@ export async function executeDeployment(
           // collided with or never made. Only SDK providers mark (the Cloud
           // Control route deletes its own remnant), hence the route. A refused
           // CREATE with no state id never reaches here (thrown above).
+          const markedCreatedId = createdBeforeFailure(
+            provisionError,
+            logicalId,
+            change.resourceType
+          );
           const createdId =
             change.changeType === 'CREATE' && statePhysicalId === undefined
-              ? createdBeforeFailure(provisionError, logicalId, change.resourceType)
+              ? markedCreatedId
               : undefined;
           // go-to-k/cdkd#4604: the same proof on a REPLACEMENT — the UPDATE
           // above names the resource being replaced, and the new one its
@@ -476,9 +498,7 @@ export async function executeDeployment(
             heldRecord?.physicalId === statePhysicalId
               ? heldRecord
               : undefined;
-          const replacementCreatedId = replaced
-            ? createdBeforeFailure(provisionError, logicalId, change.resourceType)
-            : undefined;
+          const replacementCreatedId = replaced ? markedCreatedId : undefined;
           const orphanedBy =
             replaced !== undefined &&
             replacementCreatedId !== undefined &&
@@ -578,66 +598,46 @@ export async function executeDeployment(
           }
           let replacementOrphanOp: FailedOperation | undefined;
           if (orphanedBy !== undefined) {
-            replacementOrphanOp = {
+            replacementOrphanOp = replacementOrphanOpFor(
+              engine,
+              template,
               logicalId,
-              changeType: 'CREATE',
-              resourceType: change.resourceType,
-              provisionedBy: 'sdk',
-              physicalId: orphanedBy.createdId,
-              physicalIdRecoveredFromError: true,
-              deletionPolicy: journaledOrphanPolicy(
-                extractTemplateAttributes(template, logicalId).deletionPolicy
-              ),
-              replacedPhysicalId: orphanedBy.record.physicalId,
-              replacedResourceType: orphanedBy.record.resourceType,
-              // The replacement deleted the old resource before its create:
-              // the record names a resource that is gone.
-              ...(engine.replacementRun.oldDeletedBeforeCreate.has(logicalId) && {
-                replacedResourceDeleted: true,
-              }),
-              ...(!refused && {
-                attemptedProperties: engine.attemptedResolvedProps.get(logicalId),
-              }),
-            };
+              change.resourceType,
+              orphanedBy.record,
+              orphanedBy.createdId,
+              refused
+            );
             failedOperations.push(replacementOrphanOp);
           }
-          // go-to-k/cdkd#4655: the token naming the resource just made, so a
-          // later settle can tell it from one that reused its name. Read once,
-          // best-effort, after the entry is pushed: a failed read only leaves
-          // the token out, never the entry. The read delays this failure's
-          // throw, and with it the journal write, so it is bounded
-          // (`readResourceIdentity`'s timeout), skipped once the user has
-          // interrupted the deploy, and skipped for an orphan no settle reads
-          // a token for (an exempt type, or `Retain`, which deletes nothing).
-          // A provider that took the token from its create call's response
-          // carried it on the mark: that is journaled with no read, since the
-          // failure being journaled (a describe that cannot run) often fails
-          // the read too.
-          const orphanOp = createdId !== undefined ? failedOp : replacementOrphanOp;
+          // go-to-k/cdkd#5511: this operation's deadline fired, which drops the
+          // provider's later (marked) error, so what the provider reported to
+          // `createdSink` when its create call returned stands in for the mark.
+          // Read when the failure is persisted (`settleReportedCreates`), not
+          // here: the abandoned call may still report (a create returning late)
+          // or retract (its cleanup deleting what it made). Any other error is
+          // the provider's own, whose mark, or deliberate lack of one, stays
+          // the only proof.
           if (
-            orphanOp?.physicalId !== undefined &&
-            orphanOp.deletionPolicy !== 'Retain' &&
-            orphanNeedsIdentity(orphanOp)
+            markedCreatedId === undefined &&
+            ((change.changeType === 'CREATE' && statePhysicalId === undefined) ||
+              replaced !== undefined) &&
+            deadlineFiredFor(provisionError, logicalId)
           ) {
-            const markedIdentity = createdResourceIdentityBeforeFailure(
-              provisionError,
-              logicalId,
-              change.resourceType
+            reportedCreatesToSettle.push({
+              sink: createdSink,
+              failedOp,
+              ...(replaced !== undefined && { replaced }),
+              refused,
+            });
+          }
+          // go-to-k/cdkd#4655: the token naming the resource just made.
+          const orphanOp = createdId !== undefined ? failedOp : replacementOrphanOp;
+          if (orphanOp !== undefined) {
+            await journalOrphanIdentity(
+              engine,
+              orphanOp,
+              createdResourceIdentityBeforeFailure(provisionError, logicalId, change.resourceType)
             );
-            if (markedIdentity !== undefined) {
-              orphanOp.createdResourceIdentity = markedIdentity;
-            } else if (engine.interruptCause !== 'user') {
-              const identity = await readResourceIdentity(
-                engine.providerRegistry,
-                {
-                  resourceType: orphanOp.resourceType,
-                  physicalId: orphanOp.physicalId,
-                  provisionedBy: orphanOp.provisionedBy,
-                },
-                engine.stackRegion
-              );
-              if (typeof identity === 'string') orphanOp.createdResourceIdentity = identity;
-            }
           }
           throw provisionError;
         }
@@ -1055,6 +1055,11 @@ export async function executeDeployment(
         );
       }
     }
+
+    // go-to-k/cdkd#5511: as late as possible before the first save, so a
+    // report or retraction an abandoned provider call made after its deadline
+    // is reflected. One made after this point is not.
+    await settleReportedCreates(engine, template, failedOperations, reportedCreatesToSettle);
 
     // Save partial state BEFORE rollback to track all successfully provisioned
     // resources (including those that completed concurrently with the one that
@@ -1681,5 +1686,156 @@ function recordUnsettledMarks(
     if (items !== undefined && items.size > 0) {
       newResources[logicalId] = withUnsettledItems(newResources[logicalId]!, items);
     }
+  }
+}
+
+/**
+ * go-to-k/cdkd#5511: whether `error` is (or wraps) the `ResourceTimeoutError`
+ * this logical id's own deadline raised: `provisionResource` wraps it as the
+ * `cause` of its `ProvisioningError`. Bounded; never throws.
+ */
+function deadlineFiredFor(error: unknown, logicalId: string): boolean {
+  try {
+    let current: unknown = error;
+    for (let depth = 0; depth < 5 && typeof current === 'object' && current !== null; depth++) {
+      if (current instanceof ResourceTimeoutError) return current.logicalId === logicalId;
+      current = (current as { cause?: unknown }).cause;
+    }
+  } catch {
+    // Unreadable chain: not a deadline.
+  }
+  return false;
+}
+
+/** go-to-k/cdkd#5511: a failed operation whose sink is read at the save. */
+interface ReportedCreateToSettle {
+  readonly sink: CreatedResourceSink;
+  /** The op already journaled for the failure (the CREATE, or the UPDATE). */
+  readonly failedOp: FailedOperation;
+  /** On a replacement, the record being replaced. */
+  readonly replaced?: ResourceState;
+  readonly refused: boolean;
+}
+
+/**
+ * go-to-k/cdkd#5511: complete each deadline-failed operation from what its
+ * provider reported, as its mark would have: the failed CREATE then names the
+ * resource, and a replacement journals the new one as its orphan (#4604). A
+ * sink the engine cleared (the resource reached state) or the provider
+ * retracted from (its cleanup deleted it) adds nothing.
+ */
+async function settleReportedCreates(
+  engine: DeployEngine,
+  template: CloudFormationTemplate,
+  failedOperations: FailedOperation[],
+  pending: readonly ReportedCreateToSettle[]
+): Promise<void> {
+  for (const { sink, failedOp, replaced, refused } of pending) {
+    const report = sink.report;
+    if (report === undefined) continue;
+    let orphanOp: FailedOperation;
+    if (replaced === undefined) {
+      failedOp.provisionedBy = 'sdk';
+      failedOp.physicalId = report.physicalId;
+      failedOp.physicalIdRecoveredFromError = true;
+      failedOp.deletionPolicy = journaledOrphanPolicy(
+        extractTemplateAttributes(template, failedOp.logicalId).deletionPolicy
+      );
+      orphanOp = failedOp;
+    } else {
+      if (report.physicalId === replaced.physicalId) continue;
+      failedOp.replacementOrphaned = engine.replacementRun.oldDeletedBeforeCreate.has(
+        failedOp.logicalId
+      )
+        ? 'delete-first'
+        : 'create-first';
+      orphanOp = replacementOrphanOpFor(
+        engine,
+        template,
+        failedOp.logicalId,
+        failedOp.resourceType,
+        replaced,
+        report.physicalId,
+        refused
+      );
+      failedOperations.push(orphanOp);
+    }
+    await journalOrphanIdentity(engine, orphanOp, report.createdResourceIdentity);
+  }
+}
+
+/**
+ * go-to-k/cdkd#4604: the proven orphan a failed replacement's create made,
+ * journaled beside the UPDATE naming `record`, the resource being replaced.
+ */
+function replacementOrphanOpFor(
+  engine: DeployEngine,
+  template: CloudFormationTemplate,
+  logicalId: string,
+  resourceType: string,
+  record: ResourceState,
+  createdId: string,
+  refused: boolean
+): FailedOperation {
+  return {
+    logicalId,
+    changeType: 'CREATE',
+    resourceType,
+    provisionedBy: 'sdk',
+    physicalId: createdId,
+    physicalIdRecoveredFromError: true,
+    deletionPolicy: journaledOrphanPolicy(
+      extractTemplateAttributes(template, logicalId).deletionPolicy
+    ),
+    replacedPhysicalId: record.physicalId,
+    replacedResourceType: record.resourceType,
+    // The replacement deleted the old resource before its create:
+    // the record names a resource that is gone.
+    ...(engine.replacementRun.oldDeletedBeforeCreate.has(logicalId) && {
+      replacedResourceDeleted: true,
+    }),
+    ...(!refused && {
+      attemptedProperties: engine.attemptedResolvedProps.get(logicalId),
+    }),
+  };
+}
+
+/**
+ * go-to-k/cdkd#4655: the token naming the resource just made, so a later
+ * settle can tell it from one that reused its name. Read once, best-effort,
+ * after the entry is pushed: a failed read only leaves the token out, never
+ * the entry. The read delays the failure's journal write, so it is bounded
+ * (`readResourceIdentity`'s timeout), skipped once the user has interrupted
+ * the deploy, and skipped for an orphan no settle reads a token for (an exempt
+ * type, or `Retain`, which deletes nothing). A provider that took the token
+ * from its create call's response carried it (`carried`, on the mark or the
+ * report): that is journaled with no read, since the failure being journaled
+ * (a describe that cannot run) often fails the read too.
+ */
+async function journalOrphanIdentity(
+  engine: DeployEngine,
+  orphanOp: FailedOperation,
+  carried: string | undefined
+): Promise<void> {
+  if (
+    orphanOp.physicalId === undefined ||
+    orphanOp.deletionPolicy === 'Retain' ||
+    !orphanNeedsIdentity(orphanOp)
+  ) {
+    return;
+  }
+  if (carried !== undefined) {
+    orphanOp.createdResourceIdentity = carried;
+  } else if (engine.interruptCause !== 'user') {
+    const identity = await readResourceIdentity(
+      engine.providerRegistry,
+      {
+        resourceType: orphanOp.resourceType,
+        physicalId: orphanOp.physicalId,
+        provisionedBy: orphanOp.provisionedBy,
+      },
+      engine.stackRegion
+    );
+    if (typeof identity === 'string') orphanOp.createdResourceIdentity = identity;
   }
 }

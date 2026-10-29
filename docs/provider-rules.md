@@ -382,6 +382,19 @@ implementation. Three details are worth copying:
     a provider whose delete would reach beyond what the create wrote (`AWS::IAM::Policy`
     walks every listed principal) removes its own writes in the catch instead
     (issue [#4583](https://github.com/go-to-k/cdkd/issues/4583)).
+    The mark rides on the error, which the per-resource deadline drops when the
+    provider throws after the deadline fired, so the same `create()` also calls
+    `reportCreatedResource(logicalId, resourceType, physicalId, identity?)`
+    (`src/provisioning/created-resource-sink.ts`, issue
+    [#5511](https://github.com/go-to-k/cdkd/issues/5511)) the moment the create
+    call returns, before any wait, under the same gates as the mark; a catch
+    whose cleanup deleted the resource calls `retractCreatedResource` (the
+    report before it, if any, then stands again). The deploy engine journals
+    the reported id only when the operation's deadline fired and the error it
+    sees carries no mark, and reads it when the failure is saved, so a create
+    that returns, or a cleanup that retracts, after the deadline is reflected;
+    one that does so after that save is not. A report is cleared once the
+    engine writes the resource to state.
     A create that sends no name and no idempotency token, and does not resume
     its leftover on the next attempt, also marks that error `markNonRetryable`
     (`AWS::IAM::AccessKey`): the engine's retry would make another resource,

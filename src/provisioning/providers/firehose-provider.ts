@@ -69,6 +69,7 @@ import {
 } from '../../deployment/retryable-errors.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { generatedNameFor } from '../resource-name.js';
 import { startInterruptWatch } from '../interrupt-watch.js';
 import { safeMsg } from '../../utils/display-safe.js';
@@ -709,6 +710,7 @@ export class FirehoseProvider implements ResourceProvider {
         response.DeliveryStreamARN?.split('/').pop() ||
         '';
       createdStreamName = physicalId;
+      reportCreatedResource(logicalId, resourceType, physicalId); // go-to-k/cdkd#5511
       const arn = response.DeliveryStreamARN;
 
       this.logger.debug(

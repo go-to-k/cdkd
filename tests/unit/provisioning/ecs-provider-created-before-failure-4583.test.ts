@@ -41,6 +41,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ECSProvider } from '../../../src/provisioning/providers/ecs-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { clearResolvedResourceTimeouts } from '../../../src/provisioning/resource-timeout-registry.js';
 
 const TYPE = 'AWS::ECS::Service';
@@ -108,6 +112,56 @@ describe('ECSProvider.create (Service) — created-before-failure mark (#4583)',
 
     expect(deleteCalls()).toHaveLength(1);
     expect(createdBeforeFailure(error, 'MySvc', TYPE)).toBeUndefined();
+  });
+
+  describe('created-resource sink (#5511)', () => {
+    const sinkedCreate = (sink: CreatedResourceSink) =>
+      collectCreatedResources(sink, () => failedCreate());
+
+    it('reports the service ARN before the steady-state wait when the cleanup delete fails', async () => {
+      const sink = new CreatedResourceSink('MySvc', TYPE);
+      let atWait: unknown = 'unset';
+      mockSend.mockResolvedValueOnce({
+        service: { serviceArn: SERVICE_ARN, serviceName: 'my-service' },
+      });
+      waitUntilServicesStableMock.mockImplementationOnce(async () => {
+        atWait = sink.report;
+        throw new Error('services stable timed out');
+      });
+      mockSend.mockRejectedValueOnce(new Error('delete denied'));
+
+      await sinkedCreate(sink);
+
+      expect(atWait).toEqual({ physicalId: SERVICE_ARN });
+      expect(sink.report).toEqual({ physicalId: SERVICE_ARN });
+    });
+
+    it('retracts the report when the cleanup delete succeeded', async () => {
+      const sink = new CreatedResourceSink('MySvc', TYPE);
+      mockSend.mockResolvedValueOnce({
+        service: { serviceArn: SERVICE_ARN, serviceName: 'my-service' },
+      });
+      waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
+      mockSend.mockResolvedValueOnce({});
+
+      await sinkedCreate(sink);
+
+      expect(deleteCalls()).toHaveLength(1);
+      expect(sink.report).toBeUndefined();
+    });
+
+    it('reports nothing when an ACTIVE service already held the name', async () => {
+      const sink = new CreatedResourceSink('MySvc', TYPE);
+      lookupSend.mockResolvedValue({ services: [{ serviceName: 'my-service', status: 'ACTIVE' }] });
+      mockSend.mockResolvedValueOnce({
+        service: { serviceArn: SERVICE_ARN, serviceName: 'my-service' },
+      });
+      waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
+
+      await sinkedCreate(sink);
+
+      expect(sink.report).toBeUndefined();
+    });
   });
 
   it('looks the name up in the cluster before CreateService', async () => {

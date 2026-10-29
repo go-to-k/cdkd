@@ -27,6 +27,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { EMRClusterProvider } from '../../../src/provisioning/providers/emr-cluster-provider.js';
 import { TerminateJobFlowsCommand } from '@aws-sdk/client-emr';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 const TYPE = 'AWS::EMR::Cluster';
@@ -155,6 +159,51 @@ describe('EMRClusterProvider.create — created-before-failure mark (#4583)', ()
     expect(terminateCalls()).toHaveLength(1);
     expect(createdBeforeFailure(error, 'ClusterE', TYPE)).toBeUndefined();
     expect(isMarkedNonRetryable(error)).toBe(false);
+  });
+
+  it('reports the cluster id before the ready-wait; a failed terminate leaves it (#5511)', async () => {
+    const sink = new CreatedResourceSink('ClusterH', TYPE);
+    let atDescribe: unknown = 'unset';
+    routeSend({
+      RunJobFlowCommand: { JobFlowId: CLUSTER_ID },
+      DescribeClusterCommand: new Error('AccessDeniedException: no describe'),
+      SetTerminationProtectionCommand: {},
+      TerminateJobFlowsCommand: new Error('AccessDenied'),
+    });
+    const inner = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation((command: object) => {
+      if (command.constructor.name === 'DescribeClusterCommand') atDescribe = sink.report;
+      return inner(command);
+    });
+
+    await collectCreatedResources(sink, () => failedCreate('ClusterH'));
+
+    expect(atDescribe).toEqual({ physicalId: CLUSTER_ID });
+    expect(sink.report).toEqual({ physicalId: CLUSTER_ID });
+  });
+
+  it('retracts the report when the terminate succeeded (#5511)', async () => {
+    const sink = new CreatedResourceSink('ClusterI', TYPE);
+    routeSend({
+      RunJobFlowCommand: { JobFlowId: CLUSTER_ID },
+      DescribeClusterCommand: new Error('AccessDeniedException: no describe'),
+      SetTerminationProtectionCommand: {},
+      TerminateJobFlowsCommand: {},
+    });
+
+    await collectCreatedResources(sink, () => failedCreate('ClusterI'));
+
+    expect(terminateCalls()).toHaveLength(1);
+    expect(sink.report).toBeUndefined();
+  });
+
+  it("reports nothing on RunJobFlow's own failure (#5511)", async () => {
+    const sink = new CreatedResourceSink('ClusterJ', TYPE);
+    routeSend({ RunJobFlowCommand: new Error('ValidationException: bad release') });
+
+    await collectCreatedResources(sink, () => failedCreate('ClusterJ'));
+
+    expect(sink.report).toBeUndefined();
   });
 
   it("does not mark RunJobFlow's own failure", async () => {

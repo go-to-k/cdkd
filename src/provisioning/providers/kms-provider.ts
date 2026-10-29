@@ -57,6 +57,7 @@ import {
   markCreatedBeforeFailure,
   markSupersedesEarlierCreate,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { createHash } from 'node:crypto';
 import {
   AMBIGUOUS_LATCH_TTL_MS,
@@ -426,6 +427,7 @@ export class KMSProvider implements ResourceProvider {
         setBounded(pendingKeys, attemptKey, { keyId, keyArn, inputDigest, heldAtMs: Date.now() });
         // Before the lookup below, so a throw in it still marks the key created.
         createdKeyId = keyId;
+        reportCreatedResource(logicalId, resourceType, keyId);
         // go-to-k/cdkd#4945: this key replaces a held one a retry declined.
         // Same age limit as the held key it replaced.
         const declinedAtMs = supersededAttempts.get(attemptKey);
@@ -441,6 +443,7 @@ export class KMSProvider implements ResourceProvider {
       }
 
       createdKeyId = keyId;
+      reportCreatedResource(logicalId, resourceType, keyId);
 
       // EnableKeyRotation must be called separately after key creation
       if (enableKeyRotation === true) {

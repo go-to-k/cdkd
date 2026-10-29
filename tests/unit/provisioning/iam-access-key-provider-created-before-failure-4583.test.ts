@@ -29,6 +29,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { IAMAccessKeyProvider } from '../../../src/provisioning/providers/iam-access-key-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 const RESOURCE_TYPE = 'AWS::IAM::AccessKey';
 const KEY_ID = 'AKIA0001';
@@ -152,6 +156,66 @@ describe('IAMAccessKeyProvider created-before-failure mark (go-to-k/cdkd#4583)',
     const error = await createError(provider, { UserName: 'alice' });
     expect(error).toBeInstanceOf(Error);
     expect(createdBeforeFailure(error, 'MyKey', RESOURCE_TYPE)).toBeUndefined();
+  });
+
+  describe('created-resource sink (#5511)', () => {
+    const sinkedError = (sink: CreatedResourceSink, properties?: Record<string, unknown>) =>
+      collectCreatedResources(sink, () => createError(provider, properties));
+
+    it('reports the key id (never the secret) before the Inactive wiring; failed deletes leave it', async () => {
+      const sink = new CreatedResourceSink('MyKey', RESOURCE_TYPE);
+      let atUpdate: unknown = 'unset';
+      script({ create: FULL, updateFails: true, cleanupDeleteFails: true });
+      const inner = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'UpdateAccessKeyCommand') atUpdate = sink.report;
+        return inner(command);
+      });
+
+      await sinkedError(sink);
+
+      expect(atUpdate).toEqual({ physicalId: KEY_ID });
+      expect(sink.report).toEqual({ physicalId: KEY_ID });
+      expect(JSON.stringify(sink.report)).not.toContain(SECRET);
+    });
+
+    it('retracts the report when the wiring cleanup deleted the key', async () => {
+      const sink = new CreatedResourceSink('MyKey', RESOURCE_TYPE);
+      script({ create: FULL, updateFails: true });
+      await sinkedError(sink);
+      expect(sink.report).toBeUndefined();
+    });
+
+    it('retracts the report when the reconcile deleted the key the cleanup could not', async () => {
+      const sink = new CreatedResourceSink('MyKey', RESOURCE_TYPE);
+      script({
+        create: FULL,
+        updateFails: true,
+        cleanupDeleteFails: true,
+        listAfterCreate: [KEY_ID],
+      });
+      await sinkedError(sink);
+      expect(sink.report).toBeUndefined();
+    });
+
+    it('keeps the report of a partial response whose cleanup failed, retracts it when the cleanup deleted the key', async () => {
+      const failing = new CreatedResourceSink('MyKey', RESOURCE_TYPE);
+      script({ create: { AccessKey: { AccessKeyId: KEY_ID } }, cleanupDeleteFails: true });
+      await sinkedError(failing, { UserName: 'alice' });
+      expect(failing.report).toEqual({ physicalId: KEY_ID });
+
+      const cleaned = new CreatedResourceSink('MyKey', RESOURCE_TYPE);
+      script({ create: { AccessKey: { AccessKeyId: KEY_ID } } });
+      await sinkedError(cleaned, { UserName: 'alice' });
+      expect(cleaned.report).toBeUndefined();
+    });
+
+    it('reports nothing when CreateAccessKey itself failed', async () => {
+      const sink = new CreatedResourceSink('MyKey', RESOURCE_TYPE);
+      script({ create: new Error('LimitExceeded') });
+      await sinkedError(sink);
+      expect(sink.report).toBeUndefined();
+    });
   });
 
   it('does not mark when CreateAccessKey itself failed', async () => {

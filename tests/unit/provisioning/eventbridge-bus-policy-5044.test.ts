@@ -40,6 +40,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { EventBridgeBusProvider } from '../../../src/provisioning/providers/eventbridge-bus-provider.js';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { hasRedactedCause } from '../../../src/deployment/retryable-errors.js';
 import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
@@ -136,6 +140,35 @@ describe('EventBridgeBusProvider Policy (issue #5044)', () => {
       expect((err as ProvisioningError).physicalId).toBe(NAME);
       // A cdkd-authored / transport error keeps its text.
       expect((err as Error).message).toBe('Failed to create EventBus Bus: policy refused');
+    });
+
+    it('reports the created bus to the sink before PutPermission (#5511)', async () => {
+      const sink = new CreatedResourceSink('Bus', TYPE);
+      let atPutPermission: unknown = 'unset';
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof CreateEventBusCommand) return Promise.resolve({ EventBusArn: BUS_ARN });
+        if (cmd instanceof PutPermissionCommand) {
+          atPutPermission = sink.report;
+          return Promise.reject(new Error('policy refused'));
+        }
+        return Promise.resolve({});
+      });
+
+      await collectCreatedResources(sink, () =>
+        provider.create('Bus', TYPE, { Name: NAME, Policy: policy('s') }).catch((e: unknown) => e)
+      );
+
+      expect(atPutPermission).toEqual({ physicalId: NAME });
+      expect(sink.report).toEqual({ physicalId: NAME });
+    });
+
+    it('reports nothing when CreateEventBus itself fails (#5511)', async () => {
+      const sink = new CreatedResourceSink('Bus', TYPE);
+      mockSend.mockRejectedValue(new Error('LimitExceeded'));
+      await collectCreatedResources(sink, () =>
+        provider.create('Bus', TYPE, { Name: NAME }).catch((e: unknown) => e)
+      );
+      expect(sink.report).toBeUndefined();
     });
 
     it('keeps the caller ARN out of an AWS-authored PutPermission refusal (#2319)', async () => {

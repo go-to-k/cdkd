@@ -704,11 +704,15 @@
       "resourceType": "AWS::CertificateManager::Certificate",
       "integs": [
         "acm-certificate",
+        "created-before-failure-revert",
         "replaced-delete-failed-rollback"
       ],
       "signals": {
         "acm-certificate": [
           "l2"
+        ],
+        "created-before-failure-revert": [
+          "literal"
         ],
         "replaced-delete-failed-rollback": [
           "literal"

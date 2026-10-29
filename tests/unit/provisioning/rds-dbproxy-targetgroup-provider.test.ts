@@ -47,6 +47,10 @@ import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
+import {
   hasRedactedCause,
   isRetryableTransientError,
   retryClassificationText,
@@ -246,6 +250,61 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       // go-to-k/cdkd#4583: the registration is still live, so the ARN (the id
       // delete() takes) is journaled for --revert-failed.
       expect(createdBeforeFailure(error, 'TG', RESOURCE_TYPE)).toBe(TARGET_GROUP_ARN);
+    });
+
+    it('reports the target group ARN before the tag call and keeps it when the deregister fails (#5511)', async () => {
+      const sink = new CreatedResourceSink('TG', RESOURCE_TYPE);
+      let reportAtTags: unknown = 'not-called';
+      mockSend
+        .mockResolvedValueOnce({ DBProxyTargets: [] }) // Register
+        .mockResolvedValueOnce(describeOk) // Describe
+        .mockImplementationOnce(async () => {
+          reportAtTags = sink.report;
+          throw denied();
+        }) // AddTags
+        .mockRejectedValueOnce(denied()); // Deregister (cleanup)
+      await collectCreatedResources(sink, () =>
+        provider.create('TG', RESOURCE_TYPE, {
+          DBProxyName: 'AuroraProxy',
+          DBClusterIdentifiers: ['my-cluster'],
+          Tags: [{ Key: 'team', Value: 'db' }],
+        })
+      ).catch(() => undefined);
+      expect(reportAtTags).toEqual({ physicalId: TARGET_GROUP_ARN });
+      expect(sink.report).toEqual({ physicalId: TARGET_GROUP_ARN });
+    });
+
+    it('retracts the report when the deregister retired the registration (#5511)', async () => {
+      const sink = new CreatedResourceSink('TG', RESOURCE_TYPE);
+      mockSend
+        .mockResolvedValueOnce({ DBProxyTargets: [] }) // Register
+        .mockResolvedValueOnce(describeOk) // Describe
+        .mockRejectedValueOnce(denied()) // AddTags
+        .mockResolvedValueOnce({}); // Deregister (cleanup)
+      await collectCreatedResources(sink, () =>
+        provider.create('TG', RESOURCE_TYPE, {
+          DBProxyName: 'AuroraProxy',
+          DBClusterIdentifiers: ['my-cluster'],
+          Tags: [{ Key: 'team', Value: 'db' }],
+        })
+      ).catch(() => undefined);
+      expect(names()[3]).toBe('DeregisterDBProxyTargetsCommand');
+      expect(sink.report).toBeUndefined();
+    });
+
+    it('reports nothing when the Describe fails: the ARN is unknown (#5511)', async () => {
+      const sink = new CreatedResourceSink('TG', RESOURCE_TYPE);
+      mockSend
+        .mockResolvedValueOnce({ DBProxyTargets: [] }) // Register
+        .mockRejectedValueOnce(new Error('Throttling')) // Describe
+        .mockRejectedValueOnce(new Error('Throttling')); // Deregister (cleanup)
+      await collectCreatedResources(sink, () =>
+        provider.create('TG', RESOURCE_TYPE, {
+          DBProxyName: 'AuroraProxy',
+          DBClusterIdentifiers: ['my-cluster'],
+        })
+      ).catch(() => undefined);
+      expect(sink.report).toBeUndefined();
     });
 
     it('a failed Describe whose cleanup also fails marks nothing: the ARN is unknown (go-to-k/cdkd#4583)', async () => {

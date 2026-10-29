@@ -26,6 +26,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { logicalIdShown } from '../composite-id.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { definedAttributes } from '../attribute-map.js';
 import { generatedNameFor } from '../resource-name.js';
 import {
@@ -181,6 +182,8 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
           logicalId
         );
       }
+      // go-to-k/cdkd#5511: reported before the settle wait.
+      reportCreatedResource(logicalId, resourceType, createdArn);
       const settled = await this.waitForSettled(createdArn, logicalId, 'create');
       createToken.release();
       return { physicalId: createdArn, attributes: buildAttributes(settled) };

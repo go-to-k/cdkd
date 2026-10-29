@@ -79,6 +79,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 
 const LOG_GROUP_TYPE = 'AWS::Logs::LogGroup';
 
@@ -483,6 +484,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
         await this.logsClient.send(new CreateLogGroupCommand(createParams));
         createdNewLogGroup = true;
         leftBehind = true;
+        reportCreatedResource(logicalId, resourceType, logGroupName);
       } catch (createError) {
         if (createError instanceof ResourceAlreadyExistsException) {
           this.logger.debug(`Log group ${logGroupName} already exists, using existing`);
@@ -648,6 +650,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
           try {
             await this.logsClient.send(new DeleteLogGroupCommand({ logGroupName }));
             leftBehind = false;
+            retractCreatedResource(logicalId, resourceType, logGroupName);
             this.logger.debug(
               `Cleaned up partially-created log group ${displaySafe(logicalId)} (${displaySafe(logGroupName)}) after wiring failure`
             );

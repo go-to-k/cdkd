@@ -35,6 +35,7 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
   markNonRetryable,
   markRedactedCause,
@@ -772,6 +773,8 @@ export class EMRClusterProvider implements ResourceProvider {
       }
       clusterId = response.JobFlowId;
       if (clusterId) clustersCreatedByThisProcess.add(clusterId);
+      // go-to-k/cdkd#5511: no-op for an empty id.
+      reportCreatedResource(logicalId, resourceType, clusterId ?? '');
       // Issue #4687: the SDK replayed this RunJobFlow inside its `send`, so
       // an earlier attempt may have made one too. Detection only.
       const replayWindow = replayedSendWindow(response, attemptStartMs);
@@ -823,6 +826,7 @@ export class EMRClusterProvider implements ResourceProvider {
             })
           );
           await this.getClient().send(new TerminateJobFlowsCommand({ JobFlowIds: [clusterId] }));
+          retractCreatedResource(logicalId, resourceType, clusterId);
           this.logger.warn(`Rolled back partially-created EMR Cluster ${clusterId}`);
         } catch (cleanupError) {
           survivorId = clusterId;

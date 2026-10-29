@@ -144,6 +144,7 @@ content-delivery network itself, so nothing is cached at an edge.
 | S3 origins | From local files, or from the deployed bucket | No |
 | Path routing | By the cache behaviours' path patterns | No |
 | `DefaultRootObject`, `CustomErrorResponses` | Applied | No |
+| Response headers policies | Applied, except Server-Timing and AWS-managed policies | No |
 | Other custom origins | Not fetched | — |
 | CDN caching, edge locations, cache keys | Not reproduced | — |
 
@@ -156,6 +157,30 @@ unknown path returns `index.html`. That works locally as it does deployed.
 
 As on CloudFront, a URI that ends in `/` is not given an index document. Only
 the root path resolves to `DefaultRootObject`.
+
+### Response headers policies
+
+A cache behaviour's response headers policy is applied to the origin's
+responses and to responses a Lambda@Edge request stage generates, after the
+viewer-response function and the Lambda@Edge response stages:
+
+| Policy section | Local behaviour |
+| --- | --- |
+| CORS | A matching `OPTIONS` preflight is answered before the origin, without the policy's other headers; other responses get the CORS headers |
+| Security headers | Added: `Strict-Transport-Security`, `Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `X-XSS-Protection` |
+| Custom headers | Added |
+| Remove headers | Removed first, so a header the policy also adds is still sent |
+| Server-Timing | Not added: its metrics describe CloudFront's edge and cache |
+
+A header with `Override` set replaces the origin's header; without it, the
+header is added only when the origin sent none. `Strict-Transport-Security` is
+sent over plain HTTP too, so a test can assert on it, though browsers ignore
+it there.
+
+A response a viewer-request CloudFront Function generates does not get the
+policy's headers. A header whose value is not a literal in the template, such
+as a CDK token, is skipped with a warning. An AWS-managed policy cannot be read
+locally, so it is not applied.
 
 ## Origins
 

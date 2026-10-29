@@ -34,6 +34,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ElastiCacheProvider } from '../../../src/provisioning/providers/elasticache-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 /**
@@ -130,6 +134,32 @@ describe('ElastiCacheProvider create marks the resource it made before failing (
       } finally {
         vi.restoreAllMocks();
       }
+    });
+
+    it('reports the cluster id to the sink before the first post-create call (#5511)', async () => {
+      const sink = new CreatedResourceSink('Cache', TYPE);
+      let atDescribe: unknown = 'unset';
+      route({
+        CreateCacheClusterCommand: () => ({ CacheCluster: { CacheClusterId: 'my-cache' } }),
+        DescribeCacheClustersCommand: () => {
+          atDescribe = sink.report;
+          throw new Error('describe throttled');
+        },
+      });
+      await caught(
+        collectCreatedResources(sink, () => new ElastiCacheProvider().create('Cache', TYPE, props))
+      );
+      expect(atDescribe).toEqual({ physicalId: 'my-cache' });
+      expect(sink.report).toEqual({ physicalId: 'my-cache' });
+    });
+
+    it('reports nothing when CreateCacheCluster itself fails (#5511)', async () => {
+      const sink = new CreatedResourceSink('Cache', TYPE);
+      route({ CreateCacheClusterCommand: fail('CacheClusterAlreadyExists') });
+      await caught(
+        collectCreatedResources(sink, () => new ElastiCacheProvider().create('Cache', TYPE, props))
+      );
+      expect(sink.report).toBeUndefined();
     });
 
     it('does not mark when CreateCacheCluster itself fails', async () => {

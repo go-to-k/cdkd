@@ -102,6 +102,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
   ProtectionFlipRegistry,
   deleteWithProtectionCompensation,
@@ -2266,6 +2267,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
 
       const userPoolId = userPool.Id;
       createdUserPoolId = userPoolId;
+      // go-to-k/cdkd#5511: report before the replay lookup and MFA wiring.
+      reportCreatedResource(logicalId, resourceType, userPoolId);
       // Issue #4687: the SDK replayed this CreateUserPool inside its `send`, so
       // an earlier attempt may have made a pool too. Detection only, and before
       // the follow-up calls below, so a failure in one of them cannot skip it;
@@ -2334,6 +2337,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         markAuxiliaryFailure(error, logicalId);
         try {
           await this.getClient().send(new DeleteUserPoolCommand({ UserPoolId: createdUserPoolId }));
+          retractCreatedResource(logicalId, resourceType, createdUserPoolId);
           this.logger.debug(`Rolled back partially-created Cognito User Pool ${createdUserPoolId}`);
         } catch (rollbackError) {
           poolLeftBehind = true;

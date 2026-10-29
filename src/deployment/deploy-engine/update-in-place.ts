@@ -1,3 +1,4 @@
+import { clearCreatedReport } from '../../provisioning/created-resource-sink.js';
 import { noEchoDeleteValuesFromResolved } from '../noecho-delete-reresolution.js';
 import { guardedReplacementCreate } from './create.js';
 import { buildObservedCaptureSiblings } from './observed-capture.js';
@@ -1635,6 +1636,9 @@ export async function updateInPlace(
       observedBaselineRefusalReason: 'unverifiable-parameter' as const,
     }),
   };
+  // go-to-k/cdkd#5511: state now holds the resource, so no failure after
+  // this point journals it as an orphan.
+  clearCreatedReport();
   // 'update' even after the replacement fallback: a principal then
   // claims only on its own `Policies` change (the fewer claims).
   if (updatePartialReason(result) === undefined) {

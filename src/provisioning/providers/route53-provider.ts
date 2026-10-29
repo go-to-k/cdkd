@@ -40,6 +40,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { markNotGone } from '../not-gone.js';
 import { isTruthyCfnBoolean } from '../data-delete-intent.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
@@ -782,6 +783,8 @@ export class Route53Provider implements ResourceProvider {
       // Extract zone ID without /hostedzone/ prefix
       const zoneId = hostedZone.Id.replace('/hostedzone/', '');
       createdZoneId = zoneId;
+      // go-to-k/cdkd#5511: reported before the VPC associations and later calls.
+      reportCreatedResource(logicalId, resourceType, zoneId);
 
       // Associate additional VPCs (index 1+) after creation
       if (vpcs && vpcs.length > 1) {
@@ -840,6 +843,7 @@ export class Route53Provider implements ResourceProvider {
             await this.deleteQueryLoggingConfigForZone(zoneId, logicalId);
             await this.getClient().send(new DeleteHostedZoneCommand({ Id: zoneId }));
             zoneRolledBack = true;
+            retractCreatedResource(logicalId, resourceType, zoneId);
             // Released only after the delete SUCCEEDED, and the ORDER is what
             // matters here rather than the release itself. Route 53 does not
             // retain a DELETED zone's caller reference, so reusing one whose

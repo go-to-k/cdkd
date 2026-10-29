@@ -52,6 +52,10 @@ import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 type Responder = Record<string, () => Promise<unknown>>;
 
@@ -180,6 +184,55 @@ describe('EC2Provider create marks a resource its cleanup left behind (go-to-k/c
       expect(createdBeforeFailure(error, `${c.label}Own`, c.type)).toBeUndefined();
     });
 
+    // go-to-k/cdkd#5511: reported right after the create call returned, before
+    // the wiring; withdrawn when the cleanup removed the resource.
+    it('reports the id before the wiring calls when the cleanup fails too', async () => {
+      const sink = new CreatedResourceSink(`${c.label}Rep`, c.type);
+      let atWiring: unknown = 'unset';
+      const wiring: Responder = {};
+      for (const [name, answer] of Object.entries(c.wiring as Responder)) {
+        wiring[name] = () => {
+          atWiring = sink.report;
+          return answer();
+        };
+      }
+      waitUntilInstanceRunningMock.mockImplementation(() => {
+        atWiring = sink.report;
+        return Promise.reject(new Error('wiring boom'));
+      });
+      respond({ ...c.create, ...wiring, [c.cleanup]: boom('cleanup refused') });
+
+      await collectCreatedResources(sink, () =>
+        failure(() => provider.create(`${c.label}Rep`, c.type, c.props))
+      );
+
+      expect(atWiring).toEqual({ physicalId: c.id });
+      expect(sink.report).toEqual({ physicalId: c.id });
+    });
+
+    it('leaves nothing reported when the cleanup succeeded', async () => {
+      const sink = new CreatedResourceSink(`${c.label}Gone`, c.type);
+      respond({ ...c.create, ...c.wiring });
+
+      await collectCreatedResources(sink, () =>
+        failure(() => provider.create(`${c.label}Gone`, c.type, c.props))
+      );
+
+      expect(mockSend.mock.calls.map((x) => x[0].constructor.name)).toContain(c.cleanup);
+      expect(sink.report).toBeUndefined();
+    });
+
+    it("reports nothing when the create call's own failure is thrown", async () => {
+      const sink = new CreatedResourceSink(`${c.label}NoRep`, c.type);
+      respond({ [c.createCall]: boom('create boom') });
+
+      await collectCreatedResources(sink, () =>
+        failure(() => provider.create(`${c.label}NoRep`, c.type, c.props))
+      );
+
+      expect(sink.report).toBeUndefined();
+    });
+
     it('names nothing for a pre-flight refusal', async () => {
       const error = await failure(() => provider.create(`${c.label}Refused`, c.type, c.refusal));
 
@@ -287,6 +340,70 @@ describe('EC2Provider create marks a resource its cleanup left behind (go-to-k/c
       expect(isMarkedNonRetryable(error)).toBe(true);
     });
 
+    // go-to-k/cdkd#5511: reported before the association; withdrawn on release.
+    it('reports the composite id before the association call', async () => {
+      const sink = new CreatedResourceSink('EipRep', TYPE);
+      let atAssociate: unknown = 'unset';
+      respond({
+        ...allocate,
+        AssociateAddressCommand: () => {
+          atAssociate = sink.report;
+          return Promise.reject(new Error('associate boom'));
+        },
+        ReleaseAddressCommand: boom('release refused'),
+      });
+
+      await collectCreatedResources(sink, () =>
+        failure(() => provider.create('EipRep', TYPE, { InstanceId: 'i-aaa' }))
+      );
+
+      expect(atAssociate).toEqual({ physicalId: '54.0.0.9|eipalloc-4583' });
+      expect(sink.report).toEqual({ physicalId: '54.0.0.9|eipalloc-4583' });
+    });
+
+    it('leaves nothing reported when the address was released', async () => {
+      const sink = new CreatedResourceSink('EipRel', TYPE);
+      respond({ ...allocate, AssociateAddressCommand: boom('associate boom') });
+
+      await collectCreatedResources(sink, () =>
+        failure(() => provider.create('EipRel', TYPE, { InstanceId: 'i-aaa' }))
+      );
+
+      expect(mockSend.mock.calls.map((x) => x[0].constructor.name)).toContain(
+        'ReleaseAddressCommand'
+      );
+      expect(sink.report).toBeUndefined();
+    });
+
+    it('keeps the report when the release reads NotFound', async () => {
+      const sink = new CreatedResourceSink('EipNf', TYPE);
+      respond({
+        ...allocate,
+        AssociateAddressCommand: boom('associate boom'),
+        ReleaseAddressCommand: () =>
+          Promise.reject(
+            Object.assign(new Error('The allocation ID does not exist'), {
+              name: 'InvalidAllocationID.NotFound',
+            })
+          ),
+      });
+
+      await collectCreatedResources(sink, () =>
+        failure(() => provider.create('EipNf', TYPE, { InstanceId: 'i-aaa' }))
+      );
+
+      expect(sink.report).toEqual({ physicalId: '54.0.0.9|eipalloc-4583' });
+    });
+
+    it('reports nothing when AllocateAddress itself fails', async () => {
+      const sink = new CreatedResourceSink('EipNone', TYPE);
+      respond({ AllocateAddressCommand: boom('allocate boom') });
+
+      await collectCreatedResources(sink, () => failure(() => provider.create('EipNone', TYPE, {})));
+
+      expect(sink.report).toBeUndefined();
+    });
+
     it('names nothing when AllocateAddress itself fails', async () => {
       respond({ AllocateAddressCommand: boom('allocate boom') });
 
@@ -313,6 +430,35 @@ describe('EC2Provider create marks a resource its cleanup left behind (go-to-k/c
       expect(isMarkedNonRetryable(error)).toBe(false);
     });
 
+    // go-to-k/cdkd#5511: reported before the available-state wait.
+    it('reports the gateway id before the available-state wait', async () => {
+      const sink = new CreatedResourceSink('NatRep', TYPE);
+      let atWait: unknown = 'unset';
+      respond({ CreateNatGatewayCommand: ok({ NatGateway: { NatGatewayId: 'nat-4583' } }) });
+      waitUntilNatGatewayAvailableMock.mockImplementation(() => {
+        atWait = sink.report;
+        return Promise.reject(new Error('wait boom'));
+      });
+
+      await collectCreatedResources(sink, () =>
+        failure(() => provider.create('NatRep', TYPE, props))
+      );
+
+      expect(atWait).toEqual({ physicalId: 'nat-4583' });
+      expect(sink.report).toEqual({ physicalId: 'nat-4583' });
+    });
+
+    it('reports nothing when CreateNatGateway itself fails', async () => {
+      const sink = new CreatedResourceSink('NatNone', TYPE);
+      respond({ CreateNatGatewayCommand: boom('create boom') });
+
+      await collectCreatedResources(sink, () =>
+        failure(() => provider.create('NatNone', TYPE, props))
+      );
+
+      expect(sink.report).toBeUndefined();
+    });
+
     it('names nothing when CreateNatGateway itself fails', async () => {
       respond({ CreateNatGatewayCommand: boom('create boom') });
 
@@ -327,6 +473,59 @@ describe('EC2Provider create marks a resource its cleanup left behind (go-to-k/c
 
       expect(mockSend).not.toHaveBeenCalled();
       expect(createdBeforeFailure(error, 'NatRefused', TYPE)).toBeUndefined();
+    });
+  });
+
+  // go-to-k/cdkd#5511: a VPN gateway attachment is reported once AttachVpnGateway
+  // returned, before the attached-state wait. An internet gateway attach has no
+  // mark, so it reports nothing.
+  describe('VPCGatewayAttachment', () => {
+    const TYPE = 'AWS::EC2::VPCGatewayAttachment';
+
+    it('reports the composite id before the attached-state wait (VPN gateway)', async () => {
+      const sink = new CreatedResourceSink('VgwRep', TYPE);
+      let atWait: unknown = 'unset';
+      respond({
+        DescribeVpnGatewaysCommand: () => {
+          atWait = sink.report;
+          return Promise.reject(new Error('describe boom'));
+        },
+      });
+
+      const error = await collectCreatedResources(sink, () =>
+        failure(() => provider.create('VgwRep', TYPE, { VpcId: 'vpc-aaa', VpnGatewayId: 'vgw-4583' }))
+      );
+
+      const marked = createdBeforeFailure(error, 'VgwRep', TYPE);
+      expect(marked).toEqual(expect.stringContaining('vgw-4583'));
+      expect(atWait).toEqual({ physicalId: marked });
+      expect(sink.report).toEqual({ physicalId: marked });
+    });
+
+    it('reports nothing when AttachVpnGateway itself fails', async () => {
+      const sink = new CreatedResourceSink('VgwNone', TYPE);
+      respond({ AttachVpnGatewayCommand: boom('attach boom') });
+
+      await collectCreatedResources(sink, () =>
+        failure(() =>
+          provider.create('VgwNone', TYPE, { VpcId: 'vpc-aaa', VpnGatewayId: 'vgw-4583' })
+        )
+      );
+
+      expect(sink.report).toBeUndefined();
+    });
+
+    it('reports nothing for an internet gateway attachment', async () => {
+      const sink = new CreatedResourceSink('IgwNone', TYPE);
+      respond({ AttachInternetGatewayCommand: boom('attach boom') });
+
+      await collectCreatedResources(sink, () =>
+        failure(() =>
+          provider.create('IgwNone', TYPE, { VpcId: 'vpc-aaa', InternetGatewayId: 'igw-4583' })
+        )
+      );
+
+      expect(sink.report).toBeUndefined();
     });
   });
 });

@@ -65,6 +65,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
@@ -980,6 +981,8 @@ export class ASGProvider implements ResourceProvider {
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
+      // go-to-k/cdkd#5511: report before the wiring calls.
+      reportCreatedResource(logicalId, resourceType, groupName);
 
       // `CreateAutoScalingGroup` takes neither `MetricsCollection` nor
       // `NotificationConfigurations`: each rides its own API, which only the
@@ -1019,6 +1022,7 @@ export class ASGProvider implements ResourceProvider {
         }
       } catch (wiringError) {
         survivorNote = await this.retireFailedCreate(groupName, logicalId, properties, maskSecrets);
+        if (survivorNote === undefined) retractCreatedResource(logicalId, resourceType, groupName);
         // The group itself was created: an error from its wiring is an
         // auxiliary object's, never this group's name collision (#3826).
         throw markAuxiliaryFailure(wiringError, logicalId);

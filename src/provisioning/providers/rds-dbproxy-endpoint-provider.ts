@@ -52,6 +52,7 @@ import {
 } from '../../deployment/retryable-errors.js';
 import { markNotGone } from '../not-gone.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { injectiveKey, injectiveKeyPrefix } from '../../state/record-keys.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
@@ -207,6 +208,8 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     } catch (error) {
       throw this.wrapCaughtError(error, 'CREATE', resourceType, logicalId, undefined, mask);
     }
+    // go-to-k/cdkd#5511: reported before the available poll.
+    reportCreatedResource(logicalId, resourceType, dbProxyEndpointName);
 
     let endpoint: string | undefined;
     let arn: string | undefined;

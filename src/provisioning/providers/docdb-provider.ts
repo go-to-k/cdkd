@@ -17,6 +17,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generatedNameFor } from '../resource-name.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -491,6 +492,8 @@ export class DocDBProvider implements ResourceProvider {
       );
       clusterCreated = true;
       createdResourceId = response.DBCluster?.DbClusterResourceId;
+      // go-to-k/cdkd#5511: report before the availability wait.
+      reportCreatedResource(logicalId, resourceType, dbClusterIdentifier, createdResourceId);
 
       const cluster = response.DBCluster;
       if (!cluster) {
@@ -922,6 +925,8 @@ export class DocDBProvider implements ResourceProvider {
       );
       instanceCreated = true;
       createdResourceId = response.DBInstance?.DbiResourceId;
+      // go-to-k/cdkd#5511: report before the availability wait.
+      reportCreatedResource(logicalId, resourceType, dbInstanceIdentifier, createdResourceId);
 
       const instance = response.DBInstance;
       if (!instance) {

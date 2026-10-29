@@ -27,6 +27,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import {
   markRedactedCause,
   relayedNameCollision,
@@ -280,6 +281,7 @@ export class EventBridgeBusProvider implements ResourceProvider {
       const createClient = await this.getCreateClient();
       const response = await createClient.send(new CreateEventBusCommand(createParams));
       busCreated = true;
+      reportCreatedResource(logicalId, resourceType, name); // go-to-k/cdkd#5511
 
       // Issue #5044: the bus resource policy is a separate call, as
       // CloudFormation makes it (`PutPermission` with the whole document).

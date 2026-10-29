@@ -18,6 +18,7 @@ import { displayIdent, safeMsg } from '../../utils/display-safe.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { markNotGone } from '../not-gone.js';
@@ -373,6 +374,8 @@ export class ACMCertificateProvider implements ResourceProvider {
         );
       }
       requestedArn = certificateArn;
+      // go-to-k/cdkd#5511: report before the issuance wait.
+      reportCreatedResource(logicalId, resourceType, certificateArn);
       this.logger.debug(`Requested ACM certificate: ${certificateArn}`);
 
       const noWait = process.env['CDKD_NO_WAIT'] === 'true';
@@ -415,6 +418,10 @@ export class ACMCertificateProvider implements ResourceProvider {
             context?.maskSecrets
           )
         : undefined;
+      // go-to-k/cdkd#5511: the cleanup deleted the certificate.
+      if (requestedArn && survivorNote === undefined) {
+        retractCreatedResource(logicalId, resourceType, requestedArn);
+      }
 
       // Pass through cdkd-typed errors untouched (#1272): re-labelling an inner
       // ProvisioningError replaces its precise message with this outer one.

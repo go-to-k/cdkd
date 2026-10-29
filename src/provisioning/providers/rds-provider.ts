@@ -36,6 +36,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import { markNotGone } from '../not-gone.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -960,6 +961,8 @@ export class RDSProvider implements ResourceProvider {
       );
       clusterLeftBehind = true;
       createdResourceId = response.DBCluster?.DbClusterResourceId;
+      // go-to-k/cdkd#5511: reported before the post-create wiring and waits.
+      reportCreatedResource(logicalId, resourceType, dbClusterIdentifier, createdResourceId);
 
       const cluster = response.DBCluster;
       if (!cluster) {
@@ -1035,6 +1038,7 @@ export class RDSProvider implements ResourceProvider {
             })
           );
           clusterLeftBehind = false;
+          retractCreatedResource(logicalId, resourceType, dbClusterIdentifier);
           this.logger.debug(
             `Delete requested for partially-created DBCluster ${logicalId} (${dbClusterIdentifier}) after wiring failure (not waiting for deleted state)`
           );
@@ -1653,6 +1657,8 @@ export class RDSProvider implements ResourceProvider {
       );
       instanceCreated = true;
       createdResourceId = response.DBInstance?.DbiResourceId;
+      // go-to-k/cdkd#5511: reported before the available wait.
+      reportCreatedResource(logicalId, resourceType, dbInstanceIdentifier, createdResourceId);
 
       const instance = response.DBInstance;
       if (!instance) {

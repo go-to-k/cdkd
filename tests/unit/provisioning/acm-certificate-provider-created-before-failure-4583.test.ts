@@ -23,6 +23,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { ACMCertificateProvider } from '../../../src/provisioning/providers/acm-certificate-provider.js';
 import { resetIdempotencyTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 const TYPE = 'AWS::CertificateManager::Certificate';
 const ARN = 'arn:aws:acm:us-east-1:123456789012:certificate/abc123';
@@ -123,5 +127,44 @@ describe('ACMCertificateProvider.create — created-before-failure mark (#4583)'
 
     expect(mockSend).not.toHaveBeenCalled();
     expect(createdBeforeFailure(error, 'MyCert', TYPE)).toBeUndefined();
+  });
+
+  // go-to-k/cdkd#5511: the id is reported to the engine's sink right after
+  // RequestCertificate returns, before the issuance wait.
+  it('reports the ARN before the issuance wait (order-sensitive)', async () => {
+    const sink = new CreatedResourceSink('MyCert', TYPE);
+    let reportAtWait: unknown = 'unset';
+    mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+    mockSend.mockImplementationOnce(() => {
+      reportAtWait = sink.report;
+      return Promise.resolve({ Certificate: { Status: 'VALIDATION_TIMED_OUT' } });
+    });
+    mockSend.mockRejectedValueOnce(new Error('AccessDenied'));
+
+    await collectCreatedResources(sink, () => failedCreate());
+
+    expect(reportAtWait).toEqual({ physicalId: ARN });
+    expect(sink.report).toEqual({ physicalId: ARN });
+  });
+
+  it('retracts the report when the cleanup delete succeeded', async () => {
+    const sink = new CreatedResourceSink('MyCert', TYPE);
+    mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+    mockSend.mockResolvedValueOnce({ Certificate: { Status: 'VALIDATION_TIMED_OUT' } });
+    mockSend.mockResolvedValueOnce({});
+
+    await collectCreatedResources(sink, () => failedCreate());
+
+    expect(deleteCalls()).toHaveLength(1);
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('reports nothing when RequestCertificate itself fails', async () => {
+    const sink = new CreatedResourceSink('MyCert', TYPE);
+    mockSend.mockRejectedValueOnce(new Error('LimitExceededException'));
+
+    await collectCreatedResources(sink, () => failedCreate());
+
+    expect(sink.report).toBeUndefined();
   });
 });

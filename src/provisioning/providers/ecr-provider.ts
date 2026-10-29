@@ -53,6 +53,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   markRedactedCause,
@@ -266,6 +267,8 @@ export class ECRProvider implements ResourceProvider {
       );
 
       repositoryCreated = true;
+      // go-to-k/cdkd#5511: report before the policy calls.
+      reportCreatedResource(logicalId, resourceType, repositoryName);
       const repo = response.repository;
       if (!repo?.repositoryName) {
         throw new Error('CreateRepository did not return repository name');

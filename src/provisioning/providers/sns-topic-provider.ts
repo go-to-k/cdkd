@@ -50,6 +50,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import {
   hasErrorName,
@@ -263,6 +264,9 @@ export class SNSTopicProvider implements ResourceProvider {
         // ARN to delete. Has never been observed in practice.
         throw new Error('CreateTopic did not return TopicArn');
       }
+      // go-to-k/cdkd#5511: only a topic the name was free for is this create's.
+      if (wiringDeclared && heldBefore === 'free')
+        reportCreatedResource(logicalId, resourceType, topicArn);
 
       // CreateTopicCommand has succeeded — AWS has now committed the
       // Topic (and any inline Tags + Attributes). If a subsequent
@@ -375,6 +379,7 @@ export class SNSTopicProvider implements ResourceProvider {
         } else {
           try {
             await this.snsClient.send(new DeleteTopicCommand({ TopicArn: topicArn }));
+            retractCreatedResource(logicalId, resourceType, topicArn);
             this.logger.debug(
               `Cleaned up partially-created SNS topic ${logicalId} (${topicArn}) after wiring failure`
             );

@@ -97,6 +97,7 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
   markNonRetryable,
   wrapMaskedAwsError,
@@ -1326,6 +1327,8 @@ export class ELBv2Provider implements ResourceProvider {
       const lbArn = lb.LoadBalancerArn;
 
       this.logger.debug(`Successfully created LoadBalancer ${logicalId}: ${lbArn}`);
+      // go-to-k/cdkd#5511: only a load balancer the name was free for.
+      if (heldBefore === 'free') reportCreatedResource(logicalId, resourceType, lbArn);
 
       // CreateLoadBalancerCommand has succeeded — AWS has now committed
       // the LB. If the subsequent ModifyLoadBalancerAttributesCommand
@@ -1466,6 +1469,7 @@ export class ELBv2Provider implements ResourceProvider {
         } else {
           try {
             await this.getClient().send(new DeleteLoadBalancerCommand({ LoadBalancerArn: lbArn }));
+            retractCreatedResource(logicalId, resourceType, lbArn);
             this.logger.debug(
               `Cleaned up partially-created LoadBalancer ${logicalId} (${lbArn}) after wiring failure`
             );
@@ -2203,6 +2207,8 @@ export class ELBv2Provider implements ResourceProvider {
       const tgArn = tg.TargetGroupArn;
 
       this.logger.debug(`Successfully created TargetGroup ${logicalId}: ${tgArn}`);
+      // go-to-k/cdkd#5511: only a target group the name was free for.
+      if (heldBefore === 'free') reportCreatedResource(logicalId, resourceType, tgArn);
 
       // TargetGroupAttributes and Targets ride on separate post-create calls
       // (ModifyTargetGroupAttributes / RegisterTargets). CreateTargetGroup has
@@ -2259,6 +2265,7 @@ export class ELBv2Provider implements ResourceProvider {
           }
           try {
             await this.getClient().send(new DeleteTargetGroupCommand({ TargetGroupArn: tgArn }));
+            retractCreatedResource(logicalId, resourceType, tgArn);
             this.logger.debug(
               `Cleaned up partially-created TargetGroup ${logicalId} (${tgArn}) after wiring failure`
             );
@@ -2723,6 +2730,8 @@ export class ELBv2Provider implements ResourceProvider {
       const listenerArn = listener.ListenerArn;
 
       this.logger.debug(`Successfully created Listener ${logicalId}: ${listenerArn}`);
+      // go-to-k/cdkd#5511: only a listener the port was free for.
+      if (heldBefore === 'free') reportCreatedResource(logicalId, resourceType, listenerArn);
 
       // CreateListener does NOT accept ListenerAttributes (e.g.
       // `tcp.idle_timeout.seconds`, `routing.http.response.server.enabled`) —
@@ -2818,6 +2827,7 @@ export class ELBv2Provider implements ResourceProvider {
         }
         try {
           await this.getClient().send(new DeleteListenerCommand({ ListenerArn: listenerArn }));
+          retractCreatedResource(logicalId, resourceType, listenerArn);
           this.logger.debug(
             `Cleaned up partially-created Listener ${logicalId} (${listenerArn}) after attributes-wiring failure`
           );

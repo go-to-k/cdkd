@@ -44,6 +44,7 @@ import { isRedactedRecordedValue } from '../redacted-delete-address.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import {
   markNonRetryable,
   markRedactedCause,
@@ -450,6 +451,7 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
       if (fleetId) fleetsCreatedByThisProcess.add(fleetId);
       // Before the lookup below, so a throw in it still marks the fleet created.
       createdFleetId = fleetId;
+      reportCreatedResource(logicalId, resourceType, fleetId ?? ''); // go-to-k/cdkd#5511
       // Issue #4687: the SDK replayed this AddInstanceFleet inside its `send`, so
       // an earlier attempt may have made one too. Detection only.
       const replayWindow = replayedSendWindow(response, attemptStartMs);

@@ -61,6 +61,10 @@ import {
 } from '@aws-sdk/client-auto-scaling';
 import { ASGProvider } from '../../../src/provisioning/providers/asg-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 const TYPE = 'AWS::AutoScaling::AutoScalingGroup';
 const PROPS = {
@@ -150,5 +154,47 @@ describe('ASGProvider.create marks a group its retire left behind (go-to-k/cdkd#
 
     expect(mockSend).not.toHaveBeenCalled();
     expect(createdBeforeFailure(error, 'MyAsg', TYPE)).toBeUndefined();
+  });
+
+  // go-to-k/cdkd#5511: the sink holds the group name once CreateAutoScalingGroup
+  // returned, before the wiring calls.
+  it('reports the group name before the wiring calls', async () => {
+    const sink = new CreatedResourceSink('MyAsg', TYPE);
+    let atWiring: unknown = 'unset';
+    respond({
+      wiring: validation('wiring boom'),
+      delete: Object.assign(new Error('delete refused'), { name: 'AccessDenied' }),
+    });
+    const base = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof EnableMetricsCollectionCommand) atWiring = sink.report;
+      return base(command);
+    });
+
+    await collectCreatedResources(sink, () => failure(() => provider.create('MyAsg', TYPE, PROPS)));
+
+    expect(atWiring).toEqual({ physicalId: 'my-asg' });
+    expect(sink.report).toEqual({ physicalId: 'my-asg' });
+  });
+
+  it('leaves nothing reported when the retire removed the group', async () => {
+    const sink = new CreatedResourceSink('MyAsg', TYPE);
+    respond({ wiring: validation('wiring boom') });
+
+    await collectCreatedResources(sink, () => failure(() => provider.create('MyAsg', TYPE, PROPS)));
+
+    expect(mockSend.mock.calls.some((c) => c[0] instanceof DeleteAutoScalingGroupCommand)).toBe(
+      true
+    );
+    expect(sink.report).toBeUndefined();
+  });
+
+  it("reports nothing when CreateAutoScalingGroup's own failure is thrown", async () => {
+    const sink = new CreatedResourceSink('MyAsg', TYPE);
+    respond({ create: Object.assign(new Error('already exists'), { name: 'AlreadyExists' }) });
+
+    await collectCreatedResources(sink, () => failure(() => provider.create('MyAsg', TYPE, PROPS)));
+
+    expect(sink.report).toBeUndefined();
   });
 });
