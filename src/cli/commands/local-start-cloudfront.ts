@@ -25,7 +25,8 @@ import { adoptDeprecatedRegionFlag } from '../region-options.js';
  * `--no-pull` / `--tls` / `--tls-cert` / `--tls-key` / `--watch`, plus
  * cdk-local's own `--from-cfn-stack` / `--stack-region` / `--assume-role` for
  * binding a Function URL origin's backing Lambda, a Web Function endpoint
- * origin's revision + a deployed-S3 origin's bucket name to deployed state) live in cdk-local and are auto-inherited.
+ * origin's revision + a deployed-S3 origin's bucket name to deployed state)
+ * live in cdk-local and are auto-inherited.
  *
  * `--region` is the ONE inherited option cdkd replaces rather than accepts as
  * given: cdk-local declares it visibly and undeprecated, while every other cdkd
@@ -43,8 +44,8 @@ import { adoptDeprecatedRegionFlag } from '../region-options.js';
  * every state-backed path of this command: the deployed-S3 origin, the
  * `cf.kvs()` bindings and the Function URL / Web Function endpoint /
  * Lambda@Edge container environment (go-to-k/cdk-local#699, cdk-local
- * 0.151.0; the Web Function endpoint origin since cdk-local 0.157.0). Until that release
- * these flags parsed and did nothing here, so they were refused
+ * 0.151.0; the Web Function endpoint origin since cdk-local 0.157.0). Until
+ * that release these flags parsed and did nothing here, so they were refused
  * ([#2528](https://github.com/go-to-k/cdkd/issues/2528)); the refusal is gone
  * ([#2600](https://github.com/go-to-k/cdkd/issues/2600)).
  *
