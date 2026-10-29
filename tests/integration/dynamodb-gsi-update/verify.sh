@@ -124,6 +124,8 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 DEPLOY_LOG="${TMPDIR:-/tmp}/cdkd-1768-deploy.$$.log"
 # Phase 1c's converging deploy (go-to-k/cdkd#5503); removed by cleanup().
 P1C_CONVERGE_LOG="${TMPDIR:-/tmp}/cdkd-5503-converge.$$.log"
+# Phase 1c's same-template retry (go-to-k/cdkd#5487); removed by cleanup().
+P1C_RETRY_LOG="${TMPDIR:-/tmp}/cdkd-5487-retry.$$.log"
 STATE_JSON="${TMPDIR:-/tmp}/cdkd-1767-state.$$.json"
 DRIFT_JSON="${TMPDIR:-/tmp}/cdkd-1767-drift.$$.json"
 # The Phase 3 destroy log, read by the issue #1931 assertions below. Declared
@@ -194,7 +196,7 @@ cleanup() {
   CLEANED_UP=1
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
-  rm -f "${DEPLOY_LOG}" "${P1C_CONVERGE_LOG}" "${STATE_JSON}" "${STATE_JSON}.stripped" "${STATE_JSON}.stale" "${STATE_JSON}.warm" "${DRIFT_JSON}" "${DESTROY_LOG}"
+  rm -f "${DEPLOY_LOG}" "${P1C_CONVERGE_LOG}" "${P1C_RETRY_LOG}" "${STATE_JSON}" "${STATE_JSON}.stripped" "${STATE_JSON}.stale" "${STATE_JSON}.warm" "${DRIFT_JSON}" "${DESTROY_LOG}"
   # The tables are swept BY NAME first and the state records dropped second, so
   # a `state destroy` that dies half way is never the only thing standing
   # between a table and a leak. (`state destroy` then finds the table already
@@ -311,7 +313,6 @@ case ",$(table_unsettled)," in
   *) echo "FAIL: table record's unsettledProperties after the cut-short GSI add is '$(table_unsettled)', expected it to name GlobalSecondaryIndexes (go-to-k/cdkd#5487)" >&2; exit 1 ;;
 esac
 if [ "$(gsi_status)" = "CREATING" ]; then
-  P1C_RETRY_LOG="$(mktemp)"
   set +e
   CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
     --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${P1C_RETRY_LOG}" 2>&1
