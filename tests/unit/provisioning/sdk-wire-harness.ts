@@ -785,8 +785,9 @@ export interface ProbeResult {
  * outermost CFn ancestor may sit under any SDK member (or command); a
  * container named by its command accepts any child of that parent at the
  * top of that call, and several calls of one command are told apart only
- * where the case declares `roots`; a `transformed` path is not traced at
- * all; and a
+ * where the case declares `roots` (a global table's remote replicas differ
+ * only by client region, which no input carries); a `transformed` path is not
+ * traced at all; and a
  * value landing in its own member AND another passes (the other's own value,
  * then lost, is what its removal and vary probes report silent).
  */
