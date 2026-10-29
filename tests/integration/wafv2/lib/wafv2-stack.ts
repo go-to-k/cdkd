@@ -22,10 +22,59 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
  *   under a NotStatement.
  * - An IPSetReferenceStatement whose CFn `Arn` member the SDK spells `ARN`,
  *   nested under an AndStatement.
+ *
+ * Issue #2762: the WebACL also carries `DataProtectionConfig` and
+ * `OnSourceDDoSProtectionConfig`, which `verify.sh` reads back from
+ * `GetWebACL`. Two env switches drive its later phases:
+ *
+ * - `CDKD_TEST_WAF_UPDATE=true` changes the data protection (HASH ->
+ *   SUBSTITUTION on one field, the other entry dropped) and keeps the DDoS
+ *   mode unchanged, since `UpdateWebACL` replaces the web ACL whole and an
+ *   unchanged member must still be re-sent.
+ * - `CDKD_TEST_WAF_REMOVAL=true` drops both from the template.
+ *
+ * `ApplicationConfig` is NOT exercised here (unit tests only). AWS refuses
+ * arbitrary attribute names and publishes no allowed set. Measured
+ * 2026-10-30: the create was refused with a 400 `WAFInvalidParameterException`
+ * naming `ApplicationAttribute` on both the Cloud Control and SDK routes, and
+ * on three attribute shapes sent directly with the AWS CLI.
+ *
+ * `MonetizationConfig` is deliberately NOT exercised here: it configures
+ * crypto payments to a wallet, its create needs `payments:GetConnectedAccount`,
+ * and AWS documents it for web ACLs whose rules use the `Monetize` action, so
+ * a fixture would depend on account-level payment setup. Unit tests cover its
+ * wiring.
  */
 export class Wafv2Stack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    const updatePhase = process.env['CDKD_TEST_WAF_UPDATE'] === 'true';
+    const removalPhase = process.env['CDKD_TEST_WAF_REMOVAL'] === 'true';
+
+    // Issue #2762. The second entry leaves both Exclude* booleans out, so the
+    // template-baseline drift check in verify.sh covers the read-back dropping
+    // a `false` default AWS may echo for them.
+    const dataProtectionConfig: wafv2.CfnWebACL.DataProtectionConfigProperty = updatePhase
+      ? {
+          dataProtections: [
+            {
+              field: { fieldType: 'SINGLE_HEADER', fieldKeys: ['authorization'] },
+              action: 'SUBSTITUTION',
+            },
+          ],
+        }
+      : {
+          dataProtections: [
+            {
+              field: { fieldType: 'SINGLE_HEADER', fieldKeys: ['authorization'] },
+              action: 'HASH',
+              excludeRuleMatchDetails: true,
+              excludeRateBasedDetails: false,
+            },
+            { field: { fieldType: 'QUERY_STRING' }, action: 'SUBSTITUTION' },
+          ],
+        };
 
     // WAFv2 IP Set (for IP-based access control)
     const ipSet = new wafv2.CfnIPSet(this, 'BlockedIPs', {
@@ -47,6 +96,13 @@ export class Wafv2Stack extends cdk.Stack {
       },
       name: `cdkd-test-webacl-${cdk.Aws.ACCOUNT_ID}`,
       description: 'cdkd integration test WebACL',
+      ...(removalPhase
+        ? {}
+        : {
+            dataProtectionConfig,
+            // No ALB is associated, so ALWAYS_ON changes no traffic here.
+            onSourceDDoSProtectionConfig: { albLowReputationMode: 'ALWAYS_ON' },
+          }),
       rules: [
         {
           name: 'RateLimitRule',

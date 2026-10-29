@@ -31,7 +31,7 @@ basic	2026-10-20T19:58:09Z	PASS	94	standard	PR #5100 pre-merge run, deploy+destr
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-10-28T06:38:36Z	PASS	700	verify.sh	rc ok, orph clean; #5433 tag keys exact, probe RED at tag-key assertion
 bench-ccapi	2026-10-24T06:41:39Z	PASS	90	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 0 orphans (5 deleted)
-bench-cdk-sample	2026-10-24T06:48:13Z	PASS	496	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 2 log groups retained by DeletionPolicy (expected)
+bench-cdk-sample	2026-10-29T18:05:48Z	PASS	456	standard	final head 212db23c8 (#5508); destroy 38 deleted, 2 retained by DeletionPolicy, 0 errors
 bench-sdk	2026-10-24T06:40:41Z	PASS	40	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 0 orphans (5 deleted)
 bootstrap-free-region	2026-10-05T08:20:47Z	PASS	81	verify.sh	rc 0, 0 orphans; ca-central-1, delete-marker residue from earlier runs purged (#2624 PR #4573)
 bucket-deployment	2026-10-11T09:33:22Z	PASS	80	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -356,7 +356,7 @@ scheduler-custom-group	2026-10-24T03:41:38Z	PASS	105	verify.sh	rc ok, orph clean
 schema-v10-to-v11-migration	2026-10-14T07:59:02Z	PASS	495	verify.sh	rc ok, orph clean; PR #4893 state destroy purges record history (ee330190b), own state bucket; state.json kept only its delete marker
 schema-v11-to-v12-migration	2026-10-16T16:59:47Z	PASS	161	verify.sh	rc ok, orph clean (stateless-mixins refactor #5015, rebased)
 schema-v12-to-v13-migration	2026-10-23T16:21:31Z	PASS	159	verify.sh	v12->v13 transparent auto-migration verified, 46 assertions; integ-schema-migration marker set
-schema-v14-to-v15-migration	2026-10-29T17:10:07Z	PASS	1123	verify.sh	rc ok, orph clean
+schema-v14-to-v15-migration	2026-10-29T18:05:48Z	PASS	1158	verify.sh	final head 212db23c8 (#5508); rc ok, 51 assertions, orph clean
 schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b7; v5->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-10-12T05:44:10Z	FAIL	100	verify.sh	PR #4812: fixture stale, asserts literal schema version (state is v11); GetStackOutput/ImportValue resolved, cleanup clean
@@ -408,7 +408,7 @@ vpc-lambda	2026-10-25T16:18:19Z	PASS	831	standard	us-east-1; rerun on formatting
 vpc-lambda-cr-race	2026-10-25T15:55:05Z	PASS	326	standard	us-east-1; final build 8c364cddb (#5276); 21 deleted 0 errors, orph clean, no Gave up warning
 vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-provider loop ok, 0 err 0 orph
 vpc-nat-gateway	2026-10-26T12:39:04Z	PASS	2098	verify.sh	rc ok, orph clean, #2762 regional NAT; 1h/1i wait exercised
-wafv2	2026-10-20T06:35:00Z	PASS	180	standard	deploy+destroy clean, 0 orphans
+wafv2	2026-10-29T17:47:25Z	PASS	188	verify.sh	rc ok, orph clean; probe red at assert_sdk_route (cc-api routing)
 wait-condition-handle	2026-09-30T12:06:02Z	PASS	66	verify.sh	rc ok, orph clean (#4228)
 wide-independent	2026-10-24T07:02:56Z	PASS	1343	verify.sh	final #5242 round, default settings (SDK 10/30, CC 10/20/30); 1 throttling line + retry after ProvisioningError (ThrottlingException) x16 at CC30; destroy 0 errors, orph clean incl SSM docs + Athena wg
 wide-web-functions	2026-10-24T06:46:45Z	PASS	396	verify.sh	final #5242 round, default settings (12 functions, --concurrency 10 20); retry after ProvisioningError (ValidationException) x38 at cc20; destroy 0 errors, orph clean incl log groups
