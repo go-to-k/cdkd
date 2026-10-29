@@ -29,13 +29,6 @@
       "InstanceLifecyclePolicy",
       "PlacementGroup"
     ],
-    "AWS::BedrockAgentCore::Runtime": [
-      "CapacityProviderConfiguration",
-      "FilesystemConfigurations",
-      "PlatformVersion",
-      "RequestHeaderConfiguration",
-      "Tags"
-    ],
     "AWS::CloudWatch::Alarm": [
       "EvaluationCriteria",
       "EvaluationInterval",

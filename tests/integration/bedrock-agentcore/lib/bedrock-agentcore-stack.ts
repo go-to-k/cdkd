@@ -42,6 +42,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * stays in both phases so the removal phase only drops the endpoint with the
  * authorizer.
  *
+ * Issue #2762: Phase 1 also gives the code runtime a top-level Tags map (keys
+ * a case flip would change), a RequestHeaderConfiguration allowlist and a
+ * SessionStorage FilesystemConfigurations entry; the removal phase drops all
+ * three (Tags through UntagResource, the other two by the full replace).
+ * PlatformVersion and CapacityProviderConfiguration stay unset: the first
+ * has no documented value set, the second needs a capacity provider.
+ *
  * covers: AWS::BedrockAgentCore::Runtime
  */
 export class BedrockAgentcoreStack extends cdk.Stack {
@@ -111,6 +118,18 @@ export class BedrockAgentcoreStack extends cdk.Stack {
           },
         }
       );
+    }
+    if (!isRemoval) {
+      // Issue #2762: the SDK provider sends these instead of routing the
+      // runtime to Cloud Control.
+      const cfn = codeRuntime.node.defaultChild as cdk.CfnResource;
+      cfn.addPropertyOverride('Tags', { Env: 'cdkd-integ', lowerKey: 'v2762' });
+      cfn.addPropertyOverride('RequestHeaderConfiguration', {
+        RequestHeaderAllowlist: ['X-Amzn-Bedrock-AgentCore-Runtime-Custom-Cdkd'],
+      });
+      cfn.addPropertyOverride('FilesystemConfigurations', [
+        { SessionStorage: { MountPath: '/mnt/cdkd' } },
+      ]);
     }
     if (isRemoval) {
       // The L2 always renders these two; delete them so the keys are REMOVED.

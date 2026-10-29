@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 89,
-    "declaredProperties": 1197,
-    "wiredProperties": 1195,
+    "declaredProperties": 1202,
+    "wiredProperties": 1200,
     "wired": 87,
     "gap": 0,
     "allowListed": 2,
@@ -279,7 +279,7 @@
       "file": "agentcore-runtime-provider.ts",
       "className": "AgentCoreRuntimeProvider",
       "bucket": "wired",
-      "declaredCount": 10,
+      "declaredCount": 15,
       "properties": [
         {
           "name": "AgentRuntimeArtifact",
@@ -316,6 +316,21 @@
             "AWS::BedrockAgentCore::Runtime"
           ],
           "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
+          "name": "CapacityProviderConfiguration",
+          "status": "wired",
+          "types": [
+            "AWS::BedrockAgentCore::Runtime"
+          ],
+          "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
@@ -366,6 +381,21 @@
           ]
         },
         {
+          "name": "FilesystemConfigurations",
+          "status": "wired",
+          "types": [
+            "AWS::BedrockAgentCore::Runtime"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
           "name": "LifecycleConfiguration",
           "status": "wired",
           "types": [
@@ -394,6 +424,21 @@
           ]
         },
         {
+          "name": "PlatformVersion",
+          "status": "wired",
+          "types": [
+            "AWS::BedrockAgentCore::Runtime"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
           "name": "ProtocolConfiguration",
           "status": "wired",
           "types": [
@@ -408,7 +453,36 @@
           ]
         },
         {
+          "name": "RequestHeaderConfiguration",
+          "status": "wired",
+          "types": [
+            "AWS::BedrockAgentCore::Runtime"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
           "name": "RoleArn",
+          "status": "wired",
+          "types": [
+            "AWS::BedrockAgentCore::Runtime"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
+          "name": "Tags",
           "status": "wired",
           "types": [
             "AWS::BedrockAgentCore::Runtime"
