@@ -3904,6 +3904,34 @@ describe('target-table hygiene', { timeout: CONTENDED_CASE_TIMEOUT_MS }, () => {
     ).toEqual(['AWS::ECS::TaskDefinition', 'AWS::S3::Bucket']);
   });
 
+  it('every target the hand-off walk delivers a path for declares minHandoffPoints (#1445 / PR #4324)', () => {
+    // The shape successor of the retired "WALK-DEPENDENT opt-in" check. A
+    // target with a non-empty whole delivery has shape verdicts the walk can
+    // change; without the floor, a walk that collapsed to zero hand-offs would
+    // silently restore every literal rescue PR #4324 withdraws. Derived from
+    // the real tree, so a provider that starts handing a blob off is pulled in.
+    const report = loadReport();
+    const dependent = report.targets.filter((t) => t.wholeDeliveredPaths.length > 0);
+    for (const t of dependent) {
+      const declared = NESTED_KEY_TARGETS.find((d) => d.resourceType === t.resourceType);
+      expect(declared?.minHandoffPoints, `${t.resourceType} minHandoffPoints`).toBeGreaterThanOrEqual(
+        1
+      );
+    }
+    // Non-vacuity: the four targets this check was restored for are in the
+    // measured set, alongside the ones already fenced before it.
+    expect(dependent.map((t) => t.resourceType)).toEqual(
+      expect.arrayContaining([
+        'AWS::CloudWatch::AnomalyDetector',
+        'AWS::ECS::Service',
+        'AWS::ECS::TaskDefinition',
+        'AWS::S3::Bucket',
+        'AWS::CloudFront::Distribution',
+        'AWS::ApiGatewayV2::Api',
+      ])
+    );
+  });
+
   // The two probes below re-walk every provider file a floor is declared on,
   // so their cost grows with the provider tree rather than with the change
   // under test; they carry the shared contended bound (go-to-k/cdkd#3607).

@@ -228,6 +228,12 @@ export interface NestedKeyTarget {
    * ({@link countExpandingHandoffPoints}). Counting RAW points instead is
    * vacuous; the measured reason is on that function.
    *
+   * Declared by EVERY target whose {@link wholeDeliveredPathsFor} result is
+   * non-empty — the targets whose shape verdicts the walk can change (a
+   * hygiene test derives that set from the real tree, so it stays a
+   * measurement). A target the walk never delivers anything for has nothing
+   * this floor protects.
+   *
    * Usually 1 against a larger measurement: the points are typically one per
    * audited blob top-level, so a floor AT the measurement turns a legitimate
    * provider change (the provider stops forwarding one blob and starts naming
@@ -507,6 +513,7 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     sdkClientPackage: '@aws-sdk/client-lambda',
     keyStyle: 'exact',
     minNestedKeys: 30,
+    minHandoffPoints: 1,
   },
   {
     resourceType: 'AWS::Lambda::WebFunctionRevision',
@@ -539,6 +546,7 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     sdkClientPackage: '@aws-sdk/client-eventbridge',
     keyStyle: 'exact',
     minNestedKeys: 60,
+    minHandoffPoints: 1,
   },
   {
     resourceType: 'AWS::Scheduler::Schedule',
@@ -546,6 +554,7 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     sdkClientPackage: '@aws-sdk/client-scheduler',
     keyStyle: 'exact',
     minNestedKeys: 38,
+    minHandoffPoints: 1,
   },
   {
     resourceType: 'AWS::Pipes::Pipe',
@@ -553,6 +562,7 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     sdkClientPackage: '@aws-sdk/client-pipes',
     keyStyle: 'exact',
     minNestedKeys: 180,
+    minHandoffPoints: 1,
   },
   {
     // `client-glue` is PascalCase everywhere EXCEPT
@@ -562,21 +572,25 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     ...GLUE_TARGET,
     resourceType: 'AWS::Glue::Crawler',
     minNestedKeys: 36,
+    minHandoffPoints: 1,
   },
   {
     ...GLUE_TARGET,
     resourceType: 'AWS::Glue::Table',
     minNestedKeys: 70,
+    minHandoffPoints: 1,
   },
   {
     ...GLUE_TARGET,
     resourceType: 'AWS::Glue::Connection',
     minNestedKeys: 29,
+    minHandoffPoints: 1,
   },
   {
     ...GLUE_TARGET,
     resourceType: 'AWS::Glue::Trigger',
     minNestedKeys: 12,
+    minHandoffPoints: 1,
   },
   {
     ...GLUE_TARGET,
@@ -592,6 +606,7 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     ...GLUE_TARGET,
     resourceType: 'AWS::Glue::Job',
     minNestedKeys: 5,
+    minHandoffPoints: 1,
   },
   // `AWS::Glue::Workflow` is deliberately LEFT OUT: its schema has no nested
   // property at all (scalars plus the free-form string maps

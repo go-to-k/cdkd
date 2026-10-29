@@ -232,8 +232,8 @@ export const UNREADABLE = Symbol('unreadable');
 /**
  * Every way `gen-nested-key-coverage.ts --check` announces a failure.
  *
- * Both spellings are load-bearing: `FAIL` prefixes its four blocking verdicts
- * (divergences, and the three stale-list refusals) and `failed` prefixes the
+ * Both spellings are load-bearing: `FAIL` prefixes its three blocking verdicts
+ * (divergences, and the two stale-list refusals) and `failed` prefixes the
  * crash path. A run that says either of these and yields no parsed finding must
  * never render as clean. Fenced against the producer by
  * `tests/unit/scripts/diagnose-schema-refresh.test.ts`, which greps both
@@ -2067,7 +2067,13 @@ function divergenceProcedure(divergences, sdkLag, unresolved = []) {
   /** @type {string[]} */
   const lagLines = [];
   const lags = sdkLag ?? [];
-  if (divergences.length > 0) {
+  // Per BUCKET, not per divergence count: only a `definition-member-missing`
+  // can be an SDK lag (a newer client may model the member), while an
+  // `array-vs-wrapper` is the SDK modelling a wrapper the provider must build,
+  // which no bump changes.
+  const missing = divergences.some((d) => d.bucket === 'definition-member-missing');
+  const wrappers = divergences.some((d) => d.bucket === 'array-vs-wrapper');
+  if (missing) {
     // One line per (type, client) rather than one line for the whole section.
     // A single line covering "the first divergent type" left every other
     // divergence's SDK-lag reading unstated while reading like a verdict, and
@@ -2119,7 +2125,7 @@ function divergenceProcedure(divergences, sdkLag, unresolved = []) {
     '<details><summary>How to settle these</summary>',
     '',
     ...lagLines,
-    ...(divergences.length > 0
+    ...(missing
       ? [
           '1. For a `definition-member-missing`, rule out the installed SDK',
           '   simply lagging the service.',
@@ -2176,6 +2182,15 @@ function divergenceProcedure(divergences, sdkLag, unresolved = []) {
           '   `NESTED_KEY_ALLOW_LIST` entry in',
           '   `scripts/gen-nested-key-coverage.ts` with a one-line reason — an',
           '   allow-list entry added over an SDK lag hides a real dropped value.',
+        ]
+      : []),
+    ...(wrappers
+      ? [
+          ...(missing ? [''] : []),
+          'For an `array-vs-wrapper`, the SDK models the member as a `{ Quantity, Items }`',
+          'wrapper, and no SDK bump changes that: wrap the bare CFn array in the',
+          'provider. Allow-list it only for a member the provider never sends, with a',
+          'one-line reason.',
         ]
       : []),
     '',
@@ -2267,6 +2282,9 @@ export function buildSdkLag(divergences, clientsFor, versionLag = sdkVersionLag)
   const byClient = new Map();
   const emitted = new Set();
   for (const d of divergences) {
+    // Only a `definition-member-missing` can be an SDK lag; asking npm about an
+    // `array-vs-wrapper` would render a lag reading for a finding no bump fixes.
+    if (d.bucket !== 'definition-member-missing') continue;
     for (const { client, version, matched } of clientsForType(
       d.resourceType,
       clientsFor(d.resourceType)

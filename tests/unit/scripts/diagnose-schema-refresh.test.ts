@@ -638,6 +638,25 @@ describe('renderDiagnosis', () => {
     },
   };
 
+  it('an array-vs-wrapper alone renders the wrapping step, not the SDK-lag procedure', () => {
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [
+        {
+          resourceType: 'AWS::CloudFront::Distribution',
+          nestedKey: 'NewList',
+          bucket: 'array-vs-wrapper',
+          detail: 'SDK wraps it as `NewLists` ({ Quantity, Items })',
+        },
+      ],
+      skipped: [],
+    });
+    expect(md).toContain('For an `array-vs-wrapper`');
+    expect(md).not.toContain('For a `definition-member-missing`');
+    expect(md).not.toContain('Installed vs published');
+  });
+
   it('names the property, the site, and which way the SDK evidence leans', () => {
     const md = renderDiagnosis({
       removed: [removedEntry],
@@ -1865,6 +1884,18 @@ describe('buildSdkLag', () => {
       }
     );
     expect(rows).toEqual([]);
+  });
+
+  it('never asks anything for an array-vs-wrapper (no SDK bump changes a wrapper)', () => {
+    expect(
+      buildSdkLag(
+        [{ resourceType: 'AWS::CloudFront::Distribution', bucket: 'array-vs-wrapper' }],
+        () => [{ client: '@aws-sdk/client-cloudfront', version: '3.0.0' }],
+        () => {
+          throw new Error('an array-vs-wrapper must not trigger a version lookup');
+        }
+      )
+    ).toEqual([]);
   });
 
   const glue = { resourceType: 'AWS::Glue::Connection', bucket: 'definition-member-missing' };
