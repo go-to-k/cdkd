@@ -431,7 +431,7 @@ function namesAt(loc: Location, flat: Map<string, unknown>): string[] {
  * pair up by command and occurrence; an unpaired one contributes all of its
  * members.
  */
-export function landingNames(from: readonly string[], to: readonly string[]): string[] {
+function landingNames(from: readonly string[], to: readonly string[]): string[] {
   const byCommand = (lines: readonly string[]) => {
     const m = new Map<string, unknown[]>();
     for (const line of lines) {
@@ -483,7 +483,7 @@ function expectedNames(bag: Bag, alt: Bag, path: Path): string[] {
 }
 
 /** A bag path as `MEMBER_RENAMES` keys it: its member names, indices dropped. */
-export const renameKey = (path: Path): string =>
+const renameKey = (path: Path): string =>
   path.filter((s) => typeof s === 'string').join('.');
 
 /**
