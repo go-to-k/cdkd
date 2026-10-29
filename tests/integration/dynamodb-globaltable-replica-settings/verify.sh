@@ -344,10 +344,11 @@ retire_key() { # usage: retire_key <region> <alias>
 }
 
 # Region $2's copy of table $1 ACTIVE with no encryption change in flight, or
-# gone. Bounded: 15 min. Returns 1 at the bound.
-await_table_idle() { # usage: await_table_idle <table name> <region>
-  local out
-  for _ in $(seq 1 90); do
+# gone. Bounded: 15 min, or the epoch second $3 when given (a caller's own
+# deadline). Returns 1 at the bound.
+await_table_idle() { # usage: await_table_idle <table name> <region> [deadline epoch]
+  local out deadline="${3:-$(($(date +%s) + 900))}"
+  while [ "$(date +%s)" -lt "${deadline}" ]; do
     if ! out="$(aws dynamodb describe-table --table-name "$1" --region "$2" \
       --query '[Table.TableStatus, Table.SSEDescription.Status]' --output text 2>&1)"; then
       printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' && return 0
@@ -362,11 +363,16 @@ await_table_idle() { # usage: await_table_idle <table name> <region>
 # DeleteTable for table $1 in region $2, keeping AWS's answer. Not found is the
 # goal. A ResourceInUseException (the table, a replica or its encryption still
 # changing) waits the table out and retries; a deletion-protection refusal
-# turns protection off there first. Anything else, or the bound (about 15
-# min), is recorded WITH AWS's message and returns 1.
+# turns protection off there first. Anything else, or ONE deadline for the
+# whole call (15 min from its start, waits included), is recorded WITH AWS's
+# last message and returns 1.
 delete_table_logged() { # usage: delete_table_logged <table name> <region>
-  local out
-  for _ in $(seq 1 30); do
+  local out="(no attempt)" why="refused" deadline=$(($(date +%s) + 900))
+  while :; do
+    if [ "$(date +%s)" -ge "${deadline}" ]; then
+      why="not deleted within 15 min"
+      break
+    fi
     if out="$(aws dynamodb delete-table --table-name "$1" --region "$2" 2>&1)"; then
       return 0
     fi
@@ -375,21 +381,22 @@ delete_table_logged() { # usage: delete_table_logged <table name> <region>
     fi
     if printf '%s' "${out}" | grep -qiE 'deletion protection'; then
       echo "    ${1} (${2}): deletion protection is on; turning it off before the delete"
-      aws dynamodb update-table --table-name "$1" --region "$2" \
-        --no-deletion-protection-enabled >/dev/null 2>&1 ||
-        echo "    ${1} (${2}): turning deletion protection off was refused; retrying" >&2
-      await_table_idle "$1" "$2"
+      local flip
+      flip="$(aws dynamodb update-table --table-name "$1" --region "$2" \
+        --no-deletion-protection-enabled 2>&1 >/dev/null)" ||
+        echo "    ${1} (${2}): turning deletion protection off was refused; retrying: $(printf '%s' "${flip}" | tr '\n' ' ')" >&2
+      await_table_idle "$1" "$2" "${deadline}"
       continue
     fi
     if printf '%s' "${out}" | grep -qiE 'ResourceInUseException|LimitExceededException'; then
       echo "    ${1} (${2}): delete refused while it is changing; waiting: $(printf '%s' "${out}" | tr '\n' ' ')"
-      await_table_idle "$1" "$2"
+      await_table_idle "$1" "$2" "${deadline}"
       sleep 10
       continue
     fi
     break
   done
-  echo "ERROR: cleanup could not delete ${1} in ${2}: $(printf '%s' "${out}" | tr '\n' ' ')" >&2
+  echo "ERROR: cleanup could not delete ${1} in ${2} (${why}): $(printf '%s' "${out}" | tr '\n' ' ')" >&2
   CLEANUP_STRANDED=1
   return 1
 }
@@ -436,8 +443,10 @@ teardown_table() { # usage: teardown_table <table name>
           if [ "${status}" = "ACTIVE" ]; then
             if [ "$(aws dynamodb describe-table --table-name "${tbl}" --region "${SECOND_REGION}" \
               --query 'Table.DeletionProtectionEnabled' --output text 2>/dev/null)" = "True" ]; then
-              aws dynamodb update-table --table-name "${tbl}" --region "${SECOND_REGION}" \
-                --no-deletion-protection-enabled >/dev/null 2>&1
+              if ! out="$(aws dynamodb update-table --table-name "${tbl}" --region "${SECOND_REGION}" \
+                --no-deletion-protection-enabled 2>&1)"; then
+                echo "    ${tbl} (${SECOND_REGION}): turning deletion protection off failed: $(printf '%s' "${out}" | tr '\n' ' ')" >&2
+              fi
             fi
             if ! out="$(aws dynamodb update-table --table-name "${tbl}" --region "${REGION}" \
               --replica-updates "Delete={RegionName=${SECOND_REGION}}" 2>&1)" &&
@@ -569,17 +578,9 @@ sweep_previous_runs() {
       if [ "${r}" = "${REGION}" ]; then
         teardown_table "${tbl}"
       else
-        aws dynamodb update-table --table-name "${tbl}" --region "${r}" \
-          --no-deletion-protection-enabled >/dev/null 2>&1
-        # The protection change leaves the table UPDATING, and DeleteTable
-        # is refused until it is ACTIVE again (bounded: 5 min).
-        for _ in $(seq 1 30); do
-          [ "$(aws dynamodb describe-table --table-name "${tbl}" --region "${r}" \
-            --query 'Table.TableStatus' --output text 2>/dev/null)" = "ACTIVE" ] && break
-          sleep 10
-        done
-        aws dynamodb delete-table --table-name "${tbl}" --region "${r}" >/dev/null 2>&1 ||
-          echo "WARN: sweep could not delete ${tbl} in ${r}; delete it by hand" >&2
+        # Protection, an in-flight change and any other refusal are handled
+        # (and AWS's answer kept) there.
+        delete_table_logged "${tbl}" "${r}"
       fi
       swept="${swept}${tbl} "
     done
