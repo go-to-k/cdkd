@@ -24,8 +24,10 @@ unasked its ETA and queue. A subagent running a turn's integs, marker and
 ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
 it (#5245), so the `.live` Monitor below is the only progress signal. Its brief
 (the runner never reads this file) makes marker and ledger due once the last PID
-exits, has it wait on ONE command exiting with that PID (never a per-line
-Monitor, whose every line resumes and re-ends it, #5413), bans attribution
+exits, has it run `/run-integ` step 5's block per fixture AS WRITTEN and read
+each verdict from that LOG's `verify.sh rc=` line, never a driver or results
+file of its own (#5519), wait on ONE command exiting with that PID (never a
+per-line Monitor: each line re-ends it, #5413), bans attribution
 lines in the ledger commit (#5104), and STOPs on an unreadable state record,
 never purging (`/run-integ` step 7). A FAIL names the file EMITTING its message (`grep -rlF` a `${}`-free fragment over `src/`
 and the fixture): the PR is blamed when that file is in its diff, cleared when
