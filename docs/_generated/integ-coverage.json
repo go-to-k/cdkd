@@ -5423,6 +5423,7 @@
         "kms-encryption",
         "loggroup-kms-associate",
         "propagation-races-2",
+        "s3-directory-bucket",
         "s3-replication-and-filter",
         "s3-vectors"
       ],
@@ -5472,6 +5473,9 @@
         ],
         "propagation-races-2": [
           "l1"
+        ],
+        "s3-directory-bucket": [
+          "l2"
         ],
         "s3-replication-and-filter": [
           "l2",
@@ -6786,6 +6790,7 @@
         "rollback-replay-effective-props",
         "s3-analytics-inventory",
         "s3-cloudfront",
+        "s3-directory-bucket",
         "s3-event-notification",
         "s3-fix-forward-orphan",
         "s3-lifecycle",
@@ -6957,6 +6962,9 @@
           "l1"
         ],
         "s3-cloudfront": [
+          "l2"
+        ],
+        "s3-directory-bucket": [
           "l2"
         ],
         "s3-event-notification": [

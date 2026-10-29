@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 89,
-    "declaredProperties": 1193,
-    "wiredProperties": 1191,
+    "declaredProperties": 1197,
+    "wiredProperties": 1195,
     "wired": 87,
     "gap": 0,
     "allowListed": 2,
@@ -18182,8 +18182,24 @@
       "file": "s3-directory-bucket-provider.ts",
       "className": "S3DirectoryBucketProvider",
       "bucket": "wired",
-      "declaredCount": 4,
+      "declaredCount": 8,
       "properties": [
+        {
+          "name": "BucketEncryption",
+          "status": "wired",
+          "types": [
+            "AWS::S3Express::DirectoryBucket"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "canonicalizeDriftProperties",
+            "create",
+            "update"
+          ]
+        },
         {
           "name": "BucketName",
           "status": "wired",
@@ -18211,6 +18227,37 @@
           ]
         },
         {
+          "name": "InventoryConfigurations",
+          "status": "wired",
+          "types": [
+            "AWS::S3Express::DirectoryBucket"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
+          "name": "LifecycleConfiguration",
+          "status": "wired",
+          "types": [
+            "AWS::S3Express::DirectoryBucket"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "canonicalizeDriftProperties",
+            "create",
+            "update"
+          ]
+        },
+        {
           "name": "LocationName",
           "status": "wired",
           "types": [
@@ -18221,6 +18268,21 @@
           ],
           "seededBy": [
             "create"
+          ]
+        },
+        {
+          "name": "MetricsConfigurations",
+          "status": "wired",
+          "types": [
+            "AWS::S3Express::DirectoryBucket"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
           ]
         },
         {
@@ -18240,7 +18302,10 @@
       ],
       "gaps": [],
       "blindSpots": [
-        "hasCdkAutoDeleteTag(...) in delete()"
+        "computed key in desiredConfigurations()",
+        "computed key in readUnsettled()",
+        "hasCdkAutoDeleteTag(...) in delete()",
+        "object spread in canonicalizeConfigurationsForDrift()"
       ]
     },
     {

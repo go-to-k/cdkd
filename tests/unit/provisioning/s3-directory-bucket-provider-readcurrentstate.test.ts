@@ -52,8 +52,9 @@ describe('S3DirectoryBucketProvider.readCurrentState', () => {
     provider = new S3DirectoryBucketProvider();
   });
 
-  it('returns BucketName + DataRedundancy + Tags (happy path)', async () => {
-    mockS3Send.mockResolvedValueOnce({}); // HeadBucket
+  it('emits placeholders for every user-controllable top-level key on AWS minimum response', async () => {
+    // HeadBucket, then the four configuration reads, each answering nothing.
+    mockS3Send.mockResolvedValue({});
     mockStsSend.mockResolvedValueOnce({ Account: '123456789012' }); // account for the tag ARN
     mockControlSend.mockResolvedValueOnce({ Tags: [] }); // ListTagsForResource (untagged)
 
@@ -64,10 +65,25 @@ describe('S3DirectoryBucketProvider.readCurrentState', () => {
     );
 
     expect(mockS3Send.mock.calls[0]?.[0]).toBeInstanceOf(HeadBucketCommand);
+    expect(Object.keys(result ?? {}).sort()).toEqual(
+      [
+        'BucketEncryption',
+        'BucketName',
+        'DataRedundancy',
+        'InventoryConfigurations',
+        'LifecycleConfiguration',
+        'MetricsConfigurations',
+        'Tags',
+      ].sort()
+    );
     expect(result).toEqual({
       BucketName: 'my-bucket--use1-az1--x-s3',
       DataRedundancy: 'SingleAvailabilityZone',
       Tags: [],
+      BucketEncryption: { ServerSideEncryptionConfiguration: [] },
+      LifecycleConfiguration: { Rules: [] },
+      MetricsConfigurations: [],
+      InventoryConfigurations: [],
     });
   });
 

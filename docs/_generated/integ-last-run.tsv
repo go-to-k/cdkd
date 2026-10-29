@@ -341,7 +341,7 @@ route53	2026-10-28T09:53:09Z	PASS	562	verify.sh	rc ok, orph clean; #5465 Acceler
 s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 PR #4449)
 s3-cloudfront	2026-10-27T11:54:53Z	PASS	276	verify.sh	rc ok, orph clean; #5393 Enabled arm: pre-fix MalformedXML at Distribution CREATE, post-fix green
-s3-directory-bucket	2026-10-20T06:32:13Z	PASS	221	verify.sh	deploy+destroy clean, 0 orphans
+s3-directory-bucket	2026-10-29T19:12:05Z	PASS	255	verify.sh	rc ok, orph clean; probe red at sdk-route assert (probe tree: explicit BucketName + zone-id LocationName for the pre-fix CC route)
 s3-event-notification	2026-10-25T13:14:00Z	PASS	95	verify.sh	us-east-1; PR #5262 a4722aee6; rc ok, orph clean
 s3-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	273	verify.sh	rc 0, 0 orphans; #5511 at ef3ea089e (src same as 230a2ce27)
 s3-lifecycle	2026-10-11T09:33:22Z	PASS	496	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean

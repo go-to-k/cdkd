@@ -15,7 +15,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 ## Summary
 
 - Provider classes classified: **89**
-- Declared properties: **1193** (**1191** with read evidence)
+- Declared properties: **1197** (**1195** with read evidence)
 - Fully wired classes: **87**
 - Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **39**
@@ -74,7 +74,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `RDSDBProxyTargetGroupProvider` (rds-dbproxy-targetgroup-provider.ts) | `rest-destructure in withoutKey()` |
 | `RDSProvider` (rds-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `S3BucketProvider` (s3-bucket-provider.ts) | `computed key in applyAllSubConfigsForCreate()`, `computed key in applySubConfigDiffs()`, `computed key in canonicalizeItemList()`, `computed key in versioningOrLoggingRefusal()`, `hasCdkAutoDeleteTag(...) in delete()`, `object spread in applyEffectiveOverrides()`, `object spread in canonicalizeItemList()`, `S3BucketProvider.applyEffectiveOverrides(...) in create()`, `S3BucketProvider.applyEffectiveOverrides(...) in update()`, `S3BucketProvider.versioningOrLoggingRefusal(...) in update()`, `this.maskedView(createMaskedLogSinks(this.logger, context?.maskSecrets)).create(...) in create()`, `this.maskedView(sinks).update(...) in update()`, `this.noWriteProbe().applySubConfigDiffs(...) in update()` |
-| `S3DirectoryBucketProvider` (s3-directory-bucket-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
+| `S3DirectoryBucketProvider` (s3-directory-bucket-provider.ts) | `computed key in desiredConfigurations()`, `computed key in readUnsettled()`, `hasCdkAutoDeleteTag(...) in delete()`, `object spread in canonicalizeConfigurationsForDrift()` |
 | `SecretsManagerSecretProvider` (secretsmanager-secret-provider.ts) | `object spread in retainPreviousGenerateBlock()` |
 | `ServiceDiscoveryProvider` (servicediscovery-provider.ts) | `computed key in planServiceChange()`, `withRemovalDefaults(...) in update()` |
 | `SNSTopicProvider` (sns-topic-provider.ts) | `computed key in applyUpdate()` |
@@ -158,7 +158,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `Route53Provider` | route53-provider.ts | wired | 23 | 23 |
 | `S3BucketPolicyProvider` | s3-bucket-policy-provider.ts | wired | 2 | 2 |
 | `S3BucketProvider` | s3-bucket-provider.ts | wired | 19 | 19 |
-| `S3DirectoryBucketProvider` | s3-directory-bucket-provider.ts | wired | 4 | 4 |
+| `S3DirectoryBucketProvider` | s3-directory-bucket-provider.ts | wired | 8 | 8 |
 | `S3TablesProvider` | s3-tables-provider.ts | wired | 8 | 8 |
 | `S3VectorsProvider` | s3-vectors-provider.ts | wired | 3 | 3 |
 | `SchedulerScheduleProvider` | scheduler-schedule-provider.ts | wired | 11 | 11 |

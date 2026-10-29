@@ -8,8 +8,17 @@
 #
 #   Phase 1:  deploy; assert the create-time tags landed (S3 Control
 #             list-tags-for-resource).
+#             go-to-k/cdkd#2762: the tagged bucket's SSE-KMS default
+#             encryption, lifecycle rules, metrics and inventory
+#             configurations reached AWS (read back with the AWS CLI), the
+#             bucket is on the SDK route, and `cdkd drift` is clean.
 #   Phase 1c: UPDATE-mode redeploy; assert the tag mutation landed
-#             (TagResource value change + UntagResource removal).
+#             (TagResource value change + UntagResource removal), and
+#             go-to-k/cdkd#2762's configuration update: one lifecycle rule
+#             changed and the other gone, one metrics configuration swapped
+#             for another, the inventory configuration removed, and the
+#             guard bucket's whole lifecycle and encryption removed; drift
+#             clean (the readback is stable).
 #   Phase 2:  put an object into BOTH buckets out of band.
 #   Phase 3:  destroy — must FAIL on the untagged bucket (CloudFormation
 #             parity: CFn DELETE_FAILs a non-empty directory bucket) with the
@@ -96,6 +105,10 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 BUCKET=""
 AUTO_BUCKET=""
 ACCOUNT_ID=""
+# go-to-k/cdkd#2762: the KMS key and the inventory destination bucket, for the
+# fallback cleanup should `state destroy` not get them.
+CONFIG_KEY_ARN=""
+INV_DEST_ARN=""
 
 PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 # Phase 5 (go-to-k/cdkd#2007): one run's secret and the bucket name it builds.
@@ -138,11 +151,20 @@ cleanup() {
   if [ -n "${SECRET_BUCKET}" ]; then
     aws s3api delete-bucket --bucket "${SECRET_BUCKET}" --region "${REGION}" >/dev/null 2>&1
   fi
+  if [ -n "${INV_DEST_ARN}" ]; then
+    aws s3 rb "s3://${INV_DEST_ARN##*:}" --force --region "${REGION}" >/dev/null 2>&1
+  fi
+  if [ -n "${CONFIG_KEY_ARN}" ]; then
+    # Already pending deletion after a clean destroy: that refusal is fine.
+    aws kms schedule-key-deletion --key-id "${CONFIG_KEY_ARN}" --pending-window-in-days 7 \
+      --region "${REGION}" >/dev/null 2>&1
+  fi
   if [ -n "${SECRET_CREATED}" ]; then
     aws secretsmanager delete-secret --region "${REGION}" --secret-id "${S3DIR_SECRET_NAME}" \
       --force-delete-without-recovery >/dev/null 2>&1
   fi
   [ -n "${PHASE5_LOG}" ] && rm -f "${PHASE5_LOG}"
+  rm -f "${UPDATE_LOG:-}"
   [ -n "${PHASE5_RUNS_LOG}" ] && rm -f "${PHASE5_RUNS_LOG}"
   [ -n "${SECRET_FILE}" ] && rm -f "${SECRET_FILE}"
   if [ -n "${STATE_BUCKET:-}" ]; then
@@ -211,6 +233,12 @@ if [ -z "${BUCKET}" ] || [ -z "${AUTO_BUCKET}" ]; then
   echo "FAIL: could not read BucketName/AutoBucketName outputs from cdkd state" >&2
   exit 1
 fi
+CONFIG_KEY_ARN=$(printf '%s' "${STATE_JSON}" | jq -r '.state.outputs.ConfigKeyArn // empty')
+INV_DEST_ARN=$(printf '%s' "${STATE_JSON}" | jq -r '.state.outputs.InventoryDestinationArn // empty')
+if [ -z "${CONFIG_KEY_ARN}" ] || [ -z "${INV_DEST_ARN}" ]; then
+  echo "FAIL: could not read ConfigKeyArn/InventoryDestinationArn outputs from cdkd state" >&2
+  exit 1
+fi
 echo "    Guard bucket:  ${BUCKET}"
 echo "    Tagged bucket: ${AUTO_BUCKET}"
 
@@ -232,12 +260,106 @@ if [ "${V}" != "drop-me" ]; then
 fi
 echo "    OK: create-time tags present on the directory bucket"
 
+# --- go-to-k/cdkd#2762: bucket configurations -------------------------------
+# expect_json <what> <actual-json> <expected-json>: compared after `jq -S`.
+expect_json() {
+  local what="$1" actual expected
+  actual="$(printf '%s' "$2" | jq -S -c .)"
+  expected="$(printf '%s' "$3" | jq -S -c .)"
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${what}: expected ${expected}, got ${actual}" >&2
+    exit 1
+  fi
+}
+# A configuration S3 holds none of answers a not-found error: read as `[]`.
+read_lifecycle_rules() { # usage: read_lifecycle_rules [bucket] (default: the tagged one)
+  local out
+  if out="$(aws s3api get-bucket-lifecycle-configuration --bucket "${1:-${AUTO_BUCKET}}" \
+    --region "${REGION}" --output json 2>&1)"; then
+    # An all-objects filter reads back as an empty prefix or as no member at
+    # all; both are `{}` here. Only the expiration's day count is compared.
+    printf '%s' "${out}" | jq -c '[.Rules[] | {ID, Status,
+      Filter: ((.Filter // {}) | if . == {"Prefix": ""} then {} else . end),
+      Expiration: (if .Expiration.Days then {Days: .Expiration.Days} else null end),
+      AbortIncompleteMultipartUpload} | with_entries(select(.value != null))]'
+  elif printf '%s' "${out}" | grep -q 'NoSuchLifecycleConfiguration'; then
+    printf '[]'
+  else
+    echo "FAIL: get-bucket-lifecycle-configuration: ${out}" >&2
+    return 1
+  fi
+}
+read_metrics() {
+  aws s3api list-bucket-metrics-configurations --bucket "${AUTO_BUCKET}" --region "${REGION}" \
+    --output json | jq -c '[(.MetricsConfigurationList // [])[] | {Id, Filter} | with_entries(select(.value != null))] | sort_by(.Id)'
+}
+read_inventory() {
+  aws s3api list-bucket-inventory-configurations --bucket "${AUTO_BUCKET}" --region "${REGION}" \
+    --output json | jq -c '[(.InventoryConfigurationList // [])[] | {Id, IsEnabled, IncludedObjectVersions, Schedule, OptionalFields: ((.OptionalFields // []) | sort), Destination: .Destination.S3BucketDestination | {Bucket, Format, Prefix}}]'
+}
+# The drift baseline right after a deploy is that deploy's own readback, so
+# this proves the readback is STABLE (sorted sets, canonicalized defaults), not
+# that it equals the template: the AWS CLI reads above compare against the
+# template's values.
+assert_drift_clean() { # usage: assert_drift_clean <phase label> [VAR=value ...]
+  local label="$1" rc=0
+  shift
+  env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    echo "FAIL: ${label}: cdkd drift is not clean (rc=${rc}; 1 = drift reported, 2 = error)" >&2
+    exit 1
+  fi
+  echo "    OK: ${label}: cdkd drift is clean"
+}
+
+echo "==> Phase 1: asserting the bucket configurations reached AWS (go-to-k/cdkd#2762)"
+AUTO_PROVISIONED_BY="$(printf '%s' "${STATE_JSON}" | jq -r '.state.resources.AutoDeleteBucket.provisionedBy // "<absent>"')"
+if [ "${AUTO_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: AutoDeleteBucket provisionedBy expected 'sdk', got '${AUTO_PROVISIONED_BY}' (routed off the SDK provider)" >&2
+  exit 1
+fi
+ENC="$(aws s3api get-bucket-encryption --bucket "${AUTO_BUCKET}" --region "${REGION}" --output json \
+  | jq -c '.ServerSideEncryptionConfiguration.Rules[0] | {ApplyServerSideEncryptionByDefault, BucketKeyEnabled}')"
+expect_json "default encryption (SSE-S3 means PutBucketEncryption never ran)" "${ENC}" \
+  "{\"ApplyServerSideEncryptionByDefault\":{\"SSEAlgorithm\":\"aws:kms\",\"KMSMasterKeyID\":\"${CONFIG_KEY_ARN}\"},\"BucketKeyEnabled\":true}"
+expect_json "lifecycle rules" "$(read_lifecycle_rules)" '[
+  {"ID":"expire-logs","Status":"Enabled","Filter":{"And":{"Prefix":"logs/","ObjectSizeGreaterThan":1024}},"Expiration":{"Days":7}},
+  {"ID":"abort-mpu","Status":"Enabled","Filter":{},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":3}}
+]'
+expect_json "metrics configurations" "$(read_metrics)" '[
+  {"Id":"all-objects"},
+  {"Id":"logs-prefix","Filter":{"Prefix":"logs/"}}
+]'
+expect_json "inventory configurations" "$(read_inventory)" "[
+  {\"Id\":\"daily-inventory\",\"IsEnabled\":true,\"IncludedObjectVersions\":\"Current\",\"Schedule\":{\"Frequency\":\"Daily\"},\"OptionalFields\":[\"LastModifiedDate\",\"Size\"],\"Destination\":{\"Bucket\":\"${INV_DEST_ARN}\",\"Format\":\"CSV\",\"Prefix\":\"inventory/\"}}
+]"
+expect_json "guard bucket lifecycle rules" "$(read_lifecycle_rules "${BUCKET}")" '[
+  {"ID":"guard-expire","Status":"Enabled","Filter":{"Prefix":"old/"},"Expiration":{"Days":30}}
+]'
+echo "    OK: encryption, lifecycle, metrics and inventory configurations landed"
+assert_drift_clean "Phase 1"
+
 # --- Phase 1c: UPDATE-mode redeploy mutates the tag set ---------------------
 echo "==> Phase 1c: UPDATE-mode redeploy (tag value change + tag removal)"
+# --verbose into a log: the guard bucket's whole-configuration Deletes are
+# asserted SENT below (go-to-k/cdkd#2762), since its encryption reads the same
+# SSE-S3 before and after DeleteBucketEncryption.
+UPDATE_LOG="$(mktemp -t s3-directory-bucket-update.XXXXXX)"
+set +e
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --yes
+  --verbose \
+  --yes > "${UPDATE_LOG}" 2>&1
+UPDATE_RC=$?
+set -e
+if [ "${UPDATE_RC}" -ne 0 ]; then
+  echo "FAIL: UPDATE-mode deploy exited ${UPDATE_RC}; its log tail:" >&2
+  tail -60 "${UPDATE_LOG}" >&2
+  rm -f "${UPDATE_LOG}"
+  exit 1
+fi
 
 V=$(read_tag "${AUTO_BUCKET}" "cdkd-integ")
 if [ "${V}" != "updated" ]; then
@@ -255,6 +377,43 @@ if [ "${V}" != "true" ]; then
   exit 1
 fi
 echo "    OK: tag update landed (value changed, removed key untagged, opt-in kept)"
+
+echo "==> Phase 1c: asserting the configuration update landed (go-to-k/cdkd#2762)"
+expect_json "lifecycle rules after UPDATE (one changed, one removed)" "$(read_lifecycle_rules)" '[
+  {"ID":"expire-logs","Status":"Enabled","Filter":{"And":{"Prefix":"logs/","ObjectSizeGreaterThan":1024}},"Expiration":{"Days":14}}
+]'
+expect_json "metrics configurations after UPDATE (logs-prefix deleted, tmp-prefix put)" "$(read_metrics)" '[
+  {"Id":"all-objects"},
+  {"Id":"tmp-prefix","Filter":{"Prefix":"tmp/"}}
+]'
+expect_json "inventory configurations after UPDATE (removed from the template)" "$(read_inventory)" '[]'
+ENC="$(aws s3api get-bucket-encryption --bucket "${AUTO_BUCKET}" --region "${REGION}" --output json \
+  | jq -r '.ServerSideEncryptionConfiguration.Rules[0].ApplyServerSideEncryptionByDefault.SSEAlgorithm')"
+if [ "${ENC}" != "aws:kms" ]; then
+  echo "FAIL: the unchanged default encryption moved across the UPDATE deploy (got '${ENC}')" >&2
+  exit 1
+fi
+expect_json "guard bucket lifecycle rules after UPDATE (LifecycleConfiguration removed: DeleteBucketLifecycle)" \
+  "$(read_lifecycle_rules "${BUCKET}")" '[]'
+# DeleteBucketEncryption returns the bucket to SSE-S3, which is what it
+# declared: the log line above proves the call was sent, this that the bucket
+# is still on SSE-S3 after it.
+for SENT in "Sent DeleteBucketEncryption" "Sent DeleteBucketLifecycle"; do
+  if ! grep -qF -- "${SENT}" "${UPDATE_LOG}"; then
+    echo "FAIL: the UPDATE deploy's --verbose log has no '${SENT}' line (the whole-configuration removal was not sent)" >&2
+    rm -f "${UPDATE_LOG}"
+    exit 1
+  fi
+done
+rm -f "${UPDATE_LOG}"
+ENC="$(aws s3api get-bucket-encryption --bucket "${BUCKET}" --region "${REGION}" --output json \
+  | jq -r '.ServerSideEncryptionConfiguration.Rules[0].ApplyServerSideEncryptionByDefault.SSEAlgorithm')"
+if [ "${ENC}" != "AES256" ]; then
+  echo "FAIL: guard bucket default encryption after its removal expected AES256, got '${ENC}'" >&2
+  exit 1
+fi
+echo "    OK: configuration update landed (Put, per-Id Delete of metrics and inventory, DeleteBucketLifecycle, DeleteBucketEncryption accepted)"
+assert_drift_clean "Phase 1c" CDKD_TEST_UPDATE=true
 
 # --- Phase 2: load data out of band ----------------------------------------
 echo "==> Phase 2: putting an object into BOTH directory buckets"
