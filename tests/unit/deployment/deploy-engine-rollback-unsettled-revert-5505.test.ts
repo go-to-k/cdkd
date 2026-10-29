@@ -457,6 +457,31 @@ describe('removing a tag the failed update added (go-to-k/cdkd#5505 on #5498)', 
 });
 
 describe('only THIS run\'s marks are reverted (go-to-k/cdkd#5505 review B1)', () => {
+  it('a retry refused before any write (still in transition) is not a revert candidate', async () => {
+    const run = await deploy({
+      // An earlier run (--no-rollback) left ENC unsettled; AWS is still moving it.
+      record: { unsettledProperties: [ENC] },
+      template: encrypted,
+      update: async () => {
+        throw new Error('update() must not be reached: the convergence step refuses first');
+      },
+      moving: () => [ENC],
+      live: () => ({}),
+    });
+    // Premise: the deploy failed on the in-transition refusal, before update().
+    expect(run.thrown).toBeDefined();
+    const chain: string[] = [];
+    for (let e: unknown = run.thrown; e instanceof Error; e = (e as { cause?: unknown }).cause) {
+      chain.push(e.message);
+    }
+    expect(chain.join(' | ')).toContain('AWS is still changing it');
+    // The rollback neither waits for nor reverts the earlier run's name.
+    expect(run.calls).toHaveLength(0);
+    expect(infoed('Rollback: waiting for')).toBe(false);
+    expect(warned('the automatic rollback did not revert')).toBe(false);
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual([ENC]);
+  });
+
   it('a name an earlier failed deploy left is neither waited for nor reverted', async () => {
     const run = await deploy({
       // deploy1 failed under --no-rollback and left ENC; this deploy marks nothing.
