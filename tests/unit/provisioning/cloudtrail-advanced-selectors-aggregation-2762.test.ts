@@ -341,6 +341,73 @@ describe('CloudTrailProvider AdvancedEventSelectors / AggregationConfigurations 
       });
     });
 
+    it('records the LIVE reading when the previous value is present but unusable, the absent one dropped', async () => {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof GetTrailCommand)
+          return Promise.resolve({ Trail: { Name: 'my-trail', S3BucketName: 'my-bucket' } });
+        if (command instanceof GetEventSelectorsCommand)
+          return Promise.resolve({ AdvancedEventSelectors: ADVANCED });
+        if (command instanceof GetEventConfigurationCommand)
+          return Promise.resolve({ AggregationConfigurations: AGGREGATION });
+        return Promise.resolve({});
+      });
+      const result = await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: 'bad', AggregationConfigurations: 'bad' },
+        { ...BASE, AdvancedEventSelectors: 'also-bad', AggregationConfigurations: 'also-bad' }
+      );
+      // The live trail is on advanced selectors, so the readback carries no
+      // EventSelectors key and neither side declared one: it stays absent.
+      expect(result.effectiveProperties).toEqual({
+        ...BASE,
+        AdvancedEventSelectors: ADVANCED,
+        AggregationConfigurations: AGGREGATION,
+      });
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([]);
+      expect(inputsOf(PutEventConfigurationCommand)).toEqual([]);
+    });
+
+    it('drops a skipped key whose previous value is ABSENT, even when the live read ran for another key', async () => {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof GetTrailCommand)
+          return Promise.resolve({ Trail: { Name: 'my-trail', S3BucketName: 'my-bucket' } });
+        if (command instanceof GetEventSelectorsCommand)
+          return Promise.resolve({ AdvancedEventSelectors: ADVANCED });
+        if (command instanceof GetEventConfigurationCommand)
+          return Promise.resolve({ AggregationConfigurations: AGGREGATION });
+        return Promise.resolve({});
+      });
+      const result = await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: 'bad', AggregationConfigurations: 'bad' },
+        { ...BASE, AggregationConfigurations: 'also-bad' }
+      );
+      expect(result.effectiveProperties).toEqual({
+        ...BASE,
+        AggregationConfigurations: AGGREGATION,
+      });
+    });
+
+    it('drops the key when the live read fails too', async () => {
+      mockSend.mockImplementation((command: unknown) =>
+        command instanceof GetTrailCommand
+          ? Promise.reject(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }))
+          : Promise.resolve({})
+      );
+      const result = await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AggregationConfigurations: 'bad' },
+        { ...BASE, AggregationConfigurations: 'also-bad' }
+      );
+      expect(result.effectiveProperties).toEqual(BASE);
+    });
+
     it('records nothing special when nothing was skipped', async () => {
       const result = await provider.update(
         'T',

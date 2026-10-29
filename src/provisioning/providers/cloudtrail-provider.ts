@@ -23,6 +23,7 @@ import {
   type InsightSelector,
 } from '@aws-sdk/client-cloudtrail';
 import { getLogger } from '../../utils/logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   markRedactedCause,
@@ -194,14 +195,18 @@ function listOf(read: ListBlockRead): Array<Record<string, unknown>> | undefined
 }
 
 /**
- * `desired` with each of `keys` replaced by its PREVIOUS value (a copy), or
- * removed when the previous value is absent or not a list: what to record for
- * a list block an update skipped (`.claude/rules/provider-property-fidelity.md`).
+ * `desired` with each of `keys` replaced by what AWS still holds for a list
+ * block an update skipped (`.claude/rules/provider-replay-and-refusals.md`,
+ * "Update-path downgrades"): the PREVIOUS value when it is a list; the LIVE
+ * reading when the previous value is present but unusable; otherwise (an
+ * absent previous value, or no live reading) the key is removed. Values are
+ * copied, never aliased.
  */
 function retainPreviousLists(
   desired: Record<string, unknown>,
   previous: Record<string, unknown>,
-  keys: readonly string[]
+  keys: readonly string[],
+  live?: Record<string, unknown>
 ): Record<string, unknown> {
   const out: Record<string, unknown> = Object.fromEntries(
     Object.entries(desired).filter(([key]) => !keys.includes(key))
@@ -209,6 +214,7 @@ function retainPreviousLists(
   for (const key of keys) {
     const prev = previous[key];
     if (Array.isArray(prev)) out[key] = structuredClone(prev);
+    else if (prev != null && Array.isArray(live?.[key])) out[key] = structuredClone(live[key]);
   }
   return out;
 }
@@ -569,7 +575,9 @@ export class CloudTrailProvider implements ResourceProvider {
       // Issue #2762: AggregationConfigurations ride PutEventConfiguration,
       // sent after the selectors whose events they aggregate.
       if (aggregationConfigurations && aggregationConfigurations.length > 0) {
-        this.logger.debug(`Setting aggregation configurations for CloudTrail Trail ${logicalId}`);
+        this.logger.debug(
+          safeMsg`Setting aggregation configurations for CloudTrail Trail ${logicalId}`
+        );
         await this.getClient().send(
           new PutEventConfigurationCommand({
             TrailName: trailArn,
@@ -882,9 +890,7 @@ export class CloudTrailProvider implements ResourceProvider {
       for (const read of [basicRead, advancedRead]) {
         if (read.kind === 'unusable') {
           this.logger.warn(
-            `${read.detail} The trail's ` +
-              `existing event selectors are left untouched for this update rather ` +
-              `than reset to the AWS default.`
+            safeMsg`${read.detail} The trail's existing event selectors are left untouched for this update rather than reset to the AWS default.`
           );
         }
       }
@@ -905,8 +911,7 @@ export class CloudTrailProvider implements ResourceProvider {
       );
       if (aggregationRead.kind === 'unusable') {
         this.logger.warn(
-          `${aggregationRead.detail} The trail's existing aggregation configurations ` +
-            `are left untouched for this update rather than cleared.`
+          safeMsg`${aggregationRead.detail} The trail's existing aggregation configurations are left untouched for this update rather than cleared.`
         );
       }
       const newAggregation = listOf(aggregationRead);
@@ -919,7 +924,9 @@ export class CloudTrailProvider implements ResourceProvider {
       const putAggregation = async (): Promise<void> => {
         // AWS's own unset shape is the empty list (`GetEventConfiguration` on
         // a trail with no aggregation answers `AggregationConfigurations: []`).
-        this.logger.debug(`Updating aggregation configurations for CloudTrail Trail ${logicalId}`);
+        this.logger.debug(
+          safeMsg`Updating aggregation configurations for CloudTrail Trail ${logicalId}`
+        );
         await this.getClient().send(
           new PutEventConfigurationCommand({
             TrailName: physicalId,
@@ -1078,10 +1085,21 @@ export class CloudTrailProvider implements ResourceProvider {
         ...(aggregationRead.kind === 'unusable' ? ['AggregationConfigurations'] : []),
       ];
       if (skipped.length === 0) return { physicalId, wasReplaced: false };
+      // Only a present-but-unusable previous value needs the live reading,
+      // so the read runs on that malformed path alone.
+      const needsLive = skipped.some(
+        (key) => previousProperties[key] != null && !Array.isArray(previousProperties[key])
+      );
+      const live = needsLive ? await this.readLiveForRecord(physicalId, resourceType) : undefined;
       return {
         physicalId,
         wasReplaced: false,
-        effectiveProperties: retainPreviousLists(desiredProperties, previousProperties, skipped),
+        effectiveProperties: retainPreviousLists(
+          desiredProperties,
+          previousProperties,
+          skipped,
+          live
+        ),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -1160,6 +1178,26 @@ export class CloudTrailProvider implements ResourceProvider {
       const notGone =
         error instanceof Error && error.name.includes('NotFound') ? markNotGone(failure) : failure;
       throw stripped ? markDeleteStarted(notGone) : notGone;
+    }
+  }
+
+  /**
+   * The live read-back a skipped block is recorded from when its previous
+   * value is unusable. Best-effort: a failed read answers `undefined`, which
+   * drops the key rather than failing an update AWS already applied.
+   */
+  private async readLiveForRecord(
+    physicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      const live = await this.readCurrentState(physicalId, '', resourceType);
+      return live !== undefined && live !== RESOURCE_NOT_FOUND ? live : undefined;
+    } catch (error) {
+      this.logger.debug(
+        safeMsg`CloudTrail read-back for the record failed: ${describeAwsFailure(error).detail}`
+      );
+      return undefined;
     }
   }
 
@@ -1412,7 +1450,7 @@ export class CloudTrailProvider implements ResourceProvider {
       }));
     } catch (err) {
       this.logger.debug(
-        `CloudTrail GetEventConfiguration(${physicalId}) failed: ${describeAwsFailure(err).detail}`
+        safeMsg`CloudTrail GetEventConfiguration(${physicalId}) failed: ${describeAwsFailure(err).detail}`
       );
     }
 
