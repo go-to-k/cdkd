@@ -1180,6 +1180,10 @@ describe('every wait on the DELETE path draws from the allowance (issue #1955)',
     let deletes = 0;
     mockSend.mockImplementation((command: unknown) => {
       if (command instanceof DescribeTableCommand) {
+        // Gone once AWS took the delete (the go-to-k/cdkd#5514 gone-wait).
+        if (deletes >= 3) {
+          return Promise.reject(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
+        }
         return Promise.resolve({
           Table: {
             TableName: 'shared-table',

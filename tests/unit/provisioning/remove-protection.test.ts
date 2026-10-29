@@ -158,6 +158,7 @@ import {
   UpdateTableCommand,
   DeleteTableCommand,
   DescribeTableCommand,
+  ResourceNotFoundException,
 } from '@aws-sdk/client-dynamodb';
 import { ModifyInstanceAttributeCommand, TerminateInstancesCommand } from '@aws-sdk/client-ec2';
 import {
@@ -280,13 +281,24 @@ describe('LogsLogGroupProvider --remove-protection', () => {
 });
 
 describe('DynamoDBTableProvider --remove-protection', () => {
-  it('issues UpdateTable(DeletionProtectionEnabled=false) with removeProtection=true before delete', async () => {
+  // ACTIVE until AWS takes the DeleteTable, then gone: `delete()` waits for
+  // that (go-to-k/cdkd#5514).
+  const stubDdbTable = (): void => {
+    let deleted = false;
     mockDdbSend.mockImplementation((command: unknown) => {
+      if (command instanceof DeleteTableCommand) deleted = true;
       if (command instanceof DescribeTableCommand) {
+        if (deleted) {
+          return Promise.reject(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
+        }
         return Promise.resolve({ Table: { TableStatus: 'ACTIVE' } });
       }
       return Promise.resolve({});
     });
+  };
+
+  it('issues UpdateTable(DeletionProtectionEnabled=false) with removeProtection=true before delete', async () => {
+    stubDdbTable();
     const provider = new DynamoDBTableProvider();
     await provider.delete('T', 'my-table', 'AWS::DynamoDB::Table', undefined, {
       removeProtection: true,
@@ -306,6 +318,7 @@ describe('DynamoDBTableProvider --remove-protection', () => {
   });
 
   it('does NOT issue UpdateTable when removeProtection is unset', async () => {
+    stubDdbTable();
     const provider = new DynamoDBTableProvider();
     await provider.delete('T', 'my-table', 'AWS::DynamoDB::Table');
     const cmds = mockDdbSend.mock.calls.map((c) => c[0]);
@@ -314,12 +327,7 @@ describe('DynamoDBTableProvider --remove-protection', () => {
   });
 
   it('idempotent — UpdateTable + ACTIVE wait still issued on already-disabled table', async () => {
-    mockDdbSend.mockImplementation((command: unknown) => {
-      if (command instanceof DescribeTableCommand) {
-        return Promise.resolve({ Table: { TableStatus: 'ACTIVE' } });
-      }
-      return Promise.resolve({});
-    });
+    stubDdbTable();
     const provider = new DynamoDBTableProvider();
     await provider.delete('T', 'my-table', 'AWS::DynamoDB::Table', undefined, {
       removeProtection: true,

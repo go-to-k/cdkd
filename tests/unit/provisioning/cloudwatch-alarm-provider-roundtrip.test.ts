@@ -311,3 +311,100 @@ describe('CloudWatchAlarmProvider backfilled props (Tags / ExtendedStatistic / E
     });
   });
 });
+
+describe('CloudWatchAlarmProvider ActionConfiguration / WarmUpConfiguration (go-to-k/cdkd#2762)', () => {
+  let provider: CloudWatchAlarmProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new CloudWatchAlarmProvider();
+  });
+
+  const BASE = {
+    AlarmName: ALARM_NAME,
+    ComparisonOperator: 'GreaterThanThreshold',
+    EvaluationPeriods: 1,
+    Threshold: 1,
+    MetricName: 'Errors',
+    Namespace: 'My/Ns',
+    Period: 60,
+    Statistic: 'Sum',
+  };
+  const WARM_UP = { WarmUpPeriodDurationInMinutes: 15, OnlyStartEvaluatingAfterWarmUpPeriodEnds: true };
+  const ACTION_CONFIG = {
+    AlarmTagsPropagation: { Enabled: true, IncludedTagKeys: ['Team'] },
+  };
+
+  const putInput = (): Record<string, unknown> => {
+    const putCall = mockSend.mock.calls.find((c) => c[0] instanceof PutMetricAlarmCommand);
+    expect(putCall).toBeDefined();
+    return putCall![0].input as Record<string, unknown>;
+  };
+
+  it('create() sends both through PutMetricAlarm as declared', async () => {
+    mockSend.mockResolvedValue({ MetricAlarms: [{ AlarmArn: ALARM_ARN }] });
+
+    await provider.create('L', RESOURCE_TYPE, {
+      ...BASE,
+      WarmUpConfiguration: WARM_UP,
+      ActionConfiguration: ACTION_CONFIG,
+    });
+
+    const input = putInput();
+    expect(input['WarmUpConfiguration']).toEqual(WARM_UP);
+    expect(input['ActionConfiguration']).toEqual(ACTION_CONFIG);
+  });
+
+  it('create() omits both when the template declares neither', async () => {
+    mockSend.mockResolvedValue({ MetricAlarms: [{ AlarmArn: ALARM_ARN }] });
+
+    await provider.create('L', RESOURCE_TYPE, BASE);
+
+    const input = putInput();
+    expect(input['WarmUpConfiguration']).toBeUndefined();
+    expect(input['ActionConfiguration']).toBeUndefined();
+  });
+
+  it('update() sends a changed value, and a removal as an absent member (PutMetricAlarm replaces the whole configuration)', async () => {
+    mockSend.mockResolvedValue({ MetricAlarms: [{ AlarmArn: ALARM_ARN }] });
+    const changedWarmUp = { WarmUpPeriodDurationInMinutes: 30 };
+
+    await provider.update(
+      'L',
+      ALARM_NAME,
+      RESOURCE_TYPE,
+      { ...BASE, WarmUpConfiguration: changedWarmUp },
+      { ...BASE, WarmUpConfiguration: WARM_UP, ActionConfiguration: ACTION_CONFIG }
+    );
+
+    const input = putInput();
+    expect(input['WarmUpConfiguration']).toEqual(changedWarmUp);
+    expect(input['ActionConfiguration']).toBeUndefined();
+  });
+
+  it('a readCurrentState snapshot round-trips through update() unchanged', async () => {
+    mockSend.mockResolvedValueOnce({
+      MetricAlarms: [
+        {
+          ...BASE,
+          AlarmArn: ALARM_ARN,
+          WarmUpConfiguration: WARM_UP,
+          ActionConfiguration: ACTION_CONFIG,
+        },
+      ],
+    });
+    mockSend.mockResolvedValueOnce({ Tags: [] });
+    const observed = (await provider.readCurrentState(ALARM_NAME, 'L', RESOURCE_TYPE)) as Record<
+      string,
+      unknown
+    >;
+
+    mockSend.mockReset();
+    mockSend.mockResolvedValue({ MetricAlarms: [{ AlarmArn: ALARM_ARN }] });
+    await provider.update('L', ALARM_NAME, RESOURCE_TYPE, observed, observed);
+
+    const input = putInput();
+    expect(input['WarmUpConfiguration']).toEqual(WARM_UP);
+    expect(input['ActionConfiguration']).toEqual(ACTION_CONFIG);
+  });
+});
