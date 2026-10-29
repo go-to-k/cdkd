@@ -108,7 +108,7 @@ dynamodb-fix-forward-orphan	2026-10-19T10:52:49Z	PASS	170	verify.sh	rc ok, orph 
 dynamodb-globaltable	2026-10-20T03:28:23Z	PASS	1478	verify.sh	deploy+destroy clean, 0 orphans
 dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-globaltable-replica-settings	2026-10-29T05:42:58Z	PASS	4490	verify.sh	rc ok, orph clean; #5487 phase 1a/1a2; probe red at unsettledProperties
-dynamodb-gsi-update	2026-10-29T02:49:23Z	PASS	2331	verify.sh	rc ok, orph clean; pre-fix probe RED at 1c (#5503)
+dynamodb-gsi-update	2026-10-29T08:39:45Z	PASS	1873	verify.sh	rc ok, orph clean; probe RED at 1c (#5498)
 dynamodb-ondemand	2026-10-27T17:47:12Z	PASS	560	verify.sh	rc ok, orph clean, KinesisRemovalTable arm (#5423) green, pre-fix probe red at Phase 1.5
 dynamodb-sse	2026-10-16T08:15:12Z	PASS	45	verify.sh	rc ok, orph clean (#3341 slice 4995)
 dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean (#4283 PR #4449)
@@ -356,6 +356,7 @@ scheduler-custom-group	2026-10-24T03:41:38Z	PASS	105	verify.sh	rc ok, orph clean
 schema-v10-to-v11-migration	2026-10-14T07:59:02Z	PASS	495	verify.sh	rc ok, orph clean; PR #4893 state destroy purges record history (ee330190b), own state bucket; state.json kept only its delete marker
 schema-v11-to-v12-migration	2026-10-16T16:59:47Z	PASS	161	verify.sh	rc ok, orph clean (stateless-mixins refactor #5015, rebased)
 schema-v12-to-v13-migration	2026-10-23T16:21:31Z	PASS	159	verify.sh	v12->v13 transparent auto-migration verified, 46 assertions; integ-schema-migration marker set
+schema-v14-to-v15-migration	2026-10-29T08:39:45Z	PASS	1202	verify.sh	rc ok, 51 assertions, orph clean; probe RED at Phase 6 (#5498)
 schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b7; v5->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-10-12T05:44:10Z	FAIL	100	verify.sh	PR #4812: fixture stale, asserts literal schema version (state is v11); GetStackOutput/ImportValue resolved, cleanup clean
