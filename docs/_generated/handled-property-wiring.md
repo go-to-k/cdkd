@@ -45,7 +45,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `ApiGatewayV2Provider` (apigatewayv2-provider.ts) | `object spread in updateIntegration()`, `withRemovalDefaults(...) in updateAuthorizer()` |
 | `AppSyncProvider` (appsync-provider.ts) | `computed key in applyGraphQLApiConfig()`, `computed key in refuseChangedMalformedGraphQLApiBlocks()`, `computed key in updateDataSource()`, `computed key in updateGraphQLApi()`, `computed key in updateResolver()`, `object spread in withEnvironmentVariablesRecord()` |
 | `ASGProvider` (asg-provider.ts) | `computed key in canonicalizeDriftProperties()`, `object spread in canonicalizeDriftProperties()`, `withRemovalDefaults(...) in update()` |
-| `CloudTrailProvider` (cloudtrail-provider.ts) | `withRemovalDefaults(...) in update()` |
+| `CloudTrailProvider` (cloudtrail-provider.ts) | `Object.entries(...) in retainPreviousLists()`, `withRemovalDefaults(...) in update()` |
 | `CognitoUserPoolProvider` (cognito-provider.ts) | `object spread in narrowMfaConfiguration()` |
 | `DynamoDBGlobalTableProvider` (dynamodb-globaltable-provider.ts) | `computed key in canonicalizeDriftProperties()`, `computed key in collectDesiredKeyAttributeNames()`, `computed key in readUnsettled()`, `computed key in replicationImpliedStreamSpecification()`, `computed key in updateInScope()`, `extractLocalTags(...) in updateInScope()`, `keepUnreadReplicaMembers(...) in updateInScope()`, `object spread in canonicalizeDesiredProperties()`, `object spread in canonicalizeDriftProperties()`, `object spread in create()`, `object spread in stripProvisionedCapacityKeys()` |
 | `DynamoDBTableProvider` (dynamodb-table-provider.ts) | `computed key in canonicalizeDriftPair()`, `object spread in canonicalizeDriftProperties()` |

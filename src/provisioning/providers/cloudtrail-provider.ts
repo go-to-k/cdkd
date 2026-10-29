@@ -193,6 +193,26 @@ function listOf(read: ListBlockRead): Array<Record<string, unknown>> | undefined
   return read.kind === 'list' ? read.value : undefined;
 }
 
+/**
+ * `desired` with each of `keys` replaced by its PREVIOUS value (a copy), or
+ * removed when the previous value is absent or not a list: what to record for
+ * a list block an update skipped (`.claude/rules/provider-property-fidelity.md`).
+ */
+function retainPreviousLists(
+  desired: Record<string, unknown>,
+  previous: Record<string, unknown>,
+  keys: readonly string[]
+): Record<string, unknown> {
+  const out: Record<string, unknown> = Object.fromEntries(
+    Object.entries(desired).filter(([key]) => !keys.includes(key))
+  );
+  for (const key of keys) {
+    const prev = previous[key];
+    if (Array.isArray(prev)) out[key] = structuredClone(prev);
+  }
+  return out;
+}
+
 /** The list a read carries when it has at least one entry. */
 function nonEmptyListOf(read: ListBlockRead): Array<Record<string, unknown>> | undefined {
   return read.kind === 'list' && read.value.length > 0 ? read.value : undefined;
@@ -487,6 +507,16 @@ export class CloudTrailProvider implements ResourceProvider {
             'AWS::CloudTrail::Trail AggregationConfigurations',
             replayWarn(this.logger, context)
           );
+    // A replay that skipped one of them records the trail without it, since
+    // the call never went out.
+    const skippedOnReplay = [
+      ...(properties['AdvancedEventSelectors'] != null && advancedEventSelectors === undefined
+        ? ['AdvancedEventSelectors']
+        : []),
+      ...(properties['AggregationConfigurations'] != null && aggregationConfigurations === undefined
+        ? ['AggregationConfigurations']
+        : []),
+    ];
 
     // Set once CreateTrail returns: a later failure is an auxiliary call's and
     // must not classify as this trail's name collision (#3826).
@@ -578,6 +608,9 @@ export class CloudTrailProvider implements ResourceProvider {
         attributes: {
           Arn: trailArn,
         },
+        ...(skippedOnReplay.length > 0 && {
+          effectiveProperties: retainPreviousLists(properties, {}, skippedOnReplay),
+        }),
       };
     } catch (error) {
       if (trailCreated) markAuxiliaryFailure(error, logicalId);
@@ -610,6 +643,9 @@ export class CloudTrailProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // The bag the engine records when nothing is skipped; `effectiveProperties`
+    // patches a skipped list block into it (below).
+    const desiredProperties = properties;
     properties = withRemovalDefaults(
       this.removalDefaults,
       resourceType,
@@ -899,10 +935,28 @@ export class CloudTrailProvider implements ResourceProvider {
         (JSON.stringify(newEventSelectors) !== JSON.stringify(oldEventSelectors) ||
           JSON.stringify(newAdvancedSelectors) !== JSON.stringify(oldAdvancedSelectors))
       ) {
-        const { members, isReset: isRemoval } = eventSelectorRequest(
-          newEventSelectors,
-          newAdvancedSelectors
-        );
+        // A `drift --revert` desired bag is the live readback with the drifted
+        // list overlaid, so it can carry BOTH lists: the live one it started
+        // from and the baseline one being restored. The list equal to the live
+        // (previous) side is the one being replaced, so only the other is
+        // sent, which overwrites it. A template declaring both keeps sending
+        // both, for AWS to refuse.
+        let basicToSend = newEventSelectors;
+        let advancedToSend = newAdvancedSelectors;
+        if (
+          context?.desiredFromAwsReadback === true &&
+          nonEmptyListOf(basicRead) !== undefined &&
+          nonEmptyListOf(advancedRead) !== undefined
+        ) {
+          if (JSON.stringify(newEventSelectors) === JSON.stringify(oldEventSelectors)) {
+            basicToSend = undefined;
+          } else if (
+            JSON.stringify(newAdvancedSelectors) === JSON.stringify(oldAdvancedSelectors)
+          ) {
+            advancedToSend = undefined;
+          }
+        }
+        const { members, isReset: isRemoval } = eventSelectorRequest(basicToSend, advancedToSend);
         this.logger.debug(
           isRemoval
             ? `Resetting event selectors to the AWS default for CloudTrail Trail ${logicalId}`
@@ -1015,7 +1069,20 @@ export class CloudTrailProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully updated CloudTrail Trail ${logicalId}`);
 
-      return { physicalId, wasReplaced: false };
+      // A skipped list block is recorded as what AWS still holds, the PREVIOUS
+      // value, so the next deploy diffs the template against it again and the
+      // warning repeats until the template is fixed. An unusable previous
+      // value drops the key.
+      const skipped = [
+        ...(selectorsUnusable ? ['EventSelectors', 'AdvancedEventSelectors'] : []),
+        ...(aggregationRead.kind === 'unusable' ? ['AggregationConfigurations'] : []),
+      ];
+      if (skipped.length === 0) return { physicalId, wasReplaced: false };
+      return {
+        physicalId,
+        wasReplaced: false,
+        effectiveProperties: retainPreviousLists(desiredProperties, previousProperties, skipped),
+      };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
@@ -1306,7 +1373,6 @@ export class CloudTrailProvider implements ResourceProvider {
       );
       insightSelectors = (insight.InsightSelectors ?? []).map((s) => ({
         ...(s.InsightType !== undefined && { InsightType: s.InsightType }),
-        ...(s.EventCategories !== undefined && { EventCategories: s.EventCategories }),
       }));
     } catch {
       // InsightNotEnabledException / permissions / etc — best-effort.

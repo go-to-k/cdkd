@@ -60,12 +60,13 @@ administrator) account, and the integ account is not in an organization at all
 pinned by a unit test. Closing it needs a different AWS account, not more
 fixture work.
 
-Phases 4-5 cover `AdvancedEventSelectors` and `AggregationConfigurations`
-([#2762](https://github.com/go-to-k/cdkd/issues/2762)). Phase 4
+Phases 2c-2d cover `AdvancedEventSelectors` and `AggregationConfigurations`
+([#2762](https://github.com/go-to-k/cdkd/issues/2762)). Phase 2c
 (`CDKD_TEST_ADVANCED=true`) adds an S3 data-event advanced selector and an
 aggregation of those events, asserts the trail's state record is still
 `provisionedBy: sdk` (before the fix these properties routed the trail through
-Cloud Control), and runs `cdkd drift`. Phase 5 drops both again and asserts the
+Cloud Control), and runs `cdkd drift` against the templated `properties`
+(the record's `observedProperties` dropped first). Phase 2d drops both again and asserts the
 trail is back on the default selector set with no aggregation.
 
 ## Run

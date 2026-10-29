@@ -3819,6 +3819,7 @@
       ],
       "gaps": [],
       "blindSpots": [
+        "Object.entries(...) in retainPreviousLists()",
         "withRemovalDefaults(...) in update()"
       ]
     },

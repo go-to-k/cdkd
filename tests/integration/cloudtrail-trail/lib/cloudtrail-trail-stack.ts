@@ -186,7 +186,7 @@ export class CloudTrailTrailStack extends cdk.Stack {
                 name: 'cdkd-integ-s3-data',
                 fieldSelectors: [
                   { field: 'eventCategory', equalTo: ['Data'] },
-                  { field: 'resources.type', equalTo: ['AWS::S3::Object'] },
+                  { field: 'resources.type', equalTo: [cloudtrail.DataResourceType.S3_OBJECT] },
                   { field: 'resources.ARN', startsWith: [`${trailBucket.bucketArn}/`] },
                 ],
               },

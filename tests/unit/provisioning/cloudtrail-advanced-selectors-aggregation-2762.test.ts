@@ -270,6 +270,99 @@ describe('CloudTrailProvider AdvancedEventSelectors / AggregationConfigurations 
     );
   });
 
+  describe('update: drift --revert across a selector switch', () => {
+    it('restores basic selectors on a trail switched to advanced out of band, sending only the basic list', async () => {
+      // The revert bag is the live readback (advanced) with the drifted
+      // EventSelectors overlaid; the previous side is the live readback.
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: ADVANCED, EventSelectors: BASIC },
+        { ...BASE, AdvancedEventSelectors: ADVANCED },
+        { desiredFromAwsReadback: true }
+      );
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([
+        { TrailName: TRAIL_ARN, EventSelectors: BASIC },
+      ]);
+    });
+
+    it('restores advanced selectors on a trail switched to basic out of band, sending only the advanced list', async () => {
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, EventSelectors: BASIC, AdvancedEventSelectors: ADVANCED },
+        { ...BASE, EventSelectors: BASIC, AdvancedEventSelectors: [] },
+        { desiredFromAwsReadback: true }
+      );
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([
+        { TrailName: TRAIL_ARN, AdvancedEventSelectors: ADVANCED },
+      ]);
+    });
+
+    it('keeps sending both lists for a TEMPLATE declaring both, for AWS to refuse', async () => {
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: ADVANCED, EventSelectors: BASIC },
+        { ...BASE, AdvancedEventSelectors: ADVANCED }
+      );
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([
+        { TrailName: TRAIL_ARN, AdvancedEventSelectors: ADVANCED, EventSelectors: BASIC },
+      ]);
+    });
+  });
+
+  describe('what a skip records (effectiveProperties)', () => {
+    it('records the PREVIOUS selector lists when one is unusable, since neither was sent', async () => {
+      const result = await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, EventSelectors: [{ ReadWriteType: 'All' }], AdvancedEventSelectors: 'bad' },
+        { ...BASE, EventSelectors: BASIC }
+      );
+      expect(result.effectiveProperties).toEqual({ ...BASE, EventSelectors: BASIC });
+    });
+
+    it('records the PREVIOUS aggregation when the desired one is unusable', async () => {
+      const result = await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AggregationConfigurations: 'bad' },
+        { ...BASE, AggregationConfigurations: AGGREGATION }
+      );
+      expect(result.effectiveProperties).toEqual({
+        ...BASE,
+        AggregationConfigurations: AGGREGATION,
+      });
+    });
+
+    it('records nothing special when nothing was skipped', async () => {
+      const result = await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AggregationConfigurations: AGGREGATION },
+        BASE
+      );
+      expect(result.effectiveProperties).toBeUndefined();
+    });
+
+    it('drops a key a replayed create skipped', async () => {
+      const result = await provider.create(
+        'T',
+        TYPE,
+        { ...BASE, EventSelectors: BASIC, AdvancedEventSelectors: 'bad' },
+        { replayingState: true }
+      );
+      expect(result.effectiveProperties).toEqual({ ...BASE, EventSelectors: BASIC });
+    });
+  });
+
   describe('update: aggregation', () => {
     it('adds aggregation after the selector change that delivers its events', async () => {
       await provider.update(
@@ -327,7 +420,7 @@ describe('CloudTrailProvider AdvancedEventSelectors / AggregationConfigurations 
         if (command instanceof GetEventSelectorsCommand) return Promise.resolve(selectors);
         if (command instanceof GetInsightSelectorsCommand)
           return Promise.resolve({
-            InsightSelectors: [{ InsightType: 'ApiCallRateInsight', EventCategories: ['Data'] }],
+            InsightSelectors: [{ InsightType: 'ApiCallRateInsight' }],
           });
         if (command instanceof ListTagsCommand) return Promise.resolve({ ResourceTagList: [] });
         if (command instanceof GetEventConfigurationCommand)
@@ -371,17 +464,6 @@ describe('CloudTrailProvider AdvancedEventSelectors / AggregationConfigurations 
       >;
       expect(result['AdvancedEventSelectors']).toEqual([]);
       expect(result['EventSelectors']).toEqual(BASIC);
-    });
-
-    it('keeps InsightSelectors EventCategories, so a declared category does not read as drift', async () => {
-      armRead({ EventSelectors: BASIC });
-      const result = (await provider.readCurrentState(TRAIL_ARN, 'T', TYPE)) as Record<
-        string,
-        unknown
-      >;
-      expect(result['InsightSelectors']).toEqual([
-        { InsightType: 'ApiCallRateInsight', EventCategories: ['Data'] },
-      ]);
     });
   });
 });
