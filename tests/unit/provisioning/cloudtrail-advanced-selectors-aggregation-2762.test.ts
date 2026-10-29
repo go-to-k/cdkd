@@ -325,6 +325,8 @@ describe('CloudTrailProvider AdvancedEventSelectors / AggregationConfigurations 
         { ...BASE, EventSelectors: BASIC }
       );
       expect(result.effectiveProperties).toEqual({ ...BASE, EventSelectors: BASIC });
+      // A usable previous list needs no live read.
+      expect(inputsOf(GetTrailCommand)).toEqual([]);
     });
 
     it('records the PREVIOUS aggregation when the desired one is unusable', async () => {
@@ -339,6 +341,8 @@ describe('CloudTrailProvider AdvancedEventSelectors / AggregationConfigurations 
         ...BASE,
         AggregationConfigurations: AGGREGATION,
       });
+      expect(inputsOf(GetTrailCommand)).toEqual([]);
+      expect(inputsOf(GetEventConfigurationCommand)).toEqual([]);
     });
 
     it('records the LIVE reading when the previous value is present but unusable, the absent one dropped', async () => {
@@ -427,6 +431,85 @@ describe('CloudTrailProvider AdvancedEventSelectors / AggregationConfigurations 
         { replayingState: true }
       );
       expect(result.effectiveProperties).toEqual({ ...BASE, EventSelectors: BASIC });
+    });
+
+    it('drops AggregationConfigurations when a replayed create skipped it', async () => {
+      const result = await provider.create(
+        'T',
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: ADVANCED, AggregationConfigurations: 'bad' },
+        { replayingState: true }
+      );
+      expect(result.effectiveProperties).toEqual({ ...BASE, AdvancedEventSelectors: ADVANCED });
+      expect(inputsOf(PutEventConfigurationCommand)).toEqual([]);
+    });
+  });
+
+  describe('update: a partial failure names what already landed', () => {
+    const denied = (): Error =>
+      Object.assign(new Error('User: arn:aws:sts::0:assumed-role/r/s is not authorized'), {
+        name: 'AccessDeniedException',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 403 },
+      });
+
+    it('says AggregationConfigurations was already cleared when the later selector Put fails', async () => {
+      mockSend.mockImplementation((command: unknown) =>
+        command instanceof PutEventSelectorsCommand ? Promise.reject(denied()) : Promise.resolve({})
+      );
+      const error: Error = await provider
+        .update('T', TRAIL_ARN, TYPE, BASE, {
+          ...BASE,
+          AdvancedEventSelectors: ADVANCED,
+          AggregationConfigurations: AGGREGATION,
+        })
+        .then(
+          () => new Error('update unexpectedly succeeded'),
+          (e: unknown) => e as Error
+        );
+      expect(error.message).toMatch(
+        /AccessDeniedException.*already applied before this failure: AggregationConfigurations was cleared\)$/
+      );
+      // The class only: AWS's text (the caller's role ARN) stays out.
+      expect(error.message).not.toContain('assumed-role');
+    });
+
+    it('says the event selectors were already updated when the later aggregation Put fails', async () => {
+      mockSend.mockImplementation((command: unknown) =>
+        command instanceof PutEventConfigurationCommand
+          ? Promise.reject(denied())
+          : Promise.resolve({})
+      );
+      const error: Error = await provider
+        .update(
+          'T',
+          TRAIL_ARN,
+          TYPE,
+          { ...BASE, AdvancedEventSelectors: ADVANCED, AggregationConfigurations: AGGREGATION },
+          BASE
+        )
+        .then(
+          () => new Error('update unexpectedly succeeded'),
+          (e: unknown) => e as Error
+        );
+      expect(error.message).toMatch(
+        /AccessDeniedException.*already applied before this failure: the event selectors were updated\)$/
+      );
+      expect(error.message).not.toContain('assumed-role');
+    });
+
+    it('adds no note when the first write fails', async () => {
+      mockSend.mockImplementation((command: unknown) =>
+        command instanceof PutEventSelectorsCommand ? Promise.reject(denied()) : Promise.resolve({})
+      );
+      const error: Error = await provider
+        .update('T', TRAIL_ARN, TYPE, { ...BASE, AdvancedEventSelectors: ADVANCED }, BASE)
+        .then(
+          () => new Error('update unexpectedly succeeded'),
+          (e: unknown) => e as Error
+        );
+      expect(error.message).toMatch(/^Failed to update CloudTrail Trail T: /);
+      expect(error.message).not.toContain('already applied');
     });
   });
 
@@ -521,6 +604,21 @@ describe('CloudTrailProvider AdvancedEventSelectors / AggregationConfigurations 
       ).toEqual(['Field', 'Equals']);
       expect('EventSelectors' in result).toBe(false);
       expect(result['AggregationConfigurations']).toEqual(AGGREGATION);
+    });
+
+    it('reads AggregationConfigurations as [] when the response carries no such key', async () => {
+      armRead({ EventSelectors: BASIC });
+      const base = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((command: unknown) =>
+        command instanceof GetEventConfigurationCommand
+          ? Promise.resolve({ TrailARN: TRAIL_ARN })
+          : base(command)
+      );
+      const result = (await provider.readCurrentState(TRAIL_ARN, 'T', TYPE)) as Record<
+        string,
+        unknown
+      >;
+      expect(result['AggregationConfigurations']).toEqual([]);
     });
 
     it('emits AdvancedEventSelectors: [] on a basic-selector trail', async () => {

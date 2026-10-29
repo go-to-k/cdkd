@@ -813,6 +813,10 @@ export class CloudTrailProvider implements ResourceProvider {
       ''
     );
     const isOrganizationTrail = properties['IsOrganizationTrail'] as boolean | undefined;
+    // What a later failure leaves applied (issue #2762): the selector and
+    // aggregation writes are separate calls, so the thrown message names the
+    // one that already landed.
+    const appliedBeforeFailure: string[] = [];
 
     try {
       await this.getClient().send(
@@ -935,7 +939,10 @@ export class CloudTrailProvider implements ResourceProvider {
           })
         );
       };
-      if (aggregationCleared) await putAggregation();
+      if (aggregationCleared) {
+        await putAggregation();
+        appliedBeforeFailure.push('AggregationConfigurations was cleared');
+      }
 
       if (
         !selectorsUnusable &&
@@ -976,6 +983,7 @@ export class CloudTrailProvider implements ResourceProvider {
               ...members,
             })
           );
+          appliedBeforeFailure.push('the event selectors were updated');
         } catch (error) {
           // A trail switched to AdvancedEventSelectors out of band still has
           // the basic selectors recorded in cdkd state, so the diff fires and
@@ -1022,7 +1030,10 @@ export class CloudTrailProvider implements ResourceProvider {
         }
       }
 
-      if (aggregationChanged && !aggregationCleared) await putAggregation();
+      if (aggregationChanged && !aggregationCleared) {
+        await putAggregation();
+        appliedBeforeFailure.push('AggregationConfigurations was updated');
+      }
 
       // Update InsightSelectors if changed. AWS-documented way to
       // remove InsightSelectors is `PutInsightSelectors` with an empty
@@ -1108,7 +1119,10 @@ export class CloudTrailProvider implements ResourceProvider {
         error,
         (text) =>
           new ProvisioningError(
-            `Failed to update CloudTrail Trail ${logicalId}: ${text}`,
+            `Failed to update CloudTrail Trail ${logicalId}: ${text}` +
+              (appliedBeforeFailure.length > 0
+                ? ` (already applied before this failure: ${appliedBeforeFailure.join('; ')})`
+                : ''),
             resourceType,
             logicalId,
             physicalId,
@@ -1391,8 +1405,10 @@ export class CloudTrailProvider implements ResourceProvider {
           (es) => es as unknown as Record<string, unknown>
         );
       }
-      // Issue #2762: always emitted (`[]` on a basic-selector trail), so a
-      // console-side switch to advanced selectors is visible to drift.
+      // Issue #2762: always emitted (`[]` on a basic-selector trail). A
+      // console-side change is drift only where the template DECLARES the key:
+      // an undeclared key captured as `[]` is skipped by the comparator
+      // (`undeclaredEmptyObservedKeys`).
       result['AdvancedEventSelectors'] = hasAdvanced
         ? advancedSelectorsToCfn(sel.AdvancedEventSelectors ?? [])
         : [];
@@ -1437,9 +1453,10 @@ export class CloudTrailProvider implements ResourceProvider {
     result['Tags'] = tags;
 
     // AggregationConfigurations — separate call (issue #2762), same member
-    // names on both sides. `[]` is what AWS reports for a trail with none, so
-    // a console-side add is visible to drift; a failed read omits the key
-    // rather than claiming the trail has none.
+    // names on both sides, `[]` being what AWS reports for a trail with none.
+    // As for AdvancedEventSelectors, a console-side add is drift only where
+    // the template declares the key (`undeclaredEmptyObservedKeys`). A failed
+    // read omits the key rather than claiming the trail has none.
     try {
       const config = await this.getClient().send(
         new GetEventConfigurationCommand({ TrailName: physicalId })

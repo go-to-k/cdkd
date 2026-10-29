@@ -23,9 +23,10 @@
 # cleared the CloudWatch Logs pair too, which would be a NEW divergence from
 # CloudFormation rather than a fix.
 #
-# Phases 2c-2d (issue #2762) deploy AdvancedEventSelectors + AggregationConfigurations
+# Phases 2c-2e (issue #2762) deploy AdvancedEventSelectors + AggregationConfigurations
 # (CDKD_TEST_ADVANCED=true), assert they landed on the SDK route and read back
-# drift-clean, then remove them and assert the reset / clear.
+# drift-clean, revert an out-of-band switch to basic selectors with
+# `drift --revert`, then remove them and assert the reset / clear.
 #
 # Then destroys and confirms a clean teardown.
 #
@@ -427,11 +428,52 @@ CDKD_TEST_REMOVAL=true CDKD_TEST_ADVANCED=true node "${LOCAL_DIST}" drift "${STA
   --region "${REGION}"
 echo "    ok: drift clean with advanced selectors + aggregation"
 
-# --- Phase 2d: their removal ----------------------------------------------
+# --- Phase 2d: drift --revert of an out-of-band switch to basic selectors ---
+# The revert bag is the live read-back (basic selectors) with the drifted
+# AdvancedEventSelectors overlaid, so it carries BOTH lists; AWS refuses a
+# PutEventSelectors carrying both, so the provider must send only the one being
+# restored. This is the only real-AWS run of that branch.
+echo "==> Phase 2d: switching the trail to basic selectors out of band"
+aws cloudtrail put-event-selectors --trail-name "${TRAIL_NAME}" --region "${REGION}" \
+  --event-selectors '[{"ReadWriteType":"All","IncludeManagementEvents":true}]' >/dev/null
+assert_event_selector "AdvancedEventSelectors gone after the out-of-band switch" '(.AdvancedEventSelectors | length)' '0'
+assert_event_selector "basic EventSelectors present after the out-of-band switch" '(.EventSelectors | length)' '1'
+
+echo "==> Phase 2d: drift MUST report the switch"
+set +e
+CDKD_TEST_REMOVAL=true CDKD_TEST_ADVANCED=true node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}"
+DRIFT_RC=$?
+set -e
+if [ "${DRIFT_RC}" -ne 1 ]; then
+  echo "FAIL: an out-of-band switch to basic selectors was not reported as drift (cdkd drift rc=${DRIFT_RC}, expected 1)" >&2
+  exit 1
+fi
+echo "    ok: out-of-band selector switch reported as drift"
+
+echo "==> Phase 2d: drift --revert MUST restore the advanced selectors"
+CDKD_TEST_REMOVAL=true CDKD_TEST_ADVANCED=true node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --revert --yes
+assert_event_selector "AdvancedEventSelectors restored by --revert" '(.AdvancedEventSelectors | length)' '1'
+assert_event_selector "AdvancedEventSelectors name restored" '.AdvancedEventSelectors[0].Name' 'cdkd-integ-s3-data'
+assert_event_selector "AdvancedEventSelectors fields restored" '(.AdvancedEventSelectors[0].FieldSelectors | map(.Field) | sort | join(" "))' 'eventCategory resources.ARN resources.type'
+assert_event_selector "basic EventSelectors replaced by --revert" '(.EventSelectors | length)' '0'
+assert_event_config "AggregationConfigurations after --revert" '(.AggregationConfigurations | length)' '1'
+
+echo "==> Phase 2d: drift must be clean after the revert"
+CDKD_TEST_REMOVAL=true CDKD_TEST_ADVANCED=true node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}"
+echo "    ok: drift clean after the selector --revert"
+
+# --- Phase 2e: their removal ----------------------------------------------
 # Removing AdvancedEventSelectors leaves a template with no selector at all,
 # which resets the trail to the default selector set, as the measured
 # EventSelectors removal (#1549) does; the aggregation is cleared to [].
-echo "==> Phase 2d: redeploy without CDKD_TEST_ADVANCED (removal)"
+echo "==> Phase 2e: redeploy without CDKD_TEST_ADVANCED (removal)"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -441,7 +483,7 @@ assert_event_selector "AdvancedEventSelectors removed" '(.AdvancedEventSelectors
 assert_event_selector "EventSelectors count after advanced removal" '(.EventSelectors | length)' '1'
 assert_event_selector "EventSelectors ReadWriteType after advanced removal" '.EventSelectors[0].ReadWriteType' 'All'
 
-echo "==> Phase 2d: drift must be clean after the removal"
+echo "==> Phase 2e: drift must be clean after the removal"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}"
