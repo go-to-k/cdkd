@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 89,
-    "declaredProperties": 1189,
-    "wiredProperties": 1187,
+    "declaredProperties": 1193,
+    "wiredProperties": 1191,
     "wired": 87,
     "gap": 0,
     "allowListed": 2,
@@ -20028,8 +20028,22 @@
       "file": "wafv2-provider.ts",
       "className": "WAFv2WebACLProvider",
       "bucket": "wired",
-      "declaredCount": 12,
+      "declaredCount": 16,
       "properties": [
+        {
+          "name": "ApplicationConfig",
+          "status": "wired",
+          "types": [
+            "AWS::WAFv2::WebACL"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
         {
           "name": "AssociationConfig",
           "status": "wired",
@@ -20087,6 +20101,21 @@
           ]
         },
         {
+          "name": "DataProtectionConfig",
+          "status": "wired",
+          "types": [
+            "AWS::WAFv2::WebACL"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "readCurrentState",
+            "update"
+          ]
+        },
+        {
           "name": "DefaultAction",
           "status": "wired",
           "types": [
@@ -20115,6 +20144,20 @@
           ]
         },
         {
+          "name": "MonetizationConfig",
+          "status": "wired",
+          "types": [
+            "AWS::WAFv2::WebACL"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
           "name": "Name",
           "status": "wired",
           "types": [
@@ -20125,6 +20168,20 @@
           ],
           "seededBy": [
             "create"
+          ]
+        },
+        {
+          "name": "OnSourceDDoSProtectionConfig",
+          "status": "wired",
+          "types": [
+            "AWS::WAFv2::WebACL"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
           ]
         },
         {
