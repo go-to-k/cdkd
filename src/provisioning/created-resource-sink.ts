@@ -30,7 +30,8 @@ export interface CreatedResourceReport {
 export class CreatedResourceSink {
   readonly logicalId: string;
   readonly resourceType: string;
-  private latest: CreatedResourceReport | undefined;
+  /** Every standing report, oldest first. */
+  private readonly reports: CreatedResourceReport[] = [];
 
   constructor(logicalId: string, resourceType: string) {
     this.logicalId = logicalId;
@@ -38,27 +39,31 @@ export class CreatedResourceSink {
   }
 
   /**
-   * The last report, or `undefined`. Last wins: a retried attempt that made
-   * its own resource names that one, as the error mark `withRetry` carries
-   * does; an earlier attempt's report stands while no later one replaces it.
+   * The newest standing report, or `undefined`. Newest wins: a retried
+   * attempt that made its own resource names that one, as the error mark
+   * `withRetry` carries does. A withdrawn report falls back to the one before
+   * it, as `withRetry` keeps an earlier attempt's mark when a later attempt's
+   * error carries none.
    */
   get report(): CreatedResourceReport | undefined {
-    return this.latest;
+    return this.reports.at(-1);
   }
 
   /** @internal */
   record(report: CreatedResourceReport): void {
-    this.latest = report;
+    this.reports.push(report);
   }
 
   /** @internal */
   clear(): void {
-    this.latest = undefined;
+    this.reports.length = 0;
   }
 
-  /** @internal */
+  /** @internal Every report of `physicalId`: that resource is gone. */
   retract(physicalId: string): void {
-    if (this.latest?.physicalId === physicalId) this.latest = undefined;
+    for (let i = this.reports.length - 1; i >= 0; i--) {
+      if (this.reports[i]!.physicalId === physicalId) this.reports.splice(i, 1);
+    }
   }
 }
 
@@ -66,8 +71,9 @@ const storage = new AsyncLocalStorage<CreatedResourceSink>();
 
 /**
  * Run one resource operation with `sink` receiving every create its provider
- * reports. The caller reads `sink` whether `fn` resolved or threw, and after
- * a deadline abandoned `fn`. Nested scopes shadow outer ones, so a
+ * reports. The caller reads `sink` when it persists the failure, so a report
+ * or retraction an abandoned `fn` makes after the deadline, and before that
+ * read, is reflected; one made after it is not. Nested scopes shadow outer ones, so a
  * nested-stack child engine's own rows report into their own sinks.
  */
 export function collectCreatedResources<T>(
@@ -78,17 +84,14 @@ export function collectCreatedResources<T>(
 }
 
 /**
- * Run one provider `create()` / `update()` attempt for the operation in scope,
- * clearing its sink when the call RESOLVES. A report stands in for the mark
- * on an error that `create()` threw; once the call returned, its result names
- * the resource and the engine records it, so a later engine step's failure
- * (a replacement's old-resource delete) must not journal it as an orphan,
- * which no mark would have done either.
+ * Clear the sink of the operation in scope: the engine has just written the
+ * resource to state, which now records it. A failure after this point (a
+ * replacement's later step) must not journal it as an orphan as well. Until
+ * then, a resource whose create call returned is journaled even when a later
+ * engine step (a replacement's old-resource delete) runs past the deadline.
  */
-export async function clearCreatedReportOnReturn<T>(fn: () => Promise<T>): Promise<T> {
-  const result = await fn();
+export function clearCreatedReport(): void {
   storage.getStore()?.clear();
-  return result;
 }
 
 function anchoredSink(

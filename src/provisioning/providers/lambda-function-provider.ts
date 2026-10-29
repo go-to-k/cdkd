@@ -963,6 +963,10 @@ export class LambdaFunctionProvider implements ResourceProvider {
               },
               { FunctionName: functionName }
             );
+            // go-to-k/cdkd#5511: re-reported by name alone BEFORE the call,
+            // since a deadline can drop its outcome after it has moved the
+            // token (below).
+            reportCreatedResource(logicalId, resourceType, createdFunctionName!);
             await this.putRuntimeManagementConfig(functionName, runtimeManagementConfig);
             // go-to-k/cdkd#4606: a successful PutRuntimeManagementConfig
             // moves `LastModified` (measured by the lambda-fix-forward-orphan
@@ -970,7 +974,6 @@ export class LambdaFunctionProvider implements ResourceProvider {
             // function. Dropped, so a failure after this point marks the name
             // alone and the engine journals a live `resourceIdentity` read.
             createdFunctionIdentity = undefined;
-            reportCreatedResource(logicalId, resourceType, createdFunctionName!);
           },
           {
             apiName: 'PutRuntimeManagementConfig',

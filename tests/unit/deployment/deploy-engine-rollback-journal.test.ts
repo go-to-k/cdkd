@@ -2444,6 +2444,180 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(op).not.toHaveProperty('physicalIdRecoveredFromError');
     });
 
+    describe('read when the failure is saved, not when the deadline fired', () => {
+      const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+      const BUCKET = 'AWS::S3::Bucket';
+      const QUEUE = 'AWS::SQS::Queue';
+
+      /**
+       * `B` (and any other bucket) times out at 60ms. `C`, a queue with the
+       * default budget, keeps the deploy running for 250ms, so the failure is
+       * saved after whatever `B`'s abandoned call does at ~100ms.
+       */
+      function deadlineEngine(
+        ids: string[],
+        create: (logicalId: string) => Promise<unknown>,
+        opts: { slowSibling?: boolean; bucketTimeoutMs?: number } = {}
+      ) {
+        const changes = new Map<string, ResourceChange>(
+          ids.map((id) => [id, { ...makeChange(id), desiredProperties: { p: 'new' } } as ResourceChange])
+        );
+        if (opts.slowSibling === true) {
+          changes.set('C', { ...makeChange('C'), resourceType: QUEUE } as ResourceChange);
+        }
+        const deps = Object.fromEntries([...changes.keys()].map((id) => [id, [] as string[]]));
+        const engine = buildEngine({
+          changes,
+          deps,
+          noRollback: true,
+          currentEtag: 'e0',
+          engineOptions: {
+            resourceWarnAfterMs: 10,
+            resourceTimeoutByType: { [BUCKET]: opts.bucketTimeoutMs ?? 60 },
+          },
+        });
+        const provider = (
+          engine as unknown as {
+            providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+          }
+        ).providerRegistry.getProviderFor().provider;
+        provider.create.mockImplementation(async (logicalId: string) => {
+          if (logicalId === 'C') {
+            await sleep(250);
+            return { physicalId: 'phys-C', attributes: {} };
+          }
+          return create(logicalId);
+        });
+        const resources = Object.fromEntries(
+          [...changes.entries()].map(([id, c]) => [id, { Type: c.resourceType, Properties: {} }])
+        );
+        return { engine, tmpl: { Resources: resources } as CloudFormationTemplate };
+      }
+
+      let release: () => void = () => {};
+      const hang = () =>
+        new Promise<never>((_resolve, reject) => {
+          release = () => reject(new Error('released'));
+        });
+
+      async function failedOps(engine: DeployEngine, t: CloudFormationTemplate) {
+        try {
+          await expect(engine.deploy(stackName, t)).rejects.toThrow();
+        } finally {
+          release();
+        }
+        return journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations as Array<
+          Record<string, unknown>
+        >;
+      }
+
+      it('journals a create that returned only after the deadline fired', async () => {
+        const { engine, tmpl: t } = deadlineEngine(
+          ['B'],
+          async () => {
+            await sleep(100);
+            reportCreatedResource('B', BUCKET, 'b-late');
+            return hang();
+          },
+          { slowSibling: true }
+        );
+        const ops = await failedOps(engine, t);
+        expect(ops.find((o) => o.logicalId === 'B')).toMatchObject({
+          physicalId: 'b-late',
+          physicalIdRecoveredFromError: true,
+        });
+      });
+
+      it('journals no id for a resource the abandoned call deleted after the deadline', async () => {
+        const { engine, tmpl: t } = deadlineEngine(
+          ['B'],
+          async () => {
+            reportCreatedResource('B', BUCKET, 'b-1');
+            await sleep(100);
+            retractCreatedResource('B', BUCKET, 'b-1');
+            return hang();
+          },
+          { slowSibling: true }
+        );
+        const ops = await failedOps(engine, t);
+        const op = ops.find((o) => o.logicalId === 'B')!;
+        expect(op.physicalId).toBeUndefined();
+        expect(op).not.toHaveProperty('physicalIdRecoveredFromError');
+      });
+
+      it('a retraction falls back to the earlier report', async () => {
+        const { engine, tmpl: t } = deadlineEngine(['B'], async () => {
+          reportCreatedResource('B', BUCKET, 'b-x');
+          reportCreatedResource('B', BUCKET, 'b-y');
+          retractCreatedResource('B', BUCKET, 'b-y');
+          return hang();
+        });
+        const ops = await failedOps(engine, t);
+        expect(ops.find((o) => o.logicalId === 'B')!.physicalId).toBe('b-x');
+      });
+
+      it('two resources timing out together each journal their own id', async () => {
+        const releases: Array<() => void> = [];
+        const { engine, tmpl: t } = deadlineEngine(['B', 'D'], (logicalId) => {
+          reportCreatedResource(logicalId, BUCKET, `${logicalId}-made`);
+          return new Promise<never>((_resolve, reject) => {
+            releases.push(() => reject(new Error('released')));
+          });
+        });
+        let ops: Array<Record<string, unknown>>;
+        try {
+          ops = await failedOps(engine, t);
+        } finally {
+          for (const r of releases) r();
+        }
+        expect(ops.map((o) => [o.logicalId, o.physicalId]).sort()).toEqual([
+          ['B', 'B-made'],
+          ['D', 'D-made'],
+        ]);
+      });
+
+      describe('across a retried create', () => {
+        it('journals no id when the first attempt deleted its resource and the second never returned', async () => {
+          let attempt = 0;
+          const { engine, tmpl: t } = deadlineEngine(
+            ['B'],
+            async () => {
+              attempt++;
+              if (attempt === 1) {
+                reportCreatedResource('B', BUCKET, 'b-a1');
+                retractCreatedResource('B', BUCKET, 'b-a1');
+                throw new Error('Rate exceeded');
+              }
+              return hang();
+            },
+            { bucketTimeoutMs: 4000 }
+          );
+          const ops = await failedOps(engine, t);
+          expect(attempt).toBe(2);
+          expect(ops.find((o) => o.logicalId === 'B')!.physicalId).toBeUndefined();
+        }, 15_000);
+
+        it("journals the first attempt's resource when the second never returned", async () => {
+          let attempt = 0;
+          const { engine, tmpl: t } = deadlineEngine(
+            ['B'],
+            async () => {
+              attempt++;
+              if (attempt === 1) {
+                reportCreatedResource('B', BUCKET, 'b-a1');
+                throw new Error('Rate exceeded');
+              }
+              return hang();
+            },
+            { bucketTimeoutMs: 4000 }
+          );
+          const ops = await failedOps(engine, t);
+          expect(attempt).toBe(2);
+          expect(ops.find((o) => o.logicalId === 'B')!.physicalId).toBe('b-a1');
+        }, 15_000);
+      });
+    });
+
     it('control: a report outside any deploy operation is a no-op', () => {
       expect(() => reportCreatedResource('B', 'AWS::S3::Bucket', 'b-1')).not.toThrow();
     });
@@ -2547,6 +2721,107 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         ['CREATE', 'b-new'],
       ]);
       expect(ops[1]).toMatchObject({ physicalIdRecoveredFromError: true, replacedPhysicalId: 'b-old' });
+    });
+
+    // go-to-k/cdkd#5511: the replacement's create RETURNED, and the old
+    // resource's delete is what outlives the deadline. The new resource is in
+    // no state record yet, so it is journaled; once the engine records it, it
+    // is not.
+    describe('a replacement whose old-resource delete outlives the deadline (go-to-k/cdkd#5511)', () => {
+      const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+      function replacementPastDeadline(oldDelete: () => Promise<void>) {
+        const change = {
+          logicalId: 'B',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::SQS::Queue',
+          desiredProperties: { p: 'new' },
+          propertyChanges: [{ path: 'p', oldValue: 'old', newValue: 'new', requiresReplacement: true }],
+        } as unknown as ResourceChange;
+        // `C` (a bucket, default budget) keeps the deploy running for 250ms.
+        const changes = new Map([
+          ['B', change],
+          ['C', makeChange('C')],
+        ]);
+        const engine = buildEngine({
+          changes,
+          deps: { B: [], C: [] },
+          noRollback: true,
+          currentEtag: 'e0',
+          currentResources: { B: prevB() },
+          engineOptions: {
+            resourceWarnAfterMs: 10,
+            resourceTimeoutByType: { 'AWS::SQS::Queue': 60 },
+          },
+        });
+        const provider = (
+          engine as unknown as {
+            providerRegistry: {
+              getProviderFor: () => {
+                provider: { create: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+              };
+            };
+          }
+        ).providerRegistry.getProviderFor().provider;
+        provider.create.mockImplementation(async (logicalId: string) => {
+          if (logicalId === 'C') {
+            await sleep(250);
+            return { physicalId: 'phys-C', attributes: {} };
+          }
+          reportCreatedResource('B', 'AWS::SQS::Queue', 'b-new');
+          return { physicalId: 'b-new', attributes: {} };
+        });
+        provider.delete.mockImplementation(oldDelete);
+        const tmpl: CloudFormationTemplate = {
+          Resources: {
+            B: { Type: 'AWS::SQS::Queue', Properties: { p: 'new' } },
+            C: { Type: 'AWS::S3::Bucket', Properties: {} },
+          },
+        };
+        return { engine, tmpl, provider };
+      }
+
+      it('journals the new resource while the old delete is still running', async () => {
+        let release: () => void = () => {};
+        const { engine, tmpl, provider } = replacementPastDeadline(
+          () =>
+            new Promise<void>((_resolve, reject) => {
+              release = () => reject(new Error('released'));
+            })
+        );
+        try {
+          await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+        } finally {
+          release();
+        }
+        expect(provider.delete).toHaveBeenCalled();
+        const ops = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations as Array<
+          Record<string, unknown>
+        >;
+        expect(ops.filter((o) => o.logicalId === 'B').map((o) => [o.changeType, o.physicalId])).toEqual([
+          ['UPDATE', 'b-old'],
+          ['CREATE', 'b-new'],
+        ]);
+        expect(ops.find((o) => o.changeType === 'CREATE' && o.logicalId === 'B')).toMatchObject({
+          physicalIdRecoveredFromError: true,
+          replacedPhysicalId: 'b-old',
+        });
+        expect(ops.find((o) => o.changeType === 'UPDATE')).toMatchObject({
+          replacementOrphaned: 'create-first',
+        });
+      });
+
+      it('journals no orphan once the engine has recorded the new resource', async () => {
+        // The delete finishes at ~100ms, past the 60ms deadline: the abandoned
+        // call goes on to record `b-new` before the failure is saved.
+        const { engine, tmpl, provider } = replacementPastDeadline(() => sleep(100));
+        await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+        expect(provider.delete).toHaveBeenCalled();
+        const ops = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations as Array<
+          Record<string, unknown>
+        >;
+        expect(ops.filter((o) => o.logicalId === 'B').map((o) => o.changeType)).toEqual(['UPDATE']);
+      });
     });
 
     // go-to-k/cdkd#4655: the replacement's new resource carries its token too;

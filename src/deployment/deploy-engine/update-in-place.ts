@@ -1,4 +1,4 @@
-import { clearCreatedReportOnReturn } from '../../provisioning/created-resource-sink.js';
+import { clearCreatedReport } from '../../provisioning/created-resource-sink.js';
 import { noEchoDeleteValuesFromResolved } from '../noecho-delete-reresolution.js';
 import { guardedReplacementCreate } from './create.js';
 import { buildObservedCaptureSiblings } from './observed-capture.js';
@@ -414,78 +414,76 @@ export async function updateInPlace(
         // The UPDATE twin of the CREATE call's async-local scope (issue
         // #1903). Both paths bind it or a nested stack that already
         // exists silently keeps persisting the parent's plaintext.
-        clearCreatedReportOnReturn(() =>
-          withCurrentResourceSecrets(updateSecrets, () =>
-            updateProvider.update(
-              logicalId,
-              currentResource.physicalId,
-              resourceType,
-              removal.properties,
-              // `currentPropsAsWritten` (issue #2750): the ONE consumer
-              // of the previous side that is asking what AWS holds.
-              // `CloudControlProvider.update` diffs this into a JSON
-              // Patch, so a key the SDK route never wrote must be absent
-              // here or the patch omits it and the auto-route sends
-              // nothing for it. `previousForUpdate` differs from it only
-              // at confirmed NoEcho paths (go-to-k/cdkd#3729), and at an
-              // IAM::Policy / UserToGroupAddition principal list whose
-              // unchanged secret reference was dropped (go-to-k/cdkd#4064),
-              // and at a `reattach` child's list naming a principal this
-              // deploy re-created (go-to-k/cdkd#4461).
-              previousSettled,
-              // The UPDATE twin of the CREATE call's masker (issue #1932
-              // item 3): same resolved bag, same exposure, so the contract
-              // is applied on both or it has a hole in the shape of
-              // whichever path a given deploy takes.
-              //
-              // `expectedRegion` (issue #2301 item 1) is the same value
-              // this file already hands every `DeleteContext` it builds:
-              // the region this stack's state was read under and is
-              // written back to. The update is addressed BY
-              // `currentResource.physicalId`, a state-recorded id, so it
-              // carries the same wrong-region hazard the delete sites do
-              // -- misapplied configuration rather than destruction, but
-              // on a resource cdkd does not manage. Typed `string`, so a
-              // caller with no region hands over `''`; the guard treats
-              // that as absent and proceeds.
-              //
-              // `recordedAttributes` (issue #4051): the identity evidence
-              // of the record `currentResource.physicalId` came from.
-              {
-                maskSecrets: createSecretMasker(updateSecrets),
-                expectedRegion: engine.stackRegion,
-                recordedAttributes: currentResource.attributes,
-                ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
-                ...removal.context,
-                changedProperties: changedForProvider,
-                // go-to-k/cdkd#5380: the sink lives on the engine, so a mark
-                // outlives this call's promise (deadline race, Ctrl-C, retry).
-                markUnsettled: (propertyName: string) => {
-                  if (typeof propertyName !== 'string' || propertyName === '') return;
-                  // Only a top-level key this update sends or the record holds:
-                  // anything else names no property this resource has, and the
-                  // record must not carry it into every later deploy's diff. (A
-                  // name the record already carries unsettled stays by the union
-                  // at the failure save.)
-                  if (
-                    !Object.hasOwn(resolvedProps, propertyName) &&
-                    !Object.hasOwn(currentResource.properties ?? {}, propertyName)
-                  ) {
-                    engine.logger.debug(
-                      safeMsg`${logicalId}: ignored an unsettled mark for ${propertyName}, which is not one of its properties`
-                    );
-                    return;
-                  }
-                  let marks = engine.unsettledMarks.get(logicalId);
-                  if (marks === undefined) {
-                    marks = new Set();
-                    engine.unsettledMarks.set(logicalId, marks);
-                  }
-                  marks.add(propertyName);
-                },
-                ...(unsettled.size > 0 && { unsettledProperties: unsettled }),
-              }
-            )
+        withCurrentResourceSecrets(updateSecrets, () =>
+          updateProvider.update(
+            logicalId,
+            currentResource.physicalId,
+            resourceType,
+            removal.properties,
+            // `currentPropsAsWritten` (issue #2750): the ONE consumer
+            // of the previous side that is asking what AWS holds.
+            // `CloudControlProvider.update` diffs this into a JSON
+            // Patch, so a key the SDK route never wrote must be absent
+            // here or the patch omits it and the auto-route sends
+            // nothing for it. `previousForUpdate` differs from it only
+            // at confirmed NoEcho paths (go-to-k/cdkd#3729), and at an
+            // IAM::Policy / UserToGroupAddition principal list whose
+            // unchanged secret reference was dropped (go-to-k/cdkd#4064),
+            // and at a `reattach` child's list naming a principal this
+            // deploy re-created (go-to-k/cdkd#4461).
+            previousSettled,
+            // The UPDATE twin of the CREATE call's masker (issue #1932
+            // item 3): same resolved bag, same exposure, so the contract
+            // is applied on both or it has a hole in the shape of
+            // whichever path a given deploy takes.
+            //
+            // `expectedRegion` (issue #2301 item 1) is the same value
+            // this file already hands every `DeleteContext` it builds:
+            // the region this stack's state was read under and is
+            // written back to. The update is addressed BY
+            // `currentResource.physicalId`, a state-recorded id, so it
+            // carries the same wrong-region hazard the delete sites do
+            // -- misapplied configuration rather than destruction, but
+            // on a resource cdkd does not manage. Typed `string`, so a
+            // caller with no region hands over `''`; the guard treats
+            // that as absent and proceeds.
+            //
+            // `recordedAttributes` (issue #4051): the identity evidence
+            // of the record `currentResource.physicalId` came from.
+            {
+              maskSecrets: createSecretMasker(updateSecrets),
+              expectedRegion: engine.stackRegion,
+              recordedAttributes: currentResource.attributes,
+              ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
+              ...removal.context,
+              changedProperties: changedForProvider,
+              // go-to-k/cdkd#5380: the sink lives on the engine, so a mark
+              // outlives this call's promise (deadline race, Ctrl-C, retry).
+              markUnsettled: (propertyName: string) => {
+                if (typeof propertyName !== 'string' || propertyName === '') return;
+                // Only a top-level key this update sends or the record holds:
+                // anything else names no property this resource has, and the
+                // record must not carry it into every later deploy's diff. (A
+                // name the record already carries unsettled stays by the union
+                // at the failure save.)
+                if (
+                  !Object.hasOwn(resolvedProps, propertyName) &&
+                  !Object.hasOwn(currentResource.properties ?? {}, propertyName)
+                ) {
+                  engine.logger.debug(
+                    safeMsg`${logicalId}: ignored an unsettled mark for ${propertyName}, which is not one of its properties`
+                  );
+                  return;
+                }
+                let marks = engine.unsettledMarks.get(logicalId);
+                if (marks === undefined) {
+                  marks = new Set();
+                  engine.unsettledMarks.set(logicalId, marks);
+                }
+                marks.add(propertyName);
+              },
+              ...(unsettled.size > 0 && { unsettledProperties: unsettled }),
+            }
           )
         ),
       logicalId,
@@ -1016,12 +1014,10 @@ export async function updateInPlace(
                   () =>
                     engine.withRetry(
                       () =>
-                        clearCreatedReportOnReturn(() =>
-                          withCurrentResourceSecrets(updateSecrets, () =>
-                            replProvider.create(logicalId, resourceType, replProps, {
-                              maskSecrets: createSecretMasker(updateSecrets),
-                            })
-                          )
+                        withCurrentResourceSecrets(updateSecrets, () =>
+                          replProvider.create(logicalId, resourceType, replProps, {
+                            maskSecrets: createSecretMasker(updateSecrets),
+                          })
                         ),
                       logicalId,
                       undefined,
@@ -1606,6 +1602,9 @@ export async function updateInPlace(
       observedBaselineRefusalReason: 'unverifiable-parameter' as const,
     }),
   };
+  // go-to-k/cdkd#5511: state now holds the resource, so no failure after
+  // this point journals it as an orphan.
+  clearCreatedReport();
   // 'update' even after the replacement fallback: a principal then
   // claims only on its own `Policies` change (the fewer claims).
   if (updatePartialReason(result) === undefined) {

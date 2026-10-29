@@ -4,6 +4,7 @@ import {
   DeleteFunctionCommand,
   PutFunctionConcurrencyCommand,
   PutFunctionRecursionConfigCommand,
+  PutRuntimeManagementConfigCommand,
 } from '@aws-sdk/client-lambda';
 
 const mockLambdaSend = vi.fn();
@@ -153,6 +154,38 @@ describe('LambdaFunctionProvider.create created-before-failure mark (#4583)', ()
       )
     ).rejects.toThrow();
     expect(sink.report).toBeUndefined();
+  });
+
+  // A PutRuntimeManagementConfig that lands moves the token CreateFunction's
+  // response named; a deadline can drop its outcome, so the name-only report
+  // is made before the call is sent.
+  it('re-reports by name alone before PutRuntimeManagementConfig is sent (#5511)', async () => {
+    const sink = new CreatedResourceSink('Fn', TYPE);
+    let reportAtPut: unknown = 'not-called';
+    mockLambdaSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof CreateFunctionCommand) {
+        return {
+          FunctionName: FN,
+          FunctionArn: `arn:aws:lambda:us-east-1:1:function:${FN}`,
+          LastModified: '2026-01-01T00:00:00.000+0000',
+        };
+      }
+      if (cmd instanceof PutRuntimeManagementConfigCommand) {
+        reportAtPut = sink.report;
+        throw new Error('InvalidParameterValue');
+      }
+      if (cmd instanceof DeleteFunctionCommand) throw new Error('AccessDeniedException');
+      return { Configuration: { State: 'Active' } };
+    });
+    await expect(
+      collectCreatedResources(sink, () =>
+        provider.create('Fn', TYPE, {
+          ...BASE,
+          RuntimeManagementConfig: { UpdateRuntimeOn: 'FunctionUpdate' },
+        })
+      )
+    ).rejects.toThrow();
+    expect(reportAtPut).toEqual({ physicalId: FN });
   });
 
   it('reports nothing when CreateFunction itself fails (#5511)', async () => {

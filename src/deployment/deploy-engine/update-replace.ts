@@ -1,4 +1,4 @@
-import { clearCreatedReportOnReturn } from '../../provisioning/created-resource-sink.js';
+import { clearCreatedReport } from '../../provisioning/created-resource-sink.js';
 import { updatePartialMessage } from '../update-outcome.js';
 import { guardedReplacementCreate } from './create.js';
 import { noEchoDeleteValuesFromResolved } from '../noecho-delete-reresolution.js';
@@ -616,12 +616,10 @@ export async function updateByReplacement(
           () =>
             engine.withRetry(
               () =>
-                clearCreatedReportOnReturn(() =>
-                  withCurrentResourceSecrets(updateSecrets, () =>
-                    replaceProvider.create(logicalId, resourceType, replaceProps, {
-                      maskSecrets: createSecretMasker(updateSecrets),
-                    })
-                  )
+                withCurrentResourceSecrets(updateSecrets, () =>
+                  replaceProvider.create(logicalId, resourceType, replaceProps, {
+                    maskSecrets: createSecretMasker(updateSecrets),
+                  })
                 ),
               logicalId,
               undefined,
@@ -709,12 +707,10 @@ export async function updateByReplacement(
         () =>
           engine.withRetry(
             () =>
-              clearCreatedReportOnReturn(() =>
-                withCurrentResourceSecrets(updateSecrets, () =>
-                  replaceProvider.create(logicalId, resourceType, replaceProps, {
-                    maskSecrets: createSecretMasker(updateSecrets),
-                  })
-                )
+              withCurrentResourceSecrets(updateSecrets, () =>
+                replaceProvider.create(logicalId, resourceType, replaceProps, {
+                  maskSecrets: createSecretMasker(updateSecrets),
+                })
               ),
             logicalId,
             undefined,
@@ -1159,6 +1155,9 @@ export async function updateByReplacement(
     ...extractTemplateAttributes(template, logicalId),
     provisionedBy: replaceDecision.provisionedBy,
   };
+  // go-to-k/cdkd#5511: state now holds the resource, so no failure after
+  // this point journals it as an orphan.
+  clearCreatedReport();
   engine.recordInlinePolicyWrite(logicalId, 'create');
   // go-to-k/cdkd#4656: a new resource, so its echo fidelity is read afresh
   // (whatever this deploy read of the old one is dropped).

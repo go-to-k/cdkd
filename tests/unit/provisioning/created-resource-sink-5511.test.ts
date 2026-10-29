@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 
 import {
   CreatedResourceSink,
-  clearCreatedReportOnReturn,
+  clearCreatedReport,
   collectCreatedResources,
   reportCreatedResource,
   retractCreatedResource,
@@ -85,32 +85,39 @@ describe('created-resource sink (go-to-k/cdkd#5511)', () => {
     expect(outer.report).toBeUndefined();
   });
 
-  describe('clearCreatedReportOnReturn', () => {
-    it('clears the report when the provider call resolves', async () => {
-      const sink = sinkFor();
-      await collectCreatedResources(sink, () =>
-        clearCreatedReportOnReturn(async () => reportCreatedResource('L', 'AWS::X::Y', 'id-1'))
-      );
-      expect(sink.report).toBeUndefined();
+  it('a retraction falls back to the report before it', async () => {
+    const sink = sinkFor();
+    await collectCreatedResources(sink, async () => {
+      reportCreatedResource('L', 'AWS::X::Y', 'x');
+      reportCreatedResource('L', 'AWS::X::Y', 'y');
+      retractCreatedResource('L', 'AWS::X::Y', 'y');
     });
-
-    it('keeps it when the provider call rejects', async () => {
-      const sink = sinkFor();
-      await expect(
-        collectCreatedResources(sink, () =>
-          clearCreatedReportOnReturn(async () => {
-            reportCreatedResource('L', 'AWS::X::Y', 'id-1');
-            throw new Error('wait failed');
-          })
-        )
-      ).rejects.toThrow('wait failed');
-      expect(sink.report?.physicalId).toBe('id-1');
-    });
+    expect(sink.report?.physicalId).toBe('x');
   });
 
-  it('is a no-op outside any scope', async () => {
+  it('a retraction withdraws every report of that id', async () => {
+    const sink = sinkFor();
+    await collectCreatedResources(sink, async () => {
+      reportCreatedResource('L', 'AWS::X::Y', 'x');
+      reportCreatedResource('L', 'AWS::X::Y', 'x');
+      retractCreatedResource('L', 'AWS::X::Y', 'x');
+    });
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('clearCreatedReport empties the sink in scope', async () => {
+    const sink = sinkFor();
+    await collectCreatedResources(sink, async () => {
+      reportCreatedResource('L', 'AWS::X::Y', 'x');
+      reportCreatedResource('L', 'AWS::X::Y', 'y');
+      clearCreatedReport();
+    });
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('is a no-op outside any scope', () => {
     expect(() => reportCreatedResource('L', 'AWS::X::Y', 'id-1')).not.toThrow();
     expect(() => retractCreatedResource('L', 'AWS::X::Y', 'id-1')).not.toThrow();
-    await expect(clearCreatedReportOnReturn(async () => 7)).resolves.toBe(7);
+    expect(() => clearCreatedReport()).not.toThrow();
   });
 });
