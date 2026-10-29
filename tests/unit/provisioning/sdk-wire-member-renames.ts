@@ -1,19 +1,31 @@
 /**
- * Where a varied CFn leaf may land under ANOTHER member name (#3723).
+ * Where a varied CFn leaf may land under ANOTHER member or parent (#3723).
  *
  * Each vary probe in `sdk-wire-harness.ts` diffs the two runs' command inputs
  * and requires the varied leaf to land in a member of its own name (compared
- * case- and punctuation-blind), a map entry it keys, or a name listed here for
- * that type and bag path (member names joined by `.`, list indices dropped).
- * This is what stands in for `gen-nested-key-coverage.ts`'s write pass: a
- * provider writing a value into a SIBLING member changes the wire exactly as
- * the right mapping does, so wire comparison alone cannot see it.
+ * case- and punctuation-blind, wrappers such as `Items` / `member` / `Value`
+ * skipped), with every CFn ancestor right above the level below it, or as the
+ * map entry it keys. This stands in for `gen-nested-key-coverage.ts`'s write
+ * pass: a provider writing a value into a SIBLING member changes the wire
+ * exactly as the right mapping does, so wire comparison alone cannot see it.
+ *
+ * Per type, keyed by bag path (member names joined by `.`, list indices
+ * dropped):
+ *
+ * - `members`: the leaf's SDK member has another name (`TopicName` is `Name`),
+ *   dotted when the SDK nests it (`Expiration.Days`).
+ * - `containers`: the children of that CFn parent sit under another SDK
+ *   member (an update's `ExtendedS3DestinationUpdate`, a patch operation's
+ *   `patchOperations`, a dotted extra level such as
+ *   `Destination.S3BucketDestination`). Keyed `<leaf path>@<parent path>`,
+ *   `[FLATTENED]` says the SDK input has no member for that parent on that
+ *   leaf's way, so that one level is skipped for that one leaf.
+ * - `transformed`: the value is not sent as-is (fetched from S3, generated,
+ *   re-keyed), so no member can be traced; the reason says what happens.
  *
  * Shrink-only in spirit: every entry must still be needed (the per-type
- * `uses every accepted rename` case fails on one no probe reached), and a new
- * entry is a claim that the provider's mapping is RIGHT. An entry naming a
- * structural parent (`Groups`, `Items`) is weaker than one naming the member
- * itself; where the input carries the member's own name, that is the one used.
+ * `uses every accepted rename` case fails on one that no probe needed), and a
+ * new entry is a claim that the provider's mapping is RIGHT.
  */
 /** `containers` value: the SDK input has no member for that CFn parent. */
 export const FLATTENED = '(flattened)';
@@ -21,7 +33,12 @@ export const FLATTENED = '(flattened)';
 export interface TypeRenames {
   /** Bag path (indices dropped) -> the SDK members its value may land in. */
   members?: Record<string, readonly string[]>;
-  /** Bag path of a parent -> the SDK members its children may sit under. */
+  /**
+   * Bag path of a parent -> the SDK members its children may sit under
+   * (dotted for an extra SDK level). `<leaf path>@<parent path>` ->
+   * `[FLATTENED]` lets that one leaf skip that parent: scoped to the leaf, as
+   * a parent-wide skip would let every child skip it.
+   */
   containers?: Record<string, readonly string[]>;
   /** Bag path -> why its value is not sent as-is, so no member can be traced. */
   transformed?: Record<string, string>;
@@ -35,9 +52,39 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'RequestModels.text/plain': ['text~1plain'],
     },
     containers: {
-      Integration: [FLATTENED],
-      'Integration.IntegrationResponses': [FLATTENED],
-      MethodResponses: [FLATTENED],
+      'Integration.CacheKeyParameters@Integration': [FLATTENED],
+      'Integration.CacheNamespace@Integration': [FLATTENED],
+      'Integration.ConnectionId@Integration': [FLATTENED],
+      'Integration.ConnectionType@Integration': [FLATTENED],
+      'Integration.ContentHandling@Integration': [FLATTENED],
+      'Integration.Credentials@Integration': [FLATTENED],
+      'Integration.IntegrationHttpMethod@Integration': [FLATTENED],
+      'Integration.IntegrationResponses.ContentHandling@Integration': [FLATTENED],
+      'Integration.IntegrationResponses.ContentHandling@Integration.IntegrationResponses': [FLATTENED],
+      'Integration.IntegrationResponses.ResponseParameters.method.response.header.X@Integration': [FLATTENED],
+      'Integration.IntegrationResponses.ResponseParameters.method.response.header.X@Integration.IntegrationResponses': [FLATTENED],
+      'Integration.IntegrationResponses.ResponseParameters.method.response.header.Y@Integration': [FLATTENED],
+      'Integration.IntegrationResponses.ResponseParameters.method.response.header.Y@Integration.IntegrationResponses': [FLATTENED],
+      'Integration.IntegrationResponses.ResponseTemplates.application/json@Integration': [FLATTENED],
+      'Integration.IntegrationResponses.ResponseTemplates.application/json@Integration.IntegrationResponses': [FLATTENED],
+      'Integration.IntegrationResponses.SelectionPattern@Integration': [FLATTENED],
+      'Integration.IntegrationResponses.SelectionPattern@Integration.IntegrationResponses': [FLATTENED],
+      'Integration.IntegrationResponses.StatusCode@Integration': [FLATTENED],
+      'Integration.IntegrationResponses.StatusCode@Integration.IntegrationResponses': [FLATTENED],
+      'Integration.IntegrationTarget@Integration': [FLATTENED],
+      'Integration.PassthroughBehavior@Integration': [FLATTENED],
+      'Integration.RequestParameters.integration.request.header.x@Integration': [FLATTENED],
+      'Integration.RequestParameters.integration.request.header.y@Integration': [FLATTENED],
+      'Integration.RequestTemplates.application/json@Integration': [FLATTENED],
+      'Integration.RequestTemplates.text/plain@Integration': [FLATTENED],
+      'Integration.ResponseTransferMode@Integration': [FLATTENED],
+      'Integration.TimeoutInMillis@Integration': [FLATTENED],
+      'Integration.Type@Integration': [FLATTENED],
+      'Integration.Uri@Integration': [FLATTENED],
+      'MethodResponses.ResponseModels.application/json@MethodResponses': [FLATTENED],
+      'MethodResponses.ResponseParameters.method.response.header.X@MethodResponses': [FLATTENED],
+      'MethodResponses.ResponseParameters.method.response.header.Y@MethodResponses': [FLATTENED],
+      'MethodResponses.StatusCode@MethodResponses': [FLATTENED],
       RequestModels: ['patchOperations'],
       RequestParameters: ['patchOperations'],
     },
@@ -54,8 +101,10 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
     },
     containers: {
       AccessLogSetting: ['patchOperations'],
-      CanarySetting: [FLATTENED, 'canarySettings', 'patchOperations'],
+      CanarySetting: ['canarySettings', 'patchOperations'],
       'CanarySetting.StageVariableOverrides': ['patchOperations'],
+      'CanarySetting.StageVariableOverrides.O1@CanarySetting': [FLATTENED],
+      'CanarySetting.StageVariableOverrides.O2@CanarySetting': [FLATTENED],
       MethodSettings: ['patchOperations'],
       Variables: ['patchOperations'],
     },
@@ -93,9 +142,17 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       Cooldown: ['DefaultCooldown'],
     },
     containers: {
-      LifecycleHookSpecificationList: [FLATTENED],
-      MetricsCollection: [FLATTENED],
-      NotificationConfigurations: [FLATTENED],
+      'LifecycleHookSpecificationList.DefaultResult@LifecycleHookSpecificationList': [FLATTENED],
+      'LifecycleHookSpecificationList.HeartbeatTimeout@LifecycleHookSpecificationList': [FLATTENED],
+      'LifecycleHookSpecificationList.LifecycleHookName@LifecycleHookSpecificationList': [FLATTENED],
+      'LifecycleHookSpecificationList.LifecycleTransition@LifecycleHookSpecificationList': [FLATTENED],
+      'LifecycleHookSpecificationList.NotificationMetadata@LifecycleHookSpecificationList': [FLATTENED],
+      'LifecycleHookSpecificationList.NotificationTargetARN@LifecycleHookSpecificationList': [FLATTENED],
+      'LifecycleHookSpecificationList.RoleARN@LifecycleHookSpecificationList': [FLATTENED],
+      'MetricsCollection.Granularity@MetricsCollection': [FLATTENED],
+      'MetricsCollection.Metrics@MetricsCollection': [FLATTENED],
+      'NotificationConfigurations.NotificationTypes@NotificationConfigurations': [FLATTENED],
+      'NotificationConfigurations.TopicARN@NotificationConfigurations': [FLATTENED],
     },
   },
   'AWS::BedrockAgentCore::Runtime': {
@@ -113,7 +170,7 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       CertificateExport: ['Export'],
     },
     containers: {
-      DomainValidationOptions: [FLATTENED],
+      'DomainValidationOptions.HostedZoneId@DomainValidationOptions': [FLATTENED],
     },
   },
   'AWS::CloudFormation::Stack': {
@@ -122,17 +179,18 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'Parameters.TagValue': ['Value'],
     },
     containers: {
-      Parameters: [FLATTENED, 'Attributes', 'Tags'],
+      Parameters: ['Attributes', 'Tags'],
+      'Parameters.Display@Parameters': [FLATTENED],
     },
   },
   'AWS::CloudFront::Distribution': {
     members: {
+      'DistributionConfig.CacheBehaviors.CachedMethods': ['AllowedMethods.CachedMethods'],
+      'DistributionConfig.DefaultCacheBehavior.CachedMethods': ['AllowedMethods.CachedMethods'],
       'DistributionConfig.IPV6Enabled': ['IsIPV6Enabled'],
       'DistributionConfig.Restrictions.GeoRestriction.Locations': ['Items'],
     },
     containers: {
-      'DistributionConfig.CacheBehaviors': ['CacheBehaviors.Items.AllowedMethods'],
-      'DistributionConfig.DefaultCacheBehavior': ['DefaultCacheBehavior.AllowedMethods'],
       'DistributionConfig.Origins.OriginCustomHeaders': ['CustomHeaders'],
     },
   },
@@ -156,7 +214,7 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       RepositoryName: ['newName'],
     },
     containers: {
-      Code: [FLATTENED],
+      'Code.BranchName@Code': [FLATTENED],
     },
     transformed: {
       'Code.S3.Bucket':
@@ -195,31 +253,154 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'SSESpecification.SSEEnabled': ['Enabled', 'KMSMasterKeyId'],
     },
     containers: {
-      GlobalSecondaryIndexes: [FLATTENED, 'Create'],
+      GlobalSecondaryIndexes: ['Create'],
+      'GlobalSecondaryIndexes.WarmThroughput.ReadUnitsPerSecond@GlobalSecondaryIndexes': [FLATTENED],
+      'GlobalSecondaryIndexes.WarmThroughput.WriteUnitsPerSecond@GlobalSecondaryIndexes': [FLATTENED],
       'GlobalSecondaryIndexes.WriteOnDemandThroughputSettings': ['OnDemandThroughput'],
-      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings': [FLATTENED],
-      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
-      Replicas: [FLATTENED],
-      'Replicas.ContributorInsightsSpecification': [FLATTENED],
-      'Replicas.GlobalSecondaryIndexes': [FLATTENED],
-      'Replicas.GlobalSecondaryIndexes.ContributorInsightsSpecification': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteOnDemandThroughputSettings.MaxWriteRequestUnits@GlobalSecondaryIndexes': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.MaxCapacity@GlobalSecondaryIndexes': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.MaxCapacity@GlobalSecondaryIndexes.WriteProvisionedThroughputSettings': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.MaxCapacity@GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.MinCapacity@GlobalSecondaryIndexes': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.MinCapacity@GlobalSecondaryIndexes.WriteProvisionedThroughputSettings': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.MinCapacity@GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.DisableScaleIn@GlobalSecondaryIndexes': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.DisableScaleIn@GlobalSecondaryIndexes.WriteProvisionedThroughputSettings': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.DisableScaleIn@GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleInCooldown@GlobalSecondaryIndexes': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleInCooldown@GlobalSecondaryIndexes.WriteProvisionedThroughputSettings': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleInCooldown@GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown@GlobalSecondaryIndexes': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown@GlobalSecondaryIndexes.WriteProvisionedThroughputSettings': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown@GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.TargetValue@GlobalSecondaryIndexes': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.TargetValue@GlobalSecondaryIndexes.WriteProvisionedThroughputSettings': [FLATTENED],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.TargetValue@GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
+      'Replicas.ContributorInsightsSpecification.Enabled@Replicas': [FLATTENED],
+      'Replicas.ContributorInsightsSpecification.Enabled@Replicas.ContributorInsightsSpecification': [FLATTENED],
+      'Replicas.ContributorInsightsSpecification.Mode@Replicas': [FLATTENED],
+      'Replicas.ContributorInsightsSpecification.Mode@Replicas.ContributorInsightsSpecification': [FLATTENED],
+      'Replicas.DeletionProtectionEnabled@Replicas': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ContributorInsightsSpecification.Enabled@Replicas': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ContributorInsightsSpecification.Enabled@Replicas.GlobalSecondaryIndexes': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ContributorInsightsSpecification.Enabled@Replicas.GlobalSecondaryIndexes.ContributorInsightsSpecification': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ContributorInsightsSpecification.Mode@Replicas': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ContributorInsightsSpecification.Mode@Replicas.GlobalSecondaryIndexes': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ContributorInsightsSpecification.Mode@Replicas.GlobalSecondaryIndexes.ContributorInsightsSpecification': [FLATTENED],
       'Replicas.GlobalSecondaryIndexes.ReadOnDemandThroughputSettings': ['OnDemandThroughput'],
-      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings': [FLATTENED, 'ProvisionedThroughputOverride'],
-      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
-      'Replicas.KinesisStreamSpecification': [FLATTENED, 'EnableKinesisStreamingConfiguration'],
+      'Replicas.GlobalSecondaryIndexes.ReadOnDemandThroughputSettings.MaxReadRequestUnits@Replicas': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadOnDemandThroughputSettings.MaxReadRequestUnits@Replicas.GlobalSecondaryIndexes': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings': ['ProvisionedThroughputOverride'],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MaxCapacity@Replicas': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MaxCapacity@Replicas.GlobalSecondaryIndexes': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MaxCapacity@Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MaxCapacity@Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MinCapacity@Replicas': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MinCapacity@Replicas.GlobalSecondaryIndexes': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MinCapacity@Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MinCapacity@Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.DisableScaleIn@Replicas': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.DisableScaleIn@Replicas.GlobalSecondaryIndexes': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.DisableScaleIn@Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.DisableScaleIn@Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleInCooldown@Replicas': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleInCooldown@Replicas.GlobalSecondaryIndexes': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleInCooldown@Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleInCooldown@Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown@Replicas': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown@Replicas.GlobalSecondaryIndexes': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown@Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown@Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.TargetValue@Replicas': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.TargetValue@Replicas.GlobalSecondaryIndexes': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.TargetValue@Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.TargetValue@Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityUnits@Replicas': [FLATTENED],
+      'Replicas.GlobalTableSettingsReplicationMode@Replicas': [FLATTENED],
+      'Replicas.KinesisStreamSpecification': ['EnableKinesisStreamingConfiguration'],
+      'Replicas.KinesisStreamSpecification.ApproximateCreationDateTimePrecision@Replicas': [FLATTENED],
+      'Replicas.KinesisStreamSpecification.StreamArn@Replicas': [FLATTENED],
+      'Replicas.KinesisStreamSpecification.StreamArn@Replicas.KinesisStreamSpecification': [FLATTENED],
+      'Replicas.PointInTimeRecoverySpecification.PointInTimeRecoveryEnabled@Replicas': [FLATTENED],
+      'Replicas.PointInTimeRecoverySpecification.RecoveryPeriodInDays@Replicas': [FLATTENED],
       'Replicas.ReadOnDemandThroughputSettings': ['OnDemandThroughput'],
-      'Replicas.ReadProvisionedThroughputSettings': [FLATTENED, 'ProvisionedThroughputOverride'],
-      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
-      'Replicas.ReplicaStreamSpecification': [FLATTENED],
-      'Replicas.ReplicaStreamSpecification.ResourcePolicy': [FLATTENED],
+      'Replicas.ReadOnDemandThroughputSettings.MaxReadRequestUnits@Replicas': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings': ['ProvisionedThroughputOverride'],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MaxCapacity@Replicas': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MaxCapacity@Replicas.ReadProvisionedThroughputSettings': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MaxCapacity@Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MinCapacity@Replicas': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MinCapacity@Replicas.ReadProvisionedThroughputSettings': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MinCapacity@Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.DisableScaleIn@Replicas': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.DisableScaleIn@Replicas.ReadProvisionedThroughputSettings': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.DisableScaleIn@Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleInCooldown@Replicas': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleInCooldown@Replicas.ReadProvisionedThroughputSettings': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleInCooldown@Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown@Replicas': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown@Replicas.ReadProvisionedThroughputSettings': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown@Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.TargetValue@Replicas': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.TargetValue@Replicas.ReadProvisionedThroughputSettings': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.TargetValue@Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
+      'Replicas.ReadProvisionedThroughputSettings.ReadCapacityUnits@Replicas': [FLATTENED],
+      'Replicas.Region@Replicas': [FLATTENED],
       'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument': ['Policy'],
-      'Replicas.ResourcePolicy': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Statement.Action@Replicas': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Statement.Action@Replicas.ReplicaStreamSpecification': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Statement.Action@Replicas.ReplicaStreamSpecification.ResourcePolicy': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Statement.Effect@Replicas': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Statement.Effect@Replicas.ReplicaStreamSpecification': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Statement.Effect@Replicas.ReplicaStreamSpecification.ResourcePolicy': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Statement.Principal.AWS@Replicas': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Statement.Principal.AWS@Replicas.ReplicaStreamSpecification': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Statement.Principal.AWS@Replicas.ReplicaStreamSpecification.ResourcePolicy': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Statement.Resource@Replicas': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Statement.Resource@Replicas.ReplicaStreamSpecification': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Statement.Resource@Replicas.ReplicaStreamSpecification.ResourcePolicy': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Statement.Sid@Replicas': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Statement.Sid@Replicas.ReplicaStreamSpecification': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Statement.Sid@Replicas.ReplicaStreamSpecification.ResourcePolicy': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Version@Replicas': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Version@Replicas.ReplicaStreamSpecification': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument.Version@Replicas.ReplicaStreamSpecification.ResourcePolicy': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.Tags.Key@Replicas': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.Tags.Key@Replicas.ReplicaStreamSpecification': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.Tags.Value@Replicas': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.Tags.Value@Replicas.ReplicaStreamSpecification': [FLATTENED],
       'Replicas.ResourcePolicy.PolicyDocument': ['Policy'],
+      'Replicas.ResourcePolicy.PolicyDocument.Statement.Action@Replicas': [FLATTENED],
+      'Replicas.ResourcePolicy.PolicyDocument.Statement.Action@Replicas.ResourcePolicy': [FLATTENED],
+      'Replicas.ResourcePolicy.PolicyDocument.Statement.Effect@Replicas': [FLATTENED],
+      'Replicas.ResourcePolicy.PolicyDocument.Statement.Effect@Replicas.ResourcePolicy': [FLATTENED],
+      'Replicas.ResourcePolicy.PolicyDocument.Statement.Principal.AWS@Replicas': [FLATTENED],
+      'Replicas.ResourcePolicy.PolicyDocument.Statement.Principal.AWS@Replicas.ResourcePolicy': [FLATTENED],
+      'Replicas.ResourcePolicy.PolicyDocument.Statement.Resource@Replicas': [FLATTENED],
+      'Replicas.ResourcePolicy.PolicyDocument.Statement.Resource@Replicas.ResourcePolicy': [FLATTENED],
+      'Replicas.ResourcePolicy.PolicyDocument.Statement.Sid@Replicas': [FLATTENED],
+      'Replicas.ResourcePolicy.PolicyDocument.Statement.Sid@Replicas.ResourcePolicy': [FLATTENED],
+      'Replicas.ResourcePolicy.PolicyDocument.Version@Replicas': [FLATTENED],
+      'Replicas.ResourcePolicy.PolicyDocument.Version@Replicas.ResourcePolicy': [FLATTENED],
       'Replicas.SSESpecification': ['Create', 'Update'],
+      'Replicas.SSESpecification.KMSMasterKeyId@Replicas': [FLATTENED],
+      'Replicas.TableClass@Replicas': [FLATTENED],
+      'Replicas.Tags.Key@Replicas': [FLATTENED],
+      'Replicas.Tags.Value@Replicas': [FLATTENED],
       SSESpecification: ['Update'],
       WriteOnDemandThroughputSettings: ['OnDemandThroughput'],
-      WriteProvisionedThroughputSettings: [FLATTENED],
-      'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
+      'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.MaxCapacity@WriteProvisionedThroughputSettings': [FLATTENED],
+      'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.MaxCapacity@WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
+      'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.MinCapacity@WriteProvisionedThroughputSettings': [FLATTENED],
+      'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.MinCapacity@WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
+      'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.DisableScaleIn@WriteProvisionedThroughputSettings': [FLATTENED],
+      'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.DisableScaleIn@WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
+      'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleInCooldown@WriteProvisionedThroughputSettings': [FLATTENED],
+      'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleInCooldown@WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
+      'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown@WriteProvisionedThroughputSettings': [FLATTENED],
+      'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown@WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
+      'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.TargetValue@WriteProvisionedThroughputSettings': [FLATTENED],
+      'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.TargetValue@WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
     },
     transformed: {
       'Replicas.GlobalSecondaryIndexes.IndexName':
@@ -235,15 +416,37 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'SSESpecification.SSEEnabled': ['Enabled'],
     },
     containers: {
-      ContributorInsightsSpecification: [FLATTENED],
-      GlobalSecondaryIndexes: [FLATTENED, 'Create', 'Update'],
-      'GlobalSecondaryIndexes.ContributorInsightsSpecification': [FLATTENED],
-      KinesisStreamSpecification: [FLATTENED, 'EnableKinesisStreamingConfiguration'],
-      ResourcePolicy: [FLATTENED],
+      'ContributorInsightsSpecification.Enabled@ContributorInsightsSpecification': [FLATTENED],
+      'ContributorInsightsSpecification.Mode@ContributorInsightsSpecification': [FLATTENED],
+      GlobalSecondaryIndexes: ['Create', 'Update'],
+      'GlobalSecondaryIndexes.ContributorInsightsSpecification.Enabled@GlobalSecondaryIndexes': [FLATTENED],
+      'GlobalSecondaryIndexes.ContributorInsightsSpecification.Enabled@GlobalSecondaryIndexes.ContributorInsightsSpecification': [FLATTENED],
+      'GlobalSecondaryIndexes.ContributorInsightsSpecification.Mode@GlobalSecondaryIndexes': [FLATTENED],
+      'GlobalSecondaryIndexes.ContributorInsightsSpecification.Mode@GlobalSecondaryIndexes.ContributorInsightsSpecification': [FLATTENED],
+      KinesisStreamSpecification: ['EnableKinesisStreamingConfiguration'],
+      'KinesisStreamSpecification.StreamArn@KinesisStreamSpecification': [FLATTENED],
       'ResourcePolicy.PolicyDocument': ['Policy', 'ResourcePolicy'],
-      StreamSpecification: [FLATTENED],
-      'StreamSpecification.ResourcePolicy': [FLATTENED],
+      'ResourcePolicy.PolicyDocument.Statement.Action@ResourcePolicy': [FLATTENED],
+      'ResourcePolicy.PolicyDocument.Statement.Effect@ResourcePolicy': [FLATTENED],
+      'ResourcePolicy.PolicyDocument.Statement.Principal.AWS@ResourcePolicy': [FLATTENED],
+      'ResourcePolicy.PolicyDocument.Statement.Resource@ResourcePolicy': [FLATTENED],
+      'ResourcePolicy.PolicyDocument.Statement.Sid@ResourcePolicy': [FLATTENED],
+      'ResourcePolicy.PolicyDocument.Version@ResourcePolicy': [FLATTENED],
       'StreamSpecification.ResourcePolicy.PolicyDocument': ['Policy'],
+      'StreamSpecification.ResourcePolicy.PolicyDocument.Statement.Action@StreamSpecification': [FLATTENED],
+      'StreamSpecification.ResourcePolicy.PolicyDocument.Statement.Action@StreamSpecification.ResourcePolicy': [FLATTENED],
+      'StreamSpecification.ResourcePolicy.PolicyDocument.Statement.Effect@StreamSpecification': [FLATTENED],
+      'StreamSpecification.ResourcePolicy.PolicyDocument.Statement.Effect@StreamSpecification.ResourcePolicy': [FLATTENED],
+      'StreamSpecification.ResourcePolicy.PolicyDocument.Statement.Principal.AWS@StreamSpecification': [FLATTENED],
+      'StreamSpecification.ResourcePolicy.PolicyDocument.Statement.Principal.AWS@StreamSpecification.ResourcePolicy': [FLATTENED],
+      'StreamSpecification.ResourcePolicy.PolicyDocument.Statement.Resource@StreamSpecification': [FLATTENED],
+      'StreamSpecification.ResourcePolicy.PolicyDocument.Statement.Resource@StreamSpecification.ResourcePolicy': [FLATTENED],
+      'StreamSpecification.ResourcePolicy.PolicyDocument.Statement.Sid@StreamSpecification': [FLATTENED],
+      'StreamSpecification.ResourcePolicy.PolicyDocument.Statement.Sid@StreamSpecification.ResourcePolicy': [FLATTENED],
+      'StreamSpecification.ResourcePolicy.PolicyDocument.Version@StreamSpecification': [FLATTENED],
+      'StreamSpecification.ResourcePolicy.PolicyDocument.Version@StreamSpecification.ResourcePolicy': [FLATTENED],
+      'StreamSpecification.Tags.Key@StreamSpecification': [FLATTENED],
+      'StreamSpecification.Tags.Value@StreamSpecification': [FLATTENED],
     },
   },
   'AWS::EC2::Instance': {
@@ -256,12 +459,18 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
     },
     containers: {
       CreditSpecification: ['InstanceCreditSpecifications'],
-      MetadataOptions: [FLATTENED],
+      'MetadataOptions.HttpEndpoint@MetadataOptions': [FLATTENED],
+      'MetadataOptions.HttpProtocolIpv6@MetadataOptions': [FLATTENED],
+      'MetadataOptions.HttpPutResponseHopLimit@MetadataOptions': [FLATTENED],
+      'MetadataOptions.HttpTokens@MetadataOptions': [FLATTENED],
+      'MetadataOptions.InstanceMetadataTags@MetadataOptions': [FLATTENED],
     },
   },
   'AWS::EC2::NatGateway': {
     containers: {
-      AvailabilityZoneAddresses: [FLATTENED],
+      'AvailabilityZoneAddresses.AllocationIds@AvailabilityZoneAddresses': [FLATTENED],
+      'AvailabilityZoneAddresses.AvailabilityZone@AvailabilityZoneAddresses': [FLATTENED],
+      'AvailabilityZoneAddresses.AvailabilityZoneId@AvailabilityZoneAddresses': [FLATTENED],
     },
   },
   'AWS::EC2::NetworkAclEntry': {
@@ -303,7 +512,7 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'ImageTagMutabilityExclusionFilters.ImageTagMutabilityExclusionFilterValue': ['filter'],
     },
     containers: {
-      LifecyclePolicy: [FLATTENED],
+      'LifecyclePolicy.LifecyclePolicyText@LifecyclePolicy': [FLATTENED],
       RepositoryPolicyText: ['policyText'],
     },
   },
@@ -317,7 +526,7 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'ForceNewDeployment.EnableForceNewDeployment': ['forceNewDeployment'],
     },
     containers: {
-      ForceNewDeployment: [FLATTENED],
+      'ForceNewDeployment.EnableForceNewDeployment@ForceNewDeployment': [FLATTENED],
       PlacementStrategies: ['placementStrategy'],
     },
   },
@@ -334,7 +543,7 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
   'AWS::EFS::FileSystem': {
     containers: {
       FileSystemPolicy: ['Policy'],
-      FileSystemProtection: [FLATTENED],
+      'FileSystemProtection.ReplicationOverwriteProtection@FileSystemProtection': [FLATTENED],
       FileSystemTags: ['Tags'],
     },
   },
@@ -342,7 +551,6 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
     containers: {
       'Configurations.ConfigurationProperties': ['Properties'],
       'Configurations.Configurations.ConfigurationProperties': ['Properties'],
-      Instances: [FLATTENED],
       'Instances.CoreInstanceFleet': ['InstanceFleets'],
       'Instances.CoreInstanceFleet.InstanceTypeConfigs.Configurations.ConfigurationProperties': ['Properties'],
       'Instances.CoreInstanceFleet.InstanceTypeConfigs.Configurations.Configurations.ConfigurationProperties': ['Properties'],
@@ -361,6 +569,8 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'Instances.TaskInstanceGroups': ['InstanceGroups'],
       'Instances.TaskInstanceGroups.Configurations.ConfigurationProperties': ['Properties'],
       'Instances.TaskInstanceGroups.Configurations.Configurations.ConfigurationProperties': ['Properties'],
+      'Instances.TerminationProtected@Instances': [FLATTENED],
+      'Instances.UnhealthyNodeReplacement@Instances': [FLATTENED],
       'Steps.HadoopJarStep.StepProperties': ['Properties'],
     },
   },
@@ -415,7 +625,7 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'OpenZFSConfiguration.RouteTableIds': ['AddRouteTableIds'],
     },
     containers: {
-      WindowsConfiguration: [FLATTENED],
+      'WindowsConfiguration.Aliases@WindowsConfiguration': [FLATTENED],
     },
     transformed: {
       FileSystemType:
@@ -432,7 +642,7 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'Schedule.ScheduleExpression': ['Schedule'],
     },
     containers: {
-      Schedule: [FLATTENED],
+      'Schedule.ScheduleExpression@Schedule': [FLATTENED],
       Tags: ['TagsToAdd'],
     },
   },
@@ -467,7 +677,11 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       Path: ['NewPath'],
     },
     containers: {
-      Policies: [FLATTENED],
+      'Policies.PolicyDocument.Statement.Action@Policies': [FLATTENED],
+      'Policies.PolicyDocument.Statement.Effect@Policies': [FLATTENED],
+      'Policies.PolicyDocument.Statement.Resource@Policies': [FLATTENED],
+      'Policies.PolicyDocument.Version@Policies': [FLATTENED],
+      'Policies.PolicyName@Policies': [FLATTENED],
     },
   },
   'AWS::IAM::InstanceProfile': {
@@ -496,7 +710,11 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
     },
     containers: {
       AssumeRolePolicyDocument: ['PolicyDocument'],
-      Policies: [FLATTENED],
+      'Policies.PolicyDocument.Statement.Action@Policies': [FLATTENED],
+      'Policies.PolicyDocument.Statement.Effect@Policies': [FLATTENED],
+      'Policies.PolicyDocument.Statement.Resource@Policies': [FLATTENED],
+      'Policies.PolicyDocument.Version@Policies': [FLATTENED],
+      'Policies.PolicyName@Policies': [FLATTENED],
     },
   },
   'AWS::IAM::User': {
@@ -506,8 +724,13 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       Path: ['NewPath'],
     },
     containers: {
-      LoginProfile: [FLATTENED],
-      Policies: [FLATTENED],
+      'LoginProfile.Password@LoginProfile': [FLATTENED],
+      'LoginProfile.PasswordResetRequired@LoginProfile': [FLATTENED],
+      'Policies.PolicyDocument.Statement.Action@Policies': [FLATTENED],
+      'Policies.PolicyDocument.Statement.Effect@Policies': [FLATTENED],
+      'Policies.PolicyDocument.Statement.Resource@Policies': [FLATTENED],
+      'Policies.PolicyDocument.Version@Policies': [FLATTENED],
+      'Policies.PolicyName@Policies': [FLATTENED],
     },
   },
   'AWS::IAM::UserToGroupAddition': {
@@ -533,7 +756,8 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       ShardCount: ['TargetShardCount'],
     },
     containers: {
-      StreamEncryption: [FLATTENED],
+      'StreamEncryption.EncryptionType@StreamEncryption': [FLATTENED],
+      'StreamEncryption.KeyId@StreamEncryption': [FLATTENED],
     },
   },
   'AWS::KinesisFirehose::DeliveryStream': {
@@ -558,8 +782,15 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
   },
   'AWS::Lambda::Function': {
     containers: {
-      Code: [FLATTENED],
-      RuntimeManagementConfig: [FLATTENED],
+      'Code.ImageUri@Code': [FLATTENED],
+      'Code.S3Bucket@Code': [FLATTENED],
+      'Code.S3Key@Code': [FLATTENED],
+      'Code.S3ObjectStorageMode@Code': [FLATTENED],
+      'Code.S3ObjectVersion@Code': [FLATTENED],
+      'Code.SourceKMSKeyArn@Code': [FLATTENED],
+      'Code.ZipFile@Code': [FLATTENED],
+      'RuntimeManagementConfig.RuntimeVersionArn@RuntimeManagementConfig': [FLATTENED],
+      'RuntimeManagementConfig.UpdateRuntimeOn@RuntimeManagementConfig': [FLATTENED],
     },
   },
   'AWS::Lambda::Url': {
@@ -584,7 +815,7 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'MasterUserSecret.KmsKeyId': ['MasterUserSecretKmsKeyId'],
     },
     containers: {
-      MasterUserSecret: [FLATTENED],
+      'MasterUserSecret.KmsKeyId@MasterUserSecret': [FLATTENED],
     },
   },
   'AWS::RDS::DBInstance': {
@@ -594,7 +825,7 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       VPCSecurityGroups: ['VpcSecurityGroupIds'],
     },
     containers: {
-      MasterUserSecret: [FLATTENED],
+      'MasterUserSecret.KmsKeyId@MasterUserSecret': [FLATTENED],
     },
   },
   'AWS::RDS::DBProxy': {
@@ -609,10 +840,10 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
   },
   'AWS::Route53::HostedZone': {
     containers: {
-      HostedZoneConfig: [FLATTENED],
-      HostedZoneFeatures: [FLATTENED],
+      'HostedZoneConfig.Comment@HostedZoneConfig': [FLATTENED],
+      'HostedZoneFeatures.EnableAcceleratedRecovery@HostedZoneFeatures': [FLATTENED],
       HostedZoneTags: ['AddTags'],
-      QueryLoggingConfig: [FLATTENED],
+      'QueryLoggingConfig.CloudWatchLogsLogGroupArn@QueryLoggingConfig': [FLATTENED],
       VPCs: ['VPC'],
     },
   },
@@ -664,22 +895,25 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       AnalyticsConfigurations: ['AnalyticsConfiguration', 'And'],
       'AnalyticsConfigurations.StorageClassAnalysis.DataExport.Destination': ['Destination.S3BucketDestination'],
       'AnalyticsConfigurations.TagFilters': ['Tags'],
-      BucketEncryption: [FLATTENED],
-      'BucketEncryption.ServerSideEncryptionConfiguration': ['Rules'],
+      'BucketEncryption.ServerSideEncryptionConfiguration': ['ServerSideEncryptionConfiguration.Rules'],
+      'BucketEncryption.ServerSideEncryptionConfiguration.BlockedEncryptionTypes.EncryptionType@BucketEncryption': [FLATTENED],
+      'BucketEncryption.ServerSideEncryptionConfiguration.BucketKeyEnabled@BucketEncryption': [FLATTENED],
       'BucketEncryption.ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault': ['ApplyServerSideEncryptionByDefault'],
+      'BucketEncryption.ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault.KMSMasterKeyID@BucketEncryption': [FLATTENED],
+      'BucketEncryption.ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault.SSEAlgorithm@BucketEncryption': [FLATTENED],
       IntelligentTieringConfigurations: ['And', 'IntelligentTieringConfiguration'],
       'IntelligentTieringConfigurations.TagFilters': ['Tags'],
       InventoryConfigurations: ['Filter', 'InventoryConfiguration'],
       'InventoryConfigurations.Destination': ['Destination.S3BucketDestination'],
-      LifecycleConfiguration: [FLATTENED],
       'LifecycleConfiguration.Rules.NoncurrentVersionTransition': ['NoncurrentVersionTransitions'],
       'LifecycleConfiguration.Rules.TagFilters': ['Filter.Tag'],
       'LifecycleConfiguration.Rules.Transition': ['Transitions'],
+      'LifecycleConfiguration.TransitionDefaultMinimumObjectSize@LifecycleConfiguration': [FLATTENED],
       LoggingConfiguration: ['LoggingEnabled'],
       MetricsConfigurations: ['And', 'Filter', 'MetricsConfiguration'],
       'MetricsConfigurations.TagFilters': ['Tags'],
-      NotificationConfiguration: [FLATTENED],
       'NotificationConfiguration.EventBridgeConfiguration': ['NotificationConfiguration'],
+      'NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled@NotificationConfiguration': [FLATTENED],
       'NotificationConfiguration.LambdaConfigurations': ['LambdaFunctionConfigurations'],
       'NotificationConfiguration.LambdaConfigurations.Filter.S3Key': ['Key'],
       'NotificationConfiguration.LambdaConfigurations.Filter.S3Key.Rules': ['FilterRules'],
@@ -738,8 +972,12 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
     containers: {
       ArchivePolicy: ['AttributeValue'],
       DataProtectionPolicy: ['AttributeValue'],
-      DeliveryStatusLogging: [FLATTENED],
-      Subscription: [FLATTENED],
+      'DeliveryStatusLogging.FailureFeedbackRoleArn@DeliveryStatusLogging': [FLATTENED],
+      'DeliveryStatusLogging.Protocol@DeliveryStatusLogging': [FLATTENED],
+      'DeliveryStatusLogging.SuccessFeedbackRoleArn@DeliveryStatusLogging': [FLATTENED],
+      'DeliveryStatusLogging.SuccessFeedbackSampleRate@DeliveryStatusLogging': [FLATTENED],
+      'Subscription.Endpoint@Subscription': [FLATTENED],
+      'Subscription.Protocol@Subscription': [FLATTENED],
     },
   },
   'AWS::SNS::TopicPolicy': {

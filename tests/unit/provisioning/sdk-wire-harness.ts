@@ -551,14 +551,16 @@ function levelAt(landed: Chain, pos: number, name: string): number {
  * only happens to sit below the right grandparent. A level may instead match
  * a `containers` name for its bag path (dotted when the SDK adds a level of
  * its own: `Destination.S3BucketDestination`), or be absent from the input
- * (`FLATTENED`); a named container is tried first, so a `FLATTENED` beside
- * one still goes stale.
+ * (`FLATTENED`, keyed `<leaf path>@<prefix>` so it skips that level for the
+ * one leaf that needs it); a named container is tried first, so a
+ * `FLATTENED` beside one still goes stale.
  */
 function chainNeeds(
   e: Chain,
   landed: Chain,
   leaf: [string, string | undefined],
-  containers: Readonly<Record<string, readonly string[]>>
+  containers: Readonly<Record<string, readonly string[]>>,
+  key: string
 ): string[] | undefined {
   const j = memberAt(landed, leaf[0], leaf[1] !== undefined);
   if (j < 0) return undefined;
@@ -581,8 +583,10 @@ function chainNeeds(
     if (renamed !== undefined) {
       needed.push(`${prefix}=>${renamed[0]}`);
       pos = renamed[1];
-    } else if ((containers[prefix] ?? []).includes(FLATTENED)) {
-      needed.push(`${prefix}=>${FLATTENED}`);
+    } else if ((containers[`${key}@${prefix}`] ?? []).includes(FLATTENED)) {
+      // Scoped to the leaf: `FLATTENED` on the whole prefix would let every
+      // child skip the level (a GSI's throughput landing as the table's).
+      needed.push(`${key}@${prefix}=>${FLATTENED}`);
     } else {
       return undefined;
     }
@@ -615,7 +619,7 @@ function wrongMember(
     ];
     for (const l of landed) {
       for (const leaf of leaves) {
-        const needed = chainNeeds(e, l, leaf, renames.containers ?? {});
+        const needed = chainNeeds(e, l, leaf, renames.containers ?? {}, key);
         if (needed !== undefined) matches.push(needed);
       }
     }
@@ -737,7 +741,8 @@ export interface ProbeResult {
  * though the wire changed. `sdk-wire-member-renames.ts` names the accepted
  * exceptions. Bounds: only a vary probe is traced, so a container whose
  * removal is the only evidence (an empty list) is not; a TOP-LEVEL leaf has no
- * parent to compare, so it matches a same-named member anywhere; a
+ * parent to compare, so it matches a same-named member anywhere, and the
+ * outermost CFn ancestor may sit under any SDK member; a
  * `FLATTENED` level is not compared, and is keyed by bag path rather than by
  * command (Lambda's `Code` nests on CreateFunction and flattens on
  * UpdateFunctionCode); a `transformed` path is not traced at all; and a
