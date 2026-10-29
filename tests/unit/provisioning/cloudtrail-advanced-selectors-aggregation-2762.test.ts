@@ -47,6 +47,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { CloudTrailProvider } from '../../../src/provisioning/providers/cloudtrail-provider.js';
+import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 
 /**
  * Issue #2762: `AdvancedEventSelectors` and `AggregationConfigurations` on
@@ -657,6 +658,104 @@ describe('CloudTrailProvider AdvancedEventSelectors / AggregationConfigurations 
       >;
       expect(result['AdvancedEventSelectors']).toEqual([]);
       expect(result['EventSelectors']).toEqual(BASIC);
+    });
+  });
+
+  describe('order: AWS reads FieldSelectors back sorted by Field', () => {
+    // The declared order (what the template and the state record hold) and the
+    // order a live GetEventSelectors returned for it (cloudtrail-trail integ).
+    const DECLARED = [
+      {
+        Name: 'cdkd-integ-s3-data',
+        FieldSelectors: [
+          { Field: 'eventCategory', Equals: ['Data'] },
+          { Field: 'resources.type', Equals: ['AWS::S3::Object'] },
+          { Field: 'resources.ARN', StartsWith: ['arn:aws:s3:::bucket/'] },
+        ],
+      },
+    ];
+    const AWS_ORDER = [
+      {
+        FieldSelectors: [
+          { Equals: ['Data'], Field: 'eventCategory' },
+          { Field: 'resources.ARN', StartsWith: ['arn:aws:s3:::bucket/'] },
+          { Equals: ['AWS::S3::Object'], Field: 'resources.type' },
+        ],
+        Name: 'cdkd-integ-s3-data',
+      },
+    ];
+
+    it('reports no drift for the reordered read-back', () => {
+      const drifts = calculateResourceDrift(
+        { AdvancedEventSelectors: DECLARED, AggregationConfigurations: [{ EventCategory: 'Data', Templates: ['API_ACTIVITY', 'USER_ACTIONS'] }] },
+        { AdvancedEventSelectors: AWS_ORDER, AggregationConfigurations: [{ Templates: ['USER_ACTIONS', 'API_ACTIVITY'], EventCategory: 'Data' }] },
+        { unorderedPaths: provider.getDriftUnorderedPaths('AWS::CloudTrail::Trail') }
+      );
+      expect(drifts).toEqual([]);
+    });
+
+    it('still reports a real change hidden in the reorder', () => {
+      const changed = structuredClone(AWS_ORDER);
+      changed[0]!.FieldSelectors[1]!.StartsWith = ['arn:aws:s3:::other/'];
+      const drifts = calculateResourceDrift(
+        { AdvancedEventSelectors: DECLARED },
+        { AdvancedEventSelectors: changed },
+        { unorderedPaths: provider.getDriftUnorderedPaths('AWS::CloudTrail::Trail') }
+      );
+      expect(drifts.map((d) => d.path)).toEqual(['AdvancedEventSelectors']);
+    });
+
+    it('declares nothing for another type', () => {
+      expect(provider.getDriftUnorderedPaths('AWS::S3::Bucket')).toEqual([]);
+    });
+
+    it('sends no PutEventSelectors / PutEventConfiguration when only the order differs', async () => {
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        {
+          ...BASE,
+          AdvancedEventSelectors: DECLARED,
+          AggregationConfigurations: [{ EventCategory: 'Data', Templates: ['API_ACTIVITY', 'USER_ACTIONS'] }],
+        },
+        {
+          ...BASE,
+          AdvancedEventSelectors: AWS_ORDER,
+          AggregationConfigurations: [{ Templates: ['USER_ACTIONS', 'API_ACTIVITY'], EventCategory: 'Data' }],
+        }
+      );
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([]);
+      expect(inputsOf(PutEventConfigurationCommand)).toEqual([]);
+    });
+
+    it('still sends the Put when a value changed under the reorder', async () => {
+      const changed = structuredClone(AWS_ORDER);
+      changed[0]!.FieldSelectors[0]!.Equals = ['Management'];
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: DECLARED },
+        { ...BASE, AdvancedEventSelectors: changed }
+      );
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([
+        { TrailName: TRAIL_ARN, AdvancedEventSelectors: DECLARED },
+      ]);
+    });
+
+    it('on a revert, drops the advanced list that matches the live one only by order', async () => {
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: DECLARED, EventSelectors: BASIC },
+        { ...BASE, AdvancedEventSelectors: AWS_ORDER },
+        { desiredFromAwsReadback: true }
+      );
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([
+        { TrailName: TRAIL_ARN, EventSelectors: BASIC },
+      ]);
     });
   });
 });

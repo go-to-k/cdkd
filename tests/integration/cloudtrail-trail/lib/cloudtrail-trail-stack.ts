@@ -184,6 +184,10 @@ export class CloudTrailTrailStack extends cdk.Stack {
             advancedEventSelectors: [
               {
                 name: 'cdkd-integ-s3-data',
+                // Deliberately NOT sorted by `field`: GetEventSelectors reads
+                // them back sorted (resources.ARN before resources.type), so
+                // this order is what proves the drift comparison and the
+                // update diff treat the list as a set.
                 fieldSelectors: [
                   { field: 'eventCategory', equalTo: ['Data'] },
                   { field: 'resources.type', equalTo: [cloudtrail.DataResourceType.S3_OBJECT] },

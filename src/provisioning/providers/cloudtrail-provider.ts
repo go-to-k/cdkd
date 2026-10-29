@@ -219,6 +219,41 @@ function retainPreviousLists(
   return out;
 }
 
+/**
+ * The CloudTrail list blocks whose every list is a SET (issue #2762):
+ * `AdvancedEventSelectors` (the selectors are OR-ed, each selector's
+ * `FieldSelectors` AND-ed, and each operator's values OR-ed) and
+ * `AggregationConfigurations` (one entry per category, `Templates` a set).
+ * `GetEventSelectors` returns `FieldSelectors` sorted by `Field`, not in the
+ * order they were put (measured on a live trail), so these are compared
+ * without order: by `cdkd drift` through `getDriftUnorderedPaths`, and by
+ * `update()` through {@link setKey}.
+ */
+const UNORDERED_LIST_BLOCKS: readonly string[] = [
+  'AdvancedEventSelectors',
+  'AggregationConfigurations',
+];
+
+/**
+ * An order-insensitive comparison key for a set-valued block: every array is
+ * sorted by its elements' keys and every object's keys are sorted, so two
+ * spellings of one set compare equal. Used only to decide whether a Put is
+ * needed, never sent. `undefined` keeps its own key, distinct from `[]`.
+ */
+function setKey(value: unknown): string {
+  if (value === undefined) return 'undefined';
+  if (Array.isArray(value)) return ['[', value.map(setKey).sort().join(','), ']'].join('');
+  if (value !== null && typeof value === 'object') {
+    const bag = value as Record<string, unknown>;
+    const entries = Object.keys(bag)
+      .filter((k) => bag[k] !== undefined)
+      .sort()
+      .map((k) => [JSON.stringify(k), setKey(bag[k])].join(':'));
+    return ['{', entries.join(','), '}'].join('');
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
 /** The list a read carries when it has at least one entry. */
 function nonEmptyListOf(read: ListBlockRead): Array<Record<string, unknown>> | undefined {
   return read.kind === 'list' && read.value.length > 0 ? read.value : undefined;
@@ -921,8 +956,7 @@ export class CloudTrailProvider implements ResourceProvider {
       const newAggregation = listOf(aggregationRead);
       const aggregationChanged =
         aggregationRead.kind !== 'unusable' &&
-        JSON.stringify(newAggregation) !==
-          JSON.stringify(previousProperties['AggregationConfigurations']);
+        setKey(newAggregation) !== setKey(previousProperties['AggregationConfigurations']);
       const aggregationCleared =
         aggregationChanged && nonEmptyListOf(aggregationRead) === undefined;
       const putAggregation = async (): Promise<void> => {
@@ -947,7 +981,7 @@ export class CloudTrailProvider implements ResourceProvider {
       if (
         !selectorsUnusable &&
         (JSON.stringify(newEventSelectors) !== JSON.stringify(oldEventSelectors) ||
-          JSON.stringify(newAdvancedSelectors) !== JSON.stringify(oldAdvancedSelectors))
+          setKey(newAdvancedSelectors) !== setKey(oldAdvancedSelectors))
       ) {
         // A `drift --revert` desired bag is the live readback with the drifted
         // list overlaid, so it can carry BOTH lists: the live one it started
@@ -964,9 +998,7 @@ export class CloudTrailProvider implements ResourceProvider {
         ) {
           if (JSON.stringify(newEventSelectors) === JSON.stringify(oldEventSelectors)) {
             basicToSend = undefined;
-          } else if (
-            JSON.stringify(newAdvancedSelectors) === JSON.stringify(oldAdvancedSelectors)
-          ) {
+          } else if (setKey(newAdvancedSelectors) === setKey(oldAdvancedSelectors)) {
             advancedToSend = undefined;
           }
         }
@@ -1213,6 +1245,17 @@ export class CloudTrailProvider implements ResourceProvider {
       );
       return undefined;
     }
+  }
+
+  /**
+   * Both comparison sides of `cdkd drift` sort these blocks' lists
+   * ({@link UNORDERED_LIST_BLOCKS}): AWS reads `FieldSelectors` back sorted
+   * by `Field`, so a template declaring them in another order would otherwise
+   * report drift on every clean deploy.
+   */
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    if (resourceType !== 'AWS::CloudTrail::Trail') return [];
+    return [...UNORDERED_LIST_BLOCKS];
   }
 
   getAttribute(
