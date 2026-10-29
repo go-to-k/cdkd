@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { describe, it, expect } from 'vite-plus/test';
 import { MEMBER_RENAMES } from './sdk-wire-member-renames.js';
+import { CALL_ROOTS } from './sdk-wire-call-roots.js';
 
 /**
  * Fences around the sdk-wire suites' inputs that no single case file sees
@@ -29,12 +30,13 @@ function wireTypes(): Set<string> {
 }
 
 describe('sdk-wire inputs', () => {
-  it('names only cased resource types in MEMBER_RENAMES', () => {
+  it('names only cased resource types in MEMBER_RENAMES and CALL_ROOTS', () => {
     // Each type's entries are read by that type's own suite, so a key no
     // suite runs (a typo, a retired case) is never checked for staleness.
     const types = wireTypes();
     expect(types.size).toBeGreaterThan(100);
     expect(Object.keys(MEMBER_RENAMES).filter((t) => !types.has(t))).toEqual([]);
+    expect(Object.keys(CALL_ROOTS).filter((t) => !types.has(t))).toEqual([]);
   });
 
   it('names a command only as a whole container, at the root', () => {

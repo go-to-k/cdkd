@@ -77,6 +77,19 @@ describe('traceLanding', () => {
     expect(traceLanding(bag, alt, path, right, rightAlt, { containers }, roots).wrong).toBeUndefined();
   });
 
+  it('records a command sent twice with no root, and not one with a root', () => {
+    const call = (arn: string, prefix: string) => line('PutCommand', { Arn: arn, Prefix: prefix });
+    const from = [call('primary', 'a'), call('backup', 'b')];
+    const to = [call('primary', 'a-alt'), call('backup', 'b')];
+    const unrooted = new Set<string>();
+    traceLanding(bag, alt, path, from, to, {}, {}, unrooted);
+    expect([...unrooted]).toEqual(['PutCommand']);
+    const rooted = new Set<string>();
+    const roots = { PutCommand: (input: Record<string, unknown>) => String(input['Arn']) };
+    traceLanding(bag, alt, path, from, to, {}, roots, rooted);
+    expect([...rooted]).toEqual([]);
+  });
+
   it('requires a keyed Value to land as the entry its key names', () => {
     const tags: Bag = { Tags: [{ Key: 'k1', Value: 'v1' }, { Key: 'k2', Value: 'v2' }] };
     const tagsAlt: Bag = { Tags: [{ Key: 'k1', Value: 'v1-alt' }, { Key: 'k2', Value: 'v2' }] };

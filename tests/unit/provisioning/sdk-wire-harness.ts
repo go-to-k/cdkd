@@ -789,9 +789,11 @@ export interface ProbeResult {
  * parent to compare, so it matches a same-named member anywhere, and the
  * outermost CFn ancestor may sit under any SDK member (or command); a
  * container named by its command accepts any child of that parent at the
- * top of that call, and several calls of one command are told apart only
- * where the case declares `roots` (a global table's remote replicas differ
- * only by client region, which no input carries); a `transformed` path is not
+ * top of that call; several calls of one command are told apart by
+ * `sdk-wire-call-roots.ts`'s roots, or carry a reason there why they need
+ * not be (one call per list item: an item's value sent with another item is
+ * not seen; a global table's remote replicas differ only by client region,
+ * which no input carries); a `transformed` path is not
  * traced at all; and a
  * value landing in its own member AND another passes (the other's own value,
  * then lost, is what its removal and vary probes report silent).
