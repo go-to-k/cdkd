@@ -110,7 +110,7 @@ dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc o
 dynamodb-globaltable-replica-settings	2026-10-29T05:42:58Z	PASS	4490	verify.sh	rc ok, orph clean; #5487 phase 1a/1a2; probe red at unsettledProperties
 dynamodb-gsi-update	2026-10-29T02:49:23Z	PASS	2331	verify.sh	rc ok, orph clean; pre-fix probe RED at 1c (#5503)
 dynamodb-ondemand	2026-10-27T17:47:12Z	PASS	560	verify.sh	rc ok, orph clean, KinesisRemovalTable arm (#5423) green, pre-fix probe red at Phase 1.5
-dynamodb-sse	2026-10-16T08:15:12Z	PASS	45	verify.sh	rc ok, orph clean (#3341 slice 4995)
+dynamodb-sse	2026-10-29T16:45:21Z	PASS	53	verify.sh	rc ok, orph clean; #5514 table gone straight after destroy, probe without wait RED
 dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-streams	2026-10-13T02:41:29Z	PASS	235	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 dynamodb-tableclass-switch	2026-10-03T04:27:40Z	PASS	67	verify.sh	rc ok, orph clean (#4283 PR #4449)
