@@ -7539,6 +7539,7 @@ async function runRevert(
                     recordedProperties: stateResource.properties ?? {},
                     names: unsettledPropertiesOf(stateResource),
                     previous: outcome.awsProperties,
+                    desired: newProperties,
                   });
                   const updateResult = await withRetry(
                     () =>

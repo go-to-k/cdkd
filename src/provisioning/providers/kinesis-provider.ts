@@ -1028,6 +1028,14 @@ export class KinesisStreamProvider implements ResourceProvider {
         // read leniently and never refused (the #1471 desired-side-only rule).
         const previousSet = previousMetricNames(previousProperties['DesiredShardLevelMetrics']);
         const toDisable = previousSet.filter((m) => !desiredSet.includes(m));
+        // go-to-k/cdkd#5503: converging an unsettled DesiredShardLevelMetrics
+        // leaves every live metric that neither the record nor the template
+        // names (`readUnsettled` keeps them off the previous side), as
+        // CloudFormation does. Say so: one may be a metric the failed update
+        // itself enabled.
+        if (context?.unsettledProperties?.has('DesiredShardLevelMetrics') === true) {
+          await this.warnUndeclaredLiveMetrics(physicalId, [...previousSet, ...desiredSet], warn);
+        }
         const toEnable = desiredSet.filter((m) => !previousSet.includes(m));
         if (toDisable.length > 0 || toEnable.length > 0) markUnsettled('DesiredShardLevelMetrics');
         if (toDisable.length > 0) {
@@ -1474,15 +1482,71 @@ export class KinesisStreamProvider implements ResourceProvider {
    * go-to-k/cdkd#5487: `readCurrentState`, with `ShardCount` the OPEN shard
    * count the update compares (`readCurrentState` counts closed shards too).
    */
+  /**
+   * go-to-k/cdkd#5503: warn about each live shard-level metric outside
+   * `named`. It is left enabled, and the warning says how to disable it.
+   * Best-effort: a failed read only loses the warning.
+   */
+  private async warnUndeclaredLiveMetrics(
+    physicalId: string,
+    named: readonly string[],
+    warn: (message: string) => void
+  ): Promise<void> {
+    let live: string[];
+    try {
+      const resp = await this.getClient().send(
+        new DescribeStreamSummaryCommand({ StreamName: physicalId })
+      );
+      live = (resp.StreamDescriptionSummary?.EnhancedMonitoring ?? []).flatMap(
+        (entry) => entry.ShardLevelMetrics ?? []
+      );
+    } catch {
+      return;
+    }
+    const undeclared = live.filter((metric) => metric !== 'ALL' && !named.includes(metric));
+    if (undeclared.length === 0) return;
+    warn(
+      `Kinesis stream ${physicalId} has shard-level metrics enabled that neither cdkd's record ` +
+        `nor the template declares (${undeclared.join(', ')}), so cdkd left them enabled while ` +
+        `converging the unsettled DesiredShardLevelMetrics (CloudFormation never disables a ` +
+        `metric it did not record). Another tool may have enabled them, or an earlier failed ` +
+        `cdkd update may have; cdkd cannot tell which. If they should be off, disable them with: ` +
+        `aws kinesis disable-enhanced-monitoring --stream-name ${physicalId} ` +
+        `--shard-level-metrics ${undeclared.join(' ')} (in the stream's region)`
+    );
+  }
+
   async readUnsettled(
     physicalId: string,
     logicalId: string,
     resourceType: string,
-    names: ReadonlySet<string>
+    names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>,
+    desiredProperties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const live = await this.readCurrentState(physicalId, logicalId, resourceType);
-    if (typeof live !== 'object' || live === null || !names.has('ShardCount')) return live;
-    return { ...live, ShardCount: await this.getOpenShardCount(physicalId) };
+    if (typeof live !== 'object' || live === null) return live;
+    const out: Record<string, unknown> = { ...live };
+    // go-to-k/cdkd#5503: the live metrics, projected onto the ones the record
+    // or the template names. This value becomes the previous side, and
+    // `update()` disables every previous metric the template lacks, so one
+    // enabled out of band would be DISABLED. CloudFormation leaves it enabled
+    // (CFn A/B, us-east-1, 2026-10-29: OutgoingBytes enabled out of band,
+    // then an update from [IncomingBytes] to [IncomingBytes, IncomingRecords]
+    // left all three enabled).
+    if (names.has('DesiredShardLevelMetrics') && Array.isArray(out['DesiredShardLevelMetrics'])) {
+      const named = new Set(
+        [recordedProperties, desiredProperties].flatMap((bag) => {
+          const expanded = expandShardLevelMetrics(bag?.['DesiredShardLevelMetrics']);
+          return isUsableMetricsList(expanded) ? expanded : [];
+        })
+      );
+      out['DesiredShardLevelMetrics'] = (out['DesiredShardLevelMetrics'] as unknown[]).filter(
+        (metric) => typeof metric === 'string' && named.has(metric)
+      );
+    }
+    if (!names.has('ShardCount')) return out;
+    return { ...out, ShardCount: await this.getOpenShardCount(physicalId) };
   }
 
   /**

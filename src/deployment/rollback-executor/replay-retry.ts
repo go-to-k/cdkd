@@ -67,6 +67,7 @@ export async function updateWithRollbackRetry(
     recordedProperties: recordedPrevious,
     names: context?.unsettledProperties ?? new Set(),
     previous: recordedPrevious,
+    desired,
   });
   const removal = prepareRemovalForUpdate(provider, resourceType, desired, previous);
   const revertArgs: Parameters<ResourceProvider['update']> = [

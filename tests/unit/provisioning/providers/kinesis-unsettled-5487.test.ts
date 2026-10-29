@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-const mockSend = vi.hoisted(() => vi.fn());
+const { mockSend, warnSpy } = vi.hoisted(() => ({ mockSend: vi.fn(), warnSpy: vi.fn() }));
 
 vi.mock('@aws-sdk/client-kinesis', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-kinesis')>();
@@ -20,12 +20,13 @@ vi.mock('@aws-sdk/client-kinesis', async (importOriginal) => {
   };
 });
 vi.mock('../../../../src/utils/logger.js', () => {
-  const child = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: vi.fn() };
+  const child = { debug: vi.fn(), info: vi.fn(), warn: warnSpy, error: vi.fn(), child: vi.fn() };
   child.child.mockReturnValue(child);
   return { getLogger: () => ({ ...child, child: () => child }) };
 });
 
 import { KinesisStreamProvider } from '../../../../src/provisioning/providers/kinesis-provider.js';
+import { settleUnsettledPrevious } from '../../../../src/deployment/unsettled-convergence.js';
 
 const TYPE = 'AWS::Kinesis::Stream';
 const ARN = 'arn:aws:kinesis:us-east-1:123456789012:stream/s';
@@ -38,6 +39,8 @@ function serve(live: {
   closed?: number;
   retention?: number;
   encryption?: { EncryptionType: string; KeyId?: string };
+  /** Live enhanced-monitoring metrics. */
+  metrics?: string[];
 }): void {
   mockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
     const shards = [
@@ -62,7 +65,7 @@ function serve(live: {
             RetentionPeriodHours: live.retention ?? 24,
             EncryptionType: live.encryption?.EncryptionType ?? 'NONE',
             ...(live.encryption?.KeyId !== undefined && { KeyId: live.encryption.KeyId }),
-            EnhancedMonitoring: [],
+            EnhancedMonitoring: [{ ShardLevelMetrics: live.metrics ?? [] }],
           },
         };
       case 'DescribeStreamSummaryCommand':
@@ -71,6 +74,7 @@ function serve(live: {
             StreamARN: ARN,
             StreamStatus: live.status ?? 'ACTIVE',
             OpenShardCount: live.shards ?? 1,
+            EnhancedMonitoring: [{ ShardLevelMetrics: live.metrics ?? [] }],
           },
         };
       case 'ListShardsCommand':
@@ -197,5 +201,76 @@ describe('Kinesis stream unsettled properties (go-to-k/cdkd#5487)', () => {
       'ShardCount',
       'Tags',
     ]);
+  });
+});
+
+/**
+ * go-to-k/cdkd#5503: an unsettled DesiredShardLevelMetrics converges from the
+ * live metrics projected onto record ∪ template. A metric enabled out of band
+ * is never disabled; CloudFormation leaves it enabled (CFn A/B, us-east-1,
+ * 2026-10-29).
+ */
+describe('converging an unsettled DesiredShardLevelMetrics (go-to-k/cdkd#5503)', () => {
+  let provider: KinesisStreamProvider;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new KinesisStreamProvider();
+  });
+  const NAMES = new Set(['DesiredShardLevelMetrics']);
+  const bag = (...metrics: string[]): Record<string, unknown> => ({
+    Name: 's',
+    ShardCount: 1,
+    DesiredShardLevelMetrics: metrics,
+  });
+  const converge = async (
+    recorded: Record<string, unknown>,
+    desired: Record<string, unknown>
+  ): Promise<void> => {
+    const previous = await settleUnsettledPrevious({
+      provider,
+      logicalId: 'S',
+      physicalId: 's',
+      resourceType: TYPE,
+      recordedProperties: recorded,
+      desired,
+      names: NAMES,
+      previous: recorded,
+    });
+    await provider.update('S', 's', TYPE, desired, previous, { unsettledProperties: NAMES });
+  };
+  const metricCalls = (name: string): string[][] =>
+    sent(name).map((c) => c.input.ShardLevelMetrics as string[]);
+
+  it('never disables a metric that neither the record nor the template names', async () => {
+    serve({ metrics: ['IncomingBytes', 'OutgoingBytes'] });
+    await converge(bag('IncomingBytes'), bag('IncomingBytes', 'IncomingRecords'));
+    expect(metricCalls('DisableEnhancedMonitoringCommand')).toEqual([]);
+    expect(metricCalls('EnableEnhancedMonitoringCommand')).toEqual([['IncomingRecords']]);
+    const warned = warnSpy.mock.calls.flat().join('\n');
+    expect(warned).toContain('(OutgoingBytes), so cdkd left them enabled');
+    expect(warned).toContain(
+      'aws kinesis disable-enhanced-monitoring --stream-name s --shard-level-metrics OutgoingBytes'
+    );
+  });
+
+  it('warns nothing when every live metric is declared', async () => {
+    serve({ metrics: ['IncomingBytes'] });
+    await converge(bag('IncomingBytes'), bag('IncomingBytes', 'IncomingRecords'));
+    expect(warnSpy.mock.calls.flat().join('\n')).not.toMatch(/neither cdkd's record/);
+  });
+
+  it('still disables a recorded metric the template dropped, and only that one', async () => {
+    serve({ metrics: ['IncomingBytes', 'IncomingRecords', 'OutgoingBytes'] });
+    await converge(bag('IncomingBytes', 'IncomingRecords'), bag('IncomingBytes'));
+    expect(metricCalls('DisableEnhancedMonitoringCommand')).toEqual([['IncomingRecords']]);
+  });
+
+  it('reads an ALL record as naming every metric', async () => {
+    serve({ metrics: ['IncomingBytes', 'OutgoingBytes'] });
+    const live = (await provider.readUnsettled('s', 'S', TYPE, NAMES, bag('ALL'), bag())) as Record<
+      string,
+      unknown
+    >;
+    expect(live['DesiredShardLevelMetrics']).toEqual(['IncomingBytes', 'OutgoingBytes']);
   });
 });
