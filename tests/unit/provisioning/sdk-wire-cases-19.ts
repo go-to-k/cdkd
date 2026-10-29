@@ -256,7 +256,7 @@ const CLUSTER_CASE: TypeCase = {
         ...Object.fromEntries(
           [0, 1].map((i) => [
             `update-remove:VpcSecurityGroupIds.${i}`,
-            `ModifyDBCluster sends the WHOLE desired list from next (${SRC}:2341-2342), so an element removal is delivered by next alone (update-add observes it); only a whole-list removal reads prev (the VPC default group, :2331-2399)`,
+            `ModifyDBCluster sends the WHOLE desired list from next (${SRC}:2341-2342), so an element removal is delivered by next alone (update-add observes it); only a whole-list removal reads prev (the VPC default group, :2333-2412)`,
           ])
         ),
       },

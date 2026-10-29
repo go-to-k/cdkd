@@ -260,7 +260,7 @@ function clusterPortToSend(
   const engine = properties['Engine'] ?? previousProperties['Engine'];
   const reset =
     typeof engine === 'string' ? CLUSTER_REMOVED_PORT.get(engine.toLowerCase()) : undefined;
-  // The removed value already was the default: nothing to change.
+  // Already the reset value: send nothing (an equal Multi-AZ port is unmeasured).
   return reset === Number(previousProperties['Port']) ? undefined : reset;
 }
 
