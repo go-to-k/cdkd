@@ -21,8 +21,8 @@ A **candidate** is a tier-2 CloudFormation resource type — no cdkd SDK provide
 | ...of which declare a createOnly property | 1427 |
 | Schemas declaring no top-level properties | 0 |
 | ...and fire a data-bearing signal (**candidates**) | 118 |
-| Candidates already guarded | 87 |
-| Candidates not guarded | 31 |
+| Candidates already guarded | 88 |
+| Candidates not guarded | 30 |
 | Schemas unreadable (excluded, NOT cleared) | 0 |
 
 ## Signals
@@ -70,7 +70,7 @@ A **candidate** is a tier-2 CloudFormation resource type — no cdkd SDK provide
 | `AWS::DocDBElastic::Cluster` | yes | data-store-noun, snapshot-or-backup | `AdminUserName`, `AuthType`, `ClusterName`, `KmsKeyId` |
 | `AWS::DocDBElastic::ClusterSnapshot` | yes | snapshot-or-backup | `ClusterArn`, `SnapshotName` |
 | `AWS::EC2::LocalGatewayRouteTable` | **no** | data-store-noun | `LocalGatewayId`, `Mode` |
-| `AWS::EC2::Snapshot` | **no** | storage-capacity | `Description`, `VolumeId` |
+| `AWS::EC2::Snapshot` | yes | storage-capacity | `Description`, `VolumeId` |
 | `AWS::EC2::TransitGatewayMulticastDomain` | **no** | data-store-noun | `TransitGatewayId` |
 | `AWS::EC2::TransitGatewayPolicyTable` | **no** | data-store-noun | `TransitGatewayId` |
 | `AWS::EC2::TransitGatewayRouteTable` | **no** | data-store-noun | `TransitGatewayId` |

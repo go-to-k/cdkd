@@ -354,6 +354,11 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   'AWS::MemoryDB::Snapshot',
   'AWS::Redshift::Snapshot',
   'AWS::Timestream::InfluxDBBackup',
+  // The EBS snapshot (2026-10-29 coverage refresh) is the same copy of the
+  // `AWS::EC2::Volume` above: a `VolumeId` or `Description` change replaces
+  // it, and the new snapshot is taken from the volume as it is NOW, so the
+  // point in time the old one held is gone.
+  'AWS::EC2::Snapshot',
   // Storage that holds the user's blocks or files: a Storage Gateway volume is
   // the volume's data; an FSx file cache holds writes not yet exported to its
   // data repository.

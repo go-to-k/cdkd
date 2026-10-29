@@ -7,8 +7,8 @@
     "withCreateOnly": 1427,
     "schemasWithNoProperties": 0,
     "candidateCount": 118,
-    "guardedCount": 87,
-    "unguardedCount": 31,
+    "guardedCount": 88,
+    "unguardedCount": 30,
     "signalCounts": {
       "snapshot-or-backup": 16,
       "retention-window": 10,
@@ -389,7 +389,7 @@
       "signals": [
         "storage-capacity"
       ],
-      "guarded": false
+      "guarded": true
     },
     {
       "typeName": "AWS::EC2::TransitGatewayMulticastDomain",
