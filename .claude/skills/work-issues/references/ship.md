@@ -22,12 +22,12 @@ can move `main` under that batch (#4864). A turn blocked on a fixture fix
 yields to the next merge-ready lane. ANY turn holding HOURS tells the user
 unasked its ETA and queue. A subagent running a turn's integs, marker and
 ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
-it (#5245), so the `.live` Monitor below is the only progress signal. Its brief
+it (#5245); the `.live` Monitor below is the only progress signal. Its brief
 (the runner never reads this file) makes marker and ledger due once the last PID
-exits, has it run `/run-integ` step 5's block per fixture AS WRITTEN and read
-each verdict from that LOG's `verify.sh rc=` line, never a driver or results
-file of its own (#5519), wait on ONE command exiting with that PID (never a
-per-line Monitor: each line re-ends it, #5413), bans attribution
+exits, has it run `/run-integ` step 5's block per fixture AS WRITTEN, take each
+verdict from that fixture's stdout file's `verify.sh rc=` line (no driver of
+its own, #5519) and wait on ONE command exiting with that PID (no per-line
+Monitor: each line re-ends it, #5413), bans attribution
 lines in the ledger commit (#5104), and STOPs on an unreadable state record,
 never purging (`/run-integ` step 7). A FAIL names the file EMITTING its message (`grep -rlF` a `${}`-free fragment over `src/`
 and the fixture): the PR is blamed when that file is in its diff, cleared when
@@ -60,10 +60,9 @@ A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
 
 ### Flatten, then rebase
 
-**FLATTEN BEFORE YOU REBASE — the default step, not a remedy.** The integ ledger
-gains a row at the same place on every lane that ran one, so a commit-by-commit
-rebase re-conflicts once per commit; the
-repo squash-merges, so flattening loses nothing. Both rewrite a PUSHED branch,
+**FLATTEN BEFORE YOU REBASE — the default step, not a remedy.** Every integ lane adds
+a ledger row at the same place, so a per-commit rebase re-conflicts on each
+commit; squash merges mean flattening loses nothing. Both rewrite a PUSHED branch,
 so FIRST push plainly until `git rev-list origin/<branch>..HEAD` is empty (a
 denied plain push is re-authorized, never routed round through the arm). Then,
 when the harness denies the `git reset`, the rebase or the `--force-with-lease`
