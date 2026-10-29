@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-28T10:46:07.531Z",
+  "generatedAt": "2026-10-29T11:02:29.424Z",
   "summary": {
     "tier1Count": 138,
-    "tier2Count": 1628,
+    "tier2Count": 1633,
     "tier3Count": 329,
-    "totalCount": 2095
+    "totalCount": 2100
   },
   "tier1": [
     "AWS::ApiGateway::Account",
@@ -214,6 +214,7 @@
     "AWS::AppConfig::ExtensionAssociation",
     "AWS::AppConfig::HostedConfigurationVersion",
     "AWS::AppFabric::AppAuthorization",
+    "AWS::AppFabric::AppBundle",
     "AWS::AppFabric::Ingestion",
     "AWS::AppFabric::IngestionDestination",
     "AWS::AppFlow::Connector",
@@ -434,6 +435,7 @@
     "AWS::CloudTrail::Dashboard",
     "AWS::CloudTrail::EventDataStore",
     "AWS::CloudTrail::ResourcePolicy",
+    "AWS::CloudWatch::AccessGrant",
     "AWS::CloudWatch::AccessProfile",
     "AWS::CloudWatch::AlarmMuteRule",
     "AWS::CloudWatch::CompositeAlarm",
@@ -711,6 +713,7 @@
     "AWS::EC2::SecondaryNetwork",
     "AWS::EC2::SecurityGroupEgress",
     "AWS::EC2::SecurityGroupVpcAssociation",
+    "AWS::EC2::Snapshot",
     "AWS::EC2::SnapshotBlockPublicAccess",
     "AWS::EC2::SpotFleet",
     "AWS::EC2::SqlHaStandbyDetectedInstance",
@@ -1122,9 +1125,11 @@
     "AWS::M2::Application",
     "AWS::M2::Deployment",
     "AWS::M2::Environment",
+    "AWS::MGN::Application",
     "AWS::MGN::Connector",
     "AWS::MGN::LaunchConfigurationTemplate",
     "AWS::MGN::NetworkMigrationDefinition",
+    "AWS::MGN::ReplicationConfigurationTemplate",
     "AWS::MGN::Wave",
     "AWS::MPA::ApprovalTeam",
     "AWS::MPA::IdentitySource",
