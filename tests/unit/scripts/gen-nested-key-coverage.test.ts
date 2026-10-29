@@ -3918,8 +3918,8 @@ describe('target-table hygiene', { timeout: CONTENDED_CASE_TIMEOUT_MS }, () => {
         1
       );
     }
-    // Non-vacuity: the four targets this check was restored for are in the
-    // measured set, alongside the ones already fenced before it.
+    // Non-vacuity: targets fenced before this check and targets it added a
+    // floor to are both in the measured set.
     expect(dependent.map((t) => t.resourceType)).toEqual(
       expect.arrayContaining([
         'AWS::CloudWatch::AnomalyDetector',
@@ -3928,6 +3928,9 @@ describe('target-table hygiene', { timeout: CONTENDED_CASE_TIMEOUT_MS }, () => {
         'AWS::S3::Bucket',
         'AWS::CloudFront::Distribution',
         'AWS::ApiGatewayV2::Api',
+        'AWS::Events::Rule',
+        'AWS::Glue::Job',
+        'AWS::Lambda::EventSourceMapping',
       ])
     );
   });
