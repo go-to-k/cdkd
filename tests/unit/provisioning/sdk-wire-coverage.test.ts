@@ -41,6 +41,7 @@ import { CASES_16_EC2 } from './sdk-wire-cases-16-ec2.js';
 import { CASES_17 } from './sdk-wire-cases-17.js';
 import { CASES_18 } from './sdk-wire-cases-18.js';
 import { CASES_18_GLOBAL_TABLE } from './sdk-wire-cases-18-globaltable.js';
+import { CASES_19 } from './sdk-wire-cases-19.js';
 import { CASES_CLOUDMAP } from './sdk-wire-cases-cloudmap.js';
 import { CASES_NO_PROPERTIES } from './sdk-wire-cases-no-properties.js';
 
@@ -730,8 +731,8 @@ const CASES: TypeCase[] = [
  * that adds its case, and a NEW provider class lands with a case, never a row
  * here. `MAX_UNCOVERED` is its exact size, lowered by hand with each removal.
  */
-const NOT_YET_COVERED = new Set(['RDSProvider']);
-const MAX_UNCOVERED = 1;
+const NOT_YET_COVERED = new Set<string>();
+const MAX_UNCOVERED = 0;
 
 /**
  * Every case list, with the test file that runs it and the list's name there.
@@ -771,6 +772,7 @@ const CASE_LISTS: { cases: TypeCase[]; name: string; file: string }[] = [
     name: 'CASES_18_GLOBAL_TABLE',
     file: 'sdk-wire-coverage-18-globaltable.test.ts',
   },
+  { cases: CASES_19, name: 'CASES_19', file: 'sdk-wire-coverage-19.test.ts' },
   {
     cases: CASES_CLOUDMAP,
     name: 'CASES_CLOUDMAP',
