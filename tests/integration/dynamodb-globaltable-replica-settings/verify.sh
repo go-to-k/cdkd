@@ -383,18 +383,25 @@ teardown_table() { # usage: teardown_table <table name>
 }
 
 # Wait until table $1 is gone in both regions (only a not-found answer is
-# "gone"; any other failure retries). Bounded: 15 min per region.
+# "gone"; any other failure retries). Bounded: 15 min per region. Returns 1
+# when it is still there in some region at the bound: the caller then must NOT
+# retire a key, since a table deleting on a key pending deletion stays in
+# DELETING indefinitely.
 await_table_gone() { # usage: await_table_gone <table name>
-  local r out
+  local r out gone
   for r in "${REGION}" "${SECOND_REGION}"; do
+    gone=0
     for _ in $(seq 1 90); do
       if ! out="$(aws dynamodb describe-table --table-name "$1" --region "${r}" 2>&1)" &&
         printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+        gone=1
         break
       fi
       sleep 10
     done
+    [ "${gone}" = "1" ] || return 1
   done
+  return 0
 }
 
 cleanup() {
@@ -406,9 +413,13 @@ cleanup() {
   # moved onto fixture-owned keys (retired below, after every table), but a
   # run of an older script, or a revert that lands on the stack's key, must
   # not leave it deleting on a key the destroy is scheduling.
+  # When it is still there at the bound, the stack's destroy (which
+  # schedules the stack's keys) is skipped, and so is every key retirement
+  # below.
+  local stuck=""
   teardown_table "${TABLE2}"
-  await_table_gone "${TABLE2}"
-  if [ -f "${LOCAL_DIST}" ]; then
+  await_table_gone "${TABLE2}" || stuck="${TABLE2}"
+  if [ -z "${stuck}" ] && [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" --yes --remove-protection >/dev/null 2>&1
   fi
@@ -422,25 +433,30 @@ cleanup() {
   # replica keys and Phase 5b's out-of-band key below.
   local t
   for t in "${TABLE}" "${TABLE2}" "${TABLE3}"; do
-    await_table_gone "${t}"
+    case " ${stuck} " in *" ${t} "*) continue ;; esac
+    await_table_gone "${t}" || stuck="${stuck:+${stuck} }${t}"
   done
-  # The local keys (stack-managed) when the destroy did not schedule them,
-  # and the replica keys this fixture creates — by ARN too, in case the
-  # alias was never created.
-  retire_key "${REGION}" "${LOCAL_ALIAS}"
-  retire_key "${REGION}" "${LOCAL_ALIAS}2"
-  retire_key "${SECOND_REGION}" "${REPLICA_ALIAS}"
-  retire_key "${SECOND_REGION}" "${REPLICA_ALIAS}2"
-  retire_key "${REGION}" "${OOB_ALIAS}"
   # After the table: a streaming destination names the stream.
   retire_stream "${REGION}" "${LOCAL_KINESIS}"
   retire_stream "${SECOND_REGION}" "${REPLICA_KINESIS}"
-  for arn in "${REPLICA_KEY_ARN:-}" "${REPLICA_KEY2_ARN:-}"; do
-    [ -n "${arn}" ] && aws kms schedule-key-deletion --key-id "${arn}" --pending-window-in-days 7 \
-      --region "${SECOND_REGION}" >/dev/null 2>&1
-  done
-  [ -n "${OOB_KEY_ARN:-}" ] && aws kms schedule-key-deletion --key-id "${OOB_KEY_ARN}" \
-    --pending-window-in-days 7 --region "${REGION}" >/dev/null 2>&1
+  if [ -n "${stuck}" ]; then
+    echo "WARN: cleanup: ${stuck} still exists after the 15 min bound, so NO key was retired (a table deleting on a key pending deletion stays in DELETING indefinitely). Left enabled: ${LOCAL_ALIAS}, ${LOCAL_ALIAS}2, ${OOB_ALIAS} (${OOB_KEY_ARN:-no ARN}) in ${REGION}; ${REPLICA_ALIAS} (${REPLICA_KEY_ARN:-no ARN}), ${REPLICA_ALIAS}2 (${REPLICA_KEY2_ARN:-no ARN}) in ${SECOND_REGION}. Schedule their deletion once the table is gone; a later run's sweep also does." >&2
+  else
+    # The local keys (stack-managed) when the destroy did not schedule them,
+    # and the replica keys this fixture creates — by ARN too, in case the
+    # alias was never created.
+    retire_key "${REGION}" "${LOCAL_ALIAS}"
+    retire_key "${REGION}" "${LOCAL_ALIAS}2"
+    retire_key "${SECOND_REGION}" "${REPLICA_ALIAS}"
+    retire_key "${SECOND_REGION}" "${REPLICA_ALIAS}2"
+    retire_key "${REGION}" "${OOB_ALIAS}"
+    for arn in "${REPLICA_KEY_ARN:-}" "${REPLICA_KEY2_ARN:-}"; do
+      [ -n "${arn}" ] && aws kms schedule-key-deletion --key-id "${arn}" --pending-window-in-days 7 \
+        --region "${SECOND_REGION}" >/dev/null 2>&1
+    done
+    [ -n "${OOB_KEY_ARN:-}" ] && aws kms schedule-key-deletion --key-id "${OOB_KEY_ARN}" \
+      --pending-window-in-days 7 --region "${REGION}" >/dev/null 2>&1
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -461,7 +477,10 @@ run_is_stale() { # usage: run_is_stale <name containing ${BASE}-<epoch>-<pid>>
 }
 sweep_previous_runs() {
   set +eu
-  local tbl r a k state st swept=" "
+  local tbl r a k state st swept=" " stuck=""
+  # Stage 1: every stale table, in both regions, deleted and WAITED OUT before
+  # any key goes (stage 2) — a table deleting on a key pending deletion stays
+  # in DELETING indefinitely.
   for r in "${REGION}" "${SECOND_REGION}"; do
     for tbl in $(aws dynamodb list-tables --region "${r}" \
       --query "TableNames[?starts_with(@, '${BASE}-')]" --output text 2>/dev/null); do
@@ -471,7 +490,6 @@ sweep_previous_runs() {
       echo "    sweeping ${tbl} (${r})"
       if [ "${r}" = "${REGION}" ]; then
         teardown_table "${tbl}"
-        swept="${swept}${tbl} "
       else
         aws dynamodb update-table --table-name "${tbl}" --region "${r}" \
           --no-deletion-protection-enabled >/dev/null 2>&1
@@ -485,32 +503,45 @@ sweep_previous_runs() {
         aws dynamodb delete-table --table-name "${tbl}" --region "${r}" >/dev/null 2>&1 ||
           echo "WARN: sweep could not delete ${tbl} in ${r}; delete it by hand" >&2
       fi
+      swept="${swept}${tbl} "
     done
-    for a in $(aws kms list-aliases --region "${r}" \
-      --query "Aliases[?starts_with(AliasName, 'alias/${BASE}-')].AliasName" --output text 2>/dev/null); do
-      run_is_stale "${a}" || continue
-      echo "    sweeping ${a} (${r})"
-      retire_key "${r}" "${a}"
-    done
+  done
+  for tbl in ${swept}; do
+    await_table_gone "${tbl}" || stuck="${stuck:+${stuck} }${tbl}"
+  done
+  # Stage 2: streams always; keys only once every swept table is gone.
+  for r in "${REGION}" "${SECOND_REGION}"; do
     for k in $(aws kinesis list-streams --region "${r}" \
       --query "StreamNames[?starts_with(@, '${BASE}-')]" --output text 2>/dev/null); do
       run_is_stale "${k}" || continue
       echo "    sweeping stream ${k} (${r})"
       retire_stream "${r}" "${k}"
     done
-    # Keys this script created whose alias never was (the run died between
-    # create-key and create-alias): found by tag, aged by their description.
-    for k in $(aws resourcegroupstaggingapi get-resources --region "${r}" \
-      --resource-type-filters kms --tag-filters "Key=${KEY_TAG},Values=${BASE}" \
-      --query 'ResourceTagMappingList[].ResourceARN' --output text 2>/dev/null); do
-      state="$(aws kms describe-key --key-id "${k}" --region "${r}" \
-        --query 'KeyMetadata.[KeyState, Description]' --output text 2>/dev/null)" || continue
-      case "${state}" in Enabled*) ;; *) continue ;; esac
-      run_is_stale "${state}" || continue
-      echo "    sweeping key ${k} (${r})"
-      aws kms schedule-key-deletion --key-id "${k}" --pending-window-in-days 7 --region "${r}" >/dev/null 2>&1
-    done
   done
+  if [ -n "${stuck}" ]; then
+    echo "WARN: sweep: ${stuck} still exists after the 15 min bound, so no stale run's key was retired (a table deleting on a key pending deletion stays in DELETING indefinitely). The stale '${BASE}-' aliases and keys tagged ${KEY_TAG}=${BASE} stay enabled; a later run's sweep retires them once the table is gone." >&2
+  else
+    for r in "${REGION}" "${SECOND_REGION}"; do
+      for a in $(aws kms list-aliases --region "${r}" \
+        --query "Aliases[?starts_with(AliasName, 'alias/${BASE}-')].AliasName" --output text 2>/dev/null); do
+        run_is_stale "${a}" || continue
+        echo "    sweeping ${a} (${r})"
+        retire_key "${r}" "${a}"
+      done
+      # Keys this script created whose alias never was (the run died between
+      # create-key and create-alias): found by tag, aged by their description.
+      for k in $(aws resourcegroupstaggingapi get-resources --region "${r}" \
+        --resource-type-filters kms --tag-filters "Key=${KEY_TAG},Values=${BASE}" \
+        --query 'ResourceTagMappingList[].ResourceARN' --output text 2>/dev/null); do
+        state="$(aws kms describe-key --key-id "${k}" --region "${r}" \
+          --query 'KeyMetadata.[KeyState, Description]' --output text 2>/dev/null)" || continue
+        case "${state}" in Enabled*) ;; *) continue ;; esac
+        run_is_stale "${state}" || continue
+        echo "    sweeping key ${k} (${r})"
+        aws kms schedule-key-deletion --key-id "${k}" --pending-window-in-days 7 --region "${r}" >/dev/null 2>&1
+      done
+    done
+  fi
   # State left by a run killed before its destroy.
   if [ -n "${STATE_BUCKET:-}" ]; then
     for st in $(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" --prefix "cdkd/${BASE}-" \
