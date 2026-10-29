@@ -319,16 +319,6 @@ const TABLE_CASE: TypeCase = {
   // here and its update probes are skipped.
   createOnly: new Set([...createOnlyOf('AWS::DynamoDB::Table'), 'KeySchema', 'LocalSecondaryIndexes']),
   arm: armTable,
-  // The table's and the stream's resource policy and tags go out on the same
-  // commands; the ARN says which subtree a request carries, so the
-  // wrong-member trace tells them apart (go-to-k/cdkd#3723).
-  roots: Object.fromEntries(
-    ['PutResourcePolicyCommand', 'TagResourceCommand'].map((command) => [
-      command,
-      (input: Record<string, unknown>) =>
-        String(input['ResourceArn']).includes('/stream/') ? 'stream' : 'table',
-    ])
-  ),
   exempt: {},
   targets: [
     { path: ['Tags', 0], command: 'UntagResourceCommand', names: '"k1"', notNames: '"k2"' },

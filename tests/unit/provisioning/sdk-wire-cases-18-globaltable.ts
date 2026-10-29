@@ -535,20 +535,6 @@ const GLOBAL_TABLE_CASE: TypeCase = {
   physicalId: TABLE,
   createOnly: createOnlyOf('AWS::DynamoDB::GlobalTable'),
   arm: armGlobalTable,
-  // Four auto-scaling pairs go out per bag (the table's and a GSI's write,
-  // a replica's and its GSI's read) on the same two commands: the resource and
-  // the dimension say which, so the wrong-member trace tells them apart
-  // (go-to-k/cdkd#3723). `<resource kind>-<dimension kind>-<read|write>`.
-  roots: Object.fromEntries(
-    ['RegisterScalableTargetCommand', 'PutScalingPolicyCommand'].map((command) => [
-      command,
-      (input: Record<string, unknown>) => {
-        const resource = String(input['ResourceId']).includes('/index/') ? 'index' : 'table';
-        const [, kind = '', units = ''] = String(input['ScalableDimension']).split(':');
-        return `${resource}-${kind}-${units.startsWith('Write') ? 'write' : 'read'}`;
-      },
-    ])
-  ),
   exempt: {
     TableClass:
       'not an AWS::DynamoDB::GlobalTable property (CloudFormation refuses it, measured on go-to-k/cdkd#5355): the provider reads it only as the fallback of the deploy-region Replicas[].TableClass, which the provisioned bag carries (dynamodb-globaltable-provider.ts, 9524-9541)',

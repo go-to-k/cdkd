@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vite-plus/test';
 import type { ResourceProvider, UpdateContext } from '../../../src/types/resource.js';
 import { MEMBER_RENAMES, type TypeRenames } from './sdk-wire-member-renames.js';
+import { CALL_ROOTS, type CommandRoot } from './sdk-wire-call-roots.js';
 
 /**
  * The differential wire harness behind `sdk-wire-coverage.test.ts` (#3723).
@@ -437,12 +438,7 @@ function chainsAt(loc: Location, flat: Map<string, unknown>): Chain[] {
   return chains;
 }
 
-/**
- * Names which of several same-command calls a request is (`table` / `stream`
- * for a `PutResourcePolicyCommand`), from its input: the chain's root is then
- * `<command>:<name>`, so a value sent in the other call does not match.
- */
-export type CommandRoot = (input: Record<string, unknown>) => string;
+export type { CommandRoot } from './sdk-wire-call-roots.js';
 
 /**
  * Every member chain whose value differs between two runs' inputs. Requests
@@ -453,7 +449,8 @@ export type CommandRoot = (input: Record<string, unknown>) => string;
 function landingChains(
   from: readonly string[],
   to: readonly string[],
-  roots: Readonly<Record<string, CommandRoot>> = {}
+  roots: Readonly<Record<string, CommandRoot>> = {},
+  repeated?: Set<string>
 ): Chain[] {
   const byCommand = (lines: readonly string[]) => {
     const m = new Map<string, unknown[]>();
@@ -462,6 +459,11 @@ function landingChains(
       const which = roots[command];
       const root = which === undefined ? command : `${command}:${which(input)}`;
       m.set(root, [...(m.get(root) ?? []), input]);
+    }
+    // A command sent more than once with no root: a value in the other call
+    // would match (`sdk-wire-call-roots.ts`).
+    for (const [root, calls] of m) {
+      if (calls.length > 1 && roots[root] === undefined && !root.includes(':')) repeated?.add(root);
     }
     return m;
   };
@@ -663,13 +665,14 @@ export function traceLanding(
   from: readonly string[],
   to: readonly string[],
   renames: TypeRenames = {},
-  roots: Readonly<Record<string, CommandRoot>> = {}
+  roots: Readonly<Record<string, CommandRoot>> = {},
+  repeated?: Set<string>
 ): { wrong: string | undefined; used: Set<string> } {
   const used = new Set<string>();
   const wrong = wrongMember(
     path,
     expectedChains(bag, alt, path),
-    landingChains(from, to, roots),
+    landingChains(from, to, roots, repeated),
     renames,
     used
   );
@@ -744,6 +747,8 @@ export interface ProbeResult {
   wrongMembers: Record<string, string>;
   /** The renames (`<leaf>-><member>`) some probe needed. */
   usedRenames: Set<string>;
+  /** Commands a traced probe saw sent more than once with no root. */
+  repeated: Set<string>;
 }
 
 /**
@@ -837,6 +842,7 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
   const messages: Record<string, string> = {};
   const wrongMembers: Record<string, string> = {};
   const usedRenames = new Set<string>();
+  const repeated = new Set<string>();
   // Through `traceLanding`, the seam sdk-wire-tracer.test.ts pins.
   const trace = (label: string, path: Path, alt: Bag, from: Outcome, to: Outcome): void => {
     const { wrong, used } = traceLanding(
@@ -846,7 +852,8 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
       inputsOf.get(from) ?? [],
       inputsOf.get(to) ?? [],
       c.renames,
-      c.roots
+      c.roots,
+      repeated
     );
     for (const r of used) usedRenames.add(r);
     if (wrong !== undefined) wrongMembers[label] = wrong;
@@ -924,7 +931,7 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
       }
     }
   }
-  return { silent, removalThrows, messages, wrongMembers, usedRenames };
+  return { silent, removalThrows, messages, wrongMembers, usedRenames, repeated };
 }
 
 // --- Cases and the suite that runs them ---------------------------------------
@@ -960,12 +967,6 @@ export interface TypeCase {
   arm?: (physicalId: string, bag: Bag) => void;
   /** What every `update()` receives as its context (the record's attributes). */
   updateContext?: UpdateContext;
-  /**
-   * Command -> which of its calls a request is, for a command the provider
-   * sends for more than one CFn subtree (a table's and its stream's
-   * `PutResourcePolicyCommand`); see `CommandRoot`.
-   */
-  roots?: Readonly<Record<string, CommandRoot>>;
   /**
    * Top-levels whose `update()` re-sends the WHOLE value from `next` and never
    * reads `prev`: every `update-remove` probe at or under such a key is silent
@@ -1061,7 +1062,9 @@ export const DECLARED_DEFAULT = 'the declared value is what an unset member read
 export function describeWireCases(cases: TypeCase[]): void {
   describe.each(cases)('$resourceType', (t) => {
     const renames = MEMBER_RENAMES[t.resourceType] ?? {};
+    const callRoots = CALL_ROOTS[t.resourceType] ?? {};
     const usedRenames = new Set<string>();
+    const repeatedSeen = new Set<string>();
     let bagsProbed = 0;
     it('its bags carry every handledProperties entry not exempted', () => {
       const handled = [...(t.provider().handledProperties?.get(t.resourceType) ?? [])].sort();
@@ -1156,8 +1159,10 @@ export function describeWireCases(cases: TypeCase[]): void {
         variants: b.variants,
         arm: b.arm ?? t.arm,
         renames,
+        roots: callRoots.roots,
       });
       for (const r of rest.usedRenames) usedRenames.add(r);
+      for (const r of rest.repeated) repeatedSeen.add(r);
       bagsProbed++;
       // A varied value must land in its own member (or an accepted rename):
       // probe label -> the members it landed in instead.
@@ -1222,6 +1227,14 @@ export function describeWireCases(cases: TypeCase[]): void {
     // reached is stale (the mapping now uses the member's own name, or the
     // bag no longer carries the path), and staying listed it would excuse a
     // regression into that member.
+    // A command sent twice lets a value in the other call match: each must be
+    // rooted, or carry a reason (sdk-wire-call-roots.ts); a reason no probe
+    // needs any more is stale.
+    it('declares roots or a reason for every repeated command', (ctx) => {
+      if (bagsProbed < t.bags.length) ctx.skip();
+      expect([...repeatedSeen].sort()).toEqual(Object.keys(callRoots.repeated ?? {}).sort());
+    });
+
     it('uses every accepted rename', (ctx) => {
       // A filtered run (`-t`) probes only some bags; their usage says nothing.
       if (bagsProbed < t.bags.length) ctx.skip();
