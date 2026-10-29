@@ -215,6 +215,11 @@ forwards each origin request to it:
 The server runs at the runtime's cloud architecture (`linux/arm64`); this
 command has no `--platform` flag.
 
+A distribution with such an origin needs Docker: when Docker is unavailable or
+the revision's server does not start, the command fails at startup. To serve
+the rest of the distribution without it, stand in for the origin with
+`--origin <id>=<dir>`, which serves a local directory and starts no container.
+
 ### Files outside the origin directory
 
 A file is served only when it resolves inside its origin directory. A `../` in
@@ -381,6 +386,8 @@ Changes under `cdk.out`, `node_modules` and `.git` are ignored. The
   change to their code.
 - **A Lambda@Edge association added since startup.** It is skipped with a
   warning. Restart to pick it up.
+- **A Web Function endpoint origin added since startup.** Requests for it
+  answer `502` with a message to restart the command.
 - **Anything, when synthesis fails.** cdkd prints a warning and the previous
   version keeps serving.
 
