@@ -478,7 +478,7 @@ echo "==> Phase 6: a cut-short gsi2 add records the accepted Create (v15)"
 # ---------------------------------------------------------------------------
 export CDKD_V15_EDIT="gsi"
 run_cdkd fail "local cut-short gsi2 add" "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback \
   --resource-warn-after AWS::DynamoDB::Table=5s --resource-timeout AWS::DynamoDB::Table=10s
 fetch_state "local cut-short gsi2 add"
 assert_version "local cut-short gsi2 add" "${LOCAL_SCHEMA_VERSION}"

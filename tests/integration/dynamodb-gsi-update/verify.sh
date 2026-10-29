@@ -401,7 +401,8 @@ echo "    the unsettled GSI add converged: the redeploy deleted ${GSI_NAME} and 
 # the record, which Phase 1c's --no-rollback run still asserts.
 echo "==> Phase 1d: add ${GSI_NAME} under a 10s DynamoDB deadline, with the automatic rollback"
 set +e
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+# CDKD_NO_WAIT / CDKD_FULL_WAIT dropped: a no-wait revert would return mid-DELETING.
+env -u CDKD_NO_WAIT -u CDKD_FULL_WAIT CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
   --resource-warn-after AWS::DynamoDB::Table=5s --resource-timeout AWS::DynamoDB::Table=10s \
   >"${P1D_LOG}" 2>&1

@@ -359,7 +359,7 @@ wait_group_running_count() { # $1 = cluster id, $2 = group id, $3 = count
 echo "==> Phase 1c: resize TASK group 1 -> 2 under a 20s deadline (must fail mid-resize)"
 set +e
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback \
   --resource-warn-after AWS::EMR::InstanceGroupConfig=10s \
   --resource-timeout AWS::EMR::InstanceGroupConfig=20s
 P1C_EXIT=$?
