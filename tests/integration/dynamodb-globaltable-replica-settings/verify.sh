@@ -172,7 +172,7 @@ table_settings() {
 # ACTIVE: an SSE / class / protection change leaves one or the other UPDATING
 # for a while, and the next deploy or destroy would be refused meanwhile.
 wait_settled() {
-  local i tbl reps second
+  local i tbl reps second sse sse2
   for i in $(seq 1 90); do
     tbl="$(aws dynamodb describe-table --table-name "${GT_TABLE:-${TABLE}}" --region "${REGION}" \
       --query 'Table.TableStatus' --output text)" || return 1
@@ -180,13 +180,21 @@ wait_settled() {
       --query "join(' ', Table.Replicas[].ReplicaStatus || \`[]\`)" --output text)" || return 1
     second="$(aws dynamodb describe-table --table-name "${GT_TABLE:-${TABLE}}" --region "${SECOND_REGION}" \
       --query 'Table.TableStatus' --output text)" || return 1
-    if [ "${tbl}" = "ACTIVE" ] && [ "${reps}" = "ACTIVE" ] && [ "${second}" = "ACTIVE" ]; then
-      echo "    settled (table=${tbl} replicas=${reps} ${SECOND_REGION}=${second})"
+    # An encryption change (a key move) leaves SSEDescription UPDATING while
+    # the table already reads ACTIVE, and DynamoDB refuses the next change
+    # (or a delete) meanwhile.
+    sse="$(aws dynamodb describe-table --table-name "${GT_TABLE:-${TABLE}}" --region "${REGION}" \
+      --query 'Table.SSEDescription.Status' --output text)" || return 1
+    sse2="$(aws dynamodb describe-table --table-name "${GT_TABLE:-${TABLE}}" --region "${SECOND_REGION}" \
+      --query 'Table.SSEDescription.Status' --output text)" || return 1
+    if [ "${tbl}" = "ACTIVE" ] && [ "${reps}" = "ACTIVE" ] && [ "${second}" = "ACTIVE" ] &&
+      [ "${sse}" != "UPDATING" ] && [ "${sse2}" != "UPDATING" ]; then
+      echo "    settled (table=${tbl} replicas=${reps} ${SECOND_REGION}=${second} sse=${sse}/${sse2})"
       return 0
     fi
     sleep 10
   done
-  echo "FAIL: table did not settle (table='${tbl}' replicas='${reps}' ${SECOND_REGION}='${second}')" >&2
+  echo "FAIL: table did not settle (table='${tbl}' replicas='${reps}' ${SECOND_REGION}='${second}' sse='${sse}/${sse2}')" >&2
   exit 1
 }
 
@@ -335,35 +343,107 @@ retire_key() { # usage: retire_key <region> <alias>
   esac
 }
 
+# Region $2's copy of table $1 ACTIVE with no encryption change in flight, or
+# gone. Bounded: 15 min. Returns 1 at the bound.
+await_table_idle() { # usage: await_table_idle <table name> <region>
+  local out
+  for _ in $(seq 1 90); do
+    if ! out="$(aws dynamodb describe-table --table-name "$1" --region "$2" \
+      --query '[Table.TableStatus, Table.SSEDescription.Status]' --output text 2>&1)"; then
+      printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' && return 0
+    else
+      case "${out}" in ACTIVE*UPDATING*) ;; ACTIVE*) return 0 ;; esac
+    fi
+    sleep 10
+  done
+  return 1
+}
+
+# DeleteTable for table $1 in region $2, keeping AWS's answer. Not found is the
+# goal. A ResourceInUseException (the table, a replica or its encryption still
+# changing) waits the table out and retries; a deletion-protection refusal
+# turns protection off there first. Anything else, or the bound (about 15
+# min), is recorded WITH AWS's message and returns 1.
+delete_table_logged() { # usage: delete_table_logged <table name> <region>
+  local out
+  for _ in $(seq 1 30); do
+    if out="$(aws dynamodb delete-table --table-name "$1" --region "$2" 2>&1)"; then
+      return 0
+    fi
+    if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+      return 0
+    fi
+    if printf '%s' "${out}" | grep -qiE 'deletion protection'; then
+      echo "    ${1} (${2}): deletion protection is on; turning it off before the delete"
+      aws dynamodb update-table --table-name "$1" --region "$2" \
+        --no-deletion-protection-enabled >/dev/null 2>&1 ||
+        echo "    ${1} (${2}): turning deletion protection off was refused; retrying" >&2
+      await_table_idle "$1" "$2"
+      continue
+    fi
+    if printf '%s' "${out}" | grep -qiE 'ResourceInUseException|LimitExceededException'; then
+      echo "    ${1} (${2}): delete refused while it is changing; waiting: $(printf '%s' "${out}" | tr '\n' ' ')"
+      await_table_idle "$1" "$2"
+      sleep 10
+      continue
+    fi
+    break
+  done
+  echo "ERROR: cleanup could not delete ${1} in ${2}: $(printf '%s' "${out}" | tr '\n' ' ')" >&2
+  CLEANUP_STRANDED=1
+  return 1
+}
+
 teardown_table() { # usage: teardown_table <table name>
-  local tbl="$1" gone out status reps
+  local tbl="$1" gone out status reps prot rc=0
   # Direct deletes by name, for a run that died before state existed or
-  # whose destroy failed. Protection off first in BOTH regions: a
-  # protected replica refuses its drop ("Disable deletion protection first").
+  # whose destroy failed. Protection off first in each region that has it on
+  # (only there: the flip leaves the table UPDATING): a protected replica
+  # refuses its drop ("Disable deletion protection first").
   for r in "${REGION}" "${SECOND_REGION}"; do
-    aws dynamodb update-table --table-name "${tbl}" --region "${r}" \
-      --no-deletion-protection-enabled >/dev/null 2>&1
+    # A failed read (gone, or a throttle) flips nothing here: a protection
+    # refusal is still handled by delete_table_logged below.
+    prot="$(aws dynamodb describe-table --table-name "${tbl}" --region "${r}" \
+      --query 'Table.DeletionProtectionEnabled' --output text 2>/dev/null)" || prot="read-failed:$?"
+    if [ "${prot}" = "True" ]; then
+      await_table_idle "${tbl}" "${r}"
+      if ! out="$(aws dynamodb update-table --table-name "${tbl}" --region "${r}" \
+        --no-deletion-protection-enabled 2>&1)"; then
+        echo "    ${tbl} (${r}): turning deletion protection off failed: $(printf '%s' "${out}" | tr '\n' ' ')" >&2
+      fi
+    fi
   done
   if aws dynamodb describe-table --table-name "${tbl}" --region "${REGION}" >/dev/null 2>&1; then
     gone=0
     for _ in $(seq 1 90); do
       if ! out="$(aws dynamodb describe-table --table-name "${tbl}" --region "${REGION}" \
-        --query "[Table.TableStatus, join(' ', Table.Replicas[].RegionName || \`[]\`)]" --output text 2>&1)"; then
+        --query "[Table.TableStatus, join(' ', Table.Replicas[].RegionName || \`[]\`), Table.SSEDescription.Status]" --output text 2>&1)"; then
         if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then gone=1; break; fi
         sleep 10
         continue
       fi
       status="$(printf '%s' "${out}" | cut -f1)"
-      reps="$(printf '%s' "${out}" | cut -f2-)"
+      reps="$(printf '%s' "${out}" | cut -f2)"
+      # An encryption change still in flight refuses every change below.
+      if [ "$(printf '%s' "${out}" | cut -f3)" = "UPDATING" ]; then
+        sleep 10
+        continue
+      fi
       case " ${reps} " in
         *" ${SECOND_REGION} "*)
           # Refused while anything is UPDATING (the protection flip above
           # included), so re-issued once the table is ACTIVE.
           if [ "${status}" = "ACTIVE" ]; then
-            aws dynamodb update-table --table-name "${tbl}" --region "${SECOND_REGION}" \
-              --no-deletion-protection-enabled >/dev/null 2>&1
-            aws dynamodb update-table --table-name "${tbl}" --region "${REGION}" \
-              --replica-updates "Delete={RegionName=${SECOND_REGION}}" >/dev/null 2>&1
+            if [ "$(aws dynamodb describe-table --table-name "${tbl}" --region "${SECOND_REGION}" \
+              --query 'Table.DeletionProtectionEnabled' --output text 2>/dev/null)" = "True" ]; then
+              aws dynamodb update-table --table-name "${tbl}" --region "${SECOND_REGION}" \
+                --no-deletion-protection-enabled >/dev/null 2>&1
+            fi
+            if ! out="$(aws dynamodb update-table --table-name "${tbl}" --region "${REGION}" \
+              --replica-updates "Delete={RegionName=${SECOND_REGION}}" 2>&1)" &&
+              ! printf '%s' "${out}" | grep -qiE 'ResourceInUseException|LimitExceededException'; then
+              echo "    ${tbl}: dropping the ${SECOND_REGION} replica was refused: $(printf '%s' "${out}" | tr '\n' ' ')" >&2
+            fi
           fi
           ;;
         *) [ "${status}" = "ACTIVE" ] && break ;;
@@ -371,15 +451,11 @@ teardown_table() { # usage: teardown_table <table name>
       sleep 10
     done
     if [ "${gone}" = "0" ]; then
-      aws dynamodb delete-table --table-name "${tbl}" --region "${REGION}" >/dev/null 2>&1 ||
-        echo "WARN: cleanup could not delete ${tbl} in ${REGION}; delete it by hand" >&2
+      delete_table_logged "${tbl}" "${REGION}" || rc=1
     fi
   fi
-  if ! out="$(aws dynamodb delete-table --table-name "${tbl}" --region "${SECOND_REGION}" 2>&1)"; then
-    if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
-      echo "WARN: cleanup could not delete ${tbl} in ${SECOND_REGION}; delete it by hand" >&2
-    fi
-  fi
+  delete_table_logged "${tbl}" "${SECOND_REGION}" || rc=1
+  return "${rc}"
 }
 
 # Wait until table $1 is gone in both regions (only a not-found answer is
@@ -577,6 +653,9 @@ if [ ! -d node_modules ]; then npm install; fi
 echo "==> Pre-run cleanup"
 sweep_previous_runs
 cleanup
+# What an EARLIER run left (reported above with AWS's message) does not fail
+# this one: only this run's own cleanup decides its exit status.
+CLEANUP_STRANDED=0
 LOG_DIR="$(mktemp -d)"
 
 echo "==> Creating the ${SECOND_REGION} replica keys"
