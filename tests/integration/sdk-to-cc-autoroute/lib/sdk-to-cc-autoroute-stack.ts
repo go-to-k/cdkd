@@ -47,9 +47,10 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  *
  * The policy is set through `addPropertyOverride` to keep the property in the
  * same escape-hatch shape a user without the L1 prop would reach for. It is a
- * log-group-scoped resource policy, letting this account's root write to this
- * log group only. NOT YET confirmed against a live Cloud Control create when
- * written: verify.sh's phase 2b readback is a FAIL line, not an assumption.
+ * log-group-scoped resource policy, letting this account write to this log
+ * group only. The principal is the bare account ID: CloudWatch Logs refused
+ * the `arn:...:iam::<account>:root` form on the first real-AWS run.
+ * verify.sh's phase 2b readback is a FAIL line, not an assumption.
  *
  * Phase env `CDKD_TEST_PHASE`, set by verify.sh:
  *   base      -- handled properties only; the resource must land on the SDK route
@@ -155,7 +156,10 @@ export class SdkToCcAutorouteStack extends cdk.Stack {
           {
             Sid: POLICY_SID,
             Effect: 'Allow',
-            Principal: { AWS: `arn:${this.partition}:iam::${this.account}:root` },
+            // A bare account ID: a log-group resource policy refuses an ARN
+            // principal ("Principal section of policy contains ARN instead
+            // of account ID", measured on the first real-AWS run).
+            Principal: { AWS: this.account },
             Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
             Resource: `arn:${this.partition}:logs:${this.region}:${this.account}:log-group:${logGroupName}:*`,
           },
@@ -168,7 +172,9 @@ export class SdkToCcAutorouteStack extends cdk.Stack {
       // which would refuse a number before any route is chosen) lets it
       // through, but not a usable resource policy: no Principal and no
       // Resource. Cloud Control's handler hands it to the service, which
-      // refuses it.
+      // refuses it (measured: "statement block does not include matching
+      // resourceArn"). verify.sh asserts only that the update failed inside
+      // Cloud Control, never the service's wording.
       logGroup.addPropertyOverride('ResourcePolicyDocument', {
         Version: '2012-10-17',
         Statement: [{ Effect: 'Allow', Action: 'logs:PutLogEvents' }],
