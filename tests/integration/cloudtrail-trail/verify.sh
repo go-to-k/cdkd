@@ -23,6 +23,10 @@
 # cleared the CloudWatch Logs pair too, which would be a NEW divergence from
 # CloudFormation rather than a fix.
 #
+# Phases 4-5 (issue #2762) deploy AdvancedEventSelectors + AggregationConfigurations
+# (CDKD_TEST_ADVANCED=true), assert they landed on the SDK route and read back
+# drift-clean, then remove them and assert the reset / clear.
+#
 # Then destroys and confirms a clean teardown.
 #
 # Required env vars:
@@ -362,6 +366,72 @@ CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" drift "${STACK}" \
   --region "${REGION}"
 echo "    ok: drift clean after --revert"
 
+# --- Phase 4: AdvancedEventSelectors + AggregationConfigurations -------
+# Issue #2762. Both used to be silent drops on the SDK provider, which routed
+# the whole trail through Cloud Control; the routing assertion is what tells
+# the fix from that fallback, which configures the same live trail.
+echo "==> Phase 4: redeploy with CDKD_TEST_ADVANCED=true (advanced selectors + aggregation)"
+CDKD_TEST_REMOVAL=true CDKD_TEST_ADVANCED=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+event_config_field() { # usage: event_config_field <jq-path>
+  aws cloudtrail get-event-configuration --trail-name "${TRAIL_NAME}" --region "${REGION}" \
+    --output json | jq -r "$1 | tostring"
+}
+assert_event_config() { # usage: assert_event_config <description> <jq-path> <expected>
+  local desc="$1" path="$2" want="$3" got
+  got="$(event_config_field "${path}")"
+  if [ "${got}" != "${want}" ]; then
+    echo "FAIL: ${desc}: expected '${want}', got '${got}'" >&2
+    exit 1
+  fi
+  echo "    ok: ${desc} = ${got}"
+}
+
+STATE_P4="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+TRAIL_PROVISIONED_BY="$(printf '%s' "${STATE_P4}" | jq -r '.resources.Trail.provisionedBy // "<absent>"')"
+if [ "${TRAIL_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: AWS::CloudTrail::Trail routing layer is '${TRAIL_PROVISIONED_BY}', expected 'sdk' (AdvancedEventSelectors / AggregationConfigurations still route it to Cloud Control, #2762)" >&2
+  exit 1
+fi
+echo "    ok: trail stayed on the SDK route"
+
+assert_event_selector "AdvancedEventSelectors count" '(.AdvancedEventSelectors | length)' '1'
+assert_event_selector "AdvancedEventSelectors name" '.AdvancedEventSelectors[0].Name' 'cdkd-integ-s3-data'
+assert_event_selector "AdvancedEventSelectors field count" '(.AdvancedEventSelectors[0].FieldSelectors | length)' '3'
+assert_event_selector "basic EventSelectors replaced" '(.EventSelectors | length)' '0'
+assert_event_config "AggregationConfigurations count" '(.AggregationConfigurations | length)' '1'
+assert_event_config "AggregationConfigurations category" '.AggregationConfigurations[0].EventCategory' 'Data'
+assert_event_config "AggregationConfigurations templates" '(.AggregationConfigurations[0].Templates | sort | join(" "))' 'API_ACTIVITY'
+
+echo "==> Phase 4: drift must be clean (the read-back matches what was deployed)"
+CDKD_TEST_REMOVAL=true CDKD_TEST_ADVANCED=true node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}"
+echo "    ok: drift clean with advanced selectors + aggregation"
+
+# --- Phase 5: their removal -----------------------------------------------
+# Removing AdvancedEventSelectors leaves a template with no selector at all,
+# which resets the trail to the default selector set, as the measured
+# EventSelectors removal (#1549) does; the aggregation is cleared to [].
+echo "==> Phase 5: redeploy without CDKD_TEST_ADVANCED (removal)"
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+assert_event_config "AggregationConfigurations cleared" '(.AggregationConfigurations | length)' '0'
+assert_event_selector "AdvancedEventSelectors removed" '(.AdvancedEventSelectors | length)' '0'
+assert_event_selector "EventSelectors count after advanced removal" '(.EventSelectors | length)' '1'
+assert_event_selector "EventSelectors ReadWriteType after advanced removal" '.EventSelectors[0].ReadWriteType' 'All'
+
+echo "==> Phase 5: drift must be clean after the removal"
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}"
+echo "    ok: drift clean after the advanced removal"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -409,4 +479,4 @@ echo "==> Phase 3: assert state was removed"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 
-echo "PASS: CloudTrail removal resets + the CFn-retained CloudWatch Logs pair verified end to end"
+echo "PASS: CloudTrail removal resets, the CFn-retained CloudWatch Logs pair, and advanced selectors + aggregation verified end to end"

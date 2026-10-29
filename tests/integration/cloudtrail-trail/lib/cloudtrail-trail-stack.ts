@@ -34,6 +34,12 @@ import type { Construct } from 'constructs';
  * (`ReadWriteType: All`), not a retention of the custom `WriteOnly` one, and
  * the empty-array shape the sibling `InsightSelectors` uses is rejected here.
  *
+ * `AdvancedEventSelectors` / `AggregationConfigurations` (issue #2762) ride a
+ * third template (`CDKD_TEST_ADVANCED=true`, on top of the removal one): a
+ * data-event advanced selector plus an aggregation of those events. AWS keeps
+ * one selector set per trail, so they cannot share phase 1 with the basic
+ * `EventSelectors`. Dropping the flag again is their removal.
+ *
  * The trail is created with `IsLogging: false` so it never delivers a log
  * file — the fixture exercises the control plane only, and the bucket stays
  * empty for a clean destroy.
@@ -43,6 +49,7 @@ export class CloudTrailTrailStack extends cdk.Stack {
     super(scope, id, props);
 
     const removalPhase = process.env['CDKD_TEST_REMOVAL'] === 'true';
+    const advancedPhase = process.env['CDKD_TEST_ADVANCED'] === 'true';
     const suffix = cdk.Stack.of(this).account;
 
     const trailBucket = new s3.Bucket(this, 'TrailBucket', {
@@ -170,6 +177,23 @@ export class CloudTrailTrailStack extends cdk.Stack {
             // exactly what the pre-fix provider did.
             eventSelectors: [{ readWriteType: 'WriteOnly', includeManagementEvents: true }],
           }),
+      // Issue #2762. S3 data events on the trail's own bucket: logging is off,
+      // so nothing is delivered or billed.
+      ...(advancedPhase
+        ? {
+            advancedEventSelectors: [
+              {
+                name: 'cdkd-integ-s3-data',
+                fieldSelectors: [
+                  { field: 'eventCategory', equalTo: ['Data'] },
+                  { field: 'resources.type', equalTo: ['AWS::S3::Object'] },
+                  { field: 'resources.ARN', startsWith: [`${trailBucket.bucketArn}/`] },
+                ],
+              },
+            ],
+            aggregationConfigurations: [{ eventCategory: 'Data', templates: ['API_ACTIVITY'] }],
+          }
+        : {}),
     });
     // CloudTrail validates its bucket AND topic permissions at create time,
     // and neither policy is referenced by the trail's properties, so neither

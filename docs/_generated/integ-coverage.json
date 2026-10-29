@@ -8623,6 +8623,7 @@
     "AWS::Route53::CidrCollection",
     "AWS::Route53::HealthCheck",
     "AWS::S3::AccessPoint",
+    "AWS::S3::Object",
     "AWS::SES::ConfigurationSet",
     "AWS::SES::EmailIdentity",
     "AWS::SMSVOICE::ProtectConfiguration",

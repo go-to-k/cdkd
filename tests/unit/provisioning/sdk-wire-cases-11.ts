@@ -43,8 +43,6 @@ const TRAIL_CASE: TypeCase = {
   physicalId: TRAIL_ARN,
   createOnly: createOnlyOf('AWS::CloudTrail::Trail'),
   exempt: {},
-  // AdvancedEventSelectors / AggregationConfigurations are not handled, so no
-  // bag carries them; the nested-path check reads carried top-levels only.
   targets: [
     // RemoveTags takes whole {Key, Value} entries, the removed one only.
     { path: ['Tags', 0], command: 'RemoveTagsCommand', names: 'k1', notNames: 'k2' },
@@ -130,6 +128,49 @@ const TRAIL_CASE: TypeCase = {
       expectedSilent: {
         'update-remove:IncludeGlobalServiceEvents':
           'passed through on removal while the trail stays multi-region: AWS refuses a multi-region trail that excludes global service events, so the reset applies only to a known single-region trail (cloudtrail-provider.ts:575-597)',
+        'update-remove:S3BucketName':
+          'S3BucketName is required, so no deployable template removes it: create() refuses a trail without it (cloudtrail-provider.ts:342-349)',
+      },
+      expectedRemovalThrows: {
+        'create:S3BucketName': REQUIRED(
+          'S3BucketName is required: create() refuses a trail without it before any call (cloudtrail-provider.ts:342-349)',
+          /S3BucketName is required/
+        ),
+      },
+    },
+    {
+      // Issue #2762. A bag of its own: AWS refuses EventSelectors beside
+      // AdvancedEventSelectors, so "every property" carries the basic list.
+      name: 'advanced selectors + aggregation',
+      bag: {
+        TrailName: 'trail',
+        S3BucketName: 'bucket',
+        AdvancedEventSelectors: [
+          {
+            Name: 's3-data',
+            FieldSelectors: [
+              { Field: 'eventCategory', Equals: ['Data'] },
+              { Field: 'resources.type', Equals: ['AWS::S3::Object'] },
+              {
+                Field: 'resources.ARN',
+                StartsWith: ['arn:aws:s3:::b1/', 'arn:aws:s3:::b2/'],
+                NotStartsWith: ['arn:aws:s3:::b1/x', 'arn:aws:s3:::b2/x'],
+                EndsWith: ['.json', '.csv'],
+                NotEndsWith: ['.tmp', '.bak'],
+                NotEquals: ['arn:aws:s3:::b1/a', 'arn:aws:s3:::b2/a'],
+              },
+            ],
+          },
+          {
+            Name: 'management',
+            FieldSelectors: [{ Field: 'eventCategory', Equals: ['Management'] }],
+          },
+        ],
+        AggregationConfigurations: [
+          { EventCategory: 'Data', Templates: ['API_ACTIVITY', 'RESOURCE_ACCESS'] },
+        ],
+      },
+      expectedSilent: {
         'update-remove:S3BucketName':
           'S3BucketName is required, so no deployable template removes it: create() refuses a trail without it (cloudtrail-provider.ts:342-349)',
       },
