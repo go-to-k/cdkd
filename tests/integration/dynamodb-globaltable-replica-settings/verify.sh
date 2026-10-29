@@ -141,6 +141,13 @@ TABLE2="${STACK}-table2"
 TABLE3="${STACK}-table3"
 LOCAL_ALIAS="alias/${STACK}-local"
 REPLICA_ALIAS="alias/${STACK}-replica"
+# Phase 5b's out-of-band key for ${TABLE2} in ${REGION}: fixture-owned, NOT the
+# stack's LocalKey. The template never ties ${TABLE2} to a key, so a stack key
+# under it is scheduled for deletion by the stack's destroy while the table is
+# still being deleted, and a table deleting on a key pending deletion stays in
+# DELETING indefinitely (it happened to a failed run's table2). This key is
+# retired only once every table is gone.
+OOB_ALIAS="alias/${STACK}-oob"
 # Tag on the keys this script creates, so a key whose alias was never
 # created can still be found by a later run's sweep.
 KEY_TAG="cdkd-integ-fixture"
@@ -375,9 +382,32 @@ teardown_table() { # usage: teardown_table <table name>
   fi
 }
 
+# Wait until table $1 is gone in both regions (only a not-found answer is
+# "gone"; any other failure retries). Bounded: 15 min per region.
+await_table_gone() { # usage: await_table_gone <table name>
+  local r out
+  for r in "${REGION}" "${SECOND_REGION}"; do
+    for _ in $(seq 1 90); do
+      if ! out="$(aws dynamodb describe-table --table-name "$1" --region "${r}" 2>&1)" &&
+        printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+        break
+      fi
+      sleep 10
+    done
+  done
+}
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  # ${TABLE2} FIRST, and waited out, before the stack's destroy: Phase 5b moves
+  # it onto customer managed keys out of band, which the template does not
+  # reference, so nothing orders its delete before a key's deletion. It is
+  # moved onto fixture-owned keys (retired below, after every table), but a
+  # run of an older script, or a revert that lands on the stack's key, must
+  # not leave it deleting on a key the destroy is scheduling.
+  teardown_table "${TABLE2}"
+  await_table_gone "${TABLE2}"
   if [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" --yes --remove-protection >/dev/null 2>&1
@@ -388,18 +418,11 @@ cleanup() {
   # Keys LAST, once every table is gone: a table still DELETING on a customer
   # managed key whose deletion is scheduled stays stuck until the key is
   # enabled again (bounded: 15 min per table and region).
-  local t r out
+  # Every fixture table, before ANY fixture key: the stack's local keys, the
+  # replica keys and Phase 5b's out-of-band key below.
+  local t
   for t in "${TABLE}" "${TABLE2}" "${TABLE3}"; do
-    for r in "${REGION}" "${SECOND_REGION}"; do
-      for _ in $(seq 1 90); do
-        # Only a not-found answer is "gone"; any other failure retries.
-        if ! out="$(aws dynamodb describe-table --table-name "${t}" --region "${r}" 2>&1)" &&
-          printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
-          break
-        fi
-        sleep 10
-      done
-    done
+    await_table_gone "${t}"
   done
   # The local keys (stack-managed) when the destroy did not schedule them,
   # and the replica keys this fixture creates — by ARN too, in case the
@@ -408,6 +431,7 @@ cleanup() {
   retire_key "${REGION}" "${LOCAL_ALIAS}2"
   retire_key "${SECOND_REGION}" "${REPLICA_ALIAS}"
   retire_key "${SECOND_REGION}" "${REPLICA_ALIAS}2"
+  retire_key "${REGION}" "${OOB_ALIAS}"
   # After the table: a streaming destination names the stream.
   retire_stream "${REGION}" "${LOCAL_KINESIS}"
   retire_stream "${SECOND_REGION}" "${REPLICA_KINESIS}"
@@ -415,6 +439,8 @@ cleanup() {
     [ -n "${arn}" ] && aws kms schedule-key-deletion --key-id "${arn}" --pending-window-in-days 7 \
       --region "${SECOND_REGION}" >/dev/null 2>&1
   done
+  [ -n "${OOB_KEY_ARN:-}" ] && aws kms schedule-key-deletion --key-id "${OOB_KEY_ARN}" \
+    --pending-window-in-days 7 --region "${REGION}" >/dev/null 2>&1
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -528,6 +554,12 @@ REPLICA_KEY2_ARN="$(aws kms create-key --region "${SECOND_REGION}" \
   --tags "TagKey=${KEY_TAG},TagValue=${BASE}" --query 'KeyMetadata.Arn' --output text)"
 aws kms create-alias --alias-name "${REPLICA_ALIAS}2" --target-key-id "${REPLICA_KEY2_ARN}" \
   --region "${SECOND_REGION}"
+echo "==> Creating Phase 5b's out-of-band key in ${REGION} (fixture-owned, not a stack key)"
+OOB_KEY_ARN="$(aws kms create-key --region "${REGION}" \
+  --description "cdkd integ ${STACK} out-of-band key (Phase 5b)" \
+  --tags "TagKey=${KEY_TAG},TagValue=${BASE}" --query 'KeyMetadata.Arn' --output text)"
+aws kms create-alias --alias-name "${OOB_ALIAS}" --target-key-id "${OOB_KEY_ARN}" \
+  --region "${REGION}"
 export CDKD_INTEG_REPLICA_KEY_ARN="${REPLICA_KEY_ARN}"
 export CDKD_INTEG_REPLICA_KEY2_ARN="${REPLICA_KEY2_ARN}"
 echo "    ${REPLICA_KEY_ARN} ${REPLICA_KEY2_ARN}"
@@ -1044,10 +1076,10 @@ fi
 # DynamoDB takes a customer managed key on a table with replicas only as one
 # ReplicaUpdates call naming every region's key (measured, Phase 3).
 aws dynamodb update-table --table-name "${TABLE2}" --region "${REGION}" --replica-updates \
-  "[{\"Update\":{\"RegionName\":\"${REGION}\",\"KMSMasterKeyId\":\"${LOCAL_KEY_ARN}\"}},{\"Update\":{\"RegionName\":\"${SECOND_REGION}\",\"KMSMasterKeyId\":\"${REPLICA_KEY_ARN}\"}}]" \
+  "[{\"Update\":{\"RegionName\":\"${REGION}\",\"KMSMasterKeyId\":\"${OOB_KEY_ARN}\"}},{\"Update\":{\"RegionName\":\"${SECOND_REGION}\",\"KMSMasterKeyId\":\"${REPLICA_KEY_ARN}\"}}]" \
   >/dev/null
 wait_settled
-await_settings "${REGION}" "^ENABLED	KMS	${LOCAL_KEY_ARN}	None	False$" \
+await_settings "${REGION}" "^ENABLED	KMS	${OOB_KEY_ARN}	None	False$" \
   "${PHASE5B} premise: the out-of-band move to the customer managed key did not land"
 await_settings "${SECOND_REGION}" "^ENABLED	KMS	${REPLICA_KEY_ARN}	None	False$" \
   "${PHASE5B} premise: the out-of-band move did not reach the replica"
