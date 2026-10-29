@@ -36,10 +36,6 @@
       "RequestHeaderConfiguration",
       "Tags"
     ],
-    "AWS::CloudTrail::Trail": [
-      "AdvancedEventSelectors",
-      "AggregationConfigurations"
-    ],
     "AWS::CloudWatch::Alarm": [
       "ActionConfiguration",
       "EvaluationWindow",

@@ -43,8 +43,6 @@ const TRAIL_CASE: TypeCase = {
   physicalId: TRAIL_ARN,
   createOnly: createOnlyOf('AWS::CloudTrail::Trail'),
   exempt: {},
-  // AdvancedEventSelectors / AggregationConfigurations are not handled, so no
-  // bag carries them; the nested-path check reads carried top-levels only.
   targets: [
     // RemoveTags takes whole {Key, Value} entries, the removed one only.
     { path: ['Tags', 0], command: 'RemoveTagsCommand', names: 'k1', notNames: 'k2' },
@@ -58,12 +56,12 @@ const TRAIL_CASE: TypeCase = {
         S3BucketName: 'bucket',
         S3KeyPrefix: 'prefix',
         // Single-region, so a removed IncludeGlobalServiceEvents is reset
-        // (cloudtrail-provider.ts:575-597).
+        // (cloudtrail-provider.ts, in update(): the IncludeGlobalServiceEvents reset).
         IsMultiRegionTrail: false,
         IncludeGlobalServiceEvents: true,
         EnableLogFileValidation: true,
         // `false`: an absent IsLogging starts logging on create
-        // (cloudtrail-provider.ts:431-440), so only a stopped trail differs.
+        // (cloudtrail-provider.ts, in create(): the StartLogging branch), so only a stopped trail differs.
         IsLogging: false,
         CloudWatchLogsLogGroupArn: `arn:aws:logs:us-east-1:${ACCOUNT}:log-group:trail:*`,
         CloudWatchLogsRoleArn: `arn:aws:iam::${ACCOUNT}:role/trail-logs`,
@@ -97,21 +95,21 @@ const TRAIL_CASE: TypeCase = {
       },
       expectedSilent: {
         'update-remove:IsLogging':
-          'an absent desired IsLogging leaves logging as it is: IsLogging is CFn-required, so only a state replay can lack it, and that must not start a stopped trail (cloudtrail-provider.ts:802-811)',
+          'an absent desired IsLogging leaves logging as it is: IsLogging is CFn-required, so only a state replay can lack it, and that must not start a stopped trail (cloudtrail-provider.ts, in update(): the IsLogging branch)',
         ...Object.fromEntries(
           ['CloudWatchLogsLogGroupArn', 'CloudWatchLogsRoleArn'].map((key) => [
             `update-remove:${key}`,
-            'left in place on removal: UpdateTrail keeps an absent field, and CloudFormation kept the CloudWatch Logs pair too (CFn A/B, cloudtrail-provider.ts:548-551, 600-627)',
+            'left in place on removal: UpdateTrail keeps an absent field, and CloudFormation kept the CloudWatch Logs pair too (CFn A/B, cloudtrail-provider.ts, in update(): the RETAINED removal note and resolveCloudWatchLogsPair)',
           ])
         ),
         'update-remove:IsOrganizationTrail':
-          'left in place on removal: CloudFormation\'s reset of IsOrganizationTrail is unmeasurable without an Organizations management account, so it is passed through rather than guessed (cloudtrail-provider.ts:551-558)',
+          'left in place on removal: CloudFormation\'s reset of IsOrganizationTrail is unmeasurable without an Organizations management account, so it is passed through rather than guessed (cloudtrail-provider.ts, in update(): the IsOrganizationTrail removal note)',
         'update-remove:S3BucketName':
-          'S3BucketName is required, so no deployable template removes it: create() refuses a trail without it (cloudtrail-provider.ts:342-349)',
+          'S3BucketName is required, so no deployable template removes it: create() refuses a trail without it (cloudtrail-provider.ts, in create(): the S3BucketName check)',
       },
       expectedRemovalThrows: {
         'create:S3BucketName': REQUIRED(
-          'S3BucketName is required: create() refuses a trail without it before any call (cloudtrail-provider.ts:342-349)',
+          'S3BucketName is required: create() refuses a trail without it before any call (cloudtrail-provider.ts, in create(): the S3BucketName check)',
           /S3BucketName is required/
         ),
         ...TAG_THROWS(ALL_DIRECTIONS, 2),
@@ -119,7 +117,7 @@ const TRAIL_CASE: TypeCase = {
     },
     {
       // Multi-region, where a removed IncludeGlobalServiceEvents is passed
-      // through instead of reset (cloudtrail-provider.ts:575-597).
+      // through instead of reset (cloudtrail-provider.ts, in update(): the IncludeGlobalServiceEvents reset).
       name: 'multi-region',
       bag: {
         TrailName: 'trail',
@@ -129,13 +127,56 @@ const TRAIL_CASE: TypeCase = {
       },
       expectedSilent: {
         'update-remove:IncludeGlobalServiceEvents':
-          'passed through on removal while the trail stays multi-region: AWS refuses a multi-region trail that excludes global service events, so the reset applies only to a known single-region trail (cloudtrail-provider.ts:575-597)',
+          'passed through on removal while the trail stays multi-region: AWS refuses a multi-region trail that excludes global service events, so the reset applies only to a known single-region trail (cloudtrail-provider.ts, in update(): the IncludeGlobalServiceEvents reset)',
         'update-remove:S3BucketName':
-          'S3BucketName is required, so no deployable template removes it: create() refuses a trail without it (cloudtrail-provider.ts:342-349)',
+          'S3BucketName is required, so no deployable template removes it: create() refuses a trail without it (cloudtrail-provider.ts, in create(): the S3BucketName check)',
       },
       expectedRemovalThrows: {
         'create:S3BucketName': REQUIRED(
-          'S3BucketName is required: create() refuses a trail without it before any call (cloudtrail-provider.ts:342-349)',
+          'S3BucketName is required: create() refuses a trail without it before any call (cloudtrail-provider.ts, in create(): the S3BucketName check)',
+          /S3BucketName is required/
+        ),
+      },
+    },
+    {
+      // Issue #2762. A bag of its own: AWS refuses EventSelectors beside
+      // AdvancedEventSelectors, so "every property" carries the basic list.
+      name: 'advanced selectors + aggregation',
+      bag: {
+        TrailName: 'trail',
+        S3BucketName: 'bucket',
+        AdvancedEventSelectors: [
+          {
+            Name: 's3-data',
+            FieldSelectors: [
+              { Field: 'eventCategory', Equals: ['Data'] },
+              { Field: 'resources.type', Equals: ['AWS::S3::Object'] },
+              {
+                Field: 'resources.ARN',
+                StartsWith: ['arn:aws:s3:::b1/', 'arn:aws:s3:::b2/'],
+                NotStartsWith: ['arn:aws:s3:::b1/x', 'arn:aws:s3:::b2/x'],
+                EndsWith: ['.json', '.csv'],
+                NotEndsWith: ['.tmp', '.bak'],
+                NotEquals: ['arn:aws:s3:::b1/a', 'arn:aws:s3:::b2/a'],
+              },
+            ],
+          },
+          {
+            Name: 'management',
+            FieldSelectors: [{ Field: 'eventCategory', Equals: ['Management'] }],
+          },
+        ],
+        AggregationConfigurations: [
+          { EventCategory: 'Data', Templates: ['API_ACTIVITY', 'RESOURCE_ACCESS'] },
+        ],
+      },
+      expectedSilent: {
+        'update-remove:S3BucketName':
+          'S3BucketName is required, so no deployable template removes it: create() refuses a trail without it (cloudtrail-provider.ts, in create(): the S3BucketName check)',
+      },
+      expectedRemovalThrows: {
+        'create:S3BucketName': REQUIRED(
+          'S3BucketName is required: create() refuses a trail without it before any call (cloudtrail-provider.ts, in create(): the S3BucketName check)',
           /S3BucketName is required/
         ),
       },

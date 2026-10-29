@@ -1,0 +1,761 @@
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import {
+  CreateTrailCommand,
+  GetEventConfigurationCommand,
+  GetEventSelectorsCommand,
+  GetInsightSelectorsCommand,
+  GetTrailCommand,
+  GetTrailStatusCommand,
+  ListTagsCommand,
+  PutEventConfigurationCommand,
+  PutEventSelectorsCommand,
+  PutInsightSelectorsCommand,
+} from '@aws-sdk/client-cloudtrail';
+
+const mockSend = vi.fn();
+// Hoisted with the logger factory: it builds its child logger EAGERLY.
+const { warnSpy } = vi.hoisted(() => ({ warnSpy: vi.fn() }));
+
+vi.mock('@aws-sdk/client-cloudtrail', async () => {
+  const actual = await vi.importActual('@aws-sdk/client-cloudtrail');
+  return {
+    ...actual,
+    CloudTrailClient: vi.fn().mockImplementation(() => ({
+      send: mockSend,
+      config: { region: () => Promise.resolve('us-east-1') },
+    })),
+  };
+});
+
+vi.mock('../../../src/utils/logger.js', () => {
+  const childLogger = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: warnSpy,
+    error: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  };
+  return {
+    getLogger: () => ({
+      child: () => childLogger,
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    }),
+  };
+});
+
+import { CloudTrailProvider } from '../../../src/provisioning/providers/cloudtrail-provider.js';
+import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
+
+/**
+ * Issue #2762: `AdvancedEventSelectors` and `AggregationConfigurations` on
+ * the SDK route. The first shares `PutEventSelectors` with `EventSelectors`
+ * (one selector set, replaced whole); the second rides `PutEventConfiguration`.
+ */
+
+const TRAIL_ARN = 'arn:aws:cloudtrail:us-east-1:0:trail/my-trail';
+const TYPE = 'AWS::CloudTrail::Trail';
+const BASE = { S3BucketName: 'my-bucket', IsLogging: false };
+const ADVANCED = [
+  {
+    Name: 's3-data',
+    FieldSelectors: [
+      { Field: 'eventCategory', Equals: ['Data'] },
+      { Field: 'resources.type', Equals: ['AWS::S3::Object'] },
+    ],
+  },
+];
+const BASIC = [{ ReadWriteType: 'WriteOnly', IncludeManagementEvents: true }];
+const AGGREGATION = [{ EventCategory: 'Data', Templates: ['API_ACTIVITY'] }];
+
+/** The command names sent, in order. */
+function sent(): string[] {
+  return mockSend.mock.calls.map((c) => (c[0] as object).constructor.name);
+}
+
+function inputsOf(command: abstract new (...args: never[]) => unknown): Record<string, unknown>[] {
+  return mockSend.mock.calls
+    .filter((c) => c[0] instanceof command)
+    .map((c) => (c[0] as { input: Record<string, unknown> }).input);
+}
+
+describe('CloudTrailProvider AdvancedEventSelectors / AggregationConfigurations (#2762)', () => {
+  let provider: CloudTrailProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockImplementation((command: unknown) =>
+      Promise.resolve(command instanceof CreateTrailCommand ? { TrailARN: TRAIL_ARN } : {})
+    );
+    provider = new CloudTrailProvider();
+  });
+
+  describe('create', () => {
+    it('sends AdvancedEventSelectors alone, then the aggregation after the selectors', async () => {
+      await provider.create('T', TYPE, {
+        ...BASE,
+        AdvancedEventSelectors: ADVANCED,
+        AggregationConfigurations: AGGREGATION,
+      });
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([
+        { TrailName: TRAIL_ARN, AdvancedEventSelectors: ADVANCED },
+      ]);
+      expect(inputsOf(PutEventConfigurationCommand)).toEqual([
+        { TrailName: TRAIL_ARN, AggregationConfigurations: AGGREGATION },
+      ]);
+      expect(sent().indexOf('PutEventSelectorsCommand')).toBeLessThan(
+        sent().indexOf('PutEventConfigurationCommand')
+      );
+    });
+
+    it('sends both lists when both are declared, so AWS refuses the combination', async () => {
+      await provider.create('T', TYPE, {
+        ...BASE,
+        EventSelectors: BASIC,
+        AdvancedEventSelectors: ADVANCED,
+      });
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([
+        { TrailName: TRAIL_ARN, AdvancedEventSelectors: ADVANCED, EventSelectors: BASIC },
+      ]);
+    });
+
+    it('makes neither call for empty lists', async () => {
+      await provider.create('T', TYPE, {
+        ...BASE,
+        AdvancedEventSelectors: [],
+        AggregationConfigurations: [],
+      });
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([]);
+      expect(inputsOf(PutEventConfigurationCommand)).toEqual([]);
+    });
+
+    it.each(['AdvancedEventSelectors', 'AggregationConfigurations'])(
+      'refuses a non-array %s before any call',
+      async (key) => {
+        await expect(
+          provider.create('T', TYPE, { ...BASE, [key]: 'not-a-list' })
+        ).rejects.toThrow(new RegExp(`${key} must be an array`));
+        expect(mockSend).not.toHaveBeenCalled();
+      }
+    );
+
+    it.each(['AdvancedEventSelectors', 'AggregationConfigurations'])(
+      'downgrades a non-array %s to a warning on a state replay',
+      async (key) => {
+        await provider.create(
+          'T',
+          TYPE,
+          { ...BASE, [key]: 'not-a-list' },
+          { replayingState: true }
+        );
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`${key} must be an array`));
+        expect(inputsOf(PutEventSelectorsCommand)).toEqual([]);
+        expect(inputsOf(PutEventConfigurationCommand)).toEqual([]);
+      }
+    );
+  });
+
+  describe('update: selectors', () => {
+    it('switches a basic trail to advanced selectors with one Put carrying only the advanced list', async () => {
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: ADVANCED },
+        { ...BASE, EventSelectors: BASIC }
+      );
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([
+        { TrailName: TRAIL_ARN, AdvancedEventSelectors: ADVANCED },
+      ]);
+    });
+
+    it('switches an advanced trail back to basic selectors', async () => {
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, EventSelectors: BASIC },
+        { ...BASE, AdvancedEventSelectors: ADVANCED }
+      );
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([
+        { TrailName: TRAIL_ARN, EventSelectors: BASIC },
+      ]);
+    });
+
+    it('resets a removed AdvancedEventSelectors to the default selector a selector-less trail has', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, BASE, {
+        ...BASE,
+        AdvancedEventSelectors: ADVANCED,
+      });
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([
+        {
+          TrailName: TRAIL_ARN,
+          EventSelectors: [{ ReadWriteType: 'All', IncludeManagementEvents: true }],
+        },
+      ]);
+    });
+
+    it('does NOT tolerate an advanced-selector rejection of that reset: the removal was asked for', async () => {
+      mockSend.mockImplementation((command: unknown) =>
+        command instanceof PutEventSelectorsCommand
+          ? Promise.reject(
+              Object.assign(new Error('The trail uses advanced event selectors.'), {
+                name: 'InvalidEventSelectorsException',
+              })
+            )
+          : Promise.resolve({})
+      );
+      await expect(
+        provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, AdvancedEventSelectors: ADVANCED })
+      ).rejects.toThrow(/Failed to update CloudTrail Trail T/);
+    });
+
+    it('still tolerates it for a basic removal on a trail whose record has no advanced selectors', async () => {
+      mockSend.mockImplementation((command: unknown) =>
+        command instanceof PutEventSelectorsCommand
+          ? Promise.reject(
+              Object.assign(new Error('The trail uses advanced event selectors.'), {
+                name: 'InvalidEventSelectorsException',
+              })
+            )
+          : Promise.resolve({})
+      );
+      await expect(
+        provider.update('T', TRAIL_ARN, TYPE, BASE, { ...BASE, EventSelectors: BASIC })
+      ).resolves.toMatchObject({ physicalId: TRAIL_ARN });
+    });
+
+    it('changes one advanced selector value with a Put of the whole new list', async () => {
+      const next = [{ ...ADVANCED[0]!, Name: 'renamed' }];
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: next },
+        { ...BASE, AdvancedEventSelectors: ADVANCED }
+      );
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([
+        { TrailName: TRAIL_ARN, AdvancedEventSelectors: next },
+      ]);
+    });
+
+    it('makes no selector call when neither list changed', async () => {
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: ADVANCED, AggregationConfigurations: AGGREGATION },
+        { ...BASE, AdvancedEventSelectors: ADVANCED, AggregationConfigurations: AGGREGATION }
+      );
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([]);
+      expect(inputsOf(PutEventConfigurationCommand)).toEqual([]);
+    });
+
+    it.each([
+      ['AdvancedEventSelectors', { EventSelectors: BASIC }],
+      ['EventSelectors', { AdvancedEventSelectors: ADVANCED }],
+    ])(
+      'skips the WHOLE selector Put when %s is unusable, even though the other list changed',
+      async (key, other) => {
+        await provider.update(
+          'T',
+          TRAIL_ARN,
+          TYPE,
+          { ...BASE, ...other, [key]: { not: 'a list' } },
+          BASE
+        );
+        expect(inputsOf(PutEventSelectorsCommand)).toEqual([]);
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`${key} must be an array`));
+      }
+    );
+  });
+
+  describe('update: drift --revert across a selector switch', () => {
+    it('restores basic selectors on a trail switched to advanced out of band, sending only the basic list', async () => {
+      // The revert bag is the live readback (advanced) with the drifted
+      // EventSelectors overlaid; the previous side is the live readback.
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: ADVANCED, EventSelectors: BASIC },
+        { ...BASE, AdvancedEventSelectors: ADVANCED },
+        { desiredFromAwsReadback: true }
+      );
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([
+        { TrailName: TRAIL_ARN, EventSelectors: BASIC },
+      ]);
+    });
+
+    it('restores advanced selectors on a trail switched to basic out of band, sending only the advanced list', async () => {
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, EventSelectors: BASIC, AdvancedEventSelectors: ADVANCED },
+        { ...BASE, EventSelectors: BASIC, AdvancedEventSelectors: [] },
+        { desiredFromAwsReadback: true }
+      );
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([
+        { TrailName: TRAIL_ARN, AdvancedEventSelectors: ADVANCED },
+      ]);
+    });
+
+    it('keeps sending both lists for a TEMPLATE declaring both, for AWS to refuse', async () => {
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: ADVANCED, EventSelectors: BASIC },
+        { ...BASE, AdvancedEventSelectors: ADVANCED }
+      );
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([
+        { TrailName: TRAIL_ARN, AdvancedEventSelectors: ADVANCED, EventSelectors: BASIC },
+      ]);
+    });
+  });
+
+  describe('what a skip records (effectiveProperties)', () => {
+    it('records the PREVIOUS selector lists when one is unusable, since neither was sent', async () => {
+      const result = await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, EventSelectors: [{ ReadWriteType: 'All' }], AdvancedEventSelectors: 'bad' },
+        { ...BASE, EventSelectors: BASIC }
+      );
+      expect(result.effectiveProperties).toEqual({ ...BASE, EventSelectors: BASIC });
+      // A usable previous list needs no live read.
+      expect(inputsOf(GetTrailCommand)).toEqual([]);
+    });
+
+    it('records the PREVIOUS aggregation when the desired one is unusable', async () => {
+      const result = await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AggregationConfigurations: 'bad' },
+        { ...BASE, AggregationConfigurations: AGGREGATION }
+      );
+      expect(result.effectiveProperties).toEqual({
+        ...BASE,
+        AggregationConfigurations: AGGREGATION,
+      });
+      expect(inputsOf(GetTrailCommand)).toEqual([]);
+      expect(inputsOf(GetEventConfigurationCommand)).toEqual([]);
+    });
+
+    it('records the LIVE reading when the previous value is present but unusable, the absent one dropped', async () => {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof GetTrailCommand)
+          return Promise.resolve({ Trail: { Name: 'my-trail', S3BucketName: 'my-bucket' } });
+        if (command instanceof GetEventSelectorsCommand)
+          return Promise.resolve({ AdvancedEventSelectors: ADVANCED });
+        if (command instanceof GetEventConfigurationCommand)
+          return Promise.resolve({ AggregationConfigurations: AGGREGATION });
+        return Promise.resolve({});
+      });
+      const result = await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: 'bad', AggregationConfigurations: 'bad' },
+        { ...BASE, AdvancedEventSelectors: 'also-bad', AggregationConfigurations: 'also-bad' }
+      );
+      // The live trail is on advanced selectors, so the readback carries no
+      // EventSelectors key and neither side declared one: it stays absent.
+      expect(result.effectiveProperties).toEqual({
+        ...BASE,
+        AdvancedEventSelectors: ADVANCED,
+        AggregationConfigurations: AGGREGATION,
+      });
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([]);
+      expect(inputsOf(PutEventConfigurationCommand)).toEqual([]);
+    });
+
+    it('drops a skipped key whose previous value is ABSENT, even when the live read ran for another key', async () => {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof GetTrailCommand)
+          return Promise.resolve({ Trail: { Name: 'my-trail', S3BucketName: 'my-bucket' } });
+        if (command instanceof GetEventSelectorsCommand)
+          return Promise.resolve({ AdvancedEventSelectors: ADVANCED });
+        if (command instanceof GetEventConfigurationCommand)
+          return Promise.resolve({ AggregationConfigurations: AGGREGATION });
+        return Promise.resolve({});
+      });
+      const result = await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: 'bad', AggregationConfigurations: 'bad' },
+        { ...BASE, AggregationConfigurations: 'also-bad' }
+      );
+      expect(result.effectiveProperties).toEqual({
+        ...BASE,
+        AggregationConfigurations: AGGREGATION,
+      });
+    });
+
+    it('drops the key when the live read fails too', async () => {
+      mockSend.mockImplementation((command: unknown) =>
+        command instanceof GetTrailCommand
+          ? Promise.reject(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }))
+          : Promise.resolve({})
+      );
+      const result = await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AggregationConfigurations: 'bad' },
+        { ...BASE, AggregationConfigurations: 'also-bad' }
+      );
+      expect(result.effectiveProperties).toEqual(BASE);
+    });
+
+    it('records nothing special when nothing was skipped', async () => {
+      const result = await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AggregationConfigurations: AGGREGATION },
+        BASE
+      );
+      expect(result.effectiveProperties).toBeUndefined();
+    });
+
+    it('drops a key a replayed create skipped', async () => {
+      const result = await provider.create(
+        'T',
+        TYPE,
+        { ...BASE, EventSelectors: BASIC, AdvancedEventSelectors: 'bad' },
+        { replayingState: true }
+      );
+      expect(result.effectiveProperties).toEqual({ ...BASE, EventSelectors: BASIC });
+    });
+
+    it('drops AggregationConfigurations when a replayed create skipped it', async () => {
+      const result = await provider.create(
+        'T',
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: ADVANCED, AggregationConfigurations: 'bad' },
+        { replayingState: true }
+      );
+      expect(result.effectiveProperties).toEqual({ ...BASE, AdvancedEventSelectors: ADVANCED });
+      expect(inputsOf(PutEventConfigurationCommand)).toEqual([]);
+    });
+  });
+
+  describe('update: a partial failure names what already landed', () => {
+    const denied = (): Error =>
+      Object.assign(new Error('User: arn:aws:sts::0:assumed-role/r/s is not authorized'), {
+        name: 'AccessDeniedException',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 403 },
+      });
+
+    it('says AggregationConfigurations was already cleared when the later selector Put fails', async () => {
+      mockSend.mockImplementation((command: unknown) =>
+        command instanceof PutEventSelectorsCommand ? Promise.reject(denied()) : Promise.resolve({})
+      );
+      const error: Error = await provider
+        .update('T', TRAIL_ARN, TYPE, BASE, {
+          ...BASE,
+          AdvancedEventSelectors: ADVANCED,
+          AggregationConfigurations: AGGREGATION,
+        })
+        .then(
+          () => new Error('update unexpectedly succeeded'),
+          (e: unknown) => e as Error
+        );
+      expect(error.message).toMatch(
+        /AccessDeniedException.*\(selector\/aggregation writes already applied before this failure: AggregationConfigurations was cleared\)$/
+      );
+      // The class only: AWS's text (the caller's role ARN) stays out.
+      expect(error.message).not.toContain('assumed-role');
+    });
+
+    it('says the event selectors were already updated when the later aggregation Put fails', async () => {
+      mockSend.mockImplementation((command: unknown) =>
+        command instanceof PutEventConfigurationCommand
+          ? Promise.reject(denied())
+          : Promise.resolve({})
+      );
+      const error: Error = await provider
+        .update(
+          'T',
+          TRAIL_ARN,
+          TYPE,
+          { ...BASE, AdvancedEventSelectors: ADVANCED, AggregationConfigurations: AGGREGATION },
+          BASE
+        )
+        .then(
+          () => new Error('update unexpectedly succeeded'),
+          (e: unknown) => e as Error
+        );
+      expect(error.message).toMatch(
+        /AccessDeniedException.*\(selector\/aggregation writes already applied before this failure: the event selectors were updated\)$/
+      );
+      expect(error.message).not.toContain('assumed-role');
+    });
+
+    it('says AggregationConfigurations was already updated when a later call fails', async () => {
+      mockSend.mockImplementation((command: unknown) =>
+        command instanceof PutInsightSelectorsCommand
+          ? Promise.reject(denied())
+          : Promise.resolve({})
+      );
+      const error: Error = await provider
+        .update(
+          'T',
+          TRAIL_ARN,
+          TYPE,
+          {
+            ...BASE,
+            AggregationConfigurations: AGGREGATION,
+            InsightSelectors: [{ InsightType: 'ApiCallRateInsight' }],
+          },
+          BASE
+        )
+        .then(
+          () => new Error('update unexpectedly succeeded'),
+          (e: unknown) => e as Error
+        );
+      expect(error.message).toMatch(
+        /AccessDeniedException.*\(selector\/aggregation writes already applied before this failure: AggregationConfigurations was updated\)$/
+      );
+    });
+
+    it('adds no note when the first write fails', async () => {
+      mockSend.mockImplementation((command: unknown) =>
+        command instanceof PutEventSelectorsCommand ? Promise.reject(denied()) : Promise.resolve({})
+      );
+      const error: Error = await provider
+        .update('T', TRAIL_ARN, TYPE, { ...BASE, AdvancedEventSelectors: ADVANCED }, BASE)
+        .then(
+          () => new Error('update unexpectedly succeeded'),
+          (e: unknown) => e as Error
+        );
+      expect(error.message).toMatch(/^Failed to update CloudTrail Trail T: /);
+      expect(error.message).not.toContain('writes already applied');
+    });
+  });
+
+  describe('update: aggregation', () => {
+    it('adds aggregation after the selector change that delivers its events', async () => {
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: ADVANCED, AggregationConfigurations: AGGREGATION },
+        BASE
+      );
+      expect(inputsOf(PutEventConfigurationCommand)).toEqual([
+        { TrailName: TRAIL_ARN, AggregationConfigurations: AGGREGATION },
+      ]);
+      expect(sent().indexOf('PutEventSelectorsCommand')).toBeLessThan(
+        sent().indexOf('PutEventConfigurationCommand')
+      );
+    });
+
+    it('clears a removed aggregation with an empty list, BEFORE the selector change', async () => {
+      await provider.update('T', TRAIL_ARN, TYPE, BASE, {
+        ...BASE,
+        AdvancedEventSelectors: ADVANCED,
+        AggregationConfigurations: AGGREGATION,
+      });
+      expect(inputsOf(PutEventConfigurationCommand)).toEqual([
+        { TrailName: TRAIL_ARN, AggregationConfigurations: [] },
+      ]);
+      expect(sent().indexOf('PutEventConfigurationCommand')).toBeLessThan(
+        sent().indexOf('PutEventSelectorsCommand')
+      );
+    });
+
+    it('leaves the aggregation alone, with a warning, when the desired value is unusable', async () => {
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AggregationConfigurations: 'not-a-list' },
+        { ...BASE, AggregationConfigurations: AGGREGATION }
+      );
+      expect(inputsOf(PutEventConfigurationCommand)).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('AggregationConfigurations must be an array')
+      );
+    });
+  });
+
+  describe('readCurrentState', () => {
+    function armRead(selectors: Record<string, unknown>): void {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof GetTrailCommand)
+          return Promise.resolve({
+            Trail: { Name: 'my-trail', S3BucketName: 'my-bucket', TrailARN: TRAIL_ARN },
+          });
+        if (command instanceof GetTrailStatusCommand) return Promise.resolve({ IsLogging: false });
+        if (command instanceof GetEventSelectorsCommand) return Promise.resolve(selectors);
+        if (command instanceof GetInsightSelectorsCommand)
+          return Promise.resolve({
+            InsightSelectors: [{ InsightType: 'ApiCallRateInsight' }],
+          });
+        if (command instanceof ListTagsCommand) return Promise.resolve({ ResourceTagList: [] });
+        if (command instanceof GetEventConfigurationCommand)
+          return Promise.resolve({ AggregationConfigurations: AGGREGATION });
+        return Promise.reject(new Error('unexpected command'));
+      });
+    }
+
+    it('reads advanced selectors back, without an EventSelectors key, plus the aggregation', async () => {
+      armRead({
+        AdvancedEventSelectors: [
+          {
+            Name: 's3-data',
+            FieldSelectors: [
+              { Field: 'eventCategory', Equals: ['Data'], StartsWith: undefined },
+              { Field: 'resources.type', Equals: ['AWS::S3::Object'] },
+            ],
+          },
+        ],
+      });
+      const result = (await provider.readCurrentState(TRAIL_ARN, 'T', TYPE)) as Record<
+        string,
+        unknown
+      >;
+      expect(result['AdvancedEventSelectors']).toEqual(ADVANCED);
+      expect(
+        Object.keys(
+          (result['AdvancedEventSelectors'] as Array<{ FieldSelectors: object[] }>)[0]!
+            .FieldSelectors[0]!
+        )
+      ).toEqual(['Field', 'Equals']);
+      expect('EventSelectors' in result).toBe(false);
+      expect(result['AggregationConfigurations']).toEqual(AGGREGATION);
+    });
+
+    it('reads AggregationConfigurations as [] when the response carries no such key', async () => {
+      armRead({ EventSelectors: BASIC });
+      const base = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((command: unknown) =>
+        command instanceof GetEventConfigurationCommand
+          ? Promise.resolve({ TrailARN: TRAIL_ARN })
+          : base(command)
+      );
+      const result = (await provider.readCurrentState(TRAIL_ARN, 'T', TYPE)) as Record<
+        string,
+        unknown
+      >;
+      expect(result['AggregationConfigurations']).toEqual([]);
+    });
+
+    it('emits AdvancedEventSelectors: [] on a basic-selector trail', async () => {
+      armRead({ EventSelectors: BASIC });
+      const result = (await provider.readCurrentState(TRAIL_ARN, 'T', TYPE)) as Record<
+        string,
+        unknown
+      >;
+      expect(result['AdvancedEventSelectors']).toEqual([]);
+      expect(result['EventSelectors']).toEqual(BASIC);
+    });
+  });
+
+  describe('order: AWS reads FieldSelectors back sorted by Field', () => {
+    // The declared order (what the template and the state record hold) and the
+    // order a live GetEventSelectors returned for it (cloudtrail-trail integ).
+    const DECLARED = [
+      {
+        Name: 'cdkd-integ-s3-data',
+        FieldSelectors: [
+          { Field: 'eventCategory', Equals: ['Data'] },
+          { Field: 'resources.type', Equals: ['AWS::S3::Object'] },
+          { Field: 'resources.ARN', StartsWith: ['arn:aws:s3:::bucket/'] },
+        ],
+      },
+    ];
+    const AWS_ORDER = [
+      {
+        FieldSelectors: [
+          { Equals: ['Data'], Field: 'eventCategory' },
+          { Field: 'resources.ARN', StartsWith: ['arn:aws:s3:::bucket/'] },
+          { Equals: ['AWS::S3::Object'], Field: 'resources.type' },
+        ],
+        Name: 'cdkd-integ-s3-data',
+      },
+    ];
+
+    it('reports no drift for the reordered read-back', () => {
+      const drifts = calculateResourceDrift(
+        { AdvancedEventSelectors: DECLARED, AggregationConfigurations: [{ EventCategory: 'Data', Templates: ['API_ACTIVITY', 'USER_ACTIONS'] }] },
+        { AdvancedEventSelectors: AWS_ORDER, AggregationConfigurations: [{ Templates: ['USER_ACTIONS', 'API_ACTIVITY'], EventCategory: 'Data' }] },
+        { unorderedPaths: provider.getDriftUnorderedPaths('AWS::CloudTrail::Trail') }
+      );
+      expect(drifts).toEqual([]);
+    });
+
+    it('still reports a real change hidden in the reorder', () => {
+      const changed = structuredClone(AWS_ORDER);
+      changed[0]!.FieldSelectors[1]!.StartsWith = ['arn:aws:s3:::other/'];
+      const drifts = calculateResourceDrift(
+        { AdvancedEventSelectors: DECLARED },
+        { AdvancedEventSelectors: changed },
+        { unorderedPaths: provider.getDriftUnorderedPaths('AWS::CloudTrail::Trail') }
+      );
+      expect(drifts.map((d) => d.path)).toEqual(['AdvancedEventSelectors']);
+    });
+
+    it('declares nothing for another type', () => {
+      expect(provider.getDriftUnorderedPaths('AWS::S3::Bucket')).toEqual([]);
+    });
+
+    it('sends no PutEventSelectors / PutEventConfiguration when only the order differs', async () => {
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        {
+          ...BASE,
+          AdvancedEventSelectors: DECLARED,
+          AggregationConfigurations: [{ EventCategory: 'Data', Templates: ['API_ACTIVITY', 'USER_ACTIONS'] }],
+        },
+        {
+          ...BASE,
+          AdvancedEventSelectors: AWS_ORDER,
+          AggregationConfigurations: [{ Templates: ['USER_ACTIONS', 'API_ACTIVITY'], EventCategory: 'Data' }],
+        }
+      );
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([]);
+      expect(inputsOf(PutEventConfigurationCommand)).toEqual([]);
+    });
+
+    it('still sends the Put when a value changed under the reorder', async () => {
+      const changed = structuredClone(AWS_ORDER);
+      changed[0]!.FieldSelectors[0]!.Equals = ['Management'];
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: DECLARED },
+        { ...BASE, AdvancedEventSelectors: changed }
+      );
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([
+        { TrailName: TRAIL_ARN, AdvancedEventSelectors: DECLARED },
+      ]);
+    });
+
+    it('on a revert, drops the advanced list that matches the live one only by order', async () => {
+      await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: DECLARED, EventSelectors: BASIC },
+        { ...BASE, AdvancedEventSelectors: AWS_ORDER },
+        { desiredFromAwsReadback: true }
+      );
+      expect(inputsOf(PutEventSelectorsCommand)).toEqual([
+        { TrailName: TRAIL_ARN, EventSelectors: BASIC },
+      ]);
+    });
+  });
+});

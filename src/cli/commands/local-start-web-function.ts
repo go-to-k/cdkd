@@ -15,7 +15,10 @@ import { adoptDeprecatedRegionFlag } from '../region-options.js';
  * revision), whose code bundle from `cdk.out` runs in a container whose server
  * listens on `AWS_LAMBDA_HTTP_ENDPOINT`, published on a local port with the
  * revision's `ServiceConfig` environment. Inherited from cdk-local
- * (go-to-k/cdk-local#831, cdk-local 0.155.0).
+ * (go-to-k/cdk-local#831, cdk-local 0.155.0). The code key is a literal asset
+ * key or, since go-to-k/cdk-local#840 (cdk-local 0.157.0, cdkd #5515),
+ * `Fn::Select [i, GetAtt <BucketDeployment>.SourceObjectKeys]` of an
+ * `extract: false` deployment, served as its i-th source asset.
  *
  * Like `start-agentcore` / `start-cloudfront`, this is a THIN pass-through to
  * cdk-local's factory: the serve behavior and the option block (`--revision` /
