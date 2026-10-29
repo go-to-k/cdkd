@@ -7,7 +7,6 @@ import {
   type ResourceState,
   type StackState,
 } from '../../../src/types/state.js';
-import { StateError } from '../../../src/utils/error-handler.js';
 import { clearBucketRegionCache } from '../../../src/utils/aws-region-resolver.js';
 import {
   unsettledPropertiesOf,
@@ -19,10 +18,10 @@ import {
  * Schema v14 — `ResourceState.unsettledProperties` (go-to-k/cdkd#5380).
  *
  * Through the REAL `S3StateBackend` read path, over a VERBATIM v13 document:
- * v14 is current and every older version readable, a v13 document is read
- * unchanged (nothing unsettled), a v14 document round-trips the names, and a
- * version past 14 is refused with "Upgrade cdkd" — as a v13 binary refuses 14,
- * which keeps an older binary from rewriting a record without its names. What
+ * every version through 14 stays readable, a v13 document is read
+ * unchanged (nothing unsettled), and a v14 document round-trips the names. The
+ * current version and the refusal past it are pinned by the latest bump's
+ * test (`schema-v14-to-v15-migration.test.ts`). What
  * the deploy engine writes is pinned in
  * `tests/unit/deployment/deploy-engine-unsettled-properties-5380.test.ts`.
  */
@@ -104,12 +103,11 @@ describe('State schema v14 — unsettledProperties (go-to-k/cdkd#5380)', () => {
     });
   };
 
-  it('v14 is the current version, and every version 1..14 is readable', () => {
-    expect(STATE_SCHEMA_VERSION_CURRENT).toBe(14);
+  it('every version 1..14 stays readable (v15, go-to-k/cdkd#5498, is current)', () => {
+    expect(STATE_SCHEMA_VERSION_CURRENT).toBeGreaterThanOrEqual(14);
     for (const v of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
       expect(STATE_SCHEMA_VERSIONS_READABLE).toContain(v);
     }
-    expect(STATE_SCHEMA_VERSIONS_READABLE).not.toContain(15);
   });
 
   it('reads a verbatim v13 document unchanged, with nothing unsettled, and writes nothing on read', async () => {
@@ -130,16 +128,7 @@ describe('State schema v14 — unsettledProperties (go-to-k/cdkd#5380)', () => {
     expect([...unsettledPropertiesOf(state.resources['Stream'])]).toEqual([ENC]);
   });
 
-  it('refuses version 15 with the "Upgrade cdkd" error, as a v13 binary refuses 14', async () => {
-    serve(JSON.stringify({ version: 15, stackName: 'X', resources: {}, outputs: {}, lastModified: 0 }));
-    const caught = await backend.getState('X', 'us-east-1').catch((e: unknown) => e);
-    expect(caught).toBeInstanceOf(StateError);
-    expect((caught as Error).message).toMatch(/Unsupported state schema version 15/);
-    expect((caught as Error).message).toMatch(/1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14/);
-    expect((caught as Error).message).toMatch(/Upgrade cdkd/);
-  });
-
-  it('saves version 14 with the names intact', async () => {
+  it('saves the current version with the names intact', async () => {
     client.send.mockResolvedValue({ ETag: '"new"' });
     const state = JSON.parse(V13_DOCUMENT) as StackState;
     state.resources['Stream']!.unsettledProperties = [ENC];
@@ -148,7 +137,7 @@ describe('State schema v14 — unsettledProperties (go-to-k/cdkd#5380)', () => {
       .map(([command]) => (command as { input?: { Body?: unknown } }).input?.Body)
       .find((b): b is string => typeof b === 'string');
     const saved = JSON.parse(body!) as StackState;
-    expect(saved.version).toBe(14);
+    expect(saved.version).toBe(STATE_SCHEMA_VERSION_CURRENT);
     expect(saved.resources['Stream']!.unsettledProperties).toEqual([ENC]);
   });
 });

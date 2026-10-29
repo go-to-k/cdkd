@@ -22,6 +22,7 @@ import {
   type MetricsName,
   type RecordDistributionStrategy,
 } from '@aws-sdk/client-kinesis';
+import { isUsableAttemptedName } from '../../state/unsettled-properties.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
@@ -893,6 +894,9 @@ export class KinesisStreamProvider implements ResourceProvider {
         {
           forceUpsert: context?.unsettledProperties?.has('Tags') === true,
           beforeWrite: () => markUnsettled('Tags'),
+          afterAdded: (keys) => {
+            if (keys.length > 0) context?.markAttempted?.('Tags', keys);
+          },
         }
       );
 
@@ -1058,12 +1062,19 @@ export class KinesisStreamProvider implements ResourceProvider {
         }
         if (toEnable.length > 0) {
           this.logger.debug(`Enabling ${toEnable.length} shard-level metric(s) on ${physicalId}`);
-          await this.getClient().send(
+          const enabled = await this.getClient().send(
             new EnableEnhancedMonitoringCommand({
               StreamName: physicalId,
               ShardLevelMetrics: toEnable,
             })
           );
+          // go-to-k/cdkd#5498: AFTER the call resolved, the metrics it turned on
+          // — the ones the response did not already report as current.
+          // A live literal `ALL` names every metric, so it is expanded first.
+          const current = expandShardLevelMetrics(enabled?.CurrentShardLevelMetrics ?? []);
+          const before = new Set(Array.isArray(current) ? (current as unknown[]) : []);
+          const added = toEnable.filter((metric) => !before.has(metric));
+          if (added.length > 0) context?.markAttempted?.('DesiredShardLevelMetrics', added);
           await this.waitForStreamActive(physicalId);
         }
       }
@@ -1444,7 +1455,13 @@ export class KinesisStreamProvider implements ResourceProvider {
     logicalId: string,
     oldTagsRaw: unknown,
     newTagsRaw: unknown,
-    unsettled: { forceUpsert: boolean; beforeWrite: () => void } = {
+    unsettled: {
+      forceUpsert: boolean;
+      beforeWrite: () => void;
+      // go-to-k/cdkd#5498: the tag keys an accepted AddTagsToStream added that
+      // the record lacked.
+      afterAdded?: (keys: string[]) => void;
+    } = {
       forceUpsert: false,
       beforeWrite: () => undefined,
     }
@@ -1472,6 +1489,17 @@ export class KinesisStreamProvider implements ResourceProvider {
     if (Object.keys(tagsToAdd).length > 0) {
       await this.getClient().send(
         new AddTagsToStreamCommand({ StreamName: streamName, Tags: tagsToAdd })
+      );
+      // A malformed recorded tag list cannot say which keys are new: record none
+      // (a missing name only keeps a tag, never removes one).
+      let recordedKeys: Set<string> | undefined;
+      try {
+        recordedKeys = new Set([...planTagDiff(undefined, oldTagsRaw).set.keys()]);
+      } catch {
+        recordedKeys = undefined;
+      }
+      unsettled.afterAdded?.(
+        Object.keys(tagsToAdd).filter((key) => recordedKeys !== undefined && !recordedKeys.has(key))
       );
       this.logger.debug(
         `Added/updated ${Object.keys(tagsToAdd).length} tag(s) on Kinesis stream ${streamName}`
@@ -1539,7 +1567,8 @@ export class KinesisStreamProvider implements ResourceProvider {
     resourceType: string,
     names: ReadonlySet<string>,
     recordedProperties?: Record<string, unknown>,
-    desiredProperties?: Record<string, unknown>
+    desiredProperties?: Record<string, unknown>,
+    attemptedItems?: ReadonlyMap<string, ReadonlySet<string>>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const live = await this.readCurrentState(physicalId, logicalId, resourceType);
     if (typeof live !== 'object' || live === null) return live;
@@ -1558,6 +1587,14 @@ export class KinesisStreamProvider implements ResourceProvider {
           return isUsableMetricsList(expanded) ? expanded : [];
         })
       );
+      // go-to-k/cdkd#5498: a metric an earlier failed update's accepted call
+      // enabled (exact name) is on the previous side too, so the template's
+      // omission disables it; one enabled out of band still is not. The
+      // writer records expanded names only, so an attempted `ALL` is not one
+      // cdkd wrote and names nothing.
+      for (const metric of attemptedItems?.get('DesiredShardLevelMetrics') ?? []) {
+        if (metric !== 'ALL' && isUsableAttemptedName(metric)) named.add(metric);
+      }
       // The live list is expanded too: a stream enabled with `ALL` can report
       // the literal, which would otherwise be projected away and read as
       // "nothing enabled".

@@ -26,10 +26,11 @@
 #      fails mid backfill and the record must name GlobalSecondaryIndexes
 #      unsettled; a same-template retry right after must either be refused
 #      (gsi1 still CREATING, name kept) or converge (gsi1 ACTIVE, name cleared,
-#      nothing sent). The base redeploy then clears the name: after (a) it
-#      keeps gsi1 (named by neither the record nor the template) and warns with
-#      its delete command, which the arm then runs by hand; after (b) gsi1 is
-#      recorded, so the redeploy deletes it as an ordinary update.
+#      nothing sent). The record also names gsi1 as the index the accepted
+#      Create added (`unsettledItems`, go-to-k/cdkd#5498). The base redeploy
+#      then clears the name and DELETES gsi1: after (a) because the failed
+#      update created it and the template no longer names it; after (b)
+#      because the retry recorded it, an ordinary removal.
 #  1a2. With `Replicas` marked unsettled on the record and the template
 #      unchanged, the converging deploy must send no replica change, keep both
 #      replicas and the second replica's protection, and clear the name.
@@ -717,8 +718,8 @@ await_replica "${SECOND_REGION}" "^ENABLED	10	ENABLED	${REPLICA_KINESIS_ARN}	abs
 # call. Before the fix the record kept "no GSI" and nothing named gsi1
 # unsettled. Now the record names GlobalSecondaryIndexes unsettled; a
 # same-template retry right after is refused while gsi1 moves, or converges;
-# the base redeploy clears the name, keeping a gsi1 neither the record nor the
-# template names (with a warning carrying its delete command).
+# the base redeploy clears the name and deletes gsi1, which the record names
+# as the index the failed update's accepted Create added (go-to-k/cdkd#5498).
 gt_unsettled() { # the GlobalTable record's unsettledProperties, comma-joined
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
     | jq -r --arg name "${TABLE}" '[.resources[]
@@ -758,6 +759,14 @@ case ",$(gt_unsettled)," in
   *,GlobalSecondaryIndexes,*) : ;;
   *) echo "FAIL: GlobalTable record's unsettledProperties after the cut-short add is '$(gt_unsettled)', expected it to name GlobalSecondaryIndexes (go-to-k/cdkd#5487)" >&2; exit 1 ;;
 esac
+P1A_ATTEMPTED="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+  | jq -r --arg name "${TABLE}" '[.resources[]
+      | select(.resourceType == "AWS::DynamoDB::GlobalTable" and .physicalId == $name)
+      | (.unsettledItems.GlobalSecondaryIndexes // [])[]] | join(",")')"
+if [ "${P1A_ATTEMPTED}" != "gsi1" ]; then
+  echo "FAIL: GlobalTable record's attempted indexes after the cut-short add are '${P1A_ATTEMPTED}', expected exactly gsi1 (go-to-k/cdkd#5498)" >&2
+  exit 1
+fi
 # Same-template RETRY at once, with no wait in between. Exactly one of two
 # outcomes must hold, and which one is printed:
 #   (a) gsi1 still CREATING: the retry is refused as in transition and the
@@ -830,32 +839,25 @@ if [ "${P1A_CONVERGED_BY_RETRY}" = "true" ]; then
   fi
   echo "    base redeploy removed gsi1 as an ordinary update (the retry had already settled the name)"
 else
-  # (a): gsi1 is named by neither the record nor the base template, so the
-  # convergence keeps it (it never removes what neither names) and warns with
-  # its delete command; the exact cleanup arrives with go-to-k/cdkd#5498.
-  if [ "$(gsi1_status)" != "ACTIVE" ]; then
-    echo "FAIL: gsi1 is '$(gsi1_status)' after the converging deploy, expected it kept (neither the record nor the template names it)" >&2
-    exit 1
-  fi
-  if ! grep -q "IndexName gsi1" "${LOG_DIR}/phase1a-converge.log" \
-    || ! grep -q -- "--global-secondary-index-updates Delete" "${LOG_DIR}/phase1a-converge.log"; then
-    echo "FAIL: the converging deploy did not warn about the kept gsi1 with its delete command (go-to-k/cdkd#5487)" >&2
-    exit 1
-  fi
-  echo "    the convergence kept the unnamed gsi1 and warned how to delete it (go-to-k/cdkd#5487)"
-  echo "==> Phase 1a: delete gsi1 by hand, as the warning says"
-  aws dynamodb update-table --table-name "${TABLE}" --region "${REGION}" \
-    --global-secondary-index-updates '[{"Delete":{"IndexName":"gsi1"}}]' >/dev/null
+  # (a): the record names gsi1 as the index the failed update's accepted
+  # Create added, so the convergence puts it on the previous side and the base
+  # template's omission deletes it, as CloudFormation would (go-to-k/cdkd#5498).
   P1A_LEFT=""
   for _ in $(seq 1 180); do
     P1A_LEFT="$(gsi_count)"
     [ "${P1A_LEFT}" = "0" ] && break
+    [ "$(gsi1_status)" = "DELETING" ] || break
     sleep 5
   done
   if [ "${P1A_LEFT}" != "0" ]; then
-    echo "FAIL: ${P1A_LEFT} GSI(s) remain after deleting gsi1 by hand" >&2
+    echo "FAIL: ${P1A_LEFT} GSI(s) after the base redeploy (gsi1 '$(gsi1_status)'), expected gsi1 deleted: the record names it attempted (go-to-k/cdkd#5498)" >&2
     exit 1
   fi
+  if grep -q "IndexName gsi1, which neither" "${LOG_DIR}/phase1a-converge.log"; then
+    echo "FAIL: the converging deploy warned gsi1 is undeclared, though the record names it attempted (go-to-k/cdkd#5498)" >&2
+    exit 1
+  fi
+  echo "    the base redeploy deleted gsi1, the index the failed update created (go-to-k/cdkd#5498)"
   wait_settled
 fi
 

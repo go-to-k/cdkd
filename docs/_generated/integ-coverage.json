@@ -1215,6 +1215,7 @@
         "rename-refactor",
         "rollback-same-id-recreate",
         "s3-event-notification",
+        "schema-v14-to-v15-migration",
         "serverless-api",
         "sns-event-source",
         "tags-propagation"
@@ -1327,6 +1328,9 @@
           "literal"
         ],
         "s3-event-notification": [
+          "l2"
+        ],
+        "schema-v14-to-v15-migration": [
           "l2"
         ],
         "serverless-api": [

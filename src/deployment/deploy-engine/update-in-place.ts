@@ -29,7 +29,11 @@ import {
 } from './replacement.js';
 import { isPinnedToCcApi, preparePropertiesForCcApi } from './routing.js';
 import { extractTemplateAttributes, propertiesToRecord } from './record-shape.js';
-import { unsettledPropertiesOf } from '../../state/unsettled-properties.js';
+import {
+  unsettledItemsField,
+  unsettledItemsOf,
+  unsettledPropertiesOf,
+} from '../../state/unsettled-properties.js';
 import {
   addedByFailedUpdateWarning,
   settleUnsettledPrevious,
@@ -304,6 +308,8 @@ export async function updateInPlace(
   // `update.ts` already counted in `changedProperties`; the provider is told
   // which of them to converge against AWS.
   const unsettled = unsettledPropertiesOf(currentResource);
+  // go-to-k/cdkd#5498: what the failed update had been accepted for adding.
+  const unsettledItems = unsettledItemsOf(currentResource);
   // Still nothing: an update the engine forces with no change as written (a
   // `reput` child of a parent re-created under the same id, go-to-k/cdkd#4411).
   // Every key counts, so no provider skips the write the update exists for.
@@ -344,6 +350,7 @@ export async function updateInPlace(
     names: unsettled,
     previous: previousForUpdate,
     desired: updateProps,
+    attemptedItems: unsettledItems,
   });
   if (unsettled.has('Tags')) {
     engine.logger.warn(
@@ -482,7 +489,21 @@ export async function updateInPlace(
                 }
                 marks.add(propertyName);
               },
+              // go-to-k/cdkd#5498: the items a resolved call added, per path.
+              markAttempted: (path: string, items: readonly string[]) => {
+                if (typeof path !== 'string' || path === '') return;
+                let byPath = engine.unsettledItemMarks.get(logicalId);
+                if (byPath === undefined) {
+                  byPath = new Map();
+                  engine.unsettledItemMarks.set(logicalId, byPath);
+                }
+                const names = byPath.get(path) ?? new Set<string>();
+                for (const item of items)
+                  if (typeof item === 'string' && item !== '') names.add(item);
+                byPath.set(path, names);
+              },
               ...(unsettled.size > 0 && { unsettledProperties: unsettled }),
+              ...(unsettledItems.size > 0 && { unsettledItems }),
             }
           )
         ),
@@ -499,6 +520,7 @@ export async function updateInPlace(
     // earlier attempt's marks included). The record built below carries no
     // `unsettledProperties`, which clears the previous record's.
     engine.unsettledMarks.delete(logicalId);
+    engine.unsettledItemMarks.delete(logicalId);
     // go-to-k/cdkd#4911: a provider that replaced the resource inside its own
     // `update()` and reports `'partial'` could not delete the OLD one (its
     // delete threw or was skipped), so the rollback must read AWS before
@@ -1380,6 +1402,7 @@ export async function updateInPlace(
       // create succeeded: a fallback that throws leaves the old resource, which
       // keeps the mark.
       engine.unsettledMarks.delete(logicalId);
+      engine.unsettledItemMarks.delete(logicalId);
       result = fallbackOutcome.result;
       resultProvisionedBy = fallbackOutcome.provisionedBy;
       captureProvider = fallbackOutcome.captureProvider;
@@ -1438,7 +1461,12 @@ export async function updateInPlace(
   // stays on the record, and the next deploy converges it again.
   const stillUnsettled = result.wasReplaced
     ? []
-    : await unsettledAfterUpdate({ ...unsettledIdentity, names: unsettled, desired: updateProps });
+    : await unsettledAfterUpdate({
+        ...unsettledIdentity,
+        names: unsettled,
+        desired: updateProps,
+        attemptedItems: unsettledItems,
+      });
   if (stillUnsettled.length > 0) {
     engine.logger.warn(
       safeMsg`${logicalId} (${resourceType}): the update succeeded, but AWS does not yet show the template's ${stillUnsettled.join(', ')}; cdkd keeps ${stillUnsettled.length === 1 ? 'it' : 'them'} unsettled and converges again on the next deploy.`
@@ -1596,7 +1624,13 @@ export async function updateInPlace(
     ...(dependencies && dependencies.length > 0 && { dependencies }),
     ...extractTemplateAttributes(template, logicalId),
     provisionedBy: resultProvisionedBy,
-    ...(stillUnsettled.length > 0 && { unsettledProperties: stillUnsettled }),
+    ...(stillUnsettled.length > 0 && {
+      unsettledProperties: stillUnsettled,
+      // go-to-k/cdkd#5498: a key that stays unsettled keeps its attempted names.
+      // go-to-k/cdkd#5498: the one rebuilt record that carries items — only
+      // those of the keys the proof kept unsettled, read off the old record.
+      ...unsettledItemsField(currentResource, stillUnsettled),
+    }),
     ...(keepsParameterRefusal && {
       observedBaselineRefused: true as const,
       observedBaselineRefusalReason: 'unverifiable-parameter' as const,

@@ -390,6 +390,7 @@
         "schema-v10-to-v11-migration",
         "schema-v11-to-v12-migration",
         "schema-v12-to-v13-migration",
+        "schema-v14-to-v15-migration",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
@@ -854,6 +855,7 @@
         "schema-v10-to-v11-migration",
         "schema-v11-to-v12-migration",
         "schema-v12-to-v13-migration",
+        "schema-v14-to-v15-migration",
         "schema-v7-to-v8-migration",
         "schema-v8-to-v9-migration",
         "schema-v9-to-v10-migration",
@@ -1261,6 +1263,7 @@
         "schema-v10-to-v11-migration",
         "schema-v11-to-v12-migration",
         "schema-v12-to-v13-migration",
+        "schema-v14-to-v15-migration",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
@@ -1367,6 +1370,7 @@
         "neptune-fix-forward-orphan",
         "rds-fix-forward-orphan",
         "remove-protection",
+        "schema-v14-to-v15-migration",
         "stream-delete-redeploy"
       ]
     },
@@ -1379,6 +1383,7 @@
         "emr-instance-configs",
         "eventbridge-pipes",
         "kinesis-stream-mode-switch",
+        "schema-v14-to-v15-migration",
         "stream-delete-redeploy"
       ]
     },
@@ -1748,6 +1753,7 @@
         "schema-v10-to-v11-migration",
         "schema-v11-to-v12-migration",
         "schema-v12-to-v13-migration",
+        "schema-v14-to-v15-migration",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
@@ -2165,6 +2171,7 @@
         "schema-v10-to-v11-migration",
         "schema-v11-to-v12-migration",
         "schema-v12-to-v13-migration",
+        "schema-v14-to-v15-migration",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",

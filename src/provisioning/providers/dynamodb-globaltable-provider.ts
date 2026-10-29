@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { isUsableAttemptedName } from '../../state/unsettled-properties.js';
 import {
   DynamoDBClient,
   CreateTableCommand,
@@ -386,8 +387,15 @@ function projectNamed(
   own: unknown,
   wanted: unknown,
   path: string,
-  unnamed: UnnamedLiveEntry[]
+  unnamed: UnnamedLiveEntry[],
+  // go-to-k/cdkd#5498: the names an earlier failed update's accepted calls
+  // added, per member path. A live entry (or replica tag) named here EXACTLY,
+  // not redacted, joins the previous side, so the template's omission removes
+  // it; nothing else does.
+  attempted: ReadonlyMap<string, ReadonlySet<string>> = new Map()
 ): unknown {
+  const attemptedAt = (at: string): ReadonlySet<string> =>
+    new Set([...(attempted.get(at) ?? [])].filter(isUsableAttemptedName));
   if (isPlainObject(live) && (isPlainObject(own) || isPlainObject(wanted))) {
     const ownBag = isPlainObject(own) ? own : undefined;
     const wantedBag = isPlainObject(wanted) ? wanted : undefined;
@@ -398,12 +406,26 @@ function projectNamed(
       if ((IDENTITY_KEYS as readonly string[]).includes(key)) continue;
       if (key === 'Tags') {
         if (ownBag !== undefined && Object.hasOwn(ownBag, 'Tags')) out['Tags'] = ownBag['Tags'];
+        const withAttempted = withAttemptedReplicaTags(
+          ownBag?.['Tags'],
+          wantedBag?.['Tags'],
+          live['Tags'],
+          attemptedAt(`${path}.Tags`)
+        );
+        if (withAttempted !== undefined) out['Tags'] = withAttempted;
         continue;
       }
       if (!Object.hasOwn(live, key) || live[key] === undefined) continue;
       out[key] = POSITIONAL_LIST_KEYS.has(key)
         ? live[key]
-        : projectNamed(live[key], ownBag?.[key], wantedBag?.[key], `${path}.${key}`, unnamed);
+        : projectNamed(
+            live[key],
+            ownBag?.[key],
+            wantedBag?.[key],
+            `${path}.${key}`,
+            unnamed,
+            attempted
+          );
     }
     return out;
   }
@@ -433,13 +455,56 @@ function projectNamed(
       const ownEntry = ownById.get(value);
       const wantedEntry = wantedById.get(value);
       if (ownEntry === undefined && wantedEntry === undefined) {
+        // go-to-k/cdkd#5498: an entry a failed update's accepted call added is
+        // the previous side's, whole, so the template's omission removes it.
+        if (attemptedAt(path).has(value)) return [entry];
         unnamed.push({ identity: id, value, path });
         return [];
       }
-      return [projectNamed(entry, ownEntry, wantedEntry, `${path}[${value}]`, unnamed)];
+      return [projectNamed(entry, ownEntry, wantedEntry, `${path}[${value}]`, unnamed, attempted)];
     });
   }
   return live;
+}
+
+/**
+ * go-to-k/cdkd#5498: a replica's recorded tags plus each live tag whose key an
+ * earlier failed update's accepted tag call added and neither the record nor
+ * the template declares, so the tag diff removes exactly those. List shape
+ * (`[{Key, Value}]`) only; `undefined` (the record's tags stand) otherwise.
+ */
+function withAttemptedReplicaTags(
+  recorded: unknown,
+  desired: unknown,
+  live: unknown,
+  attempted: ReadonlySet<string>
+): unknown[] | undefined {
+  if (attempted.size === 0 || !Array.isArray(live)) return undefined;
+  const keysOf = (value: unknown): Set<string> | undefined => {
+    if (value === undefined || value === null) return new Set();
+    if (!Array.isArray(value)) return undefined;
+    const keys = new Set<string>();
+    for (const entry of value) {
+      const key = (entry as { Key?: unknown } | null)?.Key;
+      if (typeof key !== 'string') return undefined;
+      keys.add(key);
+    }
+    return keys;
+  };
+  const recordedKeys = keysOf(recorded);
+  const desiredKeys = keysOf(desired);
+  if (recordedKeys === undefined || desiredKeys === undefined) return undefined;
+  const removable = live.filter((entry) => {
+    const key = (entry as { Key?: unknown } | null)?.Key;
+    return (
+      typeof key === 'string' &&
+      attempted.has(key) &&
+      !recordedKeys.has(key) &&
+      !desiredKeys.has(key)
+    );
+  });
+  if (removable.length === 0) return undefined;
+  return [...((recorded as unknown[] | undefined) ?? []), ...removable];
 }
 
 /**
@@ -473,7 +538,23 @@ function replicaStrictness(status: string | undefined): ReadonlySet<string> {
 const unsettledScope = new AsyncLocalStorage<{
   mark: (key: string) => void;
   unsettled: ReadonlySet<string>;
+  /** go-to-k/cdkd#5498: `UpdateContext.markAttempted`. */
+  attempted?: (path: string, items: readonly string[]) => void;
 }>();
+
+/** A Region usable as a path segment (`Replicas[<region>].Tags`): AWS's shape only. */
+const REGION_SEGMENT = /^[a-z]{2}(-[a-z]+)+-\d+$/;
+
+/**
+ * go-to-k/cdkd#5498: record `items` as added by a call AWS has just ACCEPTED
+ * (call it after the send resolves, never before; a send that throws added
+ * nothing). Outside an update it does nothing.
+ */
+function markAttemptedItems(path: string, items: readonly string[]): void {
+  const scope = unsettledScope.getStore();
+  if (scope?.attempted === undefined || items.length === 0) return;
+  scope.attempted(path, items);
+}
 
 /** Mark `keys` unsettled, immediately before the send that changes them. */
 function markUnsettled(...keys: string[]): void {
@@ -2077,6 +2158,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             ReplicaUpdates: replicaUpdates,
           })
         );
+        // go-to-k/cdkd#5498: AWS accepted the replica Create.
+        markAttemptedItems('Replicas', [region]);
         break;
       } catch (error) {
         if (attempt >= REPLICA_COPY_RELEASE_ATTEMPTS || !isReplicaCopyExistsRefusal(error)) {
@@ -3833,6 +3916,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       {
         mark: (key) => context?.markUnsettled?.(key),
         unsettled: context?.unsettledProperties ?? new Set(),
+        attempted: (path, items) => context?.markAttempted?.(path, items),
       },
       () =>
         this.updateInScope(
@@ -4248,7 +4332,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           logicalId,
           extractLocalTags(previousProperties),
           extractLocalTags(properties),
-          maskSecrets
+          maskSecrets,
+          currentRegion
         );
       }
 
@@ -6009,6 +6094,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             GlobalSecondaryIndexUpdates: [gsiUpdate],
           })
         );
+        // go-to-k/cdkd#5498: AWS accepted the index Create.
+        markAttemptedItems('GlobalSecondaryIndexes', [gsi.IndexName]);
         await this.waitForTableActiveAfterUpdate(
           physicalId,
           logicalId,
@@ -6459,7 +6546,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     logicalId: string,
     oldTagsRaw: unknown,
     newTagsRaw: unknown,
-    maskSecrets: SecretMasker
+    maskSecrets: SecretMasker,
+    region?: string
   ): Promise<void> {
     await this.applyTagDiffOnClient(
       this.dynamoDBClient,
@@ -6468,7 +6556,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       logicalId,
       oldTagsRaw,
       newTagsRaw,
-      maskSecrets
+      maskSecrets,
+      region
     );
   }
 
@@ -6533,7 +6622,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         `${logicalId} (replica ${region})`,
         oldTags,
         newTags,
-        maskSecrets
+        maskSecrets,
+        region
       );
     } catch (tagErr) {
       warn(
@@ -6557,7 +6647,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     id: string,
     oldTagsRaw: unknown,
     newTagsRaw: unknown,
-    maskSecrets: SecretMasker = (text) => text
+    maskSecrets: SecretMasker = (text) => text,
+    /** go-to-k/cdkd#5498: the replica whose accepted tag keys are recorded. */
+    region?: string
   ): Promise<void> {
     const plan = planTagDiff(oldTagsRaw, newTagsRaw);
     const tagWarning = tagPlanWarning(plan, resourceType, id);
@@ -6583,6 +6675,22 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
     if (tagsToAdd.length > 0) {
       await client.send(new TagResourceCommand({ ResourceArn: tableArn, Tags: tagsToAdd }));
+      // go-to-k/cdkd#5498: AFTER the call resolved, the keys it added that the
+      // record lacked. A malformed recorded list cannot say which: none.
+      if (region !== undefined && REGION_SEGMENT.test(region)) {
+        let recordedKeys: Set<string> | undefined;
+        try {
+          recordedKeys = new Set([...planTagDiff(undefined, oldTagsRaw).set.keys()]);
+        } catch {
+          recordedKeys = undefined;
+        }
+        if (recordedKeys !== undefined) {
+          markAttemptedItems(
+            `Replicas[${region}].Tags`,
+            tagsToAdd.map((t) => t.Key).filter((key) => !recordedKeys.has(key))
+          );
+        }
+      }
       this.logger.debug(
         maskSecrets(`Added/updated ${tagsToAdd.length} tag(s) on DynamoDB GlobalTable ${tableArn}`)
       );
@@ -8125,7 +8233,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     resourceType: string,
     names: ReadonlySet<string>,
     recordedProperties?: Record<string, unknown>,
-    desiredProperties?: Record<string, unknown>
+    desiredProperties?: Record<string, unknown>,
+    attemptedItems?: ReadonlyMap<string, ReadonlySet<string>>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const live = await strictReadScope.run(names, () =>
       this.readCurrentState(physicalId, logicalId, resourceType, recordedProperties)
@@ -8144,7 +8253,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         recordedProperties?.[name],
         desiredProperties?.[name],
         name,
-        unnamed
+        unnamed,
+        attemptedItems
       );
     }
     for (const entry of unnamed.filter((e) => e.ambiguous === true)) {

@@ -874,6 +874,31 @@ export interface UpdateContext extends SecretMaskingContext {
   markUnsettled?: ((propertyName: string) => void) | undefined;
 
   /**
+   * go-to-k/cdkd#5498: declare, IMMEDIATELY AFTER a call that adds items to a
+   * collection RESOLVED (never before it: a call that throws added nothing),
+   * the identity names it added under `path` — a member path of a key already
+   * marked with {@link markUnsettled} (`GlobalSecondaryIndexes`, `Tags`,
+   * `Replicas[eu-west-1].GlobalSecondaryIndexes`; closed-vocabulary segments
+   * only). Only names AWS did not hold before the call (a GSI Create, a
+   * metric the response did not list as current, a tag key the record
+   * lacked). If the update then fails, the record keeps them as
+   * `ResourceState.unsettledItems`, and the next convergence may remove an
+   * item it names that neither the record nor the template declares.
+   */
+  markAttempted?: ((path: string, items: readonly string[]) => void) | undefined;
+
+  /**
+   * go-to-k/cdkd#5498: the record's attempted names per member path (see
+   * {@link markAttempted}), for a provider's projection of a collection:
+   * a live item named here (exactly, and not redacted) that neither the record
+   * nor the template declares goes on the previous side, so it is removed.
+   * Set only with {@link unsettledProperties}. No provider reads it today
+   * (they receive the same names through `readUnsettled`); the rollback
+   * retry replay reads it back to hand them to its own convergence step.
+   */
+  unsettledItems?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
+
+  /**
    * go-to-k/cdkd#5380: the top-level properties an EARLIER failed update
    * left unsettled (see {@link markUnsettled}): AWS may hold the recorded
    * value, the attempted one, or neither. Each is also in
@@ -1406,7 +1431,13 @@ export interface ResourceProvider {
      * the record or the template names (a GlobalTable's replicas): the
      * convergence must never remove or reset what neither names.
      */
-    desiredProperties?: Record<string, unknown>
+    desiredProperties?: Record<string, unknown>,
+    /**
+     * go-to-k/cdkd#5498: the record's attempted names per member path: a live
+     * item named here (exactly, not redacted) that neither the record nor the
+     * template declares goes on the previous side, so it is removed.
+     */
+    attemptedItems?: ReadonlyMap<string, ReadonlySet<string>>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined>;
 
   unsettledInTransition?(

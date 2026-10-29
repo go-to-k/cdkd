@@ -31,7 +31,7 @@ basic	2026-10-20T19:58:09Z	PASS	94	standard	PR #5100 pre-merge run, deploy+destr
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-10-28T06:38:36Z	PASS	700	verify.sh	rc ok, orph clean; #5433 tag keys exact, probe RED at tag-key assertion
 bench-ccapi	2026-10-24T06:41:39Z	PASS	90	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 0 orphans (5 deleted)
-bench-cdk-sample	2026-10-24T06:48:13Z	PASS	496	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 2 log groups retained by DeletionPolicy (expected)
+bench-cdk-sample	2026-10-29T18:05:48Z	PASS	456	standard	final head 212db23c8 (#5508); destroy 38 deleted, 2 retained by DeletionPolicy, 0 errors
 bench-sdk	2026-10-24T06:40:41Z	PASS	40	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 0 orphans (5 deleted)
 bootstrap-free-region	2026-10-05T08:20:47Z	PASS	81	verify.sh	rc 0, 0 orphans; ca-central-1, delete-marker residue from earlier runs purged (#2624 PR #4573)
 bucket-deployment	2026-10-11T09:33:22Z	PASS	80	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -107,8 +107,8 @@ dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table 
 dynamodb-fix-forward-orphan	2026-10-19T10:52:49Z	PASS	170	verify.sh	rc ok, orph clean
 dynamodb-globaltable	2026-10-20T03:28:23Z	PASS	1478	verify.sh	deploy+destroy clean, 0 orphans
 dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc ok, orph clean (#4283 PR #4449)
-dynamodb-globaltable-replica-settings	2026-10-29T09:53:53Z	PASS	3843	verify.sh	rc ok, orph clean; fixture-owned oob key at 9fb504eed
-dynamodb-gsi-update	2026-10-29T02:49:23Z	PASS	2331	verify.sh	rc ok, orph clean; pre-fix probe RED at 1c (#5503)
+dynamodb-globaltable-replica-settings	2026-10-29T17:32:24Z	PASS	2858	verify.sh	rc ok, orph clean
+dynamodb-gsi-update	2026-10-29T17:10:07Z	PASS	2276	verify.sh	rc ok, orph clean
 dynamodb-ondemand	2026-10-27T17:47:12Z	PASS	560	verify.sh	rc ok, orph clean, KinesisRemovalTable arm (#5423) green, pre-fix probe red at Phase 1.5
 dynamodb-sse	2026-10-29T16:45:21Z	PASS	53	verify.sh	rc ok, orph clean; #5514 table gone straight after destroy, probe without wait RED
 dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean (#4283 PR #4449)
@@ -356,6 +356,7 @@ scheduler-custom-group	2026-10-24T03:41:38Z	PASS	105	verify.sh	rc ok, orph clean
 schema-v10-to-v11-migration	2026-10-14T07:59:02Z	PASS	495	verify.sh	rc ok, orph clean; PR #4893 state destroy purges record history (ee330190b), own state bucket; state.json kept only its delete marker
 schema-v11-to-v12-migration	2026-10-16T16:59:47Z	PASS	161	verify.sh	rc ok, orph clean (stateless-mixins refactor #5015, rebased)
 schema-v12-to-v13-migration	2026-10-23T16:21:31Z	PASS	159	verify.sh	v12->v13 transparent auto-migration verified, 46 assertions; integ-schema-migration marker set
+schema-v14-to-v15-migration	2026-10-29T18:05:48Z	PASS	1158	verify.sh	final head 212db23c8 (#5508); rc ok, 51 assertions, orph clean
 schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b7; v5->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-10-12T05:44:10Z	FAIL	100	verify.sh	PR #4812: fixture stale, asserts literal schema version (state is v11); GetStackOutput/ImportValue resolved, cleanup clean

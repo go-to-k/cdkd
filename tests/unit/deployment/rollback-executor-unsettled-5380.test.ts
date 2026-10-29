@@ -228,3 +228,86 @@ describe('a rollback revert settles an unsettled name only on proof (go-to-k/cdk
     expect(state.S.unsettledProperties).toEqual(expected);
   });
 });
+
+describe('a rollback revert carries attempted items (go-to-k/cdkd#5498)', () => {
+  const failedNote = (previousState: ResourceState): FailedOperation[] => [
+    {
+      logicalId: 'S',
+      changeType: 'UPDATE',
+      resourceType: TYPE,
+      physicalId: 'phys',
+      previousState,
+      attemptedProperties: { DeliveryStreamName: 'phys', Note: 'b' },
+    } as unknown as FailedOperation,
+  ];
+  const recorded = () =>
+    res({
+      properties: { DeliveryStreamName: 'phys', Note: 'b' },
+      unsettledProperties: ['Note'],
+      unsettledItems: { Note: ['x'] },
+    });
+  /** AWS holds `before` until update(), then `after`; readUnsettled sees the items. */
+  function aws(after: Record<string, unknown>) {
+    let live: Record<string, unknown> = { DeliveryStreamName: 'phys', Note: 'b' };
+    const seen: Array<ReadonlyMap<string, ReadonlySet<string>> | undefined> = [];
+    return {
+      seen,
+      update: vi.fn(async () => {
+        live = { DeliveryStreamName: 'phys', ...after };
+        return { physicalId: 'phys', wasReplaced: false };
+      }),
+      hooks: {
+        readUnsettled: async (...args: unknown[]) => {
+          seen.push(args[6] as ReadonlyMap<string, ReadonlySet<string>> | undefined);
+          return { ...live };
+        },
+      },
+    };
+  }
+  const items = (m: ReadonlyMap<string, ReadonlySet<string>> | undefined) =>
+    Object.fromEntries([...(m ?? [])].map(([k, v]) => [k, [...v]]));
+
+  it('--revert-failed hands the items to the convergence read and keeps them while unproven', async () => {
+    const f = aws({ Note: 'b' });
+    const state = { S: recorded() };
+    await replayFailedOperations(failedNote(res({ properties: { DeliveryStreamName: 'phys', Note: 'a' } })), state, 'stack', ctxWith(f.update, f.hooks));
+    expect(f.update).toHaveBeenCalledOnce();
+    expect(f.seen.length).toBeGreaterThan(0);
+    for (const m of f.seen) expect(items(m)).toEqual({ Note: ['x'] });
+    expect(state.S.unsettledProperties).toEqual(['Note']);
+    expect(state.S.unsettledItems).toEqual({ Note: ['x'] });
+  });
+
+  it('--revert-failed drops the items once proven', async () => {
+    const f = aws({ Note: 'a' });
+    const state = { S: recorded() };
+    await replayFailedOperations(failedNote(res({ properties: { DeliveryStreamName: 'phys', Note: 'a' } })), state, 'stack', ctxWith(f.update, f.hooks));
+    expect(state.S).not.toHaveProperty('unsettledProperties');
+    expect(state.S).not.toHaveProperty('unsettledItems');
+  });
+
+  it.each([
+    ['kept while unproven', { Note: 'b' }, { Note: ['x'] }],
+    ['dropped once proven', { Note: 'a' }, undefined],
+  ])('revert of a completed UPDATE: the previous record\'s items are %s', async (_l, after, expected) => {
+    const f = aws(after);
+    const ops = [
+      {
+        logicalId: 'S',
+        changeType: 'UPDATE',
+        resourceType: TYPE,
+        physicalId: 'phys',
+        previousState: res({
+          properties: { DeliveryStreamName: 'phys', Note: 'a' },
+          unsettledProperties: ['Note'],
+          unsettledItems: { Note: ['x'] },
+        }),
+      } as unknown as CompletedOperation,
+    ];
+    const state = { S: res({ properties: { DeliveryStreamName: 'phys', Note: 'b' } }) };
+    await replayRollback(ops, state, 'stack', ctxWith(f.update, f.hooks));
+    for (const m of f.seen) expect(items(m)).toEqual({ Note: ['x'] });
+    expect(f.seen.length).toBeGreaterThan(0);
+    expect(state.S.unsettledItems).toEqual(expected);
+  });
+});

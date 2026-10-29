@@ -30,8 +30,13 @@
 import { calculateResourceDrift } from '../analyzer/drift-calculator.js';
 import type { ResourceProvider } from '../types/resource.js';
 import { ProvisioningError } from '../utils/error-handler.js';
+
 import type { ResourceState } from '../types/state.js';
-import { withUnsettledProperties } from '../state/unsettled-properties.js';
+import {
+  isUsableAttemptedName,
+  withUnsettledItems,
+  withUnsettledProperties,
+} from '../state/unsettled-properties.js';
 import { safeMsg } from '../utils/display-safe.js';
 
 /** Keys whose update merges into what AWS holds rather than replacing it. */
@@ -47,7 +52,10 @@ interface Identity {
 }
 
 async function readLive(
-  args: Identity & { desired?: Record<string, unknown> },
+  args: Identity & {
+    desired?: Record<string, unknown>;
+    attemptedItems?: ReadonlyMap<string, ReadonlySet<string>>;
+  },
   names: ReadonlySet<string>
 ): Promise<Record<string, unknown> | 'unreadable' | undefined> {
   const { provider, physicalId, logicalId, resourceType, recordedProperties } = args;
@@ -59,7 +67,8 @@ async function readLive(
       resourceType,
       names,
       recordedProperties,
-      args.desired
+      args.desired,
+      args.attemptedItems
     );
   } else if (provider.readCurrentState !== undefined) {
     live = await provider.readCurrentState(physicalId, logicalId, resourceType, recordedProperties);
@@ -102,6 +111,8 @@ export async function settleUnsettledPrevious(
     previous: Record<string, unknown>;
     /** The bag the update sends, for a read that projects onto what it names. */
     desired?: Record<string, unknown>;
+    /** go-to-k/cdkd#5498: the record's attempted names per member path. */
+    attemptedItems?: ReadonlyMap<string, ReadonlySet<string>>;
   }
 ): Promise<Record<string, unknown>> {
   const { names, previous, provider } = args;
@@ -121,11 +132,18 @@ export async function settleUnsettledPrevious(
     }
   }
   const substituted = new Set([...names].filter((name) => !MERGE_SEMANTICS_KEYS.has(name)));
-  if (substituted.size === 0) return previous;
+  // go-to-k/cdkd#5498: an unsettled merge key (`Tags`) with attempted names
+  // needs the live read too, to remove exactly the attempted entries AWS holds.
+  const attemptedTags = [...(args.attemptedItems?.get('Tags') ?? [])].filter(isUsableAttemptedName);
+  const mergeNeedsLive = names.has('Tags') && attemptedTags.length > 0;
+  if (substituted.size === 0 && !mergeNeedsLive) return previous;
   let live: Awaited<ReturnType<typeof readLive>>;
   try {
-    live = await readLive(args, substituted);
+    live = await readLive(args, substituted.size > 0 ? substituted : new Set(['Tags']));
   } catch (error) {
+    // Only the attempted tags needed the read: a missing name only KEEPS a
+    // tag, so a failed read converges as before #5498 (the record's side).
+    if (substituted.size === 0) return previous;
     if (error instanceof ProvisioningError) throw error;
     const wrapped = refusal(args, substituted, 'the resource could not be read to converge it');
     if (error instanceof Error) (wrapped as { cause?: unknown }).cause = error;
@@ -133,6 +151,7 @@ export async function settleUnsettledPrevious(
   }
   if (live === undefined) return previous;
   if (live === 'unreadable') {
+    if (substituted.size === 0) return previous;
     throw refusal(args, substituted, 'the resource could not be read to converge it');
   }
   const out = { ...previous };
@@ -140,7 +159,57 @@ export async function settleUnsettledPrevious(
     if (Object.hasOwn(live, name) && live[name] !== undefined) out[name] = live[name];
     else delete out[name];
   }
+  if (mergeNeedsLive) {
+    const withAttempted = withAttemptedTags(
+      out['Tags'],
+      live['Tags'],
+      args.desired?.['Tags'],
+      attemptedTags
+    );
+    if (withAttempted !== undefined) out['Tags'] = withAttempted;
+  }
   return out;
+}
+
+/**
+ * go-to-k/cdkd#5498: the recorded tags plus each live tag an earlier failed
+ * update was accepted for adding (exact key, not redacted) that neither the
+ * record nor the template declares — so the provider's own diff (previous vs
+ * desired) removes exactly those and nothing else. List shape (`[{Key,
+ * Value}]`) only; any other shape is left as recorded (`undefined`).
+ */
+function withAttemptedTags(
+  recorded: unknown,
+  live: unknown,
+  desired: unknown,
+  attempted: readonly string[]
+): unknown[] | undefined {
+  const keysOf = (value: unknown): Set<string> | undefined => {
+    if (value === undefined || value === null) return new Set();
+    if (!Array.isArray(value)) return undefined;
+    const keys = new Set<string>();
+    for (const entry of value) {
+      const key = (entry as { Key?: unknown } | null)?.Key;
+      if (typeof key !== 'string') return undefined;
+      keys.add(key);
+    }
+    return keys;
+  };
+  const recordedKeys = keysOf(recorded);
+  const desiredKeys = keysOf(desired);
+  if (recordedKeys === undefined || desiredKeys === undefined || !Array.isArray(live))
+    return undefined;
+  const removable = live.filter((entry) => {
+    const key = (entry as { Key?: unknown } | null)?.Key;
+    return (
+      typeof key === 'string' &&
+      attempted.includes(key) &&
+      !recordedKeys.has(key) &&
+      !desiredKeys.has(key)
+    );
+  });
+  if (removable.length === 0) return undefined;
+  return [...((recorded as unknown[] | undefined) ?? []), ...removable];
 }
 
 /** Every desired tag (CFn `[{Key, Value}]` or a `{key: value}` map) is on the resource. */
@@ -177,7 +246,11 @@ function tagsHeld(desired: unknown, live: unknown): boolean {
  * sent it. A failed read keeps every name.
  */
 export async function unsettledAfterUpdate(
-  args: Identity & { names: ReadonlySet<string>; desired: Record<string, unknown> }
+  args: Identity & {
+    names: ReadonlySet<string>;
+    desired: Record<string, unknown>;
+    attemptedItems?: ReadonlyMap<string, ReadonlySet<string>>;
+  }
 ): Promise<string[]> {
   const { names, desired, provider } = args;
   if (names.size === 0) return [];
@@ -229,7 +302,15 @@ export async function unsettledAfterUpdate(
  */
 export async function withUnprovenUnsettled<R extends ResourceState>(
   record: R,
-  args: Identity & { names: ReadonlySet<string>; desired: Record<string, unknown> },
+  args: Identity & {
+    names: ReadonlySet<string>;
+    desired: Record<string, unknown>;
+    /**
+     * go-to-k/cdkd#5498: the attempted names of every record the caller read
+     * (`unsettledContextOf(...)`); a kept key keeps its own.
+     */
+    attemptedItems?: ReadonlyMap<string, ReadonlySet<string>>;
+  },
   warn: (message: string) => void
 ): Promise<R> {
   const kept = await unsettledAfterUpdate(args);
@@ -237,7 +318,10 @@ export async function withUnprovenUnsettled<R extends ResourceState>(
   warn(
     safeMsg`${args.logicalId} (${args.resourceType}): the update succeeded, but AWS does not yet show the requested ${kept.join(', ')}; cdkd keeps ${kept.length === 1 ? 'it' : 'them'} unsettled and converges again on the next deploy.`
   );
-  return withUnsettledProperties(record, kept);
+  const withNames = withUnsettledProperties(record, kept);
+  // go-to-k/cdkd#5498: only the kept keys' attempted names, never the others'.
+  // `withUnsettledItems` writes a path only under a name the record holds.
+  return withUnsettledItems(withNames, args.attemptedItems ?? new Map());
 }
 
 /**

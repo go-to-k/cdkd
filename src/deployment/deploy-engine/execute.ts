@@ -81,7 +81,7 @@ import { orphanNeedsIdentity, readResourceIdentity } from '../rollback-executor/
 import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
 import { resolveOutputs } from './outputs.js';
 import { provisionResource } from './provision.js';
-import { withUnsettledProperties } from '../../state/unsettled-properties.js';
+import { withUnsettledItems, withUnsettledProperties } from '../../state/unsettled-properties.js';
 import {
   retiredAfterRollback,
   type RolledBackCreate,
@@ -1681,6 +1681,11 @@ function recordUnsettledMarks(
     if (only !== undefined && logicalId !== only) continue;
     if (marks.size === 0 || !Object.hasOwn(newResources, logicalId)) continue;
     newResources[logicalId] = withUnsettledProperties(newResources[logicalId]!, marks);
+    // go-to-k/cdkd#5498: the items its accepted calls added, under those keys only.
+    const items = engine.unsettledItemMarks.get(logicalId);
+    if (items !== undefined && items.size > 0) {
+      newResources[logicalId] = withUnsettledItems(newResources[logicalId]!, items);
+    }
   }
 }
 

@@ -675,6 +675,9 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
       recordedProperties: current.properties ?? {},
       names: unsettledContextOf(current, previousState).unsettledProperties ?? new Set(),
       desired: desiredProps ?? {},
+      ...(unsettledContextOf(current, previousState).unsettledItems !== undefined && {
+        attemptedItems: unsettledContextOf(current, previousState).unsettledItems,
+      }),
     },
     (message) => logger.warn(mask(message))
   );

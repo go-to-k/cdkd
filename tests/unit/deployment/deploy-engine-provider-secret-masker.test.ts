@@ -326,6 +326,8 @@ describe('DeployEngine - provider calls carry a working secret masker (issue #19
     expect(Object.keys(updateContext ?? {}).sort()).toEqual([
       'changedProperties',
       'expectedRegion',
+      // go-to-k/cdkd#5498: the engine's sink for the items an accepted call added.
+      'markAttempted',
       // go-to-k/cdkd#5380: the engine's sink for what a failed update left unsettled.
       'markUnsettled',
       'maskSecrets',

@@ -1502,6 +1502,15 @@ engine then refuses to diff a moving key, keeps it unsettled after an update
 until AWS shows the template's value, and `cdkd drift --accept` / `--revert`
 keep it too (#5487).
 
+An update that ADDS a named item to such a key (a DynamoDB index, a tag key, a
+Kinesis metric) calls `context?.markAttempted?.(path, [names])` right AFTER the
+call that added it resolves, never before it or for a call that throws, naming
+only what the call added (#5498). The next convergence hands them back in
+`UpdateContext.unsettledItems` and to `readUnsettled`'s `attemptedItems`; the
+provider's projection adds a live item only when its name equals an attempted
+one exactly and `isUsableAttemptedName` accepts it, so the template's omission
+removes that item and no other.
+
 Checklist when writing or reviewing an `update()`:
 
 - Classify the API: **merge** (absent = unchanged — most `Update*` /

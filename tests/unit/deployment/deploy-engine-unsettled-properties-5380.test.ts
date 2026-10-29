@@ -80,8 +80,11 @@ async function deploy(opts: {
   createFails?: boolean;
   /** Extra provider hooks (`readCurrentState`, `unsettledInTransition`, ...). */
   hooks?: Record<string, unknown>;
+  /** A second deploy on the SAME engine, with this update (per-deploy reset). */
+  second?: UpdateFn;
 }): Promise<Run> {
   const levels = opts.levels ?? [['S']];
+  let secondRun = false;
   const contexts: Array<UpdateContext | undefined> = [];
   const created: string[] = [];
   const saves: StackState[] = [];
@@ -101,7 +104,7 @@ async function deploy(opts: {
         context?: UpdateContext
       ) => {
         contexts.push(context);
-        return opts.update(id, pid, props, prev, context);
+        return (secondRun && opts.second ? opts.second : opts.update)(id, pid, props, prev, context);
       }
     ),
     delete: vi.fn(),
@@ -145,6 +148,13 @@ async function deploy(opts: {
   await engine.deploy('s', opts.template).catch((e: unknown) => {
     thrown = e;
   });
+  if (opts.second !== undefined) {
+    secondRun = true;
+    thrown = undefined;
+    await engine.deploy('s', opts.template).catch((e: unknown) => {
+      thrown = e;
+    });
+  }
   return { thrown, contexts, saved: saves.at(-1), saves, created };
 }
 
@@ -204,7 +214,7 @@ describe('a failed update records what it left unsettled (go-to-k/cdkd#5380)', (
     const record = run.saved?.resources['S'];
     expect(record?.unsettledProperties).toEqual([ENC]);
     expect(record?.properties).toEqual(plain);
-    expect(run.saved?.version).toBe(14);
+    expect(run.saved?.version).toBe(15);
   });
 
   it('records nothing for a failed update that marked nothing', async () => {
@@ -825,5 +835,155 @@ describe('convergence messages say what happened (go-to-k/cdkd#5487)', () => {
     expect(live.some((l) => l.includes('removed from the template'))).toBe(false);
     // The recorded key the template dropped keeps its own wording.
     expect(lines.some((l) => l.includes('Gone') && l.includes('removed from the template'))).toBe(true);
+  });
+});
+
+describe('attempted items ride with their unsettled key (go-to-k/cdkd#5498)', () => {
+  const failing = (): UpdateFn => async (_id, _pid, _props, _prev, context) => {
+    context?.markUnsettled?.(ENC);
+    context?.markAttempted?.(ENC, ['b', 'a']);
+    throw failure('ENABLING_FAILED');
+  };
+
+  it('a failed update records the accepted items under the marked key, at v15', async () => {
+    const run = await deploy({
+      state: stateOf(),
+      template: templateOf(encrypted),
+      update: failing(),
+      options: { noRollback: true },
+    });
+    expect(run.thrown).toBeDefined();
+    expect(run.saved?.resources['S']?.unsettledItems).toEqual({ [ENC]: ['a', 'b'] });
+    expect(run.saved?.version).toBe(15);
+  });
+
+  it('records them under the automatic rollback too', async () => {
+    const run = await deploy({ state: stateOf(), template: templateOf(encrypted), update: failing() });
+    expect(run.thrown).toBeDefined();
+    expect(run.saved?.resources['S']?.unsettledItems).toEqual({ [ENC]: ['a', 'b'] });
+  });
+
+  it('records no item for a key the update did not mark unsettled', async () => {
+    const run = await deploy({
+      state: stateOf(),
+      template: templateOf(encrypted),
+      update: async (_id, _pid, _props, _prev, context) => {
+        context?.markAttempted?.(ENC, ['a']);
+        throw failure('refused');
+      },
+      options: { noRollback: true },
+    });
+    for (const save of run.saves) expect(save.resources['S']).not.toHaveProperty('unsettledItems');
+  });
+
+  it('items followed by a successful update record nothing', async () => {
+    const run = await deploy({
+      state: stateOf(),
+      template: templateOf(encrypted),
+      update: async (_id, pid, _props, _prev, context) => {
+        context?.markUnsettled?.(ENC);
+        context?.markAttempted?.(ENC, ['a']);
+        return { physicalId: pid, attributes: {} };
+      },
+    });
+    expect(run.thrown).toBeUndefined();
+    expect(run.saved?.resources['S']).not.toHaveProperty('unsettledItems');
+  });
+
+  it('the replacement fallback discards the failed update\'s items', async () => {
+    const run = await deploy({
+      state: stateOf(),
+      template: templateOf(encrypted),
+      update: async (id, _pid, _props, _prev, context) => {
+        context?.markUnsettled?.(ENC);
+        context?.markAttempted?.(ENC, ['a']);
+        throw new ResourceUpdateNotSupportedError(TYPE, id);
+      },
+      options: { replace: true },
+    });
+    expect(run.thrown).toBeUndefined();
+    expect(run.saved?.resources['S']?.physicalId).toBe('new-stream');
+    expect(run.saved?.resources['S']).not.toHaveProperty('unsettledItems');
+  });
+
+  it('unions with the items an earlier failure left', async () => {
+    const run = await deploy({
+      state: stateOf({ unsettledProperties: [ENC], unsettledItems: { [ENC]: ['c'] } }),
+      template: templateOf(encrypted),
+      update: failing(),
+      options: { noRollback: true },
+    });
+    expect(run.saved?.resources['S']?.unsettledItems).toEqual({ [ENC]: ['a', 'b', 'c'] });
+  });
+
+  it('the next deploy hands the items to update() and a successful convergence clears them', async () => {
+    const run = await deploy({
+      state: stateOf({ unsettledProperties: [ENC], unsettledItems: { [ENC]: ['a'] } }),
+      template: templateOf(plain),
+      update: async (_id, pid) => ({ physicalId: pid, attributes: {} }),
+    });
+    expect(run.thrown).toBeUndefined();
+    expect([...(run.contexts[0]?.unsettledItems?.get(ENC) ?? [])]).toEqual(['a']);
+    expect(run.saved?.resources['S']).not.toHaveProperty('unsettledProperties');
+    expect(run.saved?.resources['S']).not.toHaveProperty('unsettledItems');
+  });
+
+  it('items under a key that is not unsettled are not handed over (the reader enforces the subset)', async () => {
+    const run = await deploy({
+      state: stateOf({ unsettledProperties: [ENC], unsettledItems: { Tags: ['k'] } }),
+      template: templateOf(plain),
+      update: async (_id, pid) => ({ physicalId: pid, attributes: {} }),
+    });
+    expect(run.contexts[0]?.unsettledItems).toBeUndefined();
+  });
+
+  it('a failed convergence keeps the items', async () => {
+    const run = await deploy({
+      state: stateOf({ unsettledProperties: [ENC], unsettledItems: { [ENC]: ['a'] } }),
+      template: templateOf(plain),
+      update: async () => {
+        throw failure('settle wait timed out');
+      },
+      options: { noRollback: true },
+    });
+    expect(run.saved?.resources['S']?.unsettledItems).toEqual({ [ENC]: ['a'] });
+  });
+
+  it('a name the proof keeps keeps its items; a proven one drops them', async () => {
+    const live = { DeliveryStreamName: 'stream', Extra: 'attempted' };
+    const kept = await deploy({
+      state: stateOf({
+        properties: { DeliveryStreamName: 'stream', Extra: 'v' },
+        unsettledProperties: ['Extra'],
+        unsettledItems: { Extra: ['x'] },
+      }),
+      template: templateOf({ DeliveryStreamName: 'stream', Extra: 'v' }),
+      hooks: { readCurrentState: vi.fn(async () => ({ ...live })) },
+      update: async (_id, pid) => ({ physicalId: pid, attributes: {} }),
+    });
+    expect(kept.saved?.resources['S']?.unsettledProperties).toEqual(['Extra']);
+    expect(kept.saved?.resources['S']?.unsettledItems).toEqual({ Extra: ['x'] });
+  });
+
+  it('a second deploy on the same engine starts with no item marks (per-deploy reset)', async () => {
+    const run = await deploy({
+      state: stateOf(),
+      template: templateOf(encrypted),
+      // The first deploy's update records an item under no unsettled name and
+      // fails: nothing is written and nothing deletes the mark, so only the
+      // per-deploy reset keeps it off the second deploy's record.
+      update: async (_id, _pid, _props, _prev, context) => {
+        context?.markAttempted?.(ENC, ['stale']);
+        throw failure('refused');
+      },
+      second: async (_id, _pid, _props, _prev, context) => {
+        context?.markUnsettled?.(ENC);
+        throw failure('ENABLING_FAILED');
+      },
+      options: { noRollback: true },
+    });
+    expect(run.thrown).toBeDefined();
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual([ENC]);
+    expect(run.saved?.resources['S']).not.toHaveProperty('unsettledItems');
   });
 });
