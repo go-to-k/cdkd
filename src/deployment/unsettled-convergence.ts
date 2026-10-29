@@ -141,6 +141,9 @@ export async function settleUnsettledPrevious(
   try {
     live = await readLive(args, substituted.size > 0 ? substituted : new Set(['Tags']));
   } catch (error) {
+    // Only the attempted tags needed the read: a missing name only KEEPS a
+    // tag, so a failed read converges as before #5498 (the record's side).
+    if (substituted.size === 0) return previous;
     if (error instanceof ProvisioningError) throw error;
     const wrapped = refusal(args, substituted, 'the resource could not be read to converge it');
     if (error instanceof Error) (wrapped as { cause?: unknown }).cause = error;
@@ -148,6 +151,7 @@ export async function settleUnsettledPrevious(
   }
   if (live === undefined) return previous;
   if (live === 'unreadable') {
+    if (substituted.size === 0) return previous;
     throw refusal(args, substituted, 'the resource could not be read to converge it');
   }
   const out = { ...previous };

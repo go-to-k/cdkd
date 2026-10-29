@@ -1626,6 +1626,8 @@ export async function updateInPlace(
     ...(stillUnsettled.length > 0 && {
       unsettledProperties: stillUnsettled,
       // go-to-k/cdkd#5498: a key that stays unsettled keeps its attempted names.
+      // go-to-k/cdkd#5498: the one rebuilt record that carries items — only
+      // those of the keys the proof kept unsettled, read off the old record.
       ...unsettledItemsField(currentResource, stillUnsettled),
     }),
     ...(keepsParameterRefusal && {

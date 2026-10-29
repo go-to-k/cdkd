@@ -892,7 +892,9 @@ export interface UpdateContext extends SecretMaskingContext {
    * {@link markAttempted}), for a provider's projection of a collection:
    * a live item named here (exactly, and not redacted) that neither the record
    * nor the template declares goes on the previous side, so it is removed.
-   * Set only with {@link unsettledProperties}.
+   * Set only with {@link unsettledProperties}. No provider reads it today
+   * (they receive the same names through `readUnsettled`); the rollback
+   * retry replay reads it back to hand them to its own convergence step.
    */
   unsettledItems?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
 

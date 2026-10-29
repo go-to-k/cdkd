@@ -105,6 +105,7 @@ import {
   noEchoAttributeNamesOf,
   noEchoExactEchoLeavesOf,
   noEchoParameterNamesOf,
+  withAttemptedItemsMasked,
 } from '../../deployment/deploy-engine/noecho.js';
 // Issue #2109: the region split is #2057's, imported rather than re-spelled —
 // one answer to "which region must answer for this `{{resolve:...}}`
@@ -9063,7 +9064,7 @@ export function createScrubCommand(): Command {
 }
 
 /** One record's `NoEcho` positions in scrub (go-to-k/cdkd#4043 Phase C). */
-interface ScrubNoEchoPlan {
+export interface ScrubNoEchoPlan {
   /** The coordinates the record is written with. */
   readonly leaves: NoEchoCoordinate[];
   /**
@@ -9312,7 +9313,7 @@ function maskScrubNoEchoOutputs(
  * stored value (an SSM parameter's `Value`) masked and declared, whatever
  * its type or length; one equal to the physical id stays.
  */
-function applyScrubNoEcho(
+export function applyScrubNoEcho(
   scrubbed: StackState['resources'][string],
   record: StackState['resources'][string],
   plan: ScrubNoEchoPlan | undefined
@@ -9353,7 +9354,14 @@ function applyScrubNoEcho(
     next.attributes = masked;
     next.noEchoAttributeNames = [...attributeNames];
   }
-  return next;
+  // go-to-k/cdkd#5498: an attempted item name built from a value at a `NoEcho`
+  // position (read off the record before this pass masked it) is masked too,
+  // by value: the names sit at no template position.
+  const needles = leaves.flatMap((coordinate) => {
+    const value = valueAtCoordinate(record.properties, coordinate);
+    return typeof value === 'string' && value !== '' ? [value] : [];
+  });
+  return withAttemptedItemsMasked(next, needles);
 }
 
 /** `value` with every `Fn::If` node replaced by `null`. */

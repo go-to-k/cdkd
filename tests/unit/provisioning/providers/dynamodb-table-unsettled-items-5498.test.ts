@@ -191,14 +191,16 @@ describe('DynamoDB table attempted items (go-to-k/cdkd#5498)', () => {
       })
     ).rejects.toThrow();
     expect(s.items).toEqual([]);
+    vi.clearAllMocks();
     serve([]);
-    await provider
-      .update('T', 't', TYPE, tags('a', 'b'), { ...props(), Tags: 'not-a-list' }, {
+    await expect(
+      provider.update('T', 't', TYPE, tags('a', 'b'), { ...props(), Tags: 'not-a-list' }, {
         markUnsettled: () => undefined,
         markAttempted: s.markAttempted,
       })
-      .catch(() => undefined);
-    expect(s.items.filter(([, keys]) => keys.length > 0)).toEqual([]);
+    ).resolves.toBeDefined();
+    expect(mockSend.mock.calls.some((c) => c[0].constructor.name === 'TagResourceCommand')).toBe(true);
+    expect(s.items).toEqual([]);
   });
 
   const converge = async (
@@ -340,6 +342,25 @@ describe('DynamoDB table attempted items (go-to-k/cdkd#5498)', () => {
       () => undefined
     );
     expect(out).toBe(rebuilt);
+  });
+
+  it.each([
+    ['throws', () => Promise.reject(new Error('throttled'))],
+    ['is unreadable', () => Promise.resolve('garbage')],
+  ])('only attempted Tags unsettled: a read that %s keeps the record\'s side, no refusal', async (_l, read) => {
+    const withTags = { ...props(), Tags: [{ Key: 'a', Value: 'v' }] };
+    const previous = await settleUnsettledPrevious({
+      provider: { readUnsettled: read } as never,
+      logicalId: 'T',
+      physicalId: 't',
+      resourceType: TYPE,
+      recordedProperties: withTags,
+      desired: withTags,
+      names: new Set(['Tags']),
+      previous: withTags,
+      attemptedItems: new Map([['Tags', new Set(['b'])]]),
+    });
+    expect(previous).toEqual(withTags);
   });
 
   it('projectIndexesOnto adds only usable attempted names, and live-only names stay out', () => {

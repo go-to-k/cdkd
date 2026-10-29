@@ -80,8 +80,11 @@ async function deploy(opts: {
   createFails?: boolean;
   /** Extra provider hooks (`readCurrentState`, `unsettledInTransition`, ...). */
   hooks?: Record<string, unknown>;
+  /** A second deploy on the SAME engine, with this update (per-deploy reset). */
+  second?: UpdateFn;
 }): Promise<Run> {
   const levels = opts.levels ?? [['S']];
+  let secondRun = false;
   const contexts: Array<UpdateContext | undefined> = [];
   const created: string[] = [];
   const saves: StackState[] = [];
@@ -101,7 +104,7 @@ async function deploy(opts: {
         context?: UpdateContext
       ) => {
         contexts.push(context);
-        return opts.update(id, pid, props, prev, context);
+        return (secondRun && opts.second ? opts.second : opts.update)(id, pid, props, prev, context);
       }
     ),
     delete: vi.fn(),
@@ -145,6 +148,13 @@ async function deploy(opts: {
   await engine.deploy('s', opts.template).catch((e: unknown) => {
     thrown = e;
   });
+  if (opts.second !== undefined) {
+    secondRun = true;
+    thrown = undefined;
+    await engine.deploy('s', opts.template).catch((e: unknown) => {
+      thrown = e;
+    });
+  }
   return { thrown, contexts, saved: saves.at(-1), saves, created };
 }
 
@@ -953,5 +963,27 @@ describe('attempted items ride with their unsettled key (go-to-k/cdkd#5498)', ()
     });
     expect(kept.saved?.resources['S']?.unsettledProperties).toEqual(['Extra']);
     expect(kept.saved?.resources['S']?.unsettledItems).toEqual({ Extra: ['x'] });
+  });
+
+  it('a second deploy on the same engine starts with no item marks (per-deploy reset)', async () => {
+    const run = await deploy({
+      state: stateOf(),
+      template: templateOf(encrypted),
+      // The first deploy's update records an item under no unsettled name and
+      // fails: nothing is written and nothing deletes the mark, so only the
+      // per-deploy reset keeps it off the second deploy's record.
+      update: async (_id, _pid, _props, _prev, context) => {
+        context?.markAttempted?.(ENC, ['stale']);
+        throw failure('refused');
+      },
+      second: async (_id, _pid, _props, _prev, context) => {
+        context?.markUnsettled?.(ENC);
+        throw failure('ENABLING_FAILED');
+      },
+      options: { noRollback: true },
+    });
+    expect(run.thrown).toBeDefined();
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual([ENC]);
+    expect(run.saved?.resources['S']).not.toHaveProperty('unsettledItems');
   });
 });

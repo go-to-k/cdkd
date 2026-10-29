@@ -8,9 +8,11 @@
  */
 import { describe, it, expect } from 'vite-plus/test';
 import {
+  recordNoEchoParameterFreshValue,
   scrubResourceRecord,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { applyScrubNoEcho } from '../../../src/cli/commands/scrub.js';
 import { applyNoEchoPersist, NoEchoRunState } from '../../../src/deployment/deploy-engine/noecho.js';
 import { projectIndexesOnto } from '../../../src/provisioning/providers/dynamodb-table-provider.js';
 import { isUsableAttemptedName, unsettledItemsOf } from '../../../src/state/unsettled-properties.js';
@@ -91,5 +93,48 @@ describe('secret-derived attempted names (go-to-k/cdkd#5498)', () => {
       { U: rec }
     );
     expect(other.unsettledItems?.[GSI]).toEqual(['nx1', 'kept']);
+  });
+
+  it('the NoEcho persist arm masks a name embedding a sub-floor positioned value', () => {
+    const run = new NoEchoRunState();
+    run.noEchoPositionedValues.set('T', new Set([JSON.stringify('nx')]));
+    const rec = record(['gsi-nx', 'kept']);
+    const out = applyNoEchoPersist(run, { perResourceSecrets: () => new Map() } as never, 'T', rec, rec, undefined, { T: rec });
+    expect(out.unsettledItems?.[GSI]).toEqual(['***', 'kept']);
+  });
+
+  it('the NoEcho persist arm masks a whole and an embedded NoEcho parameter plaintext', () => {
+    const secrets: RecordedSecretValues = new Map();
+    recordNoEchoParameterFreshValue('noecho-tenant-7', secrets);
+    const run = new NoEchoRunState();
+    const rec = record(['noecho-tenant-7', 'gsi-noecho-tenant-7', 'kept']);
+    const out = applyNoEchoPersist(
+      run,
+      { perResourceSecrets: () => new Map([['T', secrets]]) } as never,
+      'T',
+      rec,
+      rec,
+      undefined,
+      { T: rec }
+    );
+    expect(out.unsettledItems?.[GSI]).toEqual(['***', 'kept']);
+    expect(JSON.stringify(out.unsettledItems)).not.toContain('noecho-tenant-7');
+  });
+
+  it('cdkd scrub\'s NoEcho arm masks a name built from a value at a NoEcho position', () => {
+    const raw = {
+      ...record(['gsi-ab', 'kept']),
+      properties: { TableName: 't', GlobalSecondaryIndexes: [{ IndexName: 'ab' }] },
+    } as ResourceState;
+    const out = applyScrubNoEcho(raw, raw, {
+      leaves: [['GlobalSecondaryIndexes', 0, 'IndexName']],
+      stored: [],
+      attributeNames: [],
+    });
+    expect(out.unsettledItems?.[GSI]).toEqual(['***', 'kept']);
+    expect(out.properties).toEqual({ TableName: 't', GlobalSecondaryIndexes: [{ IndexName: '***' }] });
+    // No NoEcho position: nothing masked.
+    const none = applyScrubNoEcho(raw, raw, { leaves: [], stored: [], attributeNames: [] });
+    expect(none.unsettledItems?.[GSI]).toEqual(['gsi-ab', 'kept']);
   });
 });

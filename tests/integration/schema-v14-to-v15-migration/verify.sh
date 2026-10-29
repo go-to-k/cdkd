@@ -9,7 +9,10 @@
 # therefore writes the v14 shape itself — exactly what a v14 writer leaves
 # after a cut-short index add: `version: 14`, `unsettledProperties`, no
 # items — over a record the released binary wrote, with the index created
-# out of band (a v14 binary cannot tell it from another tool's).
+# out of band (a v14 binary cannot tell it from another tool's). For the same
+# reason the refusal arm (Phase 8) runs the released binary, which predates
+# v14: it proves an older binary refuses v15, not a v14 binary specifically;
+# both refuse through the same readable-version check.
 #
 # Every version and value assertion reads S3 or AWS, never a log; write-call
 # counts read the SDK call log (`CDKD_SDK_CALL_LOG`).
@@ -411,14 +414,20 @@ assert_log_has "local migration deploy" "GSI gsioob on DynamoDB table ${TABLE_NA
 assert_eq "local migration deploy: the names are cleared and no items were written" \
   "$(state_field '.resources.Table | (has("unsettledProperties") or has("unsettledItems"))')" "false"
 assert_no_dynamodb_writes "local migration deploy (gsioob is not touched)"
-# The record's JSON diff: every changed leaf path must be an intended one.
+# The record's JSON diff over EVERY path (containers too, so an added or
+# dropped object or array shows): a path is reported when it exists on one
+# side only or holds a different scalar. Each must be an intended one.
 CHANGED_PATHS="$(jq -r -n --slurpfile a "${PRE_STATE}" --slurpfile b "${STATE_FILE}" '
-  [ ($a[0] | paths(scalars)), ($b[0] | paths(scalars)) ] | unique
-  | map(select(($a[0] | getpath(.)) != ($b[0] | getpath(.)))) | map(map(tostring) | join("."))
-  | .[]' | sort -u)"
-UNEXPECTED="$(printf '%s\n' "${CHANGED_PATHS}" | grep -vE '^(version|lastModified|resources\.Table\.unsettledProperties\.0|resources\.Table\.observedProperties\..*)$' || true)"
+  def has_path($doc; $p): try ($doc | getpath($p) | . != null) catch false;
+  [ ($a[0] | paths), ($b[0] | paths) ] | unique
+  | map(. as $p | select(
+      (has_path($a[0]; $p) != has_path($b[0]; $p))
+      or (($a[0] | getpath($p) | type) as $t | ($t != "object" and $t != "array")
+          and (($a[0] | getpath($p)) != ($b[0] | getpath($p))))))
+  | map(map(tostring) | join(".")) | .[]' | sort -u)"
+UNEXPECTED="$(printf '%s\n' "${CHANGED_PATHS}" | grep -vE '^(version|lastModified|resources\.Table\.unsettledProperties(\.0)?)$' | grep -v '^$' || true)"
 [ -z "${UNEXPECTED}" ] || fail "local migration deploy: the record changed beyond the intended fields: ${UNEXPECTED//$'\n'/ }"
-pass "local migration deploy: the record changed only in version / lastModified / unsettledProperties / observedProperties"
+pass "local migration deploy: the record changed only in version / lastModified / unsettledProperties"
 aws dynamodb update-table --table-name "${TABLE_NAME}" --region "${REGION}" \
   --global-secondary-index-updates '[{"Delete":{"IndexName":"gsioob"}}]' >/dev/null
 wait_index gsioob gone "hand delete"

@@ -340,4 +340,47 @@ describe('cdkd drift and unsettled properties (go-to-k/cdkd#5380)', () => {
     expect(updates).toBe(1);
     expect(saved).toBeUndefined();
   });
+
+  // go-to-k/cdkd#5498: a name drift keeps unsettled keeps its attempted items;
+  // a name it settles drops them.
+  it('--revert with two names, one unproven: the kept name keeps its items, the settled one\'s go', async () => {
+    const { saved } = await runDrift(
+      stateWith({
+        drifted: {
+          unsettledProperties: ['DeliveryStreamType', ENC],
+          unsettledItems: { DeliveryStreamType: ['x'], [ENC]: ['y'] },
+        },
+      }),
+      ['--revert', '--yes'],
+      undefined,
+      undefined,
+      false
+    );
+    expect(saved?.resources['Drifted']?.unsettledProperties).toEqual(['DeliveryStreamType']);
+    expect(saved?.resources['Drifted']?.unsettledItems).toEqual({ DeliveryStreamType: ['x'] });
+  });
+
+  it('--accept with two names, one still in transition: the kept name keeps its items', async () => {
+    const { saved } = await runDrift(
+      stateWith({
+        drifted: {
+          unsettledProperties: [ENC, 'Tags'],
+          unsettledItems: { [ENC]: ['y'], Tags: ['k'] },
+        },
+      }),
+      ['--accept', '--yes'],
+      undefined,
+      async () => new Set([ENC])
+    );
+    expect(saved?.resources['Drifted']?.unsettledProperties).toEqual([ENC]);
+    expect(saved?.resources['Drifted']?.unsettledItems).toEqual({ [ENC]: ['y'] });
+  });
+
+  it('a --revert that settles every name drops every item', async () => {
+    const { saved } = await runDrift(
+      stateWith({ drifted: { unsettledProperties: [ENC], unsettledItems: { [ENC]: ['y'] } } }),
+      ['--revert', '--yes']
+    );
+    expect(saved?.resources['Drifted']).not.toHaveProperty('unsettledItems');
+  });
 });

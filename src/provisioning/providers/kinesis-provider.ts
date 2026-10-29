@@ -1067,7 +1067,9 @@ export class KinesisStreamProvider implements ResourceProvider {
           );
           // go-to-k/cdkd#5498: AFTER the call resolved, the metrics it turned on
           // — the ones the response did not already report as current.
-          const before = new Set(enabled?.CurrentShardLevelMetrics ?? []);
+          // A live literal `ALL` names every metric, so it is expanded first.
+          const current = expandShardLevelMetrics(enabled?.CurrentShardLevelMetrics ?? []);
+          const before = new Set(Array.isArray(current) ? (current as unknown[]) : []);
           const added = toEnable.filter((metric) => !before.has(metric));
           if (added.length > 0) context?.markAttempted?.('DesiredShardLevelMetrics', added);
           await this.waitForStreamActive(physicalId);
@@ -1584,13 +1586,11 @@ export class KinesisStreamProvider implements ResourceProvider {
       );
       // go-to-k/cdkd#5498: a metric an earlier failed update's accepted call
       // enabled (exact name) is on the previous side too, so the template's
-      // omission disables it; one enabled out of band still is not. An
-      // attempted `ALL` names every metric, as it does in a record.
-      const attempted = expandShardLevelMetrics([
-        ...(attemptedItems?.get('DesiredShardLevelMetrics') ?? []),
-      ]);
-      for (const metric of Array.isArray(attempted) ? (attempted as unknown[]) : []) {
-        if (typeof metric === 'string' && isUsableAttemptedName(metric)) named.add(metric);
+      // omission disables it; one enabled out of band still is not. The
+      // writer records expanded names only, so an attempted `ALL` is not one
+      // cdkd wrote and names nothing.
+      for (const metric of attemptedItems?.get('DesiredShardLevelMetrics') ?? []) {
+        if (metric !== 'ALL' && isUsableAttemptedName(metric)) named.add(metric);
       }
       // The live list is expanded too: a stream enabled with `ALL` can report
       // the literal, which would otherwise be projected away and read as

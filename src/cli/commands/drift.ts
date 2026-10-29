@@ -7964,10 +7964,15 @@ async function runRevert(
           for (const [logicalId, settled] of settledByRevert) {
             const existing = resources[logicalId];
             if (!existing) continue;
-            resources[logicalId] = withUnsettledProperties(
-              withoutUnsettledProperties(existing),
-              unsettledPropertiesOf(settled)
-            );
+            // go-to-k/cdkd#5498: a name the revert kept keeps its attempted
+            // items (`settleUnsettled` carried them onto `settled`).
+            resources[logicalId] = {
+              ...withUnsettledProperties(
+                withoutUnsettledProperties(existing),
+                unsettledPropertiesOf(settled)
+              ),
+              ...unsettledItemsField(settled, unsettledPropertiesOf(settled)),
+            };
             settledCount++;
           }
           let recordedCount = 0;

@@ -224,10 +224,35 @@ describe('Kinesis stream attempted items (go-to-k/cdkd#5498)', () => {
     expect(disabled()).toEqual([]);
   });
 
-  it('an attempted ALL names every live metric the template dropped', async () => {
+  it('an attempted ALL names nothing (the writer records expanded names only)', async () => {
     serve({ metrics: ['IncomingBytes', 'OutgoingBytes'] });
     await converge(bag([]), bag(['IncomingBytes']), attempted('ALL'));
-    expect(disabled()).toEqual([['OutgoingBytes']]);
+    expect(disabled()).toEqual([]);
+  });
+
+  it('a live literal ALL in the response counts every metric as already on: nothing recorded', async () => {
+    serve({ metrics: ['ALL'], enableCurrent: ['ALL'] });
+    const s = sink();
+    await provider.update('S', 's', TYPE, bag(['IncomingBytes', 'OutgoingBytes']), bag([]), {
+      markUnsettled: () => undefined,
+      markAttempted: s.markAttempted,
+    });
+    expect(s.items).toEqual([]);
+  });
+
+  it('records no tag key when the recorded tags are malformed', async () => {
+    serve({});
+    const s = sink();
+    await provider.update(
+      'S',
+      's',
+      TYPE,
+      bag([], ['a', 'b']),
+      { ...bag([]), Tags: 'not-a-list' },
+      { markUnsettled: () => undefined, markAttempted: s.markAttempted }
+    );
+    expect(sent('AddTagsToStreamCommand').length).toBeGreaterThan(0);
+    expect(s.items).toEqual([]);
   });
 
   it('removes a live attempted tag the template dropped, never a live-only one', async () => {
