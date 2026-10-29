@@ -148,6 +148,7 @@ STATE_FILE=""
 DEPLOY_LOG=""
 CALLS=""
 PRE_STATE=""
+JSON_OUT=""
 
 cleanup() {
   rc=$?
@@ -176,7 +177,7 @@ cleanup() {
   if [ -n "${RELEASED_TMPDIR}" ] && [ -d "${RELEASED_TMPDIR}" ]; then
     rm -rf "${RELEASED_TMPDIR}"
   fi
-  rm -rf "${STATE_FILE:-}" "${DEPLOY_LOG:-}" "${CALLS:-}" "${PRE_STATE:-}"
+  rm -rf "${STATE_FILE:-}" "${DEPLOY_LOG:-}" "${CALLS:-}" "${PRE_STATE:-}" "${JSON_OUT:-}"
   set -eu
 }
 
@@ -205,6 +206,7 @@ STATE_FILE="$(mktemp)"
 DEPLOY_LOG="$(mktemp)"
 CALLS="$(mktemp)"
 PRE_STATE="$(mktemp)"
+JSON_OUT="$(mktemp)"
 
 # --- helpers ----------------------------------------------------------------
 
@@ -256,6 +258,37 @@ run_cdkd() { # <expect: ok|fail> <label> <binary> <args...>
     fail "${label}: exited 0, expected a refusal"
   fi
   pass "${label}: exited ${rc} (${expect})"
+}
+
+# A `--json` read: stdout alone into JSON_OUT (a warning on stderr would break
+# the parse), stderr into DEPLOY_LOG.
+run_cdkd_json() { # <label> <binary> <args...>
+  local label="$1" bin="$2" rc
+  shift 2
+  set +e
+  AWS_REGION="${REGION}" node "${bin}" "$@" >"${JSON_OUT}" 2>"${DEPLOY_LOG}"
+  rc=$?
+  set -e
+  if [ "${rc}" -ne 0 ]; then
+    tail -40 "${DEPLOY_LOG}" >&2
+    fail "${label}: exited ${rc}"
+  fi
+  jq -e . "${JSON_OUT}" >/dev/null 2>&1 || fail "${label}: stdout is not one JSON document"
+  pass "${label}: exited 0 with a JSON document"
+}
+
+# `cdkd state show --json` reserializes the parsed record and withholds the
+# stack instance id (`withStackInstanceIdWithheld`, src/cli/commands/state.ts:
+# a present id prints as "<withheld>"); nothing else in the record is
+# rewritten. A comparison against S3 masks the id on BOTH sides and sorts
+# keys; byte-level checks read the raw S3 object instead.
+SHOW_NORMALIZE='if has("stackInstanceId") then .stackInstanceId = "<withheld>" else . end'
+
+state_raw_sha() { # sha256 of the current state.json body as stored — strict
+  local out
+  out="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | shasum -a 256 | awk '{print $1}')" \
+    || fail "could not read state.json"
+  printf '%s' "${out}"
 }
 
 assert_log_has() { # <label> <fixed text>
@@ -395,10 +428,14 @@ assert_eq "planted v14: the record names GlobalSecondaryIndexes unsettled" \
 echo "==> Phase 4: the local binary READS the v14 record (no rewrite)"
 # ---------------------------------------------------------------------------
 VERSIONS_BEFORE="$(state_versions)"
-run_cdkd ok "local state show (v14)" "${LOCAL_DIST}" state show "${STACK}" \
+PLANTED_SHA="$(shasum -a 256 "${PRE_STATE}" | awk '{print $1}')"
+assert_eq "planted v14: state.json holds the planted bytes" "$(state_raw_sha)" "${PLANTED_SHA}"
+run_cdkd_json "local state show (v14)" "${LOCAL_DIST}" state show "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --json
-assert_eq "local state show (v14): the record reads as written" \
-  "$(jq -cS '.state' "${DEPLOY_LOG}" 2>/dev/null)" "$(jq -cS . "${PRE_STATE}")"
+assert_eq "local state show (v14): the record reads as written (id withheld on both sides)" \
+  "$(jq -cS ".state | ${SHOW_NORMALIZE}" "${JSON_OUT}")" "$(jq -cS "${SHOW_NORMALIZE}" "${PRE_STATE}")"
+assert_eq "local state show (v14): state.json is byte-identical after the read" \
+  "$(state_raw_sha)" "${PLANTED_SHA}"
 assert_eq "local state show (v14) wrote no new state.json version" "$(state_versions)" "${VERSIONS_BEFORE}"
 
 # ---------------------------------------------------------------------------
@@ -425,9 +462,13 @@ CHANGED_PATHS="$(jq -r -n --slurpfile a "${PRE_STATE}" --slurpfile b "${STATE_FI
       or (($a[0] | getpath($p) | type) as $t | ($t != "object" and $t != "array")
           and (($a[0] | getpath($p)) != ($b[0] | getpath($p))))))
   | map(map(tostring) | join(".")) | .[]' | sort -u)"
-UNEXPECTED="$(printf '%s\n' "${CHANGED_PATHS}" | grep -vE '^(version|lastModified|resources\.Table\.unsettledProperties(\.0)?)$' | grep -v '^$' || true)"
+# `observedProperties` is NOT migration output: every written update
+# re-captures it from AWS (a fire-and-forget readback), and AWS now holds
+# gsioob, so its index list legitimately appears there. Only that subtree is
+# exempt; any other added, dropped or changed field fails.
+UNEXPECTED="$(printf '%s\n' "${CHANGED_PATHS}" | grep -vE '^(version|lastModified|resources\.Table\.unsettledProperties(\.0)?|resources\.Table\.observedProperties(\..*)?)$' | grep -v '^$' || true)"
 [ -z "${UNEXPECTED}" ] || fail "local migration deploy: the record changed beyond the intended fields: ${UNEXPECTED//$'\n'/ }"
-pass "local migration deploy: the record changed only in version / lastModified / unsettledProperties"
+pass "local migration deploy: the record changed only in version / lastModified / unsettledProperties (observedProperties re-captured)"
 aws dynamodb update-table --table-name "${TABLE_NAME}" --region "${REGION}" \
   --global-secondary-index-updates '[{"Delete":{"IndexName":"gsioob"}}]' >/dev/null
 wait_index gsioob gone "hand delete"
@@ -451,10 +492,14 @@ cp "${STATE_FILE}" "${PRE_STATE}"
 echo "==> Phase 7: the v15 record round-trips through a read"
 # ---------------------------------------------------------------------------
 VERSIONS_BEFORE="$(state_versions)"
-run_cdkd ok "local state show (v15)" "${LOCAL_DIST}" state show "${STACK}" \
+V15_SHA="$(state_raw_sha)"
+run_cdkd_json "local state show (v15)" "${LOCAL_DIST}" state show "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --json
 assert_eq "local state show (v15): the items read as written" \
-  "$(jq -c '.state.resources.Table.unsettledItems' "${DEPLOY_LOG}" 2>/dev/null)" '{"GlobalSecondaryIndexes":["gsi2"]}'
+  "$(jq -c '.state.resources.Table.unsettledItems' "${JSON_OUT}")" '{"GlobalSecondaryIndexes":["gsi2"]}'
+assert_eq "local state show (v15): the record reads as stored (id withheld on both sides)" \
+  "$(jq -cS ".state | ${SHOW_NORMALIZE}" "${JSON_OUT}")" "$(jq -cS "${SHOW_NORMALIZE}" "${PRE_STATE}")"
+assert_eq "local state show (v15): state.json is byte-identical after the read" "$(state_raw_sha)" "${V15_SHA}"
 assert_eq "local state show (v15) wrote no new state.json version" "$(state_versions)" "${VERSIONS_BEFORE}"
 
 # ---------------------------------------------------------------------------
@@ -511,7 +556,7 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # THE EXECUTED-ASSERTION COUNT, an exact literal maintained by hand: every
 # assertion on the success path runs once, so any other count means a block
 # was skipped (or one was added without updating this line).
-EXPECTED_ASSERTIONS=47
+EXPECTED_ASSERTIONS=51
 if [ "${ASSERTIONS_RUN:-0}" -ne "${EXPECTED_ASSERTIONS}" ]; then
   echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly ${EXPECTED_ASSERTIONS} — a block was skipped," >&2
   echo "      so this run proves less than it claims." >&2
