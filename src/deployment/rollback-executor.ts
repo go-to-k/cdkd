@@ -796,6 +796,23 @@ function ownRecord(
 }
 
 /**
+ * go-to-k/cdkd#5505: `bag` with each of `keys` taken from `source` (absent
+ * there, absent here), so a diff of the two bags never touches those keys.
+ */
+function withKeysFrom(
+  bag: Record<string, unknown>,
+  source: Record<string, unknown> | undefined,
+  keys: readonly string[]
+): Record<string, unknown> {
+  const out = { ...bag };
+  for (const key of keys) {
+    if (source !== undefined && Object.hasOwn(source, key)) out[key] = source[key];
+    else delete out[key];
+  }
+  return out;
+}
+
+/**
  * go-to-k/cdkd#5505: what the failed update of THIS run left unsettled (the
  * names and items its accepted calls marked), and whether its call the
  * deadline abandoned later completed (`lateSuccess`: it rewrote the record,
@@ -1504,7 +1521,7 @@ async function replayFailedOperationsUnbound(
           // Issue #2274: the `--revert-failed` twin of the `revert` arm's
           // refusal. Desired side only, same reason.
           refuseMaskedReplayBaseline(desiredProps, op.logicalId, noEcho.inert);
-          const attemptedProps = noEcho.onPreviousSide(
+          const resolvedPrevious = noEcho.onPreviousSide(
             await resolveReplayProps(
               attemptedBag ?? current.properties,
               resolver,
@@ -1515,6 +1532,22 @@ async function replayFailedOperationsUnbound(
               attemptedBag === undefined ? current : undefined
             )
           );
+          // go-to-k/cdkd#5505: a late success rewrote the whole record, so its
+          // bag may hold what an earlier failed deploy left unsettled (its
+          // convergence took that in). Those keys are left out of this revert:
+          // equal on both sides, so nothing of an earlier deploy's is undone
+          // or deleted; the record keeps their names for the next deploy.
+          const excludedKeys = own?.lateSuccess === true ? [...unsettledPropertiesOf(prev)] : [];
+          const attemptedProps =
+            excludedKeys.length === 0 || resolvedPrevious === undefined
+              ? resolvedPrevious
+              : withKeysFrom(resolvedPrevious, desiredProps, excludedKeys);
+          if (excludedKeys.length > 0) {
+            const one = excludedKeys.length === 1;
+            logger.warn(
+              safeMsg`  Rollback: ${safe(op.logicalId)} (${safe(op.resourceType)}): ${excludedKeys.map(safe).join(', ')} ${one ? 'was' : 'were'} left unsettled by an earlier failed deploy, so this revert leaves ${one ? 'it' : 'them'} as AWS holds ${one ? 'it' : 'them'}; the next deploy converges ${one ? 'it' : 'them'}.`
+            );
+          }
           // Issue #2291, the `--revert-failed` twin of the two arms in
           // `replaySingle` — see the long note on the `revert` arm for why the
           // call stays although this `update()` builds no child engine either

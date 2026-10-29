@@ -491,6 +491,9 @@ describe('only THIS run\'s marks are reverted (go-to-k/cdkd#5505 review B1)', ()
     expect(run.calls).toHaveLength(2);
     expect(run.calls[1]!.context?.unsettledProperties).toEqual(new Set([ENC]));
     expect(run.saved?.resources['S']?.unsettledProperties).toEqual(['Other']);
+    // Not a late success: the record-side revert never touches `Other`, so
+    // there is nothing to leave out.
+    expect(warned('left unsettled by an earlier failed deploy')).toBe(false);
   });
 
   it("a shared name removes only this run's attempted item and keeps the earlier one", async () => {
@@ -602,6 +605,45 @@ describe('a call the deadline abandoned (go-to-k/cdkd#5505 review C1 / T3)', () 
       true
     );
     expect(warned('AWS had not settled')).toBe(false);
+  });
+});
+
+describe('a late success over an earlier deploy\'s unsettled key (go-to-k/cdkd#5505 review R1)', () => {
+  it("leaves the earlier deploy's key out of the whole-update revert, and keeps its name", async () => {
+    const run = await deploy({
+      // deploy1 (--no-rollback) left `Other` unsettled.
+      record: {
+        properties: { DeliveryStreamName: 'stream', Other: 'pre' },
+        unsettledProperties: ['Other'],
+      },
+      template: templateOf({
+        DeliveryStreamName: 'stream',
+        Other: 'late',
+        [ENC]: { KeyType: 'AWS_OWNED_CMK' },
+      }),
+      update: async (call, context) => {
+        if (call === 0) {
+          context?.markUnsettled?.(ENC);
+          // Completes after the 60 ms deadline, rewriting the record.
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      },
+      moving: () => [],
+      live: () => ({}),
+      options: {
+        resourceWarnAfterByType: { [TYPE]: 20 },
+        resourceTimeoutByType: { [TYPE]: 60 },
+      },
+    });
+    expect(run.calls).toHaveLength(2);
+    const revert = run.calls[1]!;
+    // `Other` is equal on both sides: not undone, nothing of it removed.
+    expect(revert.prev['Other']).toEqual(revert.props['Other']);
+    // A key the earlier deploy did not leave is reverted as before.
+    expect(revert.prev[ENC]).toEqual({ KeyType: 'AWS_OWNED_CMK' });
+    expect(revert.props).not.toHaveProperty(ENC);
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual(['Other']);
+    expect(warned('left unsettled by an earlier failed deploy')).toBe(true);
   });
 });
 
