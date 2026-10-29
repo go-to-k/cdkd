@@ -3,6 +3,7 @@ import {
   CreateDeliveryStreamCommand,
   DeleteDeliveryStreamCommand,
   DescribeDeliveryStreamCommand,
+  type DescribeDeliveryStreamCommandOutput,
   ListTagsForDeliveryStreamCommand,
   ResourceNotFoundException,
   UpdateDestinationCommand,
@@ -158,6 +159,19 @@ function liveEncryptionAsCfn(
 /** Polling cadence and cap for an encryption transition (measured at ~80-95 s). */
 const ENCRYPTION_POLL_INTERVAL_MS = 5000;
 const ENCRYPTION_POLL_MAX_ATTEMPTS = 120;
+
+/**
+ * Polling cadence and cap for the create-time wait for ACTIVE. The engine's
+ * per-resource deadline ends the wait first under the default 30 min timeout;
+ * the cap bounds it where no deadline encloses the call.
+ */
+const ACTIVE_POLL_INTERVAL_MS = 5000;
+const ACTIVE_POLL_MAX_ATTEMPTS = 360;
+/**
+ * What the wait leaves of the resource deadline for its last read and its
+ * throw to settle before the deadline fires (go-to-k/cdkd#5509).
+ */
+const ACTIVE_DEADLINE_MARGIN_MS = 2000;
 
 /** Errors for an `ENABLING_FAILED` / `DISABLING_FAILED` report: AWS ended the transition. */
 const terminalEncryptionFailures = new WeakSet<object>();
@@ -703,7 +717,12 @@ export class FirehoseProvider implements ResourceProvider {
 
       // Wait for delivery stream to become ACTIVE before returning.
       // SubscriptionFilter and other dependents fail if the stream is still CREATING.
-      await this.waitForActive(physicalId, logicalId);
+      await this.waitForActive(
+        physicalId,
+        logicalId,
+        resourceType,
+        maskerOrIdentity(context?.maskSecrets)
+      );
 
       return {
         physicalId,
@@ -2970,26 +2989,120 @@ export class FirehoseProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a delivery stream to become ACTIVE.
-   * Firehose CreateDeliveryStream returns immediately while the stream is still CREATING.
+   * Wait for a delivery stream to become ACTIVE (go-to-k/cdkd#5509).
+   * CreateDeliveryStream returns while the stream is still CREATING, and a
+   * stream left CREATING cannot be deleted or used by dependents
+   * (`ResourceInUseException`), so a create that returned early would be
+   * recorded as done while the next step fails. CloudFormation waits for
+   * ACTIVE and fails the resource on CREATING_FAILED; so does this: a
+   * `*_FAILED` report throws with AWS's failure description, masked, and the
+   * wait ends with an error when the engine's per-resource deadline runs out,
+   * on Ctrl-C, or at the poll cap. Each throw is non-retryable: the stream
+   * exists, so a retried create would only collide with it. `create()` records
+   * the stream through `markCreatedBeforeFailure`, so it is not orphaned.
+   *
+   * The wait aims to throw its deadline error while time is still left:
+   * `withResourceDeadline` rejects with its own timeout error the moment it
+   * fires and drops a later provider error, and the created-id mark rides
+   * only on the provider's error, so a wait that ran into the deadline
+   * would leave the stream recorded nowhere. It stops sleeping
+   * {@link ACTIVE_DEADLINE_MARGIN_MS} before the deadline, and each read is
+   * aborted at that same point, so a read held up by SDK retries or a slow
+   * connection ends in the same error. The margin is what the throw has to
+   * reach the wrapper; an event loop stalled for longer still loses the race
+   * (the engine-level gap is go-to-k/cdkd#5511).
    */
-  private async waitForActive(streamName: string, logicalId: string): Promise<void> {
-    const maxAttempts = 30;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const resp = await this.getClient().send(
-        new DescribeDeliveryStreamCommand({ DeliveryStreamName: streamName })
-      );
-      const status = resp.DeliveryStreamDescription?.DeliveryStreamStatus;
-      if (status === 'ACTIVE') {
-        this.logger.debug(`Firehose ${logicalId} is ACTIVE`);
-        return;
+  private async waitForActive(
+    streamName: string,
+    logicalId: string,
+    resourceType: string,
+    mask: MaskerFn
+  ): Promise<void> {
+    const watch = startInterruptWatch(`Firehose ${logicalId} create`);
+    try {
+      let last: string | undefined;
+      // The engine's deadline does not cancel this create, so the wait ends
+      // itself before the deadline fires (see above).
+      let deadlineNear = false;
+      for (let attempt = 1; attempt <= ACTIVE_POLL_MAX_ATTEMPTS; attempt++) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        if (enclosingDeadlineRemainingMs() <= ACTIVE_DEADLINE_MARGIN_MS) {
+          deadlineNear = true;
+          break;
+        }
+        const resp = await this.describeBeforeDeadline(streamName);
+        if (resp === 'deadline') {
+          deadlineNear = true;
+          break;
+        }
+        const description = resp.DeliveryStreamDescription;
+        last = description?.DeliveryStreamStatus;
+        if (last === 'ACTIVE') {
+          this.logger.debug(`Firehose ${logicalId} is ACTIVE`);
+          return;
+        }
+        if (last !== undefined && last.endsWith('_FAILED')) {
+          const failure = description?.FailureDescription;
+          throw markNonRetryable(
+            new ProvisioningError(
+              `Firehose delivery stream ${logicalId} did not become ACTIVE: AWS reports ${last}` +
+                (failure ? ` (${mask(`${failure.Type ?? ''}: ${failure.Details ?? ''}`)})` : ''),
+              resourceType,
+              logicalId,
+              streamName
+            )
+          );
+        }
+        this.logger.debug(
+          `Firehose ${logicalId} status: ${last} (attempt ${attempt}/${ACTIVE_POLL_MAX_ATTEMPTS})`
+        );
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        if (enclosingDeadlineRemainingMs() <= ACTIVE_POLL_INTERVAL_MS + ACTIVE_DEADLINE_MARGIN_MS) {
+          deadlineNear = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, ACTIVE_POLL_INTERVAL_MS));
       }
-      this.logger.debug(
-        `Firehose ${logicalId} status: ${status} (attempt ${attempt}/${maxAttempts})`
+      throw markNonRetryable(
+        new ProvisioningError(
+          (deadlineNear
+            ? `The resource timeout would expire while waiting for Firehose delivery stream ${logicalId} to become ACTIVE `
+            : `Timed out waiting for Firehose delivery stream ${logicalId} to become ACTIVE `) +
+            `(last status: ${last ?? 'none reported'})`,
+          resourceType,
+          logicalId,
+          streamName
+        )
       );
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+    } finally {
+      watch.dispose();
     }
-    this.logger.warn(`Firehose ${logicalId} did not reach ACTIVE after ${maxAttempts} attempts`);
+  }
+
+  /**
+   * One `DescribeDeliveryStream` read for {@link waitForActive}, aborted
+   * {@link ACTIVE_DEADLINE_MARGIN_MS} before the enclosing resource deadline
+   * (`'deadline'` then). Outside any deadline the read is unbounded.
+   */
+  private async describeBeforeDeadline(
+    streamName: string
+  ): Promise<DescribeDeliveryStreamCommandOutput | 'deadline'> {
+    const command = new DescribeDeliveryStreamCommand({ DeliveryStreamName: streamName });
+    const remaining = enclosingDeadlineRemainingMs();
+    if (!Number.isFinite(remaining)) return this.getClient().send(command);
+    const abort = new AbortController();
+    const timer = setTimeout(
+      () => abort.abort(),
+      Math.max(0, remaining - ACTIVE_DEADLINE_MARGIN_MS)
+    );
+    try {
+      return await this.getClient().send(command, { abortSignal: abort.signal });
+    } catch (error) {
+      if (abort.signal.aborted) return 'deadline';
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 
