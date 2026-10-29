@@ -746,7 +746,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'DatapointsToAlarm',
         'Dimensions',
         'EvaluateLowSampleCountPercentile',
+        'EvaluationCriteria',
+        'EvaluationInterval',
         'EvaluationPeriods',
+        'EvaluationWindow',
         'ExtendedStatistic',
         'InsufficientDataActions',
         'MetricName',
@@ -762,11 +765,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Unit',
         'WarmUpConfiguration',
       ]),
-      silentDrop: new Map<string, string>([
-        ['EvaluationCriteria', 'not yet implemented by cdkd'],
-        ['EvaluationInterval', 'not yet implemented by cdkd'],
-        ['EvaluationWindow', 'not yet implemented by cdkd'],
-      ]),
+      silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn']),
       ccRouteUnavailable: false,
@@ -2518,7 +2517,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>([
         [
           'ResourcePolicyDocument',
-          'covered by the separate account-wide AWS::Logs::ResourcePolicy resource type; logs:PutResourcePolicy is account-scoped, not per-log-group, so it has no CreateLogGroup / PutRetentionPolicy counterpart — routed via Cloud Control instead',
+          'not driven by this provider by decision (issue #1412): no CreateLogGroup / PutRetentionPolicy member carries it, and both policy lifecycles — the account-scoped AWS::Logs::ResourcePolicy type and the log-group-scoped logs:PutResourcePolicy (resourceArn + policyScope RESOURCE) — are ones this provider does not take on — routed via Cloud Control, whose handler applies it',
         ],
       ]),
       createOnlyDrops: new Set<string>(),

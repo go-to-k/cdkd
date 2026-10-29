@@ -67,7 +67,8 @@ export class CloudWatchStack extends cdk.Stack {
     // create + TagResource/UntagResource diff on update).
     cdk.Tags.of(alarm).add('Team', 'Platform');
 
-    // go-to-k/cdkd#2762: WarmUpConfiguration / ActionConfiguration ride
+    // go-to-k/cdkd#2762: WarmUpConfiguration / ActionConfiguration (and, with
+    // go-to-k/cdkd#5524, EvaluationWindow) ride
     // PutMetricAlarm. Set through addPropertyOverride: the L1 of the pinned
     // aws-cdk-lib does not carry ActionConfiguration. verify.sh reads both back
     // from DescribeAlarms. CDKD_TEST_UPDATE=true is its second phase: a
@@ -82,6 +83,29 @@ export class CloudWatchStack extends cdk.Stack {
     if (!updatePhase) {
       cfnAlarm.addPropertyOverride('ActionConfiguration', {
         AlarmTagsPropagation: { Enabled: true, IncludedTagKeys: ['Team'] },
+      });
+      // go-to-k/cdkd#5524: a wall-clock window (the alarm's 5-minute period
+      // is one AWS allows for it). The update phase REMOVES it, which
+      // PutMetricAlarm stores as the default sliding window.
+      cfnAlarm.addPropertyOverride('EvaluationWindow', { WallClockWindow: { Timezone: 'UTC' } });
+    }
+
+    // go-to-k/cdkd#5524: a PromQL alarm -- EvaluationCriteria + EvaluationInterval
+    // and none of the metric members, which PutMetricAlarm refuses beside
+    // them. A raw CfnResource, so no L1 prop requirement adds a metric member.
+    // CDKD_TEST_PROMQL=true adds it (verify.sh phase 3); its interval comes
+    // from CDKD_TEST_PROMQL_INTERVAL so phase 4 is a real in-place change.
+    if (process.env['CDKD_TEST_PROMQL'] === 'true') {
+      new cdk.CfnResource(this, 'PromQLAlarm', {
+        type: 'AWS::CloudWatch::Alarm',
+        properties: {
+          AlarmName: `${this.stackName}-promql`,
+          AlarmDescription: 'cdkd integ: PromQL alarm (go-to-k/cdkd#5524)',
+          EvaluationCriteria: {
+            PromQLCriteria: { Query: 'avg(rate(http_requests_total[5m])) > 100' },
+          },
+          EvaluationInterval: Number(process.env['CDKD_TEST_PROMQL_INTERVAL'] ?? '60'),
+        },
       });
     }
 

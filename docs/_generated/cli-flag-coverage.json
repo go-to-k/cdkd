@@ -471,6 +471,7 @@
         "rollback-same-id-recreate",
         "rollback-sqs-cooldown",
         "s3-lifecycle",
+        "sdk-to-cc-autoroute",
         "type-change-replacement",
         "update-replace"
       ]

@@ -283,17 +283,28 @@ export class LogsLogGroupProvider implements ResourceProvider {
    * #1392 silent-drop class the `handled-property-wiring` critic exists to
    * catch).
    *
-   * It cannot be honestly wired from here. The value maps to the SEPARATE
-   * `AWS::Logs::ResourcePolicy` resource type, whose CloudWatch Logs API
-   * counterpart (`PutResourcePolicy` / `DeleteResourcePolicy`) is
-   * **account-wide**, not per-log-group: the policy is keyed by a policy NAME
-   * in the account, not by the log group. Owning it from the log group's
-   * lifecycle would mean inventing an ownership/lifecycle answer cdkd has no
-   * basis for — which policy name to claim, what to do on delete when the
-   * account-wide policy may be shared, and how to resolve two log groups
-   * declaring conflicting documents. Managing the sibling
-   * `AWS::Logs::ResourcePolicy` resource is a separate feature (option 1 in
-   * issue #1412), deliberately not attempted here.
+   * It is not wired from here, by decision (issue #1412), not for lack of an
+   * API. When #1412 was decided, the only CloudWatch Logs counterpart was the
+   * ACCOUNT-scoped `PutResourcePolicy` behind the separate
+   * `AWS::Logs::ResourcePolicy` type, keyed by a policy NAME rather than by the
+   * log group. Owning it from the log group's lifecycle would have meant
+   * inventing which name to claim, what to do on delete when the policy may be
+   * shared, and how to resolve two log groups declaring conflicting documents.
+   *
+   * The API has since gained a log-group-scoped form: `PutResourcePolicy` /
+   * `DescribeResourcePolicies` / `DeleteResourcePolicy` take `resourceArn` and
+   * `policyScope: 'RESOURCE'` (present in `@aws-sdk/client-cloudwatch-logs`
+   * 3.1156.0), with an `expectedRevisionId` handshake on writes. That removes
+   * the account-wide objection, but adopting it is a separate decision: this
+   * provider would then own a second resource's create / update / delete and
+   * revision handling. It is not taken here. (That #1412 predates the
+   * resource-scoped form is an inference from its wording, not a recorded
+   * fact.) Managing the sibling `AWS::Logs::ResourcePolicy` resource stays
+   * option 1 in issue #1412, deliberately not attempted.
+   *
+   * `tests/integration/sdk-to-cc-autoroute/` rests on this drop (issue
+   * #5524): wiring the property ends that fixture's premise, which its step 0
+   * reports by name.
    *
    * Declaring the drop instead makes the omission visible: the #614 routing
    * pass sends any log group whose template sets `ResourcePolicyDocument`
@@ -307,7 +318,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
       new Map<string, string>([
         [
           'ResourcePolicyDocument',
-          'covered by the separate account-wide AWS::Logs::ResourcePolicy resource type; logs:PutResourcePolicy is account-scoped, not per-log-group, so it has no CreateLogGroup / PutRetentionPolicy counterpart — routed via Cloud Control instead',
+          'not driven by this provider by decision (issue #1412): no CreateLogGroup / PutRetentionPolicy member carries it, and both policy lifecycles — the account-scoped AWS::Logs::ResourcePolicy type and the log-group-scoped logs:PutResourcePolicy (resourceArn + policyScope RESOURCE) — are ones this provider does not take on — routed via Cloud Control, whose handler applies it',
         ],
       ]),
     ],
@@ -1712,10 +1723,9 @@ export class LogsLogGroupProvider implements ResourceProvider {
    * and `FieldIndexPolicies` (via `DescribeIndexPolicies`, filtered to
    * log-group-level policies and JSON-parsed). Still out of scope:
    * `ResourcePolicyDocument`, which is declared in
-   * {@link unhandledByDesign} (issue #1412) — it is managed by the separate
-   * account-wide `AWS::Logs::ResourcePolicy` resource type, so a log group
-   * whose template sets it routes via Cloud Control rather than through this
-   * provider at all.
+   * {@link unhandledByDesign} (issue #1412) — this provider does not own a
+   * resource policy, so a log group whose template sets it routes via Cloud
+   * Control rather than through this provider at all.
    *
    * Write-side coverage: `FieldIndexPolicies` is applied via
    * `PutIndexPolicy` (CloudWatch Logs allows at most one log-group-level

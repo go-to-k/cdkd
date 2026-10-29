@@ -59,13 +59,13 @@ vi.mock('p-limit', () => ({
  * bag, finds the property identical on both sides, omits it, and the deploy
  * reports success having sent nothing for it.
  *
- * Measured live on `AWS::CloudWatch::Alarm` / `EvaluationWindow` by
+ * Measured live on `AWS::Logs::LogGroup` / `ResourcePolicyDocument` by
  * `tests/integration/sdk-to-cc-autoroute/` — the type and property this file
  * uses, so the unit and the fixture pin the same case. The end-to-end sequence
  * stays the fixture's job; what is assertable here without Cloud Control is the
  * half that causes the damage: what the engine PERSISTS.
  *
- * The premise (that `EvaluationWindow` really is a silent drop for this type,
+ * The premise (that `ResourcePolicyDocument` really is a silent drop for this type,
  * and the other keys really are handled) is asserted rather than assumed —
  * `property-coverage.generated.ts` is regenerated from the CFn schema
  * fixtures, and a provider gaining coverage would otherwise turn every case
@@ -73,21 +73,29 @@ vi.mock('p-limit', () => ({
  */
 describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () => {
   const stackName = 'silent-drop-record-stack';
-  const RESOURCE_TYPE = 'AWS::CloudWatch::Alarm';
-  const DROPPED = 'EvaluationWindow';
-  const PHYSICAL_ID = 'silent-drop-record-stack-alarm';
+  const RESOURCE_TYPE = 'AWS::Logs::LogGroup';
+  const DROPPED = 'ResourcePolicyDocument';
+  const PHYSICAL_ID = 'silent-drop-record-stack-log-group';
 
   const WRITTEN = {
-    AlarmName: PHYSICAL_ID,
-    ComparisonOperator: 'GreaterThanThreshold',
-    EvaluationPeriods: 1,
-    MetricName: 'Errors',
-    Namespace: 'AWS/Lambda',
-    Threshold: 1,
+    LogGroupName: PHYSICAL_ID,
+    LogGroupClass: 'STANDARD',
+    RetentionInDays: 1,
+  };
+  const POLICY = {
+    Version: '2012-10-17',
+    Statement: [
+      {
+        Effect: 'Allow',
+        Principal: { Service: 'delivery.logs.amazonaws.com' },
+        Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+        Resource: '*',
+      },
+    ],
   };
   // What the template declares: everything above PLUS the property the SDK
   // provider has no wiring for.
-  const DESIRED = { ...WRITTEN, [DROPPED]: { WallClockWindow: { Timezone: 'UTC' } } };
+  const DESIRED = { ...WRITTEN, [DROPPED]: POLICY };
 
   it('PREMISE: the fixture keys are classified as this file assumes', () => {
     const coverage = getPropertyCoverage(RESOURCE_TYPE);
@@ -146,7 +154,7 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
     };
     mockDagBuilder = {
       buildGraph: vi.fn().mockReturnValue({}),
-      getExecutionLevels: vi.fn().mockReturnValue([['MyAlarm']]),
+      getExecutionLevels: vi.fn().mockReturnValue([['MyLogGroup']]),
       getDirectDependencies: vi.fn().mockReturnValue([]),
     };
     mockDiffCalculator = {
@@ -172,28 +180,28 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
     mockStateBackend = { getState: vi.fn(), saveState: vi.fn().mockResolvedValue('etag-new') };
   });
 
-  function makeEngine() {
+  function makeEngine(options: Record<string, unknown> = {}) {
     return new DeployEngine(
       mockStateBackend as never,
       mockLockManager as never,
       mockDagBuilder as never,
       mockDiffCalculator as never,
       mockProviderRegistry as never,
-      { dryRun: false },
+      { dryRun: false, ...options },
       'us-east-1'
     );
   }
 
   const template: CloudFormationTemplate = {
-    Resources: { MyAlarm: { Type: RESOURCE_TYPE, Properties: DESIRED } },
+    Resources: { MyLogGroup: { Type: RESOURCE_TYPE, Properties: DESIRED } },
   };
 
   function changeMap(changeType: 'CREATE' | 'UPDATE'): Map<string, ResourceChange> {
     return new Map<string, ResourceChange>([
       [
-        'MyAlarm',
+        'MyLogGroup',
         {
-          logicalId: 'MyAlarm',
+          logicalId: 'MyLogGroup',
           changeType,
           resourceType: RESOURCE_TYPE,
           desiredProperties: DESIRED,
@@ -208,7 +216,7 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
    * never-written property included, on the SDK route.
    */
   function recordedByOldBinary(): Record<string, unknown> {
-    return { ...DESIRED, Threshold: 2 };
+    return { ...DESIRED, RetentionInDays: 3 };
   }
 
   function priorState(provisionedBy: 'sdk' | 'cc-api' = 'sdk'): StackState {
@@ -217,7 +225,7 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
       region: 'us-east-1',
       stackName,
       resources: {
-        MyAlarm: {
+        MyLogGroup: {
           physicalId: PHYSICAL_ID,
           resourceType: RESOURCE_TYPE,
           properties: recordedByOldBinary(),
@@ -232,7 +240,7 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
 
   function savedRecord() {
     const savedState = mockStateBackend.saveState.mock.calls.at(-1)![2] as StackState;
-    return savedState.resources['MyAlarm']!;
+    return savedState.resources['MyLogGroup']!;
   }
 
   describe('CREATE path', () => {
@@ -277,13 +285,13 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
       mockProvider.create.mockResolvedValue({
         physicalId: PHYSICAL_ID,
         attributes: {},
-        effectiveProperties: { ...DESIRED, Threshold: 99 },
+        effectiveProperties: { ...DESIRED, RetentionInDays: 30 },
       });
       mockDiffCalculator.calculateDiff.mockResolvedValue(changeMap('CREATE'));
 
       await makeEngine().deploy(stackName, template);
 
-      expect(savedRecord().properties).toEqual({ ...WRITTEN, Threshold: 99 });
+      expect(savedRecord().properties).toEqual({ ...WRITTEN, RetentionInDays: 30 });
     });
   });
 
@@ -337,7 +345,7 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
       expect(previousProperties).not.toHaveProperty(DROPPED);
       // Not a wholesale replacement of the previous side: everything the SDK
       // route DID write must survive, or the patch would re-send the whole bag.
-      expect(previousProperties['Threshold']).toBe(2);
+      expect(previousProperties['RetentionInDays']).toBe(3);
 
       // The UPDATE site's negative control for `propertiesToRecord`'s route
       // gate. This deploy lands on Cloud Control, which sends the full map, so
@@ -373,7 +381,7 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
           region: 'us-east-1',
           stackName,
           resources: {
-            MyAlarm: {
+            MyLogGroup: {
               physicalId: PHYSICAL_ID,
               resourceType: RESOURCE_TYPE,
               properties: poisoned,
@@ -394,9 +402,9 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
       mockDiffCalculator.calculateDiff.mockResolvedValue(
         new Map<string, ResourceChange>([
           [
-            'MyAlarm',
+            'MyLogGroup',
             {
-              logicalId: 'MyAlarm',
+              logicalId: 'MyLogGroup',
               changeType: 'UPDATE',
               resourceType: RESOURCE_TYPE,
               desiredProperties: DESIRED,
@@ -452,7 +460,8 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
       mockProvider.create.mockResolvedValue({ physicalId: `${PHYSICAL_ID}-2`, attributes: {} });
       mockDiffCalculator.calculateDiff.mockResolvedValue(changeMap('UPDATE'));
 
-      await makeEngine().deploy(stackName, template);
+      // a log group is a stateful type (src/provisioning/stateful-types.ts); the replacement guard needs the opt-in, which is not what this test is about
+      await makeEngine({ forceStatefulRecreation: true }).deploy(stackName, template);
 
       expect(mockProvider.create).toHaveBeenCalled();
       expect(savedRecord().properties).not.toHaveProperty(DROPPED);
@@ -464,22 +473,23 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
       mockDiffCalculator.calculateDiff.mockResolvedValue(
         new Map<string, ResourceChange>([
           [
-            'MyAlarm',
+            'MyLogGroup',
             {
-              logicalId: 'MyAlarm',
+              logicalId: 'MyLogGroup',
               changeType: 'UPDATE',
               resourceType: RESOURCE_TYPE,
               desiredProperties: DESIRED,
               currentProperties: recordedByOldBinary(),
               propertyChanges: [
-                { propertyPath: 'AlarmName', changeType: 'MODIFY', requiresReplacement: true },
+                { propertyPath: 'LogGroupName', changeType: 'MODIFY', requiresReplacement: true },
               ],
             } as unknown as ResourceChange,
           ],
         ])
       );
 
-      await makeEngine().deploy(stackName, template);
+      // a log group is a stateful type (src/provisioning/stateful-types.ts); the replacement guard needs the opt-in, which is not what this test is about
+      await makeEngine({ forceStatefulRecreation: true }).deploy(stackName, template);
 
       expect(mockProvider.create).toHaveBeenCalled();
       expect(savedRecord().properties).not.toHaveProperty(DROPPED);
@@ -569,11 +579,11 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
       // allow set (from `beforeEach`) names that drop, so this deploy stays on
       // the SDK route and nothing it can send differs from what AWS holds.
       mockStateBackend.getState.mockResolvedValue({
-        state: recordState('MyAlarm', RESOURCE_TYPE, PHYSICAL_ID, WRITTEN, 'sdk'),
+        state: recordState('MyLogGroup', RESOURCE_TYPE, PHYSICAL_ID, WRITTEN, 'sdk'),
         etag: 'etag-old',
       });
       mockDiffCalculator.calculateDiff.mockResolvedValue(
-        updateOf('MyAlarm', RESOURCE_TYPE, DESIRED, WRITTEN)
+        updateOf('MyLogGroup', RESOURCE_TYPE, DESIRED, WRITTEN)
       );
 
       await makeEngine().deploy(stackName, template);
@@ -589,11 +599,11 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
       // too. Keyed on `=== 'sdk'` instead, this record would compare an
       // unnarrowed desired bag against a narrowed stored one -- the defect.
       mockStateBackend.getState.mockResolvedValue({
-        state: recordState('MyAlarm', RESOURCE_TYPE, PHYSICAL_ID, WRITTEN, undefined),
+        state: recordState('MyLogGroup', RESOURCE_TYPE, PHYSICAL_ID, WRITTEN, undefined),
         etag: 'etag-old',
       });
       mockDiffCalculator.calculateDiff.mockResolvedValue(
-        updateOf('MyAlarm', RESOURCE_TYPE, DESIRED, WRITTEN)
+        updateOf('MyLogGroup', RESOURCE_TYPE, DESIRED, WRITTEN)
       );
 
       await makeEngine().deploy(stackName, template);
@@ -609,11 +619,11 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
       // Narrowing the desired side regardless of route would remove the key
       // from ONE operand only and send an update for a resource nothing changed.
       mockStateBackend.getState.mockResolvedValue({
-        state: recordState('MyAlarm', RESOURCE_TYPE, PHYSICAL_ID, DESIRED, 'cc-api'),
+        state: recordState('MyLogGroup', RESOURCE_TYPE, PHYSICAL_ID, DESIRED, 'cc-api'),
         etag: 'etag-old',
       });
       mockDiffCalculator.calculateDiff.mockResolvedValue(
-        updateOf('MyAlarm', RESOURCE_TYPE, DESIRED, DESIRED)
+        updateOf('MyLogGroup', RESOURCE_TYPE, DESIRED, DESIRED)
       );
 
       await makeEngine().deploy(stackName, template);
@@ -638,11 +648,11 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
         attributes: {},
       });
       mockStateBackend.getState.mockResolvedValue({
-        state: recordState('MyAlarm', RESOURCE_TYPE, PHYSICAL_ID, WRITTEN, 'sdk'),
+        state: recordState('MyLogGroup', RESOURCE_TYPE, PHYSICAL_ID, WRITTEN, 'sdk'),
         etag: 'etag-old',
       });
       mockDiffCalculator.calculateDiff.mockResolvedValue(
-        updateOf('MyAlarm', RESOURCE_TYPE, DESIRED, WRITTEN)
+        updateOf('MyLogGroup', RESOURCE_TYPE, DESIRED, WRITTEN)
       );
 
       await makeEngine().deploy(stackName, template);
