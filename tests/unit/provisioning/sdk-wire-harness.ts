@@ -478,13 +478,20 @@ const WRAPPERS = new Set(['items', 'item', 'member', 'values', 'entry', 'value']
 
 /**
  * Where `landed`'s own member sits once trailing wrappers are skipped, when it
- * is `name`; else -1. `Aliases.Items` is `Aliases`.
+ * is `name`; else -1. `Aliases.Items` is `Aliases`. A dotted `members` rename
+ * (`Expiration.Days`) names the last members in order, and the index is its
+ * first: the parent check continues above it.
  */
-function memberAt(landed: Chain, name: string): number {
-  const want = memberKey(name);
+function memberAt(landed: Chain, name: string, dotted = false): number {
+  // Only a rename is split: a CFn map key may carry dots (`spark.a`).
+  const segs = (dotted ? name.split('.') : [name]).map(memberKey);
   for (let j = landed.length - 1; j >= 0; j--) {
     const k = memberKey(landed[j]!);
-    if (k === want) return j;
+    if (k === segs[segs.length - 1]) {
+      const first = j - segs.length + 1;
+      if (first < 0) return -1;
+      return segs.every((seg, i) => memberKey(landed[first + i]!) === seg) ? first : -1;
+    }
     if (!WRAPPERS.has(k)) return -1;
   }
   return -1;
@@ -522,12 +529,74 @@ const renameKey = (path: Path): string =>
   path.filter((s) => typeof s === 'string').join('.');
 
 /**
- * Whether the varied leaf at `path` landed as one of its expected chains: its
- * last member (or a `renames.members` name for that path), under its parent
- * (or a `renames.containers` name for the parent's path, `(flattened)` when
- * the SDK input has no such parent). Each accepted rename that matched is
- * recorded in `used`. Undefined when it landed right; else the chains it did
- * land as, which is what a rename would have to name.
+ * Where `name` (dotted: several members in order) ends right above `pos` in
+ * `landed`, wrappers not spelled like it skipped; its first index, else -1.
+ */
+function levelAt(landed: Chain, pos: number, name: string): number {
+  const segs = name.split('.').map(memberKey);
+  let k = pos - 1;
+  while (k >= 0 && WRAPPERS.has(memberKey(landed[k]!)) && memberKey(landed[k]!) !== segs.at(-1)) {
+    k--;
+  }
+  const first = k - segs.length + 1;
+  if (k < 0 || first < 0) return -1;
+  return segs.every((seg, i) => memberKey(landed[first + i]!) === seg) ? first : -1;
+}
+
+/**
+ * The renames `landed` needs to be `e` (empty: none), or undefined when it is
+ * not. Its last member must be the leaf (or a `members` rename), and every
+ * CFn ancestor must sit right above the level below it, wrappers skipped, so
+ * a value cannot land under an extra parent (`S3BackupConfiguration`) that
+ * only happens to sit below the right grandparent. A level may instead match
+ * a `containers` name for its bag path (dotted when the SDK adds a level of
+ * its own: `Destination.S3BucketDestination`), or be absent from the input
+ * (`FLATTENED`); a named container is tried first, so a `FLATTENED` beside
+ * one still goes stale.
+ */
+function chainNeeds(
+  e: Chain,
+  landed: Chain,
+  leaf: [string, string | undefined],
+  containers: Readonly<Record<string, readonly string[]>>
+): string[] | undefined {
+  const j = memberAt(landed, leaf[0], leaf[1] !== undefined);
+  if (j < 0) return undefined;
+  const needed = leaf[1] === undefined ? [] : [leaf[1]];
+  let pos = j;
+  for (let i = e.length - 2; i >= 0; i--) {
+    const prefix = e.slice(0, i + 1).join('.');
+    const own = memberKey(e[i]!);
+    // The CFn name itself is one member even when it carries a dot.
+    let k = pos - 1;
+    while (k >= 0 && WRAPPERS.has(memberKey(landed[k]!)) && memberKey(landed[k]!) !== own) k--;
+    if (k >= 0 && memberKey(landed[k]!) === own) {
+      pos = k;
+      continue;
+    }
+    const renamed = (containers[prefix] ?? [])
+      .filter((r) => r !== FLATTENED)
+      .map((r) => [r, levelAt(landed, pos, r)] as const)
+      .find(([, at]) => at >= 0);
+    if (renamed !== undefined) {
+      needed.push(`${prefix}=>${renamed[0]}`);
+      pos = renamed[1];
+    } else if ((containers[prefix] ?? []).includes(FLATTENED)) {
+      needed.push(`${prefix}=>${FLATTENED}`);
+    } else {
+      return undefined;
+    }
+  }
+  return needed;
+}
+
+/**
+ * Whether the varied leaf at `path` landed as one of its expected chains
+ * (`chainNeeds`), recording in `used` the renames a match needed when no
+ * match needs none, so one the mapping no longer needs goes stale. A
+ * `transformed` path is accepted only when nothing else matches and SOMETHING
+ * changed. Undefined when it landed right; else the chains it did land as,
+ * which is what a rename would have to name.
  */
 function wrongMember(
   path: Path,
@@ -538,41 +607,30 @@ function wrongMember(
 ): string | undefined {
   if (expected.length === 0) return undefined;
   const key = renameKey(path);
-  if (renames.transformed?.[key] !== undefined) {
-    used.add(`${key}~`);
-    return undefined;
-  }
-  // Each match with the renames it needed. A rename is recorded only when NO
-  // match needs none: one the mapping no longer needs must go stale.
   const matches: string[][] = [];
   for (const e of expected) {
-    const container = e.slice(0, -1).join('.');
-    const leafNames: [string, string | undefined][] = [
+    const leaves: [string, string | undefined][] = [
       [e[e.length - 1]!, undefined],
       ...(renames.members?.[key] ?? []).map((r): [string, string] => [r, `${key}->${r}`]),
     ];
     for (const l of landed) {
-      for (const [name, leafRename] of leafNames) {
-        const j = memberAt(l, name);
-        if (j < 0) continue;
-        const above = l.slice(0, j).map(memberKey);
-        const needed = leafRename === undefined ? [] : [leafRename];
-        if (e.length > 1 && !above.includes(memberKey(e[e.length - 2]!))) {
-          const parents = (renames.containers?.[container] ?? []).filter(
-            (r) => r === FLATTENED || above.includes(memberKey(r))
-          );
-          if (parents.length === 0) continue;
-          needed.push(...parents.map((r) => `${container}=>${r}`));
-        }
-        matches.push(needed);
+      for (const leaf of leaves) {
+        const needed = chainNeeds(e, l, leaf, renames.containers ?? {});
+        if (needed !== undefined) matches.push(needed);
       }
     }
   }
-  const right = matches.length > 0;
-  if (!matches.some((m) => m.length === 0)) {
-    for (const r of matches.flat()) used.add(r);
+  if (matches.some((m) => m.length === 0)) return undefined;
+  if (matches.length > 0) {
+    // The cheapest explanation: fewest renames.
+    const fewest = Math.min(...matches.map((m) => m.length));
+    for (const m of matches.filter((x) => x.length === fewest)) for (const r of m) used.add(r);
+    return undefined;
   }
-  if (right) return undefined;
+  if (renames.transformed?.[key] !== undefined && landed.length > 0) {
+    used.add(`${key}~`);
+    return undefined;
+  }
   return landed.length === 0 ? '(nothing)' : landed.map((l) => l.join('.')).join(',');
 }
 
@@ -678,9 +736,11 @@ export interface ProbeResult {
  * (`S3Configuration.Prefix` as `S3BackupConfiguration.Prefix`), fails even
  * though the wire changed. `sdk-wire-member-renames.ts` names the accepted
  * exceptions. Bounds: only a vary probe is traced, so a container whose
- * removal is the only evidence (an empty list) is not; only the immediate
- * parent is compared; and a value under a `FLATTENED` or `transformed` path
- * is matched by its leaf alone, or not at all.
+ * removal is the only evidence (an empty list) is not; a TOP-LEVEL leaf has no
+ * parent to compare, so it matches a same-named member anywhere; a
+ * `FLATTENED` level is not compared, and is keyed by bag path rather than by
+ * command (Lambda's `Code` nests on CreateFunction and flattens on
+ * UpdateFunctionCode); and a `transformed` path is not traced at all.
  */
 /** Arm the fake reads for `bag`: the case's own `arm`, else no overrides. */
 export function armFor(c: Pick<ProbeCase, 'arm' | 'physicalId'>, bag: Bag): void {

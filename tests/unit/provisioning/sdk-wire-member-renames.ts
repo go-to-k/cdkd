@@ -1,28 +1,19 @@
 /**
- * Where a varied CFn leaf may land under ANOTHER member or parent (#3723).
+ * Where a varied CFn leaf may land under ANOTHER member name (#3723).
  *
  * Each vary probe in `sdk-wire-harness.ts` diffs the two runs' command inputs
  * and requires the varied leaf to land in a member of its own name (compared
- * case- and punctuation-blind, wrappers such as `Items` / `member` / `Value`
- * skipped) under a member named like its CFn parent, or as the map entry it
- * keys. This stands in for `gen-nested-key-coverage.ts`'s write pass: a
+ * case- and punctuation-blind), a map entry it keys, or a name listed here for
+ * that type and bag path (member names joined by `.`, list indices dropped).
+ * This is what stands in for `gen-nested-key-coverage.ts`'s write pass: a
  * provider writing a value into a SIBLING member changes the wire exactly as
  * the right mapping does, so wire comparison alone cannot see it.
  *
- * Per type, keyed by bag path (member names joined by `.`, list indices
- * dropped):
- *
- * - `members`: the leaf's SDK member has another name (`TopicName` is `Name`).
- * - `containers`: the children of that CFn parent sit under another SDK
- *   member (an update's `ExtendedS3DestinationUpdate`, a patch operation's
- *   `patchOperations`), or under none (`FLATTENED`: the SDK input spreads
- *   them at its top level, so those leaves are matched by name alone).
- * - `transformed`: the value is not sent as-is (fetched from S3, generated,
- *   re-keyed), so no member can be traced; the reason says what happens.
- *
  * Shrink-only in spirit: every entry must still be needed (the per-type
- * `uses every accepted rename` case fails on one that no probe needed), and a
- * new entry is a claim that the provider's mapping is RIGHT.
+ * `uses every accepted rename` case fails on one no probe reached), and a new
+ * entry is a claim that the provider's mapping is RIGHT. An entry naming a
+ * structural parent (`Groups`, `Items`) is weaker than one naming the member
+ * itself; where the input carries the member's own name, that is the one used.
  */
 /** `containers` value: the SDK input has no member for that CFn parent. */
 export const FLATTENED = '(flattened)';
@@ -63,7 +54,7 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
     },
     containers: {
       AccessLogSetting: ['patchOperations'],
-      CanarySetting: ['canarySettings', 'patchOperations'],
+      CanarySetting: [FLATTENED, 'canarySettings', 'patchOperations'],
       'CanarySetting.StageVariableOverrides': ['patchOperations'],
       MethodSettings: ['patchOperations'],
       Variables: ['patchOperations'],
@@ -140,7 +131,9 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'DistributionConfig.Restrictions.GeoRestriction.Locations': ['Items'],
     },
     containers: {
-      'DistributionConfig.Origins.OriginCustomHeaders': ['Items'],
+      'DistributionConfig.CacheBehaviors': ['CacheBehaviors.Items.AllowedMethods'],
+      'DistributionConfig.DefaultCacheBehavior': ['DefaultCacheBehavior.AllowedMethods'],
+      'DistributionConfig.Origins.OriginCustomHeaders': ['CustomHeaders'],
     },
   },
   'AWS::CloudTrail::Trail': {
@@ -202,24 +195,30 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'SSESpecification.SSEEnabled': ['Enabled', 'KMSMasterKeyId'],
     },
     containers: {
-      GlobalSecondaryIndexes: ['Create'],
+      GlobalSecondaryIndexes: [FLATTENED, 'Create'],
       'GlobalSecondaryIndexes.WriteOnDemandThroughputSettings': ['OnDemandThroughput'],
+      'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings': [FLATTENED],
       'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
       Replicas: [FLATTENED],
       'Replicas.ContributorInsightsSpecification': [FLATTENED],
+      'Replicas.GlobalSecondaryIndexes': [FLATTENED],
       'Replicas.GlobalSecondaryIndexes.ContributorInsightsSpecification': [FLATTENED],
       'Replicas.GlobalSecondaryIndexes.ReadOnDemandThroughputSettings': ['OnDemandThroughput'],
-      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings': ['ProvisionedThroughputOverride'],
+      'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings': [FLATTENED, 'ProvisionedThroughputOverride'],
       'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
       'Replicas.KinesisStreamSpecification': [FLATTENED, 'EnableKinesisStreamingConfiguration'],
       'Replicas.ReadOnDemandThroughputSettings': ['OnDemandThroughput'],
-      'Replicas.ReadProvisionedThroughputSettings': ['ProvisionedThroughputOverride'],
+      'Replicas.ReadProvisionedThroughputSettings': [FLATTENED, 'ProvisionedThroughputOverride'],
       'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification': [FLATTENED],
+      'Replicas.ReplicaStreamSpecification.ResourcePolicy': [FLATTENED],
       'Replicas.ReplicaStreamSpecification.ResourcePolicy.PolicyDocument': ['Policy'],
+      'Replicas.ResourcePolicy': [FLATTENED],
       'Replicas.ResourcePolicy.PolicyDocument': ['Policy'],
       'Replicas.SSESpecification': ['Create', 'Update'],
       SSESpecification: ['Update'],
       WriteOnDemandThroughputSettings: ['OnDemandThroughput'],
+      WriteProvisionedThroughputSettings: [FLATTENED],
       'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': [FLATTENED],
     },
     transformed: {
@@ -237,10 +236,13 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
     },
     containers: {
       ContributorInsightsSpecification: [FLATTENED],
-      GlobalSecondaryIndexes: ['Create'],
+      GlobalSecondaryIndexes: [FLATTENED, 'Create', 'Update'],
       'GlobalSecondaryIndexes.ContributorInsightsSpecification': [FLATTENED],
       KinesisStreamSpecification: [FLATTENED, 'EnableKinesisStreamingConfiguration'],
+      ResourcePolicy: [FLATTENED],
       'ResourcePolicy.PolicyDocument': ['Policy', 'ResourcePolicy'],
+      StreamSpecification: [FLATTENED],
+      'StreamSpecification.ResourcePolicy': [FLATTENED],
       'StreamSpecification.ResourcePolicy.PolicyDocument': ['Policy'],
     },
   },
@@ -278,8 +280,8 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'SecurityGroupIngress.SourceSecurityGroupOwnerId': ['UserId'],
     },
     containers: {
-      SecurityGroupEgress: ['IpPermissions', 'IpRanges', 'Ipv6Ranges'],
-      SecurityGroupIngress: ['IpPermissions', 'IpRanges', 'Ipv6Ranges'],
+      SecurityGroupEgress: ['IpPermissions', 'IpRanges', 'Ipv6Ranges', 'PrefixListIds', 'UserIdGroupPairs'],
+      SecurityGroupIngress: ['IpPermissions', 'IpRanges', 'Ipv6Ranges', 'PrefixListIds', 'UserIdGroupPairs'],
     },
   },
   'AWS::EC2::SecurityGroupIngress': {
@@ -630,12 +632,16 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'InventoryConfigurations.Destination.BucketAccountId': ['AccountId'],
       'InventoryConfigurations.Destination.BucketArn': ['Bucket'],
       'InventoryConfigurations.Enabled': ['IsEnabled'],
-      'InventoryConfigurations.ScheduleFrequency': ['Frequency'],
-      'LifecycleConfiguration.Rules.ExpirationDate': ['Date'],
-      'LifecycleConfiguration.Rules.ExpirationInDays': ['Days'],
-      'LifecycleConfiguration.Rules.NoncurrentVersionExpirationInDays': ['NoncurrentDays'],
+      'InventoryConfigurations.ScheduleFrequency': ['Schedule.Frequency'],
+      'LifecycleConfiguration.Rules.ExpirationDate': ['Expiration.Date'],
+      'LifecycleConfiguration.Rules.ExpirationInDays': ['Expiration.Days'],
+      'LifecycleConfiguration.Rules.ExpiredObjectDeleteMarker': ['Expiration.ExpiredObjectDeleteMarker'],
+      'LifecycleConfiguration.Rules.NoncurrentVersionExpirationInDays': ['NoncurrentVersionExpiration.NoncurrentDays'],
       'LifecycleConfiguration.Rules.NoncurrentVersionTransition.TransitionInDays': ['NoncurrentDays'],
       'LifecycleConfiguration.Rules.NoncurrentVersionTransitions.TransitionInDays': ['NoncurrentDays'],
+      'LifecycleConfiguration.Rules.ObjectSizeGreaterThan': ['Filter.And.ObjectSizeGreaterThan'],
+      'LifecycleConfiguration.Rules.ObjectSizeLessThan': ['Filter.And.ObjectSizeLessThan'],
+      'LifecycleConfiguration.Rules.Prefix': ['Filter.And.Prefix'],
       'LifecycleConfiguration.Rules.Transition.TransitionDate': ['Date'],
       'LifecycleConfiguration.Rules.Transition.TransitionInDays': ['Days'],
       'LifecycleConfiguration.Rules.Transitions.TransitionDate': ['Date'],
@@ -651,27 +657,35 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'NotificationConfiguration.TopicConfigurations.Event': ['Events'],
       'NotificationConfiguration.TopicConfigurations.Topic': ['TopicArn'],
       ObjectLockEnabled: ['ObjectLockEnabledForBucket'],
-      'WebsiteConfiguration.ErrorDocument': ['Key'],
-      'WebsiteConfiguration.IndexDocument': ['Suffix'],
+      'WebsiteConfiguration.ErrorDocument': ['ErrorDocument.Key'],
+      'WebsiteConfiguration.IndexDocument': ['IndexDocument.Suffix'],
     },
     containers: {
       AnalyticsConfigurations: ['AnalyticsConfiguration', 'And'],
+      'AnalyticsConfigurations.StorageClassAnalysis.DataExport.Destination': ['Destination.S3BucketDestination'],
       'AnalyticsConfigurations.TagFilters': ['Tags'],
+      BucketEncryption: [FLATTENED],
+      'BucketEncryption.ServerSideEncryptionConfiguration': ['Rules'],
       'BucketEncryption.ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault': ['ApplyServerSideEncryptionByDefault'],
       IntelligentTieringConfigurations: ['And', 'IntelligentTieringConfiguration'],
       'IntelligentTieringConfigurations.TagFilters': ['Tags'],
       InventoryConfigurations: ['Filter', 'InventoryConfiguration'],
+      'InventoryConfigurations.Destination': ['Destination.S3BucketDestination'],
       LifecycleConfiguration: [FLATTENED],
       'LifecycleConfiguration.Rules.NoncurrentVersionTransition': ['NoncurrentVersionTransitions'],
-      'LifecycleConfiguration.Rules.TagFilters': ['Tag'],
+      'LifecycleConfiguration.Rules.TagFilters': ['Filter.Tag'],
       'LifecycleConfiguration.Rules.Transition': ['Transitions'],
       LoggingConfiguration: ['LoggingEnabled'],
       MetricsConfigurations: ['And', 'Filter', 'MetricsConfiguration'],
       'MetricsConfigurations.TagFilters': ['Tags'],
+      NotificationConfiguration: [FLATTENED],
       'NotificationConfiguration.EventBridgeConfiguration': ['NotificationConfiguration'],
       'NotificationConfiguration.LambdaConfigurations': ['LambdaFunctionConfigurations'],
+      'NotificationConfiguration.LambdaConfigurations.Filter.S3Key': ['Key'],
       'NotificationConfiguration.LambdaConfigurations.Filter.S3Key.Rules': ['FilterRules'],
+      'NotificationConfiguration.QueueConfigurations.Filter.S3Key': ['Key'],
       'NotificationConfiguration.QueueConfigurations.Filter.S3Key.Rules': ['FilterRules'],
+      'NotificationConfiguration.TopicConfigurations.Filter.S3Key': ['Key'],
       'NotificationConfiguration.TopicConfigurations.Filter.S3Key.Rules': ['FilterRules'],
       'ReplicationConfiguration.Rules.Filter.And.TagFilters': ['Tags'],
       'ReplicationConfiguration.Rules.Filter.TagFilter': ['Tag'],
@@ -706,6 +720,7 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
   },
   'AWS::SNS::Subscription': {
     containers: {
+      DeliveryPolicy: ['AttributeValue'],
       FilterPolicy: ['AttributeValue'],
       RedrivePolicy: ['AttributeValue'],
       ReplayPolicy: ['AttributeValue'],
@@ -777,6 +792,7 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
   },
   'AWS::StepFunctions::StateMachine': {
     members: {
+      DefinitionString: ['definition'],
       StateMachineName: ['name'],
       StateMachineType: ['type'],
     },
@@ -790,8 +806,6 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
         'the S3 object is fetched and sent as `definition`',
       'DefinitionS3Location.Version':
         'the S3 object is fetched and sent as `definition`',
-      DefinitionString:
-        'parsed and sent as the `definition` document',
       'DefinitionSubstitutions.s':
         'substituted into the definition document',
     },

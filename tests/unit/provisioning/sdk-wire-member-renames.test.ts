@@ -10,7 +10,7 @@ import { MEMBER_RENAMES } from './sdk-wire-member-renames.js';
 const DIR = new URL('.', import.meta.url);
 const FIXTURES = new URL('../../fixtures/cfn-schemas/', import.meta.url);
 
-/** Every resource type the wire case and suite files name. */
+/** Every resource type a wire case is written for. */
 function wireTypes(): Set<string> {
   const files = readdirSync(DIR).filter(
     (f) => /^sdk-wire-cases.*\.ts$/.test(f) || /^sdk-wire-coverage.*\.test\.ts$/.test(f)
@@ -18,7 +18,12 @@ function wireTypes(): Set<string> {
   const types = new Set<string>();
   for (const f of files) {
     const text = readFileSync(new URL(f, DIR), 'utf8');
-    for (const m of text.matchAll(/'(AWS::[A-Za-z0-9]+::[A-Za-z0-9]+)'/g)) types.add(m[1]!);
+    // A case's own `resourceType`, the EC2 file's `tc('AWS::...', ...)`, or
+    // a `const TYPE = 'AWS::...'` a case reads: not every type a template or
+    // a registry list in those files spells.
+    const named =
+      /(?:resourceType:\s*|\btc\(\s*|\bconst [A-Z_]+ = )'(AWS::[A-Za-z0-9]+::[A-Za-z0-9]+)'/g;
+    for (const m of text.matchAll(named)) types.add(m[1]!);
   }
   return types;
 }
