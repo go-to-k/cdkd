@@ -51,7 +51,7 @@ cdk-cross-account-lookup-role	2026-10-24T01:12:39Z	PASS	171	verify.sh	PR 5227 rc
 ci-cd	2026-10-11T09:33:22Z	PASS	75	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 cloudfront-function-url	2026-10-23T23:55:45Z	PASS	225	verify.sh	rc ok, orph clean, stmt-id fixture fixed
 cloudtrail-trail	2026-10-29T08:19:00Z	PASS	330	verify.sh	rc ok, advanced selectors + aggregation verified, orph clean (1 lambda log group routinely swept)
-cloudwatch	2026-10-29T16:19:31Z	PASS	104	verify.sh	rc ok, orph clean; probe red at sdk-route assert
+cloudwatch	2026-10-29T22:28:12Z	PASS	185	verify.sh	rc ok, orph clean; alarm EvaluationWindow/PromQL on SDK route
 cloudwatch-anomaly-detector	2026-10-26T05:42:10Z	PASS	61	verify.sh	rc ok, orph clean; TZ=Asia/Tokyo offset-less range read as UTC (5311)
 codebuild-project	2026-10-28T17:12:03Z	PASS	130	verify.sh	rc ok, orph clean; #5492 six keep arm + badge negative probe RED
 codecommit	2026-10-25T00:07:44Z	PASS	125	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
@@ -364,7 +364,7 @@ schema-v8-to-v9-migration	2026-10-12T05:46:57Z	FAIL	160	verify.sh	PR #4812: fixt
 schema-v9-to-v10-migration	2026-10-16T18:55:45Z	PASS	185	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
 scrub-nested-child	2026-10-18T13:42:37Z	PASS	210	verify.sh	PR #5052 (stage2 RedactionContext refactor) b22bc1158; pnpm/mise shim used; rc 0, destroy 0 errors, 0 surviving state versions
 sdk-ccapi-crossref	2026-10-18T14:34:21Z	PASS	110	verify.sh	rc ok, orph clean; #5044 EventBus provider re-run
-sdk-to-cc-autoroute	2026-10-15T02:06:45Z	PASS	225	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
+sdk-to-cc-autoroute	2026-10-29T22:28:12Z	FAIL	31	verify.sh	phase 2b arm deploy refused: Logs policy Principal.AWS must be account id not ARN (fixture lib stack line 158); orph clean
 secret-derived-immutable-names	2026-10-26T18:58:44Z	PASS	953	verify.sh	PR #5370 (#5359) d8019e0f; step 5l discriminated (RED with the 65ed23dff name-on-every-update revert); destroy 0 errors, orph clean, own ephemeral bucket swept
 secrets-array-nested	2026-10-20T06:38:29Z	PASS	516	verify.sh	deploy+destroy clean, 0 orphans
 secrets-dynamic-ref	2026-10-18T21:57:16Z	PASS	888	verify.sh	rc ok, orph clean (PR 5074)
