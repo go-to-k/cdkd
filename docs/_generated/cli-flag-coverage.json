@@ -430,6 +430,7 @@
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",
+        "wafv2",
         "wait-condition-handle",
         "wide-independent",
         "wide-web-functions"
@@ -897,6 +898,7 @@
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",
+        "wafv2",
         "wait-condition-handle",
         "wide-independent",
         "wide-web-functions"
@@ -1305,6 +1307,7 @@
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",
+        "wafv2",
         "wait-condition-handle",
         "wide-independent",
         "wide-web-functions"
@@ -1791,6 +1794,7 @@
         "update-policy-mutations",
         "update-replace",
         "vpc-nat-gateway",
+        "wafv2",
         "wait-condition-handle",
         "wide-independent",
         "wide-web-functions"
@@ -2203,6 +2207,7 @@
         "unrecognized-key-autoroute",
         "update-replace",
         "vpc-nat-gateway",
+        "wafv2",
         "wait-condition-handle",
         "wide-independent",
         "wide-web-functions"
@@ -2435,6 +2440,7 @@
     "--load-balancer-arn",
     "--load-balancer-arns",
     "--location-type",
+    "--lock-token",
     "--log-events",
     "--log-group-identifier",
     "--log-group-name",
@@ -2468,6 +2474,7 @@
     "--network-interface-id",
     "--network-load-balancer-arns",
     "--new-budget",
+    "--next-marker",
     "--next-token",
     "--no-acceptance-required",
     "--no-asset-metadata",
