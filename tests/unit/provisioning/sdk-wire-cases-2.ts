@@ -199,7 +199,7 @@ export const CASES_2: TypeCase[] = [
     arm: armRepository,
     exempt: {
       EmptyOnDelete:
-        'read by delete() alone (empty the repository before DeleteRepository); no create or update request carries it',
+        'read by delete() alone (DeleteRepository force); no create or update request carries it. Pinned by providers/ecr-provider-delete-data-guard.test.ts',
     },
     targets: [
       { path: ['Tags', 0], command: 'UntagResourceCommand', names: 'k1', notNames: 'k2' },

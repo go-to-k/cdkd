@@ -1630,6 +1630,20 @@ const firehoseS3Full = (bucket: string) => ({
   CloudWatchLoggingOptions: firehoseLogging(),
 });
 
+/**
+ * {@link firehoseS3Full} with every value its own, for a BACKUP beside a main
+ * destination of the same shape: with equal values, a provider sending the
+ * main's `BufferingHints` as the backup's would vary the same wire either way
+ * (go-to-k/cdkd#3723's wrong-member trace needs the values to differ).
+ */
+const firehoseS3Backup = (bucket: string) => ({
+  ...firehoseS3Full(bucket),
+  Prefix: 'b/',
+  ErrorOutputPrefix: 'be/',
+  BufferingHints: { IntervalInSeconds: 120, SizeInMBs: 10 },
+  CloudWatchLoggingOptions: { Enabled: true, LogGroupName: 'blg', LogStreamName: 'bls' },
+});
+
 /** The KMS alternative of {@link firehoseS3Full}'s `EncryptionConfiguration`. */
 const firehoseS3Kms = (bucket: string) => ({
   BucketARN: `arn:aws:s3:::${bucket}`,
@@ -1656,7 +1670,7 @@ const FIREHOSE_FIXED_BACKUP_MODE =
 const firehoseExtendedS3Full = () => ({
   ...firehoseS3Full('dest'),
   S3BackupMode: 'Enabled',
-  S3BackupConfiguration: firehoseS3Full('backup'),
+  S3BackupConfiguration: firehoseS3Backup('backup'),
   ProcessingConfiguration: firehoseProcessing(),
   DataFormatConversionConfiguration: {
     Enabled: true,
@@ -1866,7 +1880,7 @@ const FIREHOSE_CASE: TypeCase = {
           Password: 'Passw0rd!',
           S3Configuration: firehoseS3Full('stage'),
           S3BackupMode: 'Enabled',
-          S3BackupConfiguration: firehoseS3Full('backup'),
+          S3BackupConfiguration: firehoseS3Backup('backup'),
           CloudWatchLoggingOptions: firehoseLogging(),
           ProcessingConfiguration: firehoseProcessing(),
           RetryOptions: { DurationInSeconds: 3600 },
