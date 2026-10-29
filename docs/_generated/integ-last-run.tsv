@@ -319,7 +319,7 @@ remove-protection-compensation	2026-10-24T19:26:15Z	PASS	232	verify.sh	rc ok, or
 remove-protection-journaled-orphan	2026-10-20T10:53:50Z	PASS	675	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 replace-squatter-refusal	2026-10-20T09:27:02Z	PASS	112	verify.sh	#5064 head re-run, clean
-replaced-delete-failed-rollback	2026-10-18T04:10:16Z	PASS	150	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
+replaced-delete-failed-rollback	2026-10-29T15:28:06Z	PASS	171	verify.sh	rc ok, orph clean
 replacement-fanout	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 replacement-immutable-name	2026-10-19T08:12:15Z	PASS	130	verify.sh	rc ok, orph clean; PR #5092 (#5088) 091bc5f99
 replacement-rename-onto-holder	2026-10-20T06:29:59Z	PASS	626	verify.sh	deploy+destroy clean, 0 orphans
