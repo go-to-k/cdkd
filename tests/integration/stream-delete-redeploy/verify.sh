@@ -13,13 +13,14 @@
 # Phases:
 #   1. Deploy a named Kinesis stream + a named Firehose delivery stream
 #      (ExtendedS3 destination). Assert both are ACTIVE on AWS, and that the
-#      create applied FileExtension and CustomTimeZone (issue #1160).
+#      create applied FileExtension and CustomTimeZone (issue #1160). The
+#      legacy-S3 stream must read ACTIVE too: deploy waits for it (issue #5509).
 #   2. Destroy. Record whether each stream is ALREADY gone the moment destroy
 #      returns (the fix's contract), then IMMEDIATELY redeploy the same stack
 #      -- the arm that failed before the fix. Fail if the redeploy failed or if
 #      either stream was still present after destroy.
-#   3. Assert both streams are ACTIVE again (the redeploy really re-created
-#      them under the same names).
+#   3. Assert both streams (and the legacy-S3 stream) are ACTIVE again (the
+#      redeploy really re-created them under the same names).
 #   3b. Redeploy with a changed delivery stream tag: an in-place update, the
 #      stream's CreateTimestamp unchanged (issue #2613).
 #   3c. Redeploy with FileExtension changed and Prefix / ErrorOutputPrefix /
@@ -153,6 +154,12 @@ firehose_status() {
   aws firehose describe-delivery-stream --delivery-stream-name "${NAME}" --region "${REGION}" \
     --query 'DeliveryStreamDescription.DeliveryStreamStatus' --output text
 }
+# The legacy-S3 stream is the one seen still CREATING when an earlier create
+# returned (issue #5509): its status is read the moment deploy returns.
+legacy_status() {
+  aws firehose describe-delivery-stream --delivery-stream-name "${LEGACY_NAME}" --region "${REGION}" \
+    --query 'DeliveryStreamDescription.DeliveryStreamStatus' --output text
+}
 kinesis_status() {
   aws kinesis describe-stream-summary --stream-name "${NAME}" --region "${REGION}" \
     --query 'StreamDescriptionSummary.StreamStatus' --output text
@@ -181,6 +188,7 @@ CDKD_SRD_PHASE=a node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 assert_eq "Firehose status after Phase 1" "ACTIVE" "$(firehose_status)"
+assert_eq "legacy-S3 Firehose status after Phase 1 (issue #5509: create returned while CREATING)" "ACTIVE" "$(legacy_status)"
 assert_eq "Kinesis status after Phase 1" "ACTIVE" "$(kinesis_status)"
 assert_eq "Kinesis consumer status after Phase 1" "ACTIVE" "$(consumer_status)"
 echo "    both streams and the stream consumer ACTIVE"
@@ -231,6 +239,7 @@ echo "    streams were gone when destroy returned, and the redeploy succeeded"
 
 # --- Phase 3: the redeploy really re-created both ------------------------
 assert_eq "Firehose status after the redeploy" "ACTIVE" "$(firehose_status)"
+assert_eq "legacy-S3 Firehose status after the redeploy (issue #5509)" "ACTIVE" "$(legacy_status)"
 assert_eq "Kinesis status after the redeploy" "ACTIVE" "$(kinesis_status)"
 assert_eq "Kinesis consumer status after the redeploy" "ACTIVE" "$(consumer_status)"
 echo "    both streams and the stream consumer ACTIVE again under the same names"

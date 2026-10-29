@@ -45,6 +45,7 @@ import { isWaitAbandonedError } from '../../../../src/provisioning/wait-abandone
 import { isMarkedNonRetryable } from '../../../../src/deployment/retryable-errors.js';
 import { withResourceDeadline } from '../../../../src/deployment/resource-deadline.js';
 import { getLogger } from '../../../../src/utils/logger.js';
+import { createdBeforeFailure } from '../../../../src/provisioning/auxiliary-failure.js';
 import {
   disarmInterruptWatchForTests,
   interruptWatchTestSeam,
@@ -182,6 +183,128 @@ describe('FirehoseProvider', () => {
       expect(cmd.input.KinesisStreamSourceConfiguration.RoleARN).toBe(
         'arn:aws:iam::123456789012:role/kinesis-role'
       );
+    });
+  });
+
+  describe('create: the wait for ACTIVE (#5509)', () => {
+    const TYPE = 'AWS::KinesisFirehose::DeliveryStream';
+    const props = {
+      DeliveryStreamName: 'wait-stream',
+      S3DestinationConfiguration: {
+        BucketArn: 'arn:aws:s3:::b',
+        RoleArn: 'arn:aws:iam::123456789012:role/r',
+      },
+    };
+
+    /** CreateDeliveryStream answers, then each read reports the next status (the last repeats). */
+    function routeStatuses(
+      statuses: Array<string | { status: string; failure?: { Type?: string; Details?: string } }>
+    ): () => number {
+      let reads = 0;
+      mockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+        if (cmd.constructor.name === 'CreateDeliveryStreamCommand') {
+          return {
+            DeliveryStreamARN: 'arn:aws:firehose:us-east-1:123456789012:deliverystream/wait-stream',
+          };
+        }
+        const entry = statuses[Math.min(reads, statuses.length - 1)];
+        reads += 1;
+        const { status, failure } = typeof entry === 'string' ? { status: entry, failure: undefined } : entry;
+        return {
+          DeliveryStreamDescription: {
+            DeliveryStreamStatus: status,
+            ...(failure !== undefined && { FailureDescription: failure }),
+          },
+        };
+      });
+      return () => reads;
+    }
+
+    async function settle<T>(p: Promise<T>): Promise<{ ok?: T; err?: unknown }> {
+      vi.useFakeTimers();
+      try {
+        const settled = p.then(
+          (ok) => ({ ok }),
+          (err: unknown) => ({ err })
+        );
+        await vi.runAllTimersAsync();
+        return await settled;
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+
+    it('keeps waiting past the old ~60 s cap and returns once the stream is ACTIVE', async () => {
+      // 40 CREATING reads at 5 s is 200 s: the old wait warned and returned at 30 reads.
+      const reads = routeStatuses([...Array<string>(40).fill('CREATING'), 'ACTIVE']);
+      const { ok, err } = await settle(provider.create('S', TYPE, props));
+      expect(err).toBeUndefined();
+      expect(ok?.physicalId).toBe('wait-stream');
+      expect(reads()).toBe(41);
+    });
+
+    it('fails the create on CREATING_FAILED with AWS\'s failure description, masked, and records the stream', async () => {
+      routeStatuses([
+        'CREATING',
+        { status: 'CREATING_FAILED', failure: { Type: 'INVALID_KMS_KEY', Details: 'key s3cr3t-token denied' } },
+      ]);
+      const { err } = await settle(
+        provider.create('S', TYPE, props, {
+          maskSecrets: (t: string) => t.replace('s3cr3t-token', '****'),
+        })
+      );
+      expect(err).toBeInstanceOf(ProvisioningError);
+      const message = (err as Error).message;
+      expect(message).toContain('AWS reports CREATING_FAILED');
+      expect(message).toContain('INVALID_KMS_KEY: key **** denied');
+      expect(message).not.toContain('s3cr3t-token');
+      expect(isMarkedNonRetryable(err)).toBe(true);
+      expect(createdBeforeFailure(err, 'S', TYPE)).toBe('wait-stream');
+      // Terminal: no read after the failure report.
+      expect(
+        mockSend.mock.calls.filter((c) => c[0].constructor.name === 'DescribeDeliveryStreamCommand')
+      ).toHaveLength(2);
+    });
+
+    it('fails the create, rather than warning and returning, when the stream never leaves CREATING', async () => {
+      routeStatuses(['CREATING']);
+      const { ok, err } = await settle(provider.create('S', TYPE, props));
+      expect(ok).toBeUndefined();
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect((err as Error).message).toContain('Timed out waiting for Firehose delivery stream S');
+      expect((err as Error).message).toContain('last status: CREATING');
+      expect(isMarkedNonRetryable(err)).toBe(true);
+      expect(createdBeforeFailure(err, 'S', TYPE)).toBe('wait-stream');
+    });
+
+    it('ends the wait when the engine\'s resource deadline runs out', async () => {
+      const reads = routeStatuses(['CREATING']);
+      vi.useFakeTimers();
+      try {
+        let inner: Promise<{ ok?: unknown; err?: unknown }> | undefined;
+        const outer = withResourceDeadline(
+          () => {
+            inner = provider.create('S', TYPE, props).then(
+              (ok) => ({ ok }),
+              (err: unknown) => ({ err })
+            );
+            return inner;
+          },
+          { warnAfterMs: 1000, timeoutMs: 60_000, onTimeout: () => new Error('deadline fired') }
+        ).then(
+          (r) => r,
+          (e: unknown) => e
+        );
+        await vi.runAllTimersAsync();
+        expect(((await outer) as Error).message).toBe('deadline fired');
+        const { err } = await inner!;
+        expect((err as Error).message).toContain('The resource timeout expired while waiting');
+        expect(isMarkedNonRetryable(err)).toBe(true);
+        // 60 s at 5 s per read: the wait stopped with the deadline, not at the cap.
+        expect(reads()).toBeLessThanOrEqual(13);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

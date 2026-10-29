@@ -159,6 +159,14 @@ function liveEncryptionAsCfn(
 const ENCRYPTION_POLL_INTERVAL_MS = 5000;
 const ENCRYPTION_POLL_MAX_ATTEMPTS = 120;
 
+/**
+ * Polling cadence and cap for the create-time wait for ACTIVE. The engine's
+ * per-resource deadline ends the wait first under the default 30 min timeout;
+ * the cap bounds it where no deadline encloses the call.
+ */
+const ACTIVE_POLL_INTERVAL_MS = 5000;
+const ACTIVE_POLL_MAX_ATTEMPTS = 360;
+
 /** Errors for an `ENABLING_FAILED` / `DISABLING_FAILED` report: AWS ended the transition. */
 const terminalEncryptionFailures = new WeakSet<object>();
 
@@ -703,7 +711,12 @@ export class FirehoseProvider implements ResourceProvider {
 
       // Wait for delivery stream to become ACTIVE before returning.
       // SubscriptionFilter and other dependents fail if the stream is still CREATING.
-      await this.waitForActive(physicalId, logicalId);
+      await this.waitForActive(
+        physicalId,
+        logicalId,
+        resourceType,
+        maskerOrIdentity(context?.maskSecrets)
+      );
 
       return {
         physicalId,
@@ -2970,26 +2983,86 @@ export class FirehoseProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a delivery stream to become ACTIVE.
-   * Firehose CreateDeliveryStream returns immediately while the stream is still CREATING.
+   * Wait for a delivery stream to become ACTIVE (go-to-k/cdkd#5509).
+   * CreateDeliveryStream returns while the stream is still CREATING, and a
+   * stream left CREATING cannot be deleted or used by dependents
+   * (`ResourceInUseException`), so a create that returned early would be
+   * recorded as done while the next step fails. CloudFormation waits for
+   * ACTIVE and fails the resource on CREATING_FAILED; so does this: a
+   * `*_FAILED` report throws with AWS's failure description, masked, and the
+   * wait ends with an error when the engine's per-resource deadline runs out,
+   * on Ctrl-C, or at the poll cap. Each throw is non-retryable: the stream
+   * exists, so a retried create would only collide with it. `create()` records
+   * the stream through `markCreatedBeforeFailure`, so it is not orphaned.
    */
-  private async waitForActive(streamName: string, logicalId: string): Promise<void> {
-    const maxAttempts = 30;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const resp = await this.getClient().send(
-        new DescribeDeliveryStreamCommand({ DeliveryStreamName: streamName })
-      );
-      const status = resp.DeliveryStreamDescription?.DeliveryStreamStatus;
-      if (status === 'ACTIVE') {
-        this.logger.debug(`Firehose ${logicalId} is ACTIVE`);
-        return;
+  private async waitForActive(
+    streamName: string,
+    logicalId: string,
+    resourceType: string,
+    mask: MaskerFn
+  ): Promise<void> {
+    const watch = startInterruptWatch(`Firehose ${logicalId} create`);
+    try {
+      let last: string | undefined;
+      for (let attempt = 1; attempt <= ACTIVE_POLL_MAX_ATTEMPTS; attempt++) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        // The engine's deadline does not cancel this create, so a wait that
+        // outlived it would keep polling with nobody waiting on it.
+        if (enclosingDeadlineRemainingMs() <= 0) {
+          throw markNonRetryable(
+            new ProvisioningError(
+              `The resource timeout expired while waiting for Firehose delivery stream ` +
+                `${logicalId} to become ACTIVE (last status: ${last ?? 'none reported'})`,
+              resourceType,
+              logicalId,
+              streamName
+            )
+          );
+        }
+        const resp = await this.getClient().send(
+          new DescribeDeliveryStreamCommand({ DeliveryStreamName: streamName })
+        );
+        const description = resp.DeliveryStreamDescription;
+        last = description?.DeliveryStreamStatus;
+        if (last === 'ACTIVE') {
+          this.logger.debug(`Firehose ${logicalId} is ACTIVE`);
+          return;
+        }
+        if (last !== undefined && last.endsWith('_FAILED')) {
+          const failure = description?.FailureDescription;
+          throw markNonRetryable(
+            new ProvisioningError(
+              `Firehose delivery stream ${logicalId} did not become ACTIVE: AWS reports ${last}` +
+                (failure ? ` (${mask(`${failure.Type ?? ''}: ${failure.Details ?? ''}`)})` : ''),
+              resourceType,
+              logicalId,
+              streamName
+            )
+          );
+        }
+        this.logger.debug(
+          `Firehose ${logicalId} status: ${last} (attempt ${attempt}/${ACTIVE_POLL_MAX_ATTEMPTS})`
+        );
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        await new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.max(0, Math.min(ACTIVE_POLL_INTERVAL_MS, enclosingDeadlineRemainingMs()))
+          )
+        );
       }
-      this.logger.debug(
-        `Firehose ${logicalId} status: ${status} (attempt ${attempt}/${maxAttempts})`
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Timed out waiting for Firehose delivery stream ${logicalId} to become ACTIVE ` +
+            `(last status: ${last ?? 'none reported'})`,
+          resourceType,
+          logicalId,
+          streamName
+        )
       );
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+    } finally {
+      watch.dispose();
     }
-    this.logger.warn(`Firehose ${logicalId} did not reach ACTIVE after ${maxAttempts} attempts`);
   }
 }
 
