@@ -1216,12 +1216,17 @@ export async function executeDeployment(
         currentState,
         failedOperations,
         currentState.orphans ?? [],
-        // go-to-k/cdkd#5505: the revert waits for an abandoned call of the
-        // failed update and records its late marks first. A name the revert
-        // proved settled is no longer the failed update's mark, so the
-        // post-rollback save below does not put it back; a mark that arrives
-        // later still records.
+        // go-to-k/cdkd#5505: the revert acts on THIS run's marks only (never a
+        // name an earlier deploy left), waits for an abandoned call of the
+        // failed update and records its late marks first. Once a revert is
+        // handled, the record says what stays unsettled (its proof decides), so
+        // the post-rollback save below must not re-add the engine's copy of
+        // those names; a mark that arrives later still records.
         {
+          runMarks: (logicalId) => ({
+            names: engine.unsettledMarks.get(logicalId) ?? new Set(),
+            items: engine.unsettledItemMarks.get(logicalId) ?? new Map(),
+          }),
           stillRunning: (logicalId) => engine.inFlightBodies.get(logicalId),
           recordMarks: (logicalId) => recordUnsettledMarks(engine, newResources, logicalId),
           onReverted: (logicalId, settled) => dropUnsettledMarks(engine, logicalId, settled),

@@ -139,7 +139,13 @@ import {
 } from './rollback-executor/replay-orphan-delete.js';
 import { replayReadopt, replayRevert } from './rollback-executor/replay-revert.js';
 import { replayReverseReplacement } from './rollback-executor/replay-reverse-replacement.js';
-import { unsettledContextOf, unsettledPropertiesOf } from '../state/unsettled-properties.js';
+import {
+  unsettledContextOf,
+  unsettledItemsOf,
+  unsettledPropertiesOf,
+  withUnsettledItems,
+  withUnsettledProperties,
+} from '../state/unsettled-properties.js';
 import { withUnprovenUnsettled } from './unsettled-convergence.js';
 
 /** `undefined` for an empty list, so an absent field stays absent. */
@@ -790,6 +796,18 @@ function ownRecord(
 }
 
 /**
+ * go-to-k/cdkd#5505: what the failed update of THIS run left unsettled (the
+ * names and items its accepted calls marked), and whether its call the
+ * deadline abandoned later completed (`lateSuccess`: it rewrote the record,
+ * so the whole update is undone).
+ */
+export interface OwnUnsettled {
+  names: ReadonlySet<string>;
+  items: ReadonlyMap<string, ReadonlySet<string>>;
+  lateSuccess: boolean;
+}
+
+/**
  * Revert a segment's FAILED in-flight operations (issue #1198). Opt-in via
  * `cdkd rollback --revert-failed` — the failed resource's remote state is
  * unknown (the op died partway), so force-applying `previousState` is a
@@ -848,8 +866,12 @@ async function replayFailedOperationsUnbound(
      * unsettled keys differ: each converges from AWS, and an item goes on the
      * previous side only when its name is one the failed update's accepted
      * calls added (`unsettledItems`) and the restored bag does not declare it.
+     *
+     * Only THIS run's names and items are converged ({@link OwnUnsettled}, per
+     * logical id): a name an earlier failed deploy left on the record is kept
+     * as it is, for the next deploy or `--revert-failed`.
      */
-    previousFromRecord?: boolean;
+    previousFromRecord?: ReadonlyMap<string, OwnUnsettled>;
   } = {}
 ): Promise<FailedOpReplayResult> {
   const inlinePolicyWriters = options.inlinePolicyWriters ?? new RollbackInlinePolicyWriters();
@@ -1420,20 +1442,30 @@ async function replayFailedOperationsUnbound(
           }
           // go-to-k/cdkd#5505: the automatic rollback's revert names its own
           // cause, not a flag the user never passed.
-          const fromRecord = options.previousFromRecord === true;
+          const own = options.previousFromRecord?.get(op.logicalId);
+          const fromRecord = own !== undefined;
           const attemptedBag = fromRecord ? undefined : op.attemptedProperties;
-          // A record naming none is the late success of a call the deadline
-          // abandoned, which rewrote it: the whole update is undone.
-          const leftUnsettled = [...unsettledPropertiesOf(current)].map(safe).join(', ');
+          // The keys this revert converges: this run's own on the automatic
+          // rollback, every record's under `--revert-failed`.
+          const revertUnsettled = fromRecord
+            ? own.names.size === 0
+              ? {}
+              : {
+                  unsettledProperties: own.names,
+                  ...(own.items.size > 0 && { unsettledItems: own.items }),
+                }
+            : unsettledContextOf(current, prev);
           logger.info(
             !fromRecord
               ? `  Rollback: force-reverting failed UPDATE of ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
                   `to its pre-deploy properties (--revert-failed; remote state is unknown)`
-              : leftUnsettled !== ''
-                ? `  Rollback: reverting what the failed UPDATE of ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
-                  `left unsettled (${leftUnsettled}) to its pre-deploy properties`
-                : `  Rollback: reverting the failed UPDATE of ${safe(op.logicalId)} (${safe(op.resourceType)}), ` +
+              : own.lateSuccess
+                ? // The deadline-abandoned call completed and rewrote the
+                  // record: the whole update is undone.
+                  `  Rollback: reverting the failed UPDATE of ${safe(op.logicalId)} (${safe(op.resourceType)}), ` +
                   `whose call completed after the deploy gave up on it, to its pre-deploy properties`
+                : `  Rollback: reverting what the failed UPDATE of ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
+                  `left unsettled (${[...own.names].map(safe).join(', ')}) to its pre-deploy properties`
           );
           const { provider, provisionedBy: revertVia } = ctx.providerRegistry.getProviderFor({
             resourceType: op.resourceType,
@@ -1566,7 +1598,7 @@ async function replayFailedOperationsUnbound(
                   // hold either side in AWS while the attempted bag equals the
                   // restored one there, so the provider converges them against
                   // AWS; the record built below clears them only on success.
-                  ...unsettledContextOf(current, prev),
+                  ...revertUnsettled,
                 },
               ],
               op.logicalId,
@@ -1606,14 +1638,24 @@ async function replayFailedOperationsUnbound(
               physicalId: current.physicalId,
               resourceType: op.resourceType,
               recordedProperties: current.properties ?? {},
-              names: unsettledContextOf(current, prev).unsettledProperties ?? new Set(),
+              names: revertUnsettled.unsettledProperties ?? new Set(),
               desired: desiredProps ?? {},
-              ...(unsettledContextOf(current, prev).unsettledItems !== undefined && {
-                attemptedItems: unsettledContextOf(current, prev).unsettledItems,
+              ...(revertUnsettled.unsettledItems !== undefined && {
+                attemptedItems: revertUnsettled.unsettledItems,
               }),
             },
             (message) => logger.warn(mask(message))
           );
+          // go-to-k/cdkd#5505: what an earlier failed deploy left (the
+          // pre-deploy record's names and items) was not converged here, so it
+          // stays: even a name this run shares, whose proof covers only what
+          // this run sent (a merge key holds extra live tags).
+          if (fromRecord) {
+            stateResources[op.logicalId] = withUnsettledItems(
+              withUnsettledProperties(stateResources[op.logicalId]!, unsettledPropertiesOf(prev)),
+              unsettledItemsOf(prev)
+            );
+          }
           // go-to-k/cdkd#4225, the `revert` arm's twin: its previous side is
           // the failed attempt's bag.
           if (updatePartialReason(revertFailedResult) === undefined) {

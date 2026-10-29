@@ -569,12 +569,14 @@ export class DeployEngine {
   /**
    * go-to-k/cdkd#5505: per logical id, the provisioning body still running,
    * including one the per-resource deadline abandoned (it keeps running after
-   * the race rejects). The automatic rollback's revert of a failed update's
-   * unsettled keys waits for it, so the abandoned call cannot write after the
-   * revert. Each entry removes itself when its body settles.
+   * the race rejects). The automatic rollback waits for the one a failed
+   * UPDATE left, so it cannot write after the revert, and considers that
+   * update even when the deadline fired before its first mark: the call may
+   * mark later, or complete. Resolves whether the body succeeded, never
+   * rejects; each entry removes itself when its body settles.
    */
   /** @internal */
-  inFlightBodies = new Map<string, Promise<unknown>>();
+  inFlightBodies = new Map<string, Promise<boolean>>();
 
   /**
    * go-to-k/cdkd#3252: the Cloud Control CREATEs an earlier run stopped

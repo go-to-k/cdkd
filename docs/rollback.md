@@ -68,6 +68,14 @@ had recorded, as CloudFormation rolls back a failed update. An item the failed
 update added, such as that index, is deleted, but only when the update itself
 added it and the recorded properties do not name it.
 
+Only what the failed deploy itself left unsettled is reverted. Properties an
+earlier failed deploy left unsettled, for example one run with
+`--no-rollback`, stay as they are for the next deploy to converge.
+
+The wait holds up the rest of the rollback: the operations that completed
+are reverted after it. Press {kbd:ctrl+c} to stop waiting; the rollback
+journal keeps everything not yet reverted for `cdkd rollback`.
+
 When the properties are still changing after the wait, or setting them back
 fails, cdkd warns and keeps them unsettled. The next deploy converges them,
 or `cdkd rollback <stack> --revert-failed` retries the revert. Under

@@ -331,6 +331,9 @@ describe('a failed update records what it left unsettled (go-to-k/cdkd#5380)', (
       options: {
         resourceWarnAfterByType: { [TYPE]: 20 },
         resourceTimeoutByType: { [TYPE]: 60 },
+        // go-to-k/cdkd#5505: the rollback waits for S's abandoned call, which
+        // never returns; a short bound gives up on it (the mark stays).
+        unsettledRevertWait: { timeoutMs: 300, pollMs: 5 },
       },
     });
     expect(run.thrown).toBeDefined();

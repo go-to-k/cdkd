@@ -420,6 +420,15 @@ if [ "${P1D_COUNT}" != "0" ] && [ "${P1D_STATUS}" != "DELETING" ]; then
   echo "FAIL: ${GSI_NAME} is still on the table right after the auto-rolled-back deploy (${P1D_COUNT} GSI(s), status '${P1D_STATUS}'): the automatic rollback must revert the failed update's GSI add (go-to-k/cdkd#5505)" >&2
   exit 1
 fi
+# The record checks below read "nothing unsettled" off an empty result, so
+# first prove the state file was read and holds exactly one table record.
+P1D_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+P1D_RECORDS="$(jq -r --arg name "${TABLE_NAME}" '[.resources[]
+    | select(.resourceType == "AWS::DynamoDB::Table" and .physicalId == $name)] | length' <<<"${P1D_STATE}")"
+if [ "${P1D_RECORDS}" != "1" ]; then
+  echo "FAIL: expected exactly one ${TABLE_NAME} record in the state after the automatic rollback, found '${P1D_RECORDS}' (the record checks would be vacuous)" >&2
+  exit 1
+fi
 if [ -n "$(table_unsettled)" ]; then
   echo "FAIL: table record still names unsettled properties after the automatic rollback reverted them: $(table_unsettled) (go-to-k/cdkd#5505)" >&2
   exit 1
@@ -428,9 +437,14 @@ if [ "$(table_has_items_field)" != "false" ]; then
   echo "FAIL: table record still carries unsettledItems after the automatic rollback reverted them (go-to-k/cdkd#5505)" >&2
   exit 1
 fi
-# Premise: the revert is cdkd's (not an index that never got created). The
-# parsed marker names the revert; the sentinel is the same line's tail, so a
-# reworded line fails here instead of passing silently.
+# Premise: the revert is cdkd's (not an index that never got created). Both
+# of the arm's lines are accepted: the update call the 10s deadline abandoned
+# keeps running until gsi1 is ACTIVE and usually completes, rewriting the
+# record ("Rollback: reverting the failed UPDATE of ..., whose call completed
+# after the deploy gave up on it, ..."); if it fails instead, the line names
+# what it left unsettled ("Rollback: reverting what the failed UPDATE of ...
+# left unsettled (GlobalSecondaryIndexes) ..."). The sentinel is the shared
+# tail, so a reworded line fails here instead of passing silently.
 if ! grep -qE 'Rollback: reverting (what )?the failed UPDATE of .*to its pre-deploy properties' "${P1D_LOG}"; then
   if grep -q 'to its pre-deploy properties' "${P1D_LOG}"; then
     echo "FAIL: the rollback's revert line changed wording; update this arm's needle (go-to-k/cdkd#5505)" >&2
@@ -444,10 +458,11 @@ for _ in $(seq 1 120); do
   P1D_COUNT="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
     --query 'length(Table.GlobalSecondaryIndexes || `[]`)' --output text)"
   [ "${P1D_COUNT}" = "0" ] && break
+  [ "$(gsi_status)" = "DELETING" ] || break
   sleep 5
 done
 if [ "${P1D_COUNT}" != "0" ]; then
-  echo "FAIL: ${GSI_NAME} did not finish deleting after the automatic rollback (status '$(gsi_status)')" >&2
+  echo "FAIL: ${GSI_NAME} is still on the table after the automatic rollback (status '$(gsi_status)')" >&2
   exit 1
 fi
 echo "    the automatic rollback reverted the cut-short GSI add: ${GSI_NAME} gone and the names cleared right after the failed deploy (go-to-k/cdkd#5505)"

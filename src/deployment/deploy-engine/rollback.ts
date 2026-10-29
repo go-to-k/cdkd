@@ -6,7 +6,7 @@ import { namingSecretsFor, printingSecretsFor } from './masking.js';
 import { explicitNamePropertyFor, getCurrentSkipPrefix } from '../../provisioning/resource-name.js';
 import { getCdkdVersion } from '../../state/deployment-events-store.js';
 import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
-import type { CloudFormationTemplate } from '../../types/resource.js';
+import type { CloudFormationTemplate, ResourceProvider } from '../../types/resource.js';
 import type { RollbackJournalSegment } from '../../types/rollback-journal.js';
 import type {
   ResourceState,
@@ -40,6 +40,7 @@ import { type ProducerRegionEvidence, inheritProducerRegions } from '../producer
 import {
   type CompletedOperation,
   type FailedOperation,
+  type OwnUnsettled,
   type RollbackExecutorContext,
   classifyFailedOp,
   demoteSupersededOrphans,
@@ -50,7 +51,7 @@ import {
   replayRollback,
 } from '../rollback-executor.js';
 import { failedOpOwnRecord } from '../rollback-executor/plan.js';
-import { unsettledPropertiesOf } from '../../state/unsettled-properties.js';
+import { unsettledItemsTopKey, unsettledPropertiesOf } from '../../state/unsettled-properties.js';
 import { waitForUnsettledSettled } from '../unsettled-convergence.js';
 import { DEFAULT_UNSETTLED_REVERT_WAIT } from './options.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
@@ -633,11 +634,22 @@ export async function performRollback(
 
 /** go-to-k/cdkd#5505: what the engine lends the unsettled revert. */
 export interface UnsettledRevertHooks {
-  /** The failed update's own call, still running when the deadline abandoned it. */
-  stillRunning: (logicalId: string) => Promise<unknown> | undefined;
+  /**
+   * The names and items THIS run's failed update marked for `logicalId` (its
+   * accepted calls), never a name an earlier deploy left on the record.
+   */
+  runMarks: (logicalId: string) => {
+    names: ReadonlySet<string>;
+    items: ReadonlyMap<string, ReadonlySet<string>>;
+  };
+  /**
+   * The failed update's own call, still running when the deadline abandoned
+   * it; resolves whether it then succeeded.
+   */
+  stillRunning: (logicalId: string) => Promise<boolean> | undefined;
   /** Put the engine's pending marks for `logicalId` on its record (a late mark). */
   recordMarks: (logicalId: string) => void;
-  /** The names the revert proved settled: no longer the failed update's marks. */
+  /** The names a handled revert converged: no longer pending engine marks. */
   onReverted: (logicalId: string, settled: ReadonlySet<string>) => void;
 }
 
@@ -646,27 +658,35 @@ function waitText(ms: number): string {
   return ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.max(1, Math.round(ms / 1000))}s`;
 }
 
+type RevertVerdict = 'settled' | 'moving' | 'interrupted' | 'call-running' | 'error' | 'none';
+
 /**
- * go-to-k/cdkd#5505: the automatic rollback's revert of what failed UPDATEs
- * left unsettled (`unsettledProperties`), as CloudFormation rolls a failed
- * update back. Only a failed UPDATE whose own record names unsettled keys and
- * that `--revert-failed` would force-revert (`revert-failed-update`) is
- * considered; any other failed op stays opt-in, as before.
+ * go-to-k/cdkd#5505: the automatic rollback's revert of what THIS run's
+ * failed UPDATEs left unsettled, as CloudFormation rolls a failed update back.
+ * A failed UPDATE that `--revert-failed` would force-revert
+ * (`revert-failed-update`) is considered when this run's accepted calls marked
+ * a key (`runMarks`), or when its call the deadline abandoned is still
+ * running (it may mark later, or complete). A name an earlier failed deploy
+ * left on the record is never reverted or acted on here: the user may have
+ * declined that rollback (`--no-rollback`), so it stays for the next deploy's
+ * convergence or `--revert-failed`. Any other failed op stays opt-in.
  *
- * Each waits (bounded, interruptible) for its keys to stop moving, then goes
- * through the `--revert-failed` arm with the record as the previous side
- * (`previousFromRecord`): the unsettled keys converge from AWS, and only an
- * item the failed update's accepted calls added (`unsettledItems`) and the
- * restored bag does not declare is removed. The arm's own post-check
- * (`withUnprovenUnsettled`) clears a name only on proof.
+ * Each waits (bounded, interruptible) for that abandoned call to return and
+ * for its keys to stop moving, then goes through the `--revert-failed` arm
+ * with the record as the previous side (`previousFromRecord`): only this
+ * run's keys converge from AWS, and only an item its accepted calls added
+ * (`unsettledItems`) and the restored bag does not declare is removed. The
+ * arm's own post-check (`withUnprovenUnsettled`) clears a name only on proof.
  *
- * A key still moving at the bound, or a revert that fails or is skipped,
- * keeps the record's names and its journal entry, with a warning: the next
- * deploy converges it, or `cdkd rollback --revert-failed` retries it. Neither
- * is counted as a rollback failure: the failed update was not reverted before
- * this change either.
+ * A key still moving at the bound, a call that has not returned, or a revert
+ * that fails or is skipped keeps the record's names and the journal entry,
+ * with a warning: the next deploy converges it, or `cdkd rollback
+ * --revert-failed` retries it. None is counted as a rollback failure: the
+ * failed update was not reverted before this change either.
+ *
+ * @internal Exported for its unit tests.
  */
-async function revertUnsettledFailedUpdates(
+export async function revertUnsettledFailedUpdates(
   deps: RollbackDeps,
   ctx: RollbackExecutorContext,
   stackName: string,
@@ -680,15 +700,34 @@ async function revertUnsettledFailedUpdates(
   }
 ): Promise<{ handled: number[]; warnings: number; interrupted: boolean }> {
   const out = { handled: [] as number[], warnings: 0, interrupted: false };
-  const candidates: Array<{ index: number; op: FailedOperation; names: ReadonlySet<string> }> = [];
+  const hooks = options.hooks;
+  if (hooks === undefined) return out;
+  // This run's marks, as far as the record carries them.
+  const ownMarks = (logicalId: string): OwnUnsettled => {
+    const onRecord = unsettledPropertiesOf(stateResources[logicalId]);
+    const marks = hooks.runMarks(logicalId);
+    const names = new Set([...marks.names].filter((name) => onRecord.has(name)));
+    const items = new Map(
+      [...marks.items].filter(([path]) => names.has(unsettledItemsTopKey(path)))
+    );
+    return { names, items, lateSuccess: false };
+  };
+  const candidates: Array<{
+    index: number;
+    op: FailedOperation;
+    own: OwnUnsettled;
+    running: Promise<boolean> | undefined;
+  }> = [];
   failedOperations.forEach((op, index) => {
     if (alreadyReplayed.has(index) || op.changeType !== 'UPDATE') return;
-    const names = unsettledPropertiesOf(failedOpOwnRecord(op, stateResources));
-    if (names.size === 0) return;
+    if (failedOpOwnRecord(op, stateResources) === undefined) return;
+    const own = ownMarks(op.logicalId);
+    const running = hooks.stillRunning(op.logicalId);
+    if (own.names.size === 0 && running === undefined) return;
     if (classifyFailedOp(op, stateResources, [...failedOperations]) !== 'revert-failed-update') {
       return;
     }
-    candidates.push({ index, op, names });
+    candidates.push({ index, op, own, running });
   });
   if (candidates.length === 0) return out;
 
@@ -709,47 +748,57 @@ async function revertUnsettledFailedUpdates(
   };
   const wait = deps.options.unsettledRevertWait ?? DEFAULT_UNSETTLED_REVERT_WAIT;
   const verdicts = await Promise.all(
-    candidates.map(async (candidate) => {
+    candidates.map(async (candidate): Promise<RevertVerdict> => {
       const { op } = candidate;
+      let provider: ResourceProvider;
       try {
-        const { provider } = ctx.providerRegistry.getProviderFor({
+        provider = ctx.providerRegistry.getProviderFor({
           resourceType: op.resourceType,
           provisionedBy: op.provisionedBy ?? stateResources[op.logicalId]!.provisionedBy,
-        });
-        logger.info(
-          safeMsg`  Rollback: waiting for ${op.logicalId} (${op.resourceType}) to settle ${[...candidate.names].join(', ')} before reverting the failed update`
-        );
-        const started = Date.now();
-        const identity = (): Parameters<typeof waitForUnsettledSettled>[0] => {
-          const record = stateResources[op.logicalId]!;
-          return {
-            provider,
-            logicalId: op.logicalId,
-            physicalId: record.physicalId,
-            resourceType: op.resourceType,
-            recordedProperties: record.properties ?? {},
-            names: candidate.names,
-            timeoutMs: Math.max(0, wait.timeoutMs - (Date.now() - started)),
-            pollMs: wait.pollMs,
-            isInterrupted,
-          };
+        }).provider;
+      } catch {
+        return 'error';
+      }
+      logger.info(
+        safeMsg`  Rollback: waiting for ${op.logicalId} (${op.resourceType}) to settle before reverting the failed update`
+      );
+      const started = Date.now();
+      const identity = (): Parameters<typeof waitForUnsettledSettled>[0] => {
+        const record = stateResources[op.logicalId]!;
+        return {
+          provider,
+          logicalId: op.logicalId,
+          physicalId: record.physicalId,
+          resourceType: op.resourceType,
+          recordedProperties: record.properties ?? {},
+          names: candidate.own.names,
+          timeoutMs: Math.max(0, wait.timeoutMs - (Date.now() - started)),
+          pollMs: wait.pollMs,
+          isInterrupted,
         };
-        // First the failed update's own call, if the deadline abandoned it:
-        // it may still write, and mark what it is about to change.
-        const running = options.hooks?.stillRunning(op.logicalId);
-        if (running !== undefined) {
-          const returned = await waitForUnsettledSettled({
-            ...identity(),
-            names: new Set(),
-            running,
-          });
-          if (returned !== 'settled') return returned;
-          options.hooks?.recordMarks(op.logicalId);
-          candidate.names = unsettledPropertiesOf(stateResources[op.logicalId]);
-        }
+      };
+      // First the failed update's own call, if the deadline abandoned it: it
+      // may still write, mark what it is about to change, or complete.
+      if (candidate.running !== undefined) {
+        let succeeded = false;
+        const returned = await waitForUnsettledSettled({
+          ...identity(),
+          names: new Set(),
+          running: candidate.running.then((ok) => {
+            succeeded = ok;
+          }),
+        });
+        if (returned === 'moving') return 'call-running';
+        if (returned === 'interrupted') return returned;
+        hooks.recordMarks(op.logicalId);
+        candidate.own = { ...ownMarks(op.logicalId), lateSuccess: succeeded };
+        // Failed without marking anything: there is nothing of this run's to undo.
+        if (!succeeded && candidate.own.names.size === 0) return 'none';
+      }
+      try {
         return await waitForUnsettledSettled(identity());
       } catch {
-        return 'moving' as const;
+        return 'error';
       }
     })
   );
@@ -760,13 +809,26 @@ async function revertUnsettledFailedUpdates(
       ready.push(candidate);
       return;
     }
+    if (verdict === 'none') return;
     if (verdict === 'interrupted') {
       out.interrupted = true;
       return;
     }
-    const { op, names } = candidate;
+    const { op } = candidate;
+    const names = candidate.own.names;
+    const them = names.size === 1 ? 'it' : 'them';
+    const subject =
+      names.size > 0
+        ? `the failed update left ${[...names].join(', ')} unsettled`
+        : 'the failed update may have applied part of the template';
+    const why =
+      verdict === 'call-running'
+        ? `cdkd's own update call, abandoned at the per-resource deadline, had not returned after ${waitText(wait.timeoutMs)}`
+        : verdict === 'error'
+          ? 'cdkd could not reach its provider to wait for it'
+          : `AWS had not settled ${them} after ${waitText(wait.timeoutMs)}`;
     logger.warn(
-      safeMsg`${op.logicalId} (${op.resourceType}): the failed update left ${[...names].join(', ')} unsettled, and AWS had not settled ${names.size === 1 ? 'it' : 'them'} after ${waitText(wait.timeoutMs)}, so the automatic rollback did not revert ${names.size === 1 ? 'it' : 'them'}. ${fallback(names)}`
+      safeMsg`${op.logicalId} (${op.resourceType}): ${subject}, and ${why}, so the automatic rollback did not revert ${names.size > 0 ? them : 'it'}. ${fallback(names)}`
     );
     out.warnings++;
   });
@@ -774,6 +836,7 @@ async function revertUnsettledFailedUpdates(
 
   // Copies, as for the orphans above: the journal records the originals.
   const ops = ready.map(({ op }) => ({ ...op }));
+  const own = new Map(ready.map(({ op, own: marks }) => [op.logicalId, marks]));
   const replay = await withPrintingSecrets(
     replayPrintingBag(
       deps,
@@ -785,7 +848,7 @@ async function revertUnsettledFailedUpdates(
         emitEnvelope: options.emitEnvelope,
         inlinePolicyWriters: options.inlinePolicyWriters,
         isInterrupted,
-        previousFromRecord: true,
+        previousFromRecord: own,
       })
   );
   // The arm's own lines already said why an op failed or was skipped.
@@ -794,18 +857,20 @@ async function revertUnsettledFailedUpdates(
   const pending = new Set(replay.remainingFailedOps);
   const skipped = new Set(replay.skippedOps ?? []);
   ops.forEach((op, k) => {
-    const { index, names } = ready[k]!;
+    const { index, own: marks } = ready[k]!;
     if (pending.has(op) || skipped.has(op)) {
       if (!replay.interrupted) {
         logger.warn(
-          safeMsg`${op.logicalId} (${op.resourceType}): the automatic rollback could not revert what the failed update left unsettled (${[...names].join(', ')}; see above). ${fallback(names)}`
+          safeMsg`${op.logicalId} (${op.resourceType}): the automatic rollback could not revert ${marks.names.size > 0 ? `what the failed update left unsettled (${[...marks.names].join(', ')})` : 'the failed update'} (see above). ${fallback(marks.names)}`
         );
       }
       return;
     }
     out.handled.push(index);
-    const left = unsettledPropertiesOf(stateResources[op.logicalId]);
-    options.hooks?.onReverted(op.logicalId, new Set([...names].filter((name) => !left.has(name))));
+    // Every name it handed the arm: the record now says what is left (a name
+    // its proof kept, an earlier deploy's), so the engine's copy must not
+    // re-add this run's items under a name the record keeps for another cause.
+    hooks.onReverted(op.logicalId, marks.names);
   });
   return out;
 }

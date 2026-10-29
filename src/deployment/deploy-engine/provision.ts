@@ -566,9 +566,10 @@ function trackInFlightBody<T>(
 ): () => Promise<T> {
   return () => {
     const running = body();
-    const entry: Promise<unknown> = running.then(
-      () => undefined,
-      () => undefined
+    // Resolves whether the body succeeded; never rejects.
+    const entry: Promise<boolean> = running.then(
+      () => true,
+      () => false
     );
     engine.inFlightBodies.set(logicalId, entry);
     void entry.then(() => {

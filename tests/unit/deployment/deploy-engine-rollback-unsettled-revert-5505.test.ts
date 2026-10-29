@@ -45,6 +45,12 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { markNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { waitForUnsettledSettled } from '../../../src/deployment/unsettled-convergence.js';
+import {
+  revertUnsettledFailedUpdates,
+  rollbackExecutorContext,
+} from '../../../src/deployment/deploy-engine/rollback.js';
+import { RollbackInlinePolicyWriters } from '../../../src/deployment/inline-policy-claims.js';
+import type { FailedOperation } from '../../../src/deployment/rollback-executor.js';
 import type { CloudFormationTemplate, UpdateContext } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 
@@ -79,10 +85,13 @@ async function deploy(opts: {
   /** What AWS holds now, per read (`readUnsettled`). */
   live?: (call: number) => Record<string, unknown>;
   options?: Record<string, unknown>;
+  /** Set the user's Ctrl-C (`userInterrupted`) when this answers true for a poll. */
+  interruptAt?: (poll: number) => boolean;
 }): Promise<Run> {
   const calls: Call[] = [];
   const segments: Array<Record<string, unknown>> = [];
   let polls = 0;
+  let engineRef: DeployEngine | undefined;
   const provider: Record<string, unknown> = {
     create: vi.fn(),
     update: vi.fn(
@@ -105,7 +114,13 @@ async function deploy(opts: {
   };
   if (opts.moving !== undefined) {
     const moving = opts.moving;
-    provider['unsettledInTransition'] = vi.fn(async () => new Set(moving(polls++)));
+    provider['unsettledInTransition'] = vi.fn(async () => {
+      const poll = polls++;
+      if (opts.interruptAt?.(poll) === true && engineRef !== undefined) {
+        (engineRef as { userInterrupted: boolean }).userInterrupted = true;
+      }
+      return new Set(moving(poll));
+    });
   }
   if (opts.live !== undefined) {
     const live = opts.live;
@@ -169,6 +184,7 @@ async function deploy(opts: {
     },
     'us-east-1'
   );
+  engineRef = engine;
   let thrown: unknown;
   await engine.deploy('s', opts.template).catch((e: unknown) => {
     thrown = e;
@@ -194,6 +210,9 @@ const failsThen =
 
 const warned = (needle: string): boolean =>
   log.warn.mock.calls.some((args) => String(args[0]).includes(needle));
+
+const infoed = (needle: string): boolean =>
+  log.info.mock.calls.some((args) => String(args[0]).includes(needle));
 
 /** Whether the last journal write keeps a failed op for `--revert-failed`. */
 const keptForRevertFailed = (run: Run): boolean =>
@@ -360,6 +379,7 @@ describe('the automatic rollback reverts what a failed update left unsettled (go
     expect(run.calls[1]!.prev).toHaveProperty('Note', 'attempted');
     expect(run.calls[1]!.props).toEqual({ DeliveryStreamName: 'stream' });
     expect(run.saved?.resources['S']?.properties).toEqual({ DeliveryStreamName: 'stream' });
+    expect(infoed('whose call completed after the deploy gave up on it')).toBe(true);
     expect(run.saved?.resources['S']).not.toHaveProperty('unsettledProperties');
   });
 
@@ -436,6 +456,185 @@ describe('removing a tag the failed update added (go-to-k/cdkd#5505 on #5498)', 
   });
 });
 
+describe('only THIS run\'s marks are reverted (go-to-k/cdkd#5505 review B1)', () => {
+  it('a name an earlier failed deploy left is neither waited for nor reverted', async () => {
+    const run = await deploy({
+      // deploy1 failed under --no-rollback and left ENC; this deploy marks nothing.
+      record: { unsettledProperties: [ENC] },
+      template: encrypted,
+      update: async () => {
+        throw failure('refused before sending');
+      },
+      moving: () => [],
+      live: () => ({}),
+    });
+    expect(run.calls).toHaveLength(1);
+    expect(infoed('Rollback: waiting for')).toBe(false);
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual([ENC]);
+  });
+
+  it("reverts this run's name and keeps an earlier deploy's other name", async () => {
+    const run = await deploy({
+      record: {
+        properties: { DeliveryStreamName: 'stream', Other: 'kept' },
+        unsettledProperties: ['Other'],
+      },
+      template: templateOf({
+        DeliveryStreamName: 'stream',
+        Other: 'kept',
+        [ENC]: { KeyType: 'AWS_OWNED_CMK' },
+      }),
+      update: failsThen(),
+      moving: () => [],
+      live: (call) => (call < 2 ? { [ENC]: { KeyType: 'AWS_OWNED_CMK' } } : {}),
+    });
+    expect(run.calls).toHaveLength(2);
+    expect(run.calls[1]!.context?.unsettledProperties).toEqual(new Set([ENC]));
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual(['Other']);
+  });
+
+  it("a shared name removes only this run's attempted item and keeps the earlier one", async () => {
+    const tagged = (tags: Array<[string, string]>): Array<{ Key: string; Value: string }> =>
+      tags.map(([Key, Value]) => ({ Key, Value }));
+    const run = await deploy({
+      // deploy1 (--no-rollback) was accepted for adding `old` and failed.
+      record: {
+        properties: { DeliveryStreamName: 'stream', Tags: tagged([['keep', '1']]) },
+        unsettledProperties: ['Tags'],
+        unsettledItems: { Tags: ['old'] },
+      },
+      template: templateOf({
+        DeliveryStreamName: 'stream',
+        Tags: tagged([
+          ['keep', '1'],
+          ['added', '2'],
+        ]),
+      }),
+      update: async (call, context) => {
+        if (call === 0) {
+          context?.markUnsettled?.('Tags');
+          context?.markAttempted?.('Tags', ['added']);
+          throw failure('tagging cut short');
+        }
+      },
+      moving: () => [],
+      live: (call) => ({
+        Tags:
+          call < 2
+            ? tagged([
+                ['keep', '1'],
+                ['old', '0'],
+                ['added', '2'],
+              ])
+            : tagged([
+                ['keep', '1'],
+                ['old', '0'],
+              ]),
+      }),
+    });
+    expect(run.calls).toHaveLength(2);
+    // `old` is not on the previous side: this run never added it.
+    expect(run.calls[1]!.prev['Tags']).toEqual(
+      tagged([
+        ['keep', '1'],
+        ['added', '2'],
+      ])
+    );
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual(['Tags']);
+    expect(run.saved?.resources['S']?.unsettledItems).toEqual({ Tags: ['old'] });
+  });
+});
+
+describe('a call the deadline abandoned (go-to-k/cdkd#5505 review C1 / T3)', () => {
+  const deadline = {
+    resourceWarnAfterByType: { [TYPE]: 20 },
+    resourceTimeoutByType: { [TYPE]: 60 },
+  };
+
+  it('is a candidate although the deadline fired before its first mark', async () => {
+    const run = await deploy({
+      template: encrypted,
+      update: async (call, context) => {
+        if (call === 0) {
+          await new Promise((r) => setTimeout(r, 150));
+          context?.markUnsettled?.(ENC);
+          throw failure('ENABLING_FAILED');
+        }
+      },
+      moving: () => [],
+      live: () => ({}),
+      options: deadline,
+    });
+    expect(run.calls).toHaveLength(2);
+    expect(run.calls[1]!.context?.unsettledProperties).toEqual(new Set([ENC]));
+    expect(run.saved?.resources['S']).not.toHaveProperty('unsettledProperties');
+  });
+
+  it('that then fails without marking is left alone, without a warning', async () => {
+    const run = await deploy({
+      template: encrypted,
+      update: async () => {
+        await new Promise((r) => setTimeout(r, 150));
+        throw failure('refused late');
+      },
+      moving: () => [],
+      options: deadline,
+    });
+    expect(run.calls).toHaveLength(1);
+    expect(warned('the automatic rollback did not revert')).toBe(false);
+  });
+
+  it('that never returns within the bound is not reverted, with its own warning', async () => {
+    const run = await deploy({
+      template: encrypted,
+      update: async (call, context) => {
+        if (call === 0) {
+          context?.markUnsettled?.(ENC);
+          await new Promise(() => undefined);
+        }
+      },
+      moving: () => [],
+      options: { ...deadline, unsettledRevertWait: { timeoutMs: 150, pollMs: 5 } },
+    });
+    expect(run.calls).toHaveLength(1);
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual([ENC]);
+    expect(warned("cdkd's own update call, abandoned at the per-resource deadline, had not returned")).toBe(
+      true
+    );
+    expect(warned('AWS had not settled')).toBe(false);
+  });
+});
+
+describe('a Ctrl-C during the automatic rollback (go-to-k/cdkd#5505 review T1)', () => {
+  it('during the wait: no revert, the name kept, the rollback reported interrupted', async () => {
+    const run = await deploy({
+      template: encrypted,
+      update: failsThen(),
+      moving: () => [ENC],
+      // The deploy itself never polls (nothing was unsettled before it).
+      interruptAt: () => true,
+    });
+    expect(run.calls).toHaveLength(1);
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual([ENC]);
+    expect(warned('The automatic rollback was interrupted')).toBe(true);
+    expect(warned('did not revert')).toBe(false);
+  });
+
+  it('after the wait settled: the replay stops, and no "could not revert" line', async () => {
+    const run = await deploy({
+      template: encrypted,
+      update: failsThen(),
+      // The poll that answers "settled" also brings the Ctrl-C.
+      moving: () => [],
+      interruptAt: () => true,
+    });
+    expect(run.calls).toHaveLength(1);
+    expect(run.saved?.resources['S']?.unsettledProperties).toEqual([ENC]);
+    expect(warned('could not revert')).toBe(false);
+    expect(warned('The automatic rollback was interrupted')).toBe(true);
+  });
+});
+
 describe('waitForUnsettledSettled (go-to-k/cdkd#5505)', () => {
   const identity = {
     logicalId: 'S',
@@ -478,5 +677,123 @@ describe('waitForUnsettledSettled (go-to-k/cdkd#5505)', () => {
       isInterrupted: () => polls++ > 2,
     });
     expect(verdict).toBe('interrupted');
+  });
+
+  it('an interrupt already set ends the wait before it reports settled', async () => {
+    const hook = vi.fn(async () => new Set<string>());
+    const verdict = await waitForUnsettledSettled({
+      ...identity,
+      provider: { unsettledInTransition: hook } as never,
+      isInterrupted: () => true,
+    });
+    expect(verdict).toBe('interrupted');
+    expect(hook).not.toHaveBeenCalled();
+  });
+});
+
+describe('revertUnsettledFailedUpdates, called directly (go-to-k/cdkd#5505 review C2 / C3 / T2)', () => {
+  const record = (extra: Partial<ResourceState> = {}): ResourceState =>
+    ({
+      physicalId: 'stream',
+      resourceType: TYPE,
+      properties: { DeliveryStreamName: 'stream' },
+      attributes: {},
+      dependencies: [],
+      unsettledProperties: [ENC],
+      ...extra,
+    }) as ResourceState;
+
+  function harness(getProviderFor: () => unknown) {
+    const registry = {
+      getProvider: vi.fn(),
+      getProviderFor: vi.fn(getProviderFor),
+      getRegisteredTypes: vi.fn().mockReturnValue([]),
+      validateResourceTypes: vi.fn(),
+      validateResourceProperties: vi.fn(),
+    };
+    const engine = new DeployEngine(
+      {} as never,
+      {} as never,
+      {} as never,
+      new DiffCalculator(),
+      registry as never,
+      { dryRun: false, unsettledRevertWait: { timeoutMs: 40, pollMs: 5 } },
+      'us-east-1'
+    );
+    const state = {
+      version: 15,
+      stackName: 's',
+      region: 'us-east-1',
+      resources: {},
+      outputs: {},
+      lastModified: 0,
+    } as unknown as StackState;
+    const deps = engine.rollbackDeps();
+    return { deps, ctx: rollbackExecutorContext(deps, state, 's'), registry };
+  }
+  const hooks = {
+    runMarks: () => ({ names: new Set([ENC]), items: new Map() }),
+    stillRunning: () => undefined,
+    recordMarks: vi.fn(),
+    onReverted: vi.fn(),
+  };
+  const op = (extra: Partial<FailedOperation> = {}): FailedOperation =>
+    ({
+      changeType: 'UPDATE',
+      logicalId: 'S',
+      resourceType: TYPE,
+      physicalId: 'stream',
+      previousState: record({ unsettledProperties: undefined }),
+      ...extra,
+    }) as FailedOperation;
+
+  it('a failed op --revert-failed would not force-revert is neither waited for nor reverted', async () => {
+    const { deps, ctx, registry } = harness(() => {
+      throw new Error('not reached');
+    });
+    const out = await revertUnsettledFailedUpdates(
+      deps,
+      ctx,
+      's',
+      { S: record() },
+      // A replacement that made its new resource: `skip-failed-noop`.
+      [op({ replacementOrphaned: 'create-first' } as Partial<FailedOperation>)],
+      new Set(),
+      { emitEnvelope: false, inlinePolicyWriters: new RollbackInlinePolicyWriters(), hooks }
+    );
+    expect(out).toEqual({ handled: [], warnings: 0, interrupted: false });
+    expect(registry.getProviderFor).not.toHaveBeenCalled();
+  });
+
+  it('a provider it cannot reach says so, not that AWS is still moving', async () => {
+    const { deps, ctx } = harness(() => {
+      throw new Error('no provider');
+    });
+    const out = await revertUnsettledFailedUpdates(deps, ctx, 's', { S: record() }, [op()], new Set(), {
+      emitEnvelope: false,
+      inlinePolicyWriters: new RollbackInlinePolicyWriters(),
+      hooks,
+    });
+    expect(out.handled).toEqual([]);
+    expect(out.warnings).toBe(1);
+    expect(warned('cdkd could not reach its provider')).toBe(true);
+    expect(warned('AWS had not settled')).toBe(false);
+  });
+
+  it('a revert the arm skips is not handled: the journal keeps it, with a warning', async () => {
+    const provider = { update: vi.fn(), unsettledInTransition: async () => new Set<string>() };
+    const { deps, ctx } = harness(() => ({ provider, provisionedBy: 'sdk' }));
+    // A pre-deploy record with no `properties`: the arm refuses to restore it.
+    const failed = op({ previousState: { ...record(), properties: undefined } as never });
+    const out = await revertUnsettledFailedUpdates(deps, ctx, 's', { S: record() }, [failed], new Set(), {
+      emitEnvelope: false,
+      inlinePolicyWriters: new RollbackInlinePolicyWriters(),
+      hooks,
+    });
+    expect(provider.update).not.toHaveBeenCalled();
+    expect(out.handled).toEqual([]);
+    expect(out.warnings).toBeGreaterThanOrEqual(1);
+    expect(warned('could not revert what the failed update left unsettled')).toBe(true);
+    expect(hooks.onReverted).not.toHaveBeenCalled();
   });
 });
