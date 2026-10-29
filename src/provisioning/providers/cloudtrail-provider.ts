@@ -1121,7 +1121,7 @@ export class CloudTrailProvider implements ResourceProvider {
           new ProvisioningError(
             `Failed to update CloudTrail Trail ${logicalId}: ${text}` +
               (appliedBeforeFailure.length > 0
-                ? ` (already applied before this failure: ${appliedBeforeFailure.join('; ')})`
+                ? ` (selector/aggregation writes already applied before this failure: ${appliedBeforeFailure.join('; ')})`
                 : ''),
             resourceType,
             logicalId,

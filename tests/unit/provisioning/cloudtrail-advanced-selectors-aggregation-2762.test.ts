@@ -9,6 +9,7 @@ import {
   ListTagsCommand,
   PutEventConfigurationCommand,
   PutEventSelectorsCommand,
+  PutInsightSelectorsCommand,
 } from '@aws-sdk/client-cloudtrail';
 
 const mockSend = vi.fn();
@@ -468,7 +469,7 @@ describe('CloudTrailProvider AdvancedEventSelectors / AggregationConfigurations 
           (e: unknown) => e as Error
         );
       expect(error.message).toMatch(
-        /AccessDeniedException.*already applied before this failure: AggregationConfigurations was cleared\)$/
+        /AccessDeniedException.*\(selector\/aggregation writes already applied before this failure: AggregationConfigurations was cleared\)$/
       );
       // The class only: AWS's text (the caller's role ARN) stays out.
       expect(error.message).not.toContain('assumed-role');
@@ -493,9 +494,36 @@ describe('CloudTrailProvider AdvancedEventSelectors / AggregationConfigurations 
           (e: unknown) => e as Error
         );
       expect(error.message).toMatch(
-        /AccessDeniedException.*already applied before this failure: the event selectors were updated\)$/
+        /AccessDeniedException.*\(selector\/aggregation writes already applied before this failure: the event selectors were updated\)$/
       );
       expect(error.message).not.toContain('assumed-role');
+    });
+
+    it('says AggregationConfigurations was already updated when a later call fails', async () => {
+      mockSend.mockImplementation((command: unknown) =>
+        command instanceof PutInsightSelectorsCommand
+          ? Promise.reject(denied())
+          : Promise.resolve({})
+      );
+      const error: Error = await provider
+        .update(
+          'T',
+          TRAIL_ARN,
+          TYPE,
+          {
+            ...BASE,
+            AggregationConfigurations: AGGREGATION,
+            InsightSelectors: [{ InsightType: 'ApiCallRateInsight' }],
+          },
+          BASE
+        )
+        .then(
+          () => new Error('update unexpectedly succeeded'),
+          (e: unknown) => e as Error
+        );
+      expect(error.message).toMatch(
+        /AccessDeniedException.*\(selector\/aggregation writes already applied before this failure: AggregationConfigurations was updated\)$/
+      );
     });
 
     it('adds no note when the first write fails', async () => {
@@ -509,7 +537,7 @@ describe('CloudTrailProvider AdvancedEventSelectors / AggregationConfigurations 
           (e: unknown) => e as Error
         );
       expect(error.message).toMatch(/^Failed to update CloudTrail Trail T: /);
-      expect(error.message).not.toContain('already applied');
+      expect(error.message).not.toContain('writes already applied');
     });
   });
 

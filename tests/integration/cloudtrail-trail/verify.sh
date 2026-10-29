@@ -440,17 +440,28 @@ assert_event_selector "AdvancedEventSelectors gone after the out-of-band switch"
 assert_event_selector "basic EventSelectors present after the out-of-band switch" '(.EventSelectors | length)' '1'
 
 echo "==> Phase 2d: drift MUST report the switch"
+# rc=1 is also what a crashed command exits with, so the report must also
+# name the drifted property. `grep -q` on an empty file fails, so empty
+# output cannot pass.
+DRIFT_OUT="${TMPDIR:-/tmp}/cdkd-2762-ct-drift.$$.txt"
 set +e
 CDKD_TEST_REMOVAL=true CDKD_TEST_ADVANCED=true node "${LOCAL_DIST}" drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}"
-DRIFT_RC=$?
+  --region "${REGION}" 2>&1 | tee "${DRIFT_OUT}"
+DRIFT_RC=${PIPESTATUS[0]}
 set -e
 if [ "${DRIFT_RC}" -ne 1 ]; then
   echo "FAIL: an out-of-band switch to basic selectors was not reported as drift (cdkd drift rc=${DRIFT_RC}, expected 1)" >&2
+  rm -f "${DRIFT_OUT}"
   exit 1
 fi
-echo "    ok: out-of-band selector switch reported as drift"
+if ! grep -q 'AdvancedEventSelectors' "${DRIFT_OUT}"; then
+  echo "FAIL: cdkd drift exited 1 without naming AdvancedEventSelectors -- an error, not the expected drift report" >&2
+  rm -f "${DRIFT_OUT}"
+  exit 1
+fi
+rm -f "${DRIFT_OUT}"
+echo "    ok: out-of-band selector switch reported as drift on AdvancedEventSelectors"
 
 echo "==> Phase 2d: drift --revert MUST restore the advanced selectors"
 CDKD_TEST_REMOVAL=true CDKD_TEST_ADVANCED=true node "${LOCAL_DIST}" drift "${STACK}" \
