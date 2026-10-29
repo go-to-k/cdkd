@@ -9,7 +9,10 @@
 #
 # Phases:
 #   1. Deploy; assert SSEDescription.Status=ENABLED and SSEType=KMS.
-#   2. Destroy; assert the table and cdkd state are gone.
+#   2. Destroy; assert the table is GONE on the very first describe-table
+#      straight after `cdkd destroy` returns (no DELETING grace, no polling:
+#      go-to-k/cdkd#5514 -- delete() waits for ResourceNotFoundException, as
+#      CloudFormation does), and that cdkd state is gone.
 #
 # Required env vars: STATE_BUCKET; AWS_REGION (defaults us-east-1).
 
@@ -118,20 +121,11 @@ echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-if gone_probe aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}"; then
-  status="GONE"
-elif ! status="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
-    --query 'Table.TableStatus' --output text 2>&1)"; then
-  # TOCTOU: the table can vanish between gone_probe and this requery.
-  printf '%s' "${status}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
-    && status="GONE" \
-    || { echo "FAIL: describe-table requery undetermined: ${status}" >&2; exit 1; }
-fi
-if [ "${status}" != "GONE" ] && [ "${status}" != "DELETING" ]; then
-  echo "FAIL: table ${TABLE_NAME} still exists (status ${status}) after destroy" >&2
-  exit 1
-fi
-echo "    table deleted (status: ${status})"
+# ONE describe, no retry: before go-to-k/cdkd#5514 the destroy returned while
+# the table was still DELETING, and this probe saw it.
+assert_gone "table ${TABLE_NAME} still exists (e.g. DELETING) straight after destroy returned" \
+  aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}"
+echo "    table gone straight after destroy"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"

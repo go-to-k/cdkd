@@ -10,7 +10,9 @@ import {
  * DynamoDB keeps the name until it is gone, so a same-name re-create right
  * after cdkd's own delete failed `ResourceInUseException` and left no table.
  * `waitForNameReleased` closes that window for the replacement that deleted
- * the table; `delete()` itself (a destroy) still returns at once.
+ * the table. Since go-to-k/cdkd#5514 `delete()` waits for the table to be
+ * gone too (`dynamodb-table-delete-gone-wait-5514.test.ts`), so this wait
+ * normally answers on its first poll.
  */
 
 const { mockSend } = vi.hoisted(() => ({ mockSend: vi.fn() }));
@@ -98,20 +100,23 @@ describe('DynamoDBTableProvider.waitForNameReleased (go-to-k/cdkd#5131)', () => 
     expect(describes()).toBe(1);
   });
 
-  it('an ordinary delete (a destroy) sends no DescribeTable after DeleteTable', async () => {
+  it('after delete() (which now waits, #5514) the name-release wait answers on its first poll', async () => {
     const provider = new DynamoDBTableProvider();
-    const wait = vi.spyOn(provider, 'waitForNameReleased');
+    let deleted = false;
     mockSend.mockImplementation(async (command: unknown) => {
+      if (command instanceof DeleteTableCommand) {
+        deleted = true;
+        return {};
+      }
       if (command instanceof DescribeTableCommand) {
+        if (deleted) throw gone();
         return { Table: { TableName: NAME, TableStatus: 'ACTIVE', DeletionProtectionEnabled: false } };
       }
       return {};
     });
     await provider.delete('Orders', NAME, TYPE);
-    const sent = mockSend.mock.calls.map(([c]) => c);
-    const deleteAt = sent.findIndex((c) => c instanceof DeleteTableCommand);
-    expect(deleteAt).toBeGreaterThanOrEqual(0);
-    expect(sent.slice(deleteAt + 1).filter((c) => c instanceof DescribeTableCommand)).toEqual([]);
-    expect(wait).not.toHaveBeenCalled();
+    const afterDelete = describes();
+    await provider.waitForNameReleased('Orders', NAME, TYPE, { isInterrupted: () => false });
+    expect(describes() - afterDelete).toBe(1);
   });
 });
