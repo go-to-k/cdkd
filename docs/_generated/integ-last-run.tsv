@@ -407,7 +407,7 @@ vpc-lambda	2026-10-25T16:18:19Z	PASS	831	standard	us-east-1; rerun on formatting
 vpc-lambda-cr-race	2026-10-25T15:55:05Z	PASS	326	standard	us-east-1; final build 8c364cddb (#5276); 21 deleted 0 errors, orph clean, no Gave up warning
 vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-provider loop ok, 0 err 0 orph
 vpc-nat-gateway	2026-10-26T12:39:04Z	PASS	2098	verify.sh	rc ok, orph clean, #2762 regional NAT; 1h/1i wait exercised
-wafv2	2026-10-20T06:35:00Z	PASS	180	standard	deploy+destroy clean, 0 orphans
+wafv2	2026-10-29T17:02:18Z	FAIL	58	verify.sh	rc=1; both routes refuse WebAcl create: probe CC ApplicationAttribute 400, final sdk WAFInvalidParameterException (#5204 premise); orph clean
 wait-condition-handle	2026-09-30T12:06:02Z	PASS	66	verify.sh	rc ok, orph clean (#4228)
 wide-independent	2026-10-24T07:02:56Z	PASS	1343	verify.sh	final #5242 round, default settings (SDK 10/30, CC 10/20/30); 1 throttling line + retry after ProvisioningError (ThrottlingException) x16 at CC30; destroy 0 errors, orph clean incl SSM docs + Athena wg
 wide-web-functions	2026-10-24T06:46:45Z	PASS	396	verify.sh	final #5242 round, default settings (12 functions, --concurrency 10 20); retry after ProvisioningError (ValidationException) x38 at cc20; destroy 0 errors, orph clean incl log groups

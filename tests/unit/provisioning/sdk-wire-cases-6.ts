@@ -45,12 +45,22 @@ export function armWebAcl(): void {
 }
 
 // Not a gap: UpdateWebACL is a whole replacement, so update() sends every
-// member from `next` on every call (wafv2-provider.ts:684-702) and reads
-// `prev` only for the tag diff. A member removed from `prev` alone sends the
+// member but ApplicationConfig from `next` on every call (the provider's
+// `UpdateWebACLCommand` input) and reads `prev` only for the tag diff and the
+// ApplicationConfig comparison below. A member removed from `prev` alone sends the
 // same request; its update-add probe observes delivery, and its absence from
 // `next` is what clears it on AWS, as CloudFormation's own update does.
 const ACL_FROM_NEXT =
-  'UpdateWebACL replaces the whole web ACL from next; prev is read only for the tag diff';
+  'UpdateWebACL replaces the whole web ACL from next; prev is read only for the tag diff and the ApplicationConfig comparison';
+
+// Issue #2762: `ApplicationConfig` is the one member `UpdateWebACL` does NOT
+// replace: an omitted one keeps every stored entry, and an included one must
+// match them exactly. update() sends it only when next differs from prev, so a
+// nested change is delivered (and AWS answers it), while removing the whole
+// member from the template sends nothing and AWS keeps it, as its omission
+// rule says.
+const APPLICATION_CONFIG_KEPT =
+  'ApplicationConfig removed from the template is omitted from UpdateWebACL, which AWS documents as keeping every stored entry';
 
 const TEXT_TRANSFORMATIONS = [
   { Priority: 0, Type: 'LOWERCASE' },
@@ -364,6 +374,42 @@ const ACL_FULL: Bag = {
   ChallengeConfig: { ImmunityTimeProperty: { ImmunityTime: 600 } },
   TokenDomains: ['a.example.com', 'b.example.com'],
   AssociationConfig: { RequestBody: { CLOUDFRONT: { DefaultSizeInspectionLimit: 'KB_16' } } },
+  // Issue #2762.
+  DataProtectionConfig: {
+    DataProtections: [
+      {
+        Field: { FieldType: 'SINGLE_HEADER', FieldKeys: ['authorization', 'x-api-key'] },
+        Action: 'HASH',
+        ExcludeRuleMatchDetails: true,
+        ExcludeRateBasedDetails: false,
+      },
+      { Field: { FieldType: 'QUERY_STRING' }, Action: 'SUBSTITUTION' },
+    ],
+  },
+  OnSourceDDoSProtectionConfig: { ALBLowReputationMode: 'ALWAYS_ON' },
+  ApplicationConfig: {
+    Attributes: [
+      { Name: 'tier', Values: ['web', 'api'] },
+      { Name: 'owner', Values: ['cdkd'] },
+    ],
+  },
+  MonetizationConfig: {
+    CryptoConfig: {
+      PaymentNetworks: [
+        {
+          Chain: 'BASE_SEPOLIA',
+          WalletAddress: '0x0000000000000000000000000000000000000001',
+          Prices: [{ Amount: '0.001', Currency: 'USDC' }],
+        },
+        {
+          Chain: 'SOLANA_DEVNET',
+          WalletAddress: '11111111111111111111111111111111',
+          Prices: [{ Amount: '0.002', Currency: 'USDC' }],
+        },
+      ],
+    },
+    CurrencyMode: 'TEST',
+  },
   Tags: TAGS,
 };
 
@@ -388,13 +434,13 @@ const BLOCK_DEFAULT: Bag = {
 };
 
 // Not a gap: `Rules` reaches the SDK as one document. `toSdkRules` /
-// `toSdkStatement` (wafv2-provider.ts:178-245) spread each rule and statement
+// `toSdkStatement` (in wafv2-provider.ts) spread each rule and statement
 // and rewrite only `ByteMatchStatement.SearchStringBase64`, the three
 // reference statements' `Arn` and the five recursion points, all carried in
 // RULES above. Every other member rides through untouched, so its delivery is
 // argued by a delivered sibling under the same parent. What no bag observes
 // is its key SPELLING against the SDK model: the provider's own diff of the
-// CFn keys (wafv2-provider.ts:139-148) is the only evidence there.
+// CFn keys (`ARN_REFERENCE_STATEMENT_KEYS` in wafv2-provider.ts) is the only evidence there.
 const RULES_VERBATIM =
   'passed through verbatim inside the Rules document, as its carried siblings are; its spelling against the SDK model is not observed by a bag';
 
@@ -453,7 +499,10 @@ const WAFV2_CASES: TypeCase[] = [
     physicalId: WEB_ACL_ARN,
     createOnly: createOnlyOf('AWS::WAFv2::WebACL'),
     arm: () => armWebAcl(),
-    wholeFromNext: { keys: (key) => key !== 'Tags', reason: ACL_FROM_NEXT },
+    wholeFromNext: {
+      keys: (key) => key !== 'Tags' && key !== 'ApplicationConfig',
+      reason: ACL_FROM_NEXT,
+    },
     exempt: {},
     nestedExempt: {
       ...rulesExemptions(),
@@ -469,6 +518,7 @@ const WAFV2_CASES: TypeCase[] = [
       {
         name: 'every declared property, an Allow default',
         bag: ACL_FULL,
+        expectedSilent: { 'update-remove:ApplicationConfig': APPLICATION_CONFIG_KEPT },
         expectedRemovalThrows: TAG_THROWS(ALL_DIRECTIONS, 2),
       },
       { name: 'a Block default', bag: BLOCK_DEFAULT },
