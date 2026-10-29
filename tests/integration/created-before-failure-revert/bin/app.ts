@@ -2,6 +2,7 @@
 import * as cdk from 'aws-cdk-lib';
 import {
   CreatedBeforeFailureEcrStack,
+  CreatedBeforeFailureKinesisStack,
   CreatedBeforeFailureNestedStack,
   CreatedBeforeFailureSnsStack,
 } from '../lib/created-before-failure-revert-stack.ts';
@@ -28,4 +29,10 @@ new CreatedBeforeFailureNestedStack(app, 'CdkdCreatedBeforeFailureRevertNestedEx
   env,
   description:
     'cdkd integ: a nested child whose only skip on destroy is the ECR repository its failed CREATE journaled (go-to-k/cdkd#4738)',
+});
+
+new CreatedBeforeFailureKinesisStack(app, 'CdkdCreatedBeforeFailureRevertKinesisExample', {
+  env,
+  description:
+    'cdkd integ: a Kinesis stream whose ACTIVE wait outlives a 2s resource deadline after CreateStream returned (journaled orphan, deleted by rollback --revert-failed, go-to-k/cdkd#5511)',
 });

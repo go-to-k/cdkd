@@ -47,12 +47,25 @@
 #         AWS and no "State preserved" claim. Before the fix the parent kept
 #         its state and needed a second destroy. The fixture then deletes the
 #         repository by hand.
+#   PHASE K (go-to-k/cdkd#5511, the deadline drops the provider's marked error):
+#     K1. Deploy the Kinesis stack --no-rollback under a 2s Kinesis deadline:
+#         CreateStream returns, and the deadline fires inside the provider's
+#         ACTIVE wait, so the marked error the wait would throw is dropped. The
+#         deploy fails with the timeout; the stream EXISTS (proof the create
+#         returned); state has no record of it; the journal's failed op
+#         carries physicalId = the stream name, physicalIdRecoveredFromError
+#         = true and a creation identity, all from the id the provider
+#         reported to the engine's created-resource sink.
+#     K2. Once the stream is ACTIVE, `cdkd rollback --force --revert-failed`
+#         exits 0 and deletes it (describe-stream-summary answers
+#         ResourceNotFoundException), and the journal and state.json are gone.
 #
 # After a run killed with SIGKILL (no trap runs), delete by hand the ECR
 # repositories `cdkdcreatedbeforefailurerevertecrexample-orphan-repo` and
-# `cdkdcreatedbeforefailurerevertnestedexample-orphan-repo` and the SNS topic
-# `CdkdCreatedBeforeFailureRevertSnsExample-topic` — the next run's pre-run
-# sweep also removes them.
+# `cdkdcreatedbeforefailurerevertnestedexample-orphan-repo`, the SNS topic
+# `CdkdCreatedBeforeFailureRevertSnsExample-topic` and the Kinesis stream
+# `CdkdCreatedBeforeFailureRevertKinesisExample-deadline-stream` — the next
+# run's pre-run sweep also removes them.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -101,10 +114,12 @@ ECR_STACK="CdkdCreatedBeforeFailureRevertEcrExample"
 SNS_STACK="CdkdCreatedBeforeFailureRevertSnsExample"
 NESTED_STACK="CdkdCreatedBeforeFailureRevertNestedExample"
 NESTED_CHILD="${NESTED_STACK}~Child"
+KINESIS_STACK="CdkdCreatedBeforeFailureRevertKinesisExample"
 # The names the stacks derive from their own ids (lib/*-stack.ts).
 REPO_NAME="cdkdcreatedbeforefailurerevertecrexample-orphan-repo"
 TOPIC_NAME="${SNS_STACK}-topic"
 NESTED_REPO_NAME="cdkdcreatedbeforefailurerevertnestedexample-orphan-repo"
+STREAM_NAME="${KINESIS_STACK}-deadline-stream"
 ECR_STATE_KEY="cdkd/${ECR_STACK}/${REGION}/state.json"
 ECR_JOURNAL_KEY="cdkd/${ECR_STACK}/${REGION}/rollback-journal.json"
 SNS_STATE_KEY="cdkd/${SNS_STACK}/${REGION}/state.json"
@@ -113,6 +128,8 @@ NESTED_STATE_KEY="cdkd/${NESTED_STACK}/${REGION}/state.json"
 NESTED_JOURNAL_KEY="cdkd/${NESTED_STACK}/${REGION}/rollback-journal.json"
 CHILD_STATE_KEY="cdkd/${NESTED_CHILD}/${REGION}/state.json"
 CHILD_JOURNAL_KEY="cdkd/${NESTED_CHILD}/${REGION}/rollback-journal.json"
+KINESIS_STATE_KEY="cdkd/${KINESIS_STACK}/${REGION}/state.json"
+KINESIS_JOURNAL_KEY="cdkd/${KINESIS_STACK}/${REGION}/rollback-journal.json"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cbf-revert.XXXXXX")"
@@ -138,7 +155,7 @@ if [ -z "${ACCOUNT_ID}" ] || [ -z "${PARTITION}" ]; then
 fi
 TOPIC_ARN="arn:${PARTITION}:sns:${REGION}:${ACCOUNT_ID}:${TOPIC_NAME}"
 
-echo "[verify] region=${REGION} stacks=${ECR_STACK},${SNS_STACK},${NESTED_STACK} state-bucket=${STATE_BUCKET}"
+echo "[verify] region=${REGION} stacks=${ECR_STACK},${SNS_STACK},${NESTED_STACK},${KINESIS_STACK} state-bucket=${STATE_BUCKET}"
 
 # Best-effort removal of everything this fixture can leave: the two named
 # resources first (neither is ever in state, so the state destroy cannot reach
@@ -151,7 +168,9 @@ sweep() {
   aws ecr delete-repository --repository-name "${REPO_NAME}" --force --region "${REGION}" >/dev/null 2>&1
   aws ecr delete-repository --repository-name "${NESTED_REPO_NAME}" --force --region "${REGION}" >/dev/null 2>&1
   aws sns delete-topic --topic-arn "${TOPIC_ARN}" --region "${REGION}" >/dev/null 2>&1
-  for s in "${ECR_STACK}" "${SNS_STACK}" "${NESTED_STACK}" "${NESTED_CHILD}"; do
+  aws kinesis delete-stream --stream-name "${STREAM_NAME}" --enforce-consumer-deletion \
+    --region "${REGION}" >/dev/null 2>&1
+  for s in "${ECR_STACK}" "${SNS_STACK}" "${NESTED_STACK}" "${NESTED_CHILD}" "${KINESIS_STACK}"; do
     node "${LOCAL_DIST}" state destroy "${s}" --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" --yes >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${s}/" --recursive >/dev/null 2>&1
@@ -189,6 +208,7 @@ wait_gone() { # usage: wait_gone <description> aws <service> <read-verb> [args..
 repo_probe() { echo "aws ecr describe-repositories --repository-names ${REPO_NAME} --region ${REGION}"; }
 nested_repo_probe() { echo "aws ecr describe-repositories --repository-names ${NESTED_REPO_NAME} --region ${REGION}"; }
 topic_probe() { echo "aws sns get-topic-attributes --topic-arn ${TOPIC_ARN} --region ${REGION}"; }
+stream_probe() { echo "aws kinesis describe-stream-summary --stream-name ${STREAM_NAME} --region ${REGION}"; }
 
 # cdkd colours its output whatever the terminal, so every grep reads a copy
 # with the ANSI sequences stripped.
@@ -222,8 +242,11 @@ wait_gone "pre-run: ${REPO_NAME} still exists after the sweep" $(repo_probe)
 wait_gone "pre-run: ${TOPIC_ARN} still exists after the sweep" $(topic_probe)
 # shellcheck disable=SC2046
 wait_gone "pre-run: ${NESTED_REPO_NAME} still exists after the sweep" $(nested_repo_probe)
+# shellcheck disable=SC2046
+wait_gone "pre-run: ${STREAM_NAME} still exists after the sweep" $(stream_probe)
 for key in "${ECR_STATE_KEY}" "${ECR_JOURNAL_KEY}" "${SNS_STATE_KEY}" "${SNS_JOURNAL_KEY}" \
-  "${NESTED_STATE_KEY}" "${NESTED_JOURNAL_KEY}" "${CHILD_STATE_KEY}" "${CHILD_JOURNAL_KEY}"; do
+  "${NESTED_STATE_KEY}" "${NESTED_JOURNAL_KEY}" "${CHILD_STATE_KEY}" "${CHILD_JOURNAL_KEY}" \
+  "${KINESIS_STATE_KEY}" "${KINESIS_JOURNAL_KEY}"; do
   assert_gone "pre-run: s3://${STATE_BUCKET}/${key} still exists after the sweep" \
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}"
 done
@@ -536,6 +559,80 @@ wait_gone "phase N3: ${NESTED_REPO_NAME} still exists after the fixture deleted 
 echo "[verify] phase N3 ok: one destroy deleted both states, kept the unproven repository (exit 2)"
 
 # ---------------------------------------------------------------------------
+# PHASE K: Kinesis — the deadline drops the marked error; the sink journals it
+# ---------------------------------------------------------------------------
+echo "[verify] phase K1: deploy ${KINESIS_STACK} --no-rollback under a 2s Kinesis deadline (expect FAILURE in the ACTIVE wait)"
+deploy_expect_failure "${KINESIS_STACK}" "${LOG_DIR}/k1.log" \
+  --resource-warn-after AWS::Kinesis::Stream=1s \
+  --resource-timeout AWS::Kinesis::Stream=2s
+if ! grep -qE "DeadlineStream \(AWS::Kinesis::Stream\) in ${REGION} timed out after" "${LOG_DIR}/k1.log"; then
+  echo "[verify] FAIL: phase K1: the deploy did not fail on DeadlineStream's 2s deadline (or the wording drifted)" >&2
+  exit 1
+fi
+# PREMISE: CreateStream returned before the deadline. Without it the deadline
+# fired in the create call and nothing below tests #5511.
+if ! K1_DESCRIBE="$(aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}" 2>&1)"; then
+  if printf '%s' "${K1_DESCRIBE}" | grep -qF 'ResourceNotFoundException'; then
+    echo "[verify] FAIL: phase K1: ${STREAM_NAME} does not exist after the failed deploy — the deadline fired before CreateStream returned, so this phase tests nothing" >&2
+  else
+    echo "[verify] FAIL: phase K1: describe-stream-summary for ${STREAM_NAME} failed for another reason, so the premise is undetermined: ${K1_DESCRIBE}" >&2
+  fi
+  exit 1
+fi
+if [ "$(state_has_resource "${KINESIS_STATE_KEY}" DeadlineStream)" != "false" ]; then
+  echo "[verify] FAIL: phase K1: state records DeadlineStream (expected no record for a CREATE the deadline failed)" >&2
+  exit 1
+fi
+KINESIS_OP="$(journal_failed_op "${KINESIS_JOURNAL_KEY}" DeadlineStream)"
+if [ -z "${KINESIS_OP}" ]; then
+  echo "[verify] FAIL: phase K1: the journal records no failed op for DeadlineStream" >&2
+  exit 1
+fi
+KINESIS_OP_FIELDS="$(printf '%s' "${KINESIS_OP}" \
+  | jq -r '[.changeType // "<absent>", .physicalId // "<absent>", (.physicalIdRecoveredFromError | tostring), (if (.createdResourceIdentity // "") != "" then "identity" else "<no-identity>" end)] | join(" ")')"
+# Before #5511 the deadline dropped the provider's marked error, so the failed
+# CREATE journaled no physical id and the stream was an orphan nothing recorded.
+if [ "${KINESIS_OP_FIELDS}" != "CREATE ${STREAM_NAME} true identity" ]; then
+  echo "[verify] FAIL: phase K1: failed DeadlineStream op journaled changeType/physicalId/physicalIdRecoveredFromError/identity = '${KINESIS_OP_FIELDS}' (expected 'CREATE ${STREAM_NAME} true identity')" >&2
+  echo "${KINESIS_OP}" | jq . | sed 's/^/  /' >&2
+  exit 1
+fi
+echo "[verify] phase K1 ok: the stream exists, the deadline failed its CREATE, and the journal names it with its identity"
+
+# DeleteStream refuses a stream still CREATING, which the abandoned wait was
+# watching, so the rollback runs once it is ACTIVE.
+K2_STATUS=""
+for _ in $(seq 1 60); do
+  K2_STATUS="$(aws kinesis describe-stream-summary --stream-name "${STREAM_NAME}" --region "${REGION}" \
+    --query 'StreamDescriptionSummary.StreamStatus' --output text)"
+  [ "${K2_STATUS}" = "ACTIVE" ] && break
+  sleep 2
+done
+if [ "${K2_STATUS}" != "ACTIVE" ]; then
+  echo "[verify] FAIL: phase K2: ${STREAM_NAME} did not reach ACTIVE (last status: ${K2_STATUS})" >&2
+  exit 1
+fi
+echo "[verify] phase K2: cdkd rollback ${KINESIS_STACK} --force --revert-failed (expect exit 0, the stream DELETED)"
+K2_RC="$(run_rollback "${KINESIS_STACK}" "${LOG_DIR}/k2.log")"
+if [ "${K2_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: phase K2: the rollback exited ${K2_RC} (expected 0 -- output above)" >&2
+  exit 1
+fi
+if ! grep -qF "deleting partially-created DeadlineStream" "${LOG_DIR}/k2.log"; then
+  echo "[verify] FAIL: phase K2: the rollback did not delete DeadlineStream as a partially-created resource" >&2
+  exit 1
+fi
+# No polling: the provider's delete returns only once the stream is gone
+# (issue #3872).
+# shellcheck disable=SC2046
+assert_gone "phase K2: ${STREAM_NAME} still exists after the rollback that deleted it" $(stream_probe)
+assert_gone "phase K2: the rollback journal is still present" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${KINESIS_JOURNAL_KEY}"
+assert_gone "phase K2: state.json is still present after the initial-deploy rollback" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${KINESIS_STATE_KEY}"
+echo "[verify] phase K2 ok: the rollback deleted the journaled stream (exit 0), journal and state gone"
+
+# ---------------------------------------------------------------------------
 # FINAL: nothing left
 # ---------------------------------------------------------------------------
 # shellcheck disable=SC2046
@@ -544,10 +641,12 @@ assert_gone "${REPO_NAME} still exists at the end of the run" $(repo_probe)
 assert_gone "${TOPIC_ARN} still exists at the end of the run" $(topic_probe)
 # shellcheck disable=SC2046
 assert_gone "${NESTED_REPO_NAME} still exists at the end of the run" $(nested_repo_probe)
-for s in "${ECR_STACK}" "${SNS_STACK}" "${NESTED_STACK}" "${NESTED_CHILD}"; do
+# shellcheck disable=SC2046
+assert_gone "${STREAM_NAME} still exists at the end of the run" $(stream_probe)
+for s in "${ECR_STACK}" "${SNS_STACK}" "${NESTED_STACK}" "${NESTED_CHILD}" "${KINESIS_STACK}"; do
   aws s3 rm "s3://${STATE_BUCKET}/cdkd/${s}/" --recursive >/dev/null 2>&1 || true
 done
 
 rm -rf "${LOG_DIR}"
 trap - EXIT INT TERM
-echo "[verify] PASS — a created-before-failure resource is journaled and reverted; a self-cleaned one is left alone; a nested child's kept orphan does not keep its parent's state"
+echo "[verify] PASS — a created-before-failure resource is journaled and reverted; a self-cleaned one is left alone; a nested child's kept orphan does not keep its parent's state; a create the deadline cut short is journaled from the sink and reverted"

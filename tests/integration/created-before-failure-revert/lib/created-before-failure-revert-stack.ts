@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import type { Construct } from 'constructs';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
+import * as kinesis from 'aws-cdk-lib/aws-kinesis';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 
@@ -104,5 +105,31 @@ export class CreatedBeforeFailureSnsStack extends cdk.Stack {
       dataProtectionPolicy: { Name: 'cdkd-invalid' },
     });
     topic.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+  }
+}
+
+/**
+ * Deadline arm of go-to-k/cdkd#5511: a CREATE whose create call returned and
+ * whose post-create wait outlives the per-resource deadline.
+ *
+ * covers: AWS::Kinesis::Stream
+ *
+ * verify.sh deploys it under `--resource-timeout AWS::Kinesis::Stream=2s`.
+ * CreateStream returns at once and the stream takes longer than 2s to reach
+ * ACTIVE, so the deadline fires inside the provider's ACTIVE wait. The marked
+ * error the provider would throw is dropped, so only the id it reported to the
+ * engine's created-resource sink can journal the stream. Explicitly named so
+ * verify.sh can probe and sweep it by name.
+ */
+export class CreatedBeforeFailureKinesisStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    const stream = new kinesis.CfnStream(this, 'DeadlineStream', {
+      name: `${id}-deadline-stream`,
+      shardCount: 1,
+      streamModeDetails: { streamMode: 'PROVISIONED' },
+    });
+    stream.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
   }
 }
