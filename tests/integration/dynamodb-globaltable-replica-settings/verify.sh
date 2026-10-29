@@ -142,6 +142,13 @@ TABLE2="${STACK}-table2"
 TABLE3="${STACK}-table3"
 LOCAL_ALIAS="alias/${STACK}-local"
 REPLICA_ALIAS="alias/${STACK}-replica"
+# Phase 5b's out-of-band key for ${TABLE2} in ${REGION}: fixture-owned, NOT the
+# stack's LocalKey. The template never ties ${TABLE2} to a key, so a stack key
+# under it is scheduled for deletion by the stack's destroy while the table is
+# still being deleted, and a table deleting on a key pending deletion stays in
+# DELETING indefinitely (it happened to a failed run's table2). This key is
+# retired only once every table is gone.
+OOB_ALIAS="alias/${STACK}-oob"
 # Tag on the keys this script creates, so a key whose alias was never
 # created can still be found by a later run's sweep.
 KEY_TAG="cdkd-integ-fixture"
@@ -166,7 +173,7 @@ table_settings() {
 # ACTIVE: an SSE / class / protection change leaves one or the other UPDATING
 # for a while, and the next deploy or destroy would be refused meanwhile.
 wait_settled() {
-  local i tbl reps second
+  local i tbl reps second sse sse2
   for i in $(seq 1 90); do
     tbl="$(aws dynamodb describe-table --table-name "${GT_TABLE:-${TABLE}}" --region "${REGION}" \
       --query 'Table.TableStatus' --output text)" || return 1
@@ -174,13 +181,21 @@ wait_settled() {
       --query "join(' ', Table.Replicas[].ReplicaStatus || \`[]\`)" --output text)" || return 1
     second="$(aws dynamodb describe-table --table-name "${GT_TABLE:-${TABLE}}" --region "${SECOND_REGION}" \
       --query 'Table.TableStatus' --output text)" || return 1
-    if [ "${tbl}" = "ACTIVE" ] && [ "${reps}" = "ACTIVE" ] && [ "${second}" = "ACTIVE" ]; then
-      echo "    settled (table=${tbl} replicas=${reps} ${SECOND_REGION}=${second})"
+    # An encryption change (a key move) leaves SSEDescription UPDATING while
+    # the table already reads ACTIVE, and DynamoDB refuses the next change
+    # (or a delete) meanwhile.
+    sse="$(aws dynamodb describe-table --table-name "${GT_TABLE:-${TABLE}}" --region "${REGION}" \
+      --query 'Table.SSEDescription.Status' --output text)" || return 1
+    sse2="$(aws dynamodb describe-table --table-name "${GT_TABLE:-${TABLE}}" --region "${SECOND_REGION}" \
+      --query 'Table.SSEDescription.Status' --output text)" || return 1
+    if [ "${tbl}" = "ACTIVE" ] && [ "${reps}" = "ACTIVE" ] && [ "${second}" = "ACTIVE" ] &&
+      [ "${sse}" != "UPDATING" ] && [ "${sse2}" != "UPDATING" ]; then
+      echo "    settled (table=${tbl} replicas=${reps} ${SECOND_REGION}=${second} sse=${sse}/${sse2})"
       return 0
     fi
     sleep 10
   done
-  echo "FAIL: table did not settle (table='${tbl}' replicas='${reps}' ${SECOND_REGION}='${second}')" >&2
+  echo "FAIL: table did not settle (table='${tbl}' replicas='${reps}' ${SECOND_REGION}='${second}' sse='${sse}/${sse2}')" >&2
   exit 1
 }
 
@@ -329,35 +344,117 @@ retire_key() { # usage: retire_key <region> <alias>
   esac
 }
 
+# Region $2's copy of table $1 ACTIVE with no encryption change in flight, or
+# gone. Bounded: 15 min, or the epoch second $3 when given (a caller's own
+# deadline). Returns 1 at the bound.
+await_table_idle() { # usage: await_table_idle <table name> <region> [deadline epoch]
+  local out deadline="${3:-$(($(date +%s) + 900))}"
+  while [ "$(date +%s)" -lt "${deadline}" ]; do
+    if ! out="$(aws dynamodb describe-table --table-name "$1" --region "$2" \
+      --query '[Table.TableStatus, Table.SSEDescription.Status]' --output text 2>&1)"; then
+      printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' && return 0
+    else
+      case "${out}" in ACTIVE*UPDATING*) ;; ACTIVE*) return 0 ;; esac
+    fi
+    sleep 10
+  done
+  return 1
+}
+
+# DeleteTable for table $1 in region $2, keeping AWS's answer. Not found is the
+# goal. A ResourceInUseException (the table, a replica or its encryption still
+# changing) waits the table out and retries; a deletion-protection refusal
+# turns protection off there first. Anything else, or ONE deadline for the
+# whole call (15 min from its start, waits included), is recorded WITH AWS's
+# last message and returns 1.
+delete_table_logged() { # usage: delete_table_logged <table name> <region>
+  local out="(no attempt)" why="refused" deadline=$(($(date +%s) + 900))
+  while :; do
+    if [ "$(date +%s)" -ge "${deadline}" ]; then
+      why="not deleted within 15 min"
+      break
+    fi
+    if out="$(aws dynamodb delete-table --table-name "$1" --region "$2" 2>&1)"; then
+      return 0
+    fi
+    if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+      return 0
+    fi
+    if printf '%s' "${out}" | grep -qiE 'deletion protection'; then
+      echo "    ${1} (${2}): deletion protection is on; turning it off before the delete"
+      local flip
+      flip="$(aws dynamodb update-table --table-name "$1" --region "$2" \
+        --no-deletion-protection-enabled 2>&1 >/dev/null)" ||
+        echo "    ${1} (${2}): turning deletion protection off was refused; retrying: $(printf '%s' "${flip}" | tr '\n' ' ')" >&2
+      await_table_idle "$1" "$2" "${deadline}"
+      sleep 10
+      continue
+    fi
+    if printf '%s' "${out}" | grep -qiE 'ResourceInUseException|LimitExceededException'; then
+      echo "    ${1} (${2}): delete refused while it is changing; waiting: $(printf '%s' "${out}" | tr '\n' ' ')"
+      await_table_idle "$1" "$2" "${deadline}"
+      sleep 10
+      continue
+    fi
+    break
+  done
+  echo "ERROR: cleanup could not delete ${1} in ${2} (${why}): $(printf '%s' "${out}" | tr '\n' ' ')" >&2
+  CLEANUP_STRANDED=1
+  return 1
+}
+
 teardown_table() { # usage: teardown_table <table name>
-  local tbl="$1" gone out status reps
+  local tbl="$1" gone out status reps prot rc=0
   # Direct deletes by name, for a run that died before state existed or
-  # whose destroy failed. Protection off first in BOTH regions: a
-  # protected replica refuses its drop ("Disable deletion protection first").
+  # whose destroy failed. Protection off first in each region that has it on
+  # (only there: the flip leaves the table UPDATING): a protected replica
+  # refuses its drop ("Disable deletion protection first").
   for r in "${REGION}" "${SECOND_REGION}"; do
-    aws dynamodb update-table --table-name "${tbl}" --region "${r}" \
-      --no-deletion-protection-enabled >/dev/null 2>&1
+    # A failed read (gone, or a throttle) flips nothing here: a protection
+    # refusal is still handled by delete_table_logged below.
+    prot="$(aws dynamodb describe-table --table-name "${tbl}" --region "${r}" \
+      --query 'Table.DeletionProtectionEnabled' --output text 2>/dev/null)" || prot="read-failed:$?"
+    if [ "${prot}" = "True" ]; then
+      await_table_idle "${tbl}" "${r}"
+      if ! out="$(aws dynamodb update-table --table-name "${tbl}" --region "${r}" \
+        --no-deletion-protection-enabled 2>&1)"; then
+        echo "    ${tbl} (${r}): turning deletion protection off failed: $(printf '%s' "${out}" | tr '\n' ' ')" >&2
+      fi
+    fi
   done
   if aws dynamodb describe-table --table-name "${tbl}" --region "${REGION}" >/dev/null 2>&1; then
     gone=0
     for _ in $(seq 1 90); do
       if ! out="$(aws dynamodb describe-table --table-name "${tbl}" --region "${REGION}" \
-        --query "[Table.TableStatus, join(' ', Table.Replicas[].RegionName || \`[]\`)]" --output text 2>&1)"; then
+        --query "[Table.TableStatus, join(' ', Table.Replicas[].RegionName || \`[]\`), Table.SSEDescription.Status]" --output text 2>&1)"; then
         if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then gone=1; break; fi
         sleep 10
         continue
       fi
       status="$(printf '%s' "${out}" | cut -f1)"
-      reps="$(printf '%s' "${out}" | cut -f2-)"
+      reps="$(printf '%s' "${out}" | cut -f2)"
+      # An encryption change still in flight refuses every change below.
+      if [ "$(printf '%s' "${out}" | cut -f3)" = "UPDATING" ]; then
+        sleep 10
+        continue
+      fi
       case " ${reps} " in
         *" ${SECOND_REGION} "*)
           # Refused while anything is UPDATING (the protection flip above
           # included), so re-issued once the table is ACTIVE.
           if [ "${status}" = "ACTIVE" ]; then
-            aws dynamodb update-table --table-name "${tbl}" --region "${SECOND_REGION}" \
-              --no-deletion-protection-enabled >/dev/null 2>&1
-            aws dynamodb update-table --table-name "${tbl}" --region "${REGION}" \
-              --replica-updates "Delete={RegionName=${SECOND_REGION}}" >/dev/null 2>&1
+            if [ "$(aws dynamodb describe-table --table-name "${tbl}" --region "${SECOND_REGION}" \
+              --query 'Table.DeletionProtectionEnabled' --output text 2>/dev/null)" = "True" ]; then
+              if ! out="$(aws dynamodb update-table --table-name "${tbl}" --region "${SECOND_REGION}" \
+                --no-deletion-protection-enabled 2>&1)"; then
+                echo "    ${tbl} (${SECOND_REGION}): turning deletion protection off failed: $(printf '%s' "${out}" | tr '\n' ' ')" >&2
+              fi
+            fi
+            if ! out="$(aws dynamodb update-table --table-name "${tbl}" --region "${REGION}" \
+              --replica-updates "Delete={RegionName=${SECOND_REGION}}" 2>&1)" &&
+              ! printf '%s' "${out}" | grep -qiE 'ResourceInUseException|LimitExceededException'; then
+              echo "    ${tbl}: dropping the ${SECOND_REGION} replica was refused: $(printf '%s' "${out}" | tr '\n' ' ')" >&2
+            fi
           fi
           ;;
         *) [ "${status}" = "ACTIVE" ] && break ;;
@@ -365,21 +462,51 @@ teardown_table() { # usage: teardown_table <table name>
       sleep 10
     done
     if [ "${gone}" = "0" ]; then
-      aws dynamodb delete-table --table-name "${tbl}" --region "${REGION}" >/dev/null 2>&1 ||
-        echo "WARN: cleanup could not delete ${tbl} in ${REGION}; delete it by hand" >&2
+      delete_table_logged "${tbl}" "${REGION}" || rc=1
     fi
   fi
-  if ! out="$(aws dynamodb delete-table --table-name "${tbl}" --region "${SECOND_REGION}" 2>&1)"; then
-    if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
-      echo "WARN: cleanup could not delete ${tbl} in ${SECOND_REGION}; delete it by hand" >&2
-    fi
-  fi
+  delete_table_logged "${tbl}" "${SECOND_REGION}" || rc=1
+  return "${rc}"
+}
+
+# Wait until table $1 is gone in both regions (only a not-found answer is
+# "gone"; any other failure retries). Bounded: 15 min per region. Returns 1
+# when it is still there in some region at the bound: the caller then must NOT
+# retire a key, since a table deleting on a key pending deletion stays in
+# DELETING indefinitely.
+await_table_gone() { # usage: await_table_gone <table name>
+  local r out gone
+  for r in "${REGION}" "${SECOND_REGION}"; do
+    gone=0
+    for _ in $(seq 1 90); do
+      if ! out="$(aws dynamodb describe-table --table-name "$1" --region "${r}" 2>&1)" &&
+        printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+        gone=1
+        break
+      fi
+      sleep 10
+    done
+    [ "${gone}" = "1" ] || return 1
+  done
+  return 0
 }
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
-  if [ -f "${LOCAL_DIST}" ]; then
+  # ${TABLE2} FIRST, and waited out, before the stack's destroy: Phase 5b moves
+  # it onto customer managed keys out of band, which the template does not
+  # reference, so nothing orders its delete before a key's deletion. It is
+  # moved onto fixture-owned keys (retired below, after every table), but a
+  # run of an older script, or a revert that lands on the stack's key, must
+  # not leave it deleting on a key the destroy is scheduling.
+  # When it is still there at the bound, the stack's destroy (which
+  # schedules the stack's keys) is skipped, and so is every key retirement
+  # below.
+  local stuck=""
+  teardown_table "${TABLE2}"
+  await_table_gone "${TABLE2}" || stuck="${TABLE2}"
+  if [ -z "${stuck}" ] && [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" --yes --remove-protection >/dev/null 2>&1
   fi
@@ -389,33 +516,36 @@ cleanup() {
   # Keys LAST, once every table is gone: a table still DELETING on a customer
   # managed key whose deletion is scheduled stays stuck until the key is
   # enabled again (bounded: 15 min per table and region).
-  local t r out
+  # Every fixture table, before ANY fixture key: the stack's local keys, the
+  # replica keys and Phase 5b's out-of-band key below.
+  local t
   for t in "${TABLE}" "${TABLE2}" "${TABLE3}"; do
-    for r in "${REGION}" "${SECOND_REGION}"; do
-      for _ in $(seq 1 90); do
-        # Only a not-found answer is "gone"; any other failure retries.
-        if ! out="$(aws dynamodb describe-table --table-name "${t}" --region "${r}" 2>&1)" &&
-          printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
-          break
-        fi
-        sleep 10
-      done
-    done
+    case " ${stuck} " in *" ${t} "*) continue ;; esac
+    await_table_gone "${t}" || stuck="${stuck:+${stuck} }${t}"
   done
-  # The local keys (stack-managed) when the destroy did not schedule them,
-  # and the replica keys this fixture creates — by ARN too, in case the
-  # alias was never created.
-  retire_key "${REGION}" "${LOCAL_ALIAS}"
-  retire_key "${REGION}" "${LOCAL_ALIAS}2"
-  retire_key "${SECOND_REGION}" "${REPLICA_ALIAS}"
-  retire_key "${SECOND_REGION}" "${REPLICA_ALIAS}2"
   # After the table: a streaming destination names the stream.
   retire_stream "${REGION}" "${LOCAL_KINESIS}"
   retire_stream "${SECOND_REGION}" "${REPLICA_KINESIS}"
-  for arn in "${REPLICA_KEY_ARN:-}" "${REPLICA_KEY2_ARN:-}"; do
-    [ -n "${arn}" ] && aws kms schedule-key-deletion --key-id "${arn}" --pending-window-in-days 7 \
-      --region "${SECOND_REGION}" >/dev/null 2>&1
-  done
+  if [ -n "${stuck}" ]; then
+    # Read by the EXIT trap: a run that strands resources must not pass.
+    CLEANUP_STRANDED=1
+    echo "WARN: cleanup: ${stuck} still exists after the 15 min bound, so NO key was retired (a table deleting on a key pending deletion stays in DELETING indefinitely). Left enabled: ${LOCAL_ALIAS}, ${LOCAL_ALIAS}2, ${OOB_ALIAS} (${OOB_KEY_ARN:-no ARN}) in ${REGION}; ${REPLICA_ALIAS} (${REPLICA_KEY_ARN:-no ARN}), ${REPLICA_ALIAS}2 (${REPLICA_KEY2_ARN:-no ARN}) in ${SECOND_REGION}. Schedule their deletion once the table is gone; a later run's sweep also does." >&2
+  else
+    # The local keys (stack-managed) when the destroy did not schedule them,
+    # and the replica keys this fixture creates — by ARN too, in case the
+    # alias was never created.
+    retire_key "${REGION}" "${LOCAL_ALIAS}"
+    retire_key "${REGION}" "${LOCAL_ALIAS}2"
+    retire_key "${SECOND_REGION}" "${REPLICA_ALIAS}"
+    retire_key "${SECOND_REGION}" "${REPLICA_ALIAS}2"
+    retire_key "${REGION}" "${OOB_ALIAS}"
+    for arn in "${REPLICA_KEY_ARN:-}" "${REPLICA_KEY2_ARN:-}"; do
+      [ -n "${arn}" ] && aws kms schedule-key-deletion --key-id "${arn}" --pending-window-in-days 7 \
+        --region "${SECOND_REGION}" >/dev/null 2>&1
+    done
+    [ -n "${OOB_KEY_ARN:-}" ] && aws kms schedule-key-deletion --key-id "${OOB_KEY_ARN}" \
+      --pending-window-in-days 7 --region "${REGION}" >/dev/null 2>&1
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -436,7 +566,10 @@ run_is_stale() { # usage: run_is_stale <name containing ${BASE}-<epoch>-<pid>>
 }
 sweep_previous_runs() {
   set +eu
-  local tbl r a k state st swept=" "
+  local tbl r a k state st swept=" " stuck=""
+  # Stage 1: every stale table, in both regions, deleted and WAITED OUT before
+  # any key goes (stage 2) — a table deleting on a key pending deletion stays
+  # in DELETING indefinitely.
   for r in "${REGION}" "${SECOND_REGION}"; do
     for tbl in $(aws dynamodb list-tables --region "${r}" \
       --query "TableNames[?starts_with(@, '${BASE}-')]" --output text 2>/dev/null); do
@@ -446,46 +579,50 @@ sweep_previous_runs() {
       echo "    sweeping ${tbl} (${r})"
       if [ "${r}" = "${REGION}" ]; then
         teardown_table "${tbl}"
-        swept="${swept}${tbl} "
       else
-        aws dynamodb update-table --table-name "${tbl}" --region "${r}" \
-          --no-deletion-protection-enabled >/dev/null 2>&1
-        # The protection change leaves the table UPDATING, and DeleteTable
-        # is refused until it is ACTIVE again (bounded: 5 min).
-        for _ in $(seq 1 30); do
-          [ "$(aws dynamodb describe-table --table-name "${tbl}" --region "${r}" \
-            --query 'Table.TableStatus' --output text 2>/dev/null)" = "ACTIVE" ] && break
-          sleep 10
-        done
-        aws dynamodb delete-table --table-name "${tbl}" --region "${r}" >/dev/null 2>&1 ||
-          echo "WARN: sweep could not delete ${tbl} in ${r}; delete it by hand" >&2
+        # Protection, an in-flight change and any other refusal are handled
+        # (and AWS's answer kept) there.
+        delete_table_logged "${tbl}" "${r}"
       fi
+      swept="${swept}${tbl} "
     done
-    for a in $(aws kms list-aliases --region "${r}" \
-      --query "Aliases[?starts_with(AliasName, 'alias/${BASE}-')].AliasName" --output text 2>/dev/null); do
-      run_is_stale "${a}" || continue
-      echo "    sweeping ${a} (${r})"
-      retire_key "${r}" "${a}"
-    done
+  done
+  for tbl in ${swept}; do
+    await_table_gone "${tbl}" || stuck="${stuck:+${stuck} }${tbl}"
+  done
+  # Stage 2: streams always; keys only once every swept table is gone.
+  for r in "${REGION}" "${SECOND_REGION}"; do
     for k in $(aws kinesis list-streams --region "${r}" \
       --query "StreamNames[?starts_with(@, '${BASE}-')]" --output text 2>/dev/null); do
       run_is_stale "${k}" || continue
       echo "    sweeping stream ${k} (${r})"
       retire_stream "${r}" "${k}"
     done
-    # Keys this script created whose alias never was (the run died between
-    # create-key and create-alias): found by tag, aged by their description.
-    for k in $(aws resourcegroupstaggingapi get-resources --region "${r}" \
-      --resource-type-filters kms --tag-filters "Key=${KEY_TAG},Values=${BASE}" \
-      --query 'ResourceTagMappingList[].ResourceARN' --output text 2>/dev/null); do
-      state="$(aws kms describe-key --key-id "${k}" --region "${r}" \
-        --query 'KeyMetadata.[KeyState, Description]' --output text 2>/dev/null)" || continue
-      case "${state}" in Enabled*) ;; *) continue ;; esac
-      run_is_stale "${state}" || continue
-      echo "    sweeping key ${k} (${r})"
-      aws kms schedule-key-deletion --key-id "${k}" --pending-window-in-days 7 --region "${r}" >/dev/null 2>&1
-    done
   done
+  if [ -n "${stuck}" ]; then
+    echo "WARN: sweep: ${stuck} still exists after the 15 min bound, so no stale run's key was retired (a table deleting on a key pending deletion stays in DELETING indefinitely). The stale '${BASE}-' aliases and keys tagged ${KEY_TAG}=${BASE} stay enabled; a later run's sweep retires them once the table is gone." >&2
+  else
+    for r in "${REGION}" "${SECOND_REGION}"; do
+      for a in $(aws kms list-aliases --region "${r}" \
+        --query "Aliases[?starts_with(AliasName, 'alias/${BASE}-')].AliasName" --output text 2>/dev/null); do
+        run_is_stale "${a}" || continue
+        echo "    sweeping ${a} (${r})"
+        retire_key "${r}" "${a}"
+      done
+      # Keys this script created whose alias never was (the run died between
+      # create-key and create-alias): found by tag, aged by their description.
+      for k in $(aws resourcegroupstaggingapi get-resources --region "${r}" \
+        --resource-type-filters kms --tag-filters "Key=${KEY_TAG},Values=${BASE}" \
+        --query 'ResourceTagMappingList[].ResourceARN' --output text 2>/dev/null); do
+        state="$(aws kms describe-key --key-id "${k}" --region "${r}" \
+          --query 'KeyMetadata.[KeyState, Description]' --output text 2>/dev/null)" || continue
+        case "${state}" in Enabled*) ;; *) continue ;; esac
+        run_is_stale "${state}" || continue
+        echo "    sweeping key ${k} (${r})"
+        aws kms schedule-key-deletion --key-id "${k}" --pending-window-in-days 7 --region "${r}" >/dev/null 2>&1
+      done
+    done
+  fi
   # State left by a run killed before its destroy.
   if [ -n "${STATE_BUCKET:-}" ]; then
     for st in $(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" --prefix "cdkd/${BASE}-" \
@@ -499,7 +636,10 @@ sweep_previous_runs() {
   set -eu
 }
 
-trap cleanup EXIT
+# EXIT: a run whose cleanup stranded a table (and so kept its keys) exits 1
+# even when every phase passed; a non-zero status (INT/TERM's 130/143, a FAIL)
+# is kept as it is.
+trap 'rc=$?; cleanup; if [ "${rc}" = 0 ] && [ "${CLEANUP_STRANDED:-0}" = 1 ]; then exit 1; fi' EXIT
 trap '(exit 130); cleanup; exit 130' INT
 trap '(exit 143); cleanup; exit 143' TERM
 
@@ -516,6 +656,9 @@ if [ ! -d node_modules ]; then npm install; fi
 echo "==> Pre-run cleanup"
 sweep_previous_runs
 cleanup
+# What an EARLIER run left (reported above with AWS's message) does not fail
+# this one: only this run's own cleanup decides its exit status.
+CLEANUP_STRANDED=0
 LOG_DIR="$(mktemp -d)"
 
 echo "==> Creating the ${SECOND_REGION} replica keys"
@@ -529,6 +672,12 @@ REPLICA_KEY2_ARN="$(aws kms create-key --region "${SECOND_REGION}" \
   --tags "TagKey=${KEY_TAG},TagValue=${BASE}" --query 'KeyMetadata.Arn' --output text)"
 aws kms create-alias --alias-name "${REPLICA_ALIAS}2" --target-key-id "${REPLICA_KEY2_ARN}" \
   --region "${SECOND_REGION}"
+echo "==> Creating Phase 5b's out-of-band key in ${REGION} (fixture-owned, not a stack key)"
+OOB_KEY_ARN="$(aws kms create-key --region "${REGION}" \
+  --description "cdkd integ ${STACK} out-of-band key (Phase 5b)" \
+  --tags "TagKey=${KEY_TAG},TagValue=${BASE}" --query 'KeyMetadata.Arn' --output text)"
+aws kms create-alias --alias-name "${OOB_ALIAS}" --target-key-id "${OOB_KEY_ARN}" \
+  --region "${REGION}"
 export CDKD_INTEG_REPLICA_KEY_ARN="${REPLICA_KEY_ARN}"
 export CDKD_INTEG_REPLICA_KEY2_ARN="${REPLICA_KEY2_ARN}"
 echo "    ${REPLICA_KEY_ARN} ${REPLICA_KEY2_ARN}"
@@ -1046,10 +1195,10 @@ fi
 # DynamoDB takes a customer managed key on a table with replicas only as one
 # ReplicaUpdates call naming every region's key (measured, Phase 3).
 aws dynamodb update-table --table-name "${TABLE2}" --region "${REGION}" --replica-updates \
-  "[{\"Update\":{\"RegionName\":\"${REGION}\",\"KMSMasterKeyId\":\"${LOCAL_KEY_ARN}\"}},{\"Update\":{\"RegionName\":\"${SECOND_REGION}\",\"KMSMasterKeyId\":\"${REPLICA_KEY_ARN}\"}}]" \
+  "[{\"Update\":{\"RegionName\":\"${REGION}\",\"KMSMasterKeyId\":\"${OOB_KEY_ARN}\"}},{\"Update\":{\"RegionName\":\"${SECOND_REGION}\",\"KMSMasterKeyId\":\"${REPLICA_KEY_ARN}\"}}]" \
   >/dev/null
 wait_settled
-await_settings "${REGION}" "^ENABLED	KMS	${LOCAL_KEY_ARN}	None	False$" \
+await_settings "${REGION}" "^ENABLED	KMS	${OOB_KEY_ARN}	None	False$" \
   "${PHASE5B} premise: the out-of-band move to the customer managed key did not land"
 await_settings "${SECOND_REGION}" "^ENABLED	KMS	${REPLICA_KEY_ARN}	None	False$" \
   "${PHASE5B} premise: the out-of-band move did not reach the replica"
