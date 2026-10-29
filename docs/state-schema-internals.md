@@ -1437,8 +1437,10 @@ unsettled).
 Schema `version: 15` adds `ResourceState.unsettledItems` (issue
 [#5498](https://github.com/go-to-k/cdkd/issues/5498)): per member path, the
 item names a failed `update()` had added with a call AWS accepted: a DynamoDB
-table's index (`GlobalSecondaryIndexes`) or tag key (`Tags`), a Kinesis
-stream's metric (`DesiredShardLevelMetrics`) or tag key. Without it the next
+table's index (`GlobalSecondaryIndexes`) or tag key (`Tags`), a GlobalTable's
+replica Region (`Replicas`), index or replica tag key
+(`Replicas[<region>].Tags`), a Kinesis stream's metric
+(`DesiredShardLevelMetrics`) or tag key. Without it the next
 deploy's convergence (#5503) could not tell an index the failed update created
 from one another tool added, so it kept both; CloudFormation would delete the
 one it created.
