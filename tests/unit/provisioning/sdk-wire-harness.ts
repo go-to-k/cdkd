@@ -837,10 +837,18 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
   const messages: Record<string, string> = {};
   const wrongMembers: Record<string, string> = {};
   const usedRenames = new Set<string>();
+  // Through `traceLanding`, the seam sdk-wire-tracer.test.ts pins.
   const trace = (label: string, path: Path, alt: Bag, from: Outcome, to: Outcome): void => {
-    const landed = landingChains(inputsOf.get(from) ?? [], inputsOf.get(to) ?? [], c.roots);
-    const expected = expectedChains(c.bag, alt, path);
-    const wrong = wrongMember(path, expected, landed, c.renames ?? {}, usedRenames);
+    const { wrong, used } = traceLanding(
+      c.bag,
+      alt,
+      path,
+      inputsOf.get(from) ?? [],
+      inputsOf.get(to) ?? [],
+      c.renames,
+      c.roots
+    );
+    for (const r of used) usedRenames.add(r);
     if (wrong !== undefined) wrongMembers[label] = wrong;
   };
   const compare = (direction: string, label: string, a: Outcome, b: Outcome): boolean => {
