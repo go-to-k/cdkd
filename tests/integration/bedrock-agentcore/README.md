@@ -16,11 +16,15 @@ This example demonstrates deploying an Amazon Bedrock AgentCore Runtime using cd
    LifecycleConfiguration (600 / 3600) and EnvironmentVariables. The
    authorizer's `PrivateEndpoint.ManagedVpcResource.Tags` keys (`Env`,
    `Cost-Center`, `lowerKey`) read back from AWS unchanged, and `cdkd drift`
-   reports the code runtime clean (issue #5433).
+   reports the code runtime clean (issue #5433). The code runtime's top-level
+   Tags (`Env`, `lowerKey`), RequestHeaderConfiguration allowlist and
+   SessionStorage FilesystemConfigurations read back from AWS as declared, and
+   the runtime stays on the SDK provider (issue #2762).
 2. **Phase 2 (REMOVAL, `CDKD_TEST_REMOVAL=true`)** - all five are removed from
    the template (issue #1160). A CloudFormation A/B cleared each one, the
    lifecycle back to the service defaults 900 / 28800, so the runtime must
-   read back that way, in place.
+   read back that way, in place. The three issue #2762 properties are removed
+   too: the tags are untagged and the other two read back absent.
 3. **Phase 3 (destroy)** - both runtimes, the user pool, the VPC and the cdkd state file are gone.
 
 ## Prerequisites

@@ -10,7 +10,9 @@
 # a field is that reset; this run pins it against a regression to merge
 # semantics (filling an absent field from the previous template). Phase 1
 # also pins the authorizer private endpoint's tag keys, sent and read back
-# verbatim (issue #5433). Then destroys clean.
+# verbatim (issue #5433), and the issue #2762 backfill: the top-level Tags,
+# RequestHeaderConfiguration and FilesystemConfigurations reach AWS on the
+# SDK route, and the removal phase clears all three. Then destroys clean.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -134,12 +136,36 @@ wait_ready() { # usage: wait_ready <runtime-id>
   exit 1
 }
 
+# The AWS CLI prints NOTHING (rc 0) when a `--query` result is empty or falsy
+# (`{}`, `[]`, `null`, `0`), so every projection below reads the raw JSON and
+# projects with jq instead (issue #2762).
+#
 # Prints the code runtime's five #1160 fields as one compact JSON object
 # (null for an absent one); the authorizer is reduced to its allowed clients.
 runtime_fields() { # usage: runtime_fields <runtime-id>
-  aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "$1" --region "${REGION}" \
-    --query '{description: description, authorizer: authorizerConfiguration.customJWTAuthorizer.allowedClients, protocol: protocolConfiguration.serverProtocol, lifecycle: lifecycleConfiguration, env: environmentVariables}' \
-    --output json | jq -c -S .
+  local raw
+  raw=$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "$1" --region "${REGION}" \
+    --output json) || return 1
+  printf '%s' "${raw}" | jq -c -S '{description: .description, authorizer: .authorizerConfiguration.customJWTAuthorizer.allowedClients, protocol: .protocolConfiguration.serverProtocol, lifecycle: .lifecycleConfiguration, env: .environmentVariables}'
+}
+
+# Issue #2762: the code runtime's backfilled fields as one compact JSON object
+# (null for an absent one or an empty list, an empty Tags map as {}).
+backfill_fields() { # usage: backfill_fields <runtime-id>
+  local raw arn tags_raw tags
+  raw=$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "$1" --region "${REGION}" \
+    --output json) || return 1
+  arn=$(printf '%s' "${raw}" | jq -r '.agentRuntimeArn // empty') || return 1
+  [ -n "${arn}" ] || { echo "FAIL: get-agent-runtime $1 returned no agentRuntimeArn" >&2; return 1; }
+  tags_raw=$(aws bedrock-agentcore-control list-tags-for-resource --resource-arn "${arn}" --region "${REGION}" \
+    --output json) || return 1
+  # An empty response body is no tags too, never a parse failure.
+  tags=$(printf '%s' "${tags_raw:-{\}}" | jq -c '.tags // {}') \
+    || { echo "FAIL: list-tags-for-resource ${arn} returned unparseable JSON: ${tags_raw}" >&2; return 1; }
+  printf '%s' "${raw}" | jq -c -S --argjson tags "${tags}" \
+    'def nonempty: if . == [] then null else . end;
+     {headers: (.requestHeaderConfiguration.requestHeaderAllowlist | nonempty),
+      filesystems: (.filesystemConfigurations | nonempty), tags: $tags}'
 }
 
 # Issue #5433: pin the auth VPC to AZ IDs AgentCore serves (names differ per
@@ -175,6 +201,13 @@ if [ -z "${RUNTIME_ID}" ] || [ -z "${DOCKER_RUNTIME_ID}" ] || [ -z "${AUTH_POOL_
   echo "FAIL: physical ids missing from state: ${CODE_RUNTIME_LOGICAL_ID}='${RUNTIME_ID}' ${DOCKER_RUNTIME_LOGICAL_ID}='${DOCKER_RUNTIME_ID}' ${AUTH_POOL_LOGICAL_ID}='${AUTH_POOL_ID}'" >&2
   exit 1
 fi
+# Issue #2762: the route first, so a pre-fix (Cloud Control) run goes red HERE,
+# at this fixture's own assertion, before a route-specific difference later.
+P1_ROUTE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg l "${CODE_RUNTIME_LOGICAL_ID}" '.resources[$l].provisionedBy // "<absent>"')
+if [ "${P1_ROUTE}" != "sdk" ]; then
+  echo "FAIL (issue #2762): the code runtime was provisioned by '${P1_ROUTE}', expected the SDK provider" >&2
+  exit 1
+fi
 wait_ready "${RUNTIME_ID}"
 # Issue #1160 baseline: every field holds a non-default value first, so its
 # absence afterwards is the removal's doing.
@@ -186,11 +219,20 @@ if [ "${P1_FIELDS}" != "${P1_EXPECTED}" ]; then
 fi
 echo "    OK: baseline runtime ${RUNTIME_ID} carries all five fields"
 
+# Issue #2762: the backfilled properties reach AWS on the SDK route (Tags keys
+# byte-identical), and the runtime stayed on that route.
+P1_BACKFILL=$(backfill_fields "${RUNTIME_ID}")
+P1_BACKFILL_EXPECTED='{"filesystems":[{"sessionStorage":{"mountPath":"/mnt/cdkd"}}],"headers":["X-Amzn-Bedrock-AgentCore-Runtime-Custom-Cdkd"],"tags":{"Env":"cdkd-integ","lowerKey":"v2762"}}'
+if [ "${P1_BACKFILL}" != "${P1_BACKFILL_EXPECTED}" ]; then
+  echo "FAIL (issue #2762): code runtime ${RUNTIME_ID} after create: expected ${P1_BACKFILL_EXPECTED}, got ${P1_BACKFILL}" >&2
+  exit 1
+fi
+echo "    OK: Tags / RequestHeaderConfiguration / FilesystemConfigurations reached AWS (issue #2762)"
+
 # Issue #5433: the private endpoint's tag keys reach AWS byte-identical. The
 # PascalCase -> camelCase flip used to rewrite them (`Env` -> `env`).
 P1_TAGS=$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "${RUNTIME_ID}" --region "${REGION}" \
-  --query 'authorizerConfiguration.customJWTAuthorizer.privateEndpoint.managedVpcResource.tags' \
-  --output json | jq -c -S .)
+  --output json | jq -c -S '.authorizerConfiguration.customJWTAuthorizer.privateEndpoint.managedVpcResource.tags')
 P1_TAGS_EXPECTED='{"Cost-Center":"5433","Env":"cdkd-integ","lowerKey":"v"}'
 if [ "${P1_TAGS}" != "${P1_TAGS_EXPECTED}" ]; then
   echo "FAIL (issue #5433): the authorizer private endpoint's tag keys were rewritten: expected ${P1_TAGS_EXPECTED}, got ${P1_TAGS}" >&2
@@ -225,6 +267,11 @@ if [ "${RM_RUNTIME_ID}" != "${RUNTIME_ID}" ]; then
   echo "FAIL: the code runtime was replaced by the removal (must update in place): '${RUNTIME_ID}' -> '${RM_RUNTIME_ID}'" >&2
   exit 1
 fi
+P2_ROUTE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg l "${CODE_RUNTIME_LOGICAL_ID}" '.resources[$l].provisionedBy // "<absent>"')
+if [ "${P2_ROUTE}" != "sdk" ]; then
+  echo "FAIL (issue #2762): the removal moved the code runtime to '${P2_ROUTE}', expected the SDK provider" >&2
+  exit 1
+fi
 wait_ready "${RUNTIME_ID}"
 P2_FIELDS=$(runtime_fields "${RUNTIME_ID}")
 P2_EXPECTED='{"authorizer":null,"description":null,"env":null,"lifecycle":{"idleRuntimeSessionTimeout":900,"maxLifetime":28800},"protocol":null}'
@@ -234,6 +281,14 @@ if [ "${P2_FIELDS}" != "${P2_EXPECTED}" ]; then
 fi
 echo "    OK: removed fields cleared and the lifecycle back to 900 / 28800, in place (issue #1160)"
 
+P2_BACKFILL=$(backfill_fields "${RUNTIME_ID}")
+P2_BACKFILL_EXPECTED='{"filesystems":null,"headers":null,"tags":{}}'
+if [ "${P2_BACKFILL}" != "${P2_BACKFILL_EXPECTED}" ]; then
+  echo "FAIL (issue #2762): the code runtime kept a removed backfilled field: expected ${P2_BACKFILL_EXPECTED}, got ${P2_BACKFILL}" >&2
+  exit 1
+fi
+echo "    OK: Tags untagged, RequestHeaderConfiguration / FilesystemConfigurations cleared (issue #2762)"
+
 # Issue #5433, LOG-ONLY: AgentCore keeps the managed Lattice resource gateway
 # after the authorizer is removed and deletes it with the runtime (measured
 # with CloudFormation in us-east-1: still ACTIVE 10 min after the removal,
@@ -241,7 +296,7 @@ echo "    OK: removed fields cleared and the lifecycle back to 900 / 28800, in p
 # Phase 3's VPC-gone assertion is the gate, and the stack orders the
 # runtime's delete before the VPC's. A probe ERROR still fails loudly.
 enis=$(aws ec2 describe-network-interfaces --region "${REGION}" --filters "Name=vpc-id,Values=${AUTH_VPC_ID}" "Name=description,Values=Resource Gateway Interface*" \
-  --query 'length(NetworkInterfaces)' --output text) \
+  --output json | jq '.NetworkInterfaces | length') \
   || { echo "FAIL (issue #5433): the ENI probe on auth VPC ${AUTH_VPC_ID} failed" >&2; exit 1; }
 echo "    NOTE (issue #5433): ${enis} resource gateway interface(s) in auth VPC ${AUTH_VPC_ID} after the private endpoint was removed (expected: kept until the runtime is deleted)"
 

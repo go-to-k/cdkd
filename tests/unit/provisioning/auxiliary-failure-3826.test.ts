@@ -30,6 +30,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { APIGatewayClient } from '@aws-sdk/client-api-gateway';
+import { BedrockAgentCoreControlClient } from '@aws-sdk/client-bedrock-agentcore-control';
 import { AppSyncClient } from '@aws-sdk/client-appsync';
 import { AutoScalingClient } from '@aws-sdk/client-auto-scaling';
 import { CloudTrailClient } from '@aws-sdk/client-cloudtrail';
@@ -63,6 +64,7 @@ import {
   auxiliaryLogicalId,
   markAuxiliaryFailure,
 } from '../../../src/provisioning/auxiliary-failure.js';
+import { AgentCoreRuntimeProvider } from '../../../src/provisioning/providers/agentcore-runtime-provider.js';
 import { ApiGatewayProvider } from '../../../src/provisioning/providers/apigateway-provider.js';
 import { AppSyncProvider } from '../../../src/provisioning/providers/appsync-provider.js';
 import { ASGProvider } from '../../../src/provisioning/providers/asg-provider.js';
@@ -182,6 +184,30 @@ const LOGICAL_ID = 'Subject';
 const COLLISION_TEXT = 'The object with that name already exists';
 
 const CASES: Case[] = [
+  {
+    // go-to-k/cdkd#2762: the tags a new runtime did not keep are set after
+    // CreateAgentRuntime returned.
+    name: 'agentcore-runtime AWS::BedrockAgentCore::Runtime',
+    provider: () => new AgentCoreRuntimeProvider(),
+    resourceType: 'AWS::BedrockAgentCore::Runtime',
+    properties: {
+      AgentRuntimeName: 'runtime',
+      RoleArn: 'arn:aws:iam::123456789012:role/runtime',
+      AgentRuntimeArtifact: { ContainerConfiguration: { ContainerUri: 'uri' } },
+      Tags: { Env: 'dev' },
+    },
+    clients: [BedrockAgentCoreControlClient],
+    main: 'CreateAgentRuntimeCommand',
+    aux: 'TagResourceCommand',
+    responses: {
+      CreateAgentRuntimeCommand: {
+        agentRuntimeId: 'runtime-1',
+        agentRuntimeArn: 'arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/runtime-1',
+      },
+      // The new runtime holds none of the tags it was sent.
+      ListTagsForResourceCommand: { tags: {} },
+    },
+  },
   {
     name: 'lambda-function AWS::Lambda::Function',
     provider: () => new LambdaFunctionProvider(),

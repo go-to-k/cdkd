@@ -29,7 +29,7 @@ aws-custom-resource	2026-10-04T02:52:14Z	PASS	86	verify.sh	rc ok, orph clean (#1
 backup	2026-10-15T02:06:45Z	PASS	95	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
 basic	2026-10-20T19:58:09Z	PASS	94	standard	PR #5100 pre-merge run, deploy+destroy clean, 0 orphans
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
-bedrock-agentcore	2026-10-28T06:38:36Z	PASS	700	verify.sh	rc ok, orph clean; #5433 tag keys exact, probe RED at tag-key assertion
+bedrock-agentcore	2026-10-29T20:58:21Z	PASS	150	verify.sh	rc ok, destroy 0 errors, orph clean
 bench-ccapi	2026-10-24T06:41:39Z	PASS	90	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 0 orphans (5 deleted)
 bench-cdk-sample	2026-10-29T18:05:48Z	PASS	456	standard	final head 212db23c8 (#5508); destroy 38 deleted, 2 retained by DeletionPolicy, 0 errors
 bench-sdk	2026-10-24T06:40:41Z	PASS	40	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 0 orphans (5 deleted)

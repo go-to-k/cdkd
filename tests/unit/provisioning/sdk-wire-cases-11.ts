@@ -191,13 +191,14 @@ const RUNTIME_ID = 'rt-1';
 /**
  * `UpdateAgentRuntime` is a full replace built from the desired bag alone, and
  * a field it omits is CLEARED, which a CloudFormation A/B measured as parity
- * (agentcore-runtime-provider.ts:255-311): `update()` never reads the
- * previous side.
+ * (agentcore-runtime-provider.ts, `update()`): it never reads the previous
+ * side. `Tags` is the exception, diffed against the previous side by
+ * TagResource / UntagResource (the `targets` below).
  */
 const RUNTIME_FROM_NEXT = {
-  keys: () => true,
+  keys: (key: string) => key !== 'Tags',
   reason:
-    'UpdateAgentRuntime is a full replace from the desired bag, which clears an omitted field as CloudFormation does (CFn A/B, agentcore-runtime-provider.ts:255-311)',
+    'UpdateAgentRuntime is a full replace from the desired bag, which clears an omitted field as CloudFormation does (CFn A/B, agentcore-runtime-provider.ts update())',
 };
 
 const MANAGED_VPC = {
@@ -262,6 +263,27 @@ const RUNTIME_TOP = {
   LifecycleConfiguration: { IdleRuntimeSessionTimeout: 900, MaxLifetime: 28800 },
   EnvironmentVariables: { A: '1', B: '2' },
   ClientToken: 'client-token-1',
+  RequestHeaderConfiguration: {
+    RequestHeaderAllowlist: [
+      'X-Amzn-Bedrock-AgentCore-Runtime-Custom-A',
+      'X-Amzn-Bedrock-AgentCore-Runtime-Custom-B',
+    ],
+  },
+  FilesystemConfigurations: [
+    { SessionStorage: { MountPath: '/mnt/session' } },
+    {
+      EfsAccessPoint: {
+        AccessPointArn: `arn:aws:elasticfilesystem:us-east-1:${ACCOUNT}:access-point/fsap-1`,
+        MountPath: '/mnt/efs',
+      },
+    },
+  ],
+  CapacityProviderConfiguration: {
+    CapacityProviderArn: `arn:aws:bedrock-agentcore:us-east-1:${ACCOUNT}:capacity-provider/cp-1`,
+  },
+  PlatformVersion: '1.0',
+  // A key -> value MAP in the CFn schema, as CDK synthesizes it.
+  Tags: { k1: 'v1', k2: 'v2' },
 };
 
 const RUNTIME_REQUIRED: Record<string, Throw> = {
@@ -287,7 +309,11 @@ const RUNTIME_CASE: TypeCase = {
   createOnly: createOnlyOf('AWS::BedrockAgentCore::Runtime'),
   wholeFromNext: RUNTIME_FROM_NEXT,
   exempt: {},
-  targets: [],
+  targets: [
+    // UntagResource takes the removed keys only.
+    { path: ['Tags', 'k1'], command: 'UntagResourceCommand', names: 'k1', notNames: 'k2' },
+    { path: ['Tags', 'k2'], command: 'UntagResourceCommand', names: 'k2', notNames: 'k1' },
+  ],
   bags: [
     {
       name: 'container artifact, every other property',
@@ -331,6 +357,16 @@ const RUNTIME_CASE: TypeCase = {
             PrivateEndpointOverrides: [{ Domain: 'idp.example', PrivateEndpoint: fresh(MANAGED_VPC) }],
           },
         },
+        // The FilesystemConfiguration union's other two members.
+        FilesystemConfigurations: [
+          {
+            S3FilesAccessPoint: {
+              AccessPointArn: `arn:aws:s3:us-east-1:${ACCOUNT}:accesspoint/ap-1`,
+              MountPath: '/mnt/s3',
+            },
+          },
+          { CapacityProviderVolume: { VolumeName: 'vol-1', MountPath: '/mnt/vol' } },
+        ],
       },
       expectedRemovalThrows: RUNTIME_REQUIRED,
     },
