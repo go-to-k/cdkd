@@ -37,6 +37,14 @@ export interface SdkLagRow {
   matched: boolean;
 }
 export declare const NESTED_KEY_FAILURE_RE: RegExp;
+/** The sdk-wire harness's announcement of nested paths no bag carries. */
+export declare const WIRE_MISSING_NESTED: string;
+export interface WireMissingNested {
+  resourceType: string;
+  paths: string[];
+}
+/** The nested paths the sdk-wire suites' log names, one entry per type. */
+export declare function parseWireMissingNested(log: string): WireMissingNested[];
 export declare function comparePrimaryIdentifier(
   committedJson: string,
   refreshedJson: string
@@ -113,6 +121,11 @@ export interface DiagnosisInput {
   divergences: NestedKeyDivergence[];
   nestedKeyUnparsed?: boolean;
   failedChecks?: string[];
+  /**
+   * The nested paths a red `sdk-wire-coverage` named, listed under that
+   * check's section; the red itself is the `failedChecks` entry.
+   */
+  wireMissingNested?: WireMissingNested[];
   unreadable?: string[];
   /** Removed properties the job settled itself, rendered in their own section. */
   autoTolerated?: Array<{ resourceType: string; property: string; rationale: string }>;

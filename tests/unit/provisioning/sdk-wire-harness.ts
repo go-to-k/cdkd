@@ -605,6 +605,12 @@ export interface ProbeResult {
  *
  * An update probe whose change touches a create-only path (at, under or above
  * it) is skipped: the engine replaces instead of calling `update()`.
+ *
+ * Every vary probe that is NOT silent is also traced: the members whose value
+ * changed between the two runs' command inputs must include the leaf's own
+ * (`wrongMembers` otherwise), so a value sent in a sibling member fails even
+ * though the wire changed. Bound: only a vary probe is traced, so a container
+ * whose removal is the only evidence (an empty list) is not.
  */
 /** Arm the fake reads for `bag`: the case's own `arm`, else no overrides. */
 export function armFor(c: Pick<ProbeCase, 'arm' | 'physicalId'>, bag: Bag): void {
@@ -830,6 +836,13 @@ function nestedPathsOf(resourceType: string): Record<string, string[]> {
   return fixtureOf(resourceType).nestedPropertyPaths ?? {};
 }
 
+/**
+ * How a nested path no bag carries is announced. A schema refresh adding a
+ * nested key reds exactly this, and `scripts/diagnose-schema-refresh.mjs`
+ * greps its log for it (as its own `WIRE_MISSING_NESTED`, fenced equal).
+ */
+export const WIRE_MISSING_NESTED = 'sdk-wire-coverage: MISSING nested paths on';
+
 export const TAGS_REFUSED: Throw = {
   why: 'a Tags entry without its Key or Value is refused before any call (go-to-k/cdkd#3994)',
   says: /is not a list of tags/,
@@ -901,7 +914,12 @@ export function describeWireCases(cases: TypeCase[]): void {
           }
         }
       }
-      expect(missing).toEqual([]);
+      // The message is what a schema-refresh PR's diagnosis reads the paths
+      // from (`parseWireMissingNested`): one line, the type, then the paths.
+      expect(
+        missing,
+        `${WIRE_MISSING_NESTED} ${t.resourceType} [${missing.join(' ')}]`
+      ).toEqual([]);
       // An exemption naming no schema path is stale too.
       for (const label of Object.keys(exempt)) {
         const [top, ...rest] = label.split('.');

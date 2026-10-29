@@ -88,6 +88,8 @@ import {
   sdkClientVersions,
   renderDiagnosis,
   renderName,
+  parseWireMissingNested,
+  WIRE_MISSING_NESTED,
   sdkModelsMember,
   sdkVersionLag,
   readProviderRegistrationSource,
@@ -97,6 +99,8 @@ import {
 // defect was two definitions of "settled", and a second copy here would be a
 // third.
 import { classifyCoverage } from '../provisioning/_property-coverage-utils.js';
+// The producer of the announcement `parseWireMissingNested` reads.
+import { WIRE_MISSING_NESTED as HARNESS_WIRE_MISSING_NESTED } from '../provisioning/sdk-wire-harness.js';
 // The real acceptance gate for a rendered fragment: filename shape, the `- `
 // opener, no dated heading, one bullet. Asserting those by hand here would be
 // a second copy of rules `assemble-changelog.ts` owns.
@@ -6491,4 +6495,85 @@ describe('main()’s tolerance read (issue #3005)', () => {
   // `REPO_ROOT` is `join(__dirname, '..')`: relocating the SCRIPT relocates the
   // pin, so the arm is reachable with the committed file untouched. Measured on
   // the cases above: removing the wrap now reds two of the three.
+});
+
+describe('sdk-wire nested paths (go-to-k/cdkd#3723)', () => {
+  const SCRIPT = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
+
+  // The harness's failure as vitest renders it, not a hand-written line: the
+  // parser must read what the suite PRINTS, and a reword of either side (or a
+  // change in how vitest prefixes a message) reds here.
+  const vitestFailure = (resourceType: string, missing: string[]): string => {
+    try {
+      expect(missing, `${HARNESS_WIRE_MISSING_NESTED} ${resourceType} [${missing.join(' ')}]`).toEqual(
+        []
+      );
+    } catch (error) {
+      return `AssertionError: ${(error as Error).message}`;
+    }
+    throw new Error('the assertion did not fail');
+  };
+
+  it('reads the announcement the harness writes', () => {
+    expect(WIRE_MISSING_NESTED).toBe(HARNESS_WIRE_MISSING_NESTED);
+    const log = [
+      ' FAIL  tests/unit/provisioning/sdk-wire-coverage-9.test.ts > AWS::Glue::Connection > its bags',
+      vitestFailure('AWS::Glue::Connection', ['ConnectionInput.AuthenticationConfiguration.SecretArn']),
+      // vitest prints a failure in the summary AND the detail: one entry.
+      vitestFailure('AWS::Glue::Connection', ['ConnectionInput.AuthenticationConfiguration.SecretArn']),
+      vitestFailure('AWS::SNS::Topic', ['DeliveryStatusLogging.Region', 'Subscription.Filter']),
+      ' FAIL  some other test > unrelated',
+    ].join('\n');
+    expect(parseWireMissingNested(log)).toEqual([
+      { resourceType: 'AWS::Glue::Connection', paths: ['ConnectionInput.AuthenticationConfiguration.SecretArn'] },
+      { resourceType: 'AWS::SNS::Topic', paths: ['DeliveryStatusLogging.Region', 'Subscription.Filter'] },
+    ]);
+    expect(parseWireMissingNested('Tests  991 passed (991)')).toEqual([]);
+  });
+
+  it('lists the paths under the failed check, through the name guards', () => {
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [],
+      failedChecks: ['sdk-wire-coverage'],
+      wireMissingNested: [
+        { resourceType: 'AWS::SNS::Topic', paths: ['Subscription.Filter', 'Bad`Path'] },
+      ],
+      skipped: [],
+    });
+    const at = md.search(/^#### .*`sdk-wire-coverage`/m);
+    expect(at, 'no section for the check').toBeGreaterThan(-1);
+    const section = md.slice(at);
+    expect(section).toContain(CHECK_GUIDANCE['sdk-wire-coverage']![0]);
+    expect(section).toContain(
+      '- `AWS::SNS::Topic`: `Subscription.Filter`, **[key rejected: unexpected characters]**'
+    );
+  });
+
+  it('counts a log naming paths as the failed check, even when --failed-checks omits it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-wire-'));
+    try {
+      const log = join(dir, 'sdk-wire.log');
+      writeFileSync(log, vitestFailure('AWS::SNS::Topic', ['Subscription.Filter']));
+      const out = join(dir, 'count.txt');
+      const md = execFileSync(
+        'node',
+        [SCRIPT, '--sdk-wire-log', log, '--decision-count-out', out],
+        { encoding: 'utf8' }
+      );
+      expect(readFileSync(out, 'utf8').trim()).toBe('1');
+      expect(md).toContain('- `AWS::SNS::Topic`: `Subscription.Filter`');
+      // Named once, not twice, when the list already carries it.
+      const both = execFileSync(
+        'node',
+        [SCRIPT, '--sdk-wire-log', log, '--failed-checks', 'sdk-wire-coverage', '--decision-count-out', out],
+        { encoding: 'utf8' }
+      );
+      expect(readFileSync(out, 'utf8').trim()).toBe('1');
+      expect(both.match(/^#### .*`sdk-wire-coverage`/gm)).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

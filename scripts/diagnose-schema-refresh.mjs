@@ -37,7 +37,8 @@
  *
  *   node scripts/diagnose-schema-refresh.mjs \
  *     [--nested-key-log <file>] [--nested-key-rc <status>] \
- *     [--failed-checks <a,b>] [--skipped-log <file>] [--fixtures-dir <dir>] \
+ *     [--failed-checks <a,b>] [--sdk-wire-log <file>] [--skipped-log <file>] \
+ *     [--fixtures-dir <dir>] \
  *     [--decision-count-out <file>] [--auto-tolerated <file>] \
  *     [--changelog-out <file>] > body.md
  *
@@ -56,7 +57,9 @@
  * 0, which is the right default for a by-hand run against a checker you just
  * watched succeed. `--failed-checks` is the comma-separated list of CI checks
  * that came back red — every one of them fixture-driven, and every one reached
- * by an ordinary schema ADDITION. `--skipped-log` is the tail of the refresh's
+ * by an ordinary schema ADDITION. `--sdk-wire-log` is the captured output of
+ * the sdk-wire suites, read only for the nested paths they name (the red itself
+ * arrives through `--failed-checks`). `--skipped-log` is the tail of the refresh's
  * own output, listing the types the public bundle does not carry.
  *
  * `--write-auto-tolerated` is the WRITE mode: it classifies every removed-but-
@@ -238,6 +241,43 @@ export const UNREADABLE = Symbol('unreadable');
  * files, and a reword there would otherwise make this pattern silently inert.
  */
 export const NESTED_KEY_FAILURE_RE = /nested-key-coverage:\s*(FAIL|failed)\b/;
+
+/**
+ * How the sdk-wire suites announce a nested path the schema lists and no bag
+ * carries: `tests/unit/provisioning/sdk-wire-harness.ts`'s assertion message
+ * for `its bags carry every nested path the schema lists under a carried
+ * top-level`, followed by the type and the dotted paths in brackets. Fenced
+ * against the harness by `diagnose-schema-refresh.test.ts`, which reads the
+ * harness's `WIRE_MISSING_NESTED` constant: nothing else joins the two files.
+ */
+export const WIRE_MISSING_NESTED = 'sdk-wire-coverage: MISSING nested paths on';
+
+/**
+ * The nested paths the sdk-wire suites named as carried by no bag, one entry
+ * per type, from the suites' captured log (go-to-k/cdkd#3723).
+ *
+ * The same red is already counted, once, as the `sdk-wire-coverage` failed
+ * check; this only lists WHAT it named, so a reader of the PR does not have to
+ * open the job log for the common case. vitest prints each failure more than
+ * once (the summary and the detail), so paths are de-duplicated per type.
+ *
+ * @param {string} log
+ * @returns {Array<{resourceType: string, paths: string[]}>}
+ */
+export function parseWireMissingNested(log) {
+  /** @type {Map<string, Set<string>>} */
+  const byType = new Map();
+  const needle = WIRE_MISSING_NESTED.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`${needle} (AWS::[A-Za-z0-9]+::[A-Za-z0-9]+) \\[([^\\]\\n]*)\\]`, 'g');
+  for (const m of log.matchAll(re)) {
+    const paths = byType.get(m[1]) ?? new Set();
+    for (const p of m[2].split(/\s+/)) if (p !== '') paths.add(p);
+    byType.set(m[1], paths);
+  }
+  return [...byType]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([resourceType, paths]) => ({ resourceType, paths: [...paths].sort() }));
+}
 const FIXTURES_DIR = join(REPO_ROOT, 'tests/fixtures/cfn-schemas');
 const PROVIDERS_DIR = join(REPO_ROOT, 'src/provisioning/providers');
 
@@ -919,6 +959,23 @@ export const CHECK_GUIDANCE = {
     '`src/provisioning/cloud-control-provider.ts`, or allow-list it with a',
     'rationale if AWS does not return it.',
   ],
+  'sdk-wire-coverage': [
+    'The differential wire suites (`tests/unit/provisioning/sdk-wire-coverage*.test.ts`)',
+    'read each type\'s nested and create-only paths from the fixtures. The usual red',
+    'is a NESTED key AWS added under a top-level property an SDK provider handles:',
+    'every nested path the schema lists must be carried by one of the type\'s wire',
+    'bags, so a new one fails until someone decides whether the provider delivers',
+    'it. The paths the log named are listed under this heading. A changed',
+    'create-only path is the other cause: it moves which update probes run.',
+    '',
+    '```bash',
+    'vp test run sdk-wire-coverage',
+    '```',
+    '',
+    'For each new path, wire it in the provider and add it to a bag of that type\'s',
+    'case (`tests/unit/provisioning/sdk-wire-cases*.ts`), or add a `nestedExempt`',
+    'entry there with the reason no bag can carry it.',
+  ],
 };
 
 
@@ -1357,6 +1414,7 @@ export function renderDiagnosis(input) {
     divergences,
     nestedKeyUnparsed = false,
     failedChecks = [],
+    wireMissingNested = [],
     unreadable = [],
     autoTolerated = [],
     alreadyTolerated = [],
@@ -1752,6 +1810,14 @@ export function renderDiagnosis(input) {
         ]),
         ''
       );
+      if (check === 'sdk-wire-coverage' && wireMissingNested.length > 0) {
+        // Bundle-derived names, so through the same guards as every other.
+        lines.push('Nested paths no wire bag carries:', '');
+        for (const { resourceType, paths } of wireMissingNested) {
+          lines.push(`- ${renderName(resourceType)}: ${paths.map(renderKey).join(', ')}`);
+        }
+        lines.push('');
+      }
     }
     lines.push(
       '**Anything those checks name is NOT covered by the sections below**,',
@@ -2707,6 +2773,7 @@ export const KNOWN_FLAGS = [
   '--nested-key-log',
   '--nested-key-rc',
   '--failed-checks',
+  '--sdk-wire-log',
   '--skipped-log',
   '--umbrella-checklist',
   '--umbrella-types',
@@ -3996,6 +4063,12 @@ function main() {
     .split(',')
     .map((c) => c.trim())
     .filter((c) => c !== '');
+  // A log naming missing paths IS a red sdk-wire run, whatever the list says:
+  // the paths must not render with no failed check to sit under (and count).
+  const wireMissingNested = parseWireMissingNested(readArg('--sdk-wire-log'));
+  if (wireMissingNested.length > 0 && !failedChecks.includes('sdk-wire-coverage')) {
+    failedChecks.push('sdk-wire-coverage');
+  }
   const allDivergences = nestedKey.divergences;
   const skipped = readArg('--skipped-log')
     .split('\n')
@@ -4064,6 +4137,7 @@ function main() {
       unresolvedSdkLag,
       nestedKeyUnparsed: nestedKey.unparsedFailure,
       failedChecks,
+      wireMissingNested,
       unreadable,
       identifierChanges,
       skipped,
