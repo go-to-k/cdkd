@@ -438,6 +438,10 @@ if [ -z "${NEPTUNE_CLUSTER_PG}" ] || [ -z "${NEPTUNE_INSTANCE_PG}" ]; then
   echo "[verify] FAIL: #5544: could not resolve the Neptune parameter groups from state (cluster='${NEPTUNE_CLUSTER_PG}', instance='${NEPTUNE_INSTANCE_PG}')" >&2
   exit 1
 fi
+# Neptune stores a parameter group name lower-cased, whatever case the
+# create sent, and describe answers it that way.
+NEPTUNE_CLUSTER_PG=$(printf '%s' "${NEPTUNE_CLUSTER_PG}" | tr '[:upper:]' '[:lower:]')
+NEPTUNE_INSTANCE_PG=$(printf '%s' "${NEPTUNE_INSTANCE_PG}" | tr '[:upper:]' '[:lower:]')
 NEPTUNE_BASE_KEPT=$(echo "${NEPTUNE_BASE}" | jq -r '[.EngineVersion, .PreferredBackupWindow, .DBClusterParameterGroup] | map(. // "null") | join(" ")')
 NEPTUNE_BASE_INST_PG=$(aws neptune describe-db-instances --db-instance-identifier "${NEPTUNE_INSTANCE_ID}" \
   --region "${REGION}" --query 'DBInstances[0]' --output json \
