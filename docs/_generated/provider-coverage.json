@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-29T11:02:29.424Z",
+  "generatedAt": "2026-10-30T10:59:41.806Z",
   "summary": {
     "tier1Count": 138,
-    "tier2Count": 1633,
-    "tier3Count": 329,
-    "totalCount": 2100
+    "tier2Count": 1636,
+    "tier3Count": 330,
+    "totalCount": 2104
   },
   "tier1": [
     "AWS::ApiGateway::Account",
@@ -648,6 +648,7 @@
     "AWS::DirectConnect::Lag",
     "AWS::DirectConnect::PrivateVirtualInterface",
     "AWS::DirectConnect::PublicVirtualInterface",
+    "AWS::DirectConnect::ResiliencyGroup",
     "AWS::DirectConnect::TransitVirtualInterface",
     "AWS::DirectoryService::MicrosoftAD",
     "AWS::DirectoryService::SimpleAD",
@@ -1153,6 +1154,7 @@
     "AWS::MediaConnect::Bridge",
     "AWS::MediaConnect::BridgeOutput",
     "AWS::MediaConnect::BridgeSource",
+    "AWS::MediaConnect::DestinationEndpoint",
     "AWS::MediaConnect::Flow",
     "AWS::MediaConnect::FlowEntitlement",
     "AWS::MediaConnect::FlowMediaStream",
@@ -1163,6 +1165,7 @@
     "AWS::MediaConnect::RouterInput",
     "AWS::MediaConnect::RouterNetworkInterface",
     "AWS::MediaConnect::RouterOutput",
+    "AWS::MediaConnect::SourceEndpoint",
     "AWS::MediaConvert::CertificateAssociation",
     "AWS::MediaConvert::JobTemplate",
     "AWS::MediaConvert::Preset",
@@ -2111,6 +2114,7 @@
     "AWS::Wisdom::Session",
     "AWS::WorkSpaces::WorkSpaceApplication",
     "AWS::WorkSpaces::WorkspaceBundle",
+    "AWS::WorkSpaces::WorkspaceImage",
     "Alexa::ASK::Skill"
   ]
 }
