@@ -582,8 +582,8 @@ export function effectiveResourceTimeoutMs(
 
 /**
  * Skip waiting for async-stabilization resources (RDS, ElastiCache,
- * NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image)
- * on deploy. Setting the flag mutates
+ * NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image,
+ * ECS Service steady state) on deploy. Setting the flag mutates
  * `process.env.CDKD_NO_WAIT='true'`; provider code checks that env
  * var, not the parsed CLI option (this lets nested call paths — e.g.
  * asset publish, lifecycle hooks — see the same setting without
@@ -592,6 +592,8 @@ export function effectiveResourceTimeoutMs(
  * CloudFront Distribution left this list with issue #1282: its
  * `Deployed` wait is skipped by DEFAULT now, so under `--no-wait` it
  * simply behaves the same as the default (`--full-wait` opts back in).
+ * ECS Service joined it with go-to-k/cdkd#5571: its steady-state wait is
+ * the default now, because a failing rollout surfaces only there.
  *
  * Deploy-only. NAT Gateway destroy always waits regardless (a
  * still-`deleting` gateway blocks downstream Subnet / IGW / VPC
@@ -602,23 +604,26 @@ export function effectiveResourceTimeoutMs(
  */
 export const noWaitOption = new Option(
   '--no-wait',
-  'Skip waiting for async resources to stabilize (RDS, ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image)'
+  'Skip waiting for async resources to stabilize (RDS, ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image, ECS Service steady state)'
 );
 
 /**
  * Opt in to the stabilization waits cdkd deliberately SKIPS by default.
- * Today that is ECS Service steady state (create and update; a
- * "CloudFormation waits, Terraform does not" disagree-case) and
- * CloudFront Distribution `Deployed` (create and update; both engines
- * wait, but the wait has no in-deploy consumer and no failure signal —
- * the fast-side clause, issue #1282).
+ * Today that is CloudFront Distribution `Deployed` (create and update;
+ * both engines wait, but once the call is accepted the outcome is
+ * settled — configuration errors are refused by the call itself — and the
+ * wait changes only WHEN the edges serve it, never WHETHER: the fast-side
+ * clause, issue #1282). ECS Service steady state is NOT in this list: its
+ * outcome is still open when `CreateService` / `UpdateService` returns, so
+ * the default waits for it (go-to-k/cdkd#5571).
  *
  * `--no-wait`, the default, and `--full-wait` are three points on one
  * axis, from least to most waiting:
  *
  * - `--no-wait`      skip the stabilization waits cdkd performs by default
- * - (default)        wait where the wait is load-bearing (in-deploy
- *                    consumers / failure detection)
+ * - (default)        wait where the outcome is still open when the API
+ *                    call returns (a later step needs the result, or the
+ *                    resource can still fail)
  * - `--full-wait`    also wait everywhere CloudFormation waits
  *
  * Which one is right depends on whether anything downstream needs the
@@ -639,7 +644,7 @@ export const noWaitOption = new Option(
  */
 export const fullWaitOption = new Option(
   '--full-wait',
-  'Also wait for stabilizations cdkd skips by default, matching CloudFormation (ECS Service steady state, CloudFront Distribution Deployed)'
+  'Also wait for stabilizations cdkd skips by default, matching CloudFormation (CloudFront Distribution Deployed)'
 );
 
 /**

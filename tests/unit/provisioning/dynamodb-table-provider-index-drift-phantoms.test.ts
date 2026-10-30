@@ -914,6 +914,9 @@ describe('DynamoDBTableProvider secondary-index drift phantoms (issue #1767)', (
         'AttributeDefinitions',
         'GlobalSecondaryIndexes[]',
         'LocalSecondaryIndexes[]',
+        // go-to-k/cdkd#2762: a subtree entry — no array inside a vector index
+        // is order-significant.
+        'VectorIndexes',
       ]);
       expect(paths).not.toContain('GlobalSecondaryIndexes');
       expect(paths).not.toContain('LocalSecondaryIndexes');

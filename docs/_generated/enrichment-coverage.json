@@ -6,7 +6,7 @@
     "noComputedAttr": 18,
     "unenrichedGap": 0,
     "sdkFallbackGap": 73,
-    "allowListedTypes": 87
+    "allowListedTypes": 86
   },
   "types": [
     {
@@ -759,19 +759,13 @@
       "bucket": "sdk-fallback-gap",
       "sdkBacked": true,
       "readOnlyProperties": [
-        "Arn",
-        "Id"
+        "Arn"
       ],
       "enrichedKeys": [],
       "attributes": [
         {
           "name": "Arn",
           "status": "gap"
-        },
-        {
-          "name": "Id",
-          "status": "allow-listed",
-          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
       "gaps": [

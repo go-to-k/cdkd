@@ -5,6 +5,10 @@
 // BackupRetentionPeriod (DBCluster) and AutoMinorVersionUpgrade (DBInstance),
 // so cdkd sends NO reset for them. DBSubnetGroupDescription is required in
 // CloudFormation (not measurable), so its create-time-fallback reset stays.
+// #5544: a further A/B showed CloudFormation also KEEPS a removed DBCluster
+// EngineVersion / PreferredBackupWindow / PreferredMaintenanceWindow /
+// DBClusterParameterGroupName and DBInstance DBParameterGroupName /
+// PreferredMaintenanceWindow; cdkd keeps them and names them in a warning.
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockSend = vi.fn();
@@ -304,6 +308,197 @@ describe('NeptuneProvider removal semantics (issues #1160 / #5004)', () => {
 
       modifyCall = mockSend.mock.calls[0][0];
       expect(modifyCall.input.DBSubnetGroupDescription).toBe('kept');
+    });
+  });
+
+  describe('kept removals are warned about, never reset (#5544)', () => {
+    const warn = (): ReturnType<typeof vi.fn> =>
+      (provider as unknown as { logger: { warn: ReturnType<typeof vi.fn> } }).logger.warn;
+    const warnings = (): string[] => warn().mock.calls.map((call) => String(call[0]));
+    const mockModify = (describeKey: 'DBClusters' | 'DBInstances') => {
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({ [describeKey]: [{}] });
+    };
+    const CLUSTER_PREVIOUS = {
+      EngineVersion: '1.4.7.0',
+      PreferredBackupWindow: '03:00-03:30',
+      PreferredMaintenanceWindow: 'sun:05:00-sun:05:30',
+      DBClusterParameterGroupName: 'my-cluster-params',
+      BackupRetentionPeriod: 7,
+    };
+    const INSTANCE_PREVIOUS = {
+      DBInstanceClass: 'db.t3.medium',
+      DBParameterGroupName: 'my-instance-params',
+      PreferredMaintenanceWindow: 'mon:06:00-mon:06:30',
+    };
+
+    it.each(['AWS::Neptune::DBCluster', 'AWS::Neptune::DBInstance'])(
+      'registers every handled %s property, so the shared caller warns about none',
+      (type) => {
+        const handled = provider.handledProperties.get(type)!;
+        expect(provider.removalHandledInUpdate.get(type)).toEqual(handled);
+        const previous = Object.fromEntries([...handled].map((key) => [key, 'x']));
+        expect(prepareRemovalForUpdate(provider, type, {}, previous).unhandled).toEqual([]);
+      }
+    );
+
+    it('names every removed cluster property in ONE warning and sends none of them', async () => {
+      mockModify('DBClusters');
+
+      await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::Neptune::DBCluster',
+        // Beside a changed property, as the A/B measured.
+        { BackupRetentionPeriod: 8 },
+        CLUSTER_PREVIOUS
+      );
+
+      const input = mockSend.mock.calls[0][0].input;
+      expect(input.BackupRetentionPeriod).toBe(8);
+      for (const key of [
+        'EngineVersion',
+        'PreferredBackupWindow',
+        'PreferredMaintenanceWindow',
+        'DBClusterParameterGroupName',
+      ]) {
+        expect(input[key]).toBeUndefined();
+      }
+      expect(warnings()).toEqual([
+        'MyCluster (AWS::Neptune::DBCluster): properties EngineVersion, PreferredBackupWindow, PreferredMaintenanceWindow, DBClusterParameterGroupName were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them.',
+      ]);
+    });
+
+    it('names a removed instance parameter group and window, and sends neither', async () => {
+      mockModify('DBInstances');
+
+      await provider.update(
+        'MyInstance',
+        'my-instance',
+        'AWS::Neptune::DBInstance',
+        { DBInstanceClass: 'db.t3.medium' },
+        INSTANCE_PREVIOUS
+      );
+
+      const input = mockSend.mock.calls[0][0].input;
+      expect(input.DBParameterGroupName).toBeUndefined();
+      expect(input.PreferredMaintenanceWindow).toBeUndefined();
+      expect(warnings()).toEqual([
+        'MyInstance (AWS::Neptune::DBInstance): properties DBParameterGroupName, PreferredMaintenanceWindow were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them.',
+      ]);
+    });
+
+    it('warns about nothing when no kept property was removed (kept, changed or never set)', async () => {
+      mockModify('DBClusters');
+      await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::Neptune::DBCluster',
+        { ...CLUSTER_PREVIOUS, EngineVersion: '1.4.8.0' },
+        CLUSTER_PREVIOUS
+      );
+      mockModify('DBInstances');
+      await provider.update(
+        'MyInstance',
+        'my-instance',
+        'AWS::Neptune::DBInstance',
+        { DBInstanceClass: 'db.t3.medium' },
+        { DBInstanceClass: 'db.t3.medium' }
+      );
+
+      expect(warn()).not.toHaveBeenCalled();
+    });
+
+    it('reads the caller-computed removedProperties when set', async () => {
+      mockModify('DBClusters');
+
+      await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::Neptune::DBCluster',
+        {},
+        CLUSTER_PREVIOUS,
+        { removedProperties: new Set(['EngineVersion']) }
+      );
+
+      expect(warnings()).toEqual([
+        'MyCluster (AWS::Neptune::DBCluster): property EngineVersion was removed from the template; cdkd leaves the current AWS value in place, as CloudFormation does. Declare it to change it.',
+      ]);
+    });
+
+    it('counts DBPort and Port as one setting', async () => {
+      mockModify('DBClusters');
+      await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::Neptune::DBCluster',
+        { Port: 8183 },
+        { DBPort: 8183, Port: 8183 }
+      );
+      expect(warn()).not.toHaveBeenCalled();
+
+      mockModify('DBClusters');
+      await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::Neptune::DBCluster',
+        {},
+        { DBPort: 8183 }
+      );
+      expect(warnings()).toEqual([
+        'MyCluster (AWS::Neptune::DBCluster): property DBPort was removed from the template; cdkd leaves the current AWS value in place, as CloudFormation does. Declare it to change it.',
+      ]);
+    });
+
+    it('says a rollback restore is missing the property, not that the template dropped it', async () => {
+      mockModify('DBInstances');
+
+      await provider.update(
+        'MyInstance',
+        'my-instance',
+        'AWS::Neptune::DBInstance',
+        { DBInstanceClass: 'db.t3.medium' },
+        { DBInstanceClass: 'db.t3.medium', DBParameterGroupName: 'my-instance-params' },
+        { replayingState: true }
+      );
+
+      expect(warnings()).toEqual([
+        'MyInstance (AWS::Neptune::DBInstance): property DBParameterGroupName is absent from the state being restored; ModifyDBInstance keeps a setting it is not sent, so the rollback leaves any value the failed deploy applied in place.',
+      ]);
+    });
+
+    it.each([
+      ['AWS::Neptune::DBCluster', 'DBClusters', 'DBClusterArn', CLUSTER_PREVIOUS],
+      ['AWS::Neptune::DBInstance', 'DBInstances', 'DBInstanceArn', INSTANCE_PREVIOUS],
+    ] as const)(
+      'warns about nothing when a step after the Modify fails (%s), so a retried update cannot warn twice',
+      async (type, describeKey, arnKey, previous) => {
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({ [describeKey]: [{ [arnKey]: 'arn:aws:rds:us-east-1:123456789012:x' }] });
+        // The tag call rejects.
+        mockSend.mockRejectedValueOnce(new Error('tagging failed'));
+
+        await expect(
+          provider.update('Res', 'res-id', type, { Tags: [{ Key: 'a', Value: 'b' }] }, previous)
+        ).rejects.toThrow();
+
+        expect(warn()).not.toHaveBeenCalled();
+      }
+    );
+
+    it('warns about nothing on a drift --revert, whose baseline is a readback', async () => {
+      mockModify('DBClusters');
+
+      await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::Neptune::DBCluster',
+        {},
+        CLUSTER_PREVIOUS,
+        { desiredFromAwsReadback: true }
+      );
+
+      expect(warn()).not.toHaveBeenCalled();
     });
   });
 });

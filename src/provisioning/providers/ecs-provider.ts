@@ -17,6 +17,8 @@ import {
   TagResourceCommand,
   UntagResourceCommand,
   type DescribeClustersCommandOutput,
+  type Deployment,
+  type Service,
   type DescribeTaskDefinitionCommandOutput,
   type RegisterTaskDefinitionCommandOutput,
   type Tag,
@@ -138,6 +140,7 @@ import {
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
 import { readConfigString } from '../config-shape.js';
+import { commandHole } from '../../utils/pasteable-command.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -453,6 +456,168 @@ function isEcsErrorNamed(error: unknown, names: readonly string[]): boolean {
 export const settleRolloutDelays = {
   sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
 };
+
+/**
+ * The rollout a `CreateService` / `UpdateService` started, read off its
+ * response: the PRIMARY
+ * deployment's `id`, and its `taskDefinition` (else the service's). Both are
+ * AWS-minted (a deployment id, a full task-definition revision ARN), so the
+ * comparison never meets the template's `family` / `family:revision`
+ * spellings. The UpdateService API reference's example response carries
+ * `deployments[].{id,status,taskDefinition}` and `service.taskDefinition`.
+ */
+export interface RequestedRollout {
+  deploymentId?: string | undefined;
+  taskDefinition?: string | undefined;
+}
+
+/** {@link RequestedRollout} from a `CreateService` / `UpdateService` response's service. */
+export function requestedRolloutOf(service: Service | undefined): RequestedRollout | undefined {
+  if (!service) return undefined;
+  const primary = service.deployments?.find((d) => d.status === 'PRIMARY');
+  const deploymentId = typeof primary?.id === 'string' && primary.id ? primary.id : undefined;
+  const taskDefinitionRaw = primary?.taskDefinition ?? service.taskDefinition;
+  const taskDefinition =
+    typeof taskDefinitionRaw === 'string' && taskDefinitionRaw ? taskDefinitionRaw : undefined;
+  if (deploymentId === undefined && taskDefinition === undefined) return undefined;
+  return { deploymentId, taskDefinition };
+}
+
+/**
+ * The deployment this create / update started, if a DescribeServices answer
+ * shows it `FAILED` — a deployment circuit breaker's verdict (the API
+ * reference: "If the service fails to reach a steady state and circuit
+ * breaker is turned on, the deployment transitions to a FAILED state").
+ * Matched by the requested deployment id; with none readable, the PRIMARY
+ * deployment stands in for it. `undefined` when no such deployment is FAILED.
+ */
+export function failedRequestedDeployment(
+  requested: RequestedRollout | undefined,
+  deployments: readonly Deployment[] | undefined
+): Deployment | undefined {
+  if (!Array.isArray(deployments)) return undefined;
+  const target =
+    requested?.deploymentId !== undefined
+      ? deployments.find((d) => d?.id === requested.deploymentId)
+      : deployments.find((d) => d?.status === 'PRIMARY');
+  return target?.rolloutState === 'FAILED' ? target : undefined;
+}
+
+/**
+ * The revision NUMBER of a task-definition revision ARN, or `undefined`.
+ * Only the number: the family is template-chosen, can be secret-derived and
+ * too short for the substring masker, so it never reaches a message.
+ */
+function taskDefinitionRevision(arn: string | undefined): string | undefined {
+  const match = typeof arn === 'string' ? /:task-definition\/[^:]+:(\d+)$/.exec(arn) : null;
+  return match ? match[1] : undefined;
+}
+
+/**
+ * A rollout for a message, by AWS-minted identity only: its deployment id
+ * (`ecs-svc/<digits>`) and its task definition's revision number. Never the
+ * family (see {@link taskDefinitionRevision}).
+ */
+function describeRollout(rollout: {
+  id?: string | undefined;
+  taskDefinition?: string | undefined;
+}): string {
+  const revision = taskDefinitionRevision(rollout.taskDefinition);
+  const id =
+    typeof rollout.id === 'string' && /^ecs-svc\/\d+$/.test(rollout.id) ? rollout.id : undefined;
+  if (id && revision) return `deployment ${id} (task definition revision ${revision})`;
+  if (id) return `deployment ${id}`;
+  if (revision) return `task definition revision ${revision}`;
+  return 'another deployment';
+}
+
+/**
+ * A deployment circuit breaker's verdict (go-to-k/cdkd#5571): the rollout
+ * FAILED, or the service settled on another deployment. Its own class so
+ * `wrapSteadyStateError` does not offer a longer `--resource-timeout` for a
+ * verdict no wait would change.
+ */
+class EcsCircuitBreakerVerdict extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EcsCircuitBreakerVerdict';
+  }
+}
+
+/** The verdict for a requested deployment ECS marked `FAILED`. */
+function wrapBreakerFailedError(failed: Deployment): EcsCircuitBreakerVerdict {
+  return new EcsCircuitBreakerVerdict(
+    `its deployment circuit breaker failed the rollout of ${describeRollout(failed)} (deployment FAILED). The new tasks failed to start or failed their health checks`
+  );
+}
+
+/**
+ * Whether the DESIRED `DeploymentController` lets ECS settle the service
+ * (go-to-k/cdkd#5571): only the `ECS` rolling-update controller (also the
+ * default when absent) has the ECS-managed deployment the ServicesStable
+ * waiter and the rollout checks read. `CODE_DEPLOY` and `EXTERNAL` (task
+ * sets) never produce one, so waiting would time out and the create arm would
+ * DELETE a healthy new service. An unreadable value fails toward NOT waiting,
+ * never toward that delete. Returns `undefined` to wait, else the reason.
+ */
+export function controllerSkipsWait(properties: Record<string, unknown>): string | undefined {
+  let type: string;
+  try {
+    type = readConfigString(
+      properties['DeploymentController'],
+      'Type',
+      'ECS',
+      'DeploymentController'
+    );
+  } catch {
+    return 'its DeploymentController could not be read';
+  }
+  if (type === 'ECS') return undefined;
+  if (type === 'CODE_DEPLOY' || type === 'EXTERNAL') {
+    return `its DeploymentController is ${type}, which ECS does not settle`;
+  }
+  return 'its DeploymentController type is not one cdkd can settle';
+}
+
+/**
+ * Did the service settle on a rollout OTHER than the one this update started
+ * (go-to-k/cdkd#5571)? When a deployment circuit breaker with `rollback`
+ * fires, ECS marks the new deployment `FAILED` and rolls back to the last
+ * `COMPLETED` deployment; once the failed one drains, `DescribeServices`
+ * lists that single rollback deployment, `COMPLETED`, which the
+ * ServicesStable waiter accepts. The `FAILED` deployment is no longer listed
+ * then, so `rolloutState` cannot carry the signal; what does is the IDENTITY
+ * of the settled deployment.
+ *
+ * The deployment id decides when both sides carry one: a rollback deployment
+ * is never the deployment the update started, whether ECS reactivates the
+ * previous one or starts a new one with the previous configuration, and an
+ * update that starts no new deployment (a `DesiredCount`-only change) keeps
+ * the PRIMARY's id, so it compares equal. Otherwise the task-definition ARN
+ * decides. Either side unreadable answers `undefined` (no verdict): fail open
+ * rather than fail a deploy on a shape cdkd could not read.
+ *
+ * Returns the settled rollout's description when superseded.
+ */
+export function rolloutSupersededBy(
+  requested: RequestedRollout | undefined,
+  settled: Deployment | undefined
+): string | undefined {
+  if (!requested || !settled) return undefined;
+  if (requested.deploymentId !== undefined && typeof settled.id === 'string' && settled.id) {
+    return settled.id === requested.deploymentId ? undefined : describeRollout(settled);
+  }
+  if (
+    requested.taskDefinition !== undefined &&
+    typeof settled.taskDefinition === 'string' &&
+    settled.taskDefinition
+  ) {
+    return settled.taskDefinition === requested.taskDefinition
+      ? undefined
+      : describeRollout(settled);
+  }
+  return undefined;
+}
 
 /**
  * A DELETE failure wrap whose caught error's CLASS spells `NotFound`, marked
@@ -788,7 +953,8 @@ export class ECSProvider implements ResourceProvider {
             // The cluster name the long-format service ARN embeds (the value
             // itself when it is a bare name).
             [properties['Cluster'], clusterNameOfRef(properties['Cluster'])],
-          ])
+          ]),
+          context?.replayingState === true
         );
       default:
         throw new ProvisioningError(
@@ -873,7 +1039,8 @@ export class ECSProvider implements ResourceProvider {
             [previousProperties['Cluster'], recordedCluster],
             [properties['Cluster'], clusterNameOfRef(properties['Cluster'])],
           ]),
-          context?.desiredFromAwsReadback === true
+          context?.desiredFromAwsReadback === true,
+          context?.replayingState === true
         );
       }
       default:
@@ -1465,7 +1632,9 @@ export class ECSProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    /** `CreateContext.replayingState`: a rollback's reverse-replacement re-create. */
+    replayingState: boolean
   ): Promise<ResourceCreateResult> {
     log.debug(`Creating ECS service ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -1482,9 +1651,13 @@ export class ECSProvider implements ResourceProvider {
     try {
       // Whether the cleanup below may delete what CreateService returns: with
       // identical parameters it hands back an ACTIVE service already holding
-      // the name (go-to-k/cdkd#4403). Asked only when the wait can fail.
+      // the name (go-to-k/cdkd#4403). Asked only when the wait can fail the
+      // create: not under --no-wait, not for a controller ECS does not
+      // settle (no wait runs), and not on a rollback replay, which warns and
+      // keeps the service instead (see the catch below).
+      const skipReason = controllerSkipsWait(properties);
       const heldBefore: NameHeldBefore =
-        process.env['CDKD_FULL_WAIT'] === 'true'
+        process.env['CDKD_NO_WAIT'] !== 'true' && skipReason === undefined && !replayingState
           ? await nameHeldBefore(
               () => this.serviceNameHeld(properties['Cluster'] as string | undefined, serviceName),
               (error) => hasErrorName(error, ['ClusterNotFoundException'])
@@ -1572,8 +1745,8 @@ export class ECSProvider implements ResourceProvider {
         reportCreatedResource(logicalId, resourceType, service.serviceArn);
       }
 
-      // Under --full-wait a steady-state timeout has to fail the resource,
-      // which means throwing AFTER AWS has already created the service. The
+      // A steady-state failure (timeout or circuit breaker) has to fail the
+      // resource, which means throwing AFTER AWS has already created the service. The
       // throw aborts before the success-return, so cdkd state would not carry
       // the service while AWS does, and the next deploy's CreateService would
       // collide on the name. Clean up best-effort first, mirroring the
@@ -1609,9 +1782,30 @@ export class ECSProvider implements ResourceProvider {
           logicalId,
           service.serviceName ?? service.serviceArn,
           properties['Cluster'] as string | undefined,
-          log
+          log,
+          requestedRolloutOf(service),
+          skipReason
         );
       } catch (waitError) {
+        if (replayingState) {
+          // A rollback's reverse-replacement re-create (go-to-k/cdkd#5571):
+          // the desired bag is a STATE record, restoring what the stack held
+          // before the failed deploy. Deleting the never-stable service or
+          // failing here would leave the rollback unfinished and the stack
+          // un-rollbackable over a rollout the user cannot fix through the
+          // template; whether the restored service runs is the next deploy's
+          // question. Warn and record it, so state carries what AWS holds.
+          log.warn(
+            `${this.wrapSteadyStateError(logicalId, waitError, properties['Cluster'], log, false).message} Continuing the rollback: the restored service stays recorded.`
+          );
+          return {
+            physicalId: service.serviceArn,
+            attributes: {
+              ServiceArn: service.serviceArn,
+              Name: service.serviceName,
+            },
+          };
+        }
         // Include --cluster: a service in a non-default cluster cannot be
         // addressed without it, and the ARN alone is not documented to imply
         // the cluster. Matches the INFO hint's shape.
@@ -1647,7 +1841,7 @@ export class ECSProvider implements ResourceProvider {
               })
             );
             retractCreatedResource(logicalId, resourceType, service.serviceArn);
-            // warn, not debug: the dominant --full-wait failure is a crashing
+            // warn, not debug: the dominant steady-state failure is a crashing
             // container, and this delete removes the service the user would
             // reach for first when asking "why". Say where the evidence
             // still lives (issue #1291 item 2).
@@ -1672,21 +1866,7 @@ export class ECSProvider implements ResourceProvider {
         // ProvisioningError in the outer catch preserves it verbatim, and
         // the cause chain keeps the original waiter error reachable for
         // `cdkd events` metadata extraction.
-        // Names `--full-wait` and two `aws` commands, so the logical id is
-        // shown only when plain (go-to-k/cdkd#4295).
-        // An AWS-authored failure (the rollout poll's DescribeServices) is
-        // named by its class here, its text at `debug` and on the stamped
-        // `cause` chain (go-to-k/cdkd#2319); the outer wrap keeps this
-        // cdkd-authored sentence.
-        const waitFailure = describeAwsFailure(waitError);
-        if (waitFailure.redacted) {
-          log.debug(`ECS service ${logicalId} steady-state wait failed: ${waitFailure.detail}`);
-        }
-        const steadyStateError = new Error(
-          `ECS service ${logicalIdShown(logicalId)} did not reach steady state under --full-wait: ${waitFailure.summary.replace(/\.$/, '')}. Inspect why its tasks stopped (stopped tasks stay visible for about an hour): ${listStopped.render()}, then ${aws`aws ecs describe-tasks${clusterArg} --tasks '<task-arn>' --query 'tasks[].[stoppedReason,containers[].reason]'`.render()}`,
-          { cause: waitError }
-        );
-        throw waitFailure.redacted ? markRedactedCause(steadyStateError) : steadyStateError;
+        throw this.wrapSteadyStateError(logicalId, waitError, properties['Cluster'], log);
       }
 
       return {
@@ -1700,7 +1880,7 @@ export class ECSProvider implements ResourceProvider {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(log.mask, error, (text) => {
         const wrapped = new ProvisioningError(
-          // The wrapped text can be the `--full-wait` refusal, with its `aws`
+          // The wrapped text can be the steady-state refusal, with its `aws`
           // commands, so the logical id is shown only when plain
           // (go-to-k/cdkd#4295).
           `Failed to create ECS service ${logicalIdShown(logicalId)}: ${text}`,
@@ -1777,61 +1957,171 @@ export class ECSProvider implements ResourceProvider {
   }
 
   /**
+   * The failure `createService` / `updateService` throw when `settleService`
+   * did not settle: the waiter's (or the breaker check's) reason, plus the two
+   * commands that show why the service's tasks stopped. Names `--no-wait` only
+   * where the invoking command declares it (`CDKD_WAIT_FLAGS_AVAILABLE`), and
+   * the logical id only when plain (go-to-k/cdkd#4295).
+   *
+   * An AWS-authored failure (the rollout poll's DescribeServices) is named by
+   * its class here, its text at `debug` and on the stamped `cause` chain
+   * (go-to-k/cdkd#2319); the outer wrap keeps this cdkd-authored sentence.
+   */
+  private wrapSteadyStateError(
+    logicalId: string,
+    waitError: unknown,
+    cluster: unknown,
+    log: MaskedLogSinks,
+    /** `false` where the failure is only warned about (a state-borne replay). */
+    offerNoWait = true
+  ): Error {
+    const aws = pasteableAwsCommand(log.mask);
+    // A truthy NON-string reaches the tag and withholds the command:
+    // dropping `--cluster` would address the default cluster instead.
+    const clusterArg = cluster ? aws` --cluster ${cluster as string}` : aws``;
+    const listStopped = aws`aws ecs list-tasks${clusterArg} --desired-status STOPPED`;
+    const waitFailure = describeAwsFailure(waitError);
+    if (waitFailure.redacted) {
+      log.debug(`ECS service ${logicalId} steady-state wait failed: ${waitFailure.detail}`);
+    }
+    // Flags are named only where the invoking command declares them. A
+    // breaker verdict is final, so a longer wait is offered only for a wait
+    // that ran out (or failed otherwise), never for the verdict.
+    const flagsAvailable = offerNoWait && process.env['CDKD_WAIT_FLAGS_AVAILABLE'] === 'true';
+    const timeoutHint =
+      flagsAvailable && !(waitError instanceof EcsCircuitBreakerVerdict)
+        ? ` To wait longer, raise the limit with --resource-timeout AWS::ECS::Service=${commandHole('duration')}.`
+        : '';
+    const noWaitHint = flagsAvailable
+      ? ' To deploy without waiting for steady state, pass --no-wait.'
+      : '';
+    const steadyStateError = new Error(
+      `ECS service ${logicalIdShown(logicalId)} did not reach steady state: ${waitFailure.summary.replace(/\.$/, '')}. Inspect why its tasks stopped (stopped tasks stay visible for about an hour): ${listStopped.render()}, then ${aws`aws ecs describe-tasks${clusterArg} --tasks '<task-arn>' --query 'tasks[].[stoppedReason,containers[].reason]'`.render()}.${timeoutHint}${noWaitHint}`,
+      { cause: waitError }
+    );
+    return waitFailure.redacted ? markRedactedCause(steadyStateError) : steadyStateError;
+  }
+
+  /**
    * Settle an ECS Service according to the run's wait mode.
    *
-   * cdkd does NOT wait for steady state by default (issue #1275). The three
-   * engines genuinely disagree on what "done" means for a Service:
-   * CloudFormation waits for steady state, Terraform's `aws_ecs_service`
-   * defaults `wait_for_steady_state` to false, and nothing downstream needs
-   * the service to be running (`Fn::GetAtt` yields Name / ServiceArn, both
-   * valid the instant CreateService returns). cdkd takes the fast side and
-   * documents the divergence.
+   * cdkd WAITS for steady state by default (go-to-k/cdkd#5571, superseding
+   * the fire-and-forget default of #1275), as CloudFormation does. Steady
+   * state is the one signal that tells a healthy rollout from a failing one
+   * (a crash-looping container, an image that cannot be pulled), which is the
+   * failure detection the default wait tier exists for; Terraform's
+   * `wait_for_steady_state = false` default gives way here. `--no-wait`
+   * (`CDKD_NO_WAIT`) is the escape hatch and keeps the old early return with
+   * its manual-wait INFO line. `--full-wait` changes nothing for this type.
    *
-   * There is deliberately no health probe on the default path. Right after
-   * CreateService a healthy service and a doomed one are indistinguishable
-   * (`ACTIVE`, `runningCount: 0`, `rolloutState: IN_PROGRESS`); a circuit
-   * breaker failure surfaces tens of seconds to minutes later. A one-shot
-   * check would warn on every deploy AND imply a guarantee ("no warning, so
-   * the rollout was fine") it cannot support. The INFO line instead hands
-   * over the exact command that CAN answer the question.
+   * `requested` is the rollout this create / update started, read off the
+   * `CreateService` / `UpdateService` response. Two circuit-breaker checks
+   * use it (go-to-k/cdkd#5571): a requested deployment observed `FAILED`
+   * during the wait ends it at once (`failedRequestedDeployment`), and after
+   * steady state a service that settled on a DIFFERENT deployment — what a
+   * breaker with `rollback: true` leaves once the failed deployment drains,
+   * one `COMPLETED` deployment the waiter accepts — throws too
+   * (`rolloutSupersededBy`). Both fail open on an unreadable response.
    */
   private async settleService(
     logicalId: string,
     serviceRef: string,
     cluster: string | undefined,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    requested: RequestedRollout | undefined,
+    /**
+     * Why this service is not waited for whatever the mode (an ECS-unsettled
+     * `DeploymentController`, a `drift --revert`), or `undefined` to follow
+     * the run's wait mode.
+     */
+    skipReason: string | undefined
   ): Promise<void> {
-    if (process.env['CDKD_FULL_WAIT'] === 'true') {
+    if (skipReason !== undefined) {
+      // INFO has no masked sink; the finished line goes through the same
+      // mask. No `--no-wait` hint: the flag would change nothing here.
+      this.logger.info(
+        log.mask(
+          `ECS service ${logicalIdShown(logicalId)} accepted (not waiting for steady state: ${skipReason}).`
+        )
+      );
+      return;
+    }
+    if (process.env['CDKD_NO_WAIT'] !== 'true') {
       log.debug(`Waiting for ECS service ${logicalId} to reach steady state...`);
-      // 600s matches Terraform's `aws_ecs_service` default create timeout. An
-      // explicit `--resource-timeout` (per-type or global) lifts the cap so
-      // the inner waiter can never undercut the outer per-resource deadline
-      // the same flag raises (issue #1280) — but never lowers it below the
-      // 600s floor.
+      // 600s matches Terraform's `aws_ecs_service` default create timeout, and
+      // stays the floor on purpose even though the default now waits
+      // (go-to-k/cdkd#5571): a breaker-less crash loop must not hold a dev
+      // deploy for the generic 30m resource timeout. An explicit
+      // `--resource-timeout` (per-type or global) lifts the cap so the inner
+      // waiter can never undercut the outer per-resource deadline the same
+      // flag raises (issue #1280) — but never lowers it below the 600s floor;
+      // the timeout failure names that flag.
       const maxWaitTime = Math.max(
         600,
         (resolvedResourceTimeoutMs('AWS::ECS::Service') ?? 0) / 1000
       );
+      // A circuit breaker's verdict ends the wait early: every DescribeServices
+      // answer the waiter reads is checked for the requested deployment
+      // turning `FAILED`, which aborts the waiter (no extra AWS call). Without
+      // this, a breaker with `rollback: false` leaves the FAILED deployment in
+      // place, which never stabilizes, and the wait would run to its cap.
+      const client = this.getClient();
+      const breakerVerdict = new AbortController();
+      let failedRollout: Deployment | undefined;
+      const watchedClient = {
+        send: async (command: DescribeServicesCommand) => {
+          const output = await client.send(command);
+          if (failedRollout === undefined) {
+            failedRollout = failedRequestedDeployment(
+              requested,
+              output?.services?.[0]?.deployments
+            );
+            if (failedRollout !== undefined) breakerVerdict.abort();
+          }
+          return output;
+        },
+      } as unknown as ECSClient;
       try {
         await waitUntilServicesStable(
           // minDelay/maxDelay override the AWS SDK defaults (15s / 120s) per the
           // #1177 poll-cap sweep.
-          { client: this.getClient(), maxWaitTime, minDelay: 5, maxDelay: 10 },
+          {
+            client: watchedClient,
+            maxWaitTime,
+            minDelay: 5,
+            maxDelay: 10,
+            abortSignal: breakerVerdict.signal,
+          },
           { cluster, services: [serviceRef] }
         );
       } catch (waiterError) {
+        if (failedRollout !== undefined) {
+          // `rolloutStateReason` is AWS-authored text: `debug` only
+          // (go-to-k/cdkd#2319).
+          log.debug(
+            `ECS service ${logicalId} deployment ${failedRollout.id ?? '(no id)'} FAILED: ${failedRollout.rolloutStateReason ?? '(no rollout reason)'}`
+          );
+          throw wrapBreakerFailedError(failedRollout);
+        }
         throw this.wrapWaiterResultError(waiterError, logicalId, log);
       }
+      // The waiter can also RESOLVE on the very answer that showed the
+      // requested deployment FAILED: a `rollback: false` breaker leaves it in
+      // place, and once ECS's replacement tasks count as running,
+      // `runningCount == desiredCount` with one deployment satisfies the
+      // waiter. A FAILED ever seen is the verdict either way.
+      if (failedRollout !== undefined) throw wrapBreakerFailedError(failedRollout);
       // waitUntilServicesStable's condition (a single deployment whose
       // runningCount matches desiredCount) is satisfied a few seconds BEFORE
       // ECS flips the PRIMARY deployment's rolloutState to COMPLETED — a race
       // the ecs-fargate fixture lost on the update path the moment #609
       // flipped its Service from the CC route (whose CFn handler waits for
-      // rollout completion) to this SDK route. --full-wait promises the
+      // rollout completion) to this SDK route. The default wait promises the
       // CloudFormation-equivalent doneness, so close the gap with a short
       // bounded poll; NONE (no rollout tracking, e.g. EXTERNAL controller)
       // counts as settled.
       const rolloutDeadline = Date.now() + 120_000;
+      let settledDeployment: Deployment | undefined;
       for (;;) {
         const settled = await this.getClient().send(
           new DescribeServicesCommand({
@@ -1840,8 +2130,15 @@ export class ECSProvider implements ResourceProvider {
           })
         );
         const deployments = settled?.services?.[0]?.deployments;
-        const rolloutState =
-          deployments && deployments.length === 1 ? deployments[0]?.rolloutState : undefined;
+        // FAILED here is the breaker's verdict, not a rollout still in
+        // progress: it never turns COMPLETED.
+        const failedNow = failedRequestedDeployment(requested, deployments);
+        if (failedNow !== undefined) throw wrapBreakerFailedError(failedNow);
+        settledDeployment = deployments && deployments.length === 1 ? deployments[0] : undefined;
+        const rolloutState = settledDeployment?.rolloutState;
+        if (settledDeployment !== undefined && rolloutState === 'FAILED') {
+          throw wrapBreakerFailedError(settledDeployment);
+        }
         if (rolloutState === undefined || rolloutState === 'COMPLETED') break;
         if (Date.now() >= rolloutDeadline) {
           log.warn(
@@ -1851,26 +2148,30 @@ export class ECSProvider implements ResourceProvider {
         }
         await settleRolloutDelays.sleep(3_000);
       }
+      const supersededBy = rolloutSupersededBy(requested, settledDeployment);
+      if (supersededBy !== undefined) {
+        // `rolloutStateReason` is AWS-authored text: `debug` only
+        // (go-to-k/cdkd#2319).
+        log.debug(
+          `ECS service ${logicalId} settled deployment ${settledDeployment?.id ?? '(no id)'}: ${settledDeployment?.rolloutStateReason ?? '(no rollout reason)'}`
+        );
+        throw new EcsCircuitBreakerVerdict(
+          `its deployment circuit breaker rolled the rollout back: the service settled on ${supersededBy}, not on the deployment this update started (${describeRollout({ id: requested!.deploymentId, taskDefinition: requested!.taskDefinition })}). The new tasks failed to start or failed their health checks`
+        );
+      }
       log.debug(`ECS service ${logicalId} reached steady state`);
       return;
     }
 
-    // Rendered through `pasteableAwsCommand` (issue #3136): the cluster and
-    // the service name are TEMPLATE values, and the operation's masker
-    // withholds a command naming a secret (issue #2177).
+    // `--no-wait`. Rendered through `pasteableAwsCommand` (issue #3136): the
+    // cluster and the service name are TEMPLATE values, and the operation's
+    // masker withholds a command naming a secret (issue #2177).
     const aws = pasteableAwsCommand(log.mask);
     const clusterArg = cluster ? aws` --cluster ${cluster}` : aws``;
-    // Mention --full-wait only when the invoking COMMAND actually declares
-    // it (cdkd deploy sets CDKD_WAIT_FLAGS_AVAILABLE; `cdkd drift --revert`
-    // reaches this same code through provider.update and does NOT — the
-    // flag does not exist there, so advertising it would tell the user to
-    // pass an option the command rejects (issue #1291 item 1).
-    const fullWaitHint =
-      process.env['CDKD_WAIT_FLAGS_AVAILABLE'] === 'true' ? '; pass --full-wait to wait' : '';
     // INFO has no masked sink; the finished line goes through the same mask.
     this.logger.info(
       log.mask(
-        `ECS service ${logicalIdShown(logicalId)} accepted (not waiting for steady state${fullWaitHint}). ` +
+        `ECS service ${logicalIdShown(logicalId)} accepted (not waiting for steady state under --no-wait). ` +
           `To wait manually: ${aws`aws ecs wait services-stable${clusterArg} --services ${serviceRef}`.render()}`
       )
     );
@@ -1884,7 +2185,9 @@ export class ECSProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     log: MaskedLogSinks,
     /** `cdkd drift --revert` (`UpdateContext.desiredFromAwsReadback`). */
-    desiredFromAwsReadback: boolean
+    desiredFromAwsReadback: boolean,
+    /** The rollback executor's revert arms (`UpdateContext.replayingState`). */
+    replayingState: boolean
   ): Promise<ResourceUpdateResult> {
     log.debug(`Updating ECS service ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -2448,14 +2751,41 @@ export class ECSProvider implements ResourceProvider {
         );
       }
 
-      // UpdateService is fire-and-forget for the same reason CreateService is
-      // (issue #1275): the rolling deployment it starts settles minutes later.
-      await this.settleService(
-        logicalId,
-        service?.serviceName ?? physicalId,
-        properties['Cluster'] as string | undefined,
-        log
-      );
+      // The rolling deployment UpdateService starts settles minutes later;
+      // the default waits for it and fails on a circuit-breaker verdict.
+      try {
+        await this.settleService(
+          logicalId,
+          service?.serviceName ?? physicalId,
+          properties['Cluster'] as string | undefined,
+          log,
+          requestedRolloutOf(service),
+          // `cdkd drift --revert` (go-to-k/cdkd#5571) does not wait at all:
+          // the outcome of its wait could only ever be the warning below
+          // (a revert must not fail on the rollout it restores), and drift
+          // has no `--no-wait` to skip a wait that only costs time.
+          desiredFromAwsReadback
+            ? 'a drift revert does not wait for it'
+            : controllerSkipsWait(properties)
+        );
+      } catch (waitError) {
+        // Not a template deploy (go-to-k/cdkd#5571): the rollback executor's
+        // revert arms (`replayingState`) re-apply a configuration the service
+        // held before — a STATE record. Failing the rollback on its steady
+        // state would leave the stack un-rollbackable (the user cannot fix a
+        // state record through the template), and the revert has already
+        // been accepted by AWS: what follows is the service's rollout, not
+        // cdkd's write. So warn, with the same diagnosis commands, and report
+        // the update applied. A template deploy throws: its rollout is the
+        // deploy's outcome. (`drift --revert` never waits; see above.)
+        if (replayingState) {
+          log.warn(
+            `${this.wrapSteadyStateError(logicalId, waitError, properties['Cluster'], log, false).message} The rollback update was applied; continuing.`
+          );
+        } else {
+          throw this.wrapSteadyStateError(logicalId, waitError, properties['Cluster'], log);
+        }
+      }
 
       return {
         physicalId,

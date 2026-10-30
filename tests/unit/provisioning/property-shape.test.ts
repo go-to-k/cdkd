@@ -123,8 +123,8 @@ describe('findPropertyShapeViolations against the generated table', () => {
     ).toEqual([{ resourceType: 'AWS::SQS::Queue', path: 'Tags', expected: 'array', found: 'object' }]);
   });
 
-  it('passes the CodeBuild webhook filter groups CDK synthesizes (a legacy type, so no rows)', () => {
-    expect(PROPERTY_SHAPES.has('AWS::CodeBuild::Project')).toBe(false);
+  it('passes the CodeBuild webhook filter groups CDK synthesizes (the schema models them as a list of lists)', () => {
+    expect(PROPERTY_SHAPES.has('AWS::CodeBuild::Project')).toBe(true);
     expect(
       findPropertyShapeViolations('AWS::CodeBuild::Project', {
         Triggers: { Webhook: true, FilterGroups: [[{ Type: 'EVENT', Pattern: 'PUSH' }]] },

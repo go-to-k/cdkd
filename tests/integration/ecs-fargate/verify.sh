@@ -20,10 +20,11 @@
 #
 # Phase 0 + Phase 1 (issue #1275) cover the ECS Service wait semantics:
 # `--no-wait --full-wait` is rejected as a contradictory pair, and the
-# Phase 1 deploy passes `--full-wait` so the real `waitUntilServicesStable`
-# call runs against AWS (cdkd's default deliberately does NOT wait, matching
-# Terraform's `wait_for_steady_state = false`). The post-deploy assertion
-# proves the wait was effective rather than a no-op.
+# Phase 1 deploy passes `--full-wait`, which for an ECS Service waits exactly
+# as the default does (#5571), so the real `waitUntilServicesStable` call runs
+# against AWS. The post-deploy assertion proves the wait was effective rather
+# than a no-op. The default-mode wait and the circuit-breaker arm are covered
+# by `ecs-service-update-props` phases 2d / 2e.
 #
 # Phase 1c and Phase 3 (issue #4272) run `cdkd drift --json` before and after
 # the destroy: the live Cluster / Service / TaskDefinition must be compared,
@@ -163,9 +164,9 @@ fi
 echo "    OK: --no-wait --full-wait rejected with the mutual-exclusion error"
 
 # --- Phase 1: deploy --------------------------------------------------
-# `--full-wait` (issue #1275) is what makes cdkd wait for the ECS Service to
-# reach steady state. Passing it here is the only place the real
-# waitUntilServicesStable call is exercised against AWS: a wrong cluster /
+# cdkd waits for the ECS Service to reach steady state in the default mode
+# and under `--full-wait` alike (#5571); this phase keeps `--full-wait` to
+# cover that flag's path. A wrong cluster /
 # service identifier would leave the waiter polling a MISSING service until
 # it fails, so a green deploy here proves the identifiers are right too.
 echo "==> Phase 1: deploy with the local binary (--full-wait)"
@@ -197,9 +198,8 @@ fi
 echo "    OK: ECS Service is SDK-routed (provisionedBy=sdk) — #609 route flip verified"
 
 # --- Assertion: --full-wait actually settled the Service (issue #1275) ---
-# cdkd's DEFAULT returns once CreateService is accepted (matching Terraform's
-# `wait_for_steady_state = false`), so this assertion is only meaningful
-# because Phase 1 passed --full-wait. A COMPLETED rollout with a single
+# Under `--no-wait` cdkd returns once CreateService is accepted, so a
+# COMPLETED rollout with a single
 # deployment right after deploy returns is what "cdkd waited" looks like.
 WAIT_CLUSTER=$(echo "${STATE}" | jq -r '.outputs.ClusterName // empty')
 WAIT_SERVICE=$(echo "${STATE}" | jq -r '.outputs.ServiceName // empty')

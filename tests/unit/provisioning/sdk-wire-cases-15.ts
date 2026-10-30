@@ -547,7 +547,11 @@ const DEFAULT_SG = 'sg-default';
 
 /** A Modify* call that only sends what `next` declares: a removal sends nothing. */
 const KEPT_5004 = (key: string): string =>
-  `left in place on removal: Modify* treats an absent member as "no change", and a CloudFormation A/B (#5004) measured a removed ${key} KEPT (${NEPTUNE_SRC}:164-173, 677-682)`;
+  `left in place on removal: Modify* treats an absent member as "no change", and a CloudFormation A/B (#5004) measured a removed ${key} KEPT (${NEPTUNE_SRC}, CLUSTER_KEPT_ON_REMOVAL / INSTANCE_KEPT_ON_REMOVAL)`;
+
+/** As {@link KEPT_5004}, measured by the #5544 A/B; update() also names it in a warning. */
+const KEPT_5544 = (key: string): string =>
+  `left in place on removal and warned about: Modify* treats an absent member as "no change", and a CloudFormation A/B (#5544) measured a removed ${key} KEPT (${NEPTUNE_SRC}, CLUSTER_KEPT_ON_REMOVAL / INSTANCE_KEPT_ON_REMOVAL)`;
 
 // --- AWS::Neptune::DBSubnetGroup -----------------------------------------------
 
@@ -648,7 +652,7 @@ function neptuneArmCluster(_physicalId: string, bag: Bag): void {
 const PORT_SHADOWED = `DBPort wins when both are declared: Port is read-only in the schema and only a fallback for older CDK output (${NEPTUNE_SRC}:572-580, 722-727)`;
 
 /** A port removal sends nothing: CloudFormation keeps the live port (#1160 A/B, 8183 stayed 8183). */
-const PORT_KEPT = `left in place on removal: a CloudFormation A/B (#1160) showed a removed DBPort KEEPS the live port, so update() sends no reset (${NEPTUNE_SRC}:693-696)`;
+const PORT_KEPT = `left in place on removal: a CloudFormation A/B (#1160) showed a removed DBPort KEEPS the live port, so update() sends no reset and warns (${NEPTUNE_SRC}, CLUSTER_KEPT_ON_REMOVAL)`;
 
 const NEPTUNE_CLUSTER_CASE: TypeCase = {
   resourceType: 'AWS::Neptune::DBCluster',
@@ -692,13 +696,13 @@ const NEPTUNE_CLUSTER_CASE: TypeCase = {
         'update-remove:BackupRetentionPeriod': KEPT_5004('BackupRetentionPeriod'),
         'update-remove:IamAuthEnabled': KEPT_5004('IamAuthEnabled'),
         'update-remove:DeletionProtection': KEPT_5004('DeletionProtection'),
-        'update-remove:EngineVersion': `deliberately not reset on removal: that would mean moving to the engine's default version, a possibly major upgrade cdkd must not synthesize (${NEPTUNE_SRC}:683-685)`,
-        'update-remove:DBClusterParameterGroupName': `deliberately not reset on removal: the default is the engine-version-dependent default.neptune1.x family, and synthesizing it risks a wrong-family apply (${NEPTUNE_SRC}:686-688)`,
         ...Object.fromEntries(
-          ['PreferredBackupWindow', 'PreferredMaintenanceWindow'].map((key) => [
-            `update-remove:${key}`,
-            `not reset on removal: AWS assigns a RANDOM window at create and documents no reset-to-random sentinel, so the API cannot restore it (${NEPTUNE_SRC}:689-692)`,
-          ])
+          [
+            'EngineVersion',
+            'DBClusterParameterGroupName',
+            'PreferredBackupWindow',
+            'PreferredMaintenanceWindow',
+          ].map((key) => [`update-remove:${key}`, KEPT_5544(key)])
         ),
         ...Object.fromEntries(
           [0, 1].map((i) => [
@@ -776,11 +780,11 @@ const NEPTUNE_INSTANCE_CASE: TypeCase = {
         Tags: fresh(NEPTUNE_TAGS),
       },
       expectedSilent: {
-        'update-remove:DBInstanceClass': `DBInstanceClass is required by the schema (#top required), so no deployable template removes it; update() sends only a declared value (${NEPTUNE_SRC}:1081)`,
+        'update-remove:DBInstanceClass': `DBInstanceClass is required by the schema (#top required), so no deployable template removes it; update() sends only a declared value (${NEPTUNE_SRC}, updateDBInstance)`,
         'update-remove:AutoMinorVersionUpgrade': KEPT_5004('AutoMinorVersionUpgrade'),
-        'update-remove:DeletionProtection': `not a CloudFormation property of AWS::Neptune::DBInstance (#5004), so never reset on removal; the pass-through is kept as is (${NEPTUNE_SRC}:169-172, 1089-1090)`,
-        'update-remove:DBParameterGroupName': `deliberately not reset on removal: the default is the engine-version-dependent default.neptune1.x family, and synthesizing it risks a wrong-family apply (${NEPTUNE_SRC}:1069-1071)`,
-        'update-remove:PreferredMaintenanceWindow': `not reset on removal: AWS assigns a RANDOM window at create and documents no reset-to-random sentinel (${NEPTUNE_SRC}:1072-1073)`,
+        'update-remove:DeletionProtection': `not a CloudFormation property of AWS::Neptune::DBInstance (#5004), so never reset on removal; the pass-through is kept as is (${NEPTUNE_SRC}, removalHandledInUpdate)`,
+        'update-remove:DBParameterGroupName': KEPT_5544('DBParameterGroupName'),
+        'update-remove:PreferredMaintenanceWindow': KEPT_5544('PreferredMaintenanceWindow'),
       },
       expectedRemovalThrows: TAG_THROWS(ALL_DIRECTIONS, 2),
     },
@@ -824,7 +828,7 @@ const DOCDB_CLUSTER_ARN = `arn:aws:rds:us-east-1:${ACCOUNT}:cluster:${DOCDB_CLUS
  * poll and the tag diff has an ARN. An update that SENDS a new Port or group
  * list is answered as applied (the value the ModifyDBCluster just carried),
  * so `waitForClusterPortApplied` / `waitForSecurityGroupsApplied`
- * (${DOCDB_SRC}:1338-1404) settle on their first poll too. No member instances, so
+ * (docdb-provider.ts) settle on their first poll too. No member instances, so
  * the member waits have nothing to poll.
  */
 function docdbArmCluster(_physicalId: string, bag: Bag): void {
@@ -898,34 +902,30 @@ const DOCDB_CLUSTER_CASE: TypeCase = {
         Tags: fresh(DOCDB_TAGS),
       },
       expectedSilent: {
-        'update-remove:EngineVersion': kept(
-          `and cdkd deliberately does not synthesize a move to the engine's default version, a possibly major upgrade (${DOCDB_SRC}:573-575)`
-        ),
-        'update-remove:DBClusterParameterGroupName': kept(
-          `and the default group name is engine-version-dependent, so a removal is not synthesized into a possibly wrong family (${DOCDB_SRC}:576-578)`
-        ),
-        'update-remove:PreferredBackupWindow': kept(
-          `and AWS assigns a random window at create with no documented reset sentinel (${DOCDB_SRC}:579-581)`
-        ),
-        'update-remove:PreferredMaintenanceWindow': kept(
-          `and AWS assigns a random window at create with no documented reset sentinel (${DOCDB_SRC}:579-581)`
+        ...Object.fromEntries(
+          // Literal, not the src constant: this oracle stays independent of it.
+          [
+            'DeletionProtection',
+            'BackupRetentionPeriod',
+            'VpcSecurityGroupIds',
+            'EngineVersion',
+            'PreferredBackupWindow',
+            'PreferredMaintenanceWindow',
+            'DBClusterParameterGroupName',
+          ].map((key) => [
+            `update-remove:${key}`,
+            kept(
+              `and CloudFormation keeps the live value too, warned about by update() (CFn A/B, #5004 / #1160 / go-to-k/cdkd#5543, ${DOCDB_SRC} DOCDB_CLUSTER_KEPT_ON_REMOVAL)`
+            ),
+          ])
         ),
         'update-remove:MasterUserPassword': kept(
-          `and a removed password sends nothing: any supplied password is a master-credential reset, and removal cannot synthesize one (go-to-k/cdkd#5153, ${DOCDB_SRC}:60-65, 582-583)`
-        ),
-        'update-remove:DeletionProtection': kept(
-          `and CloudFormation keeps the live value too (CFn A/B, #5004, ${DOCDB_SRC}:244-250, 596-599)`
-        ),
-        'update-remove:BackupRetentionPeriod': kept(
-          `and CloudFormation keeps the live value too (CFn A/B, #5004, ${DOCDB_SRC}:244-250, 596-603)`
-        ),
-        'update-remove:VpcSecurityGroupIds': kept(
-          `and CloudFormation keeps a DocDB cluster's groups on removal too (CFn A/B, #1160, ${DOCDB_SRC}:584-588)`
+          `and a removed password sends nothing: any supplied password is a master-credential reset, and removal cannot synthesize one (go-to-k/cdkd#5153, ${DOCDB_SRC} masterUserPasswordToSend)`
         ),
         ...Object.fromEntries(
           [0, 1].map((i) => [
             `update-remove:VpcSecurityGroupIds.${i}`,
-            `the desired group list is sent whole from next (${DOCDB_SRC}:564-565, 611), so a dropped element reaches the wire through next, which update-add observes`,
+            `the desired group list is sent whole from next (${DOCDB_SRC} updateDBCluster, sendVpcSgIds), so a dropped element reaches the wire through next, which update-add observes`,
           ])
         ),
       },
@@ -975,9 +975,9 @@ const DOCDB_INSTANCE_CASE: TypeCase = {
         Tags: fresh(DOCDB_TAGS),
       },
       expectedSilent: {
-        'update-remove:DBInstanceClass': `DBInstanceClass is required by the CloudFormation schema, so no deployable template removes it; update() sends only a declared value (${DOCDB_SRC}:1006)`,
-        'update-remove:PreferredMaintenanceWindow': `left in place on removal: AWS assigns a random window at create with no documented reset sentinel (${DOCDB_SRC}:990-998)`,
-        'update-remove:AutoMinorVersionUpgrade': `left in place on removal: the member is inert on DocumentDB ("does not apply to Amazon DocumentDB"), so a reset would change nothing (${DOCDB_SRC}:990-996)`,
+        'update-remove:DBInstanceClass': `DBInstanceClass is required by the CloudFormation schema, so no deployable template removes it; update() sends only a declared value (${DOCDB_SRC} updateDBInstance)`,
+        'update-remove:PreferredMaintenanceWindow': `left in place on removal and warned about, as CloudFormation keeps it (CFn A/B, go-to-k/cdkd#5543, ${DOCDB_SRC} DOCDB_INSTANCE_KEPT_ON_REMOVAL)`,
+        'update-remove:AutoMinorVersionUpgrade': `left in place on removal: the member is inert on DocumentDB ("does not apply to Amazon DocumentDB"), so a reset would change nothing (${DOCDB_SRC} updateDBInstance)`,
       },
       expectedRemovalThrows: TAG_REFUSALS,
     },

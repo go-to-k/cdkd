@@ -1448,13 +1448,18 @@ MaxInstanceLifetime: clearOnUpdateRemoval(newLifetime, prevLifetime, 0),
 
 A type whose `update()` has been audited for EVERY property also declares
 `removalHandledInUpdate`: the properties whose removal `update()` handles
-itself (a local reset, a diff, a required or create-only property, or a
-value left in place that `update()` names in its own warning). The caller
+itself (a local reset, a diff, a required or create-only property, a value
+left in place that `update()` names in its own warning, a keep a
+CloudFormation A/B measured — listed with no warning, since CloudFormation
+behaves the same (SSM `Parameter`) — or a property with no default at all,
+or one whose default does nothing, such as a secret or a field AWS ignores (DocDB `MasterUserPassword`,
+`AutoMinorVersionUpgrade`), also listed with no warning). The caller
 then warns once per resource for any removed property in neither map,
 naming it as left at its current AWS value AND saying CloudFormation would
-reset it to its default — so a property with no such reset (FSx
-`StorageCapacity` cannot shrink), or one whose reset is unmeasured, goes into `removalHandledInUpdate` with its
-own warning, never into the shared line. A type without that entry is never
+reset it to its default — so a property with a default cdkd cannot reach
+(FSx `StorageCapacity` cannot shrink), or with a default whose CloudFormation
+reset is unmeasured, goes into `removalHandledInUpdate` with its own warning,
+never into the shared line. A type without that entry is never
 warned about, because cdkd cannot say what its `update()` does.
 
 Measured per type (#5004): ElastiCache `CacheCluster` KEEPS
@@ -1640,6 +1645,13 @@ Checklist when writing or reviewing an `update()`:
   measured KEEP for `DeletionProtection`, `BackupRetentionPeriod`,
   `IamAuthEnabled` and `AutoMinorVersionUpgrade`, so they declare no
   `removalDefaults`.
+  Real CloudFormation A/B, go-to-k/cdkd#5544: Neptune also KEEPS a removed
+  DBCluster `EngineVersion` (no upgrade to the default), `PreferredBackupWindow`,
+  `PreferredMaintenanceWindow` and `DBClusterParameterGroupName`, and a removed
+  DBInstance `DBParameterGroupName` and `PreferredMaintenanceWindow` (neither
+  group moves back to `default.neptune1.4`). Both Neptune types declare
+  `removalHandledInUpdate`, and `update()` names every kept removal in one
+  warning per resource.
   Real CloudFormation A/B, go-to-k/cdkd#2762: a removed `AWS::Kinesis::Stream`
   `RecordDistributionStrategy` RESETS to `USER_PARTITION_KEY` (ON_DEMAND
   stream), and on an `AWS::CodeBuild::Project` removing `Visibility` and

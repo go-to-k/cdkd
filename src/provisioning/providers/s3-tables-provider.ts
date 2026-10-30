@@ -16,8 +16,43 @@ import {
   RenameTableCommand,
   TagResourceCommand,
   UntagResourceCommand,
+  DeleteTableBucketMetricsConfigurationCommand,
+  DeleteTableBucketReplicationCommand,
+  GetTableBucketEncryptionCommand,
+  GetTableBucketMaintenanceConfigurationCommand,
+  GetTableBucketMetricsConfigurationCommand,
+  GetTableBucketReplicationCommand,
+  GetTableBucketStorageClassCommand,
+  GetTableMaintenanceConfigurationCommand,
+  PutTableBucketEncryptionCommand,
+  PutTableBucketMaintenanceConfigurationCommand,
+  PutTableBucketMetricsConfigurationCommand,
+  PutTableBucketReplicationCommand,
+  PutTableBucketStorageClassCommand,
+  PutTableMaintenanceConfigurationCommand,
   NotFoundException,
+  type EncryptionConfiguration,
+  type IcebergMetadata,
+  type IcebergNullOrder,
+  type IcebergPartitionField,
+  type IcebergSortDirection,
+  type IcebergSortField,
+  type MaintenanceStatus,
+  type ReplicationDestination,
+  type SSEAlgorithm,
+  type SchemaField,
+  type SchemaV2Field,
+  type SchemaV2FieldType,
+  type StorageClass,
+  type StorageClassConfiguration,
+  type TableBucketMaintenanceConfigurationValue,
+  type TableBucketReplicationConfiguration,
+  type TableBucketReplicationRule,
+  type TableMaintenanceConfigurationValue,
+  type TableMaintenanceType,
+  type GetTableMaintenanceConfigurationCommandOutput,
 } from '@aws-sdk/client-s3tables';
+import { isDeepStrictEqual } from 'node:util';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { markRedactedCause, relayedNameCollision } from '../../deployment/retryable-errors.js';
@@ -145,6 +180,322 @@ function tableIdentityFromGetTable(
   return { tableBucketARN, namespace: ns, name };
 }
 
+// ─── Configuration properties (go-to-k/cdkd#2762) ─────────────────
+
+type CfnObject = Record<string, unknown>;
+
+function isCfnObject(value: unknown): value is CfnObject {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * A DESIRED object-valued property, or `undefined` when the template omits it.
+ * Any other shape is refused before a call: read as absent it would skip the
+ * write (or, on an update, take the removal path) for a value the template
+ * does declare.
+ */
+function desiredObject(
+  properties: CfnObject,
+  key: string,
+  resourceType: string,
+  logicalId: string,
+  physicalId?: string
+): CfnObject | undefined {
+  const value = properties[key];
+  if (value === undefined) return undefined;
+  if (isCfnObject(value)) return value;
+  throw new ProvisioningError(
+    `${key} for ${resourceType} ${logicalId} must be an object; refusing before any call`,
+    resourceType,
+    logicalId,
+    physicalId
+  );
+}
+
+/** A RECORDED object-valued property: an unreadable one reads as absent. */
+function recordedObject(properties: CfnObject, key: string): CfnObject | undefined {
+  const value = properties[key];
+  return isCfnObject(value) ? value : undefined;
+}
+
+/** A CFn integer member that is not one, named for the refusal. */
+class NotAnInteger extends Error {
+  readonly member: string;
+  constructor(member: string) {
+    super(`${member} must be an integer`);
+    this.member = member;
+  }
+}
+
+/**
+ * A CFn integer, which a template may carry as a numeric string. Anything
+ * else (a non-numeric string, a fraction, a boolean) is refused
+ * ({@link NotAnInteger}, turned into a ProvisioningError by
+ * {@link refuseNonIntegers} before any call) rather than sent for AWS to
+ * reject after earlier writes landed.
+ */
+function integer(value: unknown, member: string): number | undefined {
+  if (value === undefined) return undefined;
+  const n =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim() !== ''
+        ? Number(value)
+        : Number.NaN;
+  if (Number.isInteger(n)) return n;
+  throw new NotAnInteger(member);
+}
+
+/** Run a CFn -> SDK conversion, a {@link NotAnInteger} refused as a ProvisioningError. */
+function refuseNonIntegers<T>(
+  convert: () => T,
+  key: string,
+  resourceType: string,
+  logicalId: string,
+  physicalId?: string
+): T {
+  try {
+    return convert();
+  } catch (error) {
+    if (!(error instanceof NotAnInteger)) throw error;
+    throw new ProvisioningError(
+      `${key}.${error.member} for ${resourceType} ${logicalId} must be an integer; refusing before any call`,
+      resourceType,
+      logicalId,
+      physicalId,
+      error
+    );
+  }
+}
+
+/** A CFn list member, or `undefined`: the SDK serializer refuses a non-list. */
+function list(value: unknown): unknown[] | undefined {
+  return Array.isArray(value) ? value : undefined;
+}
+
+/** Drop `undefined` members, so an omitted CFn member stays off the wire. */
+function defined<T extends CfnObject>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T;
+}
+
+/**
+ * The maintenance APIs spell a status `enabled` / `disabled`, while the
+ * TableBucket's `UnreferencedFileRemoval.Status` is `Enabled` / `Disabled` in
+ * the CFn schema (the Table's `Compaction` / `SnapshotManagement` already
+ * use the lowercase form).
+ */
+function maintenanceStatus(value: unknown): MaintenanceStatus | undefined {
+  return typeof value === 'string' ? (value.toLowerCase() as MaintenanceStatus) : undefined;
+}
+
+/** CFn `EncryptionConfiguration` -> the SDK shape. */
+function sdkEncryption(cfn: CfnObject): EncryptionConfiguration {
+  return defined({
+    sseAlgorithm: cfn['SSEAlgorithm'] as SSEAlgorithm,
+    kmsKeyArn: cfn['KMSKeyArn'] as string | undefined,
+  });
+}
+
+/** CFn `StorageClassConfiguration` -> the SDK shape. */
+function sdkStorageClass(cfn: CfnObject): StorageClassConfiguration {
+  return defined({ storageClass: cfn['StorageClass'] as StorageClass });
+}
+
+/** CFn `ReplicationConfiguration` -> the SDK shape. */
+function sdkReplication(cfn: CfnObject): TableBucketReplicationConfiguration {
+  return defined({
+    role: cfn['Role'] as string,
+    rules: list(cfn['Rules'])?.map((rule) =>
+      defined({
+        destinations: list(isCfnObject(rule) ? rule['Destinations'] : undefined)?.map(
+          (destination) =>
+            defined({
+              destinationTableBucketARN: (isCfnObject(destination)
+                ? destination['DestinationTableBucketARN']
+                : undefined) as string,
+            })
+        ) as ReplicationDestination[],
+      })
+    ) as TableBucketReplicationRule[],
+  });
+}
+
+/** CFn `UnreferencedFileRemoval` -> a maintenance configuration value. */
+function sdkUnreferencedFileRemoval(cfn: CfnObject): TableBucketMaintenanceConfigurationValue {
+  const unreferencedDays = integer(cfn['UnreferencedDays'], 'UnreferencedDays');
+  const nonCurrentDays = integer(cfn['NoncurrentDays'], 'NoncurrentDays');
+  return defined({
+    status: maintenanceStatus(cfn['Status']),
+    settings:
+      unreferencedDays === undefined && nonCurrentDays === undefined
+        ? undefined
+        : { icebergUnreferencedFileRemoval: defined({ unreferencedDays, nonCurrentDays }) },
+  });
+}
+
+/** CFn `Compaction` -> a maintenance configuration value. */
+function sdkCompaction(cfn: CfnObject): TableMaintenanceConfigurationValue {
+  const targetFileSizeMB = integer(cfn['TargetFileSizeMB'], 'TargetFileSizeMB');
+  return defined({
+    status: maintenanceStatus(cfn['Status']),
+    settings:
+      targetFileSizeMB === undefined ? undefined : { icebergCompaction: { targetFileSizeMB } },
+  });
+}
+
+/** CFn `SnapshotManagement` -> a maintenance configuration value. */
+function sdkSnapshotManagement(cfn: CfnObject): TableMaintenanceConfigurationValue {
+  const minSnapshotsToKeep = integer(cfn['MinSnapshotsToKeep'], 'MinSnapshotsToKeep');
+  const maxSnapshotAgeHours = integer(cfn['MaxSnapshotAgeHours'], 'MaxSnapshotAgeHours');
+  return defined({
+    status: maintenanceStatus(cfn['Status']),
+    settings:
+      minSnapshotsToKeep === undefined && maxSnapshotAgeHours === undefined
+        ? undefined
+        : { icebergSnapshotManagement: defined({ minSnapshotsToKeep, maxSnapshotAgeHours }) },
+  });
+}
+
+/** Each element of a CFn list of objects, mapped; a non-object element is sent as `{}`. */
+function mapObjects<T>(value: unknown, map: (o: CfnObject) => T): T[] | undefined {
+  return list(value)?.map((element) => map(isCfnObject(element) ? element : {}));
+}
+
+/** CFn `IcebergMetadata` -> CreateTable's `metadata.iceberg`. */
+function sdkIcebergMetadata(cfn: CfnObject): IcebergMetadata {
+  const schema = isCfnObject(cfn['IcebergSchema']) ? cfn['IcebergSchema'] : undefined;
+  const schemaV2 = isCfnObject(cfn['IcebergSchemaV2']) ? cfn['IcebergSchemaV2'] : undefined;
+  const partitionSpec = isCfnObject(cfn['IcebergPartitionSpec'])
+    ? cfn['IcebergPartitionSpec']
+    : undefined;
+  const sortOrder = isCfnObject(cfn['IcebergSortOrder']) ? cfn['IcebergSortOrder'] : undefined;
+  return defined({
+    schema:
+      schema &&
+      defined({
+        fields: mapObjects(schema['SchemaFieldList'], (f) =>
+          defined({
+            id: integer(f['Id'], 'IcebergSchema.SchemaFieldList.Id'),
+            name: f['Name'] as string,
+            type: f['Type'] as string,
+            required: f['Required'] as boolean | undefined,
+          })
+        ) as SchemaField[],
+      }),
+    schemaV2:
+      schemaV2 &&
+      defined({
+        type: schemaV2['SchemaV2FieldType'] as SchemaV2FieldType,
+        fields: mapObjects(schemaV2['SchemaV2FieldList'], (f) =>
+          defined({
+            id: integer(f['Id'], 'IcebergSchemaV2.SchemaV2FieldList.Id') as number,
+            name: f['Name'] as string,
+            // A primitive type name, or a nested Iceberg type as a JSON document.
+            type: f['Type'] as SchemaV2Field['type'],
+            required: f['Required'] as boolean,
+            doc: f['Doc'] as string | undefined,
+          })
+        ) as SchemaV2Field[],
+        schemaId: integer(schemaV2['SchemaId'], 'IcebergSchemaV2.SchemaId'),
+        identifierFieldIds: list(schemaV2['IdentifierFieldIds'])?.map(
+          (id) => integer(id, 'IcebergSchemaV2.IdentifierFieldIds') as number
+        ),
+      }),
+    partitionSpec:
+      partitionSpec &&
+      defined({
+        fields: mapObjects(partitionSpec['Fields'], (f) =>
+          defined({
+            sourceId: integer(f['SourceId'], 'IcebergPartitionSpec.Fields.SourceId') as number,
+            transform: f['Transform'] as string,
+            name: f['Name'] as string,
+            fieldId: integer(f['FieldId'], 'IcebergPartitionSpec.Fields.FieldId'),
+          })
+        ) as IcebergPartitionField[],
+        specId: integer(partitionSpec['SpecId'], 'IcebergPartitionSpec.SpecId'),
+      }),
+    writeOrder:
+      sortOrder &&
+      defined({
+        orderId: integer(sortOrder['OrderId'], 'IcebergSortOrder.OrderId') as number,
+        fields: mapObjects(sortOrder['Fields'], (f) =>
+          defined({
+            sourceId: integer(f['SourceId'], 'IcebergSortOrder.Fields.SourceId') as number,
+            transform: f['Transform'] as string,
+            direction: f['Direction'] as IcebergSortDirection,
+            nullOrder: f['NullOrder'] as IcebergNullOrder,
+          })
+        ) as IcebergSortField[],
+      }),
+    properties: isCfnObject(cfn['TableProperties'])
+      ? (cfn['TableProperties'] as Record<string, string>)
+      : undefined,
+  });
+}
+
+/** The object-valued properties an update writes, per type. */
+const UPDATABLE_CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
+  'AWS::S3Tables::TableBucket': [
+    'EncryptionConfiguration',
+    'StorageClassConfiguration',
+    'MetricsConfiguration',
+    'UnreferencedFileRemoval',
+    'ReplicationConfiguration',
+  ],
+  'AWS::S3Tables::Table': ['Compaction', 'SnapshotManagement'],
+};
+
+/**
+ * Whether a desired `MetricsConfiguration` turns metrics on. There is no
+ * member to send it in (PutTableBucketMetricsConfiguration takes only the
+ * bucket ARN), so the status is interpreted here, and a value the schema does
+ * not allow is refused rather than read as off.
+ */
+function metricsEnabled(
+  metrics: CfnObject | undefined,
+  resourceType: string,
+  logicalId: string,
+  physicalId?: string
+): boolean {
+  const status = metrics?.['Status'];
+  if (status === undefined || status === 'Disabled') return false;
+  if (status === 'Enabled') return true;
+  throw new ProvisioningError(
+    safeMsg`MetricsConfiguration.Status for ${resourceType} ${logicalId} must be 'Enabled' or 'Disabled'; refusing before any call`,
+    resourceType,
+    logicalId,
+    physicalId
+  );
+}
+
+interface TableMaintenanceWrite {
+  type: TableMaintenanceType;
+  value: TableMaintenanceConfigurationValue;
+}
+
+/** The Table's maintenance properties: CFn key, maintenance type, CFn -> SDK. */
+const TABLE_MAINTENANCE: readonly [
+  string,
+  TableMaintenanceType,
+  (cfn: CfnObject) => TableMaintenanceConfigurationValue,
+][] = [
+  ['Compaction', 'icebergCompaction', sdkCompaction],
+  ['SnapshotManagement', 'icebergSnapshotManagement', sdkSnapshotManagement],
+];
+
+/** The updatable properties with integer members, per type, and their conversion. */
+const INTEGER_BEARING_CONFIGS: Readonly<
+  Record<string, readonly (readonly [string, (cfn: CfnObject) => unknown])[]>
+> = {
+  'AWS::S3Tables::TableBucket': [['UnreferencedFileRemoval', sdkUnreferencedFileRemoval]],
+  'AWS::S3Tables::Table': TABLE_MAINTENANCE.map(([key, , toSdk]) => [key, toSdk] as const),
+};
+
+/** A bucket maintenance status read back (`enabled`) -> its CFn spelling (`Enabled`). */
+function cfnBucketStatus(status: string | undefined): string | undefined {
+  return status === undefined ? undefined : `${status.charAt(0).toUpperCase()}${status.slice(1)}`;
+}
+
 /**
  * SDK Provider for AWS S3 Tables resources
  *
@@ -201,7 +552,21 @@ export class S3TablesProvider implements ResourceProvider {
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
-    ['AWS::S3Tables::TableBucket', new Set(['TableBucketName', 'Tags'])],
+    [
+      'AWS::S3Tables::TableBucket',
+      new Set([
+        'TableBucketName',
+        'Tags',
+        // go-to-k/cdkd#2762: the first two on CreateTableBucket, the rest by
+        // their own Put* call after it; on an update, each by its own Put* when
+        // it changed (see applyTableBucketConfigUpdate for a removal).
+        'EncryptionConfiguration',
+        'StorageClassConfiguration',
+        'MetricsConfiguration',
+        'UnreferencedFileRemoval',
+        'ReplicationConfiguration',
+      ]),
+    ],
     ['AWS::S3Tables::Namespace', new Set(['TableBucketARN', 'Namespace'])],
     [
       'AWS::S3Tables::Table',
@@ -216,9 +581,52 @@ export class S3TablesProvider implements ResourceProvider {
         'OpenTableFormat',
         'Format',
         'Tags',
+        // go-to-k/cdkd#2762: `IcebergMetadata` and `StorageClassConfiguration`
+        // on CreateTable (both create-only); `Compaction` and
+        // `SnapshotManagement` by PutTableMaintenanceConfiguration, after the
+        // create and on an update. `WithoutMetadata` (create-only, only value
+        // `Yes`) declares a table with no schema, which is CreateTable
+        // without `metadata`: nothing to send.
+        'IcebergMetadata',
+        'StorageClassConfiguration',
+        'Compaction',
+        'SnapshotManagement',
+        'WithoutMetadata',
       ]),
     ],
   ]);
+
+  /**
+   * What `cdkd drift` does not read back for a Table, all create-only: Iceberg
+   * metadata is written once into the table's metadata file (there is no Get
+   * for it), and `WithoutMetadata` is a create-time declaration with no
+   * AWS-side value. The storage class IS readable (GetTableStorageClass), but
+   * no API changes it, so a difference could never be reverted in place: it is
+   * left out by choice, as the other create-only properties' readbacks are.
+   */
+  getDriftUnknownPaths(resourceType: string): string[] {
+    return resourceType === 'AWS::S3Tables::Table'
+      ? ['IcebergMetadata', 'StorageClassConfiguration', 'WithoutMetadata']
+      : [];
+  }
+
+  /**
+   * `ReplicationConfiguration` is read back only while configured (see
+   * `readTableBucketConfigs`), so a baseline captured with replication off
+   * has no key and a console-side enable would be compared nowhere. Named
+   * while the template leaves it off: drift compares it, and `drift --revert`
+   * sends it absent, which update() deletes (docs/provider-rules.md,
+   * "getDriftAbsentMeansDefaultKeys()").
+   */
+  getDriftAbsentMeansDefaultKeys(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): readonly string[] {
+    return resourceType === 'AWS::S3Tables::TableBucket' &&
+      properties['ReplicationConfiguration'] === undefined
+      ? ['ReplicationConfiguration']
+      : [];
+  }
 
   private getClient(): S3TablesClient {
     if (!this.client) {
@@ -312,6 +720,25 @@ export class S3TablesProvider implements ResourceProvider {
     if (resourceType === 'AWS::S3Tables::Table' || resourceType === 'AWS::S3Tables::TableBucket') {
       refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     }
+    // go-to-k/cdkd#2762: likewise a non-object configuration property.
+    for (const key of UPDATABLE_CONFIG_KEYS[resourceType] ?? []) {
+      desiredObject(properties, key, resourceType, logicalId, physicalId);
+    }
+    // ...and a non-integer member of one, converted here once before any write.
+    for (const [key, convert] of INTEGER_BEARING_CONFIGS[resourceType] ?? []) {
+      const value = desiredObject(properties, key, resourceType, logicalId, physicalId);
+      if (value !== undefined) {
+        refuseNonIntegers(() => convert(value), key, resourceType, logicalId, physicalId);
+      }
+    }
+    if (resourceType === 'AWS::S3Tables::TableBucket') {
+      metricsEnabled(
+        recordedObject(properties, 'MetricsConfiguration'),
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
     try {
       return await this.applyUpdate(
         logicalId,
@@ -320,7 +747,8 @@ export class S3TablesProvider implements ResourceProvider {
         properties,
         previousProperties,
         context?.maskSecrets,
-        context?.recordedAttributes
+        context?.recordedAttributes,
+        (key) => context?.markUnsettled?.(key)
       );
     } catch (error) {
       // Pass through every cdkd-typed error untouched. For THIS provider the
@@ -352,12 +780,14 @@ export class S3TablesProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
     mask: ((text: string) => string) | undefined,
-    recordedAttributes: Readonly<Record<string, unknown>> | undefined
+    recordedAttributes: Readonly<Record<string, unknown>> | undefined,
+    markUnsettled: (key: string) => void
   ): Promise<ResourceUpdateResult> {
     // There is no UpdateTable / UpdateTableBucket / UpdateNamespace API.
     // TAGS are mutable via TagResource / UntagResource (Table #609 PR #739,
-    // TableBucket #609), and a Table's `TableName` / `Namespace` via
-    // RenameTable (go-to-k/cdkd#5313). The Namespace case stays a no-op:
+    // TableBucket #609), a Table's `TableName` / `Namespace` via
+    // RenameTable (go-to-k/cdkd#5313), and the configuration properties by
+    // their own Put* / Delete* calls (go-to-k/cdkd#2762). The Namespace case stays a no-op:
     // Namespaces are not taggable (ListTagsForResource only accepts
     // table-bucket or table ARNs) and both their properties are create-only.
     if (resourceType === 'AWS::S3Tables::Table') {
@@ -379,6 +809,15 @@ export class S3TablesProvider implements ResourceProvider {
         previousProperties['Tags'],
         properties['Tags'],
         mask
+      );
+      // Maintenance against the current identity too, before the rename.
+      await this.applyTableMaintenanceUpdate(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties,
+        markUnsettled
       );
       if (rename === undefined) return { physicalId, wasReplaced: false };
       try {
@@ -411,6 +850,14 @@ export class S3TablesProvider implements ResourceProvider {
         previousProperties['Tags'],
         properties['Tags'],
         mask
+      );
+      await this.applyTableBucketConfigUpdate(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties,
+        markUnsettled
       );
     } else {
       this.logger.debug(`Update is no-op for ${resourceType} ${logicalId}`);
@@ -482,15 +929,86 @@ export class S3TablesProvider implements ResourceProvider {
     // InvalidRequestException, so omit the field entirely when no tags.
     const tags = this.tagListToSdkMap(desiredTags);
 
+    // go-to-k/cdkd#2762: refused before any call, like Tags.
+    const encryption = desiredObject(
+      properties,
+      'EncryptionConfiguration',
+      resourceType,
+      logicalId
+    );
+    const storageClass = desiredObject(
+      properties,
+      'StorageClassConfiguration',
+      resourceType,
+      logicalId
+    );
+    const metrics = desiredObject(properties, 'MetricsConfiguration', resourceType, logicalId);
+    const metricsOn = metricsEnabled(metrics, resourceType, logicalId);
+    const unreferenced = desiredObject(
+      properties,
+      'UnreferencedFileRemoval',
+      resourceType,
+      logicalId
+    );
+    const replication = desiredObject(
+      properties,
+      'ReplicationConfiguration',
+      resourceType,
+      logicalId
+    );
+    // Converted before any call: a non-integer day count is refused here.
+    const unreferencedValue =
+      unreferenced &&
+      refuseNonIntegers(
+        () => sdkUnreferencedFileRemoval(unreferenced),
+        'UnreferencedFileRemoval',
+        resourceType,
+        logicalId
+      );
+
+    // CreateTableBucket returned: the bucket exists under its ARN, whatever a
+    // later configuration call does (go-to-k/cdkd#4583's shape).
+    let createdArn: string | undefined;
     try {
       const result = await this.getCreateClient().send(
         new CreateTableBucketCommand({
           name: tableBucketName,
+          ...(encryption !== undefined && { encryptionConfiguration: sdkEncryption(encryption) }),
+          ...(storageClass !== undefined && {
+            storageClassConfiguration: sdkStorageClass(storageClass),
+          }),
           ...(tags !== undefined && { tags }),
         })
       );
 
       const tableBucketARN = result.arn!;
+      createdArn = tableBucketARN;
+      reportCreatedResource(logicalId, resourceType, tableBucketARN);
+
+      // The rest have no CreateTableBucket member. Metrics are off on a new
+      // bucket (the schema's default `Disabled`), so only `Enabled` is sent.
+      if (metricsOn) {
+        await this.getClient().send(
+          new PutTableBucketMetricsConfigurationCommand({ tableBucketARN })
+        );
+      }
+      if (unreferencedValue !== undefined) {
+        await this.getClient().send(
+          new PutTableBucketMaintenanceConfigurationCommand({
+            tableBucketARN,
+            type: 'icebergUnreferencedFileRemoval',
+            value: unreferencedValue,
+          })
+        );
+      }
+      if (replication !== undefined) {
+        await this.getClient().send(
+          new PutTableBucketReplicationCommand({
+            tableBucketARN,
+            configuration: sdkReplication(replication),
+          })
+        );
+      }
 
       this.logger.debug(`Successfully created S3 Table Bucket ${logicalId}: ${tableBucketARN}`);
 
@@ -502,7 +1020,7 @@ export class S3TablesProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -514,6 +1032,200 @@ export class S3TablesProvider implements ResourceProvider {
             cause
           )
       );
+      if (createdArn !== undefined) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdArn);
+      }
+      throw thrown;
+    }
+  }
+
+  /**
+   * The TableBucket's configuration properties on an update (go-to-k/cdkd#2762),
+   * each written by its own call only when it changed.
+   *
+   * A removal is reset only where the template has no other way to say "off":
+   * `MetricsConfiguration` (whose schema default is `Disabled`) and
+   * `ReplicationConfiguration` (whose `Rules` are required, so no declared
+   * value turns replication off) are deleted. `EncryptionConfiguration`,
+   * `StorageClassConfiguration` and `UnreferencedFileRemoval` each have a
+   * declarable value for their default, and what CloudFormation sets on their
+   * removal is unmeasured, so a removal leaves the AWS value in place and says
+   * so (docs/provider-rules.md, "Update removal semantics").
+   *
+   * Each write is preceded by `markUnsettled(key)`: a failure after an
+   * earlier write landed leaves the record naming what may differ on AWS
+   * (docs/provider-rules.md, #5380).
+   */
+  private async applyTableBucketConfigUpdate(
+    logicalId: string,
+    tableBucketARN: string,
+    resourceType: string,
+    properties: CfnObject,
+    previousProperties: CfnObject,
+    markUnsettled: (key: string) => void
+  ): Promise<void> {
+    const changed = (key: string): [CfnObject | undefined, boolean] => {
+      const next = desiredObject(properties, key, resourceType, logicalId, tableBucketARN);
+      return [next, !isDeepStrictEqual(next, recordedObject(previousProperties, key))];
+    };
+    const client = this.getClient();
+
+    const [encryption, encryptionChanged] = changed('EncryptionConfiguration');
+    if (encryptionChanged) {
+      if (encryption !== undefined) {
+        markUnsettled('EncryptionConfiguration');
+        await client.send(
+          new PutTableBucketEncryptionCommand({
+            tableBucketARN,
+            encryptionConfiguration: sdkEncryption(encryption),
+          })
+        );
+      } else {
+        this.warnRemovalKept(logicalId, 'EncryptionConfiguration');
+      }
+    }
+
+    const [storageClass, storageClassChanged] = changed('StorageClassConfiguration');
+    if (storageClassChanged) {
+      if (storageClass !== undefined) {
+        markUnsettled('StorageClassConfiguration');
+        await client.send(
+          new PutTableBucketStorageClassCommand({
+            tableBucketARN,
+            storageClassConfiguration: sdkStorageClass(storageClass),
+          })
+        );
+      } else {
+        this.warnRemovalKept(logicalId, 'StorageClassConfiguration');
+      }
+    }
+
+    // Compared on what it switches, not its spelling: `{}` and an absent one
+    // are both the default `Disabled`.
+    const metricsOn = metricsEnabled(
+      desiredObject(properties, 'MetricsConfiguration', resourceType, logicalId, tableBucketARN),
+      resourceType,
+      logicalId
+    );
+    const metricsWasOn =
+      recordedObject(previousProperties, 'MetricsConfiguration')?.['Status'] === 'Enabled';
+    if (metricsOn && !metricsWasOn) {
+      markUnsettled('MetricsConfiguration');
+      await client.send(new PutTableBucketMetricsConfigurationCommand({ tableBucketARN }));
+    } else if (!metricsOn && metricsWasOn) {
+      markUnsettled('MetricsConfiguration');
+      await this.deleteBucketConfig(
+        tableBucketARN,
+        new DeleteTableBucketMetricsConfigurationCommand({ tableBucketARN })
+      );
+    }
+
+    const [unreferenced, unreferencedChanged] = changed('UnreferencedFileRemoval');
+    if (unreferencedChanged) {
+      if (unreferenced !== undefined) {
+        markUnsettled('UnreferencedFileRemoval');
+        await client.send(
+          new PutTableBucketMaintenanceConfigurationCommand({
+            tableBucketARN,
+            type: 'icebergUnreferencedFileRemoval',
+            value: sdkUnreferencedFileRemoval(unreferenced),
+          })
+        );
+      } else {
+        this.warnRemovalKept(logicalId, 'UnreferencedFileRemoval');
+      }
+    }
+
+    const [replication, replicationChanged] = changed('ReplicationConfiguration');
+    if (replicationChanged) {
+      if (replication !== undefined) {
+        markUnsettled('ReplicationConfiguration');
+        await client.send(
+          new PutTableBucketReplicationCommand({
+            tableBucketARN,
+            configuration: sdkReplication(replication),
+          })
+        );
+      } else {
+        markUnsettled('ReplicationConfiguration');
+        await this.deleteBucketConfig(
+          tableBucketARN,
+          new DeleteTableBucketReplicationCommand({ tableBucketARN })
+        );
+      }
+    }
+  }
+
+  /**
+   * The Table's maintenance properties on an update (go-to-k/cdkd#2762), each
+   * written by PutTableMaintenanceConfiguration only when it changed. Both
+   * have a declarable `disabled`, and what CloudFormation sets on their
+   * removal is unmeasured, so a removal leaves the AWS value in place and says
+   * so, as for the bucket's (see {@link applyTableBucketConfigUpdate}).
+   */
+  private async applyTableMaintenanceUpdate(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: CfnObject,
+    previousProperties: CfnObject,
+    markUnsettled: (key: string) => void
+  ): Promise<void> {
+    const writes: (TableMaintenanceWrite & { key: string })[] = [];
+    for (const [key, type, toSdk] of TABLE_MAINTENANCE) {
+      const next = desiredObject(properties, key, resourceType, logicalId, physicalId);
+      if (isDeepStrictEqual(next, recordedObject(previousProperties, key))) continue;
+      if (next === undefined) this.warnRemovalKept(logicalId, key);
+      else writes.push({ key, type, value: toSdk(next) });
+    }
+    if (writes.length === 0) return;
+    const table = await this.resolveTableParts(physicalId);
+    if (table === 'not-found' || table === 'unparseable') {
+      throw new ProvisioningError(
+        table === 'not-found'
+          ? safeMsg`S3 Tables Table '${physicalId}' no longer exists (state is out of sync); ` +
+              `refusing to record a maintenance configuration that was not applied`
+          : compositeIdFormatMessage(S3_TABLES_TABLE_ID_FORMAT, logicalId, physicalId),
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    for (const { key, type, value } of writes) {
+      markUnsettled(key);
+      await this.getClient().send(
+        new PutTableMaintenanceConfigurationCommand({ ...table, type, value })
+      );
+    }
+  }
+
+  /** A removed configuration property left at its AWS value, said once. */
+  private warnRemovalKept(logicalId: string, key: string): void {
+    this.logger.warn(
+      safeMsg`${logicalId}: ${key} was removed from the template; cdkd leaves its current AWS value in ` +
+        `place. Declare the value you want (e.g. its default) to change it.`
+    );
+  }
+
+  /**
+   * A delete of a bucket configuration that may already be absent. AWS answers
+   * `NotFoundException` both for an unset configuration and for a bucket that
+   * is gone, so a NotFound is accepted only once `GetTableBucket` shows the
+   * bucket still exists: a gone bucket is surfaced, as the Table's
+   * maintenance write surfaces a gone table, rather than recorded as applied.
+   */
+  private async deleteBucketConfig(
+    tableBucketARN: string,
+    command: DeleteTableBucketMetricsConfigurationCommand | DeleteTableBucketReplicationCommand
+  ): Promise<void> {
+    try {
+      // The union is two commands with the same client; TypeScript cannot pick
+      // an overload for it.
+      await this.getClient().send(command as DeleteTableBucketReplicationCommand);
+    } catch (error) {
+      if (!(error instanceof NotFoundException)) throw error;
+      // Throws NotFoundException itself when the bucket is gone.
+      await this.getClient().send(new GetTableBucketCommand({ tableBucketARN }));
     }
   }
 
@@ -872,6 +1584,34 @@ export class S3TablesProvider implements ResourceProvider {
     // map, so omit the field entirely when no tags are set.
     const tags = this.tagListToSdkMap(desiredTags);
 
+    // go-to-k/cdkd#2762: refused before any call, like Tags. `WithoutMetadata`
+    // asks for a table with no schema: CreateTable without `metadata`.
+    const icebergCfn = desiredObject(properties, 'IcebergMetadata', resourceType, logicalId);
+    const iceberg =
+      icebergCfn &&
+      refuseNonIntegers(
+        () => sdkIcebergMetadata(icebergCfn),
+        'IcebergMetadata',
+        resourceType,
+        logicalId
+      );
+    const storageClass = desiredObject(
+      properties,
+      'StorageClassConfiguration',
+      resourceType,
+      logicalId
+    );
+    const maintenance: TableMaintenanceWrite[] = [];
+    for (const [key, type, toSdk] of TABLE_MAINTENANCE) {
+      const value = desiredObject(properties, key, resourceType, logicalId);
+      if (value !== undefined) {
+        maintenance.push({
+          type,
+          value: refuseNonIntegers(() => toSdk(value), key, resourceType, logicalId),
+        });
+      }
+    }
+
     // Same guard, placement and replay downgrade as `createNamespace` above
     // (issue #1672): computed before the AWS call so a refusal cannot orphan a
     // table, and structurally unreachable because a table-bucket ARN carries
@@ -907,11 +1647,22 @@ export class S3TablesProvider implements ResourceProvider {
           namespace,
           name,
           format: format as 'ICEBERG',
+          ...(iceberg !== undefined && { metadata: { iceberg } }),
+          ...(storageClass !== undefined && {
+            storageClassConfiguration: sdkStorageClass(storageClass),
+          }),
           ...(tags !== undefined && { tags }),
         })
       );
       tableCreated = true;
       reportCreatedResource(logicalId, resourceType, physicalId);
+
+      // CreateTable has no maintenance member.
+      for (const write of maintenance) {
+        await this.getClient().send(
+          new PutTableMaintenanceConfigurationCommand({ tableBucketARN, namespace, name, ...write })
+        );
+      }
 
       // Capture the REAL table ARN AWS returns — its actual format is
       // NOT inferrable from the compound parts (we tried; AWS rejected
@@ -966,7 +1717,8 @@ export class S3TablesProvider implements ResourceProvider {
    * shape.
    *
    *  - **AWS::S3Tables::TableBucket**: `GetTableBucket` for the ARN; we
-   *    surface `TableBucketName` (the only mutable cdkd-managed property).
+   *    surface `TableBucketName`, `Tags`, and each configuration property
+   *    by its own Get (`readTableBucketConfigs`).
    *  - **AWS::S3Tables::Namespace**: parses `tableBucketARN|namespace`
    *    from physical id and surfaces `TableBucketARN` and `Namespace`
    *    (as a `string[]` with one entry, matching `create()`'s shape).
@@ -976,7 +1728,7 @@ export class S3TablesProvider implements ResourceProvider {
    *  - **AWS::S3Tables::Table**: parses `tableBucketARN|namespace|name`
    *    from physical id, calls `GetTable` to verify existence and recover
    *    `format`, surfaces `TableBucketARN`, `Namespace` (string), `Name`,
-   *    `Format`.
+   *    `Format`, `Tags`, `Compaction` and `SnapshotManagement`.
    *
    * Returns `RESOURCE_NOT_FOUND` when the resource is gone (`NotFoundException`).
    */
@@ -1025,7 +1777,123 @@ export class S3TablesProvider implements ResourceProvider {
     // array does not surface noise on a pre-PR state file that had no
     // Tags entry).
     result['Tags'] = await this.readTagsBestEffort(physicalId);
+    Object.assign(result, await this.readTableBucketConfigs(physicalId));
     return result;
+  }
+
+  /**
+   * The TableBucket's configuration properties in CFn shape
+   * (go-to-k/cdkd#2762), each by its own Get. Every one is emitted, at its
+   * AWS default when unset, so a console-side change is compared — except
+   * `ReplicationConfiguration`, which is emitted only while replication is
+   * configured: its `Role` and `Rules` are required, so there is no "off"
+   * value to emit, and a removal deletes it. A console-side enable is still
+   * compared: {@link getDriftAbsentMeansDefaultKeys} names the key while the
+   * template leaves replication off. A read that fails for any other
+   * reason than `NotFoundException` leaves its key out, at `debug`, as the
+   * tag read does.
+   */
+  private async readTableBucketConfigs(tableBucketARN: string, strict = false): Promise<CfnObject> {
+    const client = this.getClient();
+    const out: CfnObject = {};
+    await this.readConfig(
+      out,
+      'EncryptionConfiguration',
+      async () => {
+        const resp = await client.send(new GetTableBucketEncryptionCommand({ tableBucketARN }));
+        const e = resp.encryptionConfiguration;
+        return defined({ SSEAlgorithm: e?.sseAlgorithm ?? 'AES256', KMSKeyArn: e?.kmsKeyArn });
+      },
+      { SSEAlgorithm: 'AES256' },
+      strict
+    );
+    await this.readConfig(
+      out,
+      'StorageClassConfiguration',
+      async () => {
+        const resp = await client.send(new GetTableBucketStorageClassCommand({ tableBucketARN }));
+        return { StorageClass: resp.storageClassConfiguration?.storageClass ?? 'STANDARD' };
+      },
+      { StorageClass: 'STANDARD' },
+      strict
+    );
+    await this.readConfig(
+      out,
+      'MetricsConfiguration',
+      async () => {
+        await client.send(new GetTableBucketMetricsConfigurationCommand({ tableBucketARN }));
+        return { Status: 'Enabled' };
+      },
+      { Status: 'Disabled' },
+      strict
+    );
+    await this.readConfig(
+      out,
+      'UnreferencedFileRemoval',
+      async () => {
+        const resp = await client.send(
+          new GetTableBucketMaintenanceConfigurationCommand({ tableBucketARN })
+        );
+        const value = resp.configuration?.icebergUnreferencedFileRemoval;
+        const settings = value?.settings?.icebergUnreferencedFileRemoval;
+        return defined({
+          // Enabled on every table bucket unless turned off.
+          Status: cfnBucketStatus(value?.status) ?? 'Enabled',
+          UnreferencedDays: settings?.unreferencedDays,
+          NoncurrentDays: settings?.nonCurrentDays,
+        });
+      },
+      { Status: 'Enabled' },
+      strict
+    );
+    await this.readConfig(
+      out,
+      'ReplicationConfiguration',
+      async () => {
+        const resp = await client.send(new GetTableBucketReplicationCommand({ tableBucketARN }));
+        const c = resp.configuration;
+        if (c === undefined) return undefined;
+        return defined({
+          Role: c.role,
+          Rules: (c.rules ?? []).map((rule) => ({
+            Destinations: (rule.destinations ?? []).map((d) => ({
+              DestinationTableBucketARN: d.destinationTableBucketARN,
+            })),
+          })),
+        });
+      },
+      'absent',
+      strict
+    );
+    return out;
+  }
+
+  /**
+   * Run one configuration read into `out[key]`: `notFound` on
+   * `NotFoundException` (the configuration is unset: its default, or no key),
+   * and the key left out on any other failure — rethrown instead when
+   * `strict` (readUnsettled, which must not read a failure as absent).
+   */
+  private async readConfig(
+    out: CfnObject,
+    key: string,
+    read: () => Promise<CfnObject | undefined>,
+    notFound: CfnObject | 'absent',
+    strict = false
+  ): Promise<void> {
+    try {
+      const value = await read();
+      if (value !== undefined) out[key] = value;
+    } catch (err) {
+      if (err instanceof NotFoundException) {
+        if (notFound !== 'absent') out[key] = notFound;
+        return;
+      }
+      if (strict) throw err;
+      this.logger.debug(
+        safeMsg`readCurrentState: reading ${key} failed: ${describeAwsFailure(err).detail} — leaving it out`
+      );
+    }
   }
 
   private async readNamespaceCurrentState(
@@ -1168,7 +2036,117 @@ export class S3TablesProvider implements ResourceProvider {
     // state-side keys, so an empty array does not surface noise on a
     // pre-PR state file that had no Tags entry).
     result['Tags'] = resp.tableARN ? await this.readTagsBestEffort(resp.tableARN) : [];
+
+    // go-to-k/cdkd#2762: the maintenance properties, each at its AWS default
+    // when unset (both kinds are enabled on a new table). The create-only
+    // `StorageClassConfiguration` is not emitted (readable, but no API changes
+    // it; getDriftUnknownPaths), and
+    // `IcebergMetadata` / `WithoutMetadata` have no read (getDriftUnknownPaths).
+    Object.assign(
+      result,
+      await this.readTableMaintenance(physicalId, { tableBucketARN, namespace, name })
+    );
     return result;
+  }
+
+  /**
+   * The Table's `Compaction` / `SnapshotManagement` in CFn shape
+   * (go-to-k/cdkd#2762). A read that fails for any other reason than
+   * `NotFoundException` leaves both out, at `debug` — or is rethrown when
+   * `strict` (readUnsettled).
+   */
+  private async readTableMaintenance(
+    physicalId: string,
+    table: { tableBucketARN: string; namespace: string; name: string },
+    strict = false
+  ): Promise<CfnObject> {
+    const result: CfnObject = {};
+    let maintenance: GetTableMaintenanceConfigurationCommandOutput['configuration'];
+    let maintenanceRead = true;
+    try {
+      maintenance = (
+        await this.getClient().send(new GetTableMaintenanceConfigurationCommand(table))
+      ).configuration;
+    } catch (err) {
+      maintenanceRead = err instanceof NotFoundException;
+      if (!maintenanceRead) {
+        if (strict) throw err;
+        this.logger.debug(
+          safeMsg`readCurrentState: reading the maintenance configuration of ${physicalId} failed: ` +
+            safeMsg`${describeAwsFailure(err).detail} — leaving Compaction / SnapshotManagement out`
+        );
+      }
+    }
+    if (maintenanceRead) {
+      const compaction = maintenance?.icebergCompaction;
+      const compactionSettings =
+        compaction?.settings && 'icebergCompaction' in compaction.settings
+          ? compaction.settings.icebergCompaction
+          : undefined;
+      result['Compaction'] = defined({
+        Status: compaction?.status ?? 'enabled',
+        TargetFileSizeMB: compactionSettings?.targetFileSizeMB,
+      });
+      const snapshots = maintenance?.icebergSnapshotManagement;
+      const snapshotSettings =
+        snapshots?.settings && 'icebergSnapshotManagement' in snapshots.settings
+          ? snapshots.settings.icebergSnapshotManagement
+          : undefined;
+      result['SnapshotManagement'] = defined({
+        Status: snapshots?.status ?? 'enabled',
+        MinSnapshotsToKeep: snapshotSettings?.minSnapshotsToKeep,
+        MaxSnapshotAgeHours: snapshotSettings?.maxSnapshotAgeHours,
+      });
+    }
+    return result;
+  }
+
+  /**
+   * go-to-k/cdkd#5487 / #2762: the live values of the configuration keys an
+   * earlier update marked unsettled, for the engine's convergence step. The
+   * same reads as `readCurrentState`, except that a failed read THROWS: left
+   * out, a key would read as unset on AWS (a metrics configuration still on
+   * would not be deleted).
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    let live: CfnObject;
+    if (resourceType === 'AWS::S3Tables::TableBucket') {
+      // The configuration Gets answer NotFound for an unset configuration AND
+      // for a gone bucket, so existence is read first.
+      try {
+        await this.getClient().send(new GetTableBucketCommand({ tableBucketARN: physicalId }));
+      } catch (err) {
+        if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
+        throw err;
+      }
+      live = await this.readTableBucketConfigs(physicalId, true);
+    } else if (resourceType === 'AWS::S3Tables::Table') {
+      const table = await this.resolveTableParts(physicalId);
+      if (table === 'not-found') return RESOURCE_NOT_FOUND;
+      if (table === 'unparseable') {
+        throw new ProvisioningError(
+          compositeIdFormatMessage(S3_TABLES_TABLE_ID_FORMAT, logicalId, physicalId),
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+      // A composite id is parsed without a call, and the maintenance Get
+      // answers NotFound for a gone table as for an unset configuration, so
+      // existence is read first, as for the bucket.
+      if ((await this.lookupTableArn(table.tableBucketARN, table.namespace, table.name)) === null) {
+        return RESOURCE_NOT_FOUND;
+      }
+      live = await this.readTableMaintenance(physicalId, table, true);
+    } else {
+      return undefined;
+    }
+    return Object.fromEntries(Object.entries(live).filter(([key]) => names.has(key)));
   }
 
   // ─── Import dispatch ──────────────────────────────────────────────
@@ -1454,8 +2432,8 @@ export class S3TablesProvider implements ResourceProvider {
     }
 
     // ROUTE-AWARE physicalId. A table whose template carries a silent-drop
-    // property (`IcebergMetadata` / `Compaction` / `SnapshotManagement` /
-    // `StorageClassConfiguration` / `WithoutMetadata`) is auto-routed to Cloud
+    // property (none today: the last five were wired by go-to-k/cdkd#2762, but
+    // a schema refresh can add one) is auto-routed to Cloud
     // Control by the #614 rule, and CC's Identifier for this type is the bare
     // `TableARN` — not cdkd's composite. `cdkd import` records
     // `provisionedBy: 'sdk'`, but ONLY `'cc-api'` is sticky, so the next

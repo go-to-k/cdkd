@@ -104,6 +104,12 @@
 #                     SURVIVED (#1861 never-declared arm — the one that
 #                     discriminates the removal rule from "re-serialize the
 #                     struct whenever its declared content changed").
+#   Phase 2d/2e:      #5571 — add a running, breaker-guarded BreakerSvc and
+#                     assert the DEFAULT deploy waited for its steady state;
+#                     then move it to a health-check-failing task definition
+#                     and assert the default deploy FAILS with the
+#                     circuit-breaker verdict and both rollbacks leave it on
+#                     the phase-2d task definition.
 #   Phase 3:          destroy; assert the state file is gone.
 #
 # Required env vars:
@@ -895,6 +901,121 @@ if [ "${SURVIVE_TH_TYPE}" != "COUNT" ] || \
   exit 1
 fi
 echo "    OK: a change INSIDE the block left the never-declared members alone (resetOnHealthyTask=false, thresholdConfiguration={COUNT,9} survived) (#1861 never-declared arm CLOSED)"
+
+# --- Phase 2d: the default deploy waits for ECS steady state (#5571) ----
+# `breaker` adds BreakerSvc: one running task, a deployment circuit breaker
+# with rollback. The deploy passes NEITHER wait flag, so a COMPLETED rollout
+# with the task running the moment it returns is what "the default waited"
+# looks like (before #5571 the default returned right after CreateService,
+# with the rollout still IN_PROGRESS and no task running).
+echo "==> Phase 2d: default deploy adds a running, breaker-guarded service and waits for its steady state (#5571)"
+BREAKER_MODE="true,force-nonce,cb-rollback,breaker"
+CDKD_TEST_UPDATE="${BREAKER_MODE}" node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+BREAKER_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+BREAKER_SERVICE_NAME=$(printf '%s' "${BREAKER_STATE}" | jq -r '.outputs.BreakerServiceName // empty')
+if [ -z "${BREAKER_SERVICE_NAME}" ]; then
+  echo "FAIL: BreakerServiceName missing from state outputs after phase 2d" >&2
+  printf '%s' "${BREAKER_STATE}" | jq '.outputs'
+  exit 1
+fi
+# The BreakerSvc record, by logical-id prefix (the main service's id starts
+# with `Svc`); exactly one must match.
+BREAKER_RECORDS=$(printf '%s' "${BREAKER_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::ECS::Service" and (.key | startswith("BreakerSvc")))] | length')
+if [ "${BREAKER_RECORDS}" != "1" ]; then
+  echo "FAIL: expected exactly one BreakerSvc* AWS::ECS::Service record in state, found ${BREAKER_RECORDS}" >&2
+  exit 1
+fi
+
+BREAKER_ROLLOUT=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${BREAKER_SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deployments[0].rolloutState' --output text)
+BREAKER_DEPLOYMENTS=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${BREAKER_SERVICE_NAME}" --region "${REGION}" \
+  --query 'length(services[0].deployments)' --output text)
+BREAKER_RUNNING=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${BREAKER_SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].runningCount' --output text)
+if [ "${BREAKER_ROLLOUT}" != "COMPLETED" ] || [ "${BREAKER_DEPLOYMENTS}" != "1" ] || [ "${BREAKER_RUNNING}" != "1" ]; then
+  echo "FAIL: right after a default deploy BreakerSvc has rollout='${BREAKER_ROLLOUT}', deployments=${BREAKER_DEPLOYMENTS}, running=${BREAKER_RUNNING}; expected COMPLETED / 1 / 1 (#5571: the default did NOT wait for steady state)" >&2
+  exit 1
+fi
+BREAKER_TD_BEFORE=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${BREAKER_SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].taskDefinition' --output text)
+case "${BREAKER_TD_BEFORE}" in
+  arn:aws*:ecs:*:task-definition/*) ;;
+  *)
+    echo "FAIL: could not read BreakerSvc's task definition before phase 2e (got '${BREAKER_TD_BEFORE}')" >&2
+    exit 1
+    ;;
+esac
+echo "    OK: the default deploy waited (rollout COMPLETED, 1 deployment, 1 running task on ${BREAKER_TD_BEFORE##*/})"
+
+# --- Phase 2e: a circuit-breaker rollback FAILS the default deploy (#5571) --
+# `breaker-fail` moves BreakerSvc to a task definition whose container health
+# check always fails. ECS replaces each unhealthy task; at the breaker's
+# threshold (3 for one task) it marks the deployment FAILED and rolls back to
+# the phase-2d deployment, which then settles as the service's ONLY, COMPLETED
+# deployment — the state the stability waiter accepts. cdkd must report the
+# breaker's verdict and fail the deploy; the automatic rollback then re-applies
+# the phase-2d record. `--resource-timeout` lifts the 600s waiter floor so a
+# slow breaker still reaches its verdict inside the wait (a timeout would fail
+# the deploy too, but for the wrong reason, which the assertion below refuses).
+echo "==> Phase 2e: default deploy to a failing task definition must FAIL with the circuit-breaker verdict (#5571)"
+BREAKER_OUT_FILE=$(mktemp)
+CDKD_TEST_UPDATE="${BREAKER_MODE},breaker-fail" node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --resource-timeout AWS::ECS::Service=20m \
+  --yes >"${BREAKER_OUT_FILE}" 2>&1 && BREAKER_RC=0 || BREAKER_RC=$?
+BREAKER_OUT=$(cat "${BREAKER_OUT_FILE}")
+rm -f "${BREAKER_OUT_FILE}"
+if [ "${BREAKER_RC}" = "0" ]; then
+  echo "FAIL: the deploy to a health-check-failing task definition exited 0; the circuit breaker's verdict must fail it (#5571)" >&2
+  printf '%s\n' "${BREAKER_OUT}" | tail -40 >&2
+  exit 1
+fi
+# Parsed marker: the breaker wording. Sentinel: the steady-state head the same
+# message carries, so a reworded message (sentinel present, marker gone) fails
+# loudly instead of reading as "the breaker never fired".
+BREAKER_LINE=$(printf '%s\n' "${BREAKER_OUT}" | grep -F 'did not reach steady state' | grep -F 'deployment circuit breaker' || true)
+SENTINEL_LINE=$(printf '%s\n' "${BREAKER_OUT}" | grep -F 'did not reach steady state' || true)
+if [ -z "${BREAKER_LINE}" ]; then
+  if [ -n "${SENTINEL_LINE}" ]; then
+    echo "FAIL: the deploy failed on the steady-state wait but without the circuit-breaker verdict (a timeout, or the message wording drifted):" >&2
+  else
+    echo "FAIL: the deploy failed (rc=${BREAKER_RC}) for a reason other than the steady-state wait:" >&2
+  fi
+  printf '%s\n' "${BREAKER_OUT}" | tail -40 >&2
+  exit 1
+fi
+if ! printf '%s\n' "${BREAKER_LINE}" | grep -q 'aws ecs list-tasks'; then
+  echo "FAIL: the circuit-breaker failure does not carry the stopped-task diagnosis command:" >&2
+  printf '%s\n' "${BREAKER_LINE}" >&2
+  exit 1
+fi
+echo "    OK: the deploy failed with the circuit-breaker verdict (rc=${BREAKER_RC})"
+
+# Both rollbacks (ECS's own, then cdkd's automatic one) leave the service on
+# the phase-2d task definition, and the state record agrees.
+BREAKER_TD_AFTER=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${BREAKER_SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].taskDefinition' --output text)
+if [ "${BREAKER_TD_AFTER}" != "${BREAKER_TD_BEFORE}" ]; then
+  echo "FAIL: after the failed deploy BreakerSvc runs '${BREAKER_TD_AFTER}', expected the phase-2d '${BREAKER_TD_BEFORE}'" >&2
+  exit 1
+fi
+ROLLED_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+ROLLED_TD=$(printf '%s' "${ROLLED_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::ECS::Service" and (.key | startswith("BreakerSvc"))) | .value.properties.TaskDefinition] | if length == 1 then .[0] else "AMBIGUOUS" end')
+if [ "${ROLLED_TD}" != "${BREAKER_TD_BEFORE}" ]; then
+  echo "FAIL: the BreakerSvc state record holds TaskDefinition '${ROLLED_TD}' after the rollback, expected '${BREAKER_TD_BEFORE}'" >&2
+  exit 1
+fi
+echo "    OK: service and state are back on the phase-2d task definition (circuit-breaker arm CLOSED)"
 
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"

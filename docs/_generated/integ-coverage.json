@@ -1261,7 +1261,8 @@
           "l1"
         ],
         "dynamodb-gsi-update": [
-          "l2"
+          "l2",
+          "literal"
         ],
         "dynamodb-ondemand": [
           "l1",
@@ -8651,6 +8652,8 @@
     "AWS::Logs::MetricFilter",
     "AWS::Logs::ResourcePolicy",
     "AWS::Logs::SubscriptionFilter",
+    "AWS::Neptune::DBClusterParameterGroup",
+    "AWS::Neptune::DBParameterGroup",
     "AWS::NeptuneGraph::Graph",
     "AWS::OpenSearchService::Domain",
     "AWS::RDS::DBParameterGroup",

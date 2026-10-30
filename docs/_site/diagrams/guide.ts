@@ -6,7 +6,7 @@ const waitModes: Diagram = {
   id: 'guide-wait-modes',
   title: 'Where each wait mode returns',
   description:
-    'A deploy passes three points in order. First, AWS accepts the create or update call: --no-wait returns here. Second, the resources a later step of the same deploy needs are ready, such as an RDS instance, a NAT gateway, an EC2 instance or a load balancer being available and an ACM certificate being issued: the default returns here. Third, everything CloudFormation waits for has settled, which adds ECS service steady state and CloudFront Deployed: --full-wait returns here.',
+    'A deploy passes three points in order. First, AWS accepts the create or update call: --no-wait returns here. Second, every outcome still open after that call is decided, such as an RDS instance, a NAT gateway, an EC2 instance or a load balancer being available, an ACM certificate being issued and an ECS service reaching steady state: the default returns here. Third, everything CloudFormation waits for has settled, which adds CloudFront Deployed: --full-wait returns here.',
   rows: [['accepted'], ['ready'], ['settled']],
   nodes: [
     {
@@ -16,19 +16,20 @@ const waitModes: Diagram = {
     },
     {
       id: 'ready',
-      title: 'Resources the deploy itself depends on are ready',
+      title: 'Every outcome still open after the call is decided',
       route: true,
       detail: [
         'RDS, DocumentDB, Neptune, ElastiCache: available',
         'NAT gateway, EC2 instance, load balancer: up',
         'ACM certificate: issued',
+        'ECS service: steady state',
       ],
       note: 'The default returns here.',
     },
     {
       id: 'settled',
       title: 'Everything CloudFormation waits for has settled',
-      detail: ['ECS service: steady state', 'CloudFront distribution: Deployed'],
+      detail: ['CloudFront distribution: Deployed'],
       note: '--full-wait returns here.',
     },
   ],

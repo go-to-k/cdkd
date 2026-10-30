@@ -543,6 +543,9 @@ const PROXY_CASE: TypeCase = {
         RequireTLS: true,
         IdleClientTimeout: 900,
         DebugLogging: true,
+        DefaultAuthScheme: 'NONE',
+        EndpointNetworkType: 'DUAL',
+        TargetConnectionNetworkType: 'IPV6',
         Auth: [
           {
             AuthScheme: 'SECRETS',
@@ -562,23 +565,28 @@ const PROXY_CASE: TypeCase = {
         ...Object.fromEntries(
           ['DebugLogging', 'IdleClientTimeout', 'RequireTLS', 'VpcSecurityGroupIds'].map((key) => [
             `update-remove:${key}`,
-            'left in place on removal: ModifyDBProxy keeps a setting it is not sent, and CloudFormation keeps it too (CFn A/B, rds-dbproxy-provider.ts:65-93)',
+            'left in place on removal: ModifyDBProxy keeps a setting it is not sent, and CloudFormation keeps it too (CFn A/B, rds-dbproxy-provider.ts:68-101)',
           ])
         ),
         'update-remove:RoleArn':
-          'RoleArn is required, so no deployable template removes it: create() refuses a proxy without it (rds-dbproxy-provider.ts:249-256), and update() sends only a declared value (:451-461)',
+          'RoleArn is required, so no deployable template removes it: create() refuses a proxy without it (rds-dbproxy-provider.ts:301-308), and update() sends only a declared value (:540-550)',
+        'update-remove:DefaultAuthScheme':
+          'left in place on removal: ModifyDBProxy keeps a setting it is not sent, and the update warns (RETAINED_ON_REMOVAL, rds-dbproxy-provider.ts:68-101; go-to-k/cdkd#2762)',
       },
       expectedRemovalThrows: {
-        'create:EngineFamily': PROXY_REQUIRED('EngineFamily', 233, /EngineFamily is required/),
-        'create:Auth': PROXY_REQUIRED('Auth', 241, /Auth \(at least one entry\) is required/),
-        'create:RoleArn': PROXY_REQUIRED('RoleArn', 249, /RoleArn is required/),
+        'create:EngineFamily': PROXY_REQUIRED('EngineFamily', 285, /EngineFamily is required/),
+        'create:Auth': REQUIRED(
+          'Auth is required while DefaultAuthScheme is NONE (this bag) or unset: create() refuses a proxy without it before any call (rds-dbproxy-provider.ts:293-300)',
+          /Auth \(at least one entry\) is required/
+        ),
+        'create:RoleArn': PROXY_REQUIRED('RoleArn', 301, /RoleArn is required/),
         'create:VpcSubnetIds': PROXY_REQUIRED(
           'VpcSubnetIds',
-          257,
+          309,
           /VpcSubnetIds \(at least one\) is required/
         ),
         'update-remove:Auth': REQUIRED(
-          'an Auth removal is refused before any call: AWS requires Auth while DefaultAuthScheme is NONE or unset, and CloudFormation fails the same update (CFn A/B, rds-dbproxy-provider.ts:95-112, 380-399)',
+          'an Auth removal is refused before any call: AWS requires Auth while DefaultAuthScheme is NONE or unset, and CloudFormation fails the same update (CFn A/B, rds-dbproxy-provider.ts:103-159, 439-458)',
           /Auth was removed from the template/
         ),
         ...RDS_TAG_KEY_THROWS,

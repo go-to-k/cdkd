@@ -56,6 +56,9 @@
 #      stack and table — enable at create with an undeclared sibling as the
 #      negative control, no phantom drift, an out-of-band toggle detected and
 #      reverted, removal + enable-with-Mode on update, destroy. See that block.
+#   V1-V4. VectorIndexes (go-to-k/cdkd#2762) on their OWN stack and table —
+#      created with the table on the SDK route, no phantom drift, one index
+#      removed and another added in one update, destroy. See that block.
 #   3a. Race an out-of-band GSI CREATE into the table immediately before the
 #      destroy (issue #1931), so AWS refuses the DeleteTable with
 #      `Cannot delete table while indexes are being created, updated, or
@@ -116,6 +119,10 @@ GSI_NAME="gsi1"
 INSIGHTS_STACK="CdkdDynamodbGsiInsightsExample"
 INSIGHTS_STATE_KEY="cdkd/${INSIGHTS_STACK}/${REGION}/state.json"
 INSIGHTS_TABLE="cdkd-gsi-insights-test-table"
+# go-to-k/cdkd#2762: the VectorIndexes arms, on their OWN stack and table too.
+VECTOR_STACK="CdkdDynamodbVectorIndexExample"
+VECTOR_STATE_KEY="cdkd/${VECTOR_STACK}/${REGION}/state.json"
+VECTOR_TABLE="cdkd-vector-index-test-table"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -168,7 +175,7 @@ reap_table() { # usage: reap_table <table-name>
     # EXACT names, accepting arm first: a prefix glob would also reap a
     # `cdkd-gsi-*` table some other fixture owns.
     case "${1:-}" in
-      cdkd-gsi-update-test-table | cdkd-gsi-insights-test-table) ;;
+      cdkd-gsi-update-test-table | cdkd-gsi-insights-test-table | cdkd-vector-index-test-table) ;;
       *)
         echo "WARN: teardown sweep refused — '${1:-}' is not one of this fixture's table names" >&2
         exit 0
@@ -209,15 +216,19 @@ cleanup() {
   # gone, which it treats as deleted.)
   reap_table "${TABLE_NAME}"
   reap_table "${INSIGHTS_TABLE}"
+  reap_table "${VECTOR_TABLE}"
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
     node "${LOCAL_DIST}" state destroy "${INSIGHTS_STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${VECTOR_STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/${INSIGHTS_STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${INSIGHTS_STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/${VECTOR_STATE_KEY}" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${VECTOR_STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
   set -eu
 }
@@ -1068,6 +1079,115 @@ assert_gone "state file ${INSIGHTS_STATE_KEY} still exists after destroy" aws s3
 echo "    insights stack state removed"
 rm -f "${STATE_JSON}" "${STATE_JSON}.stripped" "${DRIFT_JSON}"
 
+# --- Phases V1-V4: VectorIndexes (go-to-k/cdkd#2762) --------------------------
+# `VectorIndexes` was absent from the SDK provider's handled set, so a table
+# declaring it was auto-routed to Cloud Control. Asserted ON AWS, on a
+# dedicated stack:
+#
+#   V1. create: the table is on the SDK route (provisionedBy=sdk — the arm that
+#       goes RED pre-fix, where Cloud Control takes the table) and AWS holds
+#       exactly `vec1` as declared (dimensions, distance function, projection,
+#       HASH search schema element), ACTIVE.
+#   V2. `cdkd drift` is CLEAN against the deploy-time capture, which carries
+#       `vec1` in its CFn shape (no AWS-managed IndexStatus / Backfilling).
+#   V3. update: `vec1` removed, `vec2` added — the SAME table (CreationDateTime
+#       unchanged), AWS holds exactly `vec2` as declared, ACTIVE; drift clean.
+#   V4. destroy: table gone (or DELETING), state removed.
+vector_index_shape() { # $1 = table -> "<name>:<vector attribute>:<dims>:<fn>:<projection>:<search schema>:<status>" per index, sorted
+  aws dynamodb describe-table --table-name "$1" --region "${REGION}" --output json \
+    | jq -r '[(.Table.VectorIndexes // [])[]
+        | "\(.IndexName):\(.VectorAttribute.AttributeName):\(.Dimensions):\(.DistanceFunction):\(.Projection.ProjectionType)\((.Projection.NonKeyAttributes // []) | sort | map("+" + .) | join("")):\((.SearchSchema // []) | map("\(.AttributeName)=\(.SearchSchemaElementType)") | sort | join(",")):\(.IndexStatus)"]
+        | sort | join(" ")'
+}
+assert_vector_drift_clean() { # $1 = label
+  run_drift_json "$1" "${VECTOR_STACK}"
+  if [ "$(table_outcome_count notSupported)" != "0" ] || [ "$(table_outcome_count drifted)" != "0" ] \
+    || [ "$(table_outcome_count clean)" != "1" ]; then
+    echo "FAIL (go-to-k/cdkd#2762): expected the vector-index table CLEAN ($1)" >&2
+    cat "${DRIFT_JSON}" >&2
+    exit 1
+  fi
+  echo "    $1: vector-index table reported CLEAN"
+}
+
+echo "==> Phase V1: deploy the vector-index table (vec1 created with the table)"
+env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${VECTOR_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+aws s3 cp "s3://${STATE_BUCKET}/${VECTOR_STATE_KEY}" "${STATE_JSON}" --region "${REGION}" >/dev/null
+VECTOR_LID="$(jq -r '[.resources | to_entries[]
+  | select(.value.resourceType == "AWS::DynamoDB::Table") | .key] | first // ""' "${STATE_JSON}")"
+if [ -z "${VECTOR_LID}" ]; then
+  echo "FAIL: no AWS::DynamoDB::Table resource in the vector-index stack's state record" >&2
+  exit 1
+fi
+# Read strictly: v7+ writers always record the route, so an absent value is a
+# FAIL here rather than a default that would pass.
+VECTOR_ROUTE="$(jq -r --arg l "${VECTOR_LID}" '.resources[$l].provisionedBy // "absent"' "${STATE_JSON}")"
+if [ "${VECTOR_ROUTE}" != "sdk" ]; then
+  echo "FAIL (go-to-k/cdkd#2762): a table declaring VectorIndexes was provisioned by '${VECTOR_ROUTE}', expected the SDK provider (sdk)" >&2
+  exit 1
+fi
+echo "    table routed via SDK provider (provisionedBy=sdk)"
+VECTOR_CREATION_V1="$(aws dynamodb describe-table --table-name "${VECTOR_TABLE}" --region "${REGION}" \
+  --query 'Table.CreationDateTime' --output text)"
+VECTOR_SHAPE_V1="$(vector_index_shape "${VECTOR_TABLE}")"
+if [ "${VECTOR_SHAPE_V1}" != "vec1:embedding:3:COSINE:KEYS_ONLY:tenant=HASH:ACTIVE" ]; then
+  echo "FAIL (go-to-k/cdkd#2762): AWS holds vector indexes '${VECTOR_SHAPE_V1}', expected 'vec1:embedding:3:COSINE:KEYS_ONLY:tenant=HASH:ACTIVE'" >&2
+  exit 1
+fi
+echo "    vector indexes: ${VECTOR_SHAPE_V1}"
+
+echo "==> Phase V2: no phantom drift, and the capture carries vec1 in its CFn shape"
+OBSERVED_VECTOR_KEYS="$(jq -r --arg l "${VECTOR_LID}" \
+  '[(.resources[$l].observedProperties.VectorIndexes // [])[] | keys[]] | unique | join(",")' "${STATE_JSON}")"
+if [ "${OBSERVED_VECTOR_KEYS}" != "Dimensions,DistanceFunction,IndexName,Projection,SearchSchema,VectorAttribute" ]; then
+  echo "FAIL (go-to-k/cdkd#2762): the observed VectorIndexes entry carries '${OBSERVED_VECTOR_KEYS}', expected the six CFn members only" >&2
+  exit 1
+fi
+echo "    observed VectorIndexes keys: ${OBSERVED_VECTOR_KEYS}"
+assert_vector_drift_clean "observed baseline"
+
+echo "==> Phase V3: update — remove vec1, add vec2 on the same table"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${VECTOR_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+VECTOR_CREATION_V3="$(aws dynamodb describe-table --table-name "${VECTOR_TABLE}" --region "${REGION}" \
+  --query 'Table.CreationDateTime' --output text)"
+if [ "${VECTOR_CREATION_V1}" != "${VECTOR_CREATION_V3}" ]; then
+  echo "FAIL (go-to-k/cdkd#2762): the vector-index table was REPLACED (CreationDateTime ${VECTOR_CREATION_V1} -> ${VECTOR_CREATION_V3})" >&2
+  exit 1
+fi
+VECTOR_SHAPE_V3="$(vector_index_shape "${VECTOR_TABLE}")"
+if [ "${VECTOR_SHAPE_V3}" != "vec2:embedding:4:EUCLIDEAN:INCLUDE+title:tenant=HASH:ACTIVE" ]; then
+  echo "FAIL (go-to-k/cdkd#2762): after the update AWS holds vector indexes '${VECTOR_SHAPE_V3}', expected 'vec2:embedding:4:EUCLIDEAN:INCLUDE+title:tenant=HASH:ACTIVE' (vec1 deleted, vec2 created and settled)" >&2
+  exit 1
+fi
+echo "    vector indexes: ${VECTOR_SHAPE_V3} (same table)"
+assert_vector_drift_clean "after the update"
+
+echo "==> Phase V4: destroy the vector-index stack"
+node "${LOCAL_DIST}" destroy "${VECTOR_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+# DeleteTable is ASYNC — accept GONE or DELETING, exactly as Phase 3 does below.
+if gone_probe aws dynamodb describe-table --table-name "${VECTOR_TABLE}" --region "${REGION}"; then
+  vector_table_status="GONE"
+elif ! vector_table_status="$(aws dynamodb describe-table --table-name "${VECTOR_TABLE}" --region "${REGION}" \
+    --query 'Table.TableStatus' --output text 2>&1)"; then
+  # TOCTOU: the table can vanish between gone_probe and this requery.
+  if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${vector_table_status}"; then
+    vector_table_status="GONE"
+  else
+    echo "FAIL: describe-table requery undetermined: ${vector_table_status}" >&2
+    exit 1
+  fi
+fi
+if [ "${vector_table_status}" != "GONE" ] && [ "${vector_table_status}" != "DELETING" ]; then
+  echo "FAIL: table ${VECTOR_TABLE} still exists (status ${vector_table_status}) after destroy" >&2
+  exit 1
+fi
+echo "    vector-index table deleted (status: ${vector_table_status})"
+assert_gone "state file ${VECTOR_STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${VECTOR_STATE_KEY}"
+echo "    vector-index stack state removed"
+rm -f "${STATE_JSON}" "${DRIFT_JSON}"
+
 # --- Phase 3a: issue #1931 — arm the index-busy DeleteTable refusal ------
 # `AWS::DynamoDB::Table`'s `delete()` had no retry for AWS's transient refusal
 #
@@ -1236,4 +1356,4 @@ echo "    table deleted (status: ${status})"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — DynamoDB GSI add is an in-place UPDATE (no replacement), an in-use table with a GSI reports no phantom drift (issue #1767) even against a stale pre-#1767 baseline (issue #1812), a per-index ContributorInsightsSpecification is applied, read back, reverted and removed (issue #1782), and destroy absorbs the index-busy DeleteTable refusal (issue #1931); all phases passed"
+echo "[verify] PASS — DynamoDB GSI add is an in-place UPDATE (no replacement), an in-use table with a GSI reports no phantom drift (issue #1767) even against a stale pre-#1767 baseline (issue #1812), a per-index ContributorInsightsSpecification is applied, read back, reverted and removed (issue #1782), VectorIndexes are created, added and removed on the SDK route (go-to-k/cdkd#2762), and destroy absorbs the index-busy DeleteTable refusal (issue #1931); all phases passed"

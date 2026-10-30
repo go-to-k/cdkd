@@ -34,9 +34,11 @@ describe('--full-wait doc coverage', () => {
 
   it('finds every CDKD_FULL_WAIT-honoring provider (coverage floor)', () => {
     // A parse regression that stops seeing providers must fail loudly, not
-    // pass vacuously. As of this test there are 2 such providers (ECS Service
-    // steady state, CloudFront Distribution Deployed — issue #1282).
-    expect(fullWaitProviders.length).toBeGreaterThanOrEqual(2);
+    // pass vacuously. As of this test there is 1 such provider (CloudFront
+    // Distribution Deployed — issue #1282); ECS Service left the set with
+    // go-to-k/cdkd#5571, its steady-state wait now being the default and
+    // gated on CDKD_NO_WAIT (see no-wait-doc-coverage.test.ts).
+    expect(fullWaitProviders.map((p) => p.file)).toContain('cloudfront-distribution-provider.ts');
   });
 
   it('documents each CDKD_FULL_WAIT provider in the cli-deploy.md wait table', () => {
