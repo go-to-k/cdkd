@@ -362,6 +362,68 @@ function withoutTrailIdentifiers(text: string, physicalId: string): string {
 }
 
 /**
+ * The Trail properties a template removal leaves at their live value while
+ * CloudFormation's own behaviour is UNMEASURED, so `update()` names them in
+ * its own warning rather than the shared caller's line, which would claim a
+ * CloudFormation reset (issue #1160, `removalHandledInUpdate`).
+ *
+ * - `IsOrganizationTrail` (#5541): UpdateTrail keeps a field it is not sent.
+ *   CFn behaviour unmeasured: the A/B needs an Organizations management or
+ *   delegated-administrator account, and the integ account is in no
+ *   organization. A removed `false` is not named: either answer leaves it
+ *   false.
+ * - `IncludeGlobalServiceEvents`, only when its reset is skipped because the
+ *   trail is, or may be, multi-region (see `update()`); the measured reset
+ *   covered a single-region trail only.
+ */
+function removalsLeftInPlace(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined,
+  globalEventsResetSkipped: boolean
+): string[] {
+  if (context?.desiredFromAwsReadback) return [];
+  const removed = context?.removedProperties;
+  const wasRemoved = (key: string): boolean =>
+    previousProperties[key] != null &&
+    properties[key] == null &&
+    (removed === undefined || removed.has(key));
+  const org = previousProperties['IsOrganizationTrail'];
+  // A previous `false` means a single-region trail (AWS rejects a multi-region
+  // trail without global events), and CloudFormation's measured reset is
+  // `false` too, so the live value already equals it.
+  const globalEvents = previousProperties['IncludeGlobalServiceEvents'];
+  return [
+    ...(wasRemoved('IsOrganizationTrail') && org !== false && org !== 'false'
+      ? ['IsOrganizationTrail']
+      : []),
+    ...(globalEventsResetSkipped &&
+    wasRemoved('IncludeGlobalServiceEvents') &&
+    globalEvents !== false &&
+    globalEvents !== 'false'
+      ? ['IncludeGlobalServiceEvents']
+      : []),
+  ];
+}
+
+/**
+ * The ONE warning line for {@link removalsLeftInPlace}. Names are
+ * template-borne, so they go through `safeMsg`. A rollback revert restores an
+ * earlier state record, so there the property is one the failed deploy ADDED.
+ */
+function leftInPlaceWarning(
+  logicalId: string,
+  names: readonly string[],
+  caller: 'deploy' | 'rollback'
+): string {
+  const one = names.length === 1;
+  const subject = one ? 'property' : 'properties';
+  return caller === 'rollback'
+    ? safeMsg`${logicalId} (AWS::CloudTrail::Trail): ${subject} ${names.join(', ')} ${one ? 'is' : 'are'} absent from the state being restored; UpdateTrail keeps a field it is not sent, so the rollback leaves the value the failed deploy applied in place.`
+    : safeMsg`${logicalId} (AWS::CloudTrail::Trail): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template; cdkd leaves the current AWS value in place (whether CloudFormation resets it is unmeasured). Declare the intended value explicitly to change it.`;
+}
+
+/**
  * SDK Provider for AWS CloudTrail resources
  *
  * Supports:
@@ -420,6 +482,45 @@ export class CloudTrailProvider implements ResourceProvider {
       new Map<string, unknown>([
         ['IsMultiRegionTrail', false],
         ['EnableLogFileValidation', false],
+      ]),
+    ],
+  ]);
+
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every Trail
+   * property, each removal handled by `update()` — so the shared caller warns
+   * about none of them.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::CloudTrail::Trail',
+      new Set<string>([
+        // Required by CloudFormation (a template cannot remove them) or
+        // create-only (a removal replaces the trail).
+        'S3BucketName',
+        'IsLogging',
+        'TrailName',
+        // Reset to '' on removal (#1160, #1533 A/Bs).
+        'S3KeyPrefix',
+        'SnsTopicName',
+        'KMSKeyId',
+        // Kept, as CloudFormation keeps them (#1160 A/B): no warning.
+        'CloudWatchLogsLogGroupArn',
+        'CloudWatchLogsRoleArn',
+        // Diffed: a removal resets or clears them through their own Put call.
+        'EventSelectors',
+        'AdvancedEventSelectors',
+        'InsightSelectors',
+        'AggregationConfigurations',
+        // Diffed by AddTags / RemoveTags.
+        'Tags',
+        // Reset on a single-region trail; otherwise kept and named in
+        // update()'s own warning (removalsLeftInPlace).
+        'IncludeGlobalServiceEvents',
+        // Kept and named in update()'s own warning. CFn behaviour unmeasured:
+        // the A/B needs an Organizations management/delegated-admin account
+        // (Refs #5541).
+        'IsOrganizationTrail',
       ]),
     ],
   ]);
@@ -769,7 +870,8 @@ export class CloudTrailProvider implements ResourceProvider {
     //   organization at all (`AWSOrganizationsNotInUseException`, probed
     //   2026-08-11). It is recorded as permanently unmeasured on this
     //   account rather than guessed; re-measuring needs a different
-    //   account, not a different fixture.
+    //   account, not a different fixture. Until then a removal is kept and
+    //   named in this update's own warning (removalsLeftInPlace, #5541).
     //
     // The previous side is normalized through `emptyToUndefined` for presence
     // detection: `readCurrentState` always-emits `''` placeholders for
@@ -800,15 +902,16 @@ export class CloudTrailProvider implements ResourceProvider {
     // would then be REJECTED by AWS. Turning a silent no-op into a hard
     // deploy failure on an unmeasured combination is strictly worse than
     // leaving the (already CFn-divergent) no-op in place, so unknown falls
-    // back to pass-through.
-    const includeGlobalServiceEvents =
-      isMultiRegionTrail === false
-        ? clearOnUpdateRemoval(
-            properties['IncludeGlobalServiceEvents'] as boolean | undefined,
-            previousProperties['IncludeGlobalServiceEvents'] as boolean | undefined,
-            false
-          )
-        : (properties['IncludeGlobalServiceEvents'] as boolean | undefined);
+    // back to pass-through, and a removal kept that way is named in this
+    // update's warning (removalsLeftInPlace).
+    const globalEventsResetSkipped = isMultiRegionTrail !== false;
+    const includeGlobalServiceEvents = globalEventsResetSkipped
+      ? (properties['IncludeGlobalServiceEvents'] as boolean | undefined)
+      : clearOnUpdateRemoval(
+          properties['IncludeGlobalServiceEvents'] as boolean | undefined,
+          previousProperties['IncludeGlobalServiceEvents'] as boolean | undefined,
+          false
+        );
     const enableLogFileValidation = properties['EnableLogFileValidation'] as boolean | undefined;
     const isLogging = properties['IsLogging'] as boolean | undefined;
     // The CloudWatch Logs pair keys on PRESENCE, not emptiness (issue #1565).
@@ -872,6 +975,20 @@ export class CloudTrailProvider implements ResourceProvider {
           IsOrganizationTrail: isOrganizationTrail,
         })
       );
+
+      // Issue #5541: name what UpdateTrail kept as soon as it has applied, so
+      // a later selector or tag failure cannot drop the line.
+      const keptNames = removalsLeftInPlace(
+        properties,
+        previousProperties,
+        context,
+        globalEventsResetSkipped
+      );
+      if (keptNames.length > 0) {
+        this.logger.warn(
+          leftInPlaceWarning(logicalId, keptNames, context?.replayingState ? 'rollback' : 'deploy')
+        );
+      }
 
       // Update EventSelectors if changed. Removing the property (or emptying
       // the array) RESETS the trail to AWS's default selector rather than

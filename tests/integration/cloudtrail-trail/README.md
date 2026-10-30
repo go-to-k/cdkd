@@ -33,7 +33,11 @@ in two:
 
 Phase 1 deploys with every optional field set. Phase 2
 (`CDKD_TEST_REMOVAL=true`) drops them all and asserts BOTH halves: the six
-clear, the CloudWatch Logs pair still carries its phase-1 values.
+clear, the CloudWatch Logs pair still carries its phase-1 values. It also
+fails if any removal warning names the trail
+([#5541](https://github.com/go-to-k/cdkd/issues/5541)): every phase-2 removal
+is reset or a measured keep, so a hit means a property fell out of the
+`removalHandledInUpdate` audit.
 
 Asserting the retention is deliberate — a fixture that only checked the resets
 would pass just as happily against an over-eager provider that cleared the
@@ -57,8 +61,8 @@ attached, and `KmsKeyId: ''` was accepted and cleared it.
 merely unmeasured: flipping it needs an Organizations management (or delegated
 administrator) account, and the integ account is not in an organization at all
 (`AWSOrganizationsNotInUseException`, probed 2026-08-11). It stays pass-through,
-pinned by a unit test. Closing it needs a different AWS account, not more
-fixture work.
+named in a deploy warning (#5541) and pinned by unit tests. Closing it needs a
+different AWS account, not more fixture work.
 
 Phases 2c-2e cover `AdvancedEventSelectors` and `AggregationConfigurations`
 ([#2762](https://github.com/go-to-k/cdkd/issues/2762)). Phase 2c
