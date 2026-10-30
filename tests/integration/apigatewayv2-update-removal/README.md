@@ -48,7 +48,7 @@ belong on a body-carrying route.
 
 | Property | Where it is exercised |
 | --- | --- |
-| `Route.ApiKeyRequired` | WS `$connect`; removed in phase 2, must reset to `false` |
+| `Route.ApiKeyRequired` | WS `$connect`; removed in phase 2, must stay `true` (CloudFormation keeps it, #5548) |
 | `Route.RequestParameters` | WS `$connect`; value change in phase 2, REMOVED in phase 2b and RETAINED (CloudFormation keeps it, #5004) |
 | `Route.ModelSelectionExpression` | WS `$default`; value change in phase 2, REMOVED in phase 2b and RETAINED (CloudFormation keeps it, #1160 A/B) |
 | `Route.RouteResponseSelectionExpression` | WS `$default`; REMOVED in phase 2b and RETAINED (#1160 A/B) |

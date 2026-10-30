@@ -416,8 +416,9 @@ export const CASES_3: TypeCase[] = [
     createOnly: createOnlyOf('AWS::DLM::LifecyclePolicy'),
     // UpdateLifecyclePolicy sends only what next declares: a removed
     // top-level is left as it is live, which a CloudFormation A/B showed is
-    // what CFn does too (#5004; Description has no clear value, the rest are
-    // required on create), and a declared PolicyDetails / Exclusions is
+    // what CFn does too (#5004 for the shorthand fields, #5546 for
+    // Description, ExecutionRoleArn, State and PolicyDetails; `update()`
+    // names each kept removal in a warning), and a declared PolicyDetails / Exclusions is
     // replaced whole. Tags are diffed against prev (Untag on removal).
     wholeFromNext: {
       keys: (k) => k !== 'Tags',

@@ -12,7 +12,7 @@ alb	2026-10-20T08:55:09Z	PASS	589	verify.sh	PR #5116 (#1160) 0dbcced66; Phase 3.
 alb-advanced	2026-10-17T17:48:47Z	PASS	160	standard	PR #5034 (#1160) 842d0d385; deploy rc=0, destroy 17 deleted 0 errors, orph clean
 api-cognito	2026-10-18T20:35:59Z	PASS	39	standard	PR #5073: CloudWatch role no longer retained; no ApiCognitoStack-* IAM role left, orph clean
 apigateway	2026-10-27T17:38:45Z	PASS	175	verify.sh	rc ok, orph clean; #5408 authorizer ProviderARNs + method scopes arms
-apigatewayv2-update-removal	2026-10-27T12:05:27Z	PASS	205	verify.sh	PR #5402 (#5390) Api/Stage map Tags create+update+untag; probe red at Phase 1 tag assertion (Api/Stage None/None); us-east-1; rc ok, orph clean
+apigatewayv2-update-removal	2026-10-30T07:35:38Z	PASS	207	verify.sh	rc ok, orph clean; #5548 route ApiKeyRequired kept
 apigw-cloudwatch-role-redeploy	2026-10-20T02:29:40Z	PASS	335	verify.sh	deploy+destroy clean, 0 orphans
 apigw-gateway-response	2026-10-18T18:32:28Z	PASS	245	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 apigw-stage-props	2026-10-23T16:22:09Z	PASS	139	verify.sh	rc ok, orph clean, #5204 retracted-wiring head e776973
@@ -36,7 +36,7 @@ bench-sdk	2026-10-24T06:40:41Z	PASS	40	standard	final #5242 round (engine defaul
 bootstrap-free-region	2026-10-05T08:20:47Z	PASS	81	verify.sh	rc 0, 0 orphans; ca-central-1, delete-marker residue from earlier runs purged (#2624 PR #4573)
 bucket-deployment	2026-10-11T09:33:22Z	PASS	80	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 budgets	2026-10-22T21:55:31Z	PASS	133	verify.sh	PR#5188 Run C at HEAD (73687a4de): Phase2b clean (2 checked, 0 unsupported); Phase2c drift exit1 on Budget.BudgetLimit.Amount (2->3) OK; Phase2d --revert restored limit to 2, kept both subscribers and FilterExpression, drift clean after; destroy 0 errors; AWS/S3 clean after; marker SET.
-cache-streaming	2026-10-28T19:36:51Z	PASS	2446	verify.sh	rc ok, #5491 SG keep on removal verified (negative probe red at Step 4g), orph clean
+cache-streaming	2026-10-30T07:33:49Z	PASS	2774	verify.sh	rc ok, #5545 kept-on-removal warning verified (probe red at the warning assertion), orph clean
 cc-abandoned-create-resume	2026-10-20T03:03:42Z	PASS	121	verify.sh	deploy+destroy clean, 0 orphans
 cc-api-fallback	2026-10-25T03:31:31Z	PASS	182	verify.sh	rc ok, orph clean, own bucket (#5272)
 cc-api-fallback-transitions	2026-10-23T16:20:21Z	PASS	98	verify.sh	#634 items 3+4 verified end-to-end; both HTTP API probes + state files gone
@@ -94,7 +94,7 @@ destroy-interrupt	2026-10-18T04:10:16Z	PASS	376	verify.sh	rc 0, 0 orphans; #3361
 destroy-nested-cross-region	2026-10-20T08:13:14Z	PASS	216	verify.sh	rc ok, orph clean; #5115 REST API arm
 diff-fail-on-destructive	2026-10-12T13:46:43Z	PASS	85	verify.sh	rc ok, destroy 0 errors, orph clean (PR #4832, #4827 on e6be0d2a9)
 diff-intrinsic-target-change	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-dlm-lifecycle-policy	2026-10-22T07:45:16Z	PASS	110	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean
+dlm-lifecycle-policy	2026-10-30T06:31:51Z	PASS	106	verify.sh	rc ok, orph clean; #5546 Description removal arm; pre-fix probe red at phase 2b
 docdb-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	1830	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
 docdb-neptune	2026-10-30T09:47:02Z	PASS	5819	verify.sh	rc ok, orph clean; #5543 kept-removal warning asserted (probe RED pre-fix)
 docker-image-asset	2026-10-17T13:23:24Z	PASS	90	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
@@ -129,7 +129,7 @@ ecs-service-update-props	2026-10-22T19:00:38Z	PASS	132	verify.sh	rc ok, destroy 
 ecs-taskdef-tags-launch-type	2026-10-27T12:49:28Z	PASS	65	verify.sh	rc ok, orph clean; #5392 probes red at TaskDef update / Svc LaunchType guard
 efs-immutable-replacement	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
-efs-standalone	2026-10-28T15:36:21Z	PASS	240	verify.sh	PR #5484 at d4e3cd28f; us-east-1; shared state bucket; rc=0, removed BackupPolicy/FileSystemPolicy/FileSystemProtection reset (#1160), 0 errors, 0 orphans; pre-fix probe RED at Phase 1b removed-BackupPolicy assertion
+efs-standalone	2026-10-30T07:41:12Z	PASS	248	verify.sh	rc ok, orph clean; #5547 removal/replay arms
 elasticache-replicationgroup-getatt	2026-10-21T13:56:47Z	PASS	604	verify.sh	rc ok, GetAtt PrimaryEndPoint verified, orph clean
 elbv2-same-name-replacement	2026-10-20T09:26:37Z	PASS	84	verify.sh	#5064 head re-run, clean
 emr-cluster	2026-10-28T01:01:49Z	PASS	1825	verify.sh	rc ok, 0 orph, phase 3d on 522e80287 (core resize + UnhealthyNodeReplacement in place); pre-fix RED at phase 3d

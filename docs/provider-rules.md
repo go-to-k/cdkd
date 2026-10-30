@@ -1627,7 +1627,7 @@ Checklist when writing or reviewing an `update()`:
   `AuthorizerId` / `OperationName` / `RequestModels` / `RequestParameters` (per
   key); Authorizer `AuthorizerCredentialsArn` / `AuthorizerPayloadFormatVersion` /
   `AuthorizerResultTtlInSeconds` / `IdentityValidationExpression`. Route
-  `ApiKeyRequired` was not measured and is still reset (#1160). A second A/B
+  `ApiKeyRequired` is KEPT too, alone or beside another change (#5548). A second A/B
   (#1160) measured the rest: Authorizer `IdentitySource` is CLEARED (declared
   in `removalDefaults` as `[]`), Integration `IntegrationSubtype` removal FAILS
   unless the update also declares an `IntegrationUri` (so cdkd refuses it), and
