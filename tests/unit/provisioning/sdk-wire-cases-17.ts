@@ -157,16 +157,10 @@ const FILE_SYSTEM_CASE: TypeCase = {
       // update-add's baseline (the same Key-less list on both sides) passes.
       expectedRemovalThrows: {
         ...efsTagThrows('FileSystemTags', ['update-remove']),
-        ...Object.fromEntries(
-          ['update-remove', 'update-add'].map((d) => [
-            `${d}:ProvisionedThroughputInMibps`,
-            {
-              // update-add's baseline is the same value-less bag on both sides.
-              why: `CloudFormation rejects ThroughputMode: provisioned without ProvisionedThroughputInMibps (live CFn A/B, go-to-k/cdkd#5547: the update fails and rolls back), so it is refused before any call (${EFS_SRC}, updateFileSystem)`,
-              says: /Throughput value must be specified for provisioned throughput mode/,
-            },
-          ])
-        ),
+        'update-remove:ProvisionedThroughputInMibps': {
+          why: `CloudFormation rejects ThroughputMode: provisioned without ProvisionedThroughputInMibps (live CFn A/B, go-to-k/cdkd#5547: the update fails and rolls back), so it is refused before any call (${EFS_SRC}, updateFileSystem)`,
+          says: /Throughput value must be specified for provisioned throughput mode/,
+        },
       },
     },
     {

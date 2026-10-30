@@ -417,7 +417,8 @@ export class EFSProvider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          log
+          log,
+          context?.replayingState === true || context?.desiredFromAwsReadback === true
         );
       case 'AWS::EFS::MountTarget':
         return this.updateMountTarget(logicalId, physicalId, resourceType, properties, log);
@@ -578,7 +579,9 @@ export class EFSProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    /** The desired bag is a state replay or an AWS readback, not the template. */
+    desiredFromState: boolean
   ): Promise<ResourceUpdateResult> {
     // Defensive guard: any non-mutable diff means the replacement-detection
     // layer should have routed this through DELETE+CREATE — if we reach
@@ -632,20 +635,35 @@ export class EFSProvider implements ResourceProvider {
     //    mode." before any EFS mutation (no UpdateFileSystem in CloudTrail),
     //    rolled back, and the value stayed 2 MiB/s. A bursting -> provisioned
     //    switch with no value fails there too (the EFS API refuses it). So
-    //    refuse up front, before any call, with CFn's message (below).
+    //    refuse up front, before any call, with CFn's message (below) — only
+    //    when the throughput would CHANGE (a value-less provisioned record on
+    //    both sides sends nothing for it, so the rest of the update goes on),
+    //    and only on the template path: a state replay (rollback, drift
+    //    revert) warns and leaves the live throughput as it is, since the
+    //    user cannot edit a state record through the template.
     //  - Removing ONLY ThroughputMode from a 'provisioned' file system while
     //    keeping ProvisionedThroughputInMibps is RETAINED by CloudFormation
     //    (live CFn A/B, go-to-k/cdkd#5464: provisioned@1MiBps stayed so for
     //    2 min after UPDATE_COMPLETE), so sending nothing is parity — pinned
     //    by a negative unit test.
-    if (newThroughputMode === 'provisioned' && newProvisioned === undefined) {
-      throw new ProvisioningError(
-        `Failed to update EFS FileSystem ${logicalId}: Throughput value must be specified for provisioned throughput mode. ` +
-          `The template sets ThroughputMode: provisioned without ProvisionedThroughputInMibps, which CloudFormation rejects too. ` +
-          `Set ProvisionedThroughputInMibps, or change ThroughputMode (e.g. to bursting or elastic).`,
-        resourceType,
-        logicalId,
-        physicalId
+    const throughputValueMissing =
+      newThroughputMode === 'provisioned' &&
+      newProvisioned === undefined &&
+      (oldProvisioned !== undefined || oldThroughputMode !== 'provisioned');
+    if (throughputValueMissing) {
+      if (!desiredFromState) {
+        throw new ProvisioningError(
+          `Failed to update EFS FileSystem ${logicalId}: Throughput value must be specified for provisioned throughput mode. ` +
+            `The template sets ThroughputMode: provisioned without ProvisionedThroughputInMibps, which CloudFormation rejects too. ` +
+            `Set ProvisionedThroughputInMibps, or change ThroughputMode (e.g. to bursting or elastic).`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+      log.warn(
+        `EFS FileSystem ${logicalId}: the replayed properties set ThroughputMode: provisioned without ProvisionedThroughputInMibps, ` +
+          `which AWS rejects; leaving the file system's throughput as it is on AWS and applying the rest of the update.`
       );
     }
     const effectiveThroughputMode =
@@ -656,7 +674,9 @@ export class EFSProvider implements ResourceProvider {
         : newThroughputMode;
 
     const throughputModeChanged =
-      effectiveThroughputMode !== undefined && effectiveThroughputMode !== oldThroughputMode;
+      !throughputValueMissing &&
+      effectiveThroughputMode !== undefined &&
+      effectiveThroughputMode !== oldThroughputMode;
     const provisionedChanged = newProvisioned !== undefined && newProvisioned !== oldProvisioned;
 
     // Separate post-create control-plane properties — each compares deep so a

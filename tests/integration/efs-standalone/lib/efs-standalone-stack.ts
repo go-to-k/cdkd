@@ -17,6 +17,7 @@ const MOUNT_TARGET_IP = '10.0.0.100';
  *   BackupPolicy, FileSystemPolicy, FileSystemProtection)
  * - AWS::EFS::MountTarget (DUAL_STACK at a declared IpAddress, #2762)
  * - AWS::EFS::AccessPoint
+ * - A refused update: provisioned throughput mode without its value (#5547)
  * - CfnOutputs for filesystem ID, access point ID, mount target id + IpAddress
  */
 export class EfsStandaloneStack extends cdk.Stack {
@@ -83,9 +84,10 @@ export class EfsStandaloneStack extends cdk.Stack {
 
     // CDKD_TEST_THROUGHPUT_VALUE_REMOVED (issue #5547): keep the baseline's
     // ThroughputMode: provisioned but drop ProvisionedThroughputInMibps, and
-    // change a tag beside it. CloudFormation rejects that update before any
-    // EFS call (live CFn A/B), so cdkd must refuse it, leaving the value and
-    // the tag as they were; pre-fix the deploy succeeded and kept the value.
+    // add a file-system tag beside it. CloudFormation rejects that update
+    // before any EFS call (live CFn A/B), so cdkd must refuse it, leaving the
+    // value and the tags as they were; pre-fix the deploy succeeded, kept the
+    // value and added the tag. The file system is the only resource it changes.
     // The L2 refuses the shape at synth, so reach its CfnFileSystem.
     const throughputValueRemoved = process.env.CDKD_TEST_THROUGHPUT_VALUE_REMOVED === 'true';
     if (throughputValueRemoved && !removal) {
@@ -132,11 +134,12 @@ export class EfsStandaloneStack extends cdk.Stack {
     // retag sent nothing and the access-point retag was refused.
     const apRetag = process.env.CDKD_TEST_AP_RETAG === 'true';
     const fsOnly = { excludeResourceTypes: ['AWS::EFS::AccessPoint'] };
-    cdk.Tags.of(fs).add(
-      'cdkd-retag',
-      removal ? 'v2' : throughputValueRemoved ? 'refused' : 'v1',
-      fsOnly
-    );
+    cdk.Tags.of(fs).add('cdkd-retag', removal ? 'v2' : 'v1', fsOnly);
+    // Issue #5547's beside-change: on the file system ONLY (fsOnly still tags
+    // the L2's security group), so the refused deploy changes nothing else.
+    if (throughputValueRemoved && !removal) {
+      cdk.Tags.of(fs).add('cdkd-refused', 'x', { includeResourceTypes: ['AWS::EFS::FileSystem'] });
+    }
     if (!removal) cdk.Tags.of(fs).add('cdkd-drop', 'x', fsOnly);
     cdk.Tags.of(ap).add('cdkd-ap-retag', apRetag ? 'v2' : 'v1');
     if (!apRetag) cdk.Tags.of(ap).add('cdkd-ap-drop', 'x');
