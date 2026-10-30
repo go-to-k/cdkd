@@ -27,7 +27,8 @@ exercises. A turn blocked on a fixture fix never blocks the other lanes.
 **Every integ in flight across lanes is ONE parallel set under `/run-integ`
 step 4**, whichever lane owns it — its isolation rules are not per-lane:
 - a `SAFETY NOTE` fixture gets its OWN region;
-- a `cdkd gc` fixture waits until no other lane's integ is running;
+- a `cdkd gc` fixture waits until no other lane's integ is running, and none
+  starts during it;
 - a rollback-journal reader or `cdkd rollback` caller gets its own state
   bucket (#5104);
 - cap fixtures in flight per region at what the account's VPC / EIP / NAT
