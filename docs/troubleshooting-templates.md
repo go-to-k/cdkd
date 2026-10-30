@@ -19,6 +19,8 @@ On this page:
 - ["The following custom resources pass a secure dynamic reference"](#the-following-custom-resources-pass-a-secure-dynamic-reference)
 - ["OpenTableFormatInput.IcebergInput.IcebergTableInput cannot be deployed" on a Glue table](#opentableformatinput-iceberginput-icebergtableinput-cannot-be-deployed-on-a-glue-table)
 - ["SelfManagedKafkaEventSourceConfig.ConsumptionMode cannot be sent by cdkd yet"](#selfmanagedkafkaeventsourceconfig-consumptionmode-cannot-be-sent-by-cdkd-yet)
+- ["Configuration.VpcEgressConfiguration.ElasticIpConfiguration cannot be sent by cdkd yet"](#configuration-vpcegressconfiguration-elasticipconfiguration-cannot-be-sent-by-cdkd-yet)
+- ["DisassociationProtectionEnabled cannot be sent by cdkd yet" on a global table replica](#disassociationprotectionenabled-cannot-be-sent-by-cdkd-yet-on-a-global-table-replica)
 
 ## An unsupported resource type
 
@@ -281,6 +283,45 @@ Lambda rejects the member there too (`Unsupported 'ConsumptionMode' parameter
 for given event source mapping type`). A `cdkd rollback` or
 `cdkd drift --revert` only warns, because those commands re-apply a recorded
 configuration.
+
+## "Configuration.VpcEgressConfiguration.ElasticIpConfiguration cannot be sent by cdkd yet"
+
+```text
+AWS::Lambda::NetworkConnector MyConnector: Configuration.VpcEgressConfiguration.ElasticIpConfiguration
+cannot be sent by cdkd yet — the AWS SDK for JavaScript (@aws-sdk/client-lambda-core) does not
+model the member, so it would be dropped from the CreateNetworkConnector request without an error.
+Remove ElasticIpConfiguration from Configuration.VpcEgressConfiguration to deploy the connector without it.
+```
+
+The CloudFormation schema declares `ElasticIpConfiguration` on a Lambda
+network connector's VPC egress configuration. The Lambda Core SDK that cdkd
+calls has no such member yet. cdkd refuses a create that declares it, and an
+update that adds or changes it, rather than deploy a connector without the
+setting you asked for.
+
+Remove `ElasticIpConfiguration` from `Configuration.VpcEgressConfiguration`. A
+`cdkd rollback` or `cdkd drift --revert` only warns, because those commands
+re-apply a recorded configuration.
+
+## "DisassociationProtectionEnabled cannot be sent by cdkd yet" on a global table replica
+
+```text
+AWS::DynamoDB::GlobalTable MyTable: Replicas[1].DisassociationProtectionEnabled cannot be sent
+by cdkd yet — DynamoDB takes it only as a separate per-replica UpdateTable call, which cdkd does
+not make, so it would be dropped without an error. Remove DisassociationProtectionEnabled from
+the replica to deploy the table without it.
+```
+
+The CloudFormation schema declares `DisassociationProtectionEnabled` on each
+replica of a global table. DynamoDB accepts it only in an `UpdateTable` call
+that changes nothing else, made in the replica's own region. cdkd does not make
+that call yet
+([#5570](https://github.com/go-to-k/cdkd/issues/5570)). It refuses a create
+that declares the member, and an update that adds or changes it, rather than
+report a setting it never applied.
+
+Remove `DisassociationProtectionEnabled` from the replica. A `cdkd rollback`
+or `cdkd drift --revert` only warns.
 
 ## Related
 
