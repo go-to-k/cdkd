@@ -285,6 +285,44 @@ describe('ServiceDiscoveryProvider — HttpNamespace / PublicDnsNamespace', () =
       });
     });
 
+    // go-to-k/cdkd#5549: CFn A/B 2026-10-30 — a removed Description is
+    // cleared (GetNamespace reports none), alone and beside a Tags change.
+    it('clears a removed Description with the empty-string sentinel (#5549)', async () => {
+      mockSend
+        .mockResolvedValueOnce({ OperationId: 'op-upd' }) // UpdateHttpNamespace
+        .mockResolvedValueOnce({ Operation: { Status: 'SUCCESS' } }); // GetOperation
+
+      await provider.update('MyHttpNs', 'ns-http-1', HTTP_NS, {}, { Description: 'd1' });
+
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      const updateCmd = mockSend.mock.calls[0][0];
+      expect(updateCmd).toBeInstanceOf(UpdateHttpNamespaceCommand);
+      expect(updateCmd.input).toEqual({ Id: 'ns-http-1', Namespace: { Description: '' } });
+    });
+
+    it('clears a removed Description beside a Tags change (#5549)', async () => {
+      mockSend
+        .mockResolvedValueOnce({ OperationId: 'op-upd' }) // UpdateHttpNamespace
+        .mockResolvedValueOnce({ Operation: { Status: 'SUCCESS' } }) // GetOperation
+        .mockResolvedValueOnce({ Namespace: { Id: 'ns-http-1', Arn: 'arn:http' } }) // GetNamespace (ARN)
+        .mockResolvedValueOnce({}); // TagResource
+
+      await provider.update(
+        'MyHttpNs',
+        'ns-http-1',
+        HTTP_NS,
+        { Tags: [{ Key: 'k', Value: 'v2' }] },
+        { Description: 'd1', Tags: [{ Key: 'k', Value: 'v1' }] }
+      );
+
+      const updateCmd = mockSend.mock.calls[0][0];
+      expect(updateCmd).toBeInstanceOf(UpdateHttpNamespaceCommand);
+      expect(updateCmd.input).toEqual({ Id: 'ns-http-1', Namespace: { Description: '' } });
+      const tagCmd = mockSend.mock.calls[3][0];
+      expect(tagCmd).toBeInstanceOf(TagResourceCommand);
+      expect(tagCmd.input).toEqual({ ResourceARN: 'arn:http', Tags: [{ Key: 'k', Value: 'v2' }] });
+    });
+
     it('removes ALL tags via UntagResource when Tags property is dropped (full removal)', async () => {
       mockSend
         .mockResolvedValueOnce({ Namespace: { Id: 'ns-http-1', Arn: 'arn:http' } }) // GetNamespace (ARN)
@@ -402,6 +440,34 @@ describe('ServiceDiscoveryProvider — HttpNamespace / PublicDnsNamespace', () =
         },
       });
     });
+
+    // go-to-k/cdkd#5549: CFn A/B 2026-10-30 — a removed Description is
+    // cleared, alone and beside an SOA TTL change.
+    const soa = (ttl: number) => ({ Properties: { DnsProperties: { SOA: { TTL: ttl } } } });
+    it.each([
+      ['alone', {}, {}, { Description: '' }],
+      ['beside an SOA TTL change', soa(200), soa(100), { Description: '', ...soa(200) }],
+    ])(
+      'clears a removed Description with the empty-string sentinel, %s (#5549)',
+      async (_label, desired, previous, expectedChange) => {
+        mockSend
+          .mockResolvedValueOnce({ OperationId: 'op-upd' })
+          .mockResolvedValueOnce({ Operation: { Status: 'SUCCESS' } });
+
+        await provider.update(
+          'MyPubNs',
+          'ns-pub-1',
+          PUBLIC_DNS_NS,
+          desired,
+          { Description: 'd1', ...previous }
+        );
+
+        expect(mockSend).toHaveBeenCalledTimes(2);
+        const updateCmd = mockSend.mock.calls[0][0];
+        expect(updateCmd).toBeInstanceOf(UpdatePublicDnsNamespaceCommand);
+        expect(updateCmd.input).toEqual({ Id: 'ns-pub-1', Namespace: expectedChange });
+      }
+    );
 
     it('skips UpdatePublicDnsNamespace when only tags changed', async () => {
       mockSend
