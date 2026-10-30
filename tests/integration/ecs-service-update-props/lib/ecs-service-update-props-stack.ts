@@ -47,8 +47,9 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  * (needs VPC Lattice plumbing), DeploymentController CODE_DEPLOY (needs
  * CodeDeploy plumbing), Role (needs a classic ELB setup).
  *
- * Cost: desiredCount is 0 (no task ever launches; only control-plane
- * resources exist), so the fixture is cheap.
+ * Cost: the main Service's desiredCount is 0 (no task ever launches). Only
+ * phases 2d / 2e add a one-task service (`BreakerSvc`) for the circuit-breaker
+ * arm (go-to-k/cdkd#5571), torn down by phase 3.
  */
 export class EcsServiceUpdatePropsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -64,6 +65,13 @@ export class EcsServiceUpdatePropsStack extends cdk.Stack {
     const isUpdate = updateMode.includes('true');
     const isForceNonce = updateMode.includes('force-nonce');
     const isCircuitBreakerRollbackFlip = updateMode.includes('cb-rollback');
+    // go-to-k/cdkd#5571 (phases 2d / 2e): `breaker` adds a SECOND, running
+    // service guarded by a deployment circuit breaker; `breaker-fail` (which
+    // contains `breaker`, so the service stays declared — the #1543
+    // monotonic-token rule) moves it to a task definition whose container
+    // health check always fails.
+    const hasBreakerService = updateMode.includes('breaker');
+    const isBreakerFail = updateMode.includes('breaker-fail');
 
     // Minimal VPC (1 AZ, no NAT gateway to minimize cost).
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -249,6 +257,57 @@ export class EcsServiceUpdatePropsStack extends cdk.Stack {
           Enable: true,
           Rollback: isCircuitBreakerRollbackFlip,
         },
+      });
+    }
+
+    // go-to-k/cdkd#5571: the default deploy waits for ECS steady state, and a
+    // circuit-breaker verdict fails it. The breaker counts a task replaced
+    // for failing its container health check (stage 2 of the AWS breaker
+    // docs), so the failing revision keeps the healthy command and adds a
+    // health check that can never pass: the failure is deterministic and
+    // independent of image pulls. desiredCount 1 with minHealthyPercent 100
+    // keeps the healthy task serving while the failing rollout runs, so the
+    // breaker's rollback lands on a COMPLETED deployment. Added only from
+    // phase 2d on, after every phase that reads "the" ECS Service / Task
+    // Definition from state by type.
+    if (hasBreakerService) {
+      const breakerTaskDef = new ecs.FargateTaskDefinition(this, 'BreakerTaskDef', {
+        memoryLimitMiB: 512,
+        cpu: 256,
+      });
+      breakerTaskDef.addContainer('BreakerContainer', {
+        image: ecs.ContainerImage.fromRegistry('public.ecr.aws/amazonlinux/amazonlinux:latest'),
+        memoryLimitMiB: 512,
+        logging: ecs.LogDrivers.awsLogs({
+          logGroup: containerLogGroup,
+          streamPrefix: 'cdkd-ecs-svc-breaker',
+        }),
+        command: ['sleep', '3600'],
+        ...(isBreakerFail
+          ? {
+              healthCheck: {
+                command: ['CMD-SHELL', 'exit 1'],
+                interval: cdk.Duration.seconds(5),
+                timeout: cdk.Duration.seconds(2),
+                retries: 1,
+                startPeriod: cdk.Duration.seconds(0),
+              },
+            }
+          : {}),
+      });
+      const breakerService = new ecs.FargateService(this, 'BreakerSvc', {
+        cluster,
+        taskDefinition: breakerTaskDef,
+        desiredCount: 1,
+        minHealthyPercent: 100,
+        maxHealthyPercent: 200,
+        assignPublicIp: true,
+        vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+        circuitBreaker: { enable: true, rollback: true },
+      });
+      new cdk.CfnOutput(this, 'BreakerServiceName', {
+        value: breakerService.serviceName,
+        description: 'ECS Fargate Service guarded by the circuit breaker (phases 2d / 2e)',
       });
     }
 

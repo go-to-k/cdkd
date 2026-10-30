@@ -25,6 +25,19 @@ const TAGS = [
 
 const ALL_DIRECTIONS = ['create', 'update-add', 'update-remove'];
 
+const DEST_BUCKET_ARN = `arn:aws:s3tables:us-east-1:${ACCOUNT}:bucket/dest`;
+
+// Not a gap: a configuration property with a declarable default whose
+// CloudFormation removal reset is unmeasured is left at its AWS value, with a
+// warning (s3-tables-provider.ts, applyTableBucketConfigUpdate /
+// applyTableMaintenanceUpdate; go-to-k/cdkd#2762).
+const KEPT_ON_REMOVAL =
+  'a removed configuration property with a declarable default is left at its AWS value and warned about';
+
+// Not a gap: `WithoutMetadata: Yes` asks for a table with no schema, which is
+// CreateTable without `metadata`; it is create-only, so no update reads it.
+const NO_METADATA = 'WithoutMetadata declares a table with no schema: CreateTable without metadata';
+
 const required = (name: string): Throw => ({
   why: `create() refuses a missing ${name} before any call (s3-tables-provider.ts)`,
   says: new RegExp(`${name} is required`),
@@ -70,7 +83,27 @@ export const S3TABLES_CASES: TypeCase[] = [
     bags: [
       {
         name: 'every declared property',
-        bag: { TableBucketName: 'tb', Tags: TAGS },
+        bag: {
+          TableBucketName: 'tb',
+          Tags: TAGS,
+          EncryptionConfiguration: {
+            SSEAlgorithm: 'aws:kms',
+            KMSKeyArn: `arn:aws:kms:us-east-1:${ACCOUNT}:key/k`,
+          },
+          StorageClassConfiguration: { StorageClass: 'INTELLIGENT_TIERING' },
+          MetricsConfiguration: { Status: 'Enabled' },
+          UnreferencedFileRemoval: { Status: 'Enabled', UnreferencedDays: 5, NoncurrentDays: 7 },
+          ReplicationConfiguration: {
+            Role: `arn:aws:iam::${ACCOUNT}:role/r`,
+            Rules: [{ Destinations: [{ DestinationTableBucketARN: DEST_BUCKET_ARN }] }],
+          },
+        },
+        variants: { 'MetricsConfiguration.Status': 'Disabled' },
+        expectedSilent: {
+          'update-remove:EncryptionConfiguration': KEPT_ON_REMOVAL,
+          'update-remove:StorageClassConfiguration': KEPT_ON_REMOVAL,
+          'update-remove:UnreferencedFileRemoval': KEPT_ON_REMOVAL,
+        },
         expectedRemovalThrows: {
           'create:TableBucketName': required('TableBucketName'),
           ...TAG_THROWS(ALL_DIRECTIONS, 2),
@@ -132,6 +165,37 @@ export const S3TABLES_CASES: TypeCase[] = [
           TableName: 'tbl',
           OpenTableFormat: 'ICEBERG',
           Tags: TAGS,
+          StorageClassConfiguration: { StorageClass: 'INTELLIGENT_TIERING' },
+          Compaction: { Status: 'enabled', TargetFileSizeMB: 256 },
+          SnapshotManagement: { Status: 'enabled', MinSnapshotsToKeep: 2, MaxSnapshotAgeHours: 200 },
+          IcebergMetadata: {
+            IcebergSchema: {
+              SchemaFieldList: [{ Id: 1, Name: 'c1', Type: 'int', Required: true }],
+            },
+            IcebergSchemaV2: {
+              SchemaV2FieldType: 'struct',
+              SchemaId: 3,
+              IdentifierFieldIds: [1],
+              SchemaV2FieldList: [{ Id: 1, Name: 'c1', Type: 'long', Required: true, Doc: 'd' }],
+            },
+            IcebergPartitionSpec: {
+              SpecId: 4,
+              Fields: [{ SourceId: 1, Transform: 'identity', Name: 'p1', FieldId: 1000 }],
+            },
+            IcebergSortOrder: {
+              OrderId: 5,
+              Fields: [{ SourceId: 1, Transform: 'identity', Direction: 'asc', NullOrder: 'nulls-first' }],
+            },
+            TableProperties: { 'write.format.default': 'parquet' },
+          },
+        },
+        variants: {
+          'IcebergMetadata.IcebergSortOrder.Fields.0.Direction': 'desc',
+          'IcebergMetadata.IcebergSortOrder.Fields.0.NullOrder': 'nulls-last',
+        },
+        expectedSilent: {
+          'update-remove:Compaction': KEPT_ON_REMOVAL,
+          'update-remove:SnapshotManagement': KEPT_ON_REMOVAL,
         },
         expectedRemovalThrows: {
           'create:TableBucketARN': required('TableBucketARN'),
@@ -139,6 +203,26 @@ export const S3TABLES_CASES: TypeCase[] = [
           'create:TableName': required('TableName'),
           'create:OpenTableFormat': required('OpenTableFormat'),
           ...TAG_THROWS(ALL_DIRECTIONS, 2),
+        },
+      },
+      {
+        name: 'a table with no schema',
+        bag: {
+          TableBucketARN: BUCKET_ARN,
+          Namespace: 'ns',
+          TableName: 'tbl',
+          OpenTableFormat: 'ICEBERG',
+          WithoutMetadata: 'Yes',
+        },
+        expectedSilent: {
+          'create:WithoutMetadata': NO_METADATA,
+          'create-vary:WithoutMetadata': NO_METADATA,
+        },
+        expectedRemovalThrows: {
+          'create:TableBucketARN': required('TableBucketARN'),
+          'create:Namespace': required('Namespace'),
+          'create:TableName': required('TableName'),
+          'create:OpenTableFormat': required('OpenTableFormat'),
         },
       },
       {

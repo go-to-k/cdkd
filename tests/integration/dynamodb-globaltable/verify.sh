@@ -28,6 +28,9 @@
 #       (Issue #1419). Runs against the BASELINE deploy, so it pins the
 #       create-side half: pre-fix `create()` registered no autoscaling at
 #       all and NO code path ever registered a `dynamodb:index:*` dimension.
+#  4g. #5123: a deploy declaring Replicas[].DisassociationProtectionEnabled is
+#       refused before any call, record and table unchanged (pre-fix: the
+#       member was dropped and the deploy exited 0).
 #  4f. issue #1857: assert the QUOTED-STRING per-GSI WarmThroughput on
 #       WarmCoercionTable reached AWS as NUMBERS. The arm's real
 #       discriminator is step 2 itself — pre-fix the string is forwarded
@@ -641,6 +644,43 @@ if [ "${PROV_TABLE_WRITE}" != "1" ]; then
   exit 1
 fi
 echo "[verify] step 4c ok: table-level write capacity created at MinCapacity (${PROV_TABLE_WRITE})"
+
+echo "[verify] step 4g (#5123): declaring Replicas[].DisassociationProtectionEnabled is refused before any call"
+# DynamoDB takes the member only as a solo per-replica UpdateTable, which cdkd
+# does not make, so before #5123 the deploy dropped it and exited 0. It must
+# now fail naming the member and leave the HistoryTable's records (every field,
+# not only properties), and the live table, as step 2 left them. `disassociation-probe` is the only mode: the
+# stack is still at its baseline here, so the member is the only difference.
+NEEDLE_DISASSOC='DisassociationProtectionEnabled cannot be sent by cdkd yet'
+history_record() {
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+    | jq -cS '[.resources | to_entries[] | select(.key | startswith("HistoryTable"))]'
+}
+RECORD_BEFORE="$(history_record)"
+case "${RECORD_BEFORE}" in '[{'*) ;; *) echo "[verify] FAIL (#5123): could not read the HistoryTable record (${RECORD_BEFORE})" >&2; exit 1 ;; esac
+set +e
+DISASSOC_OUT="$(CDKD_TEST_UPDATE=disassociation-probe ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" 2>&1)"
+DISASSOC_RC=$?
+set -e
+DISASSOC_OUT="$(printf '%s\n' "${DISASSOC_OUT}" | sed $'s/\x1b\\[[0-9;]*m//g')"
+if [ "${DISASSOC_RC}" = 0 ]; then
+  printf '%s\n' "${DISASSOC_OUT}" >&2
+  echo "[verify] FAIL (#5123): the deploy declaring DisassociationProtectionEnabled SUCCEEDED; cdkd cannot send the member, so it must refuse it" >&2
+  exit 1
+fi
+if ! grep -qF "${NEEDLE_DISASSOC}" <<<"${DISASSOC_OUT}"; then
+  printf '%s\n' "${DISASSOC_OUT}" >&2
+  echo "[verify] FAIL (#5123): the deploy failed (rc=${DISASSOC_RC}), but not with the DisassociationProtectionEnabled refusal" >&2
+  exit 1
+fi
+RECORD_AFTER="$(history_record)"
+if [ "${RECORD_AFTER}" != "${RECORD_BEFORE}" ]; then
+  echo "[verify] FAIL (#5123): the refused deploy changed the HistoryTable record" >&2
+  exit 1
+fi
+DISASSOC_STATUS="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" --query 'Table.TableStatus' --output text)"
+[ "${DISASSOC_STATUS}" = "ACTIVE" ] || { echo "[verify] FAIL (#5123): ${TABLE_NAME} is ${DISASSOC_STATUS} after the refused deploy, expected ACTIVE" >&2; exit 1; }
+echo "[verify] step 4g ok: refused (rc=${DISASSOC_RC}) naming DisassociationProtectionEnabled; record unchanged, table ACTIVE"
 
 echo "[verify] step 5 (was steps 5/6/7): cdkd deploy with CDKD_TEST_UPDATE=deletion-protection (in-place update — Issue #389)"
 # ORDER NOTE (PR follow-up to #403): TTL toggle is intentionally

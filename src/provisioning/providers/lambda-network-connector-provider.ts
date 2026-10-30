@@ -18,6 +18,7 @@ import {
   ResourceNotFoundException as LambdaResourceNotFoundException,
 } from '@aws-sdk/client-lambda';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { getLogger } from '../../utils/logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -145,6 +146,17 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
         ? properties['Name']
         : generatedNameFor('AWS::Lambda::NetworkConnector', logicalId);
     const vpc = this.readVpcEgress(properties, logicalId, resourceType, undefined);
+    // Refused before any call. A state replay only warns: the record's value
+    // was dropped the same way when it was first deployed.
+    if (declaredElasticIp(properties) !== undefined) {
+      const message = elasticIpRefusalMessage(logicalId, 'create');
+      if (context?.replayingState !== true) {
+        throw new ProvisioningError(message, resourceType, logicalId);
+      }
+      this.logger.warn(
+        safeMsg`${message} Proceeding without it: this create replays a cdkd state record.`
+      );
+    }
     // Memoised per logical id for the deploy, so the engine's own retry of a
     // create whose response was lost resends the SAME token and gets the same
     // connector back, instead of a new token that collides on the Name.
@@ -234,6 +246,23 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
     );
     // Refused before any write: the block is the whole connector.
     const vpc = this.readVpcEgress(properties, logicalId, resourceType, physicalId);
+    // Only a CHANGED value is lost: an unchanged one (a record an older cdkd
+    // wrote) was never sent either, so the live connector already lacks it.
+    // Refused before the first write on the template path, warned on a state
+    // replay or a drift revert.
+    const desiredElasticIp = declaredElasticIp(properties);
+    if (
+      desiredElasticIp !== undefined &&
+      !isDeepStrictEqual(desiredElasticIp, declaredElasticIp(previousProperties))
+    ) {
+      const message = elasticIpRefusalMessage(logicalId, 'update');
+      if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+        throw new ProvisioningError(message, resourceType, logicalId, physicalId);
+      }
+      this.logger.warn(
+        safeMsg`${message} Proceeding without it: this update restores a recorded or read-back configuration.`
+      );
+    }
     const updateRole = this.readOperatorRole(
       properties,
       logicalId,
@@ -637,6 +666,38 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
     this.logger.debug(build(failure.detail).message);
     return markRedactedCause(build(`${failure.summary}${relayedNameCollision(failure.detail)}`));
   }
+}
+
+/**
+ * `Configuration.VpcEgressConfiguration.ElasticIpConfiguration` is in the CFn
+ * registry schema (2026-10-23 refresh, #5123) but in no
+ * `@aws-sdk/client-lambda-core` release yet (installed 3.1159.0, latest
+ * published 3.1160.0). The request below is built from explicit fields, so a
+ * declared value would never reach Lambda Core and the deploy would report
+ * success without it. It is refused on the template path instead, the
+ * `ConsumptionMode` mechanism of `lambda-eventsource-provider.ts` (#3848).
+ * `tests/unit/provisioning/sdk-pending-members.test.ts` goes red once the
+ * installed client sends the member: then forward it on create AND update,
+ * read it back, and drop this refusal.
+ */
+const ELASTIC_IP_KEY = 'ElasticIpConfiguration';
+
+/** The declared `ElasticIpConfiguration`, or `undefined` when the template omits it. */
+function declaredElasticIp(properties: Record<string, unknown>): unknown {
+  const config = properties['Configuration'];
+  const vpc = isPlainRecord(config) ? config['VpcEgressConfiguration'] : undefined;
+  return isPlainRecord(vpc) ? vpc[ELASTIC_IP_KEY] : undefined;
+}
+
+function elasticIpRefusalMessage(logicalId: string, mode: 'create' | 'update'): string {
+  return (
+    `AWS::Lambda::NetworkConnector ${logicalIdShown(logicalId)}: ` +
+    `Configuration.VpcEgressConfiguration.${ELASTIC_IP_KEY} cannot be sent by cdkd yet — ` +
+    'the AWS SDK for JavaScript (@aws-sdk/client-lambda-core) does not model the member, so it ' +
+    `would be dropped from the ${mode === 'create' ? 'CreateNetworkConnector' : 'UpdateNetworkConnector'} ` +
+    `request without an error. Remove ${ELASTIC_IP_KEY} from ` +
+    'Configuration.VpcEgressConfiguration to deploy the connector without it.'
+  );
 }
 
 /** A wait ended in a state the connector cannot leave for ACTIVE. */

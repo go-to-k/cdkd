@@ -145,8 +145,14 @@ cdkd deploy MyStack --full-wait   # wait as long as CloudFormation would
 | Mode | What cdkd waits for |
 | --- | --- |
 | `--no-wait` | Nothing beyond the AWS API call returning. |
-| default | Only what a later step of the same deploy needs, or what can surface a real failure. |
+| default | Whatever is still undecided when the API call returns: a result a later step of the same deploy needs, or an outcome that can still fail, such as an ECS service's rollout. |
 | `--full-wait` | Everything CloudFormation waits for. |
+
+The default skips a wait only when the outcome is settled once AWS accepts the
+call and the wait changes only when the resource starts serving. Today that is
+one wait, a CloudFront distribution reaching `Deployed`.
+[Choose a Wait Mode](wait-modes.md#why-the-default-waits-for-ecs-but-not-cloudfront)
+explains the rule.
 
 To choose, ask whether anything after the deploy needs the resource to be
 serving:
@@ -171,7 +177,7 @@ CloudFormation and Terraform do, for comparison.
 | Resource type | `--no-wait` | Default | `--full-wait` | CloudFormation | Terraform |
 | --- | --- | --- | --- | --- | --- |
 | `AWS::CloudFront::Distribution` | same as default | Return after the create / update call | Wait for `Deployed` (3-15 min) | Waits | Waits (`wait_for_deployment`, default true) |
-| `AWS::ECS::Service` | same as default | Return after `CreateService` / `UpdateService` | Wait for steady state | Waits for steady state | Does not wait (`wait_for_steady_state`, default false) |
+| `AWS::ECS::Service` | Return after `CreateService` / `UpdateService` | Wait for steady state; a failed or rolled-back rollout fails the deploy | same as default | Waits for steady state | Does not wait (`wait_for_steady_state`, default false) |
 | `AWS::CertificateManager::Certificate` | Return while `PENDING_VALIDATION` | Wait for `ISSUED` | same as default | Waits | Does not wait (waiting is a separate `aws_acm_certificate_validation` resource) |
 | `AWS::RDS::DBCluster` / `DBInstance` | Return after the create or update call | Wait for `available` (5-10 min); an update waits for a changed cluster port or security groups to apply | same as default | Waits | Waits |
 | `AWS::DocDB::DBCluster` / `DBInstance` | Return after the create or update call | Wait for `available` (5-10 min); an update waits for a changed cluster port or security groups to apply | same as default | Waits | Waits |
@@ -275,9 +281,10 @@ or a replacement was refused because another state prefix records the stack
 (or that check could not run). cdkd keeps the state, and running the deploy again usually clears
 the code. `--allow-unaddressed` turns this exit into `0`.
 
-Under `--full-wait`, an ECS service that never stabilizes fails the deploy, so
-the deploy exits with a failure code and not with `2`. A CloudFront wait that runs out does not
-fail the deploy. [Exit codes](cli-reference-exit-codes.md) has the table for
+An ECS service that never stabilizes, or whose deployment circuit breaker fails
+or rolls back the rollout, fails the deploy, so the deploy exits with `1` and
+not with `2`; under `--no-wait` cdkd does not wait for it. A CloudFront wait
+under `--full-wait` that runs out does not fail the deploy. [Exit codes](cli-reference-exit-codes.md) has the table for
 every command.
 
 ## Related

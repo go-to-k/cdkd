@@ -1183,6 +1183,20 @@ export class ReplacementRulesRegistry {
       ]),
     });
 
+    // S3 Tables Table — the registry schema's createOnly list (TableName and
+    // Namespace are renamed in place). Named here so a change to IcebergMetadata /
+    // StorageClassConfiguration / WithoutMetadata (sent only on CreateTable)
+    // still replaces when DescribeType cannot answer (go-to-k/cdkd#2762).
+    this.rules.set('AWS::S3Tables::Table', {
+      replacementProperties: new Set([
+        'TableBucketARN',
+        'OpenTableFormat',
+        'IcebergMetadata',
+        'StorageClassConfiguration',
+        'WithoutMetadata',
+      ]),
+    });
+
     // RDS DBProxyTargetGroup — DBProxyName + TargetGroupName are identity
     // fields. AWS rejects modifications to them; only ConnectionPoolConfig +
     // registered targets (Cluster/Instance Identifiers) are mutable.

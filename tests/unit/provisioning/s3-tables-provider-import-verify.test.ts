@@ -19,6 +19,21 @@ vi.mock('@aws-sdk/client-s3tables', async () => {
   return { ...actual, S3TablesClient: MockS3TablesClient };
 });
 
+// The silent-drop list a test pins, else the real one: since go-to-k/cdkd#2762
+// no schema-known Table property is a silent drop, so the Cloud-Control arm
+// is reached only through a forced one (a schema refresh can add one).
+const forcedDrops = vi.hoisted(() => ({ value: undefined as string[] | undefined }));
+vi.mock('../../../src/provisioning/property-coverage.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/provisioning/property-coverage.js')>(
+    '../../../src/provisioning/property-coverage.js'
+  );
+  return {
+    ...actual,
+    findSilentDropProperties: (...args: Parameters<typeof actual.findSilentDropProperties>) =>
+      forcedDrops.value ?? actual.findSilentDropProperties(...args),
+  };
+});
+
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
@@ -56,6 +71,7 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
 
   beforeEach(() => {
     vi.clearAllMocks();
+    forcedDrops.value = undefined;
     provider = new S3TablesProvider();
   });
 
@@ -333,20 +349,39 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
     });
 
     it('keeps the bare TableARN for a Cloud-Control-routed table (#614 routing)', async () => {
-      // `IcebergMetadata` is a silent-drop property, so this table auto-routes
-      // to Cloud Control, whose Identifier is the bare TableARN. cdkd import
-      // records provisionedBy: 'sdk' but only 'cc-api' is STICKY, so the next
-      // deploy/destroy re-derives the route — canonicalizing here would hand
-      // CC 'arn|ns|name'.
+      // A silent-drop property auto-routes this table to Cloud Control, whose
+      // Identifier is the bare TableARN. cdkd import records provisionedBy:
+      // 'sdk' but only 'cc-api' is STICKY, so the next deploy/destroy
+      // re-derives the route — canonicalizing here would hand CC 'arn|ns|name'.
+      forcedDrops.value = ['SomeNewProperty'];
       mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN, namespace: ['ns'], name: 'tbl' });
 
       const result = await provider.import({
         ...input,
-        properties: { ...input.properties, IcebergMetadata: { SchemaDefinition: {} } },
+        properties: { ...input.properties, SomeNewProperty: 'x' },
         knownPhysicalId: TABLE_ARN,
       });
 
       expect(result).toEqual({ physicalId: TABLE_ARN, attributes: { TableARN: TABLE_ARN } });
+    });
+
+    it('records the composite for a table declaring IcebergMetadata, now on the SDK route (go-to-k/cdkd#2762)', async () => {
+      mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN, namespace: ['ns'], name: 'tbl' });
+
+      const result = await provider.import({
+        ...input,
+        properties: {
+          ...input.properties,
+          IcebergMetadata: { IcebergSchema: { SchemaFieldList: [{ Name: 'c', Type: 'int' }] } },
+          Compaction: { Status: 'enabled' },
+        },
+        knownPhysicalId: TABLE_ARN,
+      });
+
+      expect(result).toEqual({
+        physicalId: `${BUCKET_ARN}|ns|tbl`,
+        attributes: { TableARN: TABLE_ARN },
+      });
     });
 
     it('pins the request shape for a composite id (must NOT go through tableArn)', async () => {
