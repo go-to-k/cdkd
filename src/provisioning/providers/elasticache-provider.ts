@@ -237,10 +237,18 @@ const removalWarnings = (
   }
   if (replaced.length > 0) {
     const one = replaced.length === 1;
+    // Each property gets only what was measured: AZMode replaces; a
+    // PreferredAvailabilityZones removal replaced a 1-node cluster (#5558)
+    // but updated a 2-node cluster in place (#5458).
+    const clauses = replaced.map((name) =>
+      name === 'AZMode'
+        ? 'CloudFormation replaces the cluster for an AZMode removal'
+        : 'for a PreferredAvailabilityZones removal CloudFormation replaced a 1-node cluster (go-to-k/cdkd#5558) and updated a 2-node cluster in place (go-to-k/cdkd#5458)'
+    );
     lines.push(
       caller === 'rollback'
         ? `${head(replaced)} ${one ? 'is' : 'are'} absent from the state being restored; the rollback leaves the cluster unchanged.`
-        : `${head(replaced)} ${one ? 'was' : 'were'} removed from the template; cdkd leaves the cluster unchanged, while CloudFormation replaces the cluster for this removal (go-to-k/cdkd#5558). To match CloudFormation, replace the cluster, for example by changing its logical ID.`
+        : `${head(replaced)} ${one ? 'was' : 'were'} removed from the template; cdkd leaves the cluster unchanged. ${clauses.join('; ')}. To match a CloudFormation replacement, replace the cluster, for example by changing its logical ID.`
     );
   }
   return lines;

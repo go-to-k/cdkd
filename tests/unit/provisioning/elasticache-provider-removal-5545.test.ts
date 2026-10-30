@@ -176,9 +176,13 @@ describe('ElastiCacheProvider CacheCluster removals CloudFormation keeps (issue 
     expect(input['NewAvailabilityZones']).toBeUndefined();
     expect(warnings()).toEqual([
       expect.stringContaining(
-        'properties AZMode, PreferredAvailabilityZones were removed from the template; cdkd leaves the cluster unchanged, while CloudFormation replaces the cluster for this removal (go-to-k/cdkd#5558).'
+        'properties AZMode, PreferredAvailabilityZones were removed from the template; cdkd leaves the cluster unchanged.'
       ),
     ]);
+    expect(warnings()[0]).toContain('CloudFormation replaces the cluster for an AZMode removal');
+    expect(warnings()[0]).toContain(
+      'for a PreferredAvailabilityZones removal CloudFormation replaced a 1-node cluster (go-to-k/cdkd#5558) and updated a 2-node cluster in place (go-to-k/cdkd#5458)'
+    );
     expect(warnings()[0]).not.toContain('would reset');
   });
 
