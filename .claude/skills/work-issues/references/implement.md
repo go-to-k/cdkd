@@ -160,12 +160,15 @@ with "REPORT ONLY". A subagent's Bash bypasses the PreToolUse hooks.
   tree next (#5109, #5114).
 - Never force-push over a commit you did not author: `git fetch`, inspect, and
   STOP on work that is not yours.
-- **Reviewers probe by edit-and-restore-from-`HEAD`, and collide with each
-  other and with you.** Commit the lane before dispatching any, since a restore
-  takes HEAD and not in-flight work; tell each that peers probe this same
-  worktree, so `git status --porcelain` must be EMPTY before a probe and
-  otherwise they WAIT; and leave those files alone until the round ends
-  (`.claude/agents/pr-code-reviewer.md` holds the rest).
+- **A reviewer's mutation probe never touches the lane tree** — one overwrote a
+  lane's uncommitted edits, another failed two full-suite runs (2026-10-30).
+  Commit the lane before dispatching any and name the sha in each prompt: it
+  probes an extract in its own scratch dir (`.claude/agents/pr-code-reviewer.md`
+  holds the recipe). Leave the tree alone until the round ends: a dirty tree in
+  a reviewer's END `git status --porcelain` line stops it.
 - Give each agent a unique scratch dir IN ITS PROMPT, one per AGENT, the
   parent's reviewers too (`$SCRATCHPAD/lane<issue><slice>-<role>/`): same-named
   files overwrite (a reviewer's `git archive` clobbered a peer's probe tree, #5268).
+  A lane's OWN files take the issue number too (`pr<issue>-body.md`,
+  `lane<issue>-suite.log`): sibling lanes share one session scratchpad, and
+  three lost a `pr-body.md` / `suite3.log` to it (2026-10-30).

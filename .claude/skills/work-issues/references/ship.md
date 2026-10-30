@@ -158,6 +158,12 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   stale install gen exits 1), then `vp run gen:all-matrices && vp run format`
   (it ends in the ledger normalize) after EVERY rebase; push once
   `git status --porcelain` is empty (`docs/cli-flag-coverage.md` is outside `_generated/`).
+- **A bot can push onto the PR's own branch mid-merge** (`cfn-schema-refresh`'s
+  `additional CFn schema drift`, #5123): merge with `--match-head-commit <the
+  sha you verified>`, take a head you did not author by the MERGE ARM, never a
+  force-push, and approve its runs — `gh run list --branch <b> --status
+  action_required`, then `gh api -X POST repos/<R>/actions/runs/<id>/approve`
+  (`gh run` has no verb); until then `gh pr checks` says `no checks reported`.
 - **A body edit RE-RUNS four required checks** (`on: edited`), green or
   not: merge only at `gh pr view <N> --json mergeStateStatus` = `CLEAN` (else
   "base branch policy prohibits the merge"); `gh run rerun` what it CANCELLED,
