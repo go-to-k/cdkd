@@ -1157,14 +1157,17 @@ export class ReplacementRulesRegistry {
     });
 
     // RDS DBProxyEndpoint — DBProxyName + DBProxyEndpointName + VpcSubnetIds +
-    // TargetRole are immutable. ModifyDBProxyEndpoint only accepts
-    // VpcSecurityGroupIds (+ rename, not implemented).
+    // TargetRole + EndpointNetworkType are immutable. ModifyDBProxyEndpoint only
+    // accepts VpcSecurityGroupIds (+ rename, not implemented). EndpointNetworkType
+    // is named here, not left to the create-only fallback, so the replacement
+    // does not hinge on a DescribeType answer (go-to-k/cdkd#2762).
     this.rules.set('AWS::RDS::DBProxyEndpoint', {
       replacementProperties: new Set([
         'DBProxyName',
         'DBProxyEndpointName',
         'VpcSubnetIds',
         'TargetRole',
+        'EndpointNetworkType',
       ]),
     });
 

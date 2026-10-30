@@ -946,9 +946,11 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   //   1. `<apiId>|<apiKeyId>` — what `AppSyncProvider.createApiKey` packs
   //      (`packCompositeId`, same order as the new CFn identifier) AND what the
   //      Cloud Control route stores now that the identifier is composite;
-  //   2. the key ARN `arn:<partition>:appsync:<region>:<account>:apis/<apiId>/apikey/<apiKeyId>`
-  //      — CloudFormation's `Ref` for the type, so the `PhysicalResourceId` a
-  //      `--migrate-from-cloudformation` import records verbatim;
+  //   2. the key ARN `arn:<partition>:appsync:<region>:<account>:apis/<apiId>/apikeys/<apiKeyId>`
+  //      — CloudFormation's `Ref` for the type (plural `apikeys`, measured in
+  //      #5540; the singular `apikey` the CFn docs print is accepted too), so the
+  //      `PhysicalResourceId` a `--migrate-from-cloudformation` import before
+  //      #5364 recorded verbatim;
   //   3. the bare `<apiKeyId>` — what `cdkd import --resource Key=<apiKeyId>`
   //      records verbatim (`AppSyncProvider.import` stores `knownPhysicalId` as
   //      given for every child type); the parent comes from the recorded
@@ -960,7 +962,7 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   // Both segments are AWS-minted ids, so a `|` inside one cannot occur and the
   // arity test is exact rather than "at least". An `arn:`-prefixed value that
   // is NOT the key ARN shape above is refused rather than shipped as a bare
-  // key id — a mis-spelled ARN (`apikeys`, a wrong service) has no `|`, so
+  // key id — a mis-spelled ARN (a wrong segment or service) has no `|`, so
   // without the guard it would fall through to shape 3 and only CreateChangeSet
   // would notice.
   'AWS::AppSync::ApiKey': (physicalId, properties) => {
@@ -970,7 +972,7 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
         "empty physical id for AWS::AppSync::ApiKey (expected 'apiId|apiKeyId', the key ARN, or a bare apiKeyId)"
       );
     }
-    const arnMatch = /^arn:[^:]+:appsync:[^:]*:[^:]*:apis\/([^/|]+)\/apikey\/([^/|]+)$/.exec(
+    const arnMatch = /^arn:[^:]+:appsync:[^:]*:[^:]*:apis\/([^/|]+)\/apikeys?\/([^/|]+)$/.exec(
       trimmed
     );
     if (arnMatch) {
@@ -983,7 +985,7 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     if (trimmed.startsWith('arn:')) {
       throw new Error(
         `${showRecordValue(physicalId)} looks like an ARN but is not an AppSync API key ARN ` +
-          `(expected arn:<partition>:appsync:<region>:<account>:apis/<apiId>/apikey/<apiKeyId>)`
+          `(expected arn:<partition>:appsync:<region>:<account>:apis/<apiId>/apikeys/<apiKeyId>)`
       );
     }
     const parts = trimmed.split('|');

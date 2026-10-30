@@ -176,7 +176,7 @@ describe('AppSyncProvider folds the ARN region segment (issue #1850)', () => {
     const result = await provider.create('K', 'AWS::AppSync::ApiKey', { ApiId: 'abcd1234' });
 
     expect(result.attributes?.['Arn']).toBe(
-      appsyncArn(canonical, 'apis/abcd1234/apikey/da2-abcdefghij')
+      appsyncArn(canonical, 'apis/abcd1234/apikeys/da2-abcdefghij')
     );
   });
 

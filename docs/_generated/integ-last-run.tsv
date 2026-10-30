@@ -21,7 +21,7 @@ apigw-usage-plan-key	2026-10-19T01:54:58Z	PASS	70	verify.sh	PR #5081 CloudWatch-
 apigw-vpclink-integration-target	2026-10-27T12:28:43Z	PASS	326	verify.sh	rc ok, orph clean; new fixture, #5391 IntegrationTarget
 app-autoscaling-recreate	2026-10-08T03:35:50Z	PASS	0	verify.sh	#4706: an imported scalable target is recorded cc-api; --recreate-via-cc-api refused (also from a legacy sdk record), policy intact; destroy 0 errors, 0 orphans
 appconfig	2026-08-10T05:29:23Z	PASS	69	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
-appsync	2026-10-26T18:58:44Z	PASS	190	verify.sh	PR #5370 (#5359) d8019e0f; destroy 0 errors, orph clean, own ephemeral bucket swept
+appsync	2026-10-30T05:02:32Z	PASS	206	verify.sh	#5540 ApiKeyRef plural apikeys; destroy 0 errors, orph clean, versions swept
 asset-auto-create	2026-10-05T08:20:47Z	PASS	175	verify.sh	rc ok, orph clean; eu-north-1 (#2624 PR #4573)
 asset-bootstrap	2026-10-05T08:20:47Z	PASS	151	verify.sh	rc ok, orph clean; eu-west-2 (#2624 PR #4573)
 asset-migration	2026-10-11T09:33:22Z	PASS	641	verify.sh	PR #4720 (#4705) final c53f78f; rc 0 in eu-west-1, 0 orphans
@@ -53,7 +53,7 @@ cloudfront-function-url	2026-10-23T23:55:45Z	PASS	225	verify.sh	rc ok, orph clea
 cloudtrail-trail	2026-10-29T08:19:00Z	PASS	330	verify.sh	rc ok, advanced selectors + aggregation verified, orph clean (1 lambda log group routinely swept)
 cloudwatch	2026-10-29T22:28:12Z	PASS	185	verify.sh	rc ok, orph clean; alarm EvaluationWindow/PromQL on SDK route
 cloudwatch-anomaly-detector	2026-10-26T05:42:10Z	PASS	61	verify.sh	rc ok, orph clean; TZ=Asia/Tokyo offset-less range read as UTC (5311)
-codebuild-project	2026-10-28T17:12:03Z	PASS	130	verify.sh	rc ok, orph clean; #5492 six keep arm + badge negative probe RED
+codebuild-project	2026-10-30T04:45:16Z	PASS	125	verify.sh	rc ok, orph clean
 codecommit	2026-10-25T00:07:44Z	PASS	125	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
 cognito	2026-10-24T19:26:15Z	PASS	214	verify.sh	rc ok, orph clean, #5266 tail-c
@@ -183,6 +183,7 @@ import-auto-mode	2026-10-06T02:45:41Z	PASS	85	verify.sh	rc ok, orph clean (#4607
 import-deployed-parameter-secret	2026-10-18T05:20:41Z	PASS	377	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 import-heal-prefix-record	2026-10-18T00:55:44Z	PASS	155	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
 import-lambda-url-attributes	2026-10-01T10:13:53Z	PASS	105	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean
+import-migrate-appsync	2026-10-30T05:02:32Z	PASS	115	verify.sh	#5540 outputs = CFn (KeyArn/KeyRef/SchemaRef); rc ok, orph clean, versions swept
 import-migrate-vpc	2026-10-19T00:17:40Z	PASS	356	verify.sh	rc ok, orph clean (#5077)
 import-nested-stack	2026-10-20T04:27:51Z	PASS	155	verify.sh	deploy+destroy clean, 0 orphans
 import-noecho-parameter	2026-10-16T23:38:07Z	PASS	150	verify.sh	rc ok, orph clean (NoEchoRunState refactor #5022)
@@ -300,7 +301,7 @@ pipes-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	128	verify.sh	rc 0, 0 orphans
 profile-region-default	2026-10-13T14:31:12Z	PASS	155	verify.sh	rc ok, orph clean, own state bucket, after §8-d probe; PR #4864 06b838511
 propagation-races-2	2026-10-22T21:44:19Z	PASS	130	verify.sh	PR #5187; ran alone after batch of 4; rc ok, destroy clean 0 errors, 0 orphans
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-10-29T03:31:04Z	PASS	5147	verify.sh	rc 0, orph clean (#1160 removal)
+rds-aurora	2026-10-30T06:11:29Z	PASS	4976	verify.sh	rc 0, orph clean (#5551 DBProxyEndpoint EndpointNetworkType sdk route; probe red at #2762)
 rds-dbinstance-backfill	2026-10-29T03:31:04Z	PASS	1148	verify.sh	rc 0, orph clean (#1160 removal)
 rds-fix-forward-orphan	2026-10-24T22:46:19Z	PASS	1031	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans
 rds-full-stack	2026-10-24T22:46:19Z	PASS	1011	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans
