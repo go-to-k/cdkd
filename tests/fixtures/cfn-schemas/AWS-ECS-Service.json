@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ECS::Service",
-  "generatedAt": "2026-10-01",
+  "generatedAt": "2026-10-20",
   "properties": [
     "AvailabilityZoneRebalancing",
     "CapacityProviderStrategy",
@@ -11,6 +11,7 @@
     "EnableECSManagedTags",
     "EnableExecuteCommand",
     "ForceNewDeployment",
+    "GatewayConnectors",
     "HealthCheckGracePeriodSeconds",
     "LaunchType",
     "LoadBalancers",
@@ -134,6 +135,7 @@
       "AccessLogConfiguration",
       "AwsPcaAuthorityArn",
       "ClientAliases",
+      "ContainerConfigurations",
       "DiscoveryName",
       "DnsName",
       "Enabled",
@@ -147,6 +149,7 @@
       "KmsKey",
       "LogConfiguration",
       "LogDriver",
+      "LogLevel",
       "Name",
       "Namespace",
       "Options",
@@ -206,6 +209,22 @@
       "TimeoutInMinutes",
       "Type",
       "Value"
+    ],
+    "GatewayConnectors": [
+      "AccessTypes",
+      "Filters",
+      "GrpcCode",
+      "HealthCheck",
+      "HealthCheckIntervalSeconds",
+      "HealthCheckPath",
+      "HealthCheckPort",
+      "HealthCheckProtocol",
+      "HealthCheckTimeoutSeconds",
+      "HealthyThresholdCount",
+      "HttpCode",
+      "Matcher",
+      "PortName",
+      "UnhealthyThresholdCount"
     ]
   },
   "nestedPropertyPaths": {
@@ -282,6 +301,8 @@
       "AccessLogConfiguration",
       "AccessLogConfiguration.Format",
       "AccessLogConfiguration.IncludeQueryParameters",
+      "ContainerConfigurations",
+      "ContainerConfigurations.LogLevel",
       "Enabled",
       "LogConfiguration",
       "LogConfiguration.LogDriver",
@@ -358,6 +379,22 @@
       "MaximumPercent",
       "MinimumHealthyPercent",
       "Strategy"
+    ],
+    "GatewayConnectors": [
+      "Filters",
+      "Filters.AccessTypes",
+      "HealthCheck",
+      "HealthCheck.HealthCheckIntervalSeconds",
+      "HealthCheck.HealthCheckPath",
+      "HealthCheck.HealthCheckPort",
+      "HealthCheck.HealthCheckProtocol",
+      "HealthCheck.HealthCheckTimeoutSeconds",
+      "HealthCheck.HealthyThresholdCount",
+      "HealthCheck.Matcher",
+      "HealthCheck.Matcher.GrpcCode",
+      "HealthCheck.Matcher.HttpCode",
+      "HealthCheck.UnhealthyThresholdCount",
+      "PortName"
     ]
   },
   "definitionShapes": {
@@ -390,7 +427,8 @@
       "Role": "scalar",
       "TaskDefinition": "scalar",
       "ServiceName": "scalar",
-      "DeploymentConfiguration": "object"
+      "DeploymentConfiguration": "object",
+      "GatewayConnectors": "array"
     },
     "TimeoutConfiguration": {
       "PerRequestTimeoutSeconds": "scalar",
@@ -509,6 +547,7 @@
     },
     "ServiceConnectConfiguration": {
       "Services": "array",
+      "ContainerConfigurations": "array",
       "AccessLogConfiguration": "object",
       "Enabled": "scalar",
       "LogConfiguration": "object",
@@ -529,6 +568,18 @@
     },
     "DeploymentController": {
       "Type": "scalar"
+    },
+    "GatewayConnectorHealthCheckMatcher": {
+      "GrpcCode": "scalar",
+      "HttpCode": "scalar"
+    },
+    "ServiceConnectContainerConfiguration": {
+      "LogLevel": "scalar"
+    },
+    "GatewayConnector": {
+      "Filters": "object",
+      "HealthCheck": "object",
+      "PortName": "scalar"
     },
     "Secret": {
       "ValueFrom": "scalar",
@@ -570,6 +621,16 @@
       "Value": "scalar",
       "Key": "scalar"
     },
+    "GatewayConnectorHealthCheck": {
+      "HealthCheckIntervalSeconds": "scalar",
+      "Matcher": "object",
+      "HealthyThresholdCount": "scalar",
+      "HealthCheckPath": "scalar",
+      "HealthCheckProtocol": "scalar",
+      "HealthCheckPort": "scalar",
+      "UnhealthyThresholdCount": "scalar",
+      "HealthCheckTimeoutSeconds": "scalar"
+    },
     "DeploymentConfiguration": {
       "CanaryConfiguration": "object",
       "BakeTimeInMinutes": "scalar",
@@ -589,6 +650,9 @@
       "Tls": "object",
       "DiscoveryName": "scalar",
       "PortName": "scalar"
+    },
+    "GatewayConnectorFilters": {
+      "AccessTypes": "array"
     }
   },
   "definitionRequired": {
@@ -652,6 +716,9 @@
     "DeploymentLifecycleHook": [
       "LifecycleStages"
     ],
+    "GatewayConnector": [
+      "PortName"
+    ],
     "Secret": [
       "Name",
       "ValueFrom"
@@ -689,6 +756,9 @@
     ],
     "ForceNewDeployment": [
       "EnableForceNewDeployment"
+    ],
+    "GatewayConnectors": [
+      "PortName"
     ],
     "LoadBalancers.AdvancedConfiguration": [
       "AlternateTargetGroupArn"
@@ -766,6 +836,12 @@
     "DeploymentConfiguration.LinearConfiguration": "object",
     "DeploymentController": "object",
     "ForceNewDeployment": "object",
+    "GatewayConnectors": "array",
+    "GatewayConnectors[]": "object",
+    "GatewayConnectors[].Filters": "object",
+    "GatewayConnectors[].Filters.AccessTypes": "array",
+    "GatewayConnectors[].HealthCheck": "object",
+    "GatewayConnectors[].HealthCheck.Matcher": "object",
     "LoadBalancers": "array",
     "LoadBalancers[]": "object",
     "LoadBalancers[].AdvancedConfiguration": "object",
@@ -783,6 +859,8 @@
     "PlacementStrategies[]": "object",
     "ServiceConnectConfiguration": "object",
     "ServiceConnectConfiguration.AccessLogConfiguration": "object",
+    "ServiceConnectConfiguration.ContainerConfigurations": "array",
+    "ServiceConnectConfiguration.ContainerConfigurations[]": "object",
     "ServiceConnectConfiguration.LogConfiguration": "object",
     "ServiceConnectConfiguration.LogConfiguration.Options": "object",
     "ServiceConnectConfiguration.LogConfiguration.SecretOptions": "array",

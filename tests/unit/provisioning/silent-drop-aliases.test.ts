@@ -23,7 +23,7 @@
  * underlying create code already read them — so they are covered by the
  * codegen-driven `property-coverage` test instead of a behavioral test here.
  */
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockEc2Send = vi.hoisted(() => vi.fn());
 const mockEcsSend = vi.hoisted(() => vi.fn());
@@ -188,6 +188,16 @@ describe('B-bucket silent-drop alias fixes (issue #613)', () => {
   });
 
   describe('AWS::ECS::Service:PlacementStrategies', () => {
+    // The wire shape, not the steady-state wait the default runs
+    // (go-to-k/cdkd#5571): --no-wait keeps the waiter and the pre-create name
+    // probe out of these cases.
+    beforeEach(() => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+    });
+    afterEach(() => {
+      delete process.env['CDKD_NO_WAIT'];
+    });
+
     it('create: reads the CFn-schema-canonical (plural) key and passes it to placementStrategy', async () => {
       mockEcsSend.mockResolvedValueOnce({
         service: {

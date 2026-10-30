@@ -739,11 +739,34 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       Namespace: ['newNamespaceName'],
       OpenTableFormat: ['format'],
       TableName: ['name', 'newName'],
+      'IcebergMetadata.IcebergSchemaV2.SchemaV2FieldType': ['type'],
+    },
+    containers: {
+      // A maintenance property is one PutTableMaintenanceConfiguration's
+      // `value`: its status there, its settings under the kind's own member.
+      Compaction: ['value', 'value.settings.icebergCompaction'],
+      SnapshotManagement: ['value', 'value.settings.icebergSnapshotManagement'],
+      IcebergMetadata: ['metadata.iceberg'],
+      'IcebergMetadata.IcebergPartitionSpec': ['partitionSpec'],
+      'IcebergMetadata.IcebergSchema': ['schema'],
+      'IcebergMetadata.IcebergSchema.SchemaFieldList': ['fields'],
+      'IcebergMetadata.IcebergSchemaV2': ['schemaV2'],
+      'IcebergMetadata.IcebergSchemaV2.SchemaV2FieldList': ['fields'],
+      'IcebergMetadata.IcebergSortOrder': ['writeOrder'],
+      'IcebergMetadata.TableProperties': ['properties'],
     },
   },
   'AWS::S3Tables::TableBucket': {
     members: {
       TableBucketName: ['name'],
+    },
+    containers: {
+      ReplicationConfiguration: ['configuration'],
+      UnreferencedFileRemoval: ['value', 'value.settings.icebergUnreferencedFileRemoval'],
+    },
+    transformed: {
+      'MetricsConfiguration.Status':
+        'Enabled sends PutTableBucketMetricsConfiguration and Disabled its Delete, each with only the bucket ARN: no member carries the status',
     },
   },
   'AWS::SNS::Subscription': {

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Cognito::UserPool",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-10-29",
   "properties": [
     "AccountRecoverySetting",
     "AdminCreateUserConfig",
@@ -63,10 +63,22 @@
       "SignInPolicy",
       "TemporaryPasswordValidityDays"
     ],
-    "AccountRecoverySetting": [
+    "KeyConfiguration": [
+      "KeyType",
+      "KmsKeyArn"
+    ],
+    "Schema": [
+      "AttributeDataType",
+      "DeveloperOnlyAttribute",
+      "MaxLength",
+      "MaxValue",
+      "MinLength",
+      "MinValue",
+      "Mutable",
       "Name",
-      "Priority",
-      "RecoveryMechanisms"
+      "NumberAttributeConstraints",
+      "Required",
+      "StringAttributeConstraints"
     ],
     "AdminCreateUserConfig": [
       "AllowAdminCreateUserOnly",
@@ -76,9 +88,11 @@
       "SMSMessage",
       "UnusedAccountValidityDays"
     ],
-    "DeviceConfiguration": [
-      "ChallengeRequiredOnNewDevice",
-      "DeviceOnlyRememberedOnUserPrompt"
+    "UsernameConfiguration": [
+      "CaseSensitive"
+    ],
+    "UserAttributeUpdateSettings": [
+      "AttributesRequireVerificationBeforeUpdate"
     ],
     "EmailConfiguration": [
       "ConfigurationSet",
@@ -86,6 +100,39 @@
       "From",
       "ReplyToEmailAddress",
       "SourceArn"
+    ],
+    "SmsConfiguration": [
+      "CallerArn",
+      "ConfigurationSetName",
+      "EumsSms",
+      "ExternalId",
+      "InEntityId",
+      "InTemplateId",
+      "OriginationIdentity",
+      "Region",
+      "SnsCallerArn",
+      "SnsRegion"
+    ],
+    "AccountRecoverySetting": [
+      "Name",
+      "Priority",
+      "RecoveryMechanisms"
+    ],
+    "VerificationMessageTemplate": [
+      "DefaultEmailOption",
+      "EmailMessage",
+      "EmailMessageByLink",
+      "EmailSubject",
+      "EmailSubjectByLink",
+      "SmsMessage"
+    ],
+    "IssuerConfiguration": [
+      "Type"
+    ],
+    "UserPoolAddOns": [
+      "AdvancedSecurityAdditionalFlows",
+      "AdvancedSecurityMode",
+      "CustomAuthMode"
     ],
     "LambdaConfig": [
       "CreateAuthChallenge",
@@ -106,56 +153,9 @@
       "UserMigration",
       "VerifyAuthChallengeResponse"
     ],
-    "SmsConfiguration": [
-      "CallerArn",
-      "ConfigurationSetName",
-      "EumsSms",
-      "ExternalId",
-      "InEntityId",
-      "InTemplateId",
-      "OriginationIdentity",
-      "Region",
-      "SnsCallerArn",
-      "SnsRegion"
-    ],
-    "KeyConfiguration": [
-      "KeyType",
-      "KmsKeyArn"
-    ],
-    "Schema": [
-      "AttributeDataType",
-      "DeveloperOnlyAttribute",
-      "MaxLength",
-      "MaxValue",
-      "MinLength",
-      "MinValue",
-      "Mutable",
-      "Name",
-      "NumberAttributeConstraints",
-      "Required",
-      "StringAttributeConstraints"
-    ],
-    "UsernameConfiguration": [
-      "CaseSensitive"
-    ],
-    "UserAttributeUpdateSettings": [
-      "AttributesRequireVerificationBeforeUpdate"
-    ],
-    "VerificationMessageTemplate": [
-      "DefaultEmailOption",
-      "EmailMessage",
-      "EmailMessageByLink",
-      "EmailSubject",
-      "EmailSubjectByLink",
-      "SmsMessage"
-    ],
-    "UserPoolAddOns": [
-      "AdvancedSecurityAdditionalFlows",
-      "AdvancedSecurityMode",
-      "CustomAuthMode"
-    ],
-    "IssuerConfiguration": [
-      "Type"
+    "DeviceConfiguration": [
+      "ChallengeRequiredOnNewDevice",
+      "DeviceOnlyRememberedOnUserPrompt"
     ]
   },
   "nestedPropertyPaths": {
@@ -171,10 +171,22 @@
       "SignInPolicy",
       "SignInPolicy.AllowedFirstAuthFactors"
     ],
-    "AccountRecoverySetting": [
-      "RecoveryMechanisms",
-      "RecoveryMechanisms.Name",
-      "RecoveryMechanisms.Priority"
+    "KeyConfiguration": [
+      "KeyType",
+      "KmsKeyArn"
+    ],
+    "Schema": [
+      "AttributeDataType",
+      "DeveloperOnlyAttribute",
+      "Mutable",
+      "Name",
+      "NumberAttributeConstraints",
+      "NumberAttributeConstraints.MaxValue",
+      "NumberAttributeConstraints.MinValue",
+      "Required",
+      "StringAttributeConstraints",
+      "StringAttributeConstraints.MaxLength",
+      "StringAttributeConstraints.MinLength"
     ],
     "AdminCreateUserConfig": [
       "AllowAdminCreateUserOnly",
@@ -184,9 +196,11 @@
       "InviteMessageTemplate.SMSMessage",
       "UnusedAccountValidityDays"
     ],
-    "DeviceConfiguration": [
-      "ChallengeRequiredOnNewDevice",
-      "DeviceOnlyRememberedOnUserPrompt"
+    "UsernameConfiguration": [
+      "CaseSensitive"
+    ],
+    "UserAttributeUpdateSettings": [
+      "AttributesRequireVerificationBeforeUpdate"
     ],
     "EmailConfiguration": [
       "ConfigurationSet",
@@ -194,6 +208,40 @@
       "From",
       "ReplyToEmailAddress",
       "SourceArn"
+    ],
+    "SmsConfiguration": [
+      "EumsSms",
+      "EumsSms.CallerArn",
+      "EumsSms.ConfigurationSetName",
+      "EumsSms.ExternalId",
+      "EumsSms.InEntityId",
+      "EumsSms.InTemplateId",
+      "EumsSms.OriginationIdentity",
+      "EumsSms.Region",
+      "ExternalId",
+      "SnsCallerArn",
+      "SnsRegion"
+    ],
+    "AccountRecoverySetting": [
+      "RecoveryMechanisms",
+      "RecoveryMechanisms.Name",
+      "RecoveryMechanisms.Priority"
+    ],
+    "VerificationMessageTemplate": [
+      "DefaultEmailOption",
+      "EmailMessage",
+      "EmailMessageByLink",
+      "EmailSubject",
+      "EmailSubjectByLink",
+      "SmsMessage"
+    ],
+    "IssuerConfiguration": [
+      "Type"
+    ],
+    "UserPoolAddOns": [
+      "AdvancedSecurityAdditionalFlows",
+      "AdvancedSecurityAdditionalFlows.CustomAuthMode",
+      "AdvancedSecurityMode"
     ],
     "LambdaConfig": [
       "CreateAuthChallenge",
@@ -220,206 +268,70 @@
       "UserMigration",
       "VerifyAuthChallengeResponse"
     ],
-    "SmsConfiguration": [
-      "EumsSms",
-      "EumsSms.CallerArn",
-      "EumsSms.ConfigurationSetName",
-      "EumsSms.ExternalId",
-      "EumsSms.InEntityId",
-      "EumsSms.InTemplateId",
-      "EumsSms.OriginationIdentity",
-      "EumsSms.Region",
-      "ExternalId",
-      "SnsCallerArn",
-      "SnsRegion"
-    ],
-    "KeyConfiguration": [
-      "KeyType",
-      "KmsKeyArn"
-    ],
-    "Schema": [
-      "AttributeDataType",
-      "DeveloperOnlyAttribute",
-      "Mutable",
-      "Name",
-      "NumberAttributeConstraints",
-      "NumberAttributeConstraints.MaxValue",
-      "NumberAttributeConstraints.MinValue",
-      "Required",
-      "StringAttributeConstraints",
-      "StringAttributeConstraints.MaxLength",
-      "StringAttributeConstraints.MinLength"
-    ],
-    "UsernameConfiguration": [
-      "CaseSensitive"
-    ],
-    "UserAttributeUpdateSettings": [
-      "AttributesRequireVerificationBeforeUpdate"
-    ],
-    "VerificationMessageTemplate": [
-      "DefaultEmailOption",
-      "EmailMessage",
-      "EmailMessageByLink",
-      "EmailSubject",
-      "EmailSubjectByLink",
-      "SmsMessage"
-    ],
-    "UserPoolAddOns": [
-      "AdvancedSecurityAdditionalFlows",
-      "AdvancedSecurityAdditionalFlows.CustomAuthMode",
-      "AdvancedSecurityMode"
-    ],
-    "IssuerConfiguration": [
-      "Type"
+    "DeviceConfiguration": [
+      "ChallengeRequiredOnNewDevice",
+      "DeviceOnlyRememberedOnUserPrompt"
     ]
   },
   "definitionShapes": {
     "#top": {
-      "UserPoolName": "scalar",
+      "UserPoolTags": "object",
       "Policies": "object",
-      "AccountRecoverySetting": "object",
+      "KeyConfiguration": "object",
+      "Schema": "array",
       "AdminCreateUserConfig": "object",
+      "UserPoolTier": "scalar",
+      "UsernameConfiguration": "object",
+      "UserPoolName": "scalar",
+      "SmsVerificationMessage": "scalar",
+      "UserAttributeUpdateSettings": "object",
+      "EmailConfiguration": "object",
+      "SmsConfiguration": "object",
+      "EmailVerificationSubject": "scalar",
+      "WebAuthnRelyingPartyID": "scalar",
+      "EmailAuthenticationSubject": "scalar",
+      "AccountRecoverySetting": "object",
+      "VerificationMessageTemplate": "object",
+      "IssuerConfiguration": "object",
+      "ProviderURL": "scalar",
+      "MfaConfiguration": "scalar",
+      "DeletionProtection": "scalar",
+      "WebAuthnFactorConfiguration": "scalar",
+      "SmsAuthenticationMessage": "scalar",
+      "WebAuthnUserVerification": "scalar",
+      "UserPoolAddOns": "object",
+      "ProviderName": "scalar",
+      "UserPoolId": "scalar",
+      "EmailAuthenticationMessage": "scalar",
       "AliasAttributes": "array",
+      "EnabledMfas": "array",
+      "LambdaConfig": "object",
+      "Arn": "scalar",
       "UsernameAttributes": "array",
       "AutoVerifiedAttributes": "array",
       "DeviceConfiguration": "object",
-      "EmailConfiguration": "object",
-      "EmailVerificationMessage": "scalar",
-      "EmailVerificationSubject": "scalar",
-      "DeletionProtection": "scalar",
-      "LambdaConfig": "object",
-      "MfaConfiguration": "scalar",
-      "EnabledMfas": "array",
-      "SmsAuthenticationMessage": "scalar",
-      "EmailAuthenticationMessage": "scalar",
-      "EmailAuthenticationSubject": "scalar",
-      "SmsConfiguration": "object",
-      "SmsVerificationMessage": "scalar",
-      "KeyConfiguration": "object",
-      "WebAuthnRelyingPartyID": "scalar",
-      "WebAuthnUserVerification": "scalar",
-      "WebAuthnFactorConfiguration": "scalar",
-      "Schema": "array",
-      "UsernameConfiguration": "object",
-      "UserAttributeUpdateSettings": "object",
-      "UserPoolTags": "object",
-      "VerificationMessageTemplate": "object",
-      "UserPoolAddOns": "object",
-      "ProviderName": "scalar",
-      "ProviderURL": "scalar",
-      "Arn": "scalar",
-      "UserPoolId": "scalar",
-      "UserPoolTier": "scalar",
-      "IssuerConfiguration": "object"
-    },
-    "PasswordPolicy": {
-      "MinimumLength": "scalar",
-      "RequireLowercase": "scalar",
-      "RequireNumbers": "scalar",
-      "RequireSymbols": "scalar",
-      "RequireUppercase": "scalar",
-      "TemporaryPasswordValidityDays": "scalar",
-      "PasswordHistorySize": "scalar"
-    },
-    "SignInPolicy": {
-      "AllowedFirstAuthFactors": "array"
+      "EmailVerificationMessage": "scalar"
     },
     "Policies": {
       "PasswordPolicy": "object",
       "SignInPolicy": "object"
     },
+    "KeyConfiguration": {
+      "KeyType": "scalar",
+      "KmsKeyArn": "scalar"
+    },
     "InviteMessageTemplate": {
       "EmailMessage": "scalar",
-      "EmailSubject": "scalar",
-      "SMSMessage": "scalar"
+      "SMSMessage": "scalar",
+      "EmailSubject": "scalar"
     },
-    "RecoveryOption": {
-      "Name": "scalar",
-      "Priority": "scalar"
-    },
-    "AccountRecoverySetting": {
-      "RecoveryMechanisms": "array"
+    "AdvancedSecurityAdditionalFlows": {
+      "CustomAuthMode": "scalar"
     },
     "AdminCreateUserConfig": {
-      "AllowAdminCreateUserOnly": "scalar",
       "InviteMessageTemplate": "object",
-      "UnusedAccountValidityDays": "scalar"
-    },
-    "DeviceConfiguration": {
-      "ChallengeRequiredOnNewDevice": "scalar",
-      "DeviceOnlyRememberedOnUserPrompt": "scalar"
-    },
-    "EmailConfiguration": {
-      "ReplyToEmailAddress": "scalar",
-      "SourceArn": "scalar",
-      "From": "scalar",
-      "ConfigurationSet": "scalar",
-      "EmailSendingAccount": "scalar"
-    },
-    "CustomEmailSender": {
-      "LambdaVersion": "scalar",
-      "LambdaArn": "scalar"
-    },
-    "CustomSMSSender": {
-      "LambdaVersion": "scalar",
-      "LambdaArn": "scalar"
-    },
-    "PreTokenGenerationConfig": {
-      "LambdaVersion": "scalar",
-      "LambdaArn": "scalar"
-    },
-    "InboundFederation": {
-      "LambdaVersion": "scalar",
-      "LambdaArn": "scalar"
-    },
-    "LambdaConfig": {
-      "CreateAuthChallenge": "scalar",
-      "CustomMessage": "scalar",
-      "DefineAuthChallenge": "scalar",
-      "PostAuthentication": "scalar",
-      "PostConfirmation": "scalar",
-      "PreAuthentication": "scalar",
-      "PreSignUp": "scalar",
-      "VerifyAuthChallengeResponse": "scalar",
-      "UserMigration": "scalar",
-      "PreTokenGeneration": "scalar",
-      "CustomEmailSender": "object",
-      "CustomSMSSender": "object",
-      "KMSKeyID": "scalar",
-      "PreTokenGenerationConfig": "object",
-      "InboundFederation": "object"
-    },
-    "SmsConfiguration": {
-      "ExternalId": "scalar",
-      "SnsCallerArn": "scalar",
-      "SnsRegion": "scalar",
-      "EumsSms": "object"
-    },
-    "EumsSmsConfiguration": {
-      "CallerArn": "scalar",
-      "ExternalId": "scalar",
-      "OriginationIdentity": "scalar",
-      "ConfigurationSetName": "scalar",
-      "InEntityId": "scalar",
-      "InTemplateId": "scalar",
-      "Region": "scalar"
-    },
-    "StringAttributeConstraints": {
-      "MaxLength": "scalar",
-      "MinLength": "scalar"
-    },
-    "NumberAttributeConstraints": {
-      "MaxValue": "scalar",
-      "MinValue": "scalar"
-    },
-    "SchemaAttribute": {
-      "AttributeDataType": "scalar",
-      "DeveloperOnlyAttribute": "scalar",
-      "Mutable": "scalar",
-      "Name": "scalar",
-      "NumberAttributeConstraints": "object",
-      "StringAttributeConstraints": "object",
-      "Required": "scalar"
+      "UnusedAccountValidityDays": "scalar",
+      "AllowAdminCreateUserOnly": "scalar"
     },
     "UsernameConfiguration": {
       "CaseSensitive": "scalar"
@@ -427,35 +339,123 @@
     "UserAttributeUpdateSettings": {
       "AttributesRequireVerificationBeforeUpdate": "array"
     },
+    "CustomSMSSender": {
+      "LambdaArn": "scalar",
+      "LambdaVersion": "scalar"
+    },
+    "EmailConfiguration": {
+      "ReplyToEmailAddress": "scalar",
+      "ConfigurationSet": "scalar",
+      "EmailSendingAccount": "scalar",
+      "SourceArn": "scalar",
+      "From": "scalar"
+    },
+    "SmsConfiguration": {
+      "SnsRegion": "scalar",
+      "ExternalId": "scalar",
+      "EumsSms": "object",
+      "SnsCallerArn": "scalar"
+    },
+    "PasswordPolicy": {
+      "RequireNumbers": "scalar",
+      "MinimumLength": "scalar",
+      "TemporaryPasswordValidityDays": "scalar",
+      "RequireUppercase": "scalar",
+      "RequireLowercase": "scalar",
+      "RequireSymbols": "scalar",
+      "PasswordHistorySize": "scalar"
+    },
+    "PreTokenGenerationConfig": {
+      "LambdaArn": "scalar",
+      "LambdaVersion": "scalar"
+    },
+    "AccountRecoverySetting": {
+      "RecoveryMechanisms": "array"
+    },
     "VerificationMessageTemplate": {
-      "DefaultEmailOption": "scalar",
-      "EmailMessage": "scalar",
       "EmailMessageByLink": "scalar",
+      "EmailMessage": "scalar",
+      "SmsMessage": "scalar",
       "EmailSubject": "scalar",
-      "EmailSubjectByLink": "scalar",
-      "SmsMessage": "scalar"
-    },
-    "AdvancedSecurityAdditionalFlows": {
-      "CustomAuthMode": "scalar"
-    },
-    "UserPoolAddOns": {
-      "AdvancedSecurityMode": "scalar",
-      "AdvancedSecurityAdditionalFlows": "object"
-    },
-    "KeyConfiguration": {
-      "KeyType": "scalar",
-      "KmsKeyArn": "scalar"
+      "DefaultEmailOption": "scalar",
+      "EmailSubjectByLink": "scalar"
     },
     "IssuerConfiguration": {
       "Type": "scalar"
+    },
+    "NumberAttributeConstraints": {
+      "MinValue": "scalar",
+      "MaxValue": "scalar"
+    },
+    "EumsSmsConfiguration": {
+      "InTemplateId": "scalar",
+      "InEntityId": "scalar",
+      "ExternalId": "scalar",
+      "CallerArn": "scalar",
+      "ConfigurationSetName": "scalar",
+      "Region": "scalar",
+      "OriginationIdentity": "scalar"
+    },
+    "UserPoolAddOns": {
+      "AdvancedSecurityAdditionalFlows": "object",
+      "AdvancedSecurityMode": "scalar"
+    },
+    "RecoveryOption": {
+      "Priority": "scalar",
+      "Name": "scalar"
+    },
+    "StringAttributeConstraints": {
+      "MinLength": "scalar",
+      "MaxLength": "scalar"
+    },
+    "InboundFederation": {
+      "LambdaArn": "scalar",
+      "LambdaVersion": "scalar"
+    },
+    "SignInPolicy": {
+      "AllowedFirstAuthFactors": "array"
+    },
+    "CustomEmailSender": {
+      "LambdaArn": "scalar",
+      "LambdaVersion": "scalar"
+    },
+    "LambdaConfig": {
+      "CreateAuthChallenge": "scalar",
+      "PreSignUp": "scalar",
+      "KMSKeyID": "scalar",
+      "UserMigration": "scalar",
+      "PostAuthentication": "scalar",
+      "VerifyAuthChallengeResponse": "scalar",
+      "PreAuthentication": "scalar",
+      "DefineAuthChallenge": "scalar",
+      "PreTokenGeneration": "scalar",
+      "InboundFederation": "object",
+      "CustomSMSSender": "object",
+      "PostConfirmation": "scalar",
+      "CustomMessage": "scalar",
+      "PreTokenGenerationConfig": "object",
+      "CustomEmailSender": "object"
+    },
+    "SchemaAttribute": {
+      "DeveloperOnlyAttribute": "scalar",
+      "Mutable": "scalar",
+      "AttributeDataType": "scalar",
+      "StringAttributeConstraints": "object",
+      "Required": "scalar",
+      "NumberAttributeConstraints": "object",
+      "Name": "scalar"
+    },
+    "DeviceConfiguration": {
+      "DeviceOnlyRememberedOnUserPrompt": "scalar",
+      "ChallengeRequiredOnNewDevice": "scalar"
     }
   },
   "definitionRequired": {
-    "EumsSmsConfiguration": [
-      "CallerArn"
-    ],
     "UserAttributeUpdateSettings": [
       "AttributesRequireVerificationBeforeUpdate"
+    ],
+    "EumsSmsConfiguration": [
+      "CallerArn"
     ]
   },
   "nestedRequired": {

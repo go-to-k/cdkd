@@ -8,6 +8,9 @@ import type { Construct } from 'constructs';
  * verify.sh looks the subnets and the default security group up and hands them
  * in, so the stack creates no VPC resource a lingering ENI could hold.
  *
+ * ELASTIC_IP_PROBE declares Configuration.VpcEgressConfiguration.ElasticIpConfiguration
+ * (a refused deploy, #5123).
+ *
  * TAG_KEY / TAG_VALUE change the tag (a tags-only update: untag the old key,
  * tag the new one); a different SUBNET_IDS pair is an UpdateNetworkConnector
  * (a new version). `AssociatedComputeResourceTypes` stays fixed: AWS refuses
@@ -73,6 +76,14 @@ export class LambdaNetworkConnectorStack extends cdk.Stack {
     });
     // The connector's ENIs are created with the operator role's permissions.
     connector.node.addDependency(operatorRole);
+    // ELASTIC_IP_PROBE declares a member no @aws-sdk/client-lambda-core
+    // release models (#5123). cdkd must REFUSE the deploy before any call;
+    // before that it dropped the member and reported success. The value is
+    // never sent, so its spelling does not matter (the schema leaves it untyped).
+    const elasticIp = process.env['ELASTIC_IP_PROBE'];
+    if (elasticIp) {
+      connector.addPropertyOverride('Configuration.VpcEgressConfiguration.ElasticIpConfiguration', elasticIp);
+    }
 
     new cdk.CfnOutput(this, 'ConnectorArn', { value: connector.attrArn });
     new cdk.CfnOutput(this, 'LatestVersionArn', { value: connector.attrLatestVersionArn });

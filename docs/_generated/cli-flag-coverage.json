@@ -1374,6 +1374,7 @@
         "docdb-neptune",
         "dynamodb-globaltable-replica-settings",
         "dynamodb-gsi-update",
+        "ecs-service-update-props",
         "emr-instance-configs",
         "eventbridge-pipes",
         "kinesis-stream-mode-switch",

@@ -13,9 +13,9 @@ For every SDK provider that forwards a nested CFn config blob, compares the SHAP
 ## Summary
 
 - Audited targets: **28**
-- Nested CFn key paths under handled top-levels: **1463**
-- Paths delivered whole by a generic hand-off: **600**
-- Bare-array pairs clean: **178**
+- Nested CFn key paths under handled top-levels: **1471**
+- Paths delivered whole by a generic hand-off: **606**
+- Bare-array pairs clean: **182**
 - Explicitly handled in provider: **49**
 - Allow-listed (does NOT block CI): **9**
 - **Array-vs-wrapper divergences (blocks CI): 0**
@@ -110,9 +110,9 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::AppSync::Resolver` | `appsync-provider.ts` | `@aws-sdk/client-appsync` | lower-first | 9 | 0 | 0 |
 | `AWS::CloudFront::Distribution` | `cloudfront-distribution-provider.ts` | `@aws-sdk/client-cloudfront` | exact | 173 | 160 | 4 |
 | `AWS::CloudWatch::AnomalyDetector` | `cloudwatch-anomaly-detector-provider.ts` | `@aws-sdk/client-cloudwatch` | exact | 31 | 27 | 1 |
-| `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | 98 | 0 | 4 |
-| `AWS::ECS::Service` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | 122 | 109 | 4 |
-| `AWS::ECS::TaskDefinition` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | 142 | 30 | 3 |
+| `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | 99 | 0 | 4 |
+| `AWS::ECS::Service` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | 124 | 111 | 5 |
+| `AWS::ECS::TaskDefinition` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | 146 | 34 | 4 |
 | `AWS::Events::Rule` | `eventbridge-rule-provider.ts` | `@aws-sdk/client-eventbridge` | exact | 76 | 66 | 0 |
 | `AWS::Glue::Connection` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | 37 | 25 | 0 |
 | `AWS::Glue::Crawler` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | 46 | 45 | 1 |
@@ -122,7 +122,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::Glue::Table` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | 88 | 24 | 2 |
 | `AWS::Glue::Trigger` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | 16 | 7 | 0 |
 | `AWS::Lambda::EventSourceMapping` | `lambda-eventsource-provider.ts` | `@aws-sdk/client-lambda` | exact | 38 | 34 | 6 |
-| `AWS::Lambda::NetworkConnector` | `lambda-network-connector-provider.ts` | `@aws-sdk/client-lambda-core` | exact | 7 | 0 | 3 |
+| `AWS::Lambda::NetworkConnector` | `lambda-network-connector-provider.ts` | `@aws-sdk/client-lambda-core` | exact | 8 | 0 | 3 |
 | `AWS::Lambda::WebFunctionEndpoint` | `lambda-web-function-endpoint-provider.ts` | `@aws-sdk/client-lambda-web` | lower-first | 4 | 0 | 0 |
 | `AWS::Lambda::WebFunctionRevision` | `lambda-web-function-revision-provider.ts` | `@aws-sdk/client-lambda-web` | lower-first | 17 | 0 | 0 |
 | `AWS::Pipes::Pipe` | `pipes-provider.ts` | `@aws-sdk/client-pipes` | exact | 208 | 2 | 0 |
