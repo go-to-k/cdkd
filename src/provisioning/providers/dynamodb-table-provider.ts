@@ -169,6 +169,13 @@ import {
   readTtlSpec,
   sendTtlWaitingOutRateLimit,
 } from '../dynamodb-ttl.js';
+import {
+  planVectorIndexUpdates,
+  readbackVectorIndexes,
+  vectorIndexesForCreate,
+  vectorIndexesSettled,
+  type VectorIndexPlan,
+} from '../dynamodb-vector-indexes.js';
 
 /**
  * A DynamoDB table NAME (3-255 of `a-z A-Z 0-9 _ . -`), the physical id this
@@ -1987,6 +1994,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         'ResourcePolicy',
         'KinesisStreamSpecification',
         'ContributorInsightsSpecification',
+        'VectorIndexes',
       ]),
     ],
   ]);
@@ -2354,6 +2362,11 @@ export class DynamoDBTableProvider implements ResourceProvider {
           : (declaredGsis as GlobalSecondaryIndex[]);
       }
 
+      // Vector indexes (go-to-k/cdkd#2762) ride on CreateTable, member names
+      // shared with CFn, `Dimensions` on the Integer grammar.
+      const createVectorIndexes = vectorIndexesForCreate(properties['VectorIndexes']);
+      if (createVectorIndexes !== undefined) createParams.VectorIndexes = createVectorIndexes;
+
       // Local secondary indexes
       if (properties['LocalSecondaryIndexes']) {
         createParams.LocalSecondaryIndexes = properties[
@@ -2473,6 +2486,21 @@ export class DynamoDBTableProvider implements ResourceProvider {
         () => this.waitForTableActive(tableName),
         logicalId
       );
+      // go-to-k/cdkd#2762: a vector index created WITH the table may still be
+      // building when the table reads ACTIVE; wait for it, so the settings
+      // applied below and the next deploy's index ops do not meet it mid-build.
+      if (createVectorIndexes !== undefined) {
+        await timePhase(
+          'provider waits',
+          'DynamoDB table: wait for vector indexes',
+          () =>
+            this.waitForTableAndIndexesActive(tableName, undefined, {
+              after: 'CreateTable',
+              maskSecrets,
+            }),
+          logicalId
+        );
+      }
 
       // PointInTimeRecoverySpecification and TimeToLiveSpecification do NOT
       // ride on CreateTable — both are separate post-ACTIVE API calls
@@ -2862,6 +2890,46 @@ export class DynamoDBTableProvider implements ResourceProvider {
           );
         }
         warn(`${lsiMessage}; the LocalSecondaryIndexes change was not applied`);
+      }
+
+      // go-to-k/cdkd#2762: VectorIndexes. `UpdateTable` creates or deletes a
+      // vector index and has no in-place modify, so a same-name index whose
+      // definition changed is refused here, before any mutating call — the
+      // GSI KeySchema / Projection rule. Planned against the LIVE list too, so
+      // a record that lags AWS (an earlier deploy created the index and failed
+      // before state was written) converges instead of re-sending a Create
+      // AWS refuses. The state-borne callers warn and skip the change (no
+      // template-side remedy), as the LSI refusal above does. An UNSETTLED
+      // VectorIndexes needs no extra trigger: the engine's previous side is
+      // then `readUnsettled`'s projected live list, so this comparison is
+      // already against what AWS holds.
+      const vectorIndexesChanged =
+        JSON.stringify(properties['VectorIndexes']) !==
+        JSON.stringify(previousProperties['VectorIndexes']);
+      const vectorIndexPlan = vectorIndexesChanged
+        ? planVectorIndexUpdates(
+            previousProperties['VectorIndexes'],
+            properties['VectorIndexes'],
+            table?.VectorIndexes ?? (table === undefined ? undefined : [])
+          )
+        : undefined;
+      if (vectorIndexPlan !== undefined && vectorIndexPlan.changed.length > 0) {
+        // Each name masked on its own (the WHOLE-VALUE arm, at any length),
+        // not only inside the finished sentence, as `indexScopeAt` does.
+        const vectorMessage =
+          `AWS::DynamoDB::Table ${logicalId}: VectorIndexes ` +
+          `${vectorIndexPlan.changed.map((n) => maskSecrets(n)).join(', ')} changed definition, which DynamoDB cannot ` +
+          `modify in place`;
+        if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+          throw new ProvisioningError(
+            `${maskSecrets(vectorMessage)}. Nothing was applied to the table; rename the index ` +
+              `(so it is dropped and re-created) or revert the change`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        warn(`${vectorMessage}; that change was not applied`);
       }
 
       // The StreamArn attribute returned to the deploy engine. Seeded from the
@@ -3696,7 +3764,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // `UpdateTable`s that would race a still-UPDATING index and get
         // `ResourceInUseException`. So a flip waits on the INDEXES too.
         if (billingMode !== liveBillingMode) {
-          await this.waitForTableAndIndexesActive(physicalId, BILLING_FLIP_ACTIVE_WAIT_ATTEMPTS);
+          await this.waitForTableAndIndexesActive(physicalId, BILLING_FLIP_ACTIVE_WAIT_ATTEMPTS, {
+            maskSecrets,
+          });
         } else {
           await this.waitForTableActiveAfterUpdate(physicalId, TABLE_ACTIVE_WAIT_ATTEMPTS);
         }
@@ -4139,6 +4209,20 @@ export class DynamoDBTableProvider implements ResourceProvider {
           effectiveBillingMode === 'PAY_PER_REQUEST',
           maskSecrets,
           (indexName) => context?.markAttempted?.('GlobalSecondaryIndexes', [indexName])
+        );
+      }
+
+      // VectorIndexes (go-to-k/cdkd#2762), planned and refused above. AFTER the
+      // GSI ops, each in its own UpdateTable (one vector index add or remove per
+      // call), with the table and every index settled before and after.
+      if (vectorIndexPlan !== undefined) {
+        await this.applyVectorIndexUpdates(
+          physicalId,
+          vectorIndexPlan,
+          properties['AttributeDefinitions'] as AttributeDefinition[] | undefined,
+          maskSecrets,
+          () => markUnsettled('VectorIndexes'),
+          (indexName) => context?.markAttempted?.('VectorIndexes', [indexName])
         );
       }
 
@@ -5908,7 +5992,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         )
     );
     if (ops.length === 0) return;
-    await this.waitForTableAndIndexesActive(tableName);
+    await this.waitForTableAndIndexesActive(tableName, undefined, { maskSecrets });
     for (const op of ops) {
       // go-to-k/cdkd#5487: per-index insights live inside the index entries,
       // so a failure from this call on leaves GlobalSecondaryIndexes unsettled.
@@ -6145,7 +6229,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * blocks nothing — minutes of wait budget spent per op, with a real risk of
    * exhausting it on a table whose warm status lingers.
    */
-  private async waitForTableAndIndexesActive(tableName: string, maxAttempts = 1800): Promise<void> {
+  private async waitForTableAndIndexesActive(
+    tableName: string,
+    maxAttempts = 1800,
+    // go-to-k/cdkd#2762: the call the wait follows (create() waits too), and
+    // the caller's masker for the table name in the timeout text.
+    opts: { after?: string; maskSecrets?: SecretMasker } = {}
+  ): Promise<void> {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const response = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: tableName })
@@ -6155,14 +6245,78 @@ export class DynamoDBTableProvider implements ResourceProvider {
       const indexesActive = (table?.GlobalSecondaryIndexes ?? []).every(
         (gsi) => gsi.IndexStatus === 'ACTIVE'
       );
-      if (tableActive && indexesActive) {
+      // go-to-k/cdkd#2762: a vector index building or being removed gates the
+      // next index op the same way.
+      if (tableActive && indexesActive && vectorIndexesSettled(table?.VectorIndexes)) {
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
+    const m = maskerOrIdentity(opts.maskSecrets);
     throw new Error(
-      `Table ${tableName} and its global secondary indexes did not reach ACTIVE within ${maxAttempts} seconds after UpdateTable`
+      m(
+        `Table ${m(tableName)} and its indexes did not reach ACTIVE within ${maxAttempts} ` +
+          `seconds after ${opts.after ?? 'UpdateTable'}`
+      )
     );
+  }
+
+  /**
+   * Apply a {@link planVectorIndexUpdates} plan (go-to-k/cdkd#2762): each op in
+   * its own `UpdateTable`, as AWS takes one vector index add or remove per
+   * call, waiting for the table and every index to settle first (a GSI op just
+   * issued may still be backfilling) and after (the next op, and the settings
+   * applied after this, are refused against an updating table). A Create
+   * carries the desired `AttributeDefinitions`, as a GSI Create does, so an
+   * attribute the index's `SearchSchema` names is defined.
+   */
+  private async applyVectorIndexUpdates(
+    physicalId: string,
+    plan: VectorIndexPlan,
+    desiredAttributeDefinitions: AttributeDefinition[] | undefined,
+    maskSecrets: SecretMasker,
+    beforeFirstOp: () => void,
+    onCreated: (indexName: string) => void
+  ): Promise<void> {
+    const debug = (message: string): void => this.logger.debug(maskSecrets(message));
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
+    for (const name of plan.alreadyGone) {
+      debug(
+        `${this.vectorIndexScopeAt(name, physicalId, maskSecrets)} is recorded in cdkd state but ` +
+          `not live; skipping its Delete (already removed)`
+      );
+    }
+    for (const name of plan.adopted) {
+      warn(
+        `${this.vectorIndexScopeAt(name, physicalId, maskSecrets)} already exists in AWS with the ` +
+          `declared definition but is absent from cdkd's recorded previous state, so its ` +
+          `Create is being skipped. This usually means an earlier deploy created the index ` +
+          `and then failed before state was written.`
+      );
+    }
+    if (plan.ops.length === 0) return;
+    await this.waitForTableAndIndexesActive(physicalId, undefined, { maskSecrets });
+    beforeFirstOp();
+    for (const op of plan.ops) {
+      const input: UpdateTableCommandInput = {
+        TableName: physicalId,
+        VectorIndexUpdates: [op],
+      };
+      if (op.Create && desiredAttributeDefinitions) {
+        input.AttributeDefinitions = desiredAttributeDefinitions;
+      }
+      await this.dynamoDBClient.send(new UpdateTableCommand(input));
+      if (op.Create?.IndexName !== undefined) onCreated(op.Create.IndexName);
+      await this.waitForTableAndIndexesActive(physicalId, undefined, { maskSecrets });
+      debug(
+        `${op.Create ? 'created' : 'deleted'} ` +
+          this.vectorIndexScopeAt(
+            op.Create?.IndexName ?? op.Delete?.IndexName,
+            physicalId,
+            maskSecrets
+          )
+      );
+    }
   }
 
   /**
@@ -6721,6 +6875,16 @@ export class DynamoDBTableProvider implements ResourceProvider {
         )
       );
     }
+  }
+
+  /** {@link indexScopeAt}'s vector-index twin (go-to-k/cdkd#2762): the name masked on its own. */
+  private vectorIndexScopeAt(
+    indexName: unknown,
+    physicalId: string,
+    maskSecrets: SecretMasker
+  ): string {
+    const name = typeof indexName === 'string' ? maskSecrets(indexName) : '<unnamed>';
+    return `vector index ${name} on DynamoDB table ${maskSecrets(physicalId)}`;
   }
 
   private indexScopeAt(indexName: unknown, physicalId: string, maskSecrets: SecretMasker): string {
@@ -7763,7 +7927,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // until every index is fully ACTIVE, and CloudFormation likewise waits for
       // the index to finish before completing — so wait on BOTH the table and
       // every GSI status, not just the table.
-      await this.waitForTableAndIndexesActive(physicalId);
+      await this.waitForTableAndIndexesActive(physicalId, undefined, { maskSecrets });
       const verb = op.Create ? 'created' : op.Delete ? 'deleted' : 'updated';
       debug(
         `${verb} ${this.indexScopeAt(
@@ -8001,7 +8165,17 @@ export class DynamoDBTableProvider implements ResourceProvider {
    */
   getDriftUnorderedPaths(resourceType: string): string[] {
     if (resourceType !== 'AWS::DynamoDB::Table') return [];
-    return ['AttributeDefinitions', 'GlobalSecondaryIndexes[]', 'LocalSecondaryIndexes[]'];
+    return [
+      'AttributeDefinitions',
+      'GlobalSecondaryIndexes[]',
+      'LocalSecondaryIndexes[]',
+      // go-to-k/cdkd#2762: a SUBTREE entry, unlike the two above. The list is
+      // keyed by IndexName and every array inside an element is unordered
+      // too (`SearchSchema` is CFn `insertionOrder: false`, and
+      // `Projection.NonKeyAttributes` is a set): none carries an
+      // order-significant KeySchema.
+      'VectorIndexes',
+    ];
   }
 
   /**
@@ -8251,6 +8425,17 @@ export class DynamoDBTableProvider implements ResourceProvider {
         attemptedItems?.get('GlobalSecondaryIndexes')
       );
       if (out['GlobalSecondaryIndexes'] === undefined) delete out['GlobalSecondaryIndexes'];
+    }
+    // go-to-k/cdkd#2762: the same projection for VectorIndexes, so a vector
+    // index another tool added is left alone rather than deleted.
+    if (names.has('VectorIndexes')) {
+      out['VectorIndexes'] = projectIndexesOnto(
+        out['VectorIndexes'],
+        recordedProperties?.['VectorIndexes'],
+        desiredProperties?.['VectorIndexes'],
+        attemptedItems?.get('VectorIndexes')
+      );
+      if (out['VectorIndexes'] === undefined) delete out['VectorIndexes'];
     }
     const strict = async (key: string, read: () => Promise<unknown>): Promise<void> => {
       if (!names.has(key)) return;
@@ -8556,6 +8741,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
           )
         );
       }
+      // go-to-k/cdkd#2762: VectorIndexes in their CFn shape, only when AWS
+      // reports any (no `[]` placeholder, the GSI / LSI reason above).
+      const liveVectorIndexes = readbackVectorIndexes(table.VectorIndexes);
+      if (liveVectorIndexes !== undefined) result['VectorIndexes'] = liveVectorIndexes;
       // Class 1 guard: CFn's SSESpecification.KMSMasterKeyId / SSEType are
       // only valid when SSEEnabled=true. AWS reports SSEDescription.Status
       // = 'DISABLED' (or omits SSEDescription entirely) on tables without

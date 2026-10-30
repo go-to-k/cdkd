@@ -1261,7 +1261,8 @@
           "l1"
         ],
         "dynamodb-gsi-update": [
-          "l2"
+          "l2",
+          "literal"
         ],
         "dynamodb-ondemand": [
           "l1",

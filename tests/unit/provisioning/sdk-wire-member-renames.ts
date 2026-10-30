@@ -253,6 +253,7 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       StreamSpecification: ['TagResourceCommand:stream'],
       'StreamSpecification.ResourcePolicy': ['PutResourcePolicyCommand:stream'],
       'StreamSpecification.ResourcePolicy.PolicyDocument': ['Policy'],
+      VectorIndexes: ['VectorIndexUpdates.Create'],
     },
   },
   'AWS::EC2::Instance': {

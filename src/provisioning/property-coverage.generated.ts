@@ -1047,6 +1047,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'TableName',
         'Tags',
         'TimeToLiveSpecification',
+        'VectorIndexes',
         'WarmThroughput',
       ]),
       silentDrop: new Map<string, string>([
@@ -1054,7 +1055,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
           'ImportSourceSpecification',
           'S3 import uses the separate ImportTable API (not CreateTable) and is create-only with no readback; deferred to a dedicated import-from-S3 PR',
         ],
-        ['VectorIndexes', 'not yet implemented by cdkd'],
       ]),
       createOnlyDrops: new Set<string>(['ImportSourceSpecification']),
       readOnly: new Set<string>(['Arn', 'StreamArn']),
