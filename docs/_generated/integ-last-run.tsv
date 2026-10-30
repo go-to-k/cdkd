@@ -94,7 +94,7 @@ destroy-interrupt	2026-10-18T04:10:16Z	PASS	376	verify.sh	rc 0, 0 orphans; #3361
 destroy-nested-cross-region	2026-10-20T08:13:14Z	PASS	216	verify.sh	rc ok, orph clean; #5115 REST API arm
 diff-fail-on-destructive	2026-10-12T13:46:43Z	PASS	85	verify.sh	rc ok, destroy 0 errors, orph clean (PR #4832, #4827 on e6be0d2a9)
 diff-intrinsic-target-change	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-dlm-lifecycle-policy	2026-10-22T07:45:16Z	PASS	110	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean
+dlm-lifecycle-policy	2026-10-30T06:31:51Z	PASS	106	verify.sh	rc ok, orph clean; #5546 Description removal arm; pre-fix probe red at phase 2b
 docdb-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	1830	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
 docdb-neptune	2026-10-28T02:38:45Z	PASS	5318	verify.sh	PR #5455 at 4cccfb36d; us-east-1; own state bucket; [verify] PASS, DocDB/Neptune cluster + instance creates through the fail-fast create waits, 3g --remove-protection compensation ok, final destroy 0 errors, 0 orphans (#5426)
 docker-image-asset	2026-10-17T13:23:24Z	PASS	90	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
