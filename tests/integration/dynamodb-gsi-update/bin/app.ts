@@ -2,6 +2,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { DynamodbGsiUpdateStack } from '../lib/dynamodb-gsi-update-stack.ts';
 import { DynamodbGsiInsightsStack } from '../lib/dynamodb-gsi-insights-stack.ts';
+import { DynamodbVectorIndexStack } from '../lib/dynamodb-vector-index-stack.ts';
 
 const app = new cdk.App();
 new DynamodbGsiUpdateStack(app, 'CdkdDynamodbGsiUpdateExample', {
@@ -13,6 +14,13 @@ new DynamodbGsiUpdateStack(app, 'CdkdDynamodbGsiUpdateExample', {
 });
 new DynamodbGsiInsightsStack(app, 'CdkdDynamodbGsiInsightsExample', {
   description: 'cdkd DynamoDB per-index Contributor Insights integ probe (issue #1782)',
+  env: {
+    account: process.env.CDK_DEFAULT_ACCOUNT,
+    region: process.env.CDK_DEFAULT_REGION,
+  },
+});
+new DynamodbVectorIndexStack(app, 'CdkdDynamodbVectorIndexExample', {
+  description: 'cdkd DynamoDB VectorIndexes create / add / remove integ probe (issue #2762)',
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION,

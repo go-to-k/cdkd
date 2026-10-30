@@ -91,6 +91,14 @@ function armTable(_physicalId: string, bag: Bag): void {
           ...(g['WarmThroughput'] ? { WarmThroughput: { ...(g['WarmThroughput'] as object), Status: 'ACTIVE' } } : {}),
         })),
         ...(bag['LocalSecondaryIndexes'] ? { LocalSecondaryIndexes: bag['LocalSecondaryIndexes'] } : {}),
+        ...(bag['VectorIndexes']
+          ? {
+              VectorIndexes: (bag['VectorIndexes'] as Record<string, unknown>[]).map((v) => ({
+                ...v,
+                IndexStatus: 'ACTIVE',
+              })),
+            }
+          : {}),
         ...(bag['SSESpecification'] ? { SSEDescription: { Status: 'ENABLED' } } : {}),
       },
     }),
@@ -217,6 +225,20 @@ const ON_DEMAND_BAG: Bag = {
       OnDemandThroughput: { MaxReadRequestUnits: 20, MaxWriteRequestUnits: 10 },
     },
   ],
+  // go-to-k/cdkd#2762.
+  VectorIndexes: [
+    {
+      IndexName: 'vec',
+      VectorAttribute: { AttributeName: 'embedding' },
+      Dimensions: 3,
+      DistanceFunction: 'COSINE',
+      Projection: { ProjectionType: 'INCLUDE', NonKeyAttributes: ['f'] },
+      SearchSchema: [
+        { AttributeName: 'g', SearchSchemaElementType: 'HASH' },
+        { AttributeName: 'f', SearchSchemaElementType: 'INLINE_FILTER' },
+      ],
+    },
+  ],
 };
 
 const S = TABLE_SRC;
@@ -300,6 +322,48 @@ function attributeDefinitionsSilent(bag: Bag): Record<string, string> {
 const PROVISIONED_SHAPE = gsiShape(PROVISIONED_BAG);
 const ON_DEMAND_SHAPE = gsiShape(ON_DEMAND_BAG);
 
+/** Every probe label at or beneath `VectorIndexes.0.<member>`. */
+const vectorPaths = (index: Record<string, unknown>, member: string): string[] => {
+  const out: string[] = [`VectorIndexes.0.${member}`];
+  const walk = (v: unknown, prefix: string): void => {
+    if (Array.isArray(v)) v.forEach((x, i) => (out.push(`${prefix}.${i}`), walk(x, `${prefix}.${i}`)));
+    else if (v !== null && typeof v === 'object') {
+      for (const [k, x] of Object.entries(v)) (out.push(`${prefix}.${k}`), walk(x, `${prefix}.${k}`));
+    }
+  };
+  walk(index[member], `VectorIndexes.0.${member}`);
+  return out;
+};
+
+const VECTOR_SHAPE_REFUSED: Throw = {
+  why: `update() refuses a changed definition of a same-name vector index before any call: UpdateTable's VectorIndexUpdates has Create and Delete only (go-to-k/cdkd#2762)`,
+  says: /VectorIndexes vec changed definition, which DynamoDB cannot modify in place/,
+};
+const VECTOR_SHAPE_VARY =
+  `the varied vector index member's parent is removed on the base side, so both sides change the index's definition and are refused (go-to-k/cdkd#2762), so the vary sees no wire; a direct member's vary re-creates the index and is observed`;
+
+/**
+ * The removal throws of every member of a vector index but its name, and the
+ * vary entries of the leaves nested below a member.
+ */
+function vectorShape(bag: Bag): { throws: Record<string, Throw>; silent: Record<string, string> } {
+  const index = (bag['VectorIndexes'] as Record<string, unknown>[])[0]!;
+  const labels = Object.keys(index)
+    .filter((m) => m !== 'IndexName')
+    .flatMap((m) => vectorPaths(index, m));
+  const leafBelowMember = (label: string): boolean => {
+    let v: unknown = { VectorIndexes: [index] };
+    for (const seg of label.split('.')) v = (v as Record<string, unknown>)[seg];
+    return label.split('.').length > 3 && (v === null || typeof v !== 'object');
+  };
+  return {
+    throws: Object.fromEntries(labels.flatMap((l) => UPDATE.map((d) => [`${d}:${l}`, VECTOR_SHAPE_REFUSED]))),
+    silent: Object.fromEntries(labels.filter(leafBelowMember).map((l) => [`update-vary:${l}`, VECTOR_SHAPE_VARY])),
+  };
+}
+
+const ON_DEMAND_VECTOR_SHAPE = vectorShape(ON_DEMAND_BAG);
+
 const BILLING_MODE_DEFAULT =
   `an absent BillingMode is PROVISIONED on create (${S}:2167-2172) and on update (${S}:3017-3019), the reset CloudFormation applies (measured, issue #1553), so removing a declared PROVISIONED sends the same requests`;
 
@@ -358,10 +422,12 @@ const TABLE_CASE: TypeCase = {
       expectedSilent: {
         ...attributeDefinitionsSilent(ON_DEMAND_BAG),
         ...ON_DEMAND_SHAPE.silent,
+        ...ON_DEMAND_VECTOR_SHAPE.silent,
       },
       expectedRemovalThrows: {
         ...REQUIRED_ON_CREATE,
         ...ON_DEMAND_SHAPE.throws,
+        ...ON_DEMAND_VECTOR_SHAPE.throws,
         'update-add:BillingMode': {
           why: `an index OnDemandThroughput on a table that stays PROVISIONED is refused before any call (${S}:3172-3270)`,
           says: /declare OnDemandThroughput while the table's billing mode is PROVISIONED/,
