@@ -193,7 +193,8 @@
       "SourceDbClusterResourceId",
       "SourceRegion",
       "StorageType",
-      "UseLatestRestorableTime"
+      "UseLatestRestorableTime",
+      "WithExpressConfiguration"
     ],
     "AWS::RDS::DBInstance": [
       "AdditionalStorageVolumes",

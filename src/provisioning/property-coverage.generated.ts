@@ -2714,6 +2714,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['SourceRegion', 'not yet implemented by cdkd'],
         ['StorageType', 'not yet implemented by cdkd'],
         ['UseLatestRestorableTime', 'not yet implemented by cdkd'],
+        ['WithExpressConfiguration', 'not yet implemented by cdkd'],
       ]),
       createOnlyDrops: new Set<string>([
         'ClusterScalabilityType',
@@ -2726,6 +2727,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SourceDbClusterResourceId',
         'SourceRegion',
         'UseLatestRestorableTime',
+        'WithExpressConfiguration',
       ]),
       readOnly: new Set<string>([
         'DBClusterArn',
