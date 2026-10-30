@@ -95,7 +95,7 @@ BEFORE the final integ, revert the fix, rebuild, run, confirm the arm goes RED
 ELSEWHERE proves nothing: at the CREATE, a refusal of the shape under test
 means it is unreachable, so redo `triage.md`'s CFn premise (#5204), while a
 feature hitting an UNRELATED pre-fix limitation is dropped or worked around in
-the throwaway tree only, never the PR, and re-run (#5414), at most twice
+the throwaway tree only, never the PR, and re-run (#5414), at most two such workarounds
 (#5528) — a third stops the probe for the parent; at an older step, harden it and
 re-run (#5218). A refusal at the arm's OWN deploy, emitted by the route the
 fix replaces while the fixed route accepts the shape, IS the symptom (#5507);
