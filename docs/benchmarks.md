@@ -16,7 +16,7 @@ the stack can be created in parallel.
 | CloudFormation | Types deployed through the Cloud Control API | 1.6x faster |
 | CloudFormation Express mode | VPC + CloudFront + Lambda, with `--no-wait` | 9x faster |
 | Terraform | Wide and serverless stacks | 2.2x to 2.3x faster |
-| Terraform | Stacks dominated by one slow resource | 1.2x faster, or a tie |
+| Terraform | Stacks dominated by one slow resource | 1.2x to 1.3x faster, or a tie |
 
 cdkd does not make AWS itself faster. It removes the time a deploy tool spends
 between API calls, so the gain is largest where that time is most of the
@@ -136,18 +136,23 @@ and each tool deployed them.
 | serverless | **25.9** | 57.5 | 127.1 | 24.6 |
 | ec2 | **29.1** | 35.9 | 193.9 | 22.0 |
 | webapp | 109.7 | 127.3 | 166.1 | 23.4 |
-| ecs, until steady state | 227.7 | 282.7 | 276.7 | 34.5 |
+| ecs, until steady state | **176.2** | 228.9 | 276.7 | 34.5 |
 | cloudfront, until `Deployed` | 174.0 | 166.4 | 232.3 | n/a |
 
-Bold marks a win over Terraform. The other three rows are ties.
+Bold marks a win over Terraform. The other two rows are ties.
 
 cdkd's lead depends on how much of the deploy is the tool's own work. The wide
 and serverless stacks are almost all scheduling and API calls, and there cdkd
 is about 2.2x to 2.3x faster than Terraform. Where one slow resource takes
 most of the time, both tools wait for the same thing and the gap narrows:
-1.23x on ec2. On ecs the cdkd median is 1.24x lower, but the runs overlap
-(218-290s against 260-324s), because the ECS rollout varies by more than the
-gap.
+1.23x on ec2 and 1.30x on ecs. On ecs the runs do not overlap (171-180s
+against 207-244s).
+
+The ecs cdkd and Terraform cells were measured in a later round than the rest
+of the table, after cdkd started waiting for ECS by default. Both tools ran
+about 50s faster in that round than in the earlier one, so compare them only
+with each other. The CloudFormation and `--no-wait` cells on that row come from
+the earlier round.
 
 On webapp the cdkd median is 17.6s lower, but the runs overlap (98-138s
 against 106-138s), because NAT gateway creation varies by more than the gap.
