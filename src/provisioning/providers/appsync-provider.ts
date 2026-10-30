@@ -65,6 +65,7 @@ import {
 } from '@aws-sdk/client-appsync';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -234,7 +235,7 @@ export function appSyncPhysicalIdFromCfn(
   if (canonicalizeRegion(arn[1]!) !== canonicalizeRegion(region)) {
     throw markNonRetryable(
       new ProvisioningError(
-        `${resourceType} ${physicalId} is in region ${arn[1]}, not the import region ${region}`,
+        safeMsg`${resourceType} ${physicalId} is in region ${arn[1]}, not the import region ${region}`,
         resourceType,
         logicalId,
         physicalId

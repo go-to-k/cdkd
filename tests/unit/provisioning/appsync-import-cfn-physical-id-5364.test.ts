@@ -80,6 +80,20 @@ describe('appSyncPhysicalIdFromCfn (issue #5364)', () => {
   });
 
   it.each([
+    ['aws-cn', 'cn-north-1'],
+    ['aws-us-gov', 'us-gov-west-1'],
+  ])('reads the %s partition', (partition, region) => {
+    const arn = `arn:${partition}:appsync:${region}:123456789012:apis/${API}/datasources/NoneDs`;
+    expect(appSyncPhysicalIdFromCfn('AWS::AppSync::DataSource', 'L', arn, region)).toBe(
+      `${API}|NoneDs`
+    );
+  });
+
+  it('compares regions case-insensitively', () => {
+    expect(appSyncPhysicalIdFromCfn('AWS::AppSync::GraphQLApi', 'L', ARN, 'US-EAST-1')).toBe(API);
+  });
+
+  it.each([
     // cdkd's own shapes pass through.
     ['AWS::AppSync::GraphQLApi', API],
     ['AWS::AppSync::GraphQLSchema', API],
@@ -132,6 +146,16 @@ describe('AppSyncProvider.import records cdkd ids for CloudFormation ids (issue 
       physicalId: API,
       attributes: { ApiId: API, Arn: ARN, GraphQLUrl: 'https://x/graphql' },
     });
+  });
+
+  it('GraphQLApi: refuses another region before any AppSync call', async () => {
+    await expect(
+      provider.import({
+        ...importInput('AWS::AppSync::GraphQLApi', ARN),
+        region: 'eu-west-1',
+      })
+    ).rejects.toThrow(/region us-east-1, not the import region eu-west-1/);
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('GraphQLSchema: records the bare API id', async () => {

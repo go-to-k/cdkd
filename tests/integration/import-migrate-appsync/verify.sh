@@ -216,11 +216,16 @@ PY
 echo "[verify] step 7: cdkd deploy with an unchanged template"
 (cd "${TEST_DIR}" && ${CLI} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}") 2>&1 | tee "${WORK}/deploy.log"
-# cdkd colours every resource line, so strip ANSI before matching the row.
-if sed 's/\x1b\[[0-9;]*m//g' "${WORK}/deploy.log" | grep -qE '✓ .* updated'; then
-  echo "[verify] FAIL: an unchanged deploy updated a resource the import should have recorded"
-  exit 1
-fi
+# Matched POSITIVELY on the summary, so a replacement (or any row verb) fails
+# too, and a summary whose wording drifted fails rather than passing silently.
+# cdkd colours its output, so strip ANSI first.
+sed 's/\x1b\[[0-9;]*m//g' "${WORK}/deploy.log" > "${WORK}/deploy.plain"
+for line in 'Created: 0' 'Updated: 0' 'Deleted: 0' 'Unchanged: 5'; do
+  if ! grep -qxE "[[:space:]]*${line}" "${WORK}/deploy.plain"; then
+    echo "[verify] FAIL: the unchanged deploy's summary lacks '${line}' — the import recorded something the template does not match"
+    exit 1
+  fi
+done
 echo "[verify] step 7 ok"
 
 echo "[verify] step 8: cdkd destroy --force"
