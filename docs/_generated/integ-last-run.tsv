@@ -183,6 +183,7 @@ import-auto-mode	2026-10-06T02:45:41Z	PASS	85	verify.sh	rc ok, orph clean (#4607
 import-deployed-parameter-secret	2026-10-18T05:20:41Z	PASS	377	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 import-heal-prefix-record	2026-10-18T00:55:44Z	PASS	155	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
 import-lambda-url-attributes	2026-10-01T10:13:53Z	PASS	105	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean
+import-migrate-appsync	2026-10-30T03:45:45Z	PASS	111	verify.sh	rc ok, orph clean, versions swept; pre-fix negative control FAILs at step 5
 import-migrate-vpc	2026-10-19T00:17:40Z	PASS	356	verify.sh	rc ok, orph clean (#5077)
 import-nested-stack	2026-10-20T04:27:51Z	PASS	155	verify.sh	deploy+destroy clean, 0 orphans
 import-noecho-parameter	2026-10-16T23:38:07Z	PASS	150	verify.sh	rc ok, orph clean (NoEchoRunState refactor #5022)
