@@ -219,7 +219,8 @@ async function deployCommand(
   // DeployEngine constructor below reads the lowered value).
   validateResourceTimeouts(options);
   // Seed the provisioning-layer registry so providers with an INNER waiter
-  // cap (ECS settleService under --full-wait) can lift it to the same
+  // cap (ECS settleService's default steady-state wait, CloudFront's
+  // --full-wait Deployed wait) can lift it to the same
   // user-resolved budget the OUTER per-resource deadline uses (issue #1280).
   setResolvedResourceTimeouts(options.resourceTimeout);
 

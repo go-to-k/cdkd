@@ -179,7 +179,7 @@ at the wait limit.
 
 A service can need longer than 600 seconds because of a large task count, a
 slow image pull or a long health-check grace period. Raise the limit for that
-type:
+type; the timeout message names the flag:
 
 ```bash
 cdkd deploy MyStack --resource-timeout AWS::ECS::Service=20m
@@ -196,7 +196,11 @@ stay visible for about an hour.
 | --- | --- |
 | Create | Deletes the new service, so the next deploy does not collide on the name, then fails the deploy. |
 | Update | Fails the deploy and leaves the service in place; the automatic rollback re-applies its previous configuration. |
-| Automatic rollback, `cdkd rollback`, `cdkd drift --revert` | Warns and continues, so a rollout that does not settle never leaves the stack unable to roll back. |
+| Automatic rollback, `cdkd rollback` | Warns and continues, so a rollout that does not settle never leaves the stack unable to roll back. |
+
+`cdkd drift --revert` does not wait for an ECS service at all, and no mode
+waits for a service whose `DeploymentController` is `CODE_DEPLOY` or
+`EXTERNAL`, because ECS has no deployment of its own to settle for those.
 
 ## What `--full-wait` adds
 

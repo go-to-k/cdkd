@@ -77,7 +77,9 @@ A CloudFront distribution's propagation does not fail. Waiting for it would
 add 3 to 15 minutes to every deploy and tell you nothing.
 
 - Pass `--no-wait` to skip the ECS wait: a first deploy before the image is
-  pushed, a fast iteration loop, or a pipeline with its own health check.
+  pushed, a fast iteration loop, or a pipeline with its own health check. A
+  service whose `DeploymentController` is `CODE_DEPLOY` or `EXTERNAL` is never
+  waited for, and neither is a service `cdkd drift --revert` restores.
 - Pass `--full-wait` when something right after the deploy needs the
   distribution serving, such as an end-to-end or smoke test.
 
