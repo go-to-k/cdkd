@@ -275,9 +275,10 @@ fi
 echo "    OK: LogDeliveryConfigurations RESET (slow-log delivery disabled)"
 # Issue #5545 (real CloudFormation A/B): CloudFormation KEEPS EngineVersion,
 # CacheParameterGroupName and SnapshotWindow on removal -- no move to
-# default.redis7 -- and cdkd names every kept removal in ONE warning, never the
-# shared "CloudFormation would reset it" line. Pre-#5545 cdkd kept the values
-# silently, so the warning is the assertion only the fix passes.
+# default.redis7 -- and cdkd names every kept removal in ONE warning. This
+# phase removes only kept properties, so no CacheCluster line may claim a
+# CloudFormation reset. Pre-#5545 cdkd kept the values silently, so the warning
+# is the assertion only the fix passes.
 assert_cc "RETAINED CacheParameterGroupName" 'CacheParameterGroup.CacheParameterGroupName' "${REDIS_PARAMS}"
 assert_cc "RETAINED SnapshotWindow" 'SnapshotWindow' "02:00-03:00"
 assert_cc "RETAINED EngineVersion" 'EngineVersion' "${BASE_ENGINE_VERSION}"

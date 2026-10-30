@@ -435,14 +435,17 @@ describe('ElastiCacheProvider CacheCluster in-place modify (issue #5438)', () =>
         }
       );
 
-      // No not-applied line. A removed PreferredAvailabilityZone is named only
-      // by the kept-on-removal warning (issue #5545: CloudFormation keeps the
-      // node's zone); AZMode is left to the caller's shared line.
+      // No not-applied line. The removals are named only by the #5545 lines:
+      // CloudFormation keeps the node's zone, and replaces the cluster for an
+      // AZMode removal (go-to-k/cdkd#5558).
       const lines = warn.mock.calls.map((c) => String(c[0]));
       expect(lines.filter((l) => l.includes('is not applied'))).toEqual([]);
       expect(lines).toEqual([
         expect.stringContaining(
           'property PreferredAvailabilityZone was removed from the template and keeps its current AWS value'
+        ),
+        expect.stringContaining(
+          'property AZMode was removed from the template; cdkd leaves the cluster unchanged'
         ),
       ]);
     });

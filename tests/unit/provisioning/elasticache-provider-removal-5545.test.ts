@@ -3,9 +3,12 @@
 // alone and beside another change): removing EngineVersion,
 // CacheParameterGroupName, PreferredMaintenanceWindow, SnapshotWindow or
 // IpDiscovery sent a ModifyCacheCluster without the member, and each live
-// value stayed. cdkd sends nothing for them either, names them in one warning,
-// and declares removalHandledInUpdate so the shared caller's "CloudFormation
-// would reset it" line never names a CacheCluster property.
+// value stayed. cdkd sends nothing for them either and names them in one
+// warning. AZMode / PreferredAvailabilityZones removals REPLACE the cluster
+// under CloudFormation (go-to-k/cdkd#5558); cdkd leaves it unchanged and names
+// them in a second line. The type declares removalHandledInUpdate, so the
+// shared caller's "CloudFormation would reset it" line names no CacheCluster
+// property.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const { mockSend, warn } = vi.hoisted(() => ({ mockSend: vi.fn(), warn: vi.fn() }));
@@ -120,6 +123,7 @@ describe('ElastiCacheProvider CacheCluster removals CloudFormation keeps (issue 
       'properties EngineVersion, CacheParameterGroupName, PreferredMaintenanceWindow, SnapshotWindow, IpDiscovery were removed from the template'
     );
     expect(lines[0]).toContain('as CloudFormation leaves them');
+    expect(lines[0]).toContain('To change a value, declare it explicitly.');
     expect(lines[0]).not.toContain('would reset');
   });
 
@@ -157,6 +161,25 @@ describe('ElastiCacheProvider CacheCluster removals CloudFormation keeps (issue 
         'properties TransitEncryptionEnabled, PreferredAvailabilityZone were removed from the template'
       ),
     ]);
+    // ModifyCacheCluster has no member for either: declaring a value cannot
+    // change them, so the remedy says so.
+    expect(warnings()[0]).toContain(
+      'To change a value, declare it explicitly (TransitEncryptionEnabled, PreferredAvailabilityZone change only by replacing the cluster).'
+    );
+  });
+
+  it('names an AZMode / PreferredAvailabilityZones removal as a CloudFormation replacement', async () => {
+    await update({}, { AZMode: 'single-az', PreferredAvailabilityZones: ['us-east-1a'] });
+
+    const input = modifyInput();
+    expect(input['AZMode']).toBeUndefined();
+    expect(input['NewAvailabilityZones']).toBeUndefined();
+    expect(warnings()).toEqual([
+      expect.stringContaining(
+        'properties AZMode, PreferredAvailabilityZones were removed from the template; cdkd leaves the cluster unchanged, while CloudFormation replaces the cluster for this removal (go-to-k/cdkd#5558).'
+      ),
+    ]);
+    expect(warnings()[0]).not.toContain('would reset');
   });
 
   it('names the #5004 / #5491 kept properties in the same line', async () => {
@@ -180,13 +203,17 @@ describe('ElastiCacheProvider CacheCluster removals CloudFormation keeps (issue 
     expect(warnings()[0]).toContain('property SnapshotWindow was removed from the template');
   });
 
-  it('says a rollback leaves the failed deploy value in place', async () => {
-    await update({}, { EngineVersion: '7.1' }, { replayingState: true });
+  it('says only what a rollback does', async () => {
+    await update({}, { EngineVersion: '7.1', AZMode: 'single-az' }, { replayingState: true });
 
-    expect(warnings()).toHaveLength(1);
-    expect(warnings()[0]).toContain(
-      'property EngineVersion is absent from the state being restored'
-    );
+    expect(warnings()).toEqual([
+      expect.stringContaining(
+        'property EngineVersion is absent from the state being restored; the rollback sends nothing for it, so the cluster keeps the value it holds now.'
+      ),
+      expect.stringContaining(
+        'property AZMode is absent from the state being restored; the rollback leaves the cluster unchanged.'
+      ),
+    ]);
   });
 
   it('warns about nothing on drift --revert (the previous side is a readback)', async () => {
@@ -195,15 +222,12 @@ describe('ElastiCacheProvider CacheCluster removals CloudFormation keeps (issue 
     expect(warnings()).toEqual([]);
   });
 
-  it('leaves only the removals CloudFormation replaces the cluster for to the caller', () => {
+  it('declares every handled property removal-handled, so the caller warns about none', () => {
     const handled = provider.handledProperties.get(TYPE);
     expect(handled).toBeDefined();
     const baseline = Object.fromEntries([...(handled ?? [])].map((key) => [key, 'x']));
     const prepared = prepareRemovalForUpdate(provider, TYPE, {}, baseline);
-    // The #5545 A/B measured a REPLACEMENT for these two removals, which
-    // cdkd does not plan yet (go-to-k/cdkd#5558); the caller's line names
-    // them meanwhile.
-    expect([...prepared.unhandled].sort()).toEqual(['AZMode', 'PreferredAvailabilityZones']);
+    expect(prepared.unhandled).toEqual([]);
     expect(prepared.injected).toEqual([]);
     for (const key of provider.unhandledByDesign.get(TYPE)?.keys() ?? []) {
       expect(provider.removalHandledInUpdate.get(TYPE)?.has(key)).toBe(true);
