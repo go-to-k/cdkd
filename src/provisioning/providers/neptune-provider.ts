@@ -1611,7 +1611,8 @@ export class NeptuneProvider implements ResourceProvider {
     context: UpdateContext | undefined
   ): void {
     if (context?.desiredFromAwsReadback === true) return;
-    const removed = context?.removedProperties ?? new Set(removedTemplateKeys(previousProperties, properties));
+    const removed =
+      context?.removedProperties ?? new Set(removedTemplateKeys(previousProperties, properties));
     const portStays = properties['DBPort'] != null || properties['Port'] != null;
     const names = kept.filter(
       (key) => removed.has(key) && !((key === 'DBPort' || key === 'Port') && portStays)
