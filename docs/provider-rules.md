@@ -1645,6 +1645,13 @@ Checklist when writing or reviewing an `update()`:
   measured KEEP for `DeletionProtection`, `BackupRetentionPeriod`,
   `IamAuthEnabled` and `AutoMinorVersionUpgrade`, so they declare no
   `removalDefaults`.
+  Real CloudFormation A/B, go-to-k/cdkd#5544: Neptune also KEEPS a removed
+  DBCluster `EngineVersion` (no upgrade to the default), `PreferredBackupWindow`,
+  `PreferredMaintenanceWindow` and `DBClusterParameterGroupName`, and a removed
+  DBInstance `DBParameterGroupName` and `PreferredMaintenanceWindow` (neither
+  group moves back to `default.neptune1.4`). Both Neptune types declare
+  `removalHandledInUpdate`, and `update()` names every kept removal in one
+  warning per resource.
   Real CloudFormation A/B, go-to-k/cdkd#2762: a removed `AWS::Kinesis::Stream`
   `RecordDistributionStrategy` RESETS to `USER_PARTITION_KEY` (ON_DEMAND
   stream), and on an `AWS::CodeBuild::Project` removing `Visibility` and

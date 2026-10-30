@@ -35,7 +35,11 @@
 #       reset to 27017 and Neptune keep 8183, as CloudFormation does.
 #       Step 3c leaves the DocDB MasterUserPassword unchanged, so the DocDB
 #       cluster must never read `resetting-master-credentials` from the
-#       deploy's return until it is stable (#5153).
+#       deploy's return until it is stable (#5153). The Neptune cluster's
+#       engine (1.4.7.0), backup window and cluster parameter group and the
+#       instance's parameter group are dropped too: CloudFormation keeps each
+#       (#5544 A/B), so they must still be live, and the step-3c output must
+#       carry cdkd's warning naming every kept removal.
 #   3g. --remove-protection compensation (issue #2204): re-enable
 #       DeletionProtection on both clusters out of band, add one
 #       out-of-band instance to each (DeleteDBCluster then refuses: the
@@ -126,7 +130,8 @@ DESTROY_3G_LOG=""
 # cleanup on every exit).
 EVENT_KEYS_3G=""
 EVENTS_3G=""
-# Step 3c's captured deploy output (issue #5543's warning is read from it).
+# Step 3c's captured deploy output (issues #5543's and #5544's warnings are
+# read from it).
 REMOVAL_3C_LOG=""
 # Issue #5184: when this run began (UTC, second precision, the prefix AWS's
 # ClusterCreateTime is compared on). Set before anything is created, so
@@ -425,6 +430,27 @@ if [ "${DOCDB_BASE_PORT}" != "27018" ] || [ "${NEPTUNE_BASE_PORT}" != "8183" ]; 
   echo "[verify] FAIL: #1160 premise: baseline cluster ports are docdb='${DOCDB_BASE_PORT}' (expected 27018), neptune='${NEPTUNE_BASE_PORT}' (expected 8183)" >&2
   exit 1
 fi
+# Issue #5544 premise: the Neptune engine, backup window and both custom
+# parameter groups are live, so step 3d's KEPT assertions bind to non-default
+# values (the default engine is 1.4.8.0, the default groups default.neptune1.4).
+NEPTUNE_CLUSTER_PG=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Neptune::DBClusterParameterGroup") | .value.physicalId] | first // ""')
+NEPTUNE_INSTANCE_PG=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Neptune::DBParameterGroup") | .value.physicalId] | first // ""')
+if [ -z "${NEPTUNE_CLUSTER_PG}" ] || [ -z "${NEPTUNE_INSTANCE_PG}" ]; then
+  echo "[verify] FAIL: #5544: could not resolve the Neptune parameter groups from state (cluster='${NEPTUNE_CLUSTER_PG}', instance='${NEPTUNE_INSTANCE_PG}')" >&2
+  exit 1
+fi
+# Neptune stores a parameter group name lower-cased, whatever case the
+# create sent, and describe answers it that way.
+NEPTUNE_CLUSTER_PG=$(printf '%s' "${NEPTUNE_CLUSTER_PG}" | tr '[:upper:]' '[:lower:]')
+NEPTUNE_INSTANCE_PG=$(printf '%s' "${NEPTUNE_INSTANCE_PG}" | tr '[:upper:]' '[:lower:]')
+NEPTUNE_BASE_KEPT=$(echo "${NEPTUNE_BASE}" | jq -r '[.EngineVersion, .PreferredBackupWindow, .DBClusterParameterGroup] | map(. // "null") | join(" ")')
+NEPTUNE_BASE_INST_PG=$(aws neptune describe-db-instances --db-instance-identifier "${NEPTUNE_INSTANCE_ID}" \
+  --region "${REGION}" --query 'DBInstances[0]' --output json \
+  | jq -r '[.DBParameterGroups[]?.DBParameterGroupName] | join(",")')
+if [ "${NEPTUNE_BASE_KEPT}" != "1.4.7.0 03:00-03:30 ${NEPTUNE_CLUSTER_PG}" ] || [ "${NEPTUNE_BASE_INST_PG}" != "${NEPTUNE_INSTANCE_PG}" ]; then
+  echo "[verify] FAIL: #5544 premise: Neptune baseline engine / backup window / cluster parameter group are '${NEPTUNE_BASE_KEPT}' (expected '1.4.7.0 03:00-03:30 ${NEPTUNE_CLUSTER_PG}'), instance parameter groups '${NEPTUNE_BASE_INST_PG}' (expected '${NEPTUNE_INSTANCE_PG}')" >&2
+  exit 1
+fi
 echo "[verify] step 3b ok: baseline non-default fields live on both clusters and the Neptune instance"
 
 # Issue #1160 VpcSecurityGroupIds removal arm. The baseline puts both clusters
@@ -688,6 +714,27 @@ if [ "${NEPTUNE_PORT}" != "8183" ]; then
 fi
 echo "[verify] step 3d ok: Port removal: DocDB reset to 27017, Neptune kept 8183 (#1160, matches CloudFormation)"
 
+# Issue #5544: the Neptune engine, backup window and both parameter groups were
+# removed; a real CloudFormation A/B keeps every one. Read from the stable poll
+# above, after the companion change was seen live.
+NEPTUNE_KEPT=$(echo "${NEPTUNE_AFTER}" | jq -r '[.EngineVersion, .PreferredBackupWindow, .DBClusterParameterGroup] | map(. // "null") | join(" ")')
+NEPTUNE_INST_PG=$(echo "${NEPTUNE_INST_AFTER}" | jq -r '[.DBParameterGroups[]?.DBParameterGroupName] | join(",")')
+if [ "${NEPTUNE_KEPT}" != "1.4.7.0 03:00-03:30 ${NEPTUNE_CLUSTER_PG}" ] || [ "${NEPTUNE_INST_PG}" != "${NEPTUNE_INSTANCE_PG}" ]; then
+  echo "[verify] FAIL: #5544: after the removal, the Neptune engine / backup window / cluster parameter group are '${NEPTUNE_KEPT}' (want '1.4.7.0 03:00-03:30 ${NEPTUNE_CLUSTER_PG}') and the instance parameter groups '${NEPTUNE_INST_PG}' (want '${NEPTUNE_INSTANCE_PG}'): CloudFormation keeps all of them" >&2
+  exit 1
+fi
+# The kept removals are named, one line per resource. Before #5544 cdkd kept
+# them silently, so this is #5544's only post-fix-only assertion.
+for needle in \
+  "NeptuneCluster (AWS::Neptune::DBCluster): properties EngineVersion, PreferredBackupWindow, DBClusterParameterGroupName, DeletionProtection, IamAuthEnabled, BackupRetentionPeriod, DBPort were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them." \
+  "NeptuneInstance (AWS::Neptune::DBInstance): properties DBParameterGroupName, AutoMinorVersionUpgrade were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them."; do
+  if ! grep -qF "${needle}" <<<"${REMOVAL_3C_PLAIN}"; then
+    echo "[verify] FAIL: #5544: the step-3c deploy output lacks the kept-removal warning '${needle}'" >&2
+    exit 1
+  fi
+done
+echo "[verify] step 3d ok: Neptune engine, backup window and both parameter groups kept after removal and named in cdkd's warning (#5544, matches CloudFormation)"
+
 # Issue #1160: VpcSecurityGroupIds was removed from both clusters. Neptune must
 # move to the VPC default group, as CloudFormation does; a pre-fix cdkd sends
 # nothing and the cluster stays on Sg, which fails HERE. Polled, because the
@@ -832,7 +879,11 @@ for cluster_lid in DocdbCluster NeptuneCluster; do
     exit 1
   fi
 done
-UNEXPECTED_3G="$(printf '%s\n' "${FAILED_3G}" | grep -vE '^(DocdbCluster|NeptuneCluster|DocdbSubnetGroup|NeptuneSubnetGroup|Sg[0-9A-F]{8}|Vpc[A-Za-z0-9]*)$' || true)"
+# NeptuneClusterParams / NeptuneInstanceParams: the NeptuneCluster delete fails
+# on purpose, and destroy's level loop does not skip dependents, so the parameter
+# groups (NeptuneCluster depends on them) are attempted too and fail because the
+# surviving cluster still has them attached.
+UNEXPECTED_3G="$(printf '%s\n' "${FAILED_3G}" | grep -vE '^(DocdbCluster|NeptuneCluster|NeptuneClusterParams|NeptuneInstanceParams|DocdbSubnetGroup|NeptuneSubnetGroup|Sg[0-9A-F]{8}|Vpc[A-Za-z0-9]*)$' || true)"
 if [ -n "${UNEXPECTED_3G}" ]; then
   echo "[verify] FAIL: step 3g: deletes failed outside the engineered set: $(printf '%s ' ${UNEXPECTED_3G})" >&2
   exit 1
@@ -936,6 +987,23 @@ if ${CLI} state list --state-bucket "${STATE_BUCKET}" | grep -q "${STACK}"; then
   exit 1
 fi
 echo "[verify] step 5 ok: state cleared"
+
+# The step-3g failure set let both Neptune parameter groups fail while the
+# surviving cluster held them; the final destroy must have removed them.
+for pg in "${NEPTUNE_CLUSTER_PG}:describe-db-cluster-parameter-groups --db-cluster-parameter-group-name" "${NEPTUNE_INSTANCE_PG}:describe-db-parameter-groups --db-parameter-group-name"; do
+  pg_name=${pg%%:*}
+  pg_cmd=${pg#*:}
+  # shellcheck disable=SC2086
+  if pg_out=$(aws neptune ${pg_cmd} "${pg_name}" --output text 2>&1); then
+    echo "[verify] FAIL: step 5: Neptune parameter group ${pg_name} still exists after the final destroy" >&2
+    exit 1
+  fi
+  if ! grep -q 'NotFound' <<<"${pg_out}"; then
+    echo "[verify] FAIL: step 5: could not confirm Neptune parameter group ${pg_name} is gone (probe failed with something other than NotFound)" >&2
+    exit 1
+  fi
+done
+echo "[verify] step 5 ok: both Neptune parameter groups are gone"
 
 # Issue #5184: step 4 turned each guard off and then deleted the cluster with a
 # final snapshot. The snapshot needs the cluster `available`, and right after

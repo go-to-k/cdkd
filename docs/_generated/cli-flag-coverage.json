@@ -2335,6 +2335,7 @@
     "--database-name",
     "--datastore-id",
     "--db-cluster-identifier",
+    "--db-cluster-parameter-group-name",
     "--db-cluster-snapshot-identifier",
     "--db-instance-class",
     "--db-instance-identifier",

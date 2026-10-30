@@ -33,7 +33,7 @@ import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { reportCreatedResource } from '../created-resource-sink.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generatedNameFor } from '../resource-name.js';
-import { clearOnUpdateRemoval } from '../update-removal.js';
+import { clearOnUpdateRemoval, removedTemplateKeys } from '../update-removal.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -127,6 +127,47 @@ function isDbIdentifier(id: string): boolean {
 }
 
 /**
+ * DBCluster properties CloudFormation KEEPS at their live value when the
+ * template drops them (ModifyDBCluster merges, and CloudFormation sends
+ * nothing for them), so `update()` sends nothing either and names them in a
+ * warning. Measured by real CloudFormation A/Bs in us-east-1:
+ *
+ * - #5004: `DeletionProtection`, `IamAuthEnabled`, `BackupRetentionPeriod`.
+ * - #1160: `DBPort` (8183 stayed 8183, not the 8182 default); `Port` is its
+ *   legacy spelling.
+ * - #5544 (2026-10-30): engine 1.4.7.0 (default 1.4.8.0), backup window
+ *   `03:00-03:30`, maintenance window `sun:05:00-sun:05:30` and a custom
+ *   cluster parameter group, all dropped at once, alone and beside a
+ *   `BackupRetentionPeriod` 7 -> 8 change: every one read back unchanged for
+ *   nine minutes (the version not upgraded, the group not moved back to
+ *   `default.neptune1.4`), while the companion change applied.
+ */
+const CLUSTER_KEPT_ON_REMOVAL = [
+  'EngineVersion',
+  'PreferredBackupWindow',
+  'PreferredMaintenanceWindow',
+  'DBClusterParameterGroupName',
+  'DeletionProtection',
+  'IamAuthEnabled',
+  'BackupRetentionPeriod',
+  'DBPort',
+  'Port',
+] as const;
+
+/**
+ * DBInstance properties CloudFormation KEEPS on removal (see
+ * {@link CLUSTER_KEPT_ON_REMOVAL}): `AutoMinorVersionUpgrade` (#5004), and
+ * (#5544, the same A/B) a custom `DBParameterGroupName`, which stayed
+ * attached and `in-sync`, and a maintenance window `mon:06:00-mon:06:30`,
+ * beside an `AutoMinorVersionUpgrade` true -> false change that applied.
+ */
+const INSTANCE_KEPT_ON_REMOVAL = [
+  'DBParameterGroupName',
+  'PreferredMaintenanceWindow',
+  'AutoMinorVersionUpgrade',
+] as const;
+
+/**
  * AWS Neptune Provider
  *
  * Implements resource provisioning for Neptune resources:
@@ -211,6 +252,45 @@ export class NeptuneProvider implements ResourceProvider {
         'AutoMinorVersionUpgrade',
         'DeletionProtection',
         'Tags',
+      ]),
+    ],
+  ]);
+
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every handled
+   * DBCluster / DBInstance property, each removal handled by `update()`, so
+   * the shared caller warns about none of them. Create-only ones replace;
+   * `VpcSecurityGroupIds` is reset (`dbClusterSecurityGroupsToSend`); `Tags`
+   * are diffed; `DBInstanceClass` is required. Every other one is LEFT in
+   * place, as CloudFormation leaves it (measured, see
+   * {@link CLUSTER_KEPT_ON_REMOVAL}), and named in `update()`'s own warning.
+   * The instance's `DeletionProtection` is not a CloudFormation property, so
+   * no CloudFormation template removes it.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Neptune::DBCluster',
+      new Set([
+        'DBClusterIdentifier',
+        'DBSubnetGroupName',
+        'StorageEncrypted',
+        'KmsKeyId',
+        'VpcSecurityGroupIds',
+        'Tags',
+        ...CLUSTER_KEPT_ON_REMOVAL,
+      ]),
+    ],
+    [
+      'AWS::Neptune::DBInstance',
+      new Set([
+        'DBInstanceIdentifier',
+        'DBClusterIdentifier',
+        'DBSubnetGroupName',
+        'AvailabilityZone',
+        'DBInstanceClass',
+        'DeletionProtection',
+        'Tags',
+        ...INSTANCE_KEPT_ON_REMOVAL,
       ]),
     ],
   ]);
@@ -332,7 +412,7 @@ export class NeptuneProvider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          context?.maskSecrets
+          context
         );
       default:
         throw new ProvisioningError(
@@ -679,26 +759,13 @@ export class NeptuneProvider implements ResourceProvider {
       );
       // #1160 reset-on-removal — ModifyDBCluster has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
-      // the template is sent as an explicit reset only where CloudFormation resets
-      // it; #5004 measured DeletionProtection / BackupRetentionPeriod
-      // (and IamAuthEnabled / AutoMinorVersionUpgrade on Neptune) as KEPT,
-      // so those are not reset. Deliberately NOT reset here:
-      //   * EngineVersion — removal would imply moving to the engine's
-      //     default version, a risky (possibly major) version change cdkd
-      //     must not synthesize; leave unchanged.
-      //   * DBClusterParameterGroupName — the default is the
-      //     engine-version-dependent `default.neptune1.x` family name;
-      //     synthesizing it from a removal risks a wrong-family apply.
-      //   * PreferredBackupWindow / PreferredMaintenanceWindow — AWS assigns
-      //     a RANDOM window at create; there is no documented "reset to
-      //     random" sentinel (doc-checked 2026-07-27: the Modify docs only
-      //     describe the create-time random default).
-      //   * Port / DBPort — a real CloudFormation A/B (#1160) showed
-      //     CloudFormation KEEPS the live port when `DBPort` is removed (8183
-      //     stayed 8183, not the 8182 default), so a removal sends nothing.
-      //     DocDB differs: there CloudFormation resets it to 27017.
-      // A removed VpcSecurityGroupIds IS reset, to the VPC's default security
-      // group (`dbClusterSecurityGroupsToSend`).
+      // the template is sent as an explicit reset only where CloudFormation
+      // resets it. Every property in CLUSTER_KEPT_ON_REMOVAL was measured as
+      // KEPT (#5004, #1160, #5544), so a removed one is passed through as
+      // absent and named in the warning below. DocDB differs on the port:
+      // there CloudFormation resets it to 27017. A removed
+      // VpcSecurityGroupIds IS reset, to the VPC's default security group
+      // (`dbClusterSecurityGroupsToSend`).
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
@@ -733,7 +800,6 @@ export class NeptuneProvider implements ResourceProvider {
       );
 
       this.logger.debug(`Successfully updated Neptune DBCluster ${logicalId}`);
-
       const described = await this.describeDBCluster(physicalId);
 
       // A changed VpcSecurityGroupIds also moves every member instance to
@@ -767,6 +833,15 @@ export class NeptuneProvider implements ResourceProvider {
           properties['Tags']
         );
       }
+
+      this.warnKeptRemovals(
+        logicalId,
+        resourceType,
+        properties,
+        previousProperties,
+        CLUSTER_KEPT_ON_REMOVAL,
+        context
+      );
 
       return {
         physicalId,
@@ -1058,8 +1133,9 @@ export class NeptuneProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    mask: ((text: string) => string) | undefined
+    context: UpdateContext | undefined
   ): Promise<ResourceUpdateResult> {
+    const mask = context?.maskSecrets;
     this.logger.debug(`Updating Neptune DBInstance ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
@@ -1067,15 +1143,10 @@ export class NeptuneProvider implements ResourceProvider {
     try {
       // #1160 reset-on-removal — ModifyDBInstance has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
-      // the template is sent as an explicit reset only where CloudFormation resets
-      // it; #5004 measured DeletionProtection / BackupRetentionPeriod
-      // (and IamAuthEnabled / AutoMinorVersionUpgrade on Neptune) as KEPT,
-      // so those are not reset. Deliberately NOT reset here:
-      //   * DBParameterGroupName — the default is the
-      //     engine-version-dependent `default.neptune1.x` family name;
-      //     synthesizing it from a removal risks a wrong-family apply.
-      //   * PreferredMaintenanceWindow — AWS assigns a RANDOM window at
-      //     create; no documented "reset to random" sentinel.
+      // the template is sent as an explicit reset only where CloudFormation
+      // resets it. Every property in INSTANCE_KEPT_ON_REMOVAL was measured as
+      // KEPT (#5004, #5544), so a removed one is passed through as absent and
+      // named in the warning below.
       // #5194: a cluster change in the same deploy can leave this member not
       // `available` for a moment; only that refusal is waited out and resent.
       await modifyDbInstanceWhenAvailable({
@@ -1105,7 +1176,6 @@ export class NeptuneProvider implements ResourceProvider {
       });
 
       this.logger.debug(`Successfully updated Neptune DBInstance ${logicalId}`);
-
       const described = await this.describeDBInstance(physicalId);
 
       if (described?.DBInstanceArn) {
@@ -1117,6 +1187,15 @@ export class NeptuneProvider implements ResourceProvider {
           properties['Tags']
         );
       }
+
+      this.warnKeptRemovals(
+        logicalId,
+        resourceType,
+        properties,
+        previousProperties,
+        INSTANCE_KEPT_ON_REMOVAL,
+        context
+      );
 
       return {
         physicalId,
@@ -1512,6 +1591,41 @@ export class NeptuneProvider implements ResourceProvider {
       })
     );
     return response.DBClusters?.[0];
+  }
+
+  /**
+   * Issue #5544: ONE warning naming each `kept` property this update dropped,
+   * which `update()` leaves at its live value because CloudFormation does too
+   * (the type is in `removalHandledInUpdate`, so the caller names none of
+   * them). The removed set is the caller's `removedProperties` when set, else
+   * the two bags compared (a direct call). A `drift --revert` baseline is a
+   * readback, not a template, so nothing there was removed. `DBPort` and
+   * `Port` are one setting: dropping one while the other stays is no removal.
+   */
+  private warnKeptRemovals(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    kept: readonly string[],
+    context: UpdateContext | undefined
+  ): void {
+    if (context?.desiredFromAwsReadback === true) return;
+    const removed =
+      context?.removedProperties ?? new Set(removedTemplateKeys(previousProperties, properties));
+    const portStays = properties['DBPort'] != null || properties['Port'] != null;
+    const names = kept.filter(
+      (key) => removed.has(key) && !((key === 'DBPort' || key === 'Port') && portStays)
+    );
+    if (names.length === 0) return;
+    const one = names.length === 1;
+    const modify =
+      resourceType === 'AWS::Neptune::DBInstance' ? 'ModifyDBInstance' : 'ModifyDBCluster';
+    this.logger.warn(
+      context?.replayingState === true
+        ? safeMsg`${logicalId} (${resourceType}): ${one ? 'property' : 'properties'} ${names.join(', ')} ${one ? 'is' : 'are'} absent from the state being restored; ${modify} keeps a setting it is not sent, so the rollback leaves any value the failed deploy applied in place.`
+        : safeMsg`${logicalId} (${resourceType}): ${one ? 'property' : 'properties'} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template; cdkd leaves the current AWS ${one ? 'value' : 'values'} in place, as CloudFormation does. Declare ${one ? 'it' : 'them'} to change ${one ? 'it' : 'them'}.`
+    );
   }
 
   /**
