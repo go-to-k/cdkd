@@ -340,4 +340,5 @@ export const NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set([
   'AWS::Wisdom::Session',
   'AWS::WorkSpaces::WorkSpaceApplication',
   'AWS::WorkSpaces::WorkspaceBundle',
+  'AWS::WorkSpaces::WorkspaceImage',
 ]);
