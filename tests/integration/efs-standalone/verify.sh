@@ -12,7 +12,10 @@
 # Fn::GetAtt IpAddress output (issue #2762), and that a FileSystemTags /
 # AccessPointTags change is applied in place on redeploy (issue #5464), and that
 # removing BackupPolicy / FileSystemPolicy / FileSystemProtection resets each as
-# CloudFormation does (issue #1160). Also asserts the destroy path
+# CloudFormation does (issue #1160), and that a template keeping
+# ThroughputMode: provisioned without ProvisionedThroughputInMibps is refused
+# with nothing changed, as CloudFormation refuses it (Phase 1a, an EXPECTED
+# deploy failure, issue #5547). Also asserts the destroy path
 # cleans up the file system, mount target, access point, and state file.
 #
 # Required env vars:
@@ -272,6 +275,45 @@ if [ "${FS_RETAG_P1}" != "v1" ] || [ "${FS_DROP_P1}" != "x" ] \
   exit 1
 fi
 echo "    OK: baseline file system and access point tags applied on create"
+
+# --- Phase 1a: provisioned mode without its value is refused (#5547) ---
+# The template keeps ThroughputMode: provisioned, drops
+# ProvisionedThroughputInMibps and adds the file-system tag cdkd-refused beside
+# it; the file system is the only resource it changes. CloudFormation rejects
+# that update before any EFS call (live CFn A/B, go-to-k/cdkd#5547); pre-fix
+# cdkd deployed it, kept 1 MiB/s and added the tag.
+echo "==> Phase 1a: re-deploy dropping only ProvisionedThroughputInMibps (must be refused)"
+set +e
+VALUE_REMOVED_OUT=$(CDKD_TEST_THROUGHPUT_VALUE_REMOVED=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1)
+VALUE_REMOVED_RC=$?
+set -e
+# Strip ANSI colour codes so a styled span cannot split the needle.
+VALUE_REMOVED_OUT="$(printf '%s\n' "${VALUE_REMOVED_OUT}" | sed $'s/\x1b\\[[0-9;]*m//g')"
+if [ "${VALUE_REMOVED_RC}" -eq 0 ]; then
+  echo "FAIL: the deploy dropping only ProvisionedThroughputInMibps succeeded; CloudFormation rejects it (#5547):" >&2
+  printf '%s\n' "${VALUE_REMOVED_OUT}" >&2
+  exit 1
+fi
+# A here-string, not a pipe: under pipefail grep -q's early exit can SIGPIPE
+# the writer and fail the pipeline on a match.
+if ! grep -qF 'Throughput value must be specified for provisioned throughput mode' \
+  <<<"${VALUE_REMOVED_OUT}"; then
+  echo "FAIL: the refused deploy did not name the missing throughput value (rc=${VALUE_REMOVED_RC}) (#5547):" >&2
+  printf '%s\n' "${VALUE_REMOVED_OUT}" >&2
+  exit 1
+fi
+TP_P1A=$(aws efs describe-file-systems --file-system-id "${FS_ID}" --region "${REGION}" \
+  --query 'FileSystems[0].[ThroughputMode,ProvisionedThroughputInMibps]' --output text)
+FS_REFUSED_P1A=$(fs_tag cdkd-refused); FS_RETAG_P1A=$(fs_tag cdkd-retag); FS_DROP_P1A=$(fs_tag cdkd-drop)
+if [ "${TP_P1A}" != "$(printf 'provisioned\t1.0')" ] || [ "${FS_REFUSED_P1A}" != "<absent>" ] \
+  || [ "${FS_RETAG_P1A}" != "v1" ] || [ "${FS_DROP_P1A}" != "x" ]; then
+  echo "FAIL: the refused deploy changed the file system: throughput '${TP_P1A}', cdkd-refused '${FS_REFUSED_P1A}', cdkd-retag '${FS_RETAG_P1A}', cdkd-drop '${FS_DROP_P1A}' (expected provisioned 1.0 / <absent> / v1 / x) (#5547)" >&2
+  exit 1
+fi
+echo "    OK: dropping only ProvisionedThroughputInMibps was refused before any change (#5547)"
 
 # --- Phase 1b: throughput removal redeploy (issue #1160 efs batch) ----
 # The removal template drops ThroughputMode + ProvisionedThroughputInMibps.

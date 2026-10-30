@@ -315,6 +315,35 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   ]);
 
   /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every Route
+   * property, each removal decided in `updateRoute`, so the shared caller warns
+   * about none of them. A removal `updateRoute` leaves in place is listed only
+   * where a CloudFormation A/B showed CloudFormation leaves it too.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::ApiGatewayV2::Route',
+      new Set([
+        // ApiId is create-only and RouteKey is required: neither is removable.
+        'ApiId',
+        'RouteKey',
+        // Reset on removal, as CloudFormation resets it (#5004).
+        'AuthorizationScopes',
+        // Left in place, as CloudFormation leaves them (#5004, #1160, #5548).
+        'Target',
+        'AuthorizationType',
+        'AuthorizerId',
+        'OperationName',
+        'ApiKeyRequired',
+        'RequestModels',
+        'RequestParameters',
+        'ModelSelectionExpression',
+        'RouteResponseSelectionExpression',
+      ]),
+    ],
+  ]);
+
+  /**
    * Properties this provider deliberately does NOT wire through to the SDK
    * call, with a one-line rationale per entry. Consumed by the development-
    * time coverage check (`tests/unit/provisioning/property-coverage.test.ts`,
@@ -1920,8 +1949,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       if (resp.OperationName !== undefined) result['OperationName'] = resp.OperationName;
       // Issue #609 backfill, same emit-when-present convention as above.
       // `ApiKeyRequired` gets its AWS default (false) rather than being
-      // omitted: unlike the others it is a boolean cdkd now actively RESETS on
-      // removal, so the read side has to be able to show the reset landed.
+      // omitted: it is a boolean whose absence AWS reads as false, so the
+      // observed baseline always records it and `cdkd drift --revert` can
+      // restore it either way.
       result['ApiKeyRequired'] = resp.ApiKeyRequired ?? false;
       if (resp.ModelSelectionExpression !== undefined) {
         result['ModelSelectionExpression'] = resp.ModelSelectionExpression;
@@ -2963,8 +2993,13 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.OperationName = properties['OperationName'] as string;
       changed = true;
     }
-    // ApiKeyRequired resets to false (CFn default) on removal (#1160).
-    {
+    // ApiKeyRequired: CloudFormation KEEPS the live value when it is removed,
+    // alone or beside another change, and reads stay `true` for minutes (real
+    // CloudFormation A/B on a WebSocket route, #5548), so removal sends nothing
+    // and key enforcement stays on. `cdkd drift --revert` (`restoreFromAws`)
+    // reverts to its baseline instead, resetting to false when that baseline
+    // lacks the key.
+    if (restoreFromAws) {
       const r = this.clearableUpdate(
         properties['ApiKeyRequired'] as boolean | undefined,
         previousProperties['ApiKeyRequired'] as boolean | undefined,
@@ -2974,6 +3009,12 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         input.ApiKeyRequired = r.value;
         changed = true;
       }
+    } else if (
+      properties['ApiKeyRequired'] !== undefined &&
+      properties['ApiKeyRequired'] !== previousProperties['ApiKeyRequired']
+    ) {
+      input.ApiKeyRequired = properties['ApiKeyRequired'] as boolean;
+      changed = true;
     }
     // RequestModels merges on the AWS side. On a deploy CloudFormation KEEPS a key
     // dropped from the template (real CloudFormation A/B, #5004), so a removed key

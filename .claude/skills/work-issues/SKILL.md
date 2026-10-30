@@ -71,8 +71,9 @@ file that holds that section.
   opens the PR, fixes its reviewers' (§8) findings, drives CI green, then STOPS
   at merge-ready and reports PR number, HEAD sha, review verdicts, integs still
   needed and anything deferred. It never runs a real-AWS integ or merges.
-- **Finishing (stage 9): the parent, one lane at a time.** Grant each
-  merge-ready lane its turn and run `/run-integ` and `gh pr merge` yourself
+- **Finishing (stage 9): the parent — integs in parallel, merges one at a
+  time.** Grant each merge-ready lane its integ (lanes on DIFFERENT fixtures
+  run at once) and run `/run-integ` and `gh pr merge` yourself
   FROM THAT LANE'S WORKTREE (the `integ-destroy` marker is read from the
   worktree the command runs from) — never the lane agent; a refused call
   goes to the user (§9). Post-merge (pull →
@@ -109,8 +110,11 @@ Running a lane in the parent stays legal; the stage files apply either way.
   file (list in §2). (§3)
 - **Never work in the main checkout** — one tree per lane: a new worktree under
   `.claude/worktrees/<branch>/`, or the launch worktree itself IN-PLACE. (§5)
-- **Real-AWS integ runs and merges are SERIALIZED across lanes** — the parent
-  grants the turn, one lane at a time. Everything else runs concurrently. (§9)
+- **Merges are SERIALIZED across lanes, and so are integs on the SAME
+  fixture** (one stack name) — the parent grants each turn. Integs on
+  different fixtures run in parallel — all lanes' in-flight integs form ONE
+  `/run-integ` parallel set (own region / gc alone / own bucket) — as does
+  everything else. (§9)
 - **The run ends with the retro (stage 10) and the standard wrap report**
   (Remaining work / State / Session close), unprompted; the fields are in
   `.claude/rules/session-report.md`, which never auto-loads.

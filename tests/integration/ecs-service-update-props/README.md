@@ -107,7 +107,17 @@ needs expensive/out-of-scope infrastructure this fixture deliberately avoids:
    struct whenever its declared content changed": both fit phase 2, only the
    removal rule fits this. Clobbering the members here would be a divergence
    in the opposite direction, destroying a value CloudFormation preserves.
-5. **Phase 3 (destroy)**: destroy and assert the state file is gone.
+5. **Phase 2d (default steady-state wait, #5571)**: `...,breaker` adds
+   `BreakerSvc`, a one-task service with a deployment circuit breaker
+   (`Rollback: true`). The deploy passes no wait flag; assert the rollout is
+   `COMPLETED` with one running task the moment it returns.
+6. **Phase 2e (circuit-breaker rollback fails the deploy, #5571)**:
+   `...,breaker,breaker-fail` moves `BreakerSvc` to a task definition whose
+   container health check always fails. Assert the default deploy exits
+   non-zero with the circuit-breaker verdict (sentinel: the steady-state head
+   on the same line) and the stopped-task command, then that the service and
+   its state record are back on the phase-2d task definition.
+7. **Phase 3 (destroy)**: destroy and assert the state file is gone.
 
 ## Run
 

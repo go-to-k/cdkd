@@ -1,6 +1,6 @@
 /**
  * go-to-k/cdkd#4583: an ECS service CreateService returned, left behind
- * because the --full-wait cleanup delete FAILED, is named on the thrown error
+ * because the steady-state cleanup delete FAILED, is named on the thrown error
  * for the failed-CREATE journal -- and only then. A service that held the name
  * before the create (CreateService hands an ACTIVE one back) is neither
  * cleaned up nor marked, nor is one the lookup could not answer for.
@@ -87,7 +87,7 @@ describe('ECSProvider.create (Service) — created-before-failure mark (#4583)',
     clearResolvedResourceTimeouts();
   });
 
-  it('marks the service ARN (the success physicalId) when the --full-wait cleanup delete FAILS', async () => {
+  it('marks the service ARN (the success physicalId) when the steady-state cleanup delete FAILS', async () => {
     mockSend.mockResolvedValueOnce({
       service: { serviceArn: SERVICE_ARN, serviceName: 'my-service' },
     });
@@ -253,7 +253,23 @@ describe('ECSProvider.create (Service) — created-before-failure mark (#4583)',
     expect(createdBeforeFailure(error, 'MySvc', TYPE)).toBeUndefined();
   });
 
-  it('skips the lookup without --full-wait (no step after CreateService can fail)', async () => {
+  it('skips the lookup under --no-wait (no step after CreateService can fail)', async () => {
+    delete process.env['CDKD_FULL_WAIT'];
+    process.env['CDKD_NO_WAIT'] = 'true';
+    try {
+      mockSend.mockResolvedValueOnce({
+        service: { serviceArn: SERVICE_ARN, serviceName: 'my-service' },
+      });
+
+      await new ECSProvider().create('MySvc', TYPE, { ...PROPS });
+
+      expect(lookupSend).not.toHaveBeenCalled();
+    } finally {
+      delete process.env['CDKD_NO_WAIT'];
+    }
+  });
+
+  it('asks the lookup under the default wait too (the wait can fail the create)', async () => {
     delete process.env['CDKD_FULL_WAIT'];
     mockSend.mockResolvedValueOnce({
       service: { serviceArn: SERVICE_ARN, serviceName: 'my-service' },
@@ -261,7 +277,7 @@ describe('ECSProvider.create (Service) — created-before-failure mark (#4583)',
 
     await new ECSProvider().create('MySvc', TYPE, { ...PROPS });
 
-    expect(lookupSend).not.toHaveBeenCalled();
+    expect(lookupSend).toHaveBeenCalled();
   });
 
   it("does not mark CreateService's own failure", async () => {

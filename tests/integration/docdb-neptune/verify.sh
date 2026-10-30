@@ -126,6 +126,8 @@ DESTROY_3G_LOG=""
 # cleanup on every exit).
 EVENT_KEYS_3G=""
 EVENTS_3G=""
+# Step 3c's captured deploy output (issue #5543's warning is read from it).
+REMOVAL_3C_LOG=""
 # Issue #5184: when this run began (UTC, second precision, the prefix AWS's
 # ClusterCreateTime is compared on). Set before anything is created, so
 # cleanup can delete every final snapshot of the clusters this run created.
@@ -247,6 +249,7 @@ cleanup() {
   [ -n "${DESTROY_3G_LOG}" ] && rm -f "${DESTROY_3G_LOG}"
   [ -n "${EVENT_KEYS_3G}" ] && rm -f "${EVENT_KEYS_3G}"
   [ -n "${EVENTS_3G}" ] && rm -f "${EVENTS_3G}"
+  [ -n "${REMOVAL_3C_LOG}" ] && rm -f "${REMOVAL_3C_LOG}"
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting cleanup destroy"
     # Step 3g's out-of-band members first: while one stands, its cluster's
@@ -531,10 +534,18 @@ if [ "${DOCDB_SG_DESC}" != "cdkd integ docdb subnet group" ]; then
 fi
 
 echo "[verify] step 3c: CDKD_TEST_REMOVAL=true redeploy (DROP the #1160 / #5004 fields)"
-CDKD_TEST_REMOVAL=true ${CLI} deploy "${STACK}" \
+REMOVAL_3C_LOG="$(mktemp)"
+if ! CDKD_TEST_REMOVAL=true ${CLI} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --verbose \
-  "${TIMEOUT_OVERRIDES[@]}"
+  "${TIMEOUT_OVERRIDES[@]}" 2>&1 | tee "${REMOVAL_3C_LOG}"; then
+  # pipefail: the deploy's own exit code, with its output streamed live.
+  echo "[verify] FAIL: step 3c removal redeploy failed" >&2
+  exit 1
+fi
+REMOVAL_3C_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${REMOVAL_3C_LOG}")"
+rm -f "${REMOVAL_3C_LOG}"
+REMOVAL_3C_LOG=""
 
 echo "[verify] step 3d: wait for both clusters to be available, then assert the baseline values are RETAINED (#5004)"
 # Cluster modifies can take a couple of minutes to settle; bounded retry,
@@ -646,6 +657,16 @@ if [ "${DOCDB_STATUS}" != "available" ] || [ "${DOCDB_PROT}" != "true" ] || [ "$
   echo "[verify] FAIL: a removed property was reset — CloudFormation KEEPS the live value (#5004)" >&2
   echo "  docdb:   status='${DOCDB_STATUS}' protection='${DOCDB_PROT}' retention='${DOCDB_RETENTION}' (expected available/true/7)" >&2
   echo "  neptune: status='${NEPTUNE_STATUS}' protection='${NEPTUNE_PROT}' retention='${NEPTUNE_RETENTION}' iamAuth='${NEPTUNE_IAM}' autoMinorVersionUpgrade='${NEPTUNE_AMVU}' (expected available/true/7/true/false)" >&2
+  exit 1
+fi
+# Issue #5543: the DocDB properties CloudFormation keeps on removal are named
+# in one line per resource. Before the fix cdkd kept them silently, so this is
+# the arm's only post-fix-only assertion. The fixture drops three cluster
+# properties (listed in DOCDB_CLUSTER_KEPT_ON_REMOVAL's order); the instance
+# drops none, so it has no line.
+needle="DocdbCluster (AWS::DocDB::DBCluster): properties DeletionProtection, BackupRetentionPeriod, VpcSecurityGroupIds were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them."
+if ! grep -qF "${needle}" <<<"${REMOVAL_3C_PLAIN}"; then
+  echo "[verify] FAIL: #5543: the step-3c deploy output lacks the kept-removal warning '${needle}'" >&2
   exit 1
 fi
 echo "[verify] step 3d ok: DeletionProtection=true + BackupRetentionPeriod=7 (+ Neptune IAMDatabaseAuthenticationEnabled=true, instance AutoMinorVersionUpgrade=false) retained after removal — #5004"

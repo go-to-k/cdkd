@@ -305,9 +305,10 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
     new apigwv2.CfnRoute(this, 'WsConnectRoute', {
       apiId: wsApi.ref,
       routeKey: '$connect',
-      // Issue #609: ApiKeyRequired is REMOVED on update and must reset to the
-      // CFn default; RequestParameters changes value (UpdateRoute merges the
-      // map and AWS documents no whole-block reset).
+      // Issue #5548: ApiKeyRequired is REMOVED on update, beside the
+      // RequestParameters change; CloudFormation KEEPS it (real A/B), so it
+      // must stay true. RequestParameters changes value (UpdateRoute merges
+      // the map and AWS documents no whole-block reset).
       ...(removal
         ? {}
         : update
