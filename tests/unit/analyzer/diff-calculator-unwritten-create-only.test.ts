@@ -182,4 +182,24 @@ describe('DiffCalculator — an unwritten create-only drop (#2790)', () => {
     const change = await diff(stateWith(DECLARED), templateWith(WRITTEN), new Set());
     expect(change.changeType).toBe('NO_CHANGE');
   });
+
+  it('never reports a replacement the refusal does not cover: a canonicalizer-only difference stays NO_CHANGE (#5572)', async () => {
+    // The refusal's "unchanged" test is raw, so it does not cover 'USE1-AZ1'
+    // vs 'use1-az1'. Had the record side dropped the key anyway, the diff
+    // would read an added create-only key and the flag-less deploy would
+    // replace the subnet with no opt-in.
+    const declaredUpper = { ...WRITTEN, [CREATE_ONLY]: 'USE1-AZ1' };
+    const canonicalize = (_type: string, props: Record<string, unknown>) =>
+      typeof props[CREATE_ONLY] === 'string'
+        ? { ...props, [CREATE_ONLY]: (props[CREATE_ONLY] as string).toLowerCase() }
+        : props;
+    const changes = await new DiffCalculator().calculateDiff(
+      stateWith(DECLARED),
+      templateWith(declaredUpper),
+      undefined,
+      canonicalize,
+      new Set()
+    );
+    expect(changes.get('MySubnet')!.changeType).toBe('NO_CHANGE');
+  });
 });

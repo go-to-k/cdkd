@@ -5399,6 +5399,53 @@ describe('the create-only drop refusal preview (go-to-k/cdkd#2790)', () => {
     const lines = warn.mock.calls.map((call) => String(call[0]));
     expect(lines.filter((line) => line.includes('CREATE_ONLY_DROP_NEEDS_REPLACEMENT'))).toHaveLength(1);
   });
+
+  // go-to-k/cdkd#5572: a key the SDK provider now writes is refused whatever
+  // flag the deploy passes, but it is still a refusal at the RESOURCE, not one
+  // before the deploy starts (other rows may already have changed), so it
+  // stays a warning: exit 0, like the #2790 row above.
+  it('warns, with blocking empty, for an evidence key the SDK provider now writes', async () => {
+    const TABLE = 'AWS::S3Tables::Table';
+    const table = {
+      TableBucketARN: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b',
+      Namespace: 'ns',
+      TableName: 't',
+      OpenTableFormat: 'ICEBERG',
+      StorageClassConfiguration: { StorageClass: 'INTELLIGENT_TIERING' },
+    };
+    const state = st('S', {
+      IcebergTable: {
+        ...res(TABLE, table),
+        provisionedBy: 'sdk',
+        acceptedCreateOnlyDrops: ['StorageClassConfiguration'],
+      },
+    });
+    const tmpl: CloudFormationTemplate = {
+      Resources: { IcebergTable: { Type: TABLE, Properties: table } },
+    };
+    const warn = vi.mocked(getLogger().warn);
+    warn.mockClear();
+    const { changes, blocking } = await computeStackDiff(
+      state,
+      tmpl,
+      'us-east-1',
+      'S',
+      fakeBackend({}),
+      new DiffCalculator()
+    );
+
+    const pc = changes.get('IcebergTable')!.propertyChanges!;
+    expect(pc.map((c) => [c.path, c.requiresReplacement])).toEqual([
+      ['StorageClassConfiguration', true],
+    ]);
+    expect(blocking).toEqual([]);
+    const lines = warn.mock.calls.map((call) => String(call[0]));
+    expect(
+      lines.filter((line) =>
+        line.includes("This cdkd version's SDK provider writes StorageClassConfiguration")
+      )
+    ).toHaveLength(1);
+  });
 });
 
 describe('renderDiffTree - a masked property whose template expression changed (go-to-k/cdkd#4451)', () => {

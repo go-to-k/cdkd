@@ -68,7 +68,9 @@ problem, and this entry does not explain it.
 ### `CREATE_ONLY_DROP_NEEDS_REPLACEMENT`
 
 When you stop passing `--prefer-sdk-route`, cdkd refuses the deploy with this
-code if the property is create-only. A create-only property can be set only
+code if the property is create-only. It also refuses after an upgrade to a
+release whose SDK provider writes the property, flag or not; removing the
+property from the template then keeps the resource as it is. A create-only property can be set only
 when the resource is created, so applying it to a live resource needs a
 replacement. The refusal names the remedies:
 

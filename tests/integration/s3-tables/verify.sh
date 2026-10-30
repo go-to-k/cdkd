@@ -29,6 +29,12 @@
 #      silent drops before #2762 — are sent by the SDK provider: Phase 1
 #      routes the IcebergTable via the SDK and reads every value back from
 #      AWS; Phase 1b changes UnreferencedDays and Compaction in place.
+#   7. (issue #5572) Phase 1e seeds the IcebergTable's record with the
+#      `acceptedCreateOnlyDrops` evidence a pre-#2762 cdkd wrote for
+#      StorageClassConfiguration, and asserts `cdkd diff` warns of and
+#      `cdkd deploy` refuses the replacement (CREATE_ONLY_DROP_NEEDS_REPLACEMENT)
+#      instead of calling the unchanged template NO_CHANGE; the refusal's
+#      `cdkd import --force` remedy then clears the evidence.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -97,6 +103,8 @@ cleanup() {
   # stderr — a partial-failure on the deeply-nested TableBucket → Namespace
   # → Table cascade silently leaves orphans otherwise.
   set +eu
+  # A seeded state copy (Phase 1d / 1e) must not outlive a failed run.
+  rm -f "${SEED_STATE:-}"
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" \
       --state-bucket "${STATE_BUCKET:-}" \
@@ -656,6 +664,137 @@ if [ "${CONVERGED_CC_PARAM}" != "${EXPECTED_ICEBERG_ARN}" ]; then
   exit 1
 fi
 echo "    OK: readers recorded with the table name are rewritten to the TableARN for both tables (issue #5316)"
+
+# --- Phase 1e: an accepted create-only drop the provider now writes (issue #5572) --
+# A cdkd before #2762 dropped the IcebergTable's StorageClassConfiguration
+# under `--allow-unsupported-properties AWS::S3Tables::Table:StorageClassConfiguration`
+# and recorded it in `acceptedCreateOnlyDrops` (#2790): AWS never got it. Seed
+# that evidence onto the record (the bag already holds the key), then redeploy
+# the unchanged template. Before #5572 the diff stopped consulting the evidence
+# once the key became handled, called it NO_CHANGE and reported success; now
+# both `cdkd diff` and `cdkd deploy` report the replacement and the deploy
+# refuses it (CREATE_ONLY_DROP_NEEDS_REPLACEMENT), even under the old flag.
+SEED_STATE="$(mktemp)"
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+  | jq '
+      if .resources.IcebergTable.properties.StorageClassConfiguration == null
+      then error("IcebergTable.properties.StorageClassConfiguration missing") else . end
+      | if .resources.IcebergTable.provisionedBy != "sdk"
+        then error("IcebergTable is not SDK-routed") else . end
+      | .resources.IcebergTable.acceptedCreateOnlyDrops = ["StorageClassConfiguration"]' > "${SEED_STATE}"
+SEEDED_EVIDENCE="$(jq -r '.resources.IcebergTable.acceptedCreateOnlyDrops // [] | join(",")' "${SEED_STATE}")"
+if [ "${SEEDED_EVIDENCE}" != "StorageClassConfiguration" ]; then
+  echo "FAIL: could not seed IcebergTable's acceptedCreateOnlyDrops (got '${SEEDED_EVIDENCE}')" >&2
+  rm -f "${SEED_STATE}"
+  exit 1
+fi
+aws s3 cp "${SEED_STATE}" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+rm -f "${SEED_STATE}"
+PRE_1E_ICEBERG_ID="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.IcebergTable.physicalId // ""')"
+require_value "IcebergTable physicalId before Phase 1e" "${PRE_1E_ICEBERG_ID}"
+NOW_WRITTEN_NEEDLE="This cdkd version's SDK provider writes StorageClassConfiguration"
+# Sentinel: the same message's opening, independent of the needle, so a
+# reworded needle fails loudly instead of reading as "not refused".
+REFUSAL_SENTINEL="IcebergTable (AWS::S3Tables::Table): StorageClassConfiguration is create-only"
+
+echo "==> Phase 1e: cdkd diff warns of the refusal"
+# A WARNING, exit 0, as for every #2790 row: the deploy refuses at the
+# resource, not before it starts, so it is no `blocking` reason (exit 3).
+DIFF_1E_RC=0
+DIFF_1E_OUT="$(CDKD_S3T_TEAM="${UPDATED_TEAM_TAG}" CDKD_S3T_TABLE_NAME="${RENAMED_TABLE}" \
+  CDKD_S3T_TABLE_NS="${RENAMED_NS}" node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" 2>&1)" || DIFF_1E_RC=$?
+DIFF_1E_PLAIN="$(printf '%s' "${DIFF_1E_OUT}" | sed $'s/\033\[[0-9;]*m//g')"
+if [ "${DIFF_1E_RC}" -ne 0 ] || ! grep -qF -- "${NOW_WRITTEN_NEEDLE}" <<<"${DIFF_1E_PLAIN}"; then
+  printf '%s\n' "${DIFF_1E_OUT}" >&2
+  echo "FAIL: cdkd diff exited ${DIFF_1E_RC} without warning of the #5572 refusal (expected exit 0 and '${NOW_WRITTEN_NEEDLE}'); before #5572 it previewed NO_CHANGE" >&2
+  exit 1
+fi
+
+echo "==> Phase 1e: redeploy the unchanged template under the old flag; it must refuse"
+# `if` rather than `!`: the deploy is EXPECTED to fail.
+if REFUSE_1E_OUT="$(CDKD_S3T_TEAM="${UPDATED_TEAM_TAG}" CDKD_S3T_TABLE_NAME="${RENAMED_TABLE}" \
+  CDKD_S3T_TABLE_NS="${RENAMED_NS}" node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --prefer-sdk-route AWS::S3Tables::Table:StorageClassConfiguration \
+  --yes 2>&1)"; then
+  printf '%s\n' "${REFUSE_1E_OUT}" >&2
+  echo "FAIL: the deploy SUCCEEDED. go-to-k/cdkd#5572: StorageClassConfiguration was never written (acceptedCreateOnlyDrops), the provider now writes it, and applying a create-only value needs a replacement the deploy must refuse rather than report success." >&2
+  exit 1
+fi
+printf '%s\n' "${REFUSE_1E_OUT}" >&2
+REFUSE_1E_PLAIN="$(printf '%s' "${REFUSE_1E_OUT}" | sed $'s/\033\[[0-9;]*m//g')"
+if ! grep -qF -- "${NOW_WRITTEN_NEEDLE}" <<<"${REFUSE_1E_PLAIN}"; then
+  if grep -qF -- "${REFUSAL_SENTINEL}" <<<"${REFUSE_1E_PLAIN}"; then
+    echo "FAIL: the #2790 refusal fired but its #5572 wording drifted: '${NOW_WRITTEN_NEEDLE}' is gone; update this needle" >&2
+  else
+    echo "FAIL: the deploy failed, but not with the #5572 refusal; read the output above" >&2
+  fi
+  exit 1
+fi
+grep -qF -- "--recreate-via-cc-api IcebergTable" <<<"${REFUSE_1E_PLAIN}" || {
+  echo "FAIL: the #5572 refusal does not name the --recreate-via-cc-api IcebergTable opt-in" >&2; exit 1; }
+POST_1E_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+POST_1E_ICEBERG_ID="$(printf '%s' "${POST_1E_STATE}" | jq -r '.resources.IcebergTable.physicalId // ""')"
+if [ "${POST_1E_ICEBERG_ID}" != "${PRE_1E_ICEBERG_ID}" ]; then
+  echo "FAIL: the refused deploy changed IcebergTable's record (${PRE_1E_ICEBERG_ID} -> ${POST_1E_ICEBERG_ID})" >&2
+  exit 1
+fi
+POST_1E_EVIDENCE="$(printf '%s' "${POST_1E_STATE}" | jq -r '.resources.IcebergTable.acceptedCreateOnlyDrops // [] | join(",")')"
+if [ "${POST_1E_EVIDENCE}" != "StorageClassConfiguration" ]; then
+  echo "FAIL: the refused deploy dropped IcebergTable's acceptedCreateOnlyDrops (now '${POST_1E_EVIDENCE}'); the evidence must survive until the key reaches AWS" >&2
+  exit 1
+fi
+LIVE_1E_ARN="$(aws s3tables get-table --region "${REGION}" --table-arn "${EXPECTED_ICEBERG_ARN}" --query 'tableARN' --output text)"
+if [ "${LIVE_1E_ARN}" != "${EXPECTED_ICEBERG_ARN}" ]; then
+  echo "FAIL: IcebergTable ${EXPECTED_ICEBERG_ARN} is not live after the refusal (got '${LIVE_1E_ARN}'); the refusal must come before any delete" >&2
+  exit 1
+fi
+# The refusal's non-destructive way out when AWS does hold the value (it does
+# here: the seed is a fiction): a selective `cdkd import --force` re-records
+# the table from AWS with no evidence. Then a flag-less redeploy of the same
+# template must succeed with nothing to do.
+grep -qF -- "cdkd import with --resource 'IcebergTable=PHYSICAL_ID'" <<<"${REFUSE_1E_PLAIN}" || {
+  echo "FAIL: the #5572 refusal does not name the cdkd import remedy this phase takes next" >&2; exit 1; }
+echo "==> Phase 1e: re-record IcebergTable with cdkd import --force"
+# `cdkd import` takes no --region: pin the region through the environment, or
+# a profile whose region differs would import from the wrong one.
+AWS_REGION="${REGION}" CDKD_S3T_TEAM="${UPDATED_TEAM_TAG}" CDKD_S3T_TABLE_NAME="${RENAMED_TABLE}" \
+  CDKD_S3T_TABLE_NS="${RENAMED_NS}" node "${LOCAL_DIST}" import "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --resource "IcebergTable=${PRE_1E_ICEBERG_ID}" \
+  --force \
+  --yes
+IMPORTED_1E_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+IMPORTED_1E_ID="$(printf '%s' "${IMPORTED_1E_STATE}" | jq -r '.resources.IcebergTable.physicalId // ""')"
+IMPORTED_1E_EVIDENCE="$(printf '%s' "${IMPORTED_1E_STATE}" | jq -r '.resources.IcebergTable.acceptedCreateOnlyDrops // "absent" | tostring')"
+if [ "${IMPORTED_1E_ID}" != "${PRE_1E_ICEBERG_ID}" ] || [ "${IMPORTED_1E_EVIDENCE}" != "absent" ]; then
+  echo "FAIL: cdkd import left IcebergTable at '${IMPORTED_1E_ID}' (expected '${PRE_1E_ICEBERG_ID}') with acceptedCreateOnlyDrops '${IMPORTED_1E_EVIDENCE}' (expected absent)" >&2
+  exit 1
+fi
+echo "==> Phase 1e: the same template redeploys cleanly after the import"
+CDKD_S3T_TEAM="${UPDATED_TEAM_TAG}" CDKD_S3T_TABLE_NAME="${RENAMED_TABLE}" \
+  CDKD_S3T_TABLE_NS="${RENAMED_NS}" node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+POST_IMPORT_1E_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+POST_IMPORT_1E_ID="$(printf '%s' "${POST_IMPORT_1E_STATE}" | jq -r '.resources.IcebergTable.physicalId // ""')"
+POST_IMPORT_1E_EVIDENCE="$(printf '%s' "${POST_IMPORT_1E_STATE}" | jq -r '.resources.IcebergTable.acceptedCreateOnlyDrops // "absent" | tostring')"
+if [ "${POST_IMPORT_1E_ID}" != "${PRE_1E_ICEBERG_ID}" ] || [ "${POST_IMPORT_1E_EVIDENCE}" != "absent" ]; then
+  echo "FAIL: the redeploy after the import left IcebergTable at '${POST_IMPORT_1E_ID}' (expected '${PRE_1E_ICEBERG_ID}') with acceptedCreateOnlyDrops '${POST_IMPORT_1E_EVIDENCE}' (expected absent)" >&2
+  exit 1
+fi
+# The composite physical id survives a same-name delete -> create; the table
+# ARN (its UUID) does not, so it is what proves the table was not replaced.
+POST_IMPORT_1E_ARN="$(aws s3tables get-table --region "${REGION}" --table-arn "${EXPECTED_ICEBERG_ARN}" --query 'tableARN' --output text)"
+if [ "${POST_IMPORT_1E_ARN}" != "${EXPECTED_ICEBERG_ARN}" ]; then
+  echo "FAIL: IcebergTable ${EXPECTED_ICEBERG_ARN} is not live after the redeploy that followed the import (got '${POST_IMPORT_1E_ARN}'); the redeploy replaced it" >&2
+  exit 1
+fi
+echo "    OK: diff warns and deploy refuses the replacement without touching IcebergTable; cdkd import clears the evidence and the redeploy is clean (issue #5572)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
