@@ -49,6 +49,9 @@ import { EFSProvider } from '../../../src/provisioning/providers/efs-provider.js
  *    'provisioned' file system IS reset by CloudFormation to the create
  *    default 'bursting', so the provider must send it explicitly
  *    (UpdateFileSystem merges — an absent field keeps the live value).
+ *  - Removing only ProvisionedThroughputInMibps while the mode stays
+ *    'provisioned' is REJECTED by CloudFormation (go-to-k/cdkd#5547), so the
+ *    provider refuses it before any call.
  */
 function mockUpdateFileSystemAvailable() {
   mockSend
@@ -139,16 +142,63 @@ describe('EFSProvider FileSystem throughput removal semantics (#1160)', () => {
     expect(input.ThroughputMode).toBe('elastic');
   });
 
-  it('removal of ProvisionedThroughputInMibps alone (mode kept provisioned) is deferred — no call', async () => {
-    // No wire shape can reset the provisioned value while the mode stays
-    // 'provisioned' (the API requires a value in that mode and documents no
-    // default), so the provider deliberately defers. Pinned so the deferral
-    // is a decision, not an accident.
-    const previous = { ThroughputMode: 'provisioned', ProvisionedThroughputInMibps: 1 };
-    const next = { ThroughputMode: 'provisioned' };
+  describe('ThroughputMode: provisioned without ProvisionedThroughputInMibps (#5547)', () => {
+    // Live CFn A/B (go-to-k/cdkd#5547, us-east-1): removing only the value
+    // while the mode stays provisioned FAILS the CloudFormation update with
+    // "Throughput value must be specified for provisioned throughput mode."
+    // before any EFS mutation, alone and beside a tag + lifecycle change, and
+    // the file system keeps its old value. cdkd refuses up front to match.
+    const refusal = /Throughput value must be specified for provisioned throughput mode/;
 
-    await provider.update('L', 'fs-1', 'AWS::EFS::FileSystem', next, previous);
-    expect(updateFileSystemCall()).toBeUndefined();
+    it('removal of the value alone is refused before any call', async () => {
+      const previous = { ThroughputMode: 'provisioned', ProvisionedThroughputInMibps: 2 };
+      const next = { ThroughputMode: 'provisioned' };
+
+      await expect(
+        provider.update('L', 'fs-1', 'AWS::EFS::FileSystem', next, previous)
+      ).rejects.toThrow(refusal);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('removal beside another change is refused before the other change is applied', async () => {
+      const previous = {
+        ThroughputMode: 'provisioned',
+        ProvisionedThroughputInMibps: 2,
+        FileSystemTags: [{ Key: 'ab', Value: 'v1' }],
+      };
+      const next = {
+        ThroughputMode: 'provisioned',
+        FileSystemTags: [{ Key: 'ab', Value: 'v2' }],
+        LifecyclePolicies: [{ TransitionToIA: 'AFTER_30_DAYS' }],
+      };
+
+      await expect(
+        provider.update('L', 'fs-1', 'AWS::EFS::FileSystem', next, previous)
+      ).rejects.toThrow(refusal);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('switching to provisioned without a value is refused too', async () => {
+      // Same A/B: a bursting -> provisioned update with no value also fails
+      // in CloudFormation (the EFS API answers "Provisioned throughput must
+      // be set ...") and rolls back to bursting.
+      const previous = { ThroughputMode: 'bursting' };
+      const next = { ThroughputMode: 'provisioned' };
+
+      await expect(
+        provider.update('L', 'fs-1', 'AWS::EFS::FileSystem', next, previous)
+      ).rejects.toThrow(refusal);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('a provisioned template that keeps its value is not refused', async () => {
+      const previous = { ThroughputMode: 'provisioned', ProvisionedThroughputInMibps: 2 };
+      const next = { ThroughputMode: 'provisioned', ProvisionedThroughputInMibps: 2 };
+
+      const result = await provider.update('L', 'fs-1', 'AWS::EFS::FileSystem', next, previous);
+      expect(result).toEqual({ physicalId: 'fs-1', wasReplaced: false });
+      expect(updateFileSystemCall()).toBeUndefined();
+    });
   });
 
   it('removal of ThroughputMode while ProvisionedThroughputInMibps is kept does not reset', async () => {

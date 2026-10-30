@@ -81,6 +81,19 @@ export class EfsStandaloneStack extends cdk.Stack {
           }),
     });
 
+    // CDKD_TEST_THROUGHPUT_VALUE_REMOVED (issue #5547): keep the baseline's
+    // ThroughputMode: provisioned but drop ProvisionedThroughputInMibps, and
+    // change a tag beside it. CloudFormation rejects that update before any
+    // EFS call (live CFn A/B), so cdkd must refuse it, leaving the value and
+    // the tag as they were; pre-fix the deploy succeeded and kept the value.
+    // The L2 refuses the shape at synth, so reach its CfnFileSystem.
+    const throughputValueRemoved = process.env.CDKD_TEST_THROUGHPUT_VALUE_REMOVED === 'true';
+    if (throughputValueRemoved && !removal) {
+      (fs.node.defaultChild as efs.CfnFileSystem).addPropertyDeletionOverride(
+        'ProvisionedThroughputInMibps'
+      );
+    }
+
     // Issue #2762: the mount target's create-only addressing, which used to
     // route it through Cloud Control (the SDK provider did not handle it).
     // The L2 exposes neither, so reach its one CfnMountTarget. The
@@ -119,7 +132,11 @@ export class EfsStandaloneStack extends cdk.Stack {
     // retag sent nothing and the access-point retag was refused.
     const apRetag = process.env.CDKD_TEST_AP_RETAG === 'true';
     const fsOnly = { excludeResourceTypes: ['AWS::EFS::AccessPoint'] };
-    cdk.Tags.of(fs).add('cdkd-retag', removal ? 'v2' : 'v1', fsOnly);
+    cdk.Tags.of(fs).add(
+      'cdkd-retag',
+      removal ? 'v2' : throughputValueRemoved ? 'refused' : 'v1',
+      fsOnly
+    );
     if (!removal) cdk.Tags.of(fs).add('cdkd-drop', 'x', fsOnly);
     cdk.Tags.of(ap).add('cdkd-ap-retag', apRetag ? 'v2' : 'v1');
     if (!apRetag) cdk.Tags.of(ap).add('cdkd-ap-drop', 'x');

@@ -624,15 +624,30 @@ export class EFSProvider implements ResourceProvider {
     //    live value), so mirror CFn by sending ThroughputMode: 'bursting'
     //    explicitly. This also stops provisioned-throughput billing, which
     //    the pre-fix silent drop kept running.
-    //  - Removing ONLY ProvisionedThroughputInMibps while keeping
-    //    ThroughputMode: 'provisioned' is deferred (no wire shape can reset
-    //    it — the API requires a value while the mode is provisioned, and
-    //    there is no documented default to reset to).
+    //  - A template with ThroughputMode: 'provisioned' and no
+    //    ProvisionedThroughputInMibps (e.g. the value removed while the mode
+    //    is kept) is REJECTED by CloudFormation: live CFn A/B
+    //    go-to-k/cdkd#5547, alone and beside a tag + lifecycle change, failed
+    //    with "Throughput value must be specified for provisioned throughput
+    //    mode." before any EFS mutation (no UpdateFileSystem in CloudTrail),
+    //    rolled back, and the value stayed 2 MiB/s. A bursting -> provisioned
+    //    switch with no value fails there too (the EFS API refuses it). So
+    //    refuse up front, before any call, with CFn's message (below).
     //  - Removing ONLY ThroughputMode from a 'provisioned' file system while
     //    keeping ProvisionedThroughputInMibps is RETAINED by CloudFormation
     //    (live CFn A/B, go-to-k/cdkd#5464: provisioned@1MiBps stayed so for
     //    2 min after UPDATE_COMPLETE), so sending nothing is parity — pinned
     //    by a negative unit test.
+    if (newThroughputMode === 'provisioned' && newProvisioned === undefined) {
+      throw new ProvisioningError(
+        `Failed to update EFS FileSystem ${logicalId}: Throughput value must be specified for provisioned throughput mode. ` +
+          `The template sets ThroughputMode: provisioned without ProvisionedThroughputInMibps, which CloudFormation rejects too. ` +
+          `Set ProvisionedThroughputInMibps, or change ThroughputMode (e.g. to bursting or elastic).`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
     const effectiveThroughputMode =
       newThroughputMode === undefined &&
       newProvisioned === undefined &&
