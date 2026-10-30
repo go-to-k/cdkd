@@ -110,6 +110,52 @@ function masterUserPasswordToSend(
  */
 const DOCDB_DEFAULT_PORT = 27017;
 
+/**
+ * Issue #5543: the `AWS::DocDB::DBCluster` properties a removal leaves at
+ * their live value, because CloudFormation leaves them. A real CloudFormation
+ * A/B (us-east-1, 2026-10-30) created a cluster with `EngineVersion: 5.0.0`
+ * (the default is 8.0.2), `PreferredBackupWindow: 07:00-08:00`,
+ * `PreferredMaintenanceWindow: sun:10:00-sun:10:30` and a custom
+ * `DBClusterParameterGroupName`, then removed all four: every one read back
+ * unchanged for eight minutes after UPDATE_COMPLETE, both alone and beside a
+ * `BackupRetentionPeriod` change that did land. In particular CloudFormation
+ * does NOT move the cluster back to `default.docdb5.0`.
+ */
+const DOCDB_CLUSTER_KEPT_ON_REMOVAL = [
+  'EngineVersion',
+  'PreferredBackupWindow',
+  'PreferredMaintenanceWindow',
+  'DBClusterParameterGroupName',
+] as const;
+
+/** Issue #5543: the `AWS::DocDB::DBInstance` counterpart, measured in the same A/B. */
+const DOCDB_INSTANCE_KEPT_ON_REMOVAL = ['PreferredMaintenanceWindow'] as const;
+
+/**
+ * Issue #5543: the warning naming each of `keys` removed from the template,
+ * which the resource keeps at its live value as CloudFormation does, or
+ * `undefined` when none was. A deploy reads `removedProperties` (template to
+ * template); without it (a direct call) the two bags are compared. A
+ * `drift --revert` sets it empty, since its previous side is a readback.
+ */
+function keptOnRemovalWarning(
+  keys: readonly string[],
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  removedProperties: ReadonlySet<string> | undefined,
+  logicalId: string,
+  resourceType: string
+): string | undefined {
+  const removed = keys.filter((key) =>
+    removedProperties !== undefined
+      ? removedProperties.has(key)
+      : previousProperties[key] != null && properties[key] == null
+  );
+  if (removed.length === 0) return undefined;
+  const one = removed.length === 1;
+  return safeMsg`${logicalId} (${resourceType}): ${one ? 'property' : 'properties'} ${removed.join(', ')} ${one ? 'was' : 'were'} removed from the template; cdkd leaves the current AWS ${one ? 'value' : 'values'} in place, as CloudFormation does. Declare ${one ? 'it' : 'them'} to change ${one ? 'it' : 'them'}.`;
+}
+
 /** Issue #1160: the member statuses a cluster change moves an instance through. */
 const SECURITY_GROUP_CHANGE_MEMBER_STATUSES: ReadonlySet<string> = new Set(['modifying']);
 const PORT_CHANGE_MEMBER_STATUSES: ReadonlySet<string> = new Set(['modifying', 'rebooting']);
@@ -247,8 +293,61 @@ export class DocDBProvider implements ResourceProvider {
    * removing `DeletionProtection` or `BackupRetentionPeriod` from an
    * `AWS::DocDB::DBCluster` template KEEPS the live value, so cdkd leaves
    * both untouched on removal too (ModifyDBCluster: an absent field means
-   * "no change"). Nothing on DocDB was measured as a CloudFormation reset.
+   * "no change"). The one DocDB reset CloudFormation was measured to make,
+   * a removed cluster `Port`, is computed locally (`clusterPortToSend`).
    */
+
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every handled
+   * property of both types, each removal handled by `update()`, so the shared
+   * caller warns about none of them. A removal `update()` leaves in place is
+   * listed only where a CloudFormation A/B showed CloudFormation leaves it too.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::DocDB::DBCluster',
+      new Set([
+        // Create-only: a removal replaces.
+        'DBClusterIdentifier',
+        'DBSubnetGroupName',
+        'KmsKeyId',
+        'MasterUsername',
+        'StorageEncrypted',
+        // Reset to 27017 (`clusterPortToSend`), as CloudFormation resets it.
+        'Port',
+        // Diffed (AddTagsToResource / RemoveTagsFromResource).
+        'Tags',
+        // A secret with no default to reset to: a removal sends nothing and the
+        // cluster keeps its password.
+        'MasterUserPassword',
+        // Left in place, as CloudFormation leaves them: DeletionProtection /
+        // BackupRetentionPeriod (CFn A/B, #5004), VpcSecurityGroupIds (#1160),
+        // and the four below (CFn A/B 2026-10-30, #5543), which update()
+        // names in its own warning.
+        'DeletionProtection',
+        'BackupRetentionPeriod',
+        'VpcSecurityGroupIds',
+        ...DOCDB_CLUSTER_KEPT_ON_REMOVAL,
+      ]),
+    ],
+    [
+      'AWS::DocDB::DBInstance',
+      new Set([
+        // Create-only (a removal replaces) or required (DBInstanceClass).
+        'DBInstanceIdentifier',
+        'DBClusterIdentifier',
+        'AvailabilityZone',
+        'DBInstanceClass',
+        // Diffed (AddTagsToResource / RemoveTagsFromResource).
+        'Tags',
+        // Inert on DocDB (see updateDBInstance): no value to reset.
+        'AutoMinorVersionUpgrade',
+        // Left in place, as CloudFormation leaves it (CFn A/B 2026-10-30,
+        // #5543), and named in update()'s own warning.
+        ...DOCDB_INSTANCE_KEPT_ON_REMOVAL,
+      ]),
+    ],
+  ]);
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -375,7 +474,8 @@ export class DocDBProvider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          context?.maskSecrets
+          context?.maskSecrets,
+          context?.removedProperties
         );
       default:
         throw new ProvisioningError(
@@ -573,15 +673,12 @@ export class DocDBProvider implements ResourceProvider {
       // it; #5004 measured DeletionProtection / BackupRetentionPeriod
       // (and IamAuthEnabled / AutoMinorVersionUpgrade on Neptune) as KEPT,
       // so those are not reset. Deliberately NOT reset here:
-      //   * EngineVersion — removal would imply moving to the engine's
-      //     default version, a risky (possibly major) version change cdkd
-      //     must not synthesize; leave unchanged.
-      //   * DBClusterParameterGroupName — the default is the
-      //     engine-version-dependent `default.docdb5.0`-style family name;
-      //     synthesizing it from a removal risks a wrong-family apply.
-      //   * PreferredBackupWindow / PreferredMaintenanceWindow — AWS assigns
-      //     a RANDOM window at create; there is no documented "reset to
-      //     random" sentinel.
+      //   * EngineVersion, DBClusterParameterGroupName,
+      //     PreferredBackupWindow, PreferredMaintenanceWindow — a real
+      //     CloudFormation A/B (#5543, `DOCDB_CLUSTER_KEPT_ON_REMOVAL`) showed
+      //     CloudFormation KEEPS all four on removal (the cluster stays on its
+      //     version, its custom parameter group and its windows), so an
+      //     absent value is passed through as absent.
       //   * MasterUserPassword — a secret; removal cannot synthesize a
       //     reset value.
       //   * VpcSecurityGroupIds — a real CloudFormation A/B (issue #1160)
@@ -620,6 +717,15 @@ export class DocDBProvider implements ResourceProvider {
       );
 
       this.logger.debug(`Successfully updated DocDB DBCluster ${logicalId}`);
+      const keptWarning = keptOnRemovalWarning(
+        DOCDB_CLUSTER_KEPT_ON_REMOVAL,
+        properties,
+        previousProperties,
+        context?.removedProperties,
+        logicalId,
+        resourceType
+      );
+      if (keptWarning !== undefined) this.logger.warn(keptWarning);
 
       // A changed Port (declared, or the default on removal) applies
       // asynchronously: the describe below could still read the old one, and a
@@ -985,7 +1091,8 @@ export class DocDBProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    mask: ((text: string) => string) | undefined
+    mask: ((text: string) => string) | undefined,
+    removedProperties: ReadonlySet<string> | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating DocDB DBInstance ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -999,8 +1106,9 @@ export class DocDBProvider implements ResourceProvider {
       //     Amazon DocumentDB does not perform minor version upgrades
       //     regardless of the value set"); synthesizing a reset would close
       //     no behavioral divergence.
-      //   * PreferredMaintenanceWindow — AWS assigns a RANDOM window at
-      //     create; no documented "reset to random" sentinel.
+      //   * PreferredMaintenanceWindow — a real CloudFormation A/B (#5543)
+      //     showed CloudFormation KEEPS a removed window (alone and beside
+      //     another instance change), so a removal sends nothing.
       // #5194: a cluster change in the same deploy can leave this member not
       // `available` for a moment; only that refusal is waited out and resent.
       await modifyDbInstanceWhenAvailable({
@@ -1025,6 +1133,15 @@ export class DocDBProvider implements ResourceProvider {
       });
 
       this.logger.debug(`Successfully updated DocDB DBInstance ${logicalId}`);
+      const keptWarning = keptOnRemovalWarning(
+        DOCDB_INSTANCE_KEPT_ON_REMOVAL,
+        properties,
+        previousProperties,
+        removedProperties,
+        logicalId,
+        resourceType
+      );
+      if (keptWarning !== undefined) this.logger.warn(keptWarning);
 
       const described = await this.describeDBInstance(physicalId);
 

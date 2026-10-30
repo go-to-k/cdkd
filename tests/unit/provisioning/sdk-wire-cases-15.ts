@@ -898,17 +898,18 @@ const DOCDB_CLUSTER_CASE: TypeCase = {
         Tags: fresh(DOCDB_TAGS),
       },
       expectedSilent: {
-        'update-remove:EngineVersion': kept(
-          `and cdkd deliberately does not synthesize a move to the engine's default version, a possibly major upgrade (${DOCDB_SRC}:573-575)`
-        ),
-        'update-remove:DBClusterParameterGroupName': kept(
-          `and the default group name is engine-version-dependent, so a removal is not synthesized into a possibly wrong family (${DOCDB_SRC}:576-578)`
-        ),
-        'update-remove:PreferredBackupWindow': kept(
-          `and AWS assigns a random window at create with no documented reset sentinel (${DOCDB_SRC}:579-581)`
-        ),
-        'update-remove:PreferredMaintenanceWindow': kept(
-          `and AWS assigns a random window at create with no documented reset sentinel (${DOCDB_SRC}:579-581)`
+        ...Object.fromEntries(
+          [
+            'EngineVersion',
+            'DBClusterParameterGroupName',
+            'PreferredBackupWindow',
+            'PreferredMaintenanceWindow',
+          ].map((key) => [
+            `update-remove:${key}`,
+            kept(
+              `and CloudFormation keeps the live value too, warned about by update() (CFn A/B, go-to-k/cdkd#5543, ${DOCDB_SRC} DOCDB_CLUSTER_KEPT_ON_REMOVAL)`
+            ),
+          ])
         ),
         'update-remove:MasterUserPassword': kept(
           `and a removed password sends nothing: any supplied password is a master-credential reset, and removal cannot synthesize one (go-to-k/cdkd#5153, ${DOCDB_SRC}:60-65, 582-583)`
@@ -976,7 +977,7 @@ const DOCDB_INSTANCE_CASE: TypeCase = {
       },
       expectedSilent: {
         'update-remove:DBInstanceClass': `DBInstanceClass is required by the CloudFormation schema, so no deployable template removes it; update() sends only a declared value (${DOCDB_SRC}:1006)`,
-        'update-remove:PreferredMaintenanceWindow': `left in place on removal: AWS assigns a random window at create with no documented reset sentinel (${DOCDB_SRC}:990-998)`,
+        'update-remove:PreferredMaintenanceWindow': `left in place on removal and warned about, as CloudFormation keeps it (CFn A/B, go-to-k/cdkd#5543, ${DOCDB_SRC} DOCDB_INSTANCE_KEPT_ON_REMOVAL)`,
         'update-remove:AutoMinorVersionUpgrade': `left in place on removal: the member is inert on DocumentDB ("does not apply to Amazon DocumentDB"), so a reset would change nothing (${DOCDB_SRC}:990-996)`,
       },
       expectedRemovalThrows: TAG_REFUSALS,
