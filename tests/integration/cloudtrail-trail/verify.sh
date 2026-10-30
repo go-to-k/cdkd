@@ -232,10 +232,32 @@ echo "    ok: CloudWatch Logs pair configured"
 
 # --- Phase 2: removal redeploy ---------------------------------------
 echo "==> Phase 2: redeploy with CDKD_TEST_REMOVAL=true (drops every optional field)"
-CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+P2_LOG="$(mktemp)"
+if ! CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --yes
+  --yes >"${P2_LOG}" 2>&1; then
+  cat "${P2_LOG}"
+  rm -f "${P2_LOG}"
+  echo "FAIL: Phase 2 removal redeploy failed" >&2
+  exit 1
+fi
+P2_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${P2_LOG}")"
+rm -f "${P2_LOG}"
+printf '%s\n' "${P2_PLAIN}" | sed 's/^/  /'
+
+# Issue #5541: the Trail now declares removalHandledInUpdate. Every removal in
+# this phase is either reset or a keep CloudFormation was measured to make, so
+# neither the shared caller's line nor update()'s own kept-removal line may
+# name the trail. A hit means a property fell out of the audit. Two separate
+# greps, not `grep | grep -q`: under pipefail the early exit of `grep -q` can
+# fail the first grep with SIGPIPE and hide a hit.
+P2_TRAIL_LINES="$(grep -F "(AWS::CloudTrail::Trail)" <<<"${P2_PLAIN}" || true)"
+if grep -qE "(was|were) removed from the template" <<<"${P2_TRAIL_LINES}"; then
+  echo "FAIL [phase 2]: a removal warning named the trail, but every phase-2 removal is reset or kept as CloudFormation keeps it (issue #5541):" >&2
+  printf '%s\n' "${P2_TRAIL_LINES}" >&2
+  exit 1
+fi
 
 echo "==> Phase 2: the six UpdateTrail fields CFn RESETS must be cleared"
 # Pre-fix these were absent -> undefined -> UpdateTrail merge no-op, so the

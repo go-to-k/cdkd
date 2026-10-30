@@ -434,7 +434,8 @@ describe('CloudTrailProvider removal resets (issue #1160)', () => {
     // account, and the integ account is not in an organization at all
     // (`AWSOrganizationsNotInUseException`, probed 2026-08-11). Pinned as
     // pass-through so a future "reset it too" change requires a real A/B on
-    // an account that can host an organization trail.
+    // an account that can host an organization trail. The warning naming it
+    // is pinned in cloudtrail-trail-removal-kept-5541.test.ts.
     const previous = { ...BASE, IsOrganizationTrail: true };
 
     await provider.update('T', TRAIL_ARN, TYPE, BASE, previous);
