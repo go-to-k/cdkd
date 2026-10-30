@@ -211,15 +211,16 @@ the temporary CloudFormation stack cdkd uses to expand the macro.
 If the macro is your own function and not an AWS-managed transform, the
 identity also needs `lambda:InvokeFunction` on that function.
 
-### Removing `VpcSecurityGroupIds` from an RDS or Neptune DB cluster
+### Removing the security groups from an RDS or Neptune DB cluster, or an RDS DB instance
 
 When an `AWS::RDS::DBCluster` or `AWS::Neptune::DBCluster` drops
-`VpcSecurityGroupIds` from its template, cdkd moves the cluster to its VPC's
-`default` security group, as CloudFormation does. To find that group, the
-identity needs `ec2:DescribeSecurityGroups`. No other deploy calls it for these
-types. If the identity lacks it, cdkd retries for a short while, as it does for
-any `not authorized` error, and then the update fails before the cluster
-changes.
+`VpcSecurityGroupIds` from its template, or an `AWS::RDS::DBInstance` drops
+`VPCSecurityGroups`, cdkd moves the cluster or instance to its VPC's `default`
+security group, as CloudFormation does. To find that group, the identity needs
+`ec2:DescribeSecurityGroups`. No other deploy calls it for these types. If the
+identity lacks it, cdkd retries for a short while, as it does for any
+`not authorized` error, and then the update fails before the cluster or
+instance changes.
 
 ## What you lose without `cloudformation:DescribeType`
 
