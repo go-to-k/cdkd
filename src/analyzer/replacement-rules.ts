@@ -460,51 +460,64 @@ export function elastiCachePreferredAvailabilityZonesMovedToDisjoint(
 }
 
 /**
- * Whether an `AWS::ElastiCache::CacheCluster` was `single-az` in the previous
- * template, the one condition under which CloudFormation REPLACES the cluster
- * for an `AZMode` or `PreferredAvailabilityZones` removal (issue #5558).
- * Real CloudFormation stack updates (memcached 1.6.22, cache.t3.micro,
- * us-east-1, 2026-10-30; the replacing rows show CreateCacheCluster plus
+ * Whether an `AWS::ElastiCache::CacheCluster` template change leaves a
+ * previously `single-az` cluster single-az (by value or by default) with no
+ * zone list: the condition under which CloudFormation REPLACES the cluster
+ * for an `AZMode` or `PreferredAvailabilityZones` removal (issue #5558). Real
+ * CloudFormation stack updates (memcached 1.6.22, cache.t3.micro, us-east-1,
+ * 2026-10-30; the replacing rows show CreateCacheCluster plus
  * DeleteCacheCluster in CloudTrail, the in-place rows a lone
- * ModifyCacheCluster), each alone and again beside a changed
- * PreferredMaintenanceWindow, with the same outcome both times:
+ * ModifyCacheCluster), the 1-node `single-az` and 2-node `cross-az` rows each
+ * alone and again beside a changed PreferredMaintenanceWindow, with the same
+ * outcome both times:
  *
  *  - REPLACED (`single-az`): `PreferredAvailabilityZones` `[1a]` -> absent
- *    (1 node) and `[1a, 1a]` -> absent (2 nodes); `AZMode` removed (1 node
- *    and 2 nodes, with or without a kept zone list); both removed together.
+ *    (1 node) and `[1a, 1a]` -> absent (2 nodes); `AZMode` removed with no
+ *    zone list (1 node and 2 nodes); both removed together (1 node).
+ *  - IN PLACE (`single-az`, 1 node): `AZMode` removed with `[1a]` kept.
  *  - IN PLACE (`cross-az`, 2 nodes): `PreferredAvailabilityZones`
  *    `[1a, 1b]` -> absent (and #5458's `[1c, 1b]` -> absent); `AZMode`
  *    removed, with or without a kept zone list. The nodes stay where they are.
  *
- * The node count plays no part. Only the literal `single-az` counts: an
- * absent previous `AZMode` beside a zone list is a template CloudFormation
+ * The node count plays no part. Only the literal previous `single-az` counts:
+ * an absent previous `AZMode` beside a zone list is a template CloudFormation
  * refuses at create ("To specify PreferredAvailabilityZones, AZMode must be
- * specified"), so it has no measured answer and keeps the in-place update.
+ * specified"), so it has no measured answer and keeps the in-place update. An
+ * empty new list, or a move to `cross-az` in the same change, is unmeasured
+ * and keeps it too. Without the sibling bags there is nothing to read, so
+ * the answer is `false`, the in-place update.
  */
-function elastiCachePreviouslySingleAz(siblings: ReplacementSiblings | undefined): boolean {
-  return siblings?.oldProperties['AZMode'] === 'single-az';
+function elastiCacheSingleAzLeftWithoutZones(siblings: ReplacementSiblings | undefined): boolean {
+  return (
+    siblings !== undefined &&
+    siblings.oldProperties['AZMode'] === 'single-az' &&
+    (siblings.newProperties['AZMode'] == null ||
+      siblings.newProperties['AZMode'] === 'single-az') &&
+    siblings.newProperties['PreferredAvailabilityZones'] == null
+  );
 }
 
 /**
  * Conditional-replacement predicate for
  * `AWS::ElastiCache::CacheCluster.AZMode` (issue #5558): `single-az` removed
- * from the template replaces the cluster; a `cross-az` removal is in place
- * (see {@link elastiCachePreviouslySingleAz}). Any other change keeps the
+ * from a template that names no zone list replaces the cluster (see
+ * {@link elastiCacheSingleAzLeftWithoutZones}). Any other change keeps the
  * in-place update it had before (unmeasured).
  */
 export function elastiCacheAzModeRemovedFromSingleAz(
   oldValue: unknown,
-  newValue: unknown
+  newValue: unknown,
+  siblings?: ReplacementSiblings
 ): boolean {
-  return oldValue === 'single-az' && newValue == null;
+  return (
+    oldValue === 'single-az' && newValue == null && elastiCacheSingleAzLeftWithoutZones(siblings)
+  );
 }
 
 /**
  * The `PreferredAvailabilityZones` removal half of the CacheCluster rule
  * (issue #5558): a non-empty list removed from a `single-az` cluster's
- * template replaces it (see {@link elastiCachePreviouslySingleAz}). Without
- * the sibling bags there is no previous `AZMode` to read, so it answers
- * `false`, the in-place update.
+ * template replaces it (see {@link elastiCacheSingleAzLeftWithoutZones}).
  */
 export function elastiCachePreferredAvailabilityZonesRemovedFromSingleAz(
   oldValue: unknown,
@@ -515,7 +528,7 @@ export function elastiCachePreferredAvailabilityZonesRemovedFromSingleAz(
     Array.isArray(oldValue) &&
     oldValue.length > 0 &&
     newValue == null &&
-    elastiCachePreviouslySingleAz(siblings)
+    elastiCacheSingleAzLeftWithoutZones(siblings)
   );
 }
 
@@ -1430,7 +1443,8 @@ export class ReplacementRulesRegistry {
     // ElastiCache CacheCluster — a `PreferredAvailabilityZones` move to zones
     // the previous list does not name replaces the cluster (issue #5458), and
     // so does removing `AZMode` or `PreferredAvailabilityZones` from a
-    // `single-az` cluster (issue #5558; see the predicates). Every other
+    // `single-az` cluster left with no zone list (issue #5558; see the
+    // predicates). Every other
     // property stays with the schema fallback.
     this.rules.set('AWS::ElastiCache::CacheCluster', {
       replacementProperties: new Set(),

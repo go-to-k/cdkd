@@ -171,10 +171,11 @@ export function nodesToRemove(
  *   encryption on and the node's zone.
  * - #5004: SnapshotRetentionLimit, AutoMinorVersionUpgrade,
  *   NotificationTopicArn. #5491: VpcSecurityGroupIds.
- * - #5558: AZMode and PreferredAvailabilityZones, on a `cross-az` cluster:
- *   CloudFormation's ModifyCacheCluster carried neither and the nodes kept
- *   their zones. On a `single-az` cluster either removal REPLACES it, which
- *   the replacement rules plan, so update() does not see that case.
+ * - #5558: AZMode and PreferredAvailabilityZones, on a `cross-az` cluster,
+ *   and AZMode on a `single-az` one keeping its zone list: CloudFormation's
+ *   ModifyCacheCluster carried neither and the nodes kept their zones. A
+ *   `single-az` cluster left with no zone list is REPLACED instead, which the
+ *   replacement rules plan, so update() does not see that case.
  *
  * update() names these in its own warning, since the shared caller's line
  * says CloudFormation would reset the value.

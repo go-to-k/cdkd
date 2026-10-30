@@ -2,9 +2,9 @@ import { describe, it, expect, vi } from 'vite-plus/test';
 
 // Issue #5558: through the whole diff, removing AZMode or
 // PreferredAvailabilityZones replaces a CacheCluster whose previous template
-// said `AZMode: single-az`, and updates a `cross-az` one in place, as
-// CloudFormation does (measured, us-east-1). The zone-list half reads the
-// previous AZMode from the sibling bags the diff hands the predicate.
+// said `AZMode: single-az` and whose new one names no zone list, and updates
+// any other in place, as CloudFormation does (measured, us-east-1). Both
+// halves read the sibling bags the diff hands the predicate.
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
@@ -91,6 +91,16 @@ describe('CacheCluster AZ removals through the diff (issue #5558)', () => {
     expect(
       await diff({ ...base, NumCacheNodes: 1, AZMode: 'single-az' }, { ...base, NumCacheNodes: 1 })
     ).toEqual({ changeType: 'UPDATE', replacing: ['AZMode'] });
+  });
+
+  it('updates a single-az cluster in place when AZMode is removed but the zone list is kept', async () => {
+    const zones = { PreferredAvailabilityZones: ['us-east-1a'] };
+    expect(
+      await diff(
+        { ...base, NumCacheNodes: 1, AZMode: 'single-az', ...zones },
+        { ...base, NumCacheNodes: 1, ...zones }
+      )
+    ).toEqual({ changeType: 'UPDATE', replacing: [] });
   });
 
   it('updates a cross-az cluster in place for either removal', async () => {

@@ -75,10 +75,12 @@ describe('ReplacementRulesRegistry — AWS::ElastiCache::CacheCluster.PreferredA
 
 /**
  * go-to-k/cdkd#5558: removing `AZMode` or `PreferredAvailabilityZones` replaces
- * the cluster exactly when the PREVIOUS template said `AZMode: single-az`, on
- * 1 and 2 nodes alike; a `cross-az` cluster is updated in place. Each row is a
- * real CloudFormation stack update (memcached, us-east-1), alone and beside a
- * changed PreferredMaintenanceWindow.
+ * the cluster exactly when the PREVIOUS template said `AZMode: single-az` and
+ * the new one names no zone list, on 1 and 2 nodes alike; a `cross-az`
+ * cluster, or a `single-az` one keeping its zone list, is updated in place.
+ * Each row is a real CloudFormation stack update (memcached, us-east-1); the
+ * 1-node single-az and 2-node cross-az rows also beside a changed
+ * PreferredMaintenanceWindow.
  */
 describe('ReplacementRulesRegistry — AWS::ElastiCache::CacheCluster AZ removals (#5558)', () => {
   const registry = new ReplacementRulesRegistry();
@@ -130,18 +132,21 @@ describe('ReplacementRulesRegistry — AWS::ElastiCache::CacheCluster AZ removal
     }
   });
 
-  it('replaces a single-az cluster whose AZMode is removed (1 and 2 nodes, zone list kept or not)', () => {
+  it('replaces a single-az cluster whose AZMode is removed with no zone list (1 and 2 nodes)', () => {
     for (const props of [base(1, { AZMode: 'single-az' }), base(2, { AZMode: 'single-az' })]) {
       expect(replacing(props, without(props, 'AZMode'))).toEqual(['AZMode']);
       expect(replacing(props, { ...without(props, 'AZMode'), PreferredMaintenanceWindow: W2 })).toEqual(
         ['AZMode']
       );
     }
-    expect(replacing(single1, without(single1, 'AZMode'))).toEqual(['AZMode']);
     expect(replacing(single1, without(single1, 'AZMode', 'PreferredAvailabilityZones'))).toEqual([
       'AZMode',
       'PreferredAvailabilityZones',
     ]);
+  });
+
+  it('updates a single-az cluster in place when AZMode is removed but the zone list is kept', () => {
+    expect(replacing(single1, without(single1, 'AZMode'))).toEqual([]);
   });
 
   it('updates a cross-az cluster in place for either removal', () => {
@@ -173,6 +178,8 @@ describe('ReplacementRulesRegistry — AWS::ElastiCache::CacheCluster AZ removal
       []
     );
     expect(replacing(base(1, { AZMode: 'single-az' }), single1)).toEqual([]);
+    // A zone-list removal that also moves AZMode to cross-az is unmeasured.
+    expect(replacing(single2, base(2, { AZMode: 'cross-az' }))).toEqual([]);
     // A zone list with no previous AZMode (CloudFormation refuses it at
     // create), or no sibling bags at all: no replacement.
     const noMode = base(1, { PreferredAvailabilityZones: ['us-east-1a'] });
@@ -193,7 +200,16 @@ describe('ReplacementRulesRegistry — AWS::ElastiCache::CacheCluster AZ removal
     // Callers outside a diff ask with no values at all.
     expect(elastiCacheAzModeRemovedFromSingleAz(undefined, undefined)).toBe(false);
     expect(registry.requiresReplacement(TYPE, 'AZMode', undefined, undefined)).toBe(false);
-    expect(elastiCacheAzModeRemovedFromSingleAz('single-az', undefined)).toBe(true);
-    expect(elastiCacheAzModeRemovedFromSingleAz('cross-az', undefined)).toBe(false);
+    // The AZMode half reads the new zone list from the sibling bags too.
+    const bags = (newProperties: Record<string, unknown>) => ({
+      oldProperties: { AZMode: 'single-az' },
+      newProperties,
+    });
+    expect(elastiCacheAzModeRemovedFromSingleAz('single-az', undefined, bags({}))).toBe(true);
+    expect(
+      elastiCacheAzModeRemovedFromSingleAz('single-az', undefined, bags({ PreferredAvailabilityZones: [] }))
+    ).toBe(false);
+    expect(elastiCacheAzModeRemovedFromSingleAz('single-az', undefined)).toBe(false);
+    expect(elastiCacheAzModeRemovedFromSingleAz('cross-az', undefined, bags({}))).toBe(false);
   });
 });
