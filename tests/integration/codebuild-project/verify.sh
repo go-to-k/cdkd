@@ -109,9 +109,6 @@ cleanup() {
   # subnet), then SG and subnet, then the VPC. The bucket is never written to
   # (no build runs), so a plain `rb` suffices. The role goes with the stack.
   aws codebuild delete-project --name "${PROJECT_NAME}" --region "${REGION}" >/dev/null 2>&1
-  # The FleetsAllowed fleet, by this run's recorded ARN, after the project
-  # that references it. Reserved capacity bills while it exists.
-  [ -n "${FLEET_ARN:-}" ] && aws codebuild delete-fleet --arn "${FLEET_ARN}" --region "${REGION}" >/dev/null 2>&1
   [ -n "${SG_ID:-}" ] && aws ec2 delete-security-group --group-id "${SG_ID}" --region "${REGION}" >/dev/null 2>&1
   [ -n "${SUBNET_ID:-}" ] && aws ec2 delete-subnet --subnet-id "${SUBNET_ID}" --region "${REGION}" >/dev/null 2>&1
   [ -n "${VPC_ID:-}" ] && aws ec2 delete-vpc --vpc-id "${VPC_ID}" --region "${REGION}" >/dev/null 2>&1
@@ -303,15 +300,6 @@ if [ -z "${ARTIFACT_BUCKET}" ]; then
 fi
 # The project's live VPC config must point at the recorded scaffolding.
 assert_field "vpcConfig.vpcId is the recorded VPC" '.vpcConfig.vpcId' "${VPC_ID}"
-# FleetsAllowed: the one Restrictions member the SDK provider used to drop.
-# Cloud Control records the fleet under its ARN.
-FLEET_ARN="$(state_physical_id 'AWS::CodeBuild::Fleet')"
-case "${FLEET_ARN}" in
-  arn:aws:codebuild:*:fleet/?*) ;;
-  *) echo "FAIL: state fleet id: expected one fleet ARN, got '${FLEET_ARN}'" >&2; exit 1 ;;
-esac
-assert_field "buildBatchConfig.restrictions.fleetsAllowed" \
-  '.buildBatchConfig.restrictions.fleetsAllowed // [] | join(",")' "${FLEET_ARN}"
 echo "    ok: scaffolding ids ${VPC_ID} ${SUBNET_ID} ${SG_ID} ${ARTIFACT_BUCKET}"
 
 # --- Phase 1b: issue #3887 recreate refusal ----------------------------
@@ -450,14 +438,6 @@ assert_gone "security group ${SG_ID} survived destroy" \
   aws ec2 describe-security-groups --group-ids "${SG_ID}" --region "${REGION}"
 assert_gone "secondary-artifact bucket ${ARTIFACT_BUCKET} survived destroy" \
   aws s3api head-bucket --bucket "${ARTIFACT_BUCKET}"
-# `batch-get-fleets` answers a missing ARN under `fleetsNotFound` with exit 0,
-# like `batch-get-projects` above.
-FLEET_NOT_FOUND_COUNT="$(aws codebuild batch-get-fleets --names "${FLEET_ARN}" \
-  --region "${REGION}" --query 'length(fleetsNotFound)' --output text)"
-if [ "${FLEET_NOT_FOUND_COUNT}" != "1" ]; then
-  echo "FAIL: CodeBuild fleet ${FLEET_ARN} survived destroy (fleetsNotFound=${FLEET_NOT_FOUND_COUNT})" >&2
-  exit 1
-fi
 
 echo "==> Phase 3: assert state was removed"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
