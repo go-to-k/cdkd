@@ -315,8 +315,7 @@ the replica to deploy the table without it.
 The CloudFormation schema declares `DisassociationProtectionEnabled` on each
 replica of a global table. DynamoDB accepts it only in an `UpdateTable` call
 that changes nothing else, made in the replica's own region. cdkd does not make
-that call yet
-([#5570](https://github.com/go-to-k/cdkd/issues/5570)). It refuses a create
+that call yet. It refuses a create
 that declares the member, and an update that adds or changes it, rather than
 report a setting it never applied.
 

@@ -102,9 +102,16 @@ describe('GlobalTable Replicas[].DisassociationProtectionEnabled (#5570)', () =>
   });
 
   it('an unchanged or removed value is not refused on update', async () => {
+    const reordered = (props: Record<string, unknown>) => ({
+      ...props,
+      Replicas: [...(props['Replicas'] as unknown[])].reverse(),
+    });
     for (const [next, prev] of [
       [bag(undefined, false), bag(undefined, false)],
       [bag(undefined, undefined), bag(undefined, true)],
+      // Matched by Region, not position: the recorded list in another order.
+      [bag(undefined, false), reordered(bag(undefined, false))],
+      [bag(true, false), reordered(bag(true, false))],
     ] as const) {
       await expect(provider.update('Gt', TABLE, TYPE, next, prev)).rejects.toThrow(
         PAST_THE_REFUSAL
