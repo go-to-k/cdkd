@@ -154,7 +154,7 @@ describe('CodeBuildProvider.readCurrentState', () => {
             timeoutInMins: 60,
             batchReportMode: 'REPORT_INDIVIDUAL_BUILDS',
             combineArtifacts: false,
-            restrictions: { maximumBuildsAllowed: 5 },
+            restrictions: { maximumBuildsAllowed: 5, fleetsAllowed: ['arn:aws:codebuild:us-east-1:1:fleet/f1'] },
           },
           resourceAccessRole: 'arn:aws:iam::1:role/access',
         },
@@ -186,7 +186,7 @@ describe('CodeBuildProvider.readCurrentState', () => {
       TimeoutInMins: 60,
       BatchReportMode: 'REPORT_INDIVIDUAL_BUILDS',
       CombineArtifacts: false,
-      Restrictions: { MaximumBuildsAllowed: 5 },
+      Restrictions: { MaximumBuildsAllowed: 5, FleetsAllowed: ['arn:aws:codebuild:us-east-1:1:fleet/f1'] },
     });
     expect(result?.ResourceAccessRole).toBe('arn:aws:iam::1:role/access');
   });
