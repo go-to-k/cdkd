@@ -946,6 +946,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     log.debug(`Creating DynamoDB GlobalTable ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed `Replicas[].Tags` is refused before any call.
     const desiredReplicaTags = refuseMalformedReplicaTags(properties, resourceType, logicalId);
+    // Refused before any call; a state replay only warns, the record's value
+    // having been dropped the same way when it was first deployed.
+    const disassociationRefusal = disassociationProtectionRefusal(
+      properties,
+      undefined,
+      logicalId
+    );
+    if (disassociationRefusal !== undefined) {
+      if (context?.replayingState !== true) {
+        throw new ProvisioningError(log.mask(disassociationRefusal), resourceType, logicalId);
+      }
+      warn(`${disassociationRefusal} Proceeding without it: this create replays a cdkd state record.`);
+    }
 
     const tableName =
       (properties['TableName'] as string | undefined) ||
@@ -3977,6 +3990,26 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // go-to-k/cdkd#3994: a malformed desired `Replicas[].Tags` is refused
     // before any call.
     refuseMalformedReplicaTags(properties, resourceType, logicalId, physicalId);
+    // Refused before any call on the template path; warned on a state replay
+    // or a drift revert (see disassociationProtectionRefusal).
+    const disassociationRefusal = disassociationProtectionRefusal(
+      properties,
+      previousProperties,
+      logicalId
+    );
+    if (disassociationRefusal !== undefined) {
+      if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+        throw new ProvisioningError(
+          log.mask(disassociationRefusal),
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+      warn(
+        `${disassociationRefusal} Proceeding without it: this update restores a recorded or read-back configuration.`
+      );
+    }
 
     // ─── Immutable property guards (defense-in-depth) ───────────────────
     // Issue [#2610] sites 5-7. The three refusals below advise a replacement,
@@ -10065,6 +10098,54 @@ function refuseMalformedReplicaTags(
     );
   });
   return tagsByReplica;
+}
+
+const DISASSOCIATION_PROTECTION_KEY = 'DisassociationProtectionEnabled';
+
+/**
+ * `Replicas[].DisassociationProtectionEnabled` (2026-10-21 schema refresh,
+ * #5123) is not sent yet. `@aws-sdk/client-dynamodb` models it only on
+ * `UpdateTableInput` — not on `CreateTable`, a `ReplicaUpdate` or
+ * `CreateReplicationGroupMemberAction` — as a change that cannot share an
+ * `UpdateTable` with any other, so delivering it means a solo per-region write
+ * and its settle wait, which this provider does not make. Until it does, a
+ * declared value would be dropped while the deploy reports success, so it is
+ * refused on the template path instead: the `ConsumptionMode` mechanism of
+ * `lambda-eventsource-provider.ts` (#3848). Wiring it is issue #5570.
+ *
+ * Returns the refusal message, or `undefined` when nothing is pending. On an
+ * update only a value that CHANGED from the replica's recorded one counts: an
+ * unchanged one was never sent either, so AWS already lacks it.
+ */
+function disassociationProtectionRefusal(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown> | undefined,
+  logicalId: string
+): string | undefined {
+  const replicas = properties['Replicas'];
+  if (!Array.isArray(replicas)) return undefined;
+  const pending: string[] = [];
+  replicas.forEach((entry: unknown, index) => {
+    const replica = asRecord(entry);
+    const declared = replica?.[DISASSOCIATION_PROTECTION_KEY];
+    if (declared === undefined) return;
+    if (previousProperties !== undefined) {
+      const region = replica?.['Region'];
+      const previous =
+        typeof region === 'string'
+          ? localReplicaEntry(previousProperties, region)?.[DISASSOCIATION_PROTECTION_KEY]
+          : undefined;
+      if (deepEqual(declared, previous)) return;
+    }
+    pending.push(`Replicas[${index}].${DISASSOCIATION_PROTECTION_KEY}`);
+  });
+  if (pending.length === 0) return undefined;
+  return (
+    `AWS::DynamoDB::GlobalTable ${logicalId}: ${pending.join(', ')} cannot be sent by cdkd yet — ` +
+    'DynamoDB takes it only as a separate per-replica UpdateTable call, which cdkd does not make, ' +
+    `so it would be dropped without an error. Remove ${DISASSOCIATION_PROTECTION_KEY} from the ` +
+    'replica to deploy the table without it.'
+  );
 }
 
 /**

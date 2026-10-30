@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { CreateEventSourceMappingCommand, LambdaClient } from '@aws-sdk/client-lambda';
+import { CreateNetworkConnectorCommand, LambdaCoreClient } from '@aws-sdk/client-lambda-core';
 
 /**
  * CFn members the installed AWS SDK does not SEND yet, for which a provider
@@ -21,11 +22,16 @@ interface PendingMember {
   readonly serialize: () => Promise<string>;
 }
 
-async function lambdaRequestBody(command: CreateEventSourceMappingCommand): Promise<string> {
-  const client = new LambdaClient({
-    region: 'us-east-1',
-    credentials: { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'secret' },
-  });
+const CLIENT_CONFIG = {
+  region: 'us-east-1',
+  credentials: { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'secret' },
+};
+
+/** The serialized body `client` would send for `command`; the request is never sent. */
+async function requestBody(
+  client: LambdaClient | LambdaCoreClient,
+  command: CreateEventSourceMappingCommand | CreateNetworkConnectorCommand
+): Promise<string> {
   let body: string | undefined;
   client.middlewareStack.add(
     () => async (args) => {
@@ -35,7 +41,7 @@ async function lambdaRequestBody(command: CreateEventSourceMappingCommand): Prom
     },
     { step: 'build', priority: 'low' }
   );
-  await client.send(command).catch(() => undefined);
+  await (client.send as (c: typeof command) => Promise<unknown>)(command).catch(() => undefined);
   client.destroy();
   if (body === undefined) throw new Error('the request body was never captured');
   return body;
@@ -49,12 +55,34 @@ const PENDING_MEMBERS: readonly PendingMember[] = [
     member: 'ConsumptionMode',
     sentinel: 'group-sentinel',
     serialize: () =>
-      lambdaRequestBody(
+      requestBody(
+        new LambdaClient(CLIENT_CONFIG),
         new CreateEventSourceMappingCommand({
           FunctionName: 'fn',
           SelfManagedKafkaEventSourceConfig: {
             ConsumerGroupId: 'group-sentinel',
             ConsumptionMode: 'Queue',
+          } as never,
+        })
+      ),
+  },
+  {
+    cfnPath:
+      'AWS::Lambda::NetworkConnector Configuration.VpcEgressConfiguration.ElasticIpConfiguration',
+    refusedBy:
+      'src/provisioning/providers/lambda-network-connector-provider.ts (#5123; forward it on create AND update, and read it back)',
+    member: 'ElasticIpConfiguration',
+    sentinel: 'subnet-sentinel',
+    serialize: () =>
+      requestBody(
+        new LambdaCoreClient(CLIENT_CONFIG),
+        new CreateNetworkConnectorCommand({
+          Name: 'nc',
+          Configuration: {
+            VpcEgressConfiguration: {
+              SubnetIds: ['subnet-sentinel'],
+              ElasticIpConfiguration: 'AUTO',
+            },
           } as never,
         })
       ),

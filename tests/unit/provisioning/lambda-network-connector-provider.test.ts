@@ -521,6 +521,54 @@ describe('LambdaNetworkConnectorProvider — review round gaps', () => {
     }
   });
 
+  describe('ElasticIpConfiguration, which no client-lambda-core release models (#5123)', () => {
+    const withEip = (value: unknown) => ({
+      ...props,
+      Configuration: {
+        VpcEgressConfiguration: { ...props.Configuration.VpcEgressConfiguration, ElasticIpConfiguration: value },
+      },
+    });
+    const REFUSED = /Configuration\.VpcEgressConfiguration\.ElasticIpConfiguration cannot be sent by cdkd yet/;
+
+    it('is refused on a template-path create and a changed update, before any call', async () => {
+      await expect(provider.create('Nc', TYPE, withEip('AUTO'))).rejects.toThrow(REFUSED);
+      await expect(provider.create('Nc', TYPE, withEip('AUTO'))).rejects.toThrow(
+        /dropped from the CreateNetworkConnector request/
+      );
+      await expect(provider.update('Nc', ARN, TYPE, withEip('AUTO'), props)).rejects.toThrow(
+        /dropped from the UpdateNetworkConnector request/
+      );
+      await expect(provider.update('Nc', ARN, TYPE, withEip('B'), withEip('A'))).rejects.toThrow(REFUSED);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('an unchanged value or its removal is not refused; a replay and a drift revert proceed without it', async () => {
+      respond(
+        new Map<string, unknown[]>([
+          ['CreateNetworkConnectorCommand', [{ Arn: ARN }]],
+          ['UpdateNetworkConnectorCommand', [{}]],
+          ['GetNetworkConnectorCommand', [active]],
+          ['TagResourceCommand', [{}]],
+          ['UntagResourceCommand', [{}]],
+        ])
+      );
+      // Unchanged (a record an older cdkd wrote) and removed: nothing pending.
+      await provider.update('Nc', ARN, TYPE, { ...withEip('A'), Tags: [] }, withEip('A'));
+      await provider.update('Nc', ARN, TYPE, props, withEip('A'));
+      await provider.create('Nc', TYPE, withEip('AUTO'), { replayingState: true });
+      await provider.update('Nc', ARN, TYPE, withEip('AUTO'), props, { replayingState: true });
+      await provider.update('Nc', ARN, TYPE, withEip('AUTO'), props, { desiredFromAwsReadback: true });
+      for (const klass of [CreateNetworkConnectorCommand, UpdateNetworkConnectorCommand]) {
+        for (const call of callsOf(klass)) {
+          const vpc = (call.input['Configuration'] as { VpcEgressConfiguration: object }).VpcEgressConfiguration;
+          expect(vpc).not.toHaveProperty('ElasticIpConfiguration');
+        }
+      }
+      expect(callsOf(CreateNetworkConnectorCommand)).toHaveLength(1);
+      expect(callsOf(UpdateNetworkConnectorCommand)).toHaveLength(3);
+    });
+  });
+
   it('LatestVersion is read off LatestVersionArn when Get returns no LatestVersion (measured)', async () => {
     respond(
       new Map<string, unknown[]>([
