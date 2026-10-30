@@ -56,6 +56,73 @@ import {
   type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
 import { orphanCommandRegionArg, reportPossibleOrphans } from './orphan-report.js';
+import { safeMsg } from '../../utils/display-safe.js';
+
+/**
+ * Issue #5546: the properties `UpdateLifecyclePolicy` is not sent once the
+ * template drops them, and which the policy therefore keeps. CloudFormation
+ * keeps each one too: a CFn A/B in us-east-1 (2026-10-30) removed
+ * `Description` alone and again beside a `State` + `RetainRule` change, then
+ * `State` + `ExecutionRoleArn` together, then `PolicyDetails`; every update
+ * was `UPDATE_COMPLETE`, CloudTrail's `UpdateLifecyclePolicy` request carried
+ * no member for the removed property, and `GetLifecyclePolicy` still showed
+ * the old value for three to four minutes after. #5004's A/B measured the
+ * other six the same way. So cdkd sends no reset ('' is rejected for
+ * `Description` anyway) and names what it kept.
+ */
+const KEPT_ON_REMOVAL = [
+  'Description',
+  'ExecutionRoleArn',
+  'State',
+  'PolicyDetails',
+  'CreateInterval',
+  'RetainInterval',
+  'CopyTags',
+  'ExtendDeletion',
+  'CrossRegionCopyTargets',
+  'Exclusions',
+] as const;
+
+/**
+ * The {@link KEPT_ON_REMOVAL} properties this update leaves live: the previous
+ * side declared a value (a recorded explicit null declared nothing) and the
+ * desired side sends none, since `toSdkFields` drops a null as absent. The
+ * caller's `removedProperties` decides removal, plus a desired explicit null,
+ * which that set does not count; a direct call (no context) compares the bags.
+ * Nothing on `drift --revert`, whose previous side is an AWS readback, so no
+ * template ever declared what its desired side lacks.
+ */
+function keptRemovedNames(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined
+): string[] {
+  if (context?.desiredFromAwsReadback) return [];
+  const removed = context?.removedProperties;
+  return KEPT_ON_REMOVAL.filter(
+    (key) =>
+      previousProperties[key] != null &&
+      properties[key] == null &&
+      (removed === undefined || removed.has(key) || properties[key] === null)
+  );
+}
+
+/**
+ * The ONE warning line for {@link KEPT_ON_REMOVAL} removals. Names are
+ * template-borne, so they go through `safeMsg`. A rollback revert restores an
+ * earlier state record, so there the property is one the failed deploy ADDED.
+ */
+const keptOnRemovalWarning = (
+  logicalId: string,
+  names: readonly string[],
+  caller: 'deploy' | 'rollback'
+): string => {
+  const one = names.length === 1;
+  const subject = one ? 'property' : 'properties';
+  return caller === 'rollback'
+    ? safeMsg`${logicalId} (AWS::DLM::LifecyclePolicy): ${subject} ${names.join(', ')} ${one ? 'is' : 'are'} absent from the state being restored; UpdateLifecyclePolicy keeps a field it is not sent, so the rollback leaves the value the failed deploy applied in place.`
+    : safeMsg`${logicalId} (AWS::DLM::LifecyclePolicy): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template and ${one ? 'keeps its' : 'keep their'} current AWS value, as CloudFormation leaves ${one ? 'it' : 'them'}; UpdateLifecyclePolicy keeps a field it is not sent. Declare the intended value explicitly to change it.`;
+};
 
 /**
  * Issue #2080: `CreateLifecyclePolicy` carries no idempotency token and the
@@ -159,6 +226,17 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
         'Exclusions',
       ]),
     ],
+  ]);
+
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every handled
+   * property, each removal handled by `update()`, so the shared caller warns
+   * about none. `Tags` is diffed (UntagResource), a `DefaultPolicy` change is
+   * refused toward `--replace`, and each {@link KEPT_ON_REMOVAL} property is
+   * kept, as CloudFormation keeps it, and named in `update()`'s own warning.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    ['AWS::DLM::LifecyclePolicy', new Set<string>([...KEPT_ON_REMOVAL, 'Tags', 'DefaultPolicy'])],
   ]);
 
   private getClient(): DLMClient {
@@ -467,9 +545,10 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       // CloudFormation A/B showed CFn KEEPS the live CreateInterval,
       // RetainInterval, CopyTags, ExtendDeletion, CrossRegionCopyTargets and
       // Exclusions when removed, so nothing is sent for a removed member
-      // (parity; supersedes the #1160 resets). Description has no clear
-      // sentinel ('' is rejected, live-probed); the rest are required on
-      // create. A kept-but-partial Exclusions is replaced whole by the API.
+      // (parity; supersedes the #1160 resets). A removed Description,
+      // ExecutionRoleArn, State or PolicyDetails is kept by CFn too (#5546's
+      // A/B, KEPT_ON_REMOVAL); each kept removal is named in a warning below.
+      // A kept-but-partial Exclusions is replaced whole by the API.
       await this.getClient().send(
         new UpdateLifecyclePolicyCommand({
           PolicyId: physicalId,
@@ -483,6 +562,19 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
           }),
         })
       );
+
+      // Issue #5546: name what the policy kept as soon as UpdateLifecyclePolicy
+      // has applied it, so a later tag-call failure cannot drop the line.
+      const keptNames = keptRemovedNames(properties, previousProperties, context);
+      if (keptNames.length > 0) {
+        this.logger.warn(
+          keptOnRemovalWarning(
+            logicalId,
+            keptNames,
+            context?.replayingState ? 'rollback' : 'deploy'
+          )
+        );
+      }
 
       // Tag diff via TagResource / UntagResource — UpdateLifecyclePolicy has
       // no Tags parameter. TagResource is additive-only, so a tag dropped

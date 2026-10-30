@@ -647,6 +647,7 @@ const ENDPOINT_CASE: TypeCase = {
         VpcSubnetIds: ['subnet-1', 'subnet-2'],
         VpcSecurityGroupIds: ['sg-1', 'sg-2'],
         TargetRole: 'READ_ONLY',
+        EndpointNetworkType: 'DUAL',
         Tags: TAG_LIST,
       },
       expectedSilent: {

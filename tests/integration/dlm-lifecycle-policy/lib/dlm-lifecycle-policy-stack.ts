@@ -27,6 +27,9 @@ import type { Construct } from 'constructs';
  * live values (2 / 3 / true / true / 1 / true / 1) because CloudFormation keeps
  * a removed shorthand field rather than resetting it (issue #5004).
  * DISABLED means the default policy never actually snapshots any volume.
+ * The same redeploy drops the standard policy's Description, which
+ * CloudFormation keeps too (issue #5546); verify.sh asserts AWS keeps it and
+ * that cdkd's deploy warns about both policies' kept removals.
  */
 export class DlmLifecyclePolicyStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -62,7 +65,11 @@ export class DlmLifecyclePolicyStack extends cdk.Stack {
     });
 
     const policy = new dlm.CfnLifecyclePolicy(this, 'Policy', {
-      description: isUpdate ? 'cdkd integ policy updated' : 'cdkd integ policy baseline',
+      // issue #5546: the REMOVAL redeploy drops Description; CloudFormation
+      // keeps it, so AWS must still read 'cdkd integ policy updated'.
+      ...(isRemoval
+        ? {}
+        : { description: isUpdate ? 'cdkd integ policy updated' : 'cdkd integ policy baseline' }),
       executionRoleArn: role.roleArn,
       state: isUpdate ? 'DISABLED' : 'ENABLED',
       policyDetails: {
@@ -73,7 +80,9 @@ export class DlmLifecyclePolicyStack extends cdk.Stack {
           {
             name: 'Daily',
             createRule: { interval: 24, intervalUnit: 'HOURS', times: ['09:00'] },
-            retainRule: { count: 1 },
+            // issue #5546: the REMOVAL redeploy also changes the count, so
+            // the kept Description rides a real UpdateLifecyclePolicy call.
+            retainRule: { count: isRemoval ? 2 : 1 },
           },
         ],
       },
