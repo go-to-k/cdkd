@@ -596,7 +596,11 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       );
       if (keptNames.length > 0) {
         this.logger.warn(
-          keptOnRemovalWarning(logicalId, keptNames, context?.replayingState ? 'rollback' : 'deploy')
+          keptOnRemovalWarning(
+            logicalId,
+            keptNames,
+            context?.replayingState ? 'rollback' : 'deploy'
+          )
         );
       }
 
