@@ -323,8 +323,13 @@ export interface DeleteWait {
    * settle" without ever having looked.
    */
   nextPoll(): boolean;
-  /** The clause to append to this wait's own message; `''` when the allowance played no part. */
-  note(): string;
+  /**
+   * The clause to append to this wait's own message; `''` when the allowance
+   * played no part. `shownCap` is the cap to QUOTE when the caller's effective
+   * cap is smaller than the one granted (go-to-k/cdkd#5574: a GSI re-arm granted
+   * the vector-index cap still stops at 60, so "of its 900 polls" is false).
+   */
+  note(shownCap?: number): string;
 }
 
 class DeleteWaitImpl implements DeleteWait {
@@ -366,8 +371,9 @@ class DeleteWaitImpl implements DeleteWait {
     return this.endedByBudget && this.ran < DELETE_SHORT_WAIT_POLLS;
   }
 
-  note(): string {
+  note(shownCap?: number): string {
     if (!this.endedByBudget) return '';
+    const cap = shownCap ?? this.cap;
     // The ACTUAL allowance, not the shipped constant: under the test seam (and
     // under any future per-type sizing) quoting the constant claims 26 minutes
     // for a 60-second budget.
@@ -375,7 +381,7 @@ class DeleteWaitImpl implements DeleteWait {
     if (this.cutShort) {
       return (
         ` — cdkd's shared ~${minutes}-minute delete allowance was already spent, so this wait ` +
-        `made only ${this.ran} of its ${this.cap} polls and AWS was not given a real wait. ` +
+        `made only ${this.ran} of its ${cap} polls and AWS was not given a real wait. ` +
         `Nothing is necessarily wrong with the table; re-run the destroy.`
       );
     }
@@ -384,7 +390,7 @@ class DeleteWaitImpl implements DeleteWait {
     // still being present is a signal about AWS rather than about cdkd.
     return (
       ` (cdkd's shared ~${minutes}-minute delete allowance capped this wait at ${this.ran} of ` +
-      `its ${this.cap} polls.)`
+      `its ${cap} polls.)`
     );
   }
 }

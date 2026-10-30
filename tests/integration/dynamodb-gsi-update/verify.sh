@@ -58,7 +58,8 @@
 #      reverted, removal + enable-with-Mode on update, destroy. See that block.
 #   V1-V4. VectorIndexes (go-to-k/cdkd#2762) on their OWN stack and table —
 #      created with the table on the SDK route, no phantom drift, one index
-#      removed and another added in one update, destroy. See that block.
+#      removed and another added in one update, a destroy racing a building
+#      vector index (go-to-k/cdkd#5574), destroy. See that block.
 #   3a. Race an out-of-band GSI CREATE into the table immediately before the
 #      destroy (issue #1931), so AWS refuses the DeleteTable with
 #      `Cannot delete table while indexes are being created, updated, or
@@ -145,6 +146,8 @@ DRIFT_JSON="${TMPDIR:-/tmp}/cdkd-1767-drift.$$.json"
 # here so `cleanup` sweeps it on every exit path, including the ones that never
 # reach Phase 3.
 DESTROY_LOG="${TMPDIR:-/tmp}/cdkd-1931-destroy.$$.log"
+# The Phase V4 destroy log, read by the go-to-k/cdkd#5574 assertions; removed by cleanup().
+VECTOR_DESTROY_LOG="${TMPDIR:-/tmp}/cdkd-5574-vector-destroy.$$.log"
 
 # Re-entrancy guard for `cleanup`. The INT / TERM traps run `cleanup` and then
 # `exit`, and that `exit` re-fires the EXIT trap — so without this flag every
@@ -209,7 +212,7 @@ cleanup() {
   CLEANED_UP=1
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
-  rm -f "${DEPLOY_LOG}" "${P1C_CONVERGE_LOG}" "${P1C_RETRY_LOG}" "${P1D_LOG}" "${STATE_JSON}" "${STATE_JSON}.stripped" "${STATE_JSON}.stale" "${STATE_JSON}.warm" "${DRIFT_JSON}" "${DESTROY_LOG}"
+  rm -f "${DEPLOY_LOG}" "${P1C_CONVERGE_LOG}" "${P1C_RETRY_LOG}" "${P1D_LOG}" "${STATE_JSON}" "${STATE_JSON}.stripped" "${STATE_JSON}.stale" "${STATE_JSON}.warm" "${DRIFT_JSON}" "${DESTROY_LOG}" "${VECTOR_DESTROY_LOG}"
   # The tables are swept BY NAME first and the state records dropped second, so
   # a `state destroy` that dies half way is never the only thing standing
   # between a table and a leak. (`state destroy` then finds the table already
@@ -1092,6 +1095,8 @@ rm -f "${STATE_JSON}" "${STATE_JSON}.stripped" "${DRIFT_JSON}"
 #       `vec1` in its CFn shape (no AWS-managed IndexStatus / Backfilling).
 #   V3. update: `vec1` removed, `vec2` added — the SAME table (CreationDateTime
 #       unchanged), AWS holds exactly `vec2` as declared, ACTIVE; drift clean.
+#   V3b. go-to-k/cdkd#5574: a vector index raced into CREATING before the
+#       destroy; AWS refuses DeleteTable and cdkd waits it out.
 #   V4. destroy: table gone (or DELETING), state removed.
 vector_index_shape() { # $1 = table -> "<name>:<vector attribute>:<dims>:<fn>:<projection>:<search schema>:<status>" per index, sorted
   aws dynamodb describe-table --table-name "$1" --region "${REGION}" --output json \
@@ -1164,8 +1169,94 @@ fi
 echo "    vector indexes: ${VECTOR_SHAPE_V3} (same table)"
 assert_vector_drift_clean "after the update"
 
-echo "==> Phase V4: destroy the vector-index stack"
-node "${LOCAL_DIST}" destroy "${VECTOR_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+# --- Phase V3b: a vector index still building when the destroy lands ---------
+# go-to-k/cdkd#5574: the index-busy DeleteTable retry's settle wait read only
+# GlobalSecondaryIndexes, so with a vector index CREATING it returned at once
+# and the retries spent only withRetry's backoff (~95s at the Table budget).
+# Race an out-of-band vector-index CREATE right before the destroy, as Phase 3a
+# does with a GSI. Discrimination: pre-fix, an index build outlasting the
+# backoff makes the destroy exit non-zero, and `set -o pipefail` aborts the run
+# AT the destroy; post-fix the destroy waits the build out and exits 0.
+#
+# A destroy that exits 0 with NO refusal is ambiguous, as in Phase 3a: the index
+# may have reached ACTIVE before the DeleteTable landed (a missed window), or AWS
+# may accept a DeleteTable while a vector index builds (the issue's premise
+# false). So the arm re-arms once (re-deploy the V3 table, race again), and the
+# final failure names which reading the observed statuses support: "premise does
+# not hold" only when vecRace was seen CREATING before every missed destroy.
+VEC_ARM_MAX=2
+VEC_ARM_HIT=""
+VEC_RACE_STATUSES=""
+for VEC_ARM in $(seq 1 ${VEC_ARM_MAX}); do
+  echo "==> Phase V3b (go-to-k/cdkd#5574), arm ${VEC_ARM}/${VEC_ARM_MAX}: create a vector index out of band so DeleteTable meets it building"
+  if ! VEC_RACE_ERR="$(aws dynamodb update-table --table-name "${VECTOR_TABLE}" \
+    --vector-index-updates \
+    '[{"Create":{"IndexName":"vecRace","VectorAttribute":{"AttributeName":"raceEmbedding"},"Dimensions":3,"DistanceFunction":"COSINE","Projection":{"ProjectionType":"KEYS_ONLY"}}}]' \
+    --region "${REGION}" 2>&1 >/dev/null)"; then
+    echo "FAIL (go-to-k/cdkd#5574): AWS / the CLI refused the out-of-band vector-index Create (an older aws CLI lacks --vector-index-updates), so the arm cannot reach a building index. It said: ${VEC_RACE_ERR}" >&2
+    exit 1
+  fi
+  VEC_RACE_STATUS="$(aws dynamodb describe-table --table-name "${VECTOR_TABLE}" --region "${REGION}" \
+    --query 'Table.VectorIndexes[?IndexName==`vecRace`].IndexStatus | [0]' --output text)"
+  VEC_RACE_STATUSES="${VEC_RACE_STATUSES:+${VEC_RACE_STATUSES},}${VEC_RACE_STATUS}"
+  echo "    vecRace is ${VEC_RACE_STATUS} before the destroy"
+
+  echo "==> Phase V4: destroy the vector-index stack (arm ${VEC_ARM}/${VEC_ARM_MAX})"
+  node "${LOCAL_DIST}" destroy "${VECTOR_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force --verbose 2>&1 | tee "${VECTOR_DESTROY_LOG}"
+  if grep -qF "Cannot delete table while indexes are being" "${VECTOR_DESTROY_LOG}"; then
+    VEC_ARM_HIT="yes"
+    break
+  fi
+  if [ "${VEC_ARM}" -lt "${VEC_ARM_MAX}" ]; then
+    echo "    note: AWS accepted the DeleteTable with no index-busy refusal (vecRace was ${VEC_RACE_STATUS} before the destroy); re-arming"
+    aws dynamodb wait table-not-exists --table-name "${VECTOR_TABLE}" --region "${REGION}"
+    CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${VECTOR_STACK}" \
+      --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+  fi
+done
+if [ -z "${VEC_ARM_HIT}" ]; then
+  if [ "${VEC_RACE_STATUSES}" = "CREATING,CREATING" ]; then
+    echo "FAIL (go-to-k/cdkd#5574): AWS accepted DeleteTable twice while vecRace was CREATING just before each destroy (no index-busy refusal in either log), so the issue's premise does not hold; record the measurement on the issue and drop this arm" >&2
+  else
+    echo "FAIL (go-to-k/cdkd#5574): ${VEC_ARM_MAX} armed destroys ran and AWS never refused a DeleteTable (vecRace statuses before each destroy: ${VEC_RACE_STATUSES}); the window was missed, so the retry path was not exercised and the arm needs a slower-settling index" >&2
+  fi
+  exit 1
+fi
+if ! grep -qF "AWS refused DeleteTable on ${VECTOR_TABLE} because a global secondary index or vector index is still being" "${VECTOR_DESTROY_LOG}"; then
+  echo "FAIL (go-to-k/cdkd#5574): AWS refused the DeleteTable but cdkd printed no index-busy retry warning naming vector indexes" >&2
+  exit 1
+fi
+# The settle wait really polled the VECTOR index (its once-per-wait debug line,
+# printed by waitForIndexesSettled under --verbose), rather than returning at
+# once on the GSI-only predicate the fix replaced.
+if ! grep -qF ": a vector index still transitioning" "${VECTOR_DESTROY_LOG}"; then
+  echo "FAIL (go-to-k/cdkd#5574): AWS refused the DeleteTable but the settle wait never reported polling a transitioning vector index" >&2
+  exit 1
+fi
+# A ~8.5 min build (measured 2026-10-30) must fit ONE wait: the 900-poll vector
+# cap, not five timed-out 60-poll re-arms each followed by a blind DeleteTable.
+VEC_SETTLE_TIMEOUTS="$(grep -cF "did not all reach ACTIVE within 60 DescribeTable polls" "${VECTOR_DESTROY_LOG}" || true)"
+if [ "${VEC_SETTLE_TIMEOUTS}" != "0" ]; then
+  echo "FAIL (go-to-k/cdkd#5574): the settle wait gave up at the 60-poll GSI re-arm ${VEC_SETTLE_TIMEOUTS} time(s) while a vector index built; the long vector-index cap did not apply" >&2
+  exit 1
+fi
+# ...and the check above is vacuous unless the build really outlasted 60 polls:
+# read the wait's own "settled after N DescribeTable polls" debug line. A FAIL,
+# not a SKIP: the one measured build took ~8.5 min, about 7x the 60-poll
+# (~72s) re-arm, so a build under it means AWS changed, which this arm reports.
+VEC_SETTLE_POLLS="$(grep -oE "\(${VECTOR_LID}\) settled after [0-9]+ DescribeTable polls" "${VECTOR_DESTROY_LOG}" \
+  | grep -oE "[0-9]+ DescribeTable" | grep -oE "^[0-9]+" | sort -n | tail -1 || true)"
+if [ -z "${VEC_SETTLE_POLLS}" ] || [ "${VEC_SETTLE_POLLS}" -le 60 ]; then
+  echo "FAIL (go-to-k/cdkd#5574): the vector-index settle wait settled after '${VEC_SETTLE_POLLS:-no line}' polls, not past the 60-poll GSI re-arm, so this run cannot show the long vector-index cap applied" >&2
+  exit 1
+fi
+echo "    one settle wait covered the vector build (${VEC_SETTLE_POLLS} DescribeTable polls)"
+if grep -qF "Failed to delete DynamoDB table ${VECTOR_LID}" "${VECTOR_DESTROY_LOG}"; then
+  echo "FAIL (go-to-k/cdkd#5574): the retry did not recover: destroy reported a failure for ${VECTOR_LID}" >&2
+  exit 1
+fi
+rm -f "${VECTOR_DESTROY_LOG}"
+echo "    AWS refused the DeleteTable while vecRace built, and cdkd waited it out and retried to success"
 # DeleteTable is ASYNC — accept GONE or DELETING, exactly as Phase 3 does below.
 if gone_probe aws dynamodb describe-table --table-name "${VECTOR_TABLE}" --region "${REGION}"; then
   vector_table_status="GONE"
@@ -1356,4 +1447,4 @@ echo "    table deleted (status: ${status})"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — DynamoDB GSI add is an in-place UPDATE (no replacement), an in-use table with a GSI reports no phantom drift (issue #1767) even against a stale pre-#1767 baseline (issue #1812), a per-index ContributorInsightsSpecification is applied, read back, reverted and removed (issue #1782), VectorIndexes are created, added and removed on the SDK route (go-to-k/cdkd#2762), and destroy absorbs the index-busy DeleteTable refusal (issue #1931); all phases passed"
+echo "[verify] PASS — DynamoDB GSI add is an in-place UPDATE (no replacement), an in-use table with a GSI reports no phantom drift (issue #1767) even against a stale pre-#1767 baseline (issue #1812), a per-index ContributorInsightsSpecification is applied, read back, reverted and removed (issue #1782), VectorIndexes are created, added and removed on the SDK route (go-to-k/cdkd#2762) and a destroy waits out a building vector index (go-to-k/cdkd#5574), and destroy absorbs the index-busy DeleteTable refusal (issue #1931); all phases passed"

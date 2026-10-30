@@ -109,9 +109,11 @@ import {
 } from '../dynamodb-stream-members.js';
 import {
   DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+  VECTOR_INDEX_BUSY_REARM_MAX_ATTEMPTS,
   INDEX_SETTLE_POLL_INTERVAL_MS,
   TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
   DELETE_INDEX_WAIT_PROCEED_NOTE,
+  TABLE_INDEX_NOUN,
   deleteTableWithIndexBusyRetry,
   maskedLogger,
   relayedIndexBusyDelete,
@@ -125,6 +127,7 @@ import {
   type ProtectionFlipRecord,
   ProtectionFlipRegistry,
   DYNAMODB_DELETE_POLL_COST_MS,
+  DYNAMODB_DELETE_DEADLINE_MARGIN_MS,
   beginDeleteWait,
   compensateRemovedDeletionProtection,
   deleteBudgetKey,
@@ -132,7 +135,7 @@ import {
   resolveDynamoDbDeleteBudgetClock,
   resolveDynamoDbDeleteBudgetMs,
 } from './dynamodb-delete-budget.js';
-import { type ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
+import { ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
 import { maskDeep, maskerOrIdentity } from '../masked-retry-logger.js';
 import { startInterruptWatch } from '../interrupt-watch.js';
 import { waitForGoneAfterDelete } from '../delete-gone-wait.js';
@@ -1968,7 +1971,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
     if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
     this.logger.debug(m(build(m(failure.detail)).message));
     const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
-    const wrapped = build(`${m(failure.summary)}${relay}${relayedIndexBusyDelete(failure.detail)}`);
+    const wrapped = build(
+      `${m(failure.summary)}${relay}${relayedIndexBusyDelete(failure.detail, TABLE_INDEX_NOUN)}`
+    );
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -2476,14 +2481,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // go-to-k/cdkd#5511: report before the ACTIVE wait.
       reportCreatedResource(logicalId, resourceType, tableName, createdTableId);
 
-      this.logger.debug(`CreateTable initiated for ${tableName}, waiting for ACTIVE status`);
+      debug(`CreateTable initiated for ${tableName}, waiting for ACTIVE status`);
 
       // Poll until table is ACTIVE
       // go-to-k/cdkd#5200: inert unless CDKD_PHASE_TIMINGS=1.
       const tableInfo = await timePhase(
         'provider waits',
         'DynamoDB table: wait for ACTIVE',
-        () => this.waitForTableActive(tableName),
+        () => this.waitForTableActive(tableName, maskSecrets),
         logicalId
       );
       // go-to-k/cdkd#2762: a vector index created WITH the table may still be
@@ -2556,7 +2561,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         maskSecrets
       );
 
-      this.logger.debug(`Successfully created DynamoDB table ${logicalId}: ${tableName}`);
+      debug(`Successfully created DynamoDB table ${logicalId}: ${tableName}`);
 
       return {
         physicalId: tableName,
@@ -2576,7 +2581,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       let tableLeftBehind = false;
       if (tableCreated) {
         try {
-          await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: tableName }));
+          await this.rollBackCreatedTable(logicalId, tableName, maskSecrets);
           retractCreatedResource(logicalId, resourceType, tableName);
           debug(`Rolled back partially-created DynamoDB table ${tableName}`);
         } catch (cleanupError) {
@@ -2617,6 +2622,71 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
       throw thrown;
     }
+  }
+
+  /**
+   * `create()`'s rollback `DeleteTable` of a table it created and is about to
+   * fail (go-to-k/cdkd#5574), retrying ONLY the index-busy refusal, as
+   * `delete()` does: the failure that brought it here can be the create-time
+   * vector-index wait giving up while the index is still `CREATING`, and a
+   * single refused `DeleteTable` then left the table behind as an orphan.
+   *
+   * Bounded by what the ENCLOSING per-resource deadline has left, less the
+   * delete path's margin, capped at the delete path's own allowance. With no
+   * room left (the default 30-minute deadline has already fired once the
+   * 1800-poll vector wait times out) the first refusal is terminal, exactly as
+   * before: `withResourceDeadline` does not cancel, so a retry loop there would
+   * keep deleting behind a run already reported failed. Throws what the last
+   * `DeleteTable` threw; the caller reports the table left behind.
+   */
+  private async rollBackCreatedTable(
+    logicalId: string,
+    tableName: string,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const logger = maskedLogger(this.logger, maskSecrets, tableName);
+    const allowanceMs = Math.min(
+      resolveDynamoDbDeleteBudgetMs(),
+      enclosingDeadlineRemainingMs() - DYNAMODB_DELETE_DEADLINE_MARGIN_MS
+    );
+    const budget =
+      allowanceMs > 0
+        ? new ElapsedBudget(allowanceMs, resolveDynamoDbDeleteBudgetClock())
+        : undefined;
+    await deleteTableWithIndexBusyRetry({
+      logicalId,
+      physicalId: tableName,
+      typeLabel: 'table',
+      indexNoun: TABLE_INDEX_NOUN,
+      maxRetries: TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
+      logger,
+      deleteTable: async () => {
+        await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: tableName }));
+      },
+      reArm: () => {
+        // The same long-cap-while-vector-busy re-arm as `delete()`.
+        const wait = beginDeleteWait(VECTOR_INDEX_BUSY_REARM_MAX_ATTEMPTS, budget);
+        return waitForIndexesSettled({
+          tableName,
+          logicalId,
+          logger,
+          describeTable: () =>
+            this.dynamoDBClient.send(new DescribeTableCommand({ TableName: tableName })),
+          maxAttempts: wait.grantedPolls,
+          budgetWait: wait,
+          shortCapUnlessVectorBusy: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+          proceedNote: DELETE_INDEX_WAIT_PROCEED_NOTE,
+        });
+      },
+      shouldKeepRetrying: () => budget !== undefined && !budget.isExhausted(),
+      retryWarning: () =>
+        `DynamoDB table ${logicalId}: AWS refused the DeleteTable rolling back the ` +
+        `partially-created table ${tableName} because ${TABLE_INDEX_NOUN} is still being ` +
+        `created, updated or deleted. Waiting for the indexes to settle and retrying (up to ` +
+        `${TABLE_DELETE_INDEX_BUSY_MAX_RETRIES} retries in all, within ~` +
+        `${Math.max(1, Math.round((budget?.totalMs ?? 0) / 60_000))} minutes).`,
+      sleepSeam: deleteTableRetryDelays,
+    });
   }
 
   /**
@@ -4722,7 +4792,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
       //
       // The rule is the sibling provider's, READ rather than re-spelled: the
       // classifier, the retry budget, the bounded re-arm and the warning all
-      // come from `../dynamodb-index-busy-delete.ts`.
+      // come from `../dynamodb-index-busy-delete.ts`. Its settle wait reads
+      // vector indexes too (go-to-k/cdkd#5574), so a refusal while one builds
+      // waits for it rather than spending each retry on backoff alone.
       //
       // Deliberately NO pre-delete describe / settle gate here (the sibling's
       // #1521 gate). The only thing that can precede this `DeleteTable` is the
@@ -4738,14 +4810,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
       const reArmPolls = (): {
         maxAttempts: number;
         budgetWait: ReturnType<typeof beginDeleteWait>;
+        shortCapUnlessVectorBusy: number;
       } => {
-        const wait = beginDeleteWait(DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS, budget);
-        return { maxAttempts: wait.grantedPolls, budgetWait: wait };
+        // go-to-k/cdkd#5574: granted the LONG vector-index cap, which the
+        // wait uses only while a vector index alone is building; a GSI still
+        // stops at the short re-arm. The shared allowance bounds either.
+        const wait = beginDeleteWait(VECTOR_INDEX_BUSY_REARM_MAX_ATTEMPTS, budget);
+        return {
+          maxAttempts: wait.grantedPolls,
+          budgetWait: wait,
+          shortCapUnlessVectorBusy: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+        };
       };
       await deleteTableWithIndexBusyRetry({
         logicalId,
         physicalId,
         typeLabel: 'table',
+        indexNoun: TABLE_INDEX_NOUN,
         // THIS type's budget. The two DynamoDB types no longer share one: the
         // sibling reaches this loop with the #1521 gate's ~18 min already spent
         // out of the same 30-min deadline, so it keeps the original 8 while
@@ -4779,7 +4860,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // indexes. On THIS provider the only other thing sharing that deadline
         // is the `--remove-protection` ACTIVE wait above (<=60 polls, ~72s),
         // which the budget is sized with — the whole `delete()` worst case is
-        // ~19.6 min against the 30-min deadline, two thirds of it.
+        // ~19.6 min against the 30-min deadline, two thirds of it. That figure
+        // is the GSI case; a building VECTOR index may hold one wait up to
+        // `VECTOR_INDEX_BUSY_REARM_MAX_ATTEMPTS` (go-to-k/cdkd#5574), and there
+        // the shared allowance below, not the poll count, is the path's bound.
         //
         // That deadline wraps `destroy-runner.ts`'s OUTER retry loop, not a
         // single `delete()` — up to 4 calls share it. This refusal matches no
@@ -6041,6 +6125,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
    */
   private async waitForTableActive(
     tableName: string,
+    // The caller's masker: the table name is a RESOLVED template value.
+    maskSecrets: SecretMasker,
     maxAttempts = 60
   ): Promise<{
     tableArn: string | undefined;
@@ -6053,7 +6139,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
       );
 
       const status = response.Table?.TableStatus;
-      this.logger.debug(`Table ${tableName} status: ${status} (attempt ${attempt}/${maxAttempts})`);
+      this.logger.debug(
+        maskSecrets(`Table ${tableName} status: ${status} (attempt ${attempt}/${maxAttempts})`)
+      );
 
       if (status === 'ACTIVE') {
         return {
