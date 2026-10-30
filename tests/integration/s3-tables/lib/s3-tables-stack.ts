@@ -16,8 +16,26 @@ export class S3TablesStack extends cdk.Stack {
     const tableName = process.env.CDKD_S3T_TABLE_NAME ?? 'cdkd_integ_tbl';
     const tableNamespace = process.env.CDKD_S3T_TABLE_NS ?? 'cdkd_integ_ns';
 
+    // Issue #2762: Phase 1b (CDKD_S3T_TEAM set) also changes one value of each
+    // updatable configuration property, so the redeploy reaches their Put*
+    // calls in update(); Phases 1c / 1d keep that value.
+    const configUpdated = process.env.CDKD_S3T_TEAM !== undefined;
+
     const tableBucket = new s3tables.CfnTableBucket(this, 'TableBucket', {
       tableBucketName: `${this.stackName}-table-bucket`.toLowerCase(),
+      // Issue #2762: these used to route the bucket to Cloud Control; the SDK
+      // provider now sends them (storage class on CreateTableBucket, the
+      // others by their own Put* call). Each is a non-default value, so
+      // verify.sh's readback of it proves the value reached AWS.
+      storageClassConfiguration: { storageClass: 'INTELLIGENT_TIERING' },
+      // Phase 1b drops it: a removal deletes the bucket's metrics
+      // configuration (its schema default is Disabled).
+      ...(configUpdated ? {} : { metricsConfiguration: { status: 'Enabled' } }),
+      unreferencedFileRemoval: {
+        status: 'Enabled',
+        unreferencedDays: configUpdated ? 6 : 5,
+        noncurrentDays: 7,
+      },
     });
 
     // Two tags on the TableBucket — issue #609 Tags backfill (this PR)
@@ -84,25 +102,22 @@ export class S3TablesStack extends cdk.Stack {
     cdk.Tags.of(table).add('env', 'cdkd-integ');
     cdk.Tags.of(table).add('team', teamTag);
 
-    // --- CC-routed Table + Ref-to-TableARN assertion (issues #974 / #5316) --
-    // A schema-bearing Table (IcebergMetadata set) is NOT in the SDK
-    // provider's `handledProperties` for AWS::S3Tables::Table, so cdkd's
-    // #614 silent-drop routing sends it entirely through Cloud Control.
-    // The CC primaryIdentifier for a Table is the bare single-segment
-    // TableARN (describe-type-verified in PR #972), so the CC path stores a
-    // pipe-free ARN as the physical id. CloudFormation's `Ref` for a Table
-    // returns that TableARN (measured with a CloudFormation stack, issue
-    // #5316); issue #974 had made cdkd return the table name instead. This
-    // Table proves the CC-routed Ref resolves to the TableARN against real AWS.
+    // --- Schema-bearing Table + Ref-to-TableARN assertion (#974 / #5316 / #2762)
+    // A schema-bearing Table (IcebergMetadata set). Until issue #2762 its
+    // IcebergMetadata / Compaction / SnapshotManagement / StorageClass were
+    // silent drops that routed it to Cloud Control; the SDK provider now sends
+    // them, so it is SDK-routed like the plain Table and verify.sh reads each
+    // value back from AWS. CloudFormation's `Ref` for a Table returns its
+    // TableARN (measured with a CloudFormation stack, issue #5316); issue
+    // #974 had made cdkd return the table name instead.
     const ICEBERG_TABLE_NAME = 'cdkd_integ_cc_tbl';
     const icebergTable = new s3tables.CfnTable(this, 'IcebergTable', {
       tableBucketArn: tableBucket.attrTableBucketArn,
       namespace: 'cdkd_integ_ns',
       tableName: ICEBERG_TABLE_NAME,
       openTableFormat: 'ICEBERG',
-      // IcebergMetadata is the everyday schema-bearing-table path and the
-      // property that flips routing to Cloud Control (silent-drop on the
-      // SDK provider). Its presence is what this fixture is exercising.
+      // IcebergMetadata is the everyday schema-bearing-table path: sent on
+      // CreateTable, it makes S3 Tables write the table's first metadata file.
       icebergMetadata: {
         icebergSchema: {
           schemaFieldList: [
@@ -111,6 +126,14 @@ export class S3TablesStack extends cdk.Stack {
           ],
         },
       },
+      // Issue #2762: non-default values (compaction is enabled on a new table;
+      // snapshot management keeps 1 snapshot for 120 hours), each read back by
+      // verify.sh. Phase 1b turns compaction on with a target file size.
+      storageClassConfiguration: { storageClass: 'INTELLIGENT_TIERING' },
+      compaction: configUpdated
+        ? { status: 'enabled', targetFileSizeMb: 256 }
+        : { status: 'disabled' },
+      snapshotManagement: { status: 'enabled', minSnapshotsToKeep: 2, maxSnapshotAgeHours: 200 },
     });
     icebergTable.addDependency(namespace);
 
@@ -138,11 +161,11 @@ export class S3TablesStack extends cdk.Stack {
       value: table.attrTableArn,
       description: 'S3 Table ARN',
     });
-    // The CC-routed Table's `Ref` — must resolve to its TableARN (issue
+    // The IcebergMetadata Table's `Ref` — must resolve to its TableARN (issue
     // #5316), the `IcebergTableArn` output below, and not to the table name.
     new cdk.CfnOutput(this, 'IcebergTableRef', {
       value: icebergTable.ref,
-      description: 'Ref of the CC-routed IcebergMetadata table (expect the TableARN)',
+      description: 'Ref of the IcebergMetadata table (expect the TableARN)',
     });
     new cdk.CfnOutput(this, 'IcebergTableArn', {
       value: icebergTable.attrTableArn,

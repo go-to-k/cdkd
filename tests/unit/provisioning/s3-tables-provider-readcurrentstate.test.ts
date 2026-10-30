@@ -70,7 +70,9 @@ describe('S3TablesProvider.readCurrentState', () => {
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetTableBucketCommand);
       expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
-      expect(result).toEqual({
+      // The configuration keys (go-to-k/cdkd#2762) are pinned in
+      // s3-tables-config-2762.test.ts; this mock answers none of their Gets.
+      expect(result).toMatchObject({
         TableBucketName: 'my-bucket',
         Tags: [
           { Key: 'env', Value: 'cdkd-integ' },

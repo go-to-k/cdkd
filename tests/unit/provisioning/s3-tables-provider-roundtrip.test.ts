@@ -32,7 +32,29 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+import { NotFoundException } from '@aws-sdk/client-s3tables';
 import { S3TablesProvider } from '../../../src/provisioning/providers/s3-tables-provider.js';
+
+/** An unset configuration: each S3 Tables configuration Get answers NotFound. */
+function primeUnsetConfigs(count: number): void {
+  for (let i = 0; i < count; i++) {
+    mockSend.mockRejectedValueOnce(new NotFoundException({ message: 'nf', $metadata: {} }));
+  }
+}
+
+/** The TableBucket configuration keys a NotFound-only readback emits (go-to-k/cdkd#2762). */
+const BUCKET_CONFIG_DEFAULTS = {
+  EncryptionConfiguration: { SSEAlgorithm: 'AES256' },
+  StorageClassConfiguration: { StorageClass: 'STANDARD' },
+  MetricsConfiguration: { Status: 'Disabled' },
+  UnreferencedFileRemoval: { Status: 'Enabled' },
+};
+
+/** The Table maintenance keys a NotFound readback emits (go-to-k/cdkd#2762). */
+const TABLE_MAINTENANCE_DEFAULTS = {
+  Compaction: { Status: 'enabled' },
+  SnapshotManagement: { Status: 'enabled' },
+};
 
 const BUCKET_ARN = 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket';
 const NAMESPACE_PHYSICAL_ID = `${BUCKET_ARN}|my-namespace`;
@@ -60,9 +82,10 @@ describe('S3TablesProvider read-update round-trip', () => {
   //   - Class 2 (structurally-incomplete-when-empty): N/A — no nested
   //     placeholder objects (RedrivePolicy / VpcConfig style).
   //   - Truthy gate: N/A — update() does not gate on properties.
-  // The structural assertion is "round-trip never sends ANY SDK call"
-  // — any future regression that adds a real update() must explicitly
-  // confirm round-trip safety here.
+  // The structural assertion is "round-trip never sends ANY SDK call":
+  // update() writes a configuration property only when it CHANGED
+  // (go-to-k/cdkd#2762), so the readback's default placeholders round-trip
+  // to nothing.
 
   it('AWS::S3Tables::TableBucket — no-op update fires zero SDK calls on round-trip (same Tags)', async () => {
     // readCurrentState mock: GetTableBucket + ListTagsForResource (post-#609
@@ -72,6 +95,8 @@ describe('S3TablesProvider read-update round-trip', () => {
       arn: BUCKET_ARN,
     });
     mockSend.mockResolvedValueOnce({ tags: {} });
+    // The five configuration Gets (go-to-k/cdkd#2762), all unset.
+    primeUnsetConfigs(5);
 
     const observed = (await provider.readCurrentState(
       BUCKET_ARN,
@@ -82,11 +107,13 @@ describe('S3TablesProvider read-update round-trip', () => {
       TableBucketName: 'my-bucket',
       // #609 backfill: empty Tags array (no tags on the live resource).
       Tags: [],
+      // Each at its AWS default; an unset replication emits no key.
+      ...BUCKET_CONFIG_DEFAULTS,
     });
-    // GetTableBucket + ListTagsForResource. Both primed responses must be
-    // consumed HERE, or the leftover shifts every later test in this file
-    // (issue #1655).
-    expect(mockSend).toHaveBeenCalledTimes(2);
+    // GetTableBucket + ListTagsForResource + the five configuration Gets.
+    // Every primed response must be consumed HERE, or the leftover shifts
+    // every later test in this file (issue #1655).
+    expect(mockSend).toHaveBeenCalledTimes(7);
 
     vi.clearAllMocks();
 
@@ -150,6 +177,8 @@ describe('S3TablesProvider read-update round-trip', () => {
       tableARN: TABLE_ARN,
     });
     mockSend.mockResolvedValueOnce({ tags: {} });
+    // GetTableMaintenanceConfiguration (go-to-k/cdkd#2762), unset.
+    primeUnsetConfigs(1);
 
     const observed = (await provider.readCurrentState(
       TABLE_PHYSICAL_ID,
@@ -167,9 +196,11 @@ describe('S3TablesProvider read-update round-trip', () => {
       Format: 'ICEBERG',
       // #609 backfill: empty Tags array (no tags on the live resource).
       Tags: [],
+      ...TABLE_MAINTENANCE_DEFAULTS,
     });
-    // GetTable + ListTagsForResource — see the note on `tableARN` above.
-    expect(mockSend).toHaveBeenCalledTimes(2);
+    // GetTable + ListTagsForResource + GetTableMaintenanceConfiguration —
+    // see the note on `tableARN` above.
+    expect(mockSend).toHaveBeenCalledTimes(3);
 
     vi.clearAllMocks();
 
@@ -201,6 +232,7 @@ describe('S3TablesProvider read-update round-trip', () => {
     });
     // Second mock: ListTagsForResource (always called post-#609 readback).
     mockSend.mockResolvedValueOnce({ tags: {} });
+    primeUnsetConfigs(1);
 
     const observed = (await provider.readCurrentState(
       TABLE_PHYSICAL_ID,
@@ -218,10 +250,11 @@ describe('S3TablesProvider read-update round-trip', () => {
       TableName: 'my-table',
       // #609 backfill: empty Tags array.
       Tags: [],
+      ...TABLE_MAINTENANCE_DEFAULTS,
     });
     expect(observed).not.toHaveProperty('Format');
-    // GetTable + ListTagsForResource — see the note on `tableARN` above.
-    expect(mockSend).toHaveBeenCalledTimes(2);
+    // GetTable + ListTagsForResource + GetTableMaintenanceConfiguration.
+    expect(mockSend).toHaveBeenCalledTimes(3);
 
     vi.clearAllMocks();
 
