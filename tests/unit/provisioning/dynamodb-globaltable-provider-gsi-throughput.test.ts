@@ -18,10 +18,11 @@ import { CreateTableCommand, UpdateTableCommand } from '@aws-sdk/client-dynamodb
  * top-level GSI.
  */
 
-const { mockSend, mockAutoScalingSend, warnSpy } = vi.hoisted(() => ({
+const { mockSend, mockAutoScalingSend, warnSpy, debugSpy } = vi.hoisted(() => ({
   mockSend: vi.fn(),
   mockAutoScalingSend: vi.fn(),
   warnSpy: vi.fn(),
+  debugSpy: vi.fn(),
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -57,7 +58,7 @@ vi.mock('@aws-sdk/client-application-auto-scaling', async () => {
 
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
-    debug: vi.fn(),
+    debug: debugSpy,
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
@@ -733,6 +734,11 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
           },
         },
       ]);
+      // The dynamodb-globaltable integ (step 13h, #1585) reads this line to
+      // tell which index cdkd sent an Update for.
+      expect(debugSpy.mock.calls.map((c) => String(c[0]))).toContain(
+        'Sending UpdateTable GlobalSecondaryIndexUpdates Update for index gsi2 on od-table'
+      );
     });
 
     it('resets the DROPPED member while KEEPING the one still declared (partial removal)', async () => {
@@ -850,6 +856,16 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
           },
         },
       ]);
+      // The integ's index-send needle (step 13h, #1585), Create and Delete alike.
+      const debugLines = debugSpy.mock.calls.map((c) => String(c[0]));
+      expect(debugLines).toContain(
+        'Sending UpdateTable GlobalSecondaryIndexUpdates Create for index gsi1 on prov-table'
+      );
+      debugSpy.mockClear();
+      await provider.update('Prov', 'prov-table', RESOURCE_TYPE, previous, PROVISIONED_TABLE_PROPS);
+      expect(debugSpy.mock.calls.map((c) => String(c[0]))).toContain(
+        'Sending UpdateTable GlobalSecondaryIndexUpdates Delete for index gsi1 on prov-table'
+      );
     });
 
     it('carries WarmThroughput on a GSI Create action, matching what create() sends', async () => {
@@ -1027,6 +1043,10 @@ describe('DynamoDBGlobalTable GSI throughput translation (issue #1387)', () => {
           },
         },
       ]);
+      // The integ's index-send needle covers the flip call's index updates too.
+      expect(debugSpy.mock.calls.map((c) => String(c[0]))).toContain(
+        'Sending UpdateTable GlobalSecondaryIndexUpdates Update for index gsi1 on prov-table (with the billing mode change)'
+      );
       // ...and step 6 must not re-issue the same Update.
       const standaloneGsiCalls = mockSend.mock.calls
         .map((c) => c[0])

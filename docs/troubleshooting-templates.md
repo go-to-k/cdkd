@@ -20,7 +20,6 @@ On this page:
 - ["OpenTableFormatInput.IcebergInput.IcebergTableInput cannot be deployed" on a Glue table](#opentableformatinput-iceberginput-icebergtableinput-cannot-be-deployed-on-a-glue-table)
 - ["SelfManagedKafkaEventSourceConfig.ConsumptionMode cannot be sent by cdkd yet"](#selfmanagedkafkaeventsourceconfig-consumptionmode-cannot-be-sent-by-cdkd-yet)
 - ["Configuration.VpcEgressConfiguration.ElasticIpConfiguration cannot be sent by cdkd yet"](#configuration-vpcegressconfiguration-elasticipconfiguration-cannot-be-sent-by-cdkd-yet)
-- ["DisassociationProtectionEnabled cannot be sent by cdkd yet" on a global table replica](#disassociationprotectionenabled-cannot-be-sent-by-cdkd-yet-on-a-global-table-replica)
 
 ## An unsupported resource type
 
@@ -302,27 +301,6 @@ setting you asked for.
 Remove `ElasticIpConfiguration` from `Configuration.VpcEgressConfiguration`. A
 `cdkd rollback` or `cdkd drift --revert` only warns, because those commands
 re-apply a recorded configuration.
-
-## "DisassociationProtectionEnabled cannot be sent by cdkd yet" on a global table replica
-
-```text
-AWS::DynamoDB::GlobalTable MyTable: Replicas[1].DisassociationProtectionEnabled cannot be sent
-by cdkd yet — DynamoDB takes it only as a separate per-replica UpdateTable call, which cdkd does
-not make, so it would be dropped without an error. Remove DisassociationProtectionEnabled from
-the replica to deploy the table without it.
-```
-
-The CloudFormation schema declares `DisassociationProtectionEnabled` on each
-replica of a global table. DynamoDB accepts it only in an `UpdateTable` call
-that changes nothing else, made in the replica's own region. cdkd does not make
-that call yet. It refuses a create
-that declares the member, and an update that adds or changes it, rather than
-report a setting it never applied.
-
-Remove `DisassociationProtectionEnabled` from the replica. For a declared
-`true`, the message adds that the AWS SDK documents the protection as enabled
-by default. cdkd has not verified that, so check the replica after you deploy.
-A `cdkd rollback` or `cdkd drift --revert` only warns.
 
 ## Related
 
