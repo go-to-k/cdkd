@@ -373,6 +373,9 @@ describe('a secret-seeding integ fixture must sweep S3 object versions', () => {
       'docdb-neptune',
       'eventbridge-api-destination',
       'iam-access-key',
+      // Issue #5364: an AppSync API key, whose id is the credential and the
+      // physical id the import records; the fixture sweeps the prefix.
+      'import-migrate-appsync',
       'import-secret-observed',
       // Issue #1160: a generated DocumentDB master password, resolved through
       // a dynamic reference into the cluster; the fixture sweeps the prefix.

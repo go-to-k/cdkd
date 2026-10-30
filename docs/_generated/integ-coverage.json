@@ -548,10 +548,14 @@
     {
       "resourceType": "AWS::AppSync::ApiKey",
       "integs": [
-        "appsync"
+        "appsync",
+        "import-migrate-appsync"
       ],
       "signals": {
         "appsync": [
+          "l1"
+        ],
+        "import-migrate-appsync": [
           "l1"
         ]
       }
@@ -560,12 +564,16 @@
       "resourceType": "AWS::AppSync::DataSource",
       "integs": [
         "appsync",
+        "import-migrate-appsync",
         "secret-derived-immutable-names"
       ],
       "signals": {
         "appsync": [
           "l1",
           "literal"
+        ],
+        "import-migrate-appsync": [
+          "l1"
         ],
         "secret-derived-immutable-names": [
           "l1",
@@ -577,10 +585,14 @@
       "resourceType": "AWS::AppSync::GraphQLApi",
       "integs": [
         "appsync",
+        "import-migrate-appsync",
         "secret-derived-immutable-names"
       ],
       "signals": {
         "appsync": [
+          "l1"
+        ],
+        "import-migrate-appsync": [
           "l1"
         ],
         "secret-derived-immutable-names": [
@@ -592,10 +604,14 @@
     {
       "resourceType": "AWS::AppSync::GraphQLSchema",
       "integs": [
-        "appsync"
+        "appsync",
+        "import-migrate-appsync"
       ],
       "signals": {
         "appsync": [
+          "l1"
+        ],
+        "import-migrate-appsync": [
           "l1"
         ]
       }
@@ -603,10 +619,14 @@
     {
       "resourceType": "AWS::AppSync::Resolver",
       "integs": [
-        "appsync"
+        "appsync",
+        "import-migrate-appsync"
       ],
       "signals": {
         "appsync": [
+          "l1"
+        ],
+        "import-migrate-appsync": [
           "l1"
         ]
       }
