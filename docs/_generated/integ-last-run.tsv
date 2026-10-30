@@ -159,7 +159,7 @@ generated-name-security-group	2026-10-20T06:06:16Z	PASS	120	verify.sh	deploy+des
 getatt-fallback-guard	2026-10-18T04:25:39Z	PASS	172	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 getstackoutput-crossregion	2026-10-18T00:55:44Z	PASS	456	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
 globaltable-fix-forward-orphan	2026-10-24T22:46:19Z	PASS	165	verify.sh	PR #5268 at 947d06203 (rebased onto #5266); us-east-1; own state bucket; rc=0, destroy 0 errors, 0 orphans
-glue-securityconfig-replace	2026-10-17T17:11:05Z	PASS	65	verify.sh	rc ok, orph clean (#5032)
+glue-securityconfig-replace	2026-10-30T00:18:42Z	PASS	60	verify.sh	rc ok, orph clean
 glue-update-hardening	2026-10-26T08:45:57Z	PASS	281	verify.sh	rc ok, orph clean
 guardduty-detector-update	2026-10-15T04:32:09Z	PASS	210	verify.sh	PR #4935 (#4921) maintainer run on f7e8e94cd; own state bucket; all 6 phases incl. Phase 3b reverts; 3 destroys 0 err, no detector left, orph clean
 healthimaging-stateful-update-fallback	2026-10-12T05:13:18Z	PASS	320	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08: DescribeType-denied CC create/update path (fail-open narrowing); rc ok, destroy 0 errors, orph clean
@@ -339,7 +339,7 @@ rollback-same-id-recreate	2026-10-20T19:58:09Z	PASS	167	verify.sh	PR #5100 pre-m
 rollback-sqs-cooldown	2026-10-24T07:04:10Z	PASS	154	verify.sh	rc ok, orph clean
 route53	2026-10-28T09:53:09Z	PASS	562	verify.sh	rc ok, orph clean; #5465 AcceleratedRecovery ENABLED on deploy return (pre-fix probe RED)
 s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 PR #4449)
+s3-asset-deploy	2026-10-30T00:18:42Z	PASS	65	verify.sh	rc ok, orph clean
 s3-cloudfront	2026-10-27T11:54:53Z	PASS	276	verify.sh	rc ok, orph clean; #5393 Enabled arm: pre-fix MalformedXML at Distribution CREATE, post-fix green
 s3-directory-bucket	2026-10-29T19:12:05Z	PASS	255	verify.sh	rc ok, orph clean; probe red at sdk-route assert (probe tree: explicit BucketName + zone-id LocationName for the pre-fix CC route)
 s3-event-notification	2026-10-25T13:14:00Z	PASS	95	verify.sh	us-east-1; PR #5262 a4722aee6; rc ok, orph clean

@@ -280,8 +280,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
    * {@link handledProperties} purely to keep the log group off the Cloud
    * Control fallback path — but nothing ever wired it, so a template setting
    * it deployed "successfully" with the policy silently discarded (the
-   * #1392 silent-drop class the `handled-property-wiring` critic exists to
-   * catch).
+   * #1392 silent-drop class, which the sdk-wire harness now catches).
    *
    * It is not wired from here, by decision (issue #1412), not for lack of an
    * API. When #1412 was decided, the only CloudWatch Logs counterpart was the

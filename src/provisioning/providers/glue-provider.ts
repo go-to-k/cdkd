@@ -2483,14 +2483,10 @@ export class GlueProvider implements ResourceProvider {
     // database — no error, no warning, and nothing for `cdkd drift` to report
     // because `readDatabase` did not surface them either.
     //
-    // Every member is named INDIVIDUALLY rather than cast through verbatim:
-    // both spellings agree, so a cast would typecheck, but the write-evidence
-    // pass of the nested-key critic (`freshObjectMapper: true` on this type,
-    // added in the same change) can only see per-member writes — a verbatim
-    // forward would leave all 8 child paths reporting `no-write-evidence`,
-    // which is precisely the "membership does not guarantee delivery" class
-    // this drop belonged to. Naming them also makes the next member AWS adds
-    // fail the critic instead of silently vanishing.
+    // Every member is named INDIVIDUALLY rather than cast through verbatim
+    // (both spellings agree, so a cast would typecheck). The shape was chosen
+    // for the nested-key critic's write pass, which could only see per-member
+    // writes; that pass was retired by issue #3723.
     if (databaseInput['TargetDatabase'] !== undefined) {
       const target = pickBlockSource(
         databaseInput['TargetDatabase'],

@@ -236,8 +236,6 @@ jobs:
 
       - run: vp run audit:nested-key-coverage:check
 
-      - run: vp run audit:handled-property-wiring:check
-
       # Issue #2040 — every provider `catch` site (and every `wrapError` helper a
       # catch hands its binding to) must thread the caught AWS error as `cause`.
       # `isTransientServerError` / `isThrottlingError` / `isMarkedNonRetryable`

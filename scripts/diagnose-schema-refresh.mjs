@@ -232,8 +232,8 @@ export const UNREADABLE = Symbol('unreadable');
 /**
  * Every way `gen-nested-key-coverage.ts --check` announces a failure.
  *
- * Both spellings are load-bearing: `FAIL` prefixes its four blocking verdicts
- * (divergences, and the three stale-list refusals) and `failed` prefixes the
+ * Both spellings are load-bearing: `FAIL` prefixes its three blocking verdicts
+ * (divergences, and the two stale-list refusals) and `failed` prefixes the
  * crash path. A run that says either of these and yields no parsed finding must
  * never render as clean. Fenced against the producer by
  * `tests/unit/scripts/diagnose-schema-refresh.test.ts`, which greps both
@@ -402,8 +402,8 @@ export function comparePrimaryIdentifier(committedJson, refreshedJson) {
  * another file and nothing joins the two, so a wording change there would make
  * this parser return `[]` and the pull request would render "nothing needs a
  * decision" over a red check — the silent-empty class this whole job exists to
- * prevent, one level up. The checker also has three other FAIL modes (stale
- * allow-list / segmentRenames / terminalRenames) plus a crash path that
+ * prevent, one level up. The checker also has two other FAIL modes (stale
+ * allow-list / segmentRenames) plus a crash path that
  * legitimately print no finding line, and refusing on THOSE discarded the whole
  * diagnosis — losing the removal and addition sections too — while blaming a
  * format change that had not happened. So a failure with no parsed finding is
@@ -584,9 +584,9 @@ export function findDeclarationCandidates(
  * `restApiId` and carries no PascalCase spelling anywhere in `dist-types/models`,
  * so a case-sensitive scan reported `RestApiId` as "no longer modelled" — a
  * false claim whose lean is toward DELETING a live declaration, the one
- * direction this evidence must never push. The repo's own nested-key machinery
- * has a `case-divergence` bucket precisely because CFn and SDK capitalisation
- * routinely differ.
+ * direction this evidence must never push. CFn and SDK capitalisation
+ * routinely differ (the sdk-wire suites exist partly to catch a value sent in
+ * the CFn spelling the SDK does not model).
  *
  * **Every imported client is consulted, not the first.** 14 provider files
  * import two to four clients, and reading the first one is the "confident wrong
@@ -1381,8 +1381,8 @@ export function classifyRemovedProperty({
  * research IS largely mechanical and is now done above; what is left to a human
  * is confirmation plus the cases the evidence cannot separate — a rename looks
  * exactly like a removal at the name level (hence this repo's hand-maintained
- * rename maps), and `no-sdk-member` cannot tell "unsupported" from "the
- * installed SDK lags the service".
+ * rename maps), and `definition-member-missing` cannot tell "unsupported" from
+ * "the installed SDK lags the service".
  *
  * The reason to stop there is the asymmetry rather than the ambiguity: the
  * silencing option (`bogusTolerated`, `NESTED_KEY_ALLOW_LIST`) is always
@@ -1768,8 +1768,8 @@ export function renderDiagnosis(input) {
       '',
       'It failed, or dropped findings, without printing lines this parser could',
       'read. That is one of its non-divergence refusals (a stale',
-      '`NESTED_KEY_ALLOW_LIST`, `segmentRenames` or `terminalRenames` entry — each a',
-      'real decision, and each exactly what a schema refresh causes), a change to',
+      '`NESTED_KEY_ALLOW_LIST` or `segmentRenames` entry — each a real',
+      'decision, and each exactly what a schema refresh causes), a change to',
       'its output format, or a checker that never ran at all (a missing task, a',
       'crash, an OOM kill — the case its exit code is the only evidence of).',
       '**Read that job\u2019s log before merging.** Any nested-key divergences listed',
@@ -2064,11 +2064,16 @@ function removedProcedure(removed) {
  * @returns {string[]}
  */
 function divergenceProcedure(divergences, sdkLag, unresolved = []) {
-  const hasMissing = divergences.some((d) => d.bucket !== 'case-divergence');
   /** @type {string[]} */
   const lagLines = [];
   const lags = sdkLag ?? [];
-  if (hasMissing) {
+  // Per BUCKET, not per divergence count: only a `definition-member-missing`
+  // can be an SDK lag (a newer client may model the member), while an
+  // `array-vs-wrapper` is the SDK modelling a wrapper the provider must build,
+  // which no bump changes.
+  const missing = divergences.some((d) => d.bucket === 'definition-member-missing');
+  const wrappers = divergences.some((d) => d.bucket === 'array-vs-wrapper');
+  if (missing) {
     // One line per (type, client) rather than one line for the whole section.
     // A single line covering "the first divergent type" left every other
     // divergence's SDK-lag reading unstated while reading like a verdict, and
@@ -2119,13 +2124,11 @@ function divergenceProcedure(divergences, sdkLag, unresolved = []) {
   return [
     '<details><summary>How to settle these</summary>',
     '',
-    '1. A `case-divergence` means the SDK models the key under a different',
-    '   capitalisation — rename it in the provider. There is no judgement here.',
     ...lagLines,
-    ...(hasMissing
+    ...(missing
       ? [
-          '2. For `no-sdk-member` / `definition-member-missing`, rule out the',
-          '   installed SDK simply lagging the service.',
+          '1. For a `definition-member-missing`, rule out the installed SDK',
+          '   simply lagging the service.',
           '',
           '   For a `definition-member-missing` the job re-asks that finding’s own',
           '   interface-scoped question in the PUBLISHED client, so one reaching',
@@ -2174,25 +2177,26 @@ function divergenceProcedure(divergences, sdkLag, unresolved = []) {
                 ),
               ]
             : []),
-          '',
-          '   A `no-sdk-member` carries no interface to re-ask — it is a',
-          '   member-index question over the whole client — so check it by hand:',
-          '',
-          '   ```bash',
-          '   # Compare what is installed against what npm publishes today.',
-          '   node -p "require(\'@aws-sdk/client-<service>/package.json\').version"',
-          '   npm view @aws-sdk/client-<service> version',
-          '   ```',
-          '',
-          '   If a newer version exists, bump it and re-run',
-          '   `vp run audit:nested-key-coverage:check` before deciding — an',
-          '   allow-list entry added over an SDK lag hides a real dropped value.',
-          '3. If the SDK is current and still lacks the member, confirm the service',
+          '2. If the SDK is current and still lacks the member, confirm the service',
           '   API genuinely has no such field (its API reference), then add a',
           '   `NESTED_KEY_ALLOW_LIST` entry in',
-          '   `scripts/gen-nested-key-coverage.ts` with a one-line reason.',
+          '   `scripts/gen-nested-key-coverage.ts` with a one-line reason — an',
+          '   allow-list entry added over an SDK lag hides a real dropped value.',
         ]
       : []),
+    ...(wrappers
+      ? [
+          ...(missing ? [''] : []),
+          'For an `array-vs-wrapper`, the SDK models the member as a `{ Quantity, Items }`',
+          'wrapper, and no SDK bump changes that: wrap the bare CFn array in the',
+          'provider. Allow-list it only for a member the provider never sends, with a',
+          'one-line reason.',
+        ]
+      : []),
+    '',
+    'A nested member this refresh ADDS that the provider does not forward is not',
+    'reported here: the differential wire suites catch it, and their',
+    '`sdk-wire-coverage` section lists the paths (`vp test run sdk-wire-coverage`).',
     '',
     '</details>',
   ];
@@ -2258,7 +2262,7 @@ export function committedVersions(relPaths, cwd = REPO_ROOT) {
  * Extracted from `main()` because everything here was reachable only through
  * it, and `main()` has no unit coverage: the composition of
  * {@link clientsForType} with {@link sdkClientVersions}, the per-client memo,
- * the de-duplication, and the `case-divergence` skip were all unfalsifiable
+ * and the de-duplication were all unfalsifiable
  * while each PIECE was pinned. Two review rounds found real defects in exactly
  * this code (the first-import client, then an unrelated `client-sts` row), both
  * by running the script rather than by a test.
@@ -2278,9 +2282,9 @@ export function buildSdkLag(divergences, clientsFor, versionLag = sdkVersionLag)
   const byClient = new Map();
   const emitted = new Set();
   for (const d of divergences) {
-    // A case divergence needs no judgement — the SDK models the key under
-    // another capitalisation — so it never justifies a network call.
-    if (d.bucket === 'case-divergence') continue;
+    // Only a `definition-member-missing` can be an SDK lag; asking npm about an
+    // `array-vs-wrapper` would render a lag reading for a finding no bump fixes.
+    if (d.bucket !== 'definition-member-missing') continue;
     for (const { client, version, matched } of clientsForType(
       d.resourceType,
       clientsFor(d.resourceType)
@@ -2375,10 +2379,9 @@ export function pendingBumpGroups(pending) {
  * removes is the INVESTIGATION (four `npm view` / bump / re-check loops), not
  * the action: they collapse into one decision per lagging client.
  *
- * Scoped to `definition-member-missing` on purpose. A `no-sdk-member` finding
- * carries no detail — it is a member-index question over the whole client, not
- * an interface-scoped one — so there is no question to re-ask and it escalates
- * unchanged.
+ * Scoped to `definition-member-missing` on purpose. Any other bucket (today
+ * `array-vs-wrapper`, a shape question no SDK version changes) carries no
+ * interface-scoped question to re-ask, so it escalates unchanged.
  *
  * Rows are tried MATCHED-first, and a client whose published index does not
  * declare the interface at all is skipped rather than read as "the member is

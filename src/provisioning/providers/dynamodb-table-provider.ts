@@ -1415,12 +1415,7 @@ function declaresWarmThroughput(properties?: Record<string, unknown>): boolean {
   if (!desiredBagIsInformative(properties)) return true;
   // `properties !== undefined &&` rather than a non-null `!` (PR review round
   // 4). The two are identical at runtime — `desiredBagIsInformative` already
-  // proved it — but `scripts/gen-handled-property-wiring.ts` does not walk
-  // through a `NonNullExpression`, so the `!` spelling made this read
-  // INVISIBLE to that critic and silently dropped `WarmThroughput`'s
-  // `getDriftUnknownPaths` / `readCurrentState` evidence from the checked-in
-  // matrix. A property whose drift side no critic can see is a property whose
-  // next regression nothing reports.
+  // proved it.
   return properties !== undefined && wasSentWarmThroughput(properties['WarmThroughput']);
 }
 
@@ -8077,8 +8072,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // declaring nothing is never left in the comparison.
     if (desiredBagIsInformative(properties)) {
       for (const key of ['GlobalSecondaryIndexes', 'LocalSecondaryIndexes']) {
-        // Same reason as `declaresWarmThroughput` above: the `!` spelling is
-        // invisible to the handled-property-wiring critic.
+        // Same spelling as `declaresWarmThroughput` above: an explicit check
+        // rather than a non-null `!`.
         if (properties !== undefined && !declaresIndexList(properties[key])) paths.push(key);
       }
     }

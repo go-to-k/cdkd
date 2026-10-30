@@ -2623,8 +2623,8 @@ export class AppSyncProvider implements ResourceProvider {
     // The three inline-or-S3 pairs. CFn's behavior for the *S3Location
     // variants is to fetch the S3 object and pass its BODY as the inline
     // member — there is no SDK member for the URL itself. The bag reads stay
-    // DIRECT at this call site (the helper takes values, not keys) so the
-    // handled-property-wiring critic can see each `properties['X']` read.
+    // DIRECT at this call site (the helper takes values, not keys) so each
+    // `properties['X']` read stays visible (and greppable) here.
     const requestTemplate = await this.resolveInlineOrS3Template(
       properties['RequestMappingTemplate'],
       properties['RequestMappingTemplateS3Location'],

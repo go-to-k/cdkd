@@ -5,8 +5,8 @@
  * and requires the varied leaf to land in a member of its own name (compared
  * case- and punctuation-blind, wrappers such as `Items` / `member` / `Value`
  * skipped), with every CFn ancestor right above the level below it, or as the
- * map entry it keys. This stands in for `gen-nested-key-coverage.ts`'s write
- * pass: a provider writing a value into a SIBLING member changes the wire
+ * map entry it keys. This replaced `gen-nested-key-coverage.ts`'s retired
+ * write pass: a provider writing a value into a SIBLING member changes the wire
  * exactly as the right mapping does, so wire comparison alone cannot see it.
  *
  * Per type, keyed by bag path (member names joined by `.`, list indices

@@ -231,9 +231,7 @@ function canonicalSpend(spend: unknown): unknown {
  * another compare equal. Returns the input by identity when nothing applies.
  *
  * `side` is a drift comparison bag (the baseline or the readback), never a
- * desired bag bound for AWS, so it is not named like one: the handled-property
- * wiring walk (`scripts/gen-handled-property-wiring.ts`) seeds on desired-bag
- * names and would record the copy below as a whole-bag blind spot.
+ * desired bag bound for AWS, so it is not named like one.
  */
 function canonicalizeBudgetDriftBag(side: Record<string, unknown>): Record<string, unknown> {
   let out = side;
@@ -941,8 +939,8 @@ export class BudgetsBudgetProvider implements ResourceProvider {
   /**
    * Read the DESIRED lists of a create or update, refusing a malformed one
    * before any call (go-to-k/cdkd#3989). The caller passes its own literal read
-   * of each property so the handled-property wiring walk still sees which
-   * property feeds the calls. `physicalId` is set on the update path.
+   * of each property so the call site shows (and a grep finds) which property
+   * feeds the calls. `physicalId` is set on the update path.
    */
   private readDesiredLists(
     logicalId: string,

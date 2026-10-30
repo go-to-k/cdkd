@@ -96,7 +96,7 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
 ```
 
 - **A GENERATED file is REGENERATED, never hand-merged nor trusted when git
-  merged it CLEANLY** (`handled-property-wiring.json` came out inconsistent):
+  merged it CLEANLY** (`update-wrap-coverage.json` came out inconsistent):
   take upstream's copy whole — it is the generator's BASELINE — re-run the
   generator, commit ITS output before the push (#4460). Take it with
   `git show origin/main:<file> > <file>`: mid-rebase `checkout -- <file>` hits

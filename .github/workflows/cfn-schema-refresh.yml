@@ -77,8 +77,8 @@ name: CFn schema fixture refresh
 # `AWS::Route53::RecordSet.GeoProximityLocation` — the case that motivated this
 # — is settled that way. Everything else still lands RED: a removal whose SDK
 # member is gone (retiring it is a behaviour change), a possible rename, and new
-# nested keys on `AWS::Glue::Connection` taking
-# `audit:nested-key-coverage:check` from rc=0 to rc=1.
+# nested keys on `AWS::Glue::Connection` that no wire bag carries yet, which
+# redden the sdk-wire suites.
 on:
   schedule:
     # 04:37 UTC daily. Off the hour on purpose — the top of the hour is heavily
@@ -401,8 +401,8 @@ jobs:
               ecs-service-config-props
           # The differential wire suites (go-to-k/cdkd#3723) read each type's
           # nested and create-only paths from the fixtures, so a nested key AWS
-          # adds under a handled top-level reds them, which is what used to make
-          # the nested-key critic's key pass red. Their log is kept: the
+          # adds under a handled top-level reds them — the class the nested-key
+          # critic's retired key pass used to catch. Their log is kept: the
           # diagnosis lists the paths it names. `status` is read inside a
           # function `run_check` calls from an `if`, where `set -e` is off.
           sdk_wire_suites() {

@@ -128,8 +128,8 @@ describe('readConfigString', () => {
 
 describe('requireConfigString', () => {
   // The value-level form used at TOP-LEVEL call sites, so the
-  // `properties['X']` element-read stays visible to the
-  // handled-property-wiring critic (see the JSDoc for why that matters).
+  // `properties['X']` element-read stays visible at the
+  // call site (see the JSDoc for why that matters).
   const PATH = 'AWS::WAFv2::WebACL Scope';
 
   it('returns the fallback for an absent value', () => {
