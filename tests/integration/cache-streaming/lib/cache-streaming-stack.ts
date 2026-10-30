@@ -21,7 +21,8 @@ import * as sns from 'aws-cdk-lib/aws-sns';
  * - CfnOutputs for Redis endpoint, stream name, function name
  * - CDKD_TEST_REMOVAL=true: the cluster template LACKS SnapshotRetentionLimit,
  *   AutoMinorVersionUpgrade, NotificationTopicArn and LogDeliveryConfigurations
- *   (issue #5004 -- see the cluster comment below)
+ *   (issue #5004), and EngineVersion, CacheParameterGroupName and
+ *   SnapshotWindow (issue #5545) -- see the cluster comment below
  * - CDKD_TEST_NODETYPE=true: the cluster's CacheNodeType moves cache.t3.micro
  *   -> cache.t3.small, an in-place ModifyCacheCluster (issue #5438)
  * - A 2-node Memcached cluster on its own subnet group; CDKD_TEST_NODEREMOVE=true
@@ -80,7 +81,8 @@ export class CacheStreamingStack extends cdk.Stack {
     // CDKD_TEST_REMOVAL (issue #5004). The baseline template sets
     // SnapshotRetentionLimit / AutoMinorVersionUpgrade / NotificationTopicArn
     // to NON-default values plus a slow-log LogDeliveryConfigurations entry.
-    // The removal phase drops all four AND changes PreferredMaintenanceWindow,
+    // The removal phase drops all four (plus the three #5545 properties below)
+    // AND changes PreferredMaintenanceWindow,
     // a property ModifyCacheCluster sends, so the Modify call provably fires.
     // Real CloudFormation A/B: the first three are KEPT (live value stays,
     // topic status stays active); LogDeliveryConfigurations is RESET (delivery
@@ -97,6 +99,15 @@ export class CacheStreamingStack extends cdk.Stack {
     const nodeTypeChange = process.env.CDKD_TEST_NODETYPE === 'true';
     const topic = new sns.Topic(this, 'CacheNotifications');
     topic.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    // Issue #5545: a custom parameter group the baseline cluster names and the
+    // removal phase drops. Not mode-gated, so no later deploy deletes it while
+    // the cluster may still be moving off it.
+    const redisParams = new elasticache.CfnParameterGroup(this, 'RedisParams', {
+      cacheParameterGroupFamily: 'redis7',
+      description: 'cdkd cache-streaming custom parameter group (issue #5545)',
+      properties: { 'maxmemory-policy': 'allkeys-lru' },
+    });
+    redisParams.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     const slowLogGroup = new logs.LogGroup(this, 'RedisSlowLog', {
       retention: logs.RetentionDays.ONE_DAY,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -106,7 +117,6 @@ export class CacheStreamingStack extends cdk.Stack {
     const redis = new elasticache.CfnCacheCluster(this, 'RedisCluster', {
       cacheNodeType: nodeTypeChange ? 'cache.t3.small' : 'cache.t3.micro',
       engine: 'redis',
-      engineVersion: '7.1',
       numCacheNodes: 1,
       ...(sgRemove ? {} : { vpcSecurityGroupIds: [redisSg.securityGroupId] }),
       cacheSubnetGroupName: subnetGroup.ref,
@@ -117,10 +127,17 @@ export class CacheStreamingStack extends cdk.Stack {
         : removal
           ? 'wed:05:00-wed:06:00'
           : 'tue:05:00-tue:06:00',
-      snapshotWindow: '02:00-03:00',
+      // Issue #5545 (real CloudFormation A/B): CloudFormation KEEPS
+      // EngineVersion, CacheParameterGroupName and SnapshotWindow on removal
+      // (no move to default.redis7, no version change, the window stays), so
+      // the removal phase drops them too and verify.sh asserts the live values
+      // stay and cdkd's warning names them.
       ...(removal
         ? {}
         : {
+            engineVersion: '7.1',
+            cacheParameterGroupName: redisParams.ref,
+            snapshotWindow: '02:00-03:00',
             snapshotRetentionLimit: 3, // default 0
             autoMinorVersionUpgrade: false, // default true
             notificationTopicArn: topic.topicArn,
@@ -137,6 +154,10 @@ export class CacheStreamingStack extends cdk.Stack {
           }),
     });
     redis.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    // The cluster keeps using the group after the removal phase drops the Ref,
+    // so an explicit dependency keeps destroy deleting the cluster first (AWS
+    // refuses to delete a parameter group a cluster still uses).
+    redis.addDependency(redisParams);
 
     // CDKD_TEST_NODEREMOVE (issue #5441): a Memcached scale-in. AWS refuses a
     // lower NumCacheNodes without CacheNodeIdsToRemove; real CloudFormation

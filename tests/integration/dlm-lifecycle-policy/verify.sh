@@ -27,7 +27,10 @@
 #      CloudFormation A/B (issue #5004) showed CloudFormation KEEPS the live
 #      value, so cdkd sends no reset. Assert AWS still holds the baseline
 #      values (2 / 3 / true / true / 1 / true / 1) and the policy id is
-#      unchanged.
+#      unchanged. The same redeploy drops the standard policy's Description
+#      (issue #5546, kept by CloudFormation too): assert AWS keeps it and the
+#      deploy warns once per policy, naming each kept property, and never
+#      prints the shared "CloudFormation would reset it" line for either.
 #   3. Destroy + assert the policies are gone from AWS and the cdkd state
 #      file is removed.
 #
@@ -252,9 +255,64 @@ fi
 echo "    update reached AWS (DISABLED, env=changed, dropme removed)"
 
 # --- Phase 2b: shorthand-field removal (issue #1160 dlm batch) -----------
-echo "==> Phase 2b: re-deploy with CDKD_TEST_REMOVAL=true (all shorthand fields dropped)"
-CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+echo "==> Phase 2b: re-deploy with CDKD_TEST_REMOVAL=true (all shorthand fields + Description dropped)"
+P2B_LOG="$(mktemp)"
+if ! CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${P2B_LOG}" 2>&1; then
+  cat "${P2B_LOG}"
+  rm -f "${P2B_LOG}"
+  echo "FAIL: Phase 2b removal redeploy failed" >&2
+  exit 1
+fi
+P2B_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${P2B_LOG}")"
+rm -f "${P2B_LOG}"
+printf '%s\n' "${P2B_PLAIN}" | sed 's/^/  /'
+
+# issue #5546: one warning per policy naming what it kept, as CloudFormation
+# keeps it. The sentinel separates "no warning" from "the wording drifted".
+P2B_POLICY_NEEDLE="Policy (AWS::DLM::LifecyclePolicy): property Description was removed from the template and keeps its current AWS value, as CloudFormation leaves it;"
+P2B_DEFAULT_NEEDLE="DefaultPolicy (AWS::DLM::LifecyclePolicy): properties CreateInterval, RetainInterval, CopyTags, ExtendDeletion, CrossRegionCopyTargets, Exclusions were removed from the template and keep their current AWS value, as CloudFormation leaves them;"
+P2B_SENTINEL="UpdateLifecyclePolicy keeps a field it is not sent"
+for needle in "${P2B_POLICY_NEEDLE}" "${P2B_DEFAULT_NEEDLE}"; do
+  hits="$(grep -cF "${needle}" <<<"${P2B_PLAIN}" || true)"
+  if [ "${hits}" -gt 1 ]; then
+    echo "FAIL [phase 2b]: the kept-removal warning printed ${hits} times, expected once: '${needle}'" >&2
+    exit 1
+  fi
+  if [ "${hits}" -ne 1 ]; then
+    if grep -qF "${P2B_SENTINEL}" <<<"${P2B_PLAIN}"; then
+      echo "FAIL [phase 2b]: a kept-removal warning fired but no longer reads '${needle}' -- the wording drifted; update this fixture" >&2
+    else
+      echo "FAIL [phase 2b]: a removal was dropped silently (issue #5546): no warning reading '${needle}'" >&2
+    fi
+    exit 1
+  fi
+done
+# The shared caller's line claims a CloudFormation reset, which CloudFormation
+# does not do for these properties, so it must not name either policy. Two
+# separate greps, not `grep | grep -q`: under pipefail the early exit of
+# `grep -q` can fail the first grep with SIGPIPE and hide a hit.
+P2B_DLM_LINES="$(grep -F "(AWS::DLM::LifecyclePolicy)" <<<"${P2B_PLAIN}" || true)"
+if grep -qF "CloudFormation would reset it to its default" <<<"${P2B_DLM_LINES}"; then
+  echo "FAIL [phase 2b]: the shared removal warning claimed a CloudFormation reset for a DLM policy (issue #5546)" >&2
+  exit 1
+fi
+echo "    deploy warned about each policy's kept removals (issue #5546)"
+
+DESC_P2B="$(aws dlm get-lifecycle-policy --policy-id "${POLICY_ID_P2}" --region "${REGION}" \
+  --query 'Policy.Description' --output text)"
+if [ "${DESC_P2B}" != "cdkd integ policy updated" ]; then
+  echo "FAIL [phase 2b]: removing Description did not keep the live value (got '${DESC_P2B}', expected 'cdkd integ policy updated' -- CloudFormation keeps it, issue #5546)" >&2
+  exit 1
+fi
+# The companion change proves UpdateLifecyclePolicy really ran on this deploy.
+COUNT_P2B="$(aws dlm get-lifecycle-policy --policy-id "${POLICY_ID_P2}" --region "${REGION}" \
+  --query 'Policy.PolicyDetails.Schedules[0].RetainRule.Count' --output text)"
+if [ "${COUNT_P2B}" != "2" ]; then
+  echo "FAIL [phase 2b]: the companion RetainRule.Count change did not reach AWS (got '${COUNT_P2B}', expected 2), so the Description check proves nothing" >&2
+  exit 1
+fi
+echo "    removed Description kept at its live value beside an applied RetainRule change (CloudFormation parity, issue #5546)"
 
 DEFAULT_POLICY_ID_P2B="$(policy_id_from_state DefaultPolicyId)"
 if [ "${DEFAULT_POLICY_ID_P1}" != "${DEFAULT_POLICY_ID_P2B}" ]; then
@@ -291,4 +349,4 @@ echo "    execution role deleted"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — AWS::DLM::LifecyclePolicy SDK provider: deploy + in-place update (incl. tag removal) + shorthand-field removal retained (#5004) + destroy all passed"
+echo "[verify] PASS — AWS::DLM::LifecyclePolicy SDK provider: deploy + in-place update (incl. tag removal) + shorthand-field removal retained (#5004) + Description removal kept and warned (#5546) + destroy all passed"
