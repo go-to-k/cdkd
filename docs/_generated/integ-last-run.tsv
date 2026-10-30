@@ -350,7 +350,7 @@ s3-object-lock	2026-10-27T12:13:27Z	PASS	76	verify.sh	rc ok, orph clean; #5395 p
 s3-replication-and-filter	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-retry-own-bucket	2026-10-24T14:12:33Z	PASS	70	verify.sh	rc ok, orph clean
 s3-subconfig-removal	2026-10-11T09:33:22Z	PASS	105	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-s3-tables	2026-10-26T09:43:48Z	PASS	95	verify.sh	rc ok, orph clean; #5316 Ref(Table)=TableARN, Phase 1c rename + 1d heal green, pre-fix red at Phase 1 Ref assertion
+s3-tables	2026-10-30T10:23:06Z	PASS	152	verify.sh	rc 0, orph clean; PR #5568 409136ab2 S3Tables 10 props sdk route + drift positive control; probe red at TableBucket routing assertion (cc-api, expected sdk)
 s3-vectors	2026-10-26T02:21:56Z	PASS	55	verify.sh	rc ok, orph clean; #5309 pre-fix RED at nameless-create check
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 scheduler-custom-group	2026-10-24T03:41:38Z	PASS	105	verify.sh	rc ok, orph clean; #5228 not-gone mark

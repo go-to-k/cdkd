@@ -263,20 +263,6 @@
       "BucketNamespace",
       "MetadataConfiguration",
       "MetadataTableConfiguration"
-    ],
-    "AWS::S3Tables::Table": [
-      "Compaction",
-      "IcebergMetadata",
-      "SnapshotManagement",
-      "StorageClassConfiguration",
-      "WithoutMetadata"
-    ],
-    "AWS::S3Tables::TableBucket": [
-      "EncryptionConfiguration",
-      "MetricsConfiguration",
-      "ReplicationConfiguration",
-      "StorageClassConfiguration",
-      "UnreferencedFileRemoval"
     ]
   },
   "bogusTolerated": {

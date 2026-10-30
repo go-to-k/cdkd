@@ -145,6 +145,12 @@ export const CALL_ROOTS: Record<string, CallRoots> = {
       PutBucketMetricsConfigurationCommand: PER_ITEM('MetricsConfigurations', 'Id'),
     },
   },
+  'AWS::S3Tables::Table': {
+    repeated: {
+      PutTableMaintenanceConfigurationCommand:
+        'one call per maintenance kind (Compaction, SnapshotManagement), each naming it in `type` and carrying its settings under that kind\'s own member, which the containers name',
+    },
+  },
   'AWS::SNS::Topic': {
     repeated: {
       SetTopicAttributesCommand:
