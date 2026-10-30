@@ -581,7 +581,7 @@ export class EFSProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     log: MaskedLogSinks,
     /** The desired bag is a state replay or an AWS readback, not the template. */
-    desiredFromState: boolean
+    stateBorneDesired: boolean
   ): Promise<ResourceUpdateResult> {
     // Defensive guard: any non-mutable diff means the replacement-detection
     // layer should have routed this through DELETE+CREATE — if we reach
@@ -651,7 +651,7 @@ export class EFSProvider implements ResourceProvider {
       newProvisioned === undefined &&
       (oldProvisioned !== undefined || oldThroughputMode !== 'provisioned');
     if (throughputValueMissing) {
-      if (!desiredFromState) {
+      if (!stateBorneDesired) {
         throw new ProvisioningError(
           `Failed to update EFS FileSystem ${logicalId}: Throughput value must be specified for provisioned throughput mode. ` +
             `The template sets ThroughputMode: provisioned without ProvisionedThroughputInMibps, which CloudFormation rejects too. ` +
@@ -662,8 +662,9 @@ export class EFSProvider implements ResourceProvider {
         );
       }
       log.warn(
-        `EFS FileSystem ${logicalId}: the replayed properties set ThroughputMode: provisioned without ProvisionedThroughputInMibps, ` +
-          `which AWS rejects; leaving the file system's throughput as it is on AWS and applying the rest of the update.`
+        `EFS FileSystem ${logicalId}: the desired properties (from cdkd state or an AWS readback, not the template) set ThroughputMode: provisioned without ProvisionedThroughputInMibps, ` +
+          `which AWS rejects; leaving the file system's throughput as it is on AWS and applying the rest of the update. ` +
+          `Its throughput may now differ from the record: run cdkd drift to see it.`
       );
     }
     const effectiveThroughputMode =

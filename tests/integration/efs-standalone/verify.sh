@@ -307,9 +307,10 @@ if ! grep -qF 'Throughput value must be specified for provisioned throughput mod
 fi
 TP_P1A=$(aws efs describe-file-systems --file-system-id "${FS_ID}" --region "${REGION}" \
   --query 'FileSystems[0].[ThroughputMode,ProvisionedThroughputInMibps]' --output text)
-FS_REFUSED_P1A=$(fs_tag cdkd-refused)
-if [ "${TP_P1A}" != "$(printf 'provisioned\t1.0')" ] || [ "${FS_REFUSED_P1A}" != "<absent>" ]; then
-  echo "FAIL: the refused deploy changed the file system: throughput '${TP_P1A}', cdkd-refused '${FS_REFUSED_P1A}' (expected provisioned 1.0 / <absent>) (#5547)" >&2
+FS_REFUSED_P1A=$(fs_tag cdkd-refused); FS_RETAG_P1A=$(fs_tag cdkd-retag); FS_DROP_P1A=$(fs_tag cdkd-drop)
+if [ "${TP_P1A}" != "$(printf 'provisioned\t1.0')" ] || [ "${FS_REFUSED_P1A}" != "<absent>" ] \
+  || [ "${FS_RETAG_P1A}" != "v1" ] || [ "${FS_DROP_P1A}" != "x" ]; then
+  echo "FAIL: the refused deploy changed the file system: throughput '${TP_P1A}', cdkd-refused '${FS_REFUSED_P1A}', cdkd-retag '${FS_RETAG_P1A}', cdkd-drop '${FS_DROP_P1A}' (expected provisioned 1.0 / <absent> / v1 / x) (#5547)" >&2
   exit 1
 fi
 echo "    OK: dropping only ProvisionedThroughputInMibps was refused before any change (#5547)"

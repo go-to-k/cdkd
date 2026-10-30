@@ -204,7 +204,22 @@ describe('EFSProvider FileSystem throughput removal semantics (#1160)', () => {
         replayingState: true,
       });
       expect(updateFileSystemCall()).toBeUndefined();
-      expect(providerWarn).toHaveBeenCalled();
+      expect(providerWarn).toHaveBeenCalledWith(
+        expect.stringMatching(/leaving the file system's throughput as it is on AWS/)
+      );
+    });
+
+    it('a drift --revert readback warns rather than refusing', async () => {
+      const previous = { ThroughputMode: 'elastic' };
+      const next = { ThroughputMode: 'provisioned' };
+
+      await provider.update('L', 'fs-1', 'AWS::EFS::FileSystem', next, previous, {
+        desiredFromAwsReadback: true,
+      });
+      expect(updateFileSystemCall()).toBeUndefined();
+      expect(providerWarn).toHaveBeenCalledWith(
+        expect.stringMatching(/from cdkd state or an AWS readback, not the template/)
+      );
     });
 
     it('a value-less provisioned record on BOTH sides does not block an unrelated change', async () => {
