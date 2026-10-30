@@ -89,5 +89,34 @@
     "LogConfig": "object",
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "DeadLetterConfig": "object",
+    "DeadLetterConfig.Arn": "string",
+    "Description": "string",
+    "EventSourceName": "string",
+    "KmsKeyIdentifier": "string",
+    "LogConfig": "object",
+    "LogConfig.IncludeDetail": "string",
+    "LogConfig.Level": "string",
+    "Name": "string",
+    "Policy": "object|string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string"
+  },
+  "propertyEnums": {
+    "LogConfig.IncludeDetail": [
+      "FULL",
+      "NONE"
+    ],
+    "LogConfig.Level": [
+      "ERROR",
+      "INFO",
+      "OFF",
+      "TRACE"
+    ]
   }
 }

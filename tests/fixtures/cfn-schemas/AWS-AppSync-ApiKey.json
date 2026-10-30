@@ -40,5 +40,13 @@
     "#top": [
       "ApiId"
     ]
+  },
+  "propertyTypes": {
+    "ApiId": "string",
+    "ApiKey": "string",
+    "ApiKeyId": "string",
+    "Arn": "string",
+    "Description": "string",
+    "Expires": "number"
   }
 }

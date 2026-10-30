@@ -100,5 +100,24 @@
   "propertyShapes": {
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "AllowMajorVersionUpgrade": "boolean",
+    "AutoMinorVersionUpgrade": "boolean",
+    "AvailabilityZone": "string",
+    "DBClusterIdentifier": "string",
+    "DBInstanceClass": "string",
+    "DBInstanceIdentifier": "string",
+    "DBParameterGroupName": "string",
+    "DBSnapshotIdentifier": "string",
+    "DBSubnetGroupName": "string",
+    "Endpoint": "string",
+    "Port": "string",
+    "PreferredMaintenanceWindow": "string",
+    "PubliclyAccessible": "boolean",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string"
   }
 }

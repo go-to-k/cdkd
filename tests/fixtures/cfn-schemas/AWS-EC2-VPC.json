@@ -200,5 +200,101 @@
     "VpcEncryptionControl.ResourceExclusions.VirtualPrivateGateway": "object",
     "VpcEncryptionControl.ResourceExclusions.VpcLattice": "object",
     "VpcEncryptionControl.ResourceExclusions.VpcPeering": "object"
+  },
+  "propertyTypes": {
+    "CidrBlock": "string",
+    "CidrBlockAssociations": "array",
+    "CidrBlockAssociations[]": "string",
+    "DefaultNetworkAcl": "string",
+    "DefaultSecurityGroup": "string",
+    "EnableDnsHostnames": "boolean",
+    "EnableDnsSupport": "boolean",
+    "InstanceTenancy": "string",
+    "Ipv4IpamPoolId": "string",
+    "Ipv4NetmaskLength": "integer",
+    "Ipv6CidrBlocks": "array",
+    "Ipv6CidrBlocks[]": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "VpcEncryptionControl": "object",
+    "VpcEncryptionControl.EgressOnlyInternetGatewayExclusion": "string",
+    "VpcEncryptionControl.ElasticFileSystemExclusion": "string",
+    "VpcEncryptionControl.InternetGatewayExclusion": "string",
+    "VpcEncryptionControl.LambdaExclusion": "string",
+    "VpcEncryptionControl.Mode": "string",
+    "VpcEncryptionControl.NatGatewayExclusion": "string",
+    "VpcEncryptionControl.ResourceExclusions": "object",
+    "VpcEncryptionControl.ResourceExclusions.EgressOnlyInternetGateway": "object",
+    "VpcEncryptionControl.ResourceExclusions.EgressOnlyInternetGateway.State": "string",
+    "VpcEncryptionControl.ResourceExclusions.EgressOnlyInternetGateway.StateMessage": "string",
+    "VpcEncryptionControl.ResourceExclusions.ElasticFileSystem": "object",
+    "VpcEncryptionControl.ResourceExclusions.ElasticFileSystem.State": "string",
+    "VpcEncryptionControl.ResourceExclusions.ElasticFileSystem.StateMessage": "string",
+    "VpcEncryptionControl.ResourceExclusions.InternetGateway": "object",
+    "VpcEncryptionControl.ResourceExclusions.InternetGateway.State": "string",
+    "VpcEncryptionControl.ResourceExclusions.InternetGateway.StateMessage": "string",
+    "VpcEncryptionControl.ResourceExclusions.Lambda": "object",
+    "VpcEncryptionControl.ResourceExclusions.Lambda.State": "string",
+    "VpcEncryptionControl.ResourceExclusions.Lambda.StateMessage": "string",
+    "VpcEncryptionControl.ResourceExclusions.NatGateway": "object",
+    "VpcEncryptionControl.ResourceExclusions.NatGateway.State": "string",
+    "VpcEncryptionControl.ResourceExclusions.NatGateway.StateMessage": "string",
+    "VpcEncryptionControl.ResourceExclusions.VirtualPrivateGateway": "object",
+    "VpcEncryptionControl.ResourceExclusions.VirtualPrivateGateway.State": "string",
+    "VpcEncryptionControl.ResourceExclusions.VirtualPrivateGateway.StateMessage": "string",
+    "VpcEncryptionControl.ResourceExclusions.VpcLattice": "object",
+    "VpcEncryptionControl.ResourceExclusions.VpcLattice.State": "string",
+    "VpcEncryptionControl.ResourceExclusions.VpcLattice.StateMessage": "string",
+    "VpcEncryptionControl.ResourceExclusions.VpcPeering": "object",
+    "VpcEncryptionControl.ResourceExclusions.VpcPeering.State": "string",
+    "VpcEncryptionControl.ResourceExclusions.VpcPeering.StateMessage": "string",
+    "VpcEncryptionControl.State": "string",
+    "VpcEncryptionControl.StateMessage": "string",
+    "VpcEncryptionControl.VirtualPrivateGatewayExclusion": "string",
+    "VpcEncryptionControl.VpcEncryptionControlId": "string",
+    "VpcEncryptionControl.VpcId": "string",
+    "VpcEncryptionControl.VpcLatticeExclusion": "string",
+    "VpcEncryptionControl.VpcPeeringExclusion": "string",
+    "VpcId": "string"
+  },
+  "propertyEnums": {
+    "VpcEncryptionControl.EgressOnlyInternetGatewayExclusion": [
+      "disable",
+      "enable"
+    ],
+    "VpcEncryptionControl.ElasticFileSystemExclusion": [
+      "disable",
+      "enable"
+    ],
+    "VpcEncryptionControl.InternetGatewayExclusion": [
+      "disable",
+      "enable"
+    ],
+    "VpcEncryptionControl.LambdaExclusion": [
+      "disable",
+      "enable"
+    ],
+    "VpcEncryptionControl.Mode": [
+      "enforce",
+      "monitor"
+    ],
+    "VpcEncryptionControl.NatGatewayExclusion": [
+      "disable",
+      "enable"
+    ],
+    "VpcEncryptionControl.VirtualPrivateGatewayExclusion": [
+      "disable",
+      "enable"
+    ],
+    "VpcEncryptionControl.VpcLatticeExclusion": [
+      "disable",
+      "enable"
+    ],
+    "VpcEncryptionControl.VpcPeeringExclusion": [
+      "disable",
+      "enable"
+    ]
   }
 }

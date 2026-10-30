@@ -274,5 +274,91 @@
     "MetricsConfigurations[]": "object",
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "AvailabilityZoneName": "string",
+    "BucketEncryption": "object",
+    "BucketEncryption.ServerSideEncryptionConfiguration": "array",
+    "BucketEncryption.ServerSideEncryptionConfiguration[]": "object",
+    "BucketEncryption.ServerSideEncryptionConfiguration[].BucketKeyEnabled": "boolean",
+    "BucketEncryption.ServerSideEncryptionConfiguration[].ServerSideEncryptionByDefault": "object",
+    "BucketEncryption.ServerSideEncryptionConfiguration[].ServerSideEncryptionByDefault.KMSMasterKeyID": "string",
+    "BucketEncryption.ServerSideEncryptionConfiguration[].ServerSideEncryptionByDefault.SSEAlgorithm": "string",
+    "BucketName": "string",
+    "DataRedundancy": "string",
+    "InventoryConfigurations": "array",
+    "InventoryConfigurations[]": "object",
+    "InventoryConfigurations[].Destination": "object",
+    "InventoryConfigurations[].Destination.BucketAccountId": "string",
+    "InventoryConfigurations[].Destination.BucketArn": "string",
+    "InventoryConfigurations[].Destination.Format": "string",
+    "InventoryConfigurations[].Destination.Prefix": "string",
+    "InventoryConfigurations[].Enabled": "boolean",
+    "InventoryConfigurations[].Id": "string",
+    "InventoryConfigurations[].IncludedObjectVersions": "string",
+    "InventoryConfigurations[].OptionalFields": "array",
+    "InventoryConfigurations[].OptionalFields[]": "string",
+    "InventoryConfigurations[].Prefix": "string",
+    "InventoryConfigurations[].ScheduleFrequency": "string",
+    "LifecycleConfiguration": "object",
+    "LifecycleConfiguration.Rules": "array",
+    "LifecycleConfiguration.Rules[]": "object",
+    "LifecycleConfiguration.Rules[].AbortIncompleteMultipartUpload": "object",
+    "LifecycleConfiguration.Rules[].AbortIncompleteMultipartUpload.DaysAfterInitiation": "integer",
+    "LifecycleConfiguration.Rules[].ExpirationInDays": "integer",
+    "LifecycleConfiguration.Rules[].Id": "string",
+    "LifecycleConfiguration.Rules[].ObjectSizeGreaterThan": "string",
+    "LifecycleConfiguration.Rules[].ObjectSizeLessThan": "string",
+    "LifecycleConfiguration.Rules[].Prefix": "string",
+    "LifecycleConfiguration.Rules[].Status": "string",
+    "LocationName": "string",
+    "MetricsConfigurations": "array",
+    "MetricsConfigurations[]": "object",
+    "MetricsConfigurations[].AccessPointArn": "string",
+    "MetricsConfigurations[].Id": "string",
+    "MetricsConfigurations[].Prefix": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string"
+  },
+  "propertyEnums": {
+    "BucketEncryption.ServerSideEncryptionConfiguration[].ServerSideEncryptionByDefault.SSEAlgorithm": [
+      "AES256",
+      "aws:kms"
+    ],
+    "DataRedundancy": [
+      "SingleAvailabilityZone",
+      "SingleLocalZone"
+    ],
+    "InventoryConfigurations[].Destination.Format": [
+      "CSV",
+      "ORC",
+      "Parquet"
+    ],
+    "InventoryConfigurations[].IncludedObjectVersions": [
+      "All",
+      "Current"
+    ],
+    "InventoryConfigurations[].OptionalFields[]": [
+      "BucketKeyStatus",
+      "ChecksumAlgorithm",
+      "ETag",
+      "EncryptionStatus",
+      "IsMultipartUploaded",
+      "LastModifiedDate",
+      "LifecycleExpirationDate",
+      "Size",
+      "StorageClass"
+    ],
+    "InventoryConfigurations[].ScheduleFrequency": [
+      "Daily",
+      "Weekly"
+    ],
+    "LifecycleConfiguration.Rules[].Status": [
+      "Disabled",
+      "Enabled"
+    ]
   }
 }

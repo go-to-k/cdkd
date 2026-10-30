@@ -86,5 +86,34 @@
     "Tags[]": "object",
     "VpcSecurityGroupIds": "array",
     "VpcSubnetIds": "array"
+  },
+  "propertyTypes": {
+    "DBProxyEndpointArn": "string",
+    "DBProxyEndpointName": "string",
+    "DBProxyName": "string",
+    "Endpoint": "string",
+    "EndpointNetworkType": "string",
+    "IsDefault": "boolean",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "TargetRole": "string",
+    "VpcId": "string",
+    "VpcSecurityGroupIds": "array",
+    "VpcSecurityGroupIds[]": "string",
+    "VpcSubnetIds": "array",
+    "VpcSubnetIds[]": "string"
+  },
+  "propertyEnums": {
+    "EndpointNetworkType": [
+      "DUAL",
+      "IPV4",
+      "IPV6"
+    ],
+    "TargetRole": [
+      "READ_ONLY",
+      "READ_WRITE"
+    ]
   }
 }

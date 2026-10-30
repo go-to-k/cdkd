@@ -7,7 +7,7 @@
  * combinator whose arms disagree or leave a key open, and a map value.
  */
 import { describe, it, expect } from 'vite-plus/test';
-import { extractPropertyShapes } from '../../../scripts/refresh-cfn-schemas.mjs';
+import { extractPropertyShapes, extractPropertyTypes } from '../../../scripts/refresh-cfn-schemas.mjs';
 import { collectPropertyShapes } from '../../../scripts/gen-property-shape.ts';
 
 // Every case but the legacy one declares `handlers`: a handler-less schema yields nothing.
@@ -276,6 +276,69 @@ describe('extractPropertyShapes', () => {
     const depths = Object.keys(out).map((p) => p.split('.').length);
     expect(Math.max(...depths)).toBe(12);
     expect(depths).toHaveLength(12);
+  });
+});
+
+// The same tree, flattened to `type` names and enum values (issue #3723).
+const types = (schema: Record<string, unknown>) =>
+  extractPropertyTypes(JSON.stringify({ handlers: { create: {} }, ...schema }));
+
+describe('extractPropertyTypes', () => {
+  it('keys type names and enums by the shape paths, $refs resolved, a const as a one-value enum', () => {
+    expect(
+      types({
+        properties: {
+          Tags: { type: 'array', items: { $ref: '#/definitions/Tag' } },
+          Mode: { type: 'string', enum: ['b', 'a'] },
+          Size: { type: 'integer' },
+          Doc: { type: ['string', 'object'] },
+          Fixed: { const: 1 },
+          Open: {},
+        },
+        definitions: { Tag: { type: 'object', properties: { Key: { type: 'string' } } } },
+      })
+    ).toEqual({
+      propertyTypes: {
+        Doc: 'object|string',
+        Mode: 'string',
+        Size: 'integer',
+        Tags: 'array',
+        'Tags[]': 'object',
+        'Tags[].Key': 'string',
+      },
+      propertyEnums: { Fixed: [1], Mode: ['a', 'b'] },
+    });
+  });
+
+  it('unions oneOf arms, and leaves a path open when one arm does not constrain it', () => {
+    expect(
+      types({
+        properties: {
+          Both: { oneOf: [{ type: 'string', enum: ['x'] }, { type: 'integer', enum: [2] }] },
+          Loose: { oneOf: [{ type: 'string', enum: ['x'] }, {}] },
+        },
+      })
+    ).toEqual({
+      propertyTypes: { Both: 'integer|string' },
+      // Sorted by JSON text: `"x"` before `2`.
+      propertyEnums: { Both: ['x', 2] },
+    });
+  });
+
+  it('intersects allOf arms', () => {
+    expect(
+      types({
+        properties: {
+          X: { allOf: [{ enum: ['a', 'b'] }, { type: 'string', enum: ['b', 'c'] }] },
+        },
+      })
+    ).toEqual({ propertyTypes: { X: 'string' }, propertyEnums: { X: ['b'] } });
+  });
+
+  it('returns nothing for a legacy schema without handlers', () => {
+    expect(
+      extractPropertyTypes(JSON.stringify({ properties: { Name: { type: 'string' } } }))
+    ).toEqual({ propertyTypes: {}, propertyEnums: {} });
   });
 });
 

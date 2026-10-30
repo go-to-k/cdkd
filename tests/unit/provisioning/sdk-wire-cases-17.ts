@@ -223,10 +223,10 @@ const MOUNT_TARGET_CASE: TypeCase = {
 
 const ACCESS_POINT_BAG: Bag = {
   FileSystemId: FS_ID,
-  PosixUser: { Uid: 1000, Gid: 1000, SecondaryGids: [2000, 2001] },
+  PosixUser: { Uid: '1000', Gid: '1000', SecondaryGids: ['2000', '2001'] },
   RootDirectory: {
     Path: '/data',
-    CreationInfo: { OwnerUid: 1000, OwnerGid: 1000, Permissions: '0755' },
+    CreationInfo: { OwnerUid: '1000', OwnerGid: '1000', Permissions: '0755' },
   },
   AccessPointTags: fresh(TAGS),
 };
@@ -441,7 +441,7 @@ const armRecordSet = (_physicalId: string, bag: Bag): void => {
               Name: bag['Name'],
               Type: bag['Type'],
               ...(bag['SetIdentifier'] !== undefined ? { SetIdentifier: bag['SetIdentifier'] } : {}),
-              TTL: 60,
+              TTL: '60',
               ResourceRecords: [{ Value: 'live' }],
             },
           ]
@@ -483,7 +483,7 @@ const record = (extra: Bag): Bag => ({
 const RECORD_BAGS: { name: string; bag: Bag; throws?: Record<string, Throw> }[] = [
   {
     name: 'plain',
-    bag: record({ TTL: 300, ResourceRecords: ['192.0.2.1', '192.0.2.2'], Comment: 'plain record' }),
+    bag: record({ TTL: '300', ResourceRecords: ['192.0.2.1', '192.0.2.2'], Comment: 'plain record' }),
   },
   {
     name: 'plain, by HostedZoneName',
@@ -491,7 +491,7 @@ const RECORD_BAGS: { name: string; bag: Bag; throws?: Record<string, Throw> }[] 
       HostedZoneName: 'example.com.',
       Name: RECORD_NAME,
       Type: 'TXT',
-      TTL: 60,
+      TTL: '60',
       ResourceRecords: ['"v=spf1 -all"'],
     },
     throws: {
@@ -523,7 +523,7 @@ const RECORD_BAGS: { name: string; bag: Bag; throws?: Record<string, Throw> }[] 
   {
     name: 'weighted',
     bag: record({
-      TTL: 60,
+      TTL: '60',
       ResourceRecords: ['192.0.2.1'],
       SetIdentifier: 'blue',
       Weight: 10,
@@ -532,12 +532,12 @@ const RECORD_BAGS: { name: string; bag: Bag; throws?: Record<string, Throw> }[] 
   },
   {
     name: 'latency',
-    bag: record({ TTL: 60, ResourceRecords: ['192.0.2.1'], SetIdentifier: 'use1', Region: 'us-east-1' }),
+    bag: record({ TTL: '60', ResourceRecords: ['192.0.2.1'], SetIdentifier: 'use1', Region: 'us-east-1' }),
   },
   {
     name: 'failover',
     bag: record({
-      TTL: 60,
+      TTL: '60',
       ResourceRecords: ['192.0.2.1'],
       SetIdentifier: 'primary',
       Failover: 'PRIMARY',
@@ -547,7 +547,7 @@ const RECORD_BAGS: { name: string; bag: Bag; throws?: Record<string, Throw> }[] 
   {
     name: 'geolocation, country',
     bag: record({
-      TTL: 60,
+      TTL: '60',
       ResourceRecords: ['192.0.2.1'],
       SetIdentifier: 'us-wa',
       GeoLocation: { CountryCode: 'US', SubdivisionCode: 'WA' },
@@ -556,7 +556,7 @@ const RECORD_BAGS: { name: string; bag: Bag; throws?: Record<string, Throw> }[] 
   {
     name: 'geolocation, continent',
     bag: record({
-      TTL: 60,
+      TTL: '60',
       ResourceRecords: ['192.0.2.1'],
       SetIdentifier: 'eu',
       GeoLocation: { ContinentCode: 'EU' },
@@ -565,7 +565,7 @@ const RECORD_BAGS: { name: string; bag: Bag; throws?: Record<string, Throw> }[] 
   {
     name: 'geoproximity, AWS Region',
     bag: record({
-      TTL: 60,
+      TTL: '60',
       ResourceRecords: ['192.0.2.1'],
       SetIdentifier: 'gp-region',
       GeoProximityLocation: { AWSRegion: 'us-east-1', Bias: 10 },
@@ -574,7 +574,7 @@ const RECORD_BAGS: { name: string; bag: Bag; throws?: Record<string, Throw> }[] 
   {
     name: 'geoproximity, coordinates',
     bag: record({
-      TTL: 60,
+      TTL: '60',
       ResourceRecords: ['192.0.2.1'],
       SetIdentifier: 'gp-coords',
       GeoProximityLocation: { Coordinates: { Latitude: '49.22', Longitude: '-74.01' } },
@@ -583,7 +583,7 @@ const RECORD_BAGS: { name: string; bag: Bag; throws?: Record<string, Throw> }[] 
   {
     name: 'geoproximity, local zone group',
     bag: record({
-      TTL: 60,
+      TTL: '60',
       ResourceRecords: ['192.0.2.1'],
       SetIdentifier: 'gp-lz',
       GeoProximityLocation: { LocalZoneGroup: 'us-east-1-bos-1' },
@@ -592,7 +592,7 @@ const RECORD_BAGS: { name: string; bag: Bag; throws?: Record<string, Throw> }[] 
   {
     name: 'cidr',
     bag: record({
-      TTL: 60,
+      TTL: '60',
       ResourceRecords: ['192.0.2.1'],
       SetIdentifier: 'cidr-1',
       CidrRoutingConfig: { CollectionId: 'c0000000-0000-0000-0000-000000000000', LocationName: 'loc' },
@@ -601,7 +601,7 @@ const RECORD_BAGS: { name: string; bag: Bag; throws?: Record<string, Throw> }[] 
   {
     name: 'multivalue',
     bag: record({
-      TTL: 60,
+      TTL: '60',
       ResourceRecords: ['192.0.2.1'],
       SetIdentifier: 'mv-1',
       MultiValueAnswer: true,

@@ -72,5 +72,24 @@
     "#top": [
       "RouteTableId"
     ]
+  },
+  "propertyTypes": {
+    "CarrierGatewayId": "string",
+    "CidrBlock": "string",
+    "CoreNetworkArn": "string",
+    "DestinationCidrBlock": "string",
+    "DestinationIpv6CidrBlock": "string",
+    "DestinationPrefixListId": "string",
+    "EgressOnlyInternetGatewayId": "string",
+    "GatewayId": "string",
+    "InstanceId": "string",
+    "LocalGatewayId": "string",
+    "NatGatewayId": "string",
+    "NetworkInterfaceId": "string",
+    "OdbNetworkArn": "string",
+    "RouteTableId": "string",
+    "TransitGatewayId": "string",
+    "VpcEndpointId": "string",
+    "VpcPeeringConnectionId": "string"
   }
 }

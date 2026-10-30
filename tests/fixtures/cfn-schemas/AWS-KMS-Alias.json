@@ -28,5 +28,9 @@
       "AliasName",
       "TargetKeyId"
     ]
+  },
+  "propertyTypes": {
+    "AliasName": "string",
+    "TargetKeyId": "string"
   }
 }

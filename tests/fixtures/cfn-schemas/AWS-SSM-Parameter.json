@@ -49,5 +49,32 @@
   },
   "propertyShapes": {
     "Tags": "object"
+  },
+  "propertyTypes": {
+    "AllowedPattern": "string",
+    "Arn": "string",
+    "DataType": "string",
+    "Description": "string",
+    "Name": "string",
+    "Policies": "string",
+    "Tags": "object",
+    "Tier": "string",
+    "Type": "string",
+    "Value": "string"
+  },
+  "propertyEnums": {
+    "DataType": [
+      "aws:ec2:image",
+      "text"
+    ],
+    "Tier": [
+      "Advanced",
+      "Intelligent-Tiering",
+      "Standard"
+    ],
+    "Type": [
+      "String",
+      "StringList"
+    ]
   }
 }

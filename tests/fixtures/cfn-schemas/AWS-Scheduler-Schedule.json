@@ -313,5 +313,104 @@
     "Target.SageMakerPipelineParameters.PipelineParameterList": "array",
     "Target.SageMakerPipelineParameters.PipelineParameterList[]": "object",
     "Target.SqsParameters": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "Description": "string",
+    "EndDate": "string",
+    "FlexibleTimeWindow": "object",
+    "FlexibleTimeWindow.MaximumWindowInMinutes": "number",
+    "FlexibleTimeWindow.Mode": "string",
+    "GroupName": "string",
+    "KmsKeyArn": "string",
+    "Name": "string",
+    "ScheduleExpression": "string",
+    "ScheduleExpressionTimezone": "string",
+    "StartDate": "string",
+    "State": "string",
+    "Target": "object",
+    "Target.Arn": "string",
+    "Target.DeadLetterConfig": "object",
+    "Target.DeadLetterConfig.Arn": "string",
+    "Target.EcsParameters": "object",
+    "Target.EcsParameters.CapacityProviderStrategy": "array",
+    "Target.EcsParameters.CapacityProviderStrategy[]": "object",
+    "Target.EcsParameters.CapacityProviderStrategy[].Base": "number",
+    "Target.EcsParameters.CapacityProviderStrategy[].CapacityProvider": "string",
+    "Target.EcsParameters.CapacityProviderStrategy[].Weight": "number",
+    "Target.EcsParameters.EnableECSManagedTags": "boolean",
+    "Target.EcsParameters.EnableExecuteCommand": "boolean",
+    "Target.EcsParameters.Group": "string",
+    "Target.EcsParameters.LaunchType": "string",
+    "Target.EcsParameters.NetworkConfiguration": "object",
+    "Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration": "object",
+    "Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration.AssignPublicIp": "string",
+    "Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration.SecurityGroups": "array",
+    "Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration.SecurityGroups[]": "string",
+    "Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration.Subnets": "array",
+    "Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration.Subnets[]": "string",
+    "Target.EcsParameters.PlacementConstraints": "array",
+    "Target.EcsParameters.PlacementConstraints[]": "object",
+    "Target.EcsParameters.PlacementConstraints[].Expression": "string",
+    "Target.EcsParameters.PlacementConstraints[].Type": "string",
+    "Target.EcsParameters.PlacementStrategy": "array",
+    "Target.EcsParameters.PlacementStrategy[]": "object",
+    "Target.EcsParameters.PlacementStrategy[].Field": "string",
+    "Target.EcsParameters.PlacementStrategy[].Type": "string",
+    "Target.EcsParameters.PlatformVersion": "string",
+    "Target.EcsParameters.PropagateTags": "string",
+    "Target.EcsParameters.ReferenceId": "string",
+    "Target.EcsParameters.Tags": "array",
+    "Target.EcsParameters.Tags[]": "object",
+    "Target.EcsParameters.TaskCount": "number",
+    "Target.EcsParameters.TaskDefinitionArn": "string",
+    "Target.EventBridgeParameters": "object",
+    "Target.EventBridgeParameters.DetailType": "string",
+    "Target.EventBridgeParameters.Source": "string",
+    "Target.Input": "string",
+    "Target.KinesisParameters": "object",
+    "Target.KinesisParameters.PartitionKey": "string",
+    "Target.RetryPolicy": "object",
+    "Target.RetryPolicy.MaximumEventAgeInSeconds": "number",
+    "Target.RetryPolicy.MaximumRetryAttempts": "number",
+    "Target.RoleArn": "string",
+    "Target.SageMakerPipelineParameters": "object",
+    "Target.SageMakerPipelineParameters.PipelineParameterList": "array",
+    "Target.SageMakerPipelineParameters.PipelineParameterList[]": "object",
+    "Target.SageMakerPipelineParameters.PipelineParameterList[].Name": "string",
+    "Target.SageMakerPipelineParameters.PipelineParameterList[].Value": "string",
+    "Target.SqsParameters": "object",
+    "Target.SqsParameters.MessageGroupId": "string"
+  },
+  "propertyEnums": {
+    "FlexibleTimeWindow.Mode": [
+      "FLEXIBLE",
+      "OFF"
+    ],
+    "State": [
+      "DISABLED",
+      "ENABLED"
+    ],
+    "Target.EcsParameters.LaunchType": [
+      "EC2",
+      "EXTERNAL",
+      "FARGATE"
+    ],
+    "Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration.AssignPublicIp": [
+      "DISABLED",
+      "ENABLED"
+    ],
+    "Target.EcsParameters.PlacementConstraints[].Type": [
+      "distinctInstance",
+      "memberOf"
+    ],
+    "Target.EcsParameters.PlacementStrategy[].Type": [
+      "binpack",
+      "random",
+      "spread"
+    ],
+    "Target.EcsParameters.PropagateTags": [
+      "TASK_DEFINITION"
+    ]
   }
 }

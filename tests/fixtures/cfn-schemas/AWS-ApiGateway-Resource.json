@@ -44,5 +44,11 @@
       "PathPart",
       "RestApiId"
     ]
+  },
+  "propertyTypes": {
+    "ParentId": "string",
+    "PathPart": "string",
+    "ResourceId": "string",
+    "RestApiId": "string"
   }
 }

@@ -867,7 +867,7 @@ const SERVICE_DEPLOYMENT_CONFIGURATION = {
   ],
   LinearConfiguration: { StepPercent: 33, StepBakeTimeInMinutes: 9 },
   CanaryConfiguration: { CanaryPercent: 21, CanaryBakeTimeInMinutes: 9 },
-  EarlySuccessCriteria: { Enable: true, HealthyPercent: 90, SourceServiceRevisionCleanup: 'ENABLED' },
+  EarlySuccessCriteria: { Enable: true, HealthyPercent: 90, SourceServiceRevisionCleanup: 'BLOCKING' },
 };
 
 /**
@@ -946,7 +946,7 @@ const SERVICE_TOP = {
   Tags: fresh(ECS_TAG_LIST),
   AvailabilityZoneRebalancing: 'ENABLED',
   DeploymentController: { Type: 'ECS' },
-  Monitoring: { MetricConfigurations: [{ MetricNames: ['m1', 'm2'], ResolutionSeconds: 20 }] },
+  Monitoring: { MetricConfigurations: [{ MetricNames: ['CPUUtilization', 'MemoryUtilization'], ResolutionSeconds: 20 }] },
   Role: ECS_ROLE('ecs-service'),
   ServiceConnectConfiguration: {
     Enabled: true,
@@ -1442,7 +1442,7 @@ const LISTENER_CASE: TypeCase = {
               UserPoolDomain: 'domain',
               SessionCookieName: 'cookie',
               Scope: 'openid',
-              SessionTimeout: 3600,
+              SessionTimeout: '3600',
               OnUnauthenticatedRequest: 'authenticate',
               AuthenticationRequestExtraParams: { display: 'page', prompt: 'login' },
             },
@@ -1459,7 +1459,7 @@ const LISTENER_CASE: TypeCase = {
               ClientSecret: 'oidc-secret',
               SessionCookieName: 'oidc-cookie',
               Scope: 'openid email',
-              SessionTimeout: 7200,
+              SessionTimeout: '7200',
               OnUnauthenticatedRequest: 'deny',
               UseExistingClientSecret: false,
               AuthenticationRequestExtraParams: { a: '1', b: '2' },
@@ -2143,13 +2143,14 @@ function asgEntryThrows(key: string, member: string, count: number, says: RegExp
 const ASG_EVERY: Bag = {
   AutoScalingGroupName: ASG_NAME,
   LaunchTemplate: { LaunchTemplateId: 'lt-0123456789abcdef0', Version: '3' },
-  MinSize: 1,
-  MaxSize: 4,
-  DesiredCapacity: 2,
+  // String-typed in the schema and in CDK's CfnAutoScalingGroup, as a template spells them.
+  MinSize: '1',
+  MaxSize: '4',
+  DesiredCapacity: '2',
   VPCZoneIdentifier: ['subnet-1', 'subnet-2'],
   HealthCheckType: 'ELB',
   HealthCheckGracePeriod: 300,
-  Cooldown: 120,
+  Cooldown: '120',
   // Both `true`: an absent PropagateAtLaunch is sent as `false` on create
   // (asg-provider.ts:2220), so only `true` differs from its removal.
   Tags: [
@@ -2218,8 +2219,8 @@ const ASG_TRAFFIC_TYPE =
 
 const ASG_MIXED: Bag = {
   AutoScalingGroupName: ASG_NAME,
-  MinSize: 1,
-  MaxSize: 4,
+  MinSize: '1',
+  MaxSize: '4',
   MixedInstancesPolicy: {
     InstancesDistribution: {
       OnDemandAllocationStrategy: 'prioritized',
@@ -2229,8 +2230,8 @@ const ASG_MIXED: Bag = {
       SpotInstancePools: 2,
       SpotMaxPrice: '0.5',
       DistributionSegments: [
-        { TargetCapacityTypes: ['on-demand', 'spot'] },
-        { TargetCapacityTypes: ['spot', 'on-demand'] },
+        { TargetCapacityTypes: ['on-demand', 'capacity-block'] },
+        { TargetCapacityTypes: ['capacity-block', 'on-demand'] },
       ],
     },
     LaunchTemplate: {
@@ -2285,8 +2286,8 @@ const ASG_MIXED: Bag = {
 // The policy's own launch template named rather than addressed by id.
 const ASG_MIXED_BY_NAME: Bag = {
   AutoScalingGroupName: ASG_NAME,
-  MinSize: 1,
-  MaxSize: 2,
+  MinSize: '1',
+  MaxSize: '2',
   MixedInstancesPolicy: {
     LaunchTemplate: {
       LaunchTemplateSpecification: { LaunchTemplateName: 'lt-by-name', Version: '$Default' },
@@ -2296,8 +2297,8 @@ const ASG_MIXED_BY_NAME: Bag = {
 
 const ASG_BY_NAME: Bag = {
   AutoScalingGroupName: ASG_NAME,
-  MinSize: 1,
-  MaxSize: 2,
+  MinSize: '1',
+  MaxSize: '2',
   LaunchTemplate: { LaunchTemplateName: 'lt-by-name', Version: '$Latest' },
   AvailabilityZones: ['us-east-1a', 'us-east-1b'],
   DefaultCooldown: 60,

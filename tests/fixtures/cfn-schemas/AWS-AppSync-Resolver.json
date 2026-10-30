@@ -159,5 +159,42 @@
     "Runtime": "object",
     "SyncConfig": "object",
     "SyncConfig.LambdaConflictHandlerConfig": "object"
+  },
+  "propertyTypes": {
+    "ApiId": "string",
+    "CachingConfig": "object",
+    "CachingConfig.CachingKeys": "array",
+    "CachingConfig.CachingKeys[]": "string",
+    "CachingConfig.Ttl": "number",
+    "Code": "string",
+    "CodeS3Location": "string",
+    "DataSourceName": "string",
+    "FieldName": "string",
+    "Kind": "string",
+    "MaxBatchSize": "integer",
+    "MetricsConfig": "string",
+    "PipelineConfig": "object",
+    "PipelineConfig.Functions": "array",
+    "PipelineConfig.Functions[]": "string",
+    "RequestMappingTemplate": "string",
+    "RequestMappingTemplateS3Location": "string",
+    "ResolverArn": "string",
+    "ResponseMappingTemplate": "string",
+    "ResponseMappingTemplateS3Location": "string",
+    "Runtime": "object",
+    "Runtime.Name": "string",
+    "Runtime.RuntimeVersion": "string",
+    "SyncConfig": "object",
+    "SyncConfig.ConflictDetection": "string",
+    "SyncConfig.ConflictHandler": "string",
+    "SyncConfig.LambdaConflictHandlerConfig": "object",
+    "SyncConfig.LambdaConflictHandlerConfig.LambdaConflictHandlerArn": "string",
+    "TypeName": "string"
+  },
+  "propertyEnums": {
+    "MetricsConfig": [
+      "DISABLED",
+      "ENABLED"
+    ]
   }
 }

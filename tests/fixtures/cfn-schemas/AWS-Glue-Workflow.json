@@ -32,5 +32,12 @@
   "propertyShapes": {
     "DefaultRunProperties": "object",
     "Tags": "object"
+  },
+  "propertyTypes": {
+    "DefaultRunProperties": "object",
+    "Description": "string",
+    "MaxConcurrentRuns": "integer",
+    "Name": "string",
+    "Tags": "object"
   }
 }

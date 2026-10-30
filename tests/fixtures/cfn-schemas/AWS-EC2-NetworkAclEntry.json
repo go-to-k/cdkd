@@ -88,5 +88,21 @@
   "propertyShapes": {
     "Icmp": "object",
     "PortRange": "object"
+  },
+  "propertyTypes": {
+    "CidrBlock": "string",
+    "Egress": "boolean",
+    "Icmp": "object",
+    "Icmp.Code": "integer",
+    "Icmp.Type": "integer",
+    "Id": "string",
+    "Ipv6CidrBlock": "string",
+    "NetworkAclId": "string",
+    "PortRange": "object",
+    "PortRange.From": "integer",
+    "PortRange.To": "integer",
+    "Protocol": "integer",
+    "RuleAction": "string",
+    "RuleNumber": "integer"
   }
 }

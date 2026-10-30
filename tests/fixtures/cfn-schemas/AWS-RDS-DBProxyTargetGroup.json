@@ -97,5 +97,30 @@
     "DBInstanceIdentifiers": "array",
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "ConnectionPoolConfigurationInfo": "object",
+    "ConnectionPoolConfigurationInfo.ConnectionBorrowTimeout": "integer",
+    "ConnectionPoolConfigurationInfo.InitQuery": "string",
+    "ConnectionPoolConfigurationInfo.MaxConnectionsPercent": "integer",
+    "ConnectionPoolConfigurationInfo.MaxIdleConnectionsPercent": "integer",
+    "ConnectionPoolConfigurationInfo.SessionPinningFilters": "array",
+    "ConnectionPoolConfigurationInfo.SessionPinningFilters[]": "string",
+    "DBClusterIdentifiers": "array",
+    "DBClusterIdentifiers[]": "string",
+    "DBInstanceIdentifiers": "array",
+    "DBInstanceIdentifiers[]": "string",
+    "DBProxyName": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "TargetGroupArn": "string",
+    "TargetGroupName": "string"
+  },
+  "propertyEnums": {
+    "TargetGroupName": [
+      "default"
+    ]
   }
 }

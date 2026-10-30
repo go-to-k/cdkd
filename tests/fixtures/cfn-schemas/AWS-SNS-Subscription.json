@@ -58,5 +58,19 @@
       "Protocol",
       "TopicArn"
     ]
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "DeliveryPolicy": "object|string",
+    "Endpoint": "string",
+    "FilterPolicy": "object|string",
+    "FilterPolicyScope": "string",
+    "Protocol": "string",
+    "RawMessageDelivery": "boolean",
+    "RedrivePolicy": "object|string",
+    "Region": "string",
+    "ReplayPolicy": "object|string",
+    "SubscriptionRoleArn": "string",
+    "TopicArn": "string"
   }
 }

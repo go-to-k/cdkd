@@ -96,5 +96,26 @@
     "CompatibleArchitectures": "array",
     "CompatibleRuntimes": "array",
     "Content": "object"
+  },
+  "propertyTypes": {
+    "CompatibleArchitectures": "array",
+    "CompatibleArchitectures[]": "string",
+    "CompatibleRuntimes": "array",
+    "CompatibleRuntimes[]": "string",
+    "Content": "object",
+    "Content.S3Bucket": "string",
+    "Content.S3Key": "string",
+    "Content.S3ObjectStorageMode": "string",
+    "Content.S3ObjectVersion": "string",
+    "Description": "string",
+    "LayerName": "string",
+    "LayerVersionArn": "string",
+    "LicenseInfo": "string"
+  },
+  "propertyEnums": {
+    "Content.S3ObjectStorageMode": [
+      "COPY",
+      "REFERENCE"
+    ]
   }
 }

@@ -167,5 +167,49 @@
     "Tags": "array",
     "Tags[]": "object",
     "UnreferencedFileRemoval": "object"
+  },
+  "propertyTypes": {
+    "EncryptionConfiguration": "object",
+    "EncryptionConfiguration.KMSKeyArn": "string",
+    "EncryptionConfiguration.SSEAlgorithm": "string",
+    "MetricsConfiguration": "object",
+    "MetricsConfiguration.Status": "string",
+    "ReplicationConfiguration": "object",
+    "ReplicationConfiguration.Role": "string",
+    "ReplicationConfiguration.Rules": "array",
+    "ReplicationConfiguration.Rules[]": "object",
+    "ReplicationConfiguration.Rules[].Destinations": "array",
+    "ReplicationConfiguration.Rules[].Destinations[]": "object",
+    "ReplicationConfiguration.Rules[].Destinations[].DestinationTableBucketARN": "string",
+    "StorageClassConfiguration": "object",
+    "StorageClassConfiguration.StorageClass": "string",
+    "TableBucketARN": "string",
+    "TableBucketName": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "UnreferencedFileRemoval": "object",
+    "UnreferencedFileRemoval.NoncurrentDays": "integer",
+    "UnreferencedFileRemoval.Status": "string",
+    "UnreferencedFileRemoval.UnreferencedDays": "integer"
+  },
+  "propertyEnums": {
+    "EncryptionConfiguration.SSEAlgorithm": [
+      "AES256",
+      "aws:kms"
+    ],
+    "MetricsConfiguration.Status": [
+      "Disabled",
+      "Enabled"
+    ],
+    "StorageClassConfiguration.StorageClass": [
+      "INTELLIGENT_TIERING",
+      "STANDARD"
+    ],
+    "UnreferencedFileRemoval.Status": [
+      "Disabled",
+      "Enabled"
+    ]
   }
 }

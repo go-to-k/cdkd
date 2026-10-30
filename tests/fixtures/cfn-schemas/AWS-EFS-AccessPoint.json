@@ -170,5 +170,26 @@
     "PosixUser.SecondaryGids": "array",
     "RootDirectory": "object",
     "RootDirectory.CreationInfo": "object"
+  },
+  "propertyTypes": {
+    "AccessPointId": "string",
+    "AccessPointTags": "array",
+    "AccessPointTags[]": "object",
+    "AccessPointTags[].Key": "string",
+    "AccessPointTags[].Value": "string",
+    "Arn": "string",
+    "ClientToken": "string",
+    "FileSystemId": "string",
+    "PosixUser": "object",
+    "PosixUser.Gid": "string",
+    "PosixUser.SecondaryGids": "array",
+    "PosixUser.SecondaryGids[]": "string",
+    "PosixUser.Uid": "string",
+    "RootDirectory": "object",
+    "RootDirectory.CreationInfo": "object",
+    "RootDirectory.CreationInfo.OwnerGid": "string",
+    "RootDirectory.CreationInfo.OwnerUid": "string",
+    "RootDirectory.CreationInfo.Permissions": "string",
+    "RootDirectory.Path": "string"
   }
 }

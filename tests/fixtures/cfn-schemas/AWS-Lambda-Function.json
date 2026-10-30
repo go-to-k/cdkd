@@ -425,5 +425,154 @@
     "VpcConfig": "object",
     "VpcConfig.SecurityGroupIds": "array",
     "VpcConfig.SubnetIds": "array"
+  },
+  "propertyTypes": {
+    "Architectures": "array",
+    "Architectures[]": "string",
+    "Arn": "string",
+    "CapacityProviderConfig": "object",
+    "CapacityProviderConfig.LambdaManagedInstancesCapacityProviderConfig": "object",
+    "CapacityProviderConfig.LambdaManagedInstancesCapacityProviderConfig.CapacityProviderArn": "string",
+    "CapacityProviderConfig.LambdaManagedInstancesCapacityProviderConfig.ExecutionEnvironmentMemoryGiBPerVCpu": "number",
+    "CapacityProviderConfig.LambdaManagedInstancesCapacityProviderConfig.PerExecutionEnvironmentMaxConcurrency": "integer",
+    "Code": "object",
+    "Code.ImageUri": "string",
+    "Code.S3Bucket": "string",
+    "Code.S3Key": "string",
+    "Code.S3ObjectStorageMode": "string",
+    "Code.S3ObjectVersion": "string",
+    "Code.SourceKMSKeyArn": "string",
+    "Code.ZipFile": "string",
+    "CodeSigningConfigArn": "string",
+    "DeadLetterConfig": "object",
+    "DeadLetterConfig.TargetArn": "string",
+    "Description": "string",
+    "DurableConfig": "object",
+    "DurableConfig.ExecutionTimeout": "integer",
+    "DurableConfig.KMSKeyArn": "string",
+    "DurableConfig.RetentionPeriodInDays": "integer",
+    "Environment": "object",
+    "Environment.Variables": "object",
+    "EphemeralStorage": "object",
+    "EphemeralStorage.Size": "integer",
+    "FileSystemConfigs": "array",
+    "FileSystemConfigs[]": "object",
+    "FileSystemConfigs[].Arn": "string",
+    "FileSystemConfigs[].LocalMountPath": "string",
+    "FileSystemConfigs[].S3FilesConfig": "object",
+    "FileSystemConfigs[].S3FilesConfig.DirectS3Read": "string",
+    "FunctionName": "string",
+    "FunctionScalingConfig": "object",
+    "FunctionScalingConfig.MaxExecutionEnvironments": "integer",
+    "FunctionScalingConfig.MinExecutionEnvironments": "integer",
+    "Handler": "string",
+    "ImageConfig": "object",
+    "ImageConfig.Command": "array",
+    "ImageConfig.Command[]": "string",
+    "ImageConfig.EntryPoint": "array",
+    "ImageConfig.EntryPoint[]": "string",
+    "ImageConfig.WorkingDirectory": "string",
+    "KmsKeyArn": "string",
+    "Layers": "array",
+    "Layers[]": "string",
+    "LoggingConfig": "object",
+    "LoggingConfig.ApplicationLogLevel": "string",
+    "LoggingConfig.LogFormat": "string",
+    "LoggingConfig.LogGroup": "string",
+    "LoggingConfig.SystemLogLevel": "string",
+    "MemorySize": "integer",
+    "PackageType": "string",
+    "PublishToLatestPublished": "boolean",
+    "RecursiveLoop": "string",
+    "ReservedConcurrentExecutions": "integer",
+    "Role": "string",
+    "Runtime": "string",
+    "RuntimeManagementConfig": "object",
+    "RuntimeManagementConfig.RuntimeVersionArn": "string",
+    "RuntimeManagementConfig.UpdateRuntimeOn": "string",
+    "SnapStart": "object",
+    "SnapStart.ApplyOn": "string",
+    "SnapStartResponse": "object",
+    "SnapStartResponse.ApplyOn": "string",
+    "SnapStartResponse.OptimizationStatus": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "TenancyConfig": "object",
+    "TenancyConfig.TenantIsolationMode": "string",
+    "Timeout": "integer",
+    "TracingConfig": "object",
+    "TracingConfig.Mode": "string",
+    "VpcConfig": "object",
+    "VpcConfig.Ipv6AllowedForDualStack": "boolean",
+    "VpcConfig.SecurityGroupIds": "array",
+    "VpcConfig.SecurityGroupIds[]": "string",
+    "VpcConfig.SubnetIds": "array",
+    "VpcConfig.SubnetIds[]": "string"
+  },
+  "propertyEnums": {
+    "Architectures[]": [
+      "arm64",
+      "x86_64"
+    ],
+    "Code.S3ObjectStorageMode": [
+      "COPY",
+      "REFERENCE"
+    ],
+    "FileSystemConfigs[].S3FilesConfig.DirectS3Read": [
+      "AUTO",
+      "DISABLED",
+      "ENABLED"
+    ],
+    "LoggingConfig.ApplicationLogLevel": [
+      "DEBUG",
+      "ERROR",
+      "FATAL",
+      "INFO",
+      "TRACE",
+      "WARN"
+    ],
+    "LoggingConfig.LogFormat": [
+      "JSON",
+      "Text"
+    ],
+    "LoggingConfig.SystemLogLevel": [
+      "DEBUG",
+      "INFO",
+      "WARN"
+    ],
+    "PackageType": [
+      "Image",
+      "Zip"
+    ],
+    "RecursiveLoop": [
+      "Allow",
+      "Terminate"
+    ],
+    "RuntimeManagementConfig.UpdateRuntimeOn": [
+      "Auto",
+      "FunctionUpdate",
+      "Manual"
+    ],
+    "SnapStart.ApplyOn": [
+      "None",
+      "PublishedVersions"
+    ],
+    "SnapStartResponse.ApplyOn": [
+      "None",
+      "PublishedVersions"
+    ],
+    "SnapStartResponse.OptimizationStatus": [
+      "Off",
+      "On"
+    ],
+    "TenancyConfig.TenantIsolationMode": [
+      "PER_TENANT"
+    ],
+    "TracingConfig.Mode": [
+      "Active",
+      "PassThrough"
+    ]
   }
 }

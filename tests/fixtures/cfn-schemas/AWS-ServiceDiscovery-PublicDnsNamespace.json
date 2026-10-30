@@ -93,5 +93,20 @@
     "Properties.DnsProperties.SOA": "object",
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "Description": "string",
+    "HostedZoneId": "string",
+    "Id": "string",
+    "Name": "string",
+    "Properties": "object",
+    "Properties.DnsProperties": "object",
+    "Properties.DnsProperties.SOA": "object",
+    "Properties.DnsProperties.SOA.TTL": "number",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string"
   }
 }

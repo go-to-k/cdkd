@@ -113,5 +113,35 @@
     "SubjectAlternativeNames": "array",
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "CertificateArn": "string",
+    "CertificateAuthorityArn": "string",
+    "CertificateExport": "string",
+    "CertificateTransparencyLoggingPreference": "string",
+    "DomainName": "string",
+    "DomainValidationOptions": "array",
+    "DomainValidationOptions[]": "object",
+    "DomainValidationOptions[].DomainName": "string",
+    "DomainValidationOptions[].HostedZoneId": "string",
+    "DomainValidationOptions[].ValidationDomain": "string",
+    "KeyAlgorithm": "string",
+    "SubjectAlternativeNames": "array",
+    "SubjectAlternativeNames[]": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "ValidationMethod": "string"
+  },
+  "propertyEnums": {
+    "CertificateExport": [
+      "DISABLED",
+      "ENABLED"
+    ],
+    "CertificateTransparencyLoggingPreference": [
+      "DISABLED",
+      "ENABLED"
+    ]
   }
 }

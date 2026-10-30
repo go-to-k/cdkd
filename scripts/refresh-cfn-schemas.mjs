@@ -700,6 +700,10 @@ export function extractNestedRequired(schemaJson) {
  * @typedef {object} ShapeNode
  * @property {Set<string> | undefined} types JSON kinds the node admits
  *   (`array` / `object` / `scalar`); `undefined` admits anything.
+ * @property {Set<string> | undefined} raw the JSON Schema `type` names the
+ *   node admits (`string` / `integer` / ...); `undefined` admits anything.
+ * @property {Map<string, unknown> | undefined} enum the values the node admits,
+ *   keyed by their JSON text; `undefined` admits any value of its type.
  * @property {Map<string, ShapeNode>} props
  * @property {boolean} closed every key outside `props` is refused
  * @property {ShapeNode | undefined} items
@@ -707,8 +711,53 @@ export function extractNestedRequired(schemaJson) {
 
 /** @returns {ShapeNode} */
 function anyShape() {
-  return { types: undefined, props: new Map(), closed: false, items: undefined };
+  return {
+    types: undefined,
+    raw: undefined,
+    enum: undefined,
+    props: new Map(),
+    closed: false,
+    items: undefined,
+  };
 }
+
+/**
+ * Both constraints at once: the intersection, or the one side that constrains.
+ * An empty intersection is unsatisfiable, read as "anything" like `joinShapes`.
+ *
+ * @template T
+ * @param {Map<string, T> | undefined} a
+ * @param {Map<string, T> | undefined} b
+ * @returns {Map<string, T> | undefined}
+ */
+function joinMaps(a, b) {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  const both = new Map([...a].filter(([k]) => b.has(k)));
+  return both.size > 0 ? both : undefined;
+}
+
+/**
+ * Either constraint: the union, unless one side admits anything.
+ *
+ * @template T
+ * @param {readonly (Map<string, T> | undefined)[]} maps
+ * @returns {Map<string, T> | undefined}
+ */
+function meetMaps(maps) {
+  /** @type {Map<string, T>} */
+  const out = new Map();
+  for (const m of maps) {
+    if (m === undefined) return undefined;
+    for (const [k, v] of m) out.set(k, v);
+  }
+  return out;
+}
+
+/** @param {Set<string> | undefined} set */
+const asMap = (set) => (set === undefined ? undefined : new Map([...set].map((t) => [t, t])));
+/** @param {Map<string, string> | undefined} map */
+const asSet = (map) => (map === undefined ? undefined : new Set(map.keys()));
 
 /**
  * allOf: every constraint holds. Two contradicting kinds make the schema
@@ -734,7 +783,14 @@ function joinShapes(a, b) {
   }
   const items =
     a.items && b.items ? joinShapes(a.items, b.items) : (a.items ?? b.items);
-  return { types, props, closed: a.closed || b.closed, items };
+  return {
+    types,
+    raw: asSet(joinMaps(asMap(a.raw), asMap(b.raw))),
+    enum: joinMaps(a.enum, b.enum),
+    props,
+    closed: a.closed || b.closed,
+    items,
+  };
 }
 
 /**
@@ -777,6 +833,10 @@ function meetShapes(arms) {
       : undefined;
   return {
     types,
+    raw: asSet(meetMaps(arms.map((a) => asMap(a.raw)))),
+    // Conservative: an arm admitting any value of some type leaves every
+    // value open, even where that arm's type could not hold the value.
+    enum: meetMaps(arms.map((a) => a.enum)),
     props,
     closed: objectArms.length > 0 && objectArms.every((a) => a.closed),
     items,
@@ -813,14 +873,93 @@ function meetShapes(arms) {
  * @returns {Record<string, string>}
  */
 export function extractPropertyShapes(schemaJson) {
+  /** @type {Map<string, string>} */
+  const out = new Map();
+  /**
+   * @param {ShapeNode} node
+   * @param {string} path
+   */
+  function flatten(node, path) {
+    if (node.types?.size === 1) {
+      const [kind] = node.types;
+      if (kind === 'array' || kind === 'object') out.set(path, kind);
+    }
+    for (const [name, child] of node.props) flatten(child, `${path}.${name}`);
+    if (node.items) flatten(node.items, `${path}[]`);
+  }
+  for (const [topName, tree] of shapeTrees(schemaJson)) flatten(tree, topName);
+  /** @type {Record<string, string>} */
+  const result = {};
+  for (const key of [...out.keys()].sort()) result[key] = /** @type {string} */ (out.get(key));
+  return result;
+}
+
+/**
+ * Extract, per property PATH, the JSON Schema `type` names and the `enum`
+ * values the schema admits there: the data the wire harness checks every
+ * hand-written property bag against (issue #3723,
+ * `tests/unit/provisioning/sdk-wire-harness.ts`), so a bag cannot carry a
+ * value no valid template holds, and a vary probe can draw an enum leaf's
+ * alternative from the schema.
+ *
+ * Keyed exactly as {@link extractPropertyShapes} (dotted from the top-level,
+ * `[]` for an array's elements), and built from the same tree, so the same
+ * rules decide where an entry holds: a `$ref`'s siblings are ignored, `allOf`
+ * arms add up, `oneOf` / `anyOf` keep only what every arm agrees on (a union
+ * of their types and enums; an arm without a `type` or `enum` leaves the path
+ * open), map values are not followed, and a legacy schema yields nothing.
+ * `types` is the sorted type list joined by `|` (`object|string` for a policy
+ * document a template may spell either way); `enum` lists the values sorted
+ * by their JSON text, a `const` counting as a one-value enum. A path neither
+ * constrains gets no entry.
+ *
+ * @param {string} schemaJson
+ * @returns {{propertyTypes: Record<string, string>, propertyEnums: Record<string, unknown[]>}}
+ */
+export function extractPropertyTypes(schemaJson) {
+  /** @type {Map<string, string>} */
+  const types = new Map();
+  /** @type {Map<string, unknown[]>} */
+  const enums = new Map();
+  /**
+   * @param {ShapeNode} node
+   * @param {string} path
+   */
+  function flatten(node, path) {
+    if (node.raw !== undefined) types.set(path, [...node.raw].sort().join('|'));
+    if (node.enum !== undefined) {
+      const sorted = [...node.enum.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+      enums.set(
+        path,
+        sorted.map(([, v]) => v)
+      );
+    }
+    for (const [name, child] of node.props) flatten(child, `${path}.${name}`);
+    if (node.items) flatten(node.items, `${path}[]`);
+  }
+  for (const [topName, tree] of shapeTrees(schemaJson)) flatten(tree, topName);
+  /** @param {Map<string, unknown>} m */
+  const sortedRecord = (m) => Object.fromEntries([...m.keys()].sort().map((k) => [k, m.get(k)]));
+  return { propertyTypes: sortedRecord(types), propertyEnums: sortedRecord(enums) };
+}
+
+/**
+ * Each top-level property's constraint tree, in schema order, for
+ * {@link extractPropertyShapes} and {@link extractPropertyTypes}: empty for a
+ * schema without `properties`, or without `handlers` (a legacy type).
+ *
+ * @param {string} schemaJson
+ * @returns {Map<string, ShapeNode>}
+ */
+function shapeTrees(schemaJson) {
   /** @type {{properties?: Record<string, unknown>, definitions?: Record<string, unknown>, handlers?: unknown}} */
   const schema = JSON.parse(schemaJson);
-  if (!schema.properties || typeof schema.properties !== 'object') return {};
+  if (!schema.properties || typeof schema.properties !== 'object') return new Map();
   // A schema with no `handlers` belongs to a legacy type CloudFormation does
   // not validate against it, and such schemas are known to be wrong:
   // `AWS::CodeBuild::Project`'s `FilterGroup` is an empty closed object where
   // the real shape (and CDK's output) is a list of filters.
-  if (!schema.handlers || typeof schema.handlers !== 'object') return {};
+  if (!schema.handlers || typeof schema.handlers !== 'object') return new Map();
   const definitions =
     schema.definitions && typeof schema.definitions === 'object' ? schema.definitions : {};
 
@@ -852,6 +991,17 @@ export function extractPropertyShapes(schemaJson) {
           : Array.isArray(rawType) && rawType.length > 0
             ? new Set(rawType.map(kindOf))
             : undefined,
+      raw:
+        typeof rawType === 'string'
+          ? new Set([rawType])
+          : Array.isArray(rawType) && rawType.length > 0
+            ? new Set(rawType.map(String))
+            : undefined,
+      enum: Array.isArray(obj['enum'])
+        ? new Map(obj['enum'].map((v) => [JSON.stringify(v), v]))
+        : 'const' in obj
+          ? new Map([[JSON.stringify(obj['const']), obj['const']]])
+          : undefined,
       props: new Map(),
       closed: obj['additionalProperties'] === false && obj['patternProperties'] === undefined,
       items: undefined,
@@ -879,27 +1029,12 @@ export function extractPropertyShapes(schemaJson) {
     return result;
   }
 
-  /** @type {Map<string, string>} */
-  const out = new Map();
-  /**
-   * @param {ShapeNode} node
-   * @param {string} path
-   */
-  function flatten(node, path) {
-    if (node.types?.size === 1) {
-      const [kind] = node.types;
-      if (kind === 'array' || kind === 'object') out.set(path, kind);
-    }
-    for (const [name, child] of node.props) flatten(child, `${path}.${name}`);
-    if (node.items) flatten(node.items, `${path}[]`);
-  }
+  /** @type {Map<string, ShapeNode>} */
+  const trees = new Map();
   for (const [topName, sub] of Object.entries(schema.properties)) {
-    flatten(shapeOf(sub, new Set(), 0), topName);
+    trees.set(topName, shapeOf(sub, new Set(), 0));
   }
-  /** @type {Record<string, string>} */
-  const result = {};
-  for (const key of [...out.keys()].sort()) result[key] = /** @type {string} */ (out.get(key));
-  return result;
+  return trees;
 }
 
 /**
@@ -973,6 +1108,7 @@ export function buildFixture(schemaJson, resourceType, generatedAt) {
   const definitionRequired = extractDefinitionRequired(schemaJson);
   const nestedRequired = extractNestedRequired(schemaJson);
   const propertyShapes = extractPropertyShapes(schemaJson);
+  const { propertyTypes, propertyEnums } = extractPropertyTypes(schemaJson);
   return {
     resourceType,
     generatedAt,
@@ -1006,6 +1142,10 @@ export function buildFixture(schemaJson, resourceType, generatedAt) {
     // The per-PATH array / object kinds (issue #4357), read by the deploy
     // pre-flight through `scripts/gen-property-shape.ts`. Same omit-when-empty rule.
     ...(Object.keys(propertyShapes).length > 0 ? { propertyShapes } : {}),
+    // The per-PATH type names and enum values (issue #3723), which the wire
+    // harness checks every property bag against. Same omit-when-empty rule.
+    ...(Object.keys(propertyTypes).length > 0 ? { propertyTypes } : {}),
+    ...(Object.keys(propertyEnums).length > 0 ? { propertyEnums } : {}),
   };
 }
 

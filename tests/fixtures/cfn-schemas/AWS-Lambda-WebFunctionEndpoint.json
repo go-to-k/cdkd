@@ -180,5 +180,54 @@
     "RevisionWeights[]": "object",
     "ScalingConfig": "object",
     "ThrottleConfig": "object"
+  },
+  "propertyTypes": {
+    "AuthType": "string",
+    "CreatedAt": "string",
+    "Description": "string",
+    "DomainName": "string",
+    "EndpointArn": "string",
+    "EndpointName": "string",
+    "EndpointType": "string",
+    "FunctionArn": "string",
+    "FunctionName": "string",
+    "RegionalEndpoints": "object",
+    "Regions": "array",
+    "Regions[]": "string",
+    "RevisionWeights": "array",
+    "RevisionWeights[]": "object",
+    "RevisionWeights[].RevisionId": "string",
+    "RevisionWeights[].Weight": "integer",
+    "ScalingConfig": "object",
+    "ScalingConfig.MaxEnvironments": "integer",
+    "State": "string",
+    "StateReason": "string",
+    "ThrottleConfig": "object",
+    "ThrottleConfig.RateLimit": "integer",
+    "UpdateStatus": "string",
+    "UpdateStatusReason": "string",
+    "UpdatedAt": "string"
+  },
+  "propertyEnums": {
+    "AuthType": [
+      "ApplicationManaged",
+      "IamAuth"
+    ],
+    "EndpointType": [
+      "HomeRegion",
+      "MultiRegion",
+      "PerRegion"
+    ],
+    "State": [
+      "Active",
+      "Deleting",
+      "Failed",
+      "Pending"
+    ],
+    "UpdateStatus": [
+      "Failed",
+      "InProgress",
+      "Successful"
+    ]
   }
 }

@@ -86,5 +86,20 @@
   "propertyShapes": {
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "Address": "string",
+    "AllocationId": "string",
+    "Domain": "string",
+    "InstanceId": "string",
+    "IpamPoolId": "string",
+    "NetworkBorderGroup": "string",
+    "PublicIp": "string",
+    "PublicIpv4Pool": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "TransferAddress": "string"
   }
 }

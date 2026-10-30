@@ -36,5 +36,10 @@
       "RouteTableId",
       "SubnetId"
     ]
+  },
+  "propertyTypes": {
+    "Id": "string",
+    "RouteTableId": "string",
+    "SubnetId": "string"
   }
 }

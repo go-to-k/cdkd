@@ -63,5 +63,15 @@
     "SubnetIds": "array",
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "DBSubnetGroupDescription": "string",
+    "DBSubnetGroupName": "string",
+    "SubnetIds": "array",
+    "SubnetIds[]": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string"
   }
 }

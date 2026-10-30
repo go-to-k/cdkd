@@ -53,5 +53,19 @@
   },
   "propertyShapes": {
     "ProviderARNs": "array"
+  },
+  "propertyTypes": {
+    "AuthType": "string",
+    "AuthorizerCredentials": "string",
+    "AuthorizerId": "string",
+    "AuthorizerResultTtlInSeconds": "integer",
+    "AuthorizerUri": "string",
+    "IdentitySource": "string",
+    "IdentityValidationExpression": "string",
+    "Name": "string",
+    "ProviderARNs": "array",
+    "ProviderARNs[]": "string",
+    "RestApiId": "string",
+    "Type": "string"
   }
 }

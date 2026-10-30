@@ -83,5 +83,16 @@
     "DestinationConfig": "object",
     "DestinationConfig.OnFailure": "object",
     "DestinationConfig.OnSuccess": "object"
+  },
+  "propertyTypes": {
+    "DestinationConfig": "object",
+    "DestinationConfig.OnFailure": "object",
+    "DestinationConfig.OnFailure.Destination": "string",
+    "DestinationConfig.OnSuccess": "object",
+    "DestinationConfig.OnSuccess.Destination": "string",
+    "FunctionName": "string",
+    "MaximumEventAgeInSeconds": "integer",
+    "MaximumRetryAttempts": "integer",
+    "Qualifier": "string"
   }
 }

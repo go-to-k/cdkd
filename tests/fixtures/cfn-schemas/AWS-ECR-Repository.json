@@ -151,5 +151,45 @@
     "LifecyclePolicy": "object",
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "EmptyOnDelete": "boolean",
+    "EncryptionConfiguration": "object",
+    "EncryptionConfiguration.EncryptionType": "string",
+    "EncryptionConfiguration.KmsKey": "string",
+    "ImageScanningConfiguration": "object",
+    "ImageScanningConfiguration.ScanOnPush": "boolean",
+    "ImageTagMutability": "string",
+    "ImageTagMutabilityExclusionFilters": "array",
+    "ImageTagMutabilityExclusionFilters[]": "object",
+    "ImageTagMutabilityExclusionFilters[].ImageTagMutabilityExclusionFilterType": "string",
+    "ImageTagMutabilityExclusionFilters[].ImageTagMutabilityExclusionFilterValue": "string",
+    "LifecyclePolicy": "object",
+    "LifecyclePolicy.LifecyclePolicyText": "string",
+    "LifecyclePolicy.RegistryId": "string",
+    "RepositoryName": "string",
+    "RepositoryPolicyText": "object|string",
+    "RepositoryUri": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string"
+  },
+  "propertyEnums": {
+    "EncryptionConfiguration.EncryptionType": [
+      "AES256",
+      "KMS",
+      "KMS_DSSE"
+    ],
+    "ImageTagMutability": [
+      "IMMUTABLE",
+      "IMMUTABLE_WITH_EXCLUSION",
+      "MUTABLE",
+      "MUTABLE_WITH_EXCLUSION"
+    ],
+    "ImageTagMutabilityExclusionFilters[].ImageTagMutabilityExclusionFilterType": [
+      "WILDCARD"
+    ]
   }
 }

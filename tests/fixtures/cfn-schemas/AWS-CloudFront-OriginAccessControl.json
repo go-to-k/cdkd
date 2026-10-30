@@ -65,5 +65,14 @@
   },
   "propertyShapes": {
     "OriginAccessControlConfig": "object"
+  },
+  "propertyTypes": {
+    "Id": "string",
+    "OriginAccessControlConfig": "object",
+    "OriginAccessControlConfig.Description": "string",
+    "OriginAccessControlConfig.Name": "string",
+    "OriginAccessControlConfig.OriginAccessControlOriginType": "string",
+    "OriginAccessControlConfig.SigningBehavior": "string",
+    "OriginAccessControlConfig.SigningProtocol": "string"
   }
 }

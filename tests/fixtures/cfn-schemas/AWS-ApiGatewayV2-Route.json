@@ -80,5 +80,23 @@
     "RequestModels": "object",
     "RequestParameters": "object",
     "RequestParameters[]": "object"
+  },
+  "propertyTypes": {
+    "ApiId": "string",
+    "ApiKeyRequired": "boolean",
+    "AuthorizationScopes": "array",
+    "AuthorizationScopes[]": "string",
+    "AuthorizationType": "string",
+    "AuthorizerId": "string",
+    "ModelSelectionExpression": "string",
+    "OperationName": "string",
+    "RequestModels": "object",
+    "RequestParameters": "object",
+    "RequestParameters[]": "object",
+    "RequestParameters[].Required": "boolean",
+    "RouteId": "string",
+    "RouteKey": "string",
+    "RouteResponseSelectionExpression": "string",
+    "Target": "string"
   }
 }

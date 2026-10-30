@@ -159,5 +159,55 @@
     "ServiceConfig.EnvironmentVariables": "object",
     "ServiceConfig.TelemetryConfig": "object",
     "ServiceConfig.TelemetryConfig.LoggingConfig": "object"
+  },
+  "propertyTypes": {
+    "BuildConfig": "object",
+    "BuildConfig.CodeConfig": "object",
+    "BuildConfig.CodeConfig.S3Object": "object",
+    "BuildConfig.CodeConfig.S3Object.Bucket": "string",
+    "BuildConfig.CodeConfig.S3Object.Key": "string",
+    "BuildConfig.CodeConfig.S3Object.VersionId": "string",
+    "BuildConfig.RuntimeConfig": "object",
+    "BuildConfig.RuntimeConfig.Runtime": "string",
+    "CreatedAt": "string",
+    "Description": "string",
+    "FunctionArn": "string",
+    "FunctionName": "string",
+    "KmsKeyArn": "string",
+    "RevisionArn": "string",
+    "RevisionId": "string",
+    "ServiceConfig": "object",
+    "ServiceConfig.EgressNetworkConnectorArn": "string",
+    "ServiceConfig.EnvironmentVariables": "object",
+    "ServiceConfig.ExecutionRoleArn": "string",
+    "ServiceConfig.MaxConcurrencyPerEnvironment": "integer",
+    "ServiceConfig.TelemetryConfig": "object",
+    "ServiceConfig.TelemetryConfig.LoggingConfig": "object",
+    "ServiceConfig.TelemetryConfig.LoggingConfig.ApplicationLogLevel": "string",
+    "ServiceConfig.TelemetryConfig.LoggingConfig.LogGroup": "string",
+    "ServiceConfig.TelemetryConfig.LoggingConfig.SystemLogLevel": "string",
+    "ServiceConfig.TimeoutSeconds": "integer",
+    "State": "string",
+    "StateReason": "string"
+  },
+  "propertyEnums": {
+    "ServiceConfig.TelemetryConfig.LoggingConfig.ApplicationLogLevel": [
+      "DEBUG",
+      "ERROR",
+      "FATAL",
+      "INFO",
+      "TRACE",
+      "WARN"
+    ],
+    "ServiceConfig.TelemetryConfig.LoggingConfig.SystemLogLevel": [
+      "DEBUG",
+      "INFO",
+      "WARN"
+    ],
+    "State": [
+      "Active",
+      "Failed",
+      "Pending"
+    ]
   }
 }

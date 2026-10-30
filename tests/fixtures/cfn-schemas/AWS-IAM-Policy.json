@@ -37,5 +37,16 @@
     "Groups": "array",
     "Roles": "array",
     "Users": "array"
+  },
+  "propertyTypes": {
+    "Groups": "array",
+    "Groups[]": "string",
+    "Id": "string",
+    "PolicyDocument": "object|string",
+    "PolicyName": "string",
+    "Roles": "array",
+    "Roles[]": "string",
+    "Users": "array",
+    "Users[]": "string"
   }
 }

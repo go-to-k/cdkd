@@ -40,5 +40,12 @@
   },
   "propertyShapes": {
     "Roles": "array"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "InstanceProfileName": "string",
+    "Path": "string",
+    "Roles": "array",
+    "Roles[]": "string"
   }
 }

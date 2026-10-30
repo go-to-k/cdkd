@@ -160,5 +160,31 @@
     "ServiceAttributes": "object",
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "Description": "string",
+    "DnsConfig": "object",
+    "DnsConfig.DnsRecords": "array",
+    "DnsConfig.DnsRecords[]": "object",
+    "DnsConfig.DnsRecords[].TTL": "number",
+    "DnsConfig.DnsRecords[].Type": "string",
+    "DnsConfig.NamespaceId": "string",
+    "DnsConfig.RoutingPolicy": "string",
+    "HealthCheckConfig": "object",
+    "HealthCheckConfig.FailureThreshold": "number",
+    "HealthCheckConfig.ResourcePath": "string",
+    "HealthCheckConfig.Type": "string",
+    "HealthCheckCustomConfig": "object",
+    "HealthCheckCustomConfig.FailureThreshold": "number",
+    "Id": "string",
+    "Name": "string",
+    "NamespaceId": "string",
+    "ServiceAttributes": "object",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "Type": "string"
   }
 }

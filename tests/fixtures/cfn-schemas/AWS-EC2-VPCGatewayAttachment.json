@@ -34,5 +34,11 @@
     "#top": [
       "VpcId"
     ]
+  },
+  "propertyTypes": {
+    "AttachmentType": "string",
+    "InternetGatewayId": "string",
+    "VpcId": "string",
+    "VpnGatewayId": "string"
   }
 }
