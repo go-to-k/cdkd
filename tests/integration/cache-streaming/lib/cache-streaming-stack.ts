@@ -31,6 +31,9 @@ import * as sns from 'aws-cdk-lib/aws-sns';
  *   previous list does not name, which replaces the cluster (issue #5458)
  * - CDKD_TEST_SGREMOVE=true: the Redis cluster's VpcSecurityGroupIds is removed;
  *   the live group stays, as CloudFormation keeps it (issue #5491)
+ * - CDKD_TEST_PAZREMOVE=true removes the single-az Memcached cluster's
+ *   PreferredAvailabilityZones, and CDKD_TEST_AZMODEREMOVE=true then its
+ *   AZMode; each replaces the cluster, as CloudFormation does (issue #5558)
  */
 export class CacheStreamingStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -170,6 +173,11 @@ export class CacheStreamingStack extends cdk.Stack {
     // does not name ([az0] -> [az1]); the #5441 removal ([az0, az0] -> [az0])
     // shares az0 and stays in place.
     const pazMove = process.env.CDKD_TEST_PAZMOVE === 'true';
+    // CDKD_TEST_PAZREMOVE / CDKD_TEST_AZMODEREMOVE (issue #5558): real
+    // CloudFormation REPLACES a single-az cluster when its zone list, or its
+    // AZMode, is removed from the template (a cross-az one stays in place).
+    const pazRemove = process.env.CDKD_TEST_PAZREMOVE === 'true';
+    const azModeRemove = process.env.CDKD_TEST_AZMODEREMOVE === 'true';
     const [az0, az1] = vpc.availabilityZones;
     const memcachedSubnetGroup = new elasticache.CfnSubnetGroup(this, 'MemcachedSubnetGroup', {
       description: 'Subnet group for the Memcached cluster',
@@ -180,8 +188,9 @@ export class CacheStreamingStack extends cdk.Stack {
       cacheNodeType: 'cache.t3.micro',
       engine: 'memcached',
       numCacheNodes: nodeRemoval || pazMove ? 1 : 2,
-      azMode: 'single-az',
-      preferredAvailabilityZones: pazMove ? [az1] : nodeRemoval ? [az0] : [az0, az0],
+      azMode: azModeRemove ? undefined : 'single-az',
+      preferredAvailabilityZones:
+        pazRemove || azModeRemove ? undefined : pazMove ? [az1] : nodeRemoval ? [az0] : [az0, az0],
       vpcSecurityGroupIds: [redisSg.securityGroupId],
       cacheSubnetGroupName: memcachedSubnetGroup.ref,
     });

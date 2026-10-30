@@ -171,6 +171,10 @@ export function nodesToRemove(
  *   encryption on and the node's zone.
  * - #5004: SnapshotRetentionLimit, AutoMinorVersionUpgrade,
  *   NotificationTopicArn. #5491: VpcSecurityGroupIds.
+ * - #5558: AZMode and PreferredAvailabilityZones, on a `cross-az` cluster:
+ *   CloudFormation's ModifyCacheCluster carried neither and the nodes kept
+ *   their zones. On a `single-az` cluster either removal REPLACES it, which
+ *   the replacement rules plan, so update() does not see that case.
  *
  * update() names these in its own warning, since the shared caller's line
  * says CloudFormation would reset the value.
@@ -187,71 +191,47 @@ const KEPT_ON_REMOVAL = [
   'VpcSecurityGroupIds',
   'TransitEncryptionEnabled',
   'PreferredAvailabilityZone',
+  'AZMode',
+  'PreferredAvailabilityZones',
 ] as const;
 
 /**
- * The {@link KEPT_ON_REMOVAL} members ModifyCacheCluster has no member for:
- * declaring a value cannot change them either, only a replacement can
- * (`warnTransitEncryptionNotApplied`, `warnNotAppliedInPlace`).
+ * The {@link KEPT_ON_REMOVAL} members declaring a value cannot change on the
+ * existing nodes, only a replacement can: ModifyCacheCluster has no member
+ * for the first two, and its AZMode / NewAvailabilityZones place only the
+ * nodes it adds (`warnTransitEncryptionNotApplied`, `warnNotAppliedInPlace`).
  */
-const NOT_MODIFIABLE = new Set<string>(['TransitEncryptionEnabled', 'PreferredAvailabilityZone']);
+const NOT_MODIFIABLE = new Set<string>([
+  'TransitEncryptionEnabled',
+  'PreferredAvailabilityZone',
+  'AZMode',
+  'PreferredAvailabilityZones',
+]);
 
 /**
- * Removals CloudFormation answers by REPLACING the cluster (#5545 A/B, a
- * 1-node memcached 1.6.22 cluster, each removed alone: `AZMode: single-az`,
- * and `PreferredAvailabilityZones: [us-east-1a]` with AZMode kept, both gave a
- * new cluster id). cdkd does not plan that replacement yet
- * (go-to-k/cdkd#5558): it sends nothing and names them in its own warning,
- * since the shared caller's line would say CloudFormation resets the value.
- */
-const REPLACED_ON_REMOVAL = ['AZMode', 'PreferredAvailabilityZones'] as const;
-
-/**
- * The warning lines for {@link KEPT_ON_REMOVAL} and
- * {@link REPLACED_ON_REMOVAL} removals, one per group that has names. Names
- * are template-borne, so they go through `safeMsg`. A rollback revert
- * restores an earlier state record, so there the property is one the failed
- * deploy ADDED, and the line says only what the rollback does.
+ * The warning line for {@link KEPT_ON_REMOVAL} removals, or none. Names are
+ * template-borne, so they go through `safeMsg`. A rollback revert restores an
+ * earlier state record, so there the property is one the failed deploy ADDED,
+ * and the line says only what the rollback does.
  */
 const removalWarnings = (
   logicalId: string,
   kept: readonly string[],
-  replaced: readonly string[],
   caller: 'deploy' | 'rollback'
 ): string[] => {
-  const lines: string[] = [];
-  const head = (names: readonly string[]): string =>
-    safeMsg`${logicalId} (AWS::ElastiCache::CacheCluster): ${names.length === 1 ? 'property' : 'properties'} ${names.join(', ')}`;
-  if (kept.length > 0) {
-    const one = kept.length === 1;
-    const fixed = kept.filter((name) => NOT_MODIFIABLE.has(name));
-    const replaceNote =
-      fixed.length === 0
-        ? ''
-        : safeMsg` (${fixed.join(', ')} ${fixed.length === 1 ? 'changes' : 'change'} only by replacing the cluster)`;
-    lines.push(
-      caller === 'rollback'
-        ? `${head(kept)} ${one ? 'is' : 'are'} absent from the state being restored; the rollback sends nothing for ${one ? 'it' : 'them'}, so the cluster keeps the value it holds now.`
-        : `${head(kept)} ${one ? 'was' : 'were'} removed from the template and ${one ? 'keeps its' : 'keep their'} current AWS value, as CloudFormation leaves ${one ? 'it' : 'them'}; cdkd sends nothing for a removed property. To change a value, declare it explicitly${replaceNote}.`
-    );
-  }
-  if (replaced.length > 0) {
-    const one = replaced.length === 1;
-    // Each property gets only what was measured: AZMode replaces; a
-    // PreferredAvailabilityZones removal replaced a 1-node cluster (#5558)
-    // but updated a 2-node cluster in place (#5458).
-    const clauses = replaced.map((name) =>
-      name === 'AZMode'
-        ? 'CloudFormation replaces the cluster for an AZMode removal'
-        : 'for a PreferredAvailabilityZones removal CloudFormation replaced a 1-node cluster (go-to-k/cdkd#5558) and updated a 2-node cluster in place (go-to-k/cdkd#5458)'
-    );
-    lines.push(
-      caller === 'rollback'
-        ? `${head(replaced)} ${one ? 'is' : 'are'} absent from the state being restored; the rollback leaves the cluster unchanged.`
-        : `${head(replaced)} ${one ? 'was' : 'were'} removed from the template; cdkd leaves the cluster unchanged. ${clauses.join('; ')}. To match a CloudFormation replacement, replace the cluster, for example by changing its logical ID.`
-    );
-  }
-  return lines;
+  if (kept.length === 0) return [];
+  const one = kept.length === 1;
+  const head = safeMsg`${logicalId} (AWS::ElastiCache::CacheCluster): ${one ? 'property' : 'properties'} ${kept.join(', ')}`;
+  const fixed = kept.filter((name) => NOT_MODIFIABLE.has(name));
+  const replaceNote =
+    fixed.length === 0
+      ? ''
+      : safeMsg` (${fixed.join(', ')} ${fixed.length === 1 ? 'changes' : 'change'} only by replacing the cluster)`;
+  return [
+    caller === 'rollback'
+      ? `${head} ${one ? 'is' : 'are'} absent from the state being restored; the rollback sends nothing for ${one ? 'it' : 'them'}, so the cluster keeps the value it holds now.`
+      : `${head} ${one ? 'was' : 'were'} removed from the template and ${one ? 'keeps its' : 'keep their'} current AWS value, as CloudFormation leaves ${one ? 'it' : 'them'}; cdkd sends nothing for a removed property. To change a value, declare it explicitly${replaceNote}.`,
+  ];
 };
 
 /**
@@ -400,9 +380,6 @@ export class ElastiCacheProvider implements ResourceProvider {
         // Left in place, as CloudFormation leaves them, and named in
         // update()'s own warning.
         ...KEPT_ON_REMOVAL,
-        // Replaced by CloudFormation, left unchanged by cdkd until
-        // go-to-k/cdkd#5558, and named in update()'s own warning.
-        ...REPLACED_ON_REMOVAL,
       ]),
     ],
   ]);
@@ -1304,8 +1281,7 @@ export class ElastiCacheProvider implements ResourceProvider {
   }
 
   /**
-   * Name the {@link KEPT_ON_REMOVAL} and {@link REPLACED_ON_REMOVAL}
-   * properties this update removed, after the update succeeded. The caller's
+   * Name the {@link KEPT_ON_REMOVAL} properties this update removed, after the update succeeded. The caller's
    * `removedProperties` is the template-to-template set; a direct call (no
    * set) falls back to comparing the two bags, which is why a direct
    * `drift --revert`-shaped call is excluded here too: its previous side is an
@@ -1327,7 +1303,6 @@ export class ElastiCacheProvider implements ResourceProvider {
     const lines = removalWarnings(
       logicalId,
       KEPT_ON_REMOVAL.filter(wasRemoved),
-      REPLACED_ON_REMOVAL.filter(wasRemoved),
       context?.replayingState ? 'rollback' : 'deploy'
     );
     for (const line of lines) this.logger.warn(line);
