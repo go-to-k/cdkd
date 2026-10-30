@@ -298,14 +298,14 @@ describe('ECSProvider thrown wraps withhold AWS text (#2319)', () => {
   it.each([
     {
       label: 'create',
-      wrap: 'Failed to create ECS service Svc: ECS service Svc did not reach steady state under --full-wait: the ServicesStable waiter ended in state TIMEOUT (TimeoutError). ',
+      wrap: 'Failed to create ECS service Svc: ECS service Svc did not reach steady state: the ServicesStable waiter ended in state TIMEOUT (TimeoutError). ',
       answers: { CreateServiceCommand: { service: { serviceArn: SERVICE_ARN, serviceName: 'web' } } },
       run: (p: ECSProvider) =>
         p.create('Svc', 'AWS::ECS::Service', SERVICE_PROPS, { maskSecrets: mask }),
     },
     {
       label: 'update',
-      wrap: `Failed to update ECS service Svc: the ServicesStable waiter ended in state TIMEOUT (TimeoutError). ${VERBOSE_POINTER}`,
+      wrap: `Failed to update ECS service Svc: ECS service Svc did not reach steady state: the ServicesStable waiter ended in state TIMEOUT (TimeoutError). ${VERBOSE_POINTER}`,
       answers: { UpdateServiceCommand: { service: { serviceArn: SERVICE_ARN, serviceName: 'web' } } },
       run: (p: ECSProvider) =>
         p.update(
@@ -317,8 +317,7 @@ describe('ECSProvider thrown wraps withhold AWS text (#2319)', () => {
           { maskSecrets: mask }
         ),
     },
-  ])('$label under --full-wait: the waiter result is withheld', async (c) => {
-    process.env['CDKD_FULL_WAIT'] = 'true';
+  ])('$label (default wait): the waiter result is withheld', async (c) => {
     failOn('none', undefined, c.answers);
     const timeout = waiterTimeout();
     waitUntilServicesStableMock.mockRejectedValue(timeout);
@@ -341,8 +340,11 @@ describe('ECSProvider thrown wraps withhold AWS text (#2319)', () => {
     expect(debugLines().join('\n')).not.toContain('s3cr3t');
   });
 
+  // The update wrap carries the steady-state sentence and the diagnosis
+  // commands after the reduced waiter text (go-to-k/cdkd#5571).
+  const UPDATE_WAIT_HEAD = 'Failed to update ECS service Svc: ECS service Svc did not reach steady state: ';
+
   it('a waiter error that is no waiter result keeps its text', async () => {
-    process.env['CDKD_FULL_WAIT'] = 'true';
     failOn('none', undefined, {
       UpdateServiceCommand: { service: { serviceArn: SERVICE_ARN, serviceName: 'web' } },
     });
@@ -350,12 +352,11 @@ describe('ECSProvider thrown wraps withhold AWS text (#2319)', () => {
 
     const failure = await caught(cases[6]!.run(provider));
 
-    expect(failure.message).toBe('Failed to update ECS service Svc: Waiter has timed out');
+    expect(failure.message.startsWith(`${UPDATE_WAIT_HEAD}Waiter has timed out. Inspect`)).toBe(true);
     expect(hasRedactedCause(failure)).toBe(false);
   });
 
   it('a JSON waiter error with no state keeps its text', async () => {
-    process.env['CDKD_FULL_WAIT'] = 'true';
     failOn('none', undefined, {
       UpdateServiceCommand: { service: { serviceArn: SERVICE_ARN, serviceName: 'web' } },
     });
@@ -363,12 +364,11 @@ describe('ECSProvider thrown wraps withhold AWS text (#2319)', () => {
 
     const failure = await caught(cases[6]!.run(provider));
 
-    expect(failure.message).toBe('Failed to update ECS service Svc: {"foo":1}');
+    expect(failure.message.startsWith(`${UPDATE_WAIT_HEAD}{"foo":1}. Inspect`)).toBe(true);
     expect(hasRedactedCause(failure)).toBe(false);
   });
 
   it('a FAILURE waiter result with the plain Error name names the state only', async () => {
-    process.env['CDKD_FULL_WAIT'] = 'true';
     failOn('none', undefined, {
       UpdateServiceCommand: { service: { serviceArn: SERVICE_ARN, serviceName: 'web' } },
     });
@@ -378,14 +378,15 @@ describe('ECSProvider thrown wraps withhold AWS text (#2319)', () => {
 
     const failure = await caught(cases[6]!.run(provider));
 
-    expect(failure.message).toBe(
-      `Failed to update ECS service Svc: the ServicesStable waiter ended in state FAILURE. ${VERBOSE_POINTER}`
-    );
+    expect(
+      failure.message.startsWith(
+        `${UPDATE_WAIT_HEAD}the ServicesStable waiter ended in state FAILURE. ${VERBOSE_POINTER.replace(/\.$/, '')}. Inspect`
+      )
+    ).toBe(true);
     expect(failure.message).not.toContain(ACCOUNT);
   });
 
-  it('create under --full-wait: a denied rollout read is named by its class', async () => {
-    process.env['CDKD_FULL_WAIT'] = 'true';
+  it('create (default wait): a denied rollout read is named by its class', async () => {
     failOn('DescribeServicesCommand', denied(), {
       CreateServiceCommand: { service: { serviceArn: SERVICE_ARN, serviceName: 'web' } },
     });
@@ -395,7 +396,7 @@ describe('ECSProvider thrown wraps withhold AWS text (#2319)', () => {
     );
 
     expect(failure.message).toContain(
-      `did not reach steady state under --full-wait: AccessDeniedException. Re-run with --verbose for AWS's own message. Inspect`
+      `did not reach steady state: AccessDeniedException. Re-run with --verbose for AWS's own message. Inspect`
     );
     expect(failure.message).not.toContain(ACCOUNT);
     expect(hasRedactedCause(failure)).toBe(true);

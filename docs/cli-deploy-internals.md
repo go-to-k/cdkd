@@ -16,9 +16,10 @@ for the Outputs of a deploy that changes nothing.
 ## Why the wait defaults are where they are
 
 Where CloudFormation and Terraform agree on what "done" means for a resource
-type, cdkd matches them. Where they disagree, the default takes the definition
-that suits dev/test iteration and `--full-wait` opts into the CloudFormation
-one.
+type, cdkd matches them. Where they disagree, the deciding question is whether
+the outcome is still open when the API call returns: if it is, the default
+waits; if it is settled, the default returns and `--full-wait` opts into the
+CloudFormation definition.
 
 Even where both engines wait, cdkd's default may return early, but only when
 all three of these hold:
@@ -26,8 +27,9 @@ all three of these hold:
 1. **No in-deploy consumer.** Nothing the same deploy creates or resolves
    (`Fn::GetAtt`, downstream create calls, post-create verification) needs the
    waited-for state.
-2. **No failure signal.** The wait cannot surface an error. A timeout means
-   slow, not broken, so waiting buys certainty of when, never whether.
+2. **No failure signal.** The outcome is settled once the call is accepted, so
+   the wait cannot surface an error. A timeout means slow, not broken, so
+   waiting buys certainty of when, never whether.
 3. **Measurable in both modes.** The comparison tool offers both completion
    definitions, so a benchmark can report two like-for-like rows.
 
@@ -39,10 +41,12 @@ The same test is why `--no-wait` is not the default:
 | ACM certificate | (1): a downstream CloudFront or load balancer create fails on an un-issued certificate. |
 | RDS | (1): `Endpoint` attributes are not final until `available`. |
 | EC2 instance | (1): the instance-profile verification needs a `running` instance. |
+| ECS service | (2): the rollout can still fail after `CreateService` / `UpdateService` returns. |
 
-ECS services follow Terraform by default. Nothing downstream needs a steady
-service, and CloudFormation's steady-state wait is what makes a crash-looping
-image hang a stack for many minutes.
+ECS services follow CloudFormation, not Terraform's `wait_for_steady_state`
+default: nothing downstream needs a steady service, but steady state is the
+only place a failing rollout shows up. A deployment circuit breaker ends the
+wait as soon as ECS gives a verdict.
 
 These are per-run choices. A pipeline that wants CloudFormation's completion
 semantics can pass `--full-wait` on every deploy.
