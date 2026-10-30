@@ -70,6 +70,9 @@ describe('ServiceDiscoveryProvider — HttpNamespace / PublicDnsNamespace', () =
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // `clearAllMocks` keeps queued `mockResolvedValueOnce` values: a test
+    // failing before it consumes its queue would feed the next test's calls.
+    mockSend.mockReset();
     clientRegion.value = 'us-east-1';
     provider = new ServiceDiscoveryProvider();
   });
