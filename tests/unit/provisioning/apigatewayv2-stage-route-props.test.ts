@@ -43,6 +43,8 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { NotFoundException } from '@aws-sdk/client-apigatewayv2';
 import { ApiGatewayV2Provider } from '../../../src/provisioning/providers/apigatewayv2-provider.js';
 import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.generated.js';
+import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
+import { readFileSync } from 'node:fs';
 
 const API_ID = 'abcd1234';
 const STAGE_TYPE = 'AWS::ApiGatewayV2::Stage';
@@ -296,15 +298,45 @@ describe('ApiGatewayV2 Stage / Route config properties (#609)', () => {
       expect(cmd.input[property]).toEqual(next);
     });
 
-    it('resets ApiKeyRequired to the CFn default when it is removed', async () => {
+    it('does NOT reset a removed ApiKeyRequired (CFn KEEPS it, #5548)', async () => {
+      await provider.update(
+        'L',
+        'r-1',
+        ROUTE_TYPE,
+        { ApiId: API_ID, RouteKey: '$connect' },
+        { ApiId: API_ID, RouteKey: '$connect', ApiKeyRequired: true }
+      );
+
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('keeps a removed ApiKeyRequired beside another change (#5548)', async () => {
       mockSend.mockResolvedValueOnce({});
 
       await provider.update(
         'L',
         'r-1',
         ROUTE_TYPE,
-        { ApiId: API_ID, RouteKey: 'GET /items' },
-        { ApiId: API_ID, RouteKey: 'GET /items', ApiKeyRequired: true }
+        { ApiId: API_ID, RouteKey: '$connect', OperationName: 'op2' },
+        { ApiId: API_ID, RouteKey: '$connect', ApiKeyRequired: true, OperationName: 'op1' }
+      );
+
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(UpdateRouteCommand);
+      expect(cmd.input.OperationName).toBe('op2');
+      expect(cmd.input).not.toHaveProperty('ApiKeyRequired');
+    });
+
+    it('drift --revert still resets ApiKeyRequired when its baseline lacks it', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'r-1',
+        ROUTE_TYPE,
+        { ApiId: API_ID, RouteKey: '$connect' },
+        { ApiId: API_ID, RouteKey: '$connect', ApiKeyRequired: true },
+        { desiredFromAwsReadback: true }
       );
 
       const cmd = mockSend.mock.calls[0]?.[0];
@@ -534,6 +566,29 @@ describe('ApiGatewayV2 Stage / Route config properties (#609)', () => {
   });
 
   describe('declarations', () => {
+    it('declares every Route property removal-handled, so none warns as reset-missing', () => {
+      const handled = provider.removalHandledInUpdate.get(ROUTE_TYPE);
+      const schema = JSON.parse(
+        readFileSync(
+          new URL('../../fixtures/cfn-schemas/AWS-ApiGatewayV2-Route.json', import.meta.url),
+          'utf8'
+        )
+      ) as { properties: string[]; readOnlyProperties: string[] };
+      const schemaProps = schema.properties.filter((p) => !schema.readOnlyProperties.includes(p));
+      expect(schemaProps.length).toBeGreaterThanOrEqual(12);
+      for (const property of schemaProps) {
+        expect(handled?.has(property), property).toBe(true);
+      }
+      expect(
+        prepareRemovalForUpdate(
+          provider,
+          ROUTE_TYPE,
+          { ApiId: API_ID, RouteKey: '$connect' },
+          { ApiId: API_ID, RouteKey: '$connect', ApiKeyRequired: true }
+        ).unhandled
+      ).toEqual([]);
+    });
+
     it.each([
       [STAGE_TYPE, ['AccessLogSettings', 'ClientCertificateId', 'DeploymentId', 'RouteSettings']],
       [
