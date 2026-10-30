@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
+const mockWarn = vi.hoisted(() => vi.fn());
 
 vi.mock('@aws-sdk/client-dlm', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-dlm')>();
@@ -22,7 +23,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: mockWarn,
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -39,6 +40,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 
 import { DLMLifecyclePolicyProvider } from '../../../../src/provisioning/providers/dlm-lifecycle-policy-provider.js';
 import { UpdateLifecyclePolicyCommand, GetLifecyclePolicyCommand } from '@aws-sdk/client-dlm';
+import { prepareRemovalForUpdate } from '../../../../src/provisioning/update-removal.js';
 
 const RESOURCE_TYPE = 'AWS::DLM::LifecyclePolicy';
 const POLICY_ID = 'policy-0123456789abcdef0';
@@ -246,5 +248,154 @@ describe('DLMLifecyclePolicyProvider removal keeps the live value like CloudForm
     );
 
     expect('Description' in sentUpdateInput()).toBe(false);
+  });
+});
+
+// issue #5546: a CloudFormation A/B (us-east-1, 2026-10-30) showed CFn KEEPS a
+// removed Description (alone and beside another change), ExecutionRoleArn,
+// State and PolicyDetails too: its UpdateLifecyclePolicy request omitted the
+// member and GetLifecyclePolicy kept the old value. cdkd keeps them and names
+// each kept removal in ONE warning.
+describe('DLMLifecyclePolicyProvider names a kept removed property (issue #5546)', () => {
+  let provider: DLMLifecyclePolicyProvider;
+  const BASE = {
+    ExecutionRoleArn: ROLE_ARN,
+    State: 'DISABLED',
+    PolicyDetails: { ResourceTypes: ['VOLUME'] },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new DLMLifecyclePolicyProvider();
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetLifecyclePolicyCommand) {
+        return Promise.resolve({ Policy: { PolicyId: POLICY_ID, PolicyArn: POLICY_ARN } });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  function keptWarnings(): string[] {
+    return mockWarn.mock.calls
+      .map((c: unknown[]) => String(c[0]))
+      .filter((line) => line.includes('AWS::DLM::LifecyclePolicy'));
+  }
+
+  it('warns once naming a removed Description, and sends none', async () => {
+    const previous = { ...BASE, Description: 'old description' };
+    await provider.update('Policy', POLICY_ID, RESOURCE_TYPE, { ...BASE }, previous, {
+      removedProperties: new Set(['Description']),
+    });
+
+    const call = mockSend.mock.calls.find(
+      (c: unknown[]) => c[0] instanceof UpdateLifecyclePolicyCommand
+    );
+    expect('Description' in (call?.[0] as UpdateLifecyclePolicyCommand).input).toBe(false);
+    expect(keptWarnings()).toEqual([
+      'Policy (AWS::DLM::LifecyclePolicy): property Description was removed from the template and keeps its current AWS value, as CloudFormation leaves it; UpdateLifecyclePolicy keeps a field it is not sent. Declare the intended value explicitly to change it.',
+    ]);
+  });
+
+  it('names several kept removals in one line, in a fixed order', async () => {
+    await provider.update(
+      'Policy',
+      POLICY_ID,
+      RESOURCE_TYPE,
+      { PolicyDetails: BASE.PolicyDetails },
+      { ...BASE, Description: 'd', CopyTags: true },
+      { removedProperties: new Set(['CopyTags', 'State', 'Description', 'ExecutionRoleArn']) }
+    );
+
+    const lines = keptWarnings();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(
+      'properties Description, ExecutionRoleArn, State, CopyTags were removed from the template and keep their current AWS value, as CloudFormation leaves them;'
+    );
+  });
+
+  it('uses the rollback wording when replaying a state record', async () => {
+    await provider.update(
+      'Policy',
+      POLICY_ID,
+      RESOURCE_TYPE,
+      { ...BASE },
+      { ...BASE, Description: 'added by the failed deploy' },
+      { removedProperties: new Set(['Description']), replayingState: true }
+    );
+
+    expect(keptWarnings()).toEqual([
+      'Policy (AWS::DLM::LifecyclePolicy): property Description is absent from the state being restored; UpdateLifecyclePolicy keeps a field it is not sent, so the rollback leaves the value the failed deploy applied in place.',
+    ]);
+  });
+
+  it('warns about nothing on drift --revert (empty removedProperties)', async () => {
+    await provider.update(
+      'Policy',
+      POLICY_ID,
+      RESOURCE_TYPE,
+      { ...BASE },
+      { ...BASE, Description: 'read back' },
+      { removedProperties: new Set() }
+    );
+
+    expect(keptWarnings()).toEqual([]);
+  });
+
+  it('compares the bags on a direct call, skipping a recorded explicit null', async () => {
+    await provider.update(
+      'Policy',
+      POLICY_ID,
+      RESOURCE_TYPE,
+      { ...BASE },
+      { ...BASE, Description: 'old', CopyTags: null }
+    );
+
+    const lines = keptWarnings();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('property Description was removed');
+  });
+
+  it('warns about nothing when nothing was removed', async () => {
+    await provider.update(
+      'Policy',
+      POLICY_ID,
+      RESOURCE_TYPE,
+      { ...BASE, Description: 'new' },
+      { ...BASE, Description: 'old' },
+      { removedProperties: new Set() }
+    );
+
+    expect(keptWarnings()).toEqual([]);
+  });
+
+  it('does not warn when the update fails', async () => {
+    mockSend.mockRejectedValue(new Error('boom'));
+    await expect(
+      provider.update(
+        'Policy',
+        POLICY_ID,
+        RESOURCE_TYPE,
+        { ...BASE },
+        { ...BASE, Description: 'old' },
+        { removedProperties: new Set(['Description']) }
+      )
+    ).rejects.toThrow();
+
+    expect(keptWarnings()).toEqual([]);
+  });
+
+  it('registers every handled property in removalHandledInUpdate, so the shared caller names none', () => {
+    const handled = provider.handledProperties.get(RESOURCE_TYPE);
+    const removal = provider.removalHandledInUpdate.get(RESOURCE_TYPE);
+    expect(handled).toBeDefined();
+    expect(removal).toBeDefined();
+    expect([...(removal ?? [])].sort()).toEqual([...(handled ?? [])].sort());
+
+    const prep = prepareRemovalForUpdate(provider, RESOURCE_TYPE, { ...BASE }, {
+      ...BASE,
+      Description: 'old',
+      Tags: [{ Key: 'k', Value: 'v' }],
+    });
+    expect(prep.unhandled).toEqual([]);
   });
 });
