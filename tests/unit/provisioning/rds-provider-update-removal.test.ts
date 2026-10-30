@@ -401,7 +401,8 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
           MasterUserSecret: { KmsKeyId: 'arn:aws:kms:us-east-1:123:key/k1' },
           MonitoringRoleArn: 'arn:aws:iam::123:role/monitoring',
           PubliclyAccessible: true,
-          VPCSecurityGroups: ['sg-1'],
+          // VPCSecurityGroups resets to the VPC default group instead (#5542):
+          // rds-instance-sg-removal-5542.test.ts.
         }
       );
 
@@ -420,7 +421,6 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       expect(modifyCall.input.MasterUserSecretKmsKeyId).toBeUndefined();
       expect(modifyCall.input.MonitoringRoleArn).toBeUndefined();
       expect(modifyCall.input.PubliclyAccessible).toBeUndefined();
-      expect(modifyCall.input.VpcSecurityGroupIds).toBeUndefined();
     });
 
     it('sends no interval when the role is kept but the interval is removed (#5004)', async () => {
