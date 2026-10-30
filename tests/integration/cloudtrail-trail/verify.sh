@@ -73,6 +73,7 @@ cd "$(dirname "$0")"
 STACK="CdkdCloudTrailTrailExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+P2_LOG=""
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 TRAIL_NAME="cdkd-integ-ct-${ACCOUNT_ID}"
@@ -128,6 +129,7 @@ cleanup() {
     # expires.
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  [ -n "${P2_LOG}" ] && rm -f "${P2_LOG}"
   sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
   set -eu
 }

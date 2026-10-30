@@ -39,6 +39,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { CloudTrailProvider } from '../../../src/provisioning/providers/cloudtrail-provider.js';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 import type { UpdateContext } from '../../../src/types/resource.js';
+import { loadSchemaFixture } from './_property-coverage-utils.js';
 
 const TRAIL_ARN = 'arn:aws:cloudtrail:us-east-1:0:trail/my-trail';
 const TYPE = 'AWS::CloudTrail::Trail';
@@ -172,6 +173,26 @@ describe('CloudTrailProvider removals kept while CloudFormation is unmeasured (#
       expect(warnings()).toEqual([]);
     });
 
+    it.each([false, 'false'])(
+      'a removed previous %s is not named: the trail was single-region, live already equals the reset',
+      async (prev) => {
+        for (const desired of [BASE, { ...BASE, IsMultiRegionTrail: true }]) {
+          warnSpy.mockClear();
+          await deployUpdate(desired, { ...desired, IncludeGlobalServiceEvents: prev });
+          expect(warnings().join('\n')).not.toContain('IncludeGlobalServiceEvents');
+          mockSend.mockClear();
+        }
+      }
+    );
+
+    it('IsMultiRegionTrail undeclared on both sides: a removed true is named (may be multi-region)', async () => {
+      await deployUpdate(BASE, { ...BASE, IncludeGlobalServiceEvents: true });
+
+      expect(updateTrailInput()['IncludeGlobalServiceEvents']).toBeUndefined();
+      expect(warnings()).toHaveLength(1);
+      expect(warnings()[0]).toContain('property IncludeGlobalServiceEvents was removed');
+    });
+
     it('both kept properties share ONE line', async () => {
       const desired = { ...BASE, IsMultiRegionTrail: true };
       await deployUpdate(desired, {
@@ -187,9 +208,11 @@ describe('CloudTrailProvider removals kept while CloudFormation is unmeasured (#
     });
   });
 
-  it('the audit covers every handled Trail property: the shared caller line never fires', () => {
+  it('the audit covers every writable schema Trail property: the shared caller line never fires', () => {
     const provider = new CloudTrailProvider();
-    const handled = [...provider.handledProperties.get(TYPE)!];
+    const schema = loadSchemaFixture(TYPE)!;
+    const readOnly = new Set(schema.readOnlyProperties);
+    const handled = schema.properties.filter((key) => !readOnly.has(key));
     const previous = Object.fromEntries(handled.map((key) => [key, 'x']));
     const prep = prepareRemovalForUpdate(provider, TYPE, {}, previous);
 

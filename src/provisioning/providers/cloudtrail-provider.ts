@@ -389,11 +389,18 @@ function removalsLeftInPlace(
     properties[key] == null &&
     (removed === undefined || removed.has(key));
   const org = previousProperties['IsOrganizationTrail'];
+  // A previous `false` means a single-region trail (AWS rejects a multi-region
+  // trail without global events), and CloudFormation's measured reset is
+  // `false` too, so the live value already equals it.
+  const globalEvents = previousProperties['IncludeGlobalServiceEvents'];
   return [
     ...(wasRemoved('IsOrganizationTrail') && org !== false && org !== 'false'
       ? ['IsOrganizationTrail']
       : []),
-    ...(globalEventsResetSkipped && wasRemoved('IncludeGlobalServiceEvents')
+    ...(globalEventsResetSkipped &&
+    wasRemoved('IncludeGlobalServiceEvents') &&
+    globalEvents !== false &&
+    globalEvents !== 'false'
       ? ['IncludeGlobalServiceEvents']
       : []),
   ];
