@@ -202,6 +202,29 @@ describe('DocDBProvider removal of CloudFormation-kept properties (#5543)', () =
     expect(warnings()).toEqual([]);
   });
 
+  it('does not warn when the cluster tag call fails after the Modify call', async () => {
+    routeDbSends();
+    const base = dbSend.getMockImplementation()!;
+    dbSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'AddTagsToResourceCommand') {
+        throw Object.assign(new Error('boom'), { name: 'InternalFailure' });
+      }
+      return base(command);
+    });
+
+    await expect(
+      deployUpdate(
+        CLUSTER,
+        'my-cluster',
+        { BackupRetentionPeriod: 2, Tags: [{ Key: 'k', Value: 'v' }] },
+        { ...CLUSTER_PREVIOUS, Tags: [] }
+      )
+    ).rejects.toThrow();
+    expect(sentInput('ModifyDBClusterCommand')).toBeDefined();
+    expect(sentInput('AddTagsToResourceCommand')).toBeDefined();
+    expect(warnings()).toEqual([]);
+  });
+
   it('a removed cluster EngineVersion / windows / parameter group sends nothing and is warned about once', async () => {
     const unhandled = await deployUpdate(
       CLUSTER,
