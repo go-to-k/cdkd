@@ -91,6 +91,14 @@ cleanup() {
   local rc=$?
   echo "==> Cleanup (errors tolerated)"
   set +e
+  # A failed replacement step (4f/4h/4i) can leave a Memcached cluster on the
+  # subnet group that cdkd state does not own; it would block the subnet-group
+  # delete and orphan it. Delete every cluster on that group first and wait.
+  for mc_leftover in $(aws elasticache describe-cache-clusters --region "${REGION}" \
+    --query "CacheClusters[?CacheSubnetGroupName=='${MC_SUBNET_GROUP}'].CacheClusterId" --output text 2>/dev/null); do
+    aws elasticache delete-cache-cluster --cache-cluster-id "${mc_leftover}" --region "${REGION}" >/dev/null 2>&1 || true
+    aws elasticache wait cache-cluster-deleted --cache-cluster-id "${mc_leftover}" --region "${REGION}" >/dev/null 2>&1 || true
+  done
   if [ -x "${LOCAL_DIST}" ]; then
     # Best-effort real teardown first (removes AWS resources if the run died
     # mid-flight), then drop any residual state record.
@@ -482,7 +490,7 @@ assert_memcached_replaced() { # usage: assert_memcached_replaced <phase label> <
   local before after on_group rc
   if ! before=$(mc_field 'CacheClusterId'); then
     echo "FAIL: cannot read the Memcached cluster id before the ${label} (#5558)" >&2
-    return 1
+    exit 1
   fi
   if [ -z "${before}" ] || [ "${before}" = "None" ]; then
     echo "FAIL: cannot resolve the Memcached cluster before the ${label} (#5558)" >&2
@@ -501,7 +509,7 @@ assert_memcached_replaced() { # usage: assert_memcached_replaced <phase label> <
   if ! on_group=$(aws elasticache describe-cache-clusters --region "${REGION}" \
     --query "length(CacheClusters[?CacheSubnetGroupName=='${MC_SUBNET_GROUP}'])" --output text); then
     echo "FAIL: cannot count the Memcached clusters after the ${label} (#5558)" >&2
-    return 1
+    exit 1
   fi
   if [ "${on_group}" != "1" ]; then
     echo "FAIL: ${on_group} Memcached clusters on ${MC_SUBNET_GROUP} after the ${label}, expected 1 (old one not deleted?)" >&2
@@ -509,7 +517,7 @@ assert_memcached_replaced() { # usage: assert_memcached_replaced <phase label> <
   fi
   if ! after=$(mc_field 'CacheClusterId'); then
     echo "FAIL: cannot read the Memcached cluster id after the ${label} (#5558)" >&2
-    return 1
+    exit 1
   fi
   if [ "${after}" = "${before}" ]; then
     echo "FAIL: Memcached cluster ${before} was NOT replaced by the ${label} (#5558: CloudFormation replaces a single-az cluster)" >&2
