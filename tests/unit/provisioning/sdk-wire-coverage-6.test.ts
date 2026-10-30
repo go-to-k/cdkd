@@ -22,6 +22,11 @@ import {
   armWebAcl,
   rulesExemptions,
 } from './sdk-wire-cases-6.js';
+import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
+
+// The WebACL's every-declared-property bag is a CPU-bound enumeration that
+// runs just past Vitest's 5 s default on a loaded CI runner (5.0-5.2 s).
+vi.setConfig({ testTimeout: CONTENDED_CASE_TIMEOUT_MS });
 
 describe('SDK wire coverage (batch 6)', () => {
   describeWireCases(CASES_6);
