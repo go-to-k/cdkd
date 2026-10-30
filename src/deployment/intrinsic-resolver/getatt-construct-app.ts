@@ -187,8 +187,10 @@ export async function constructAttributeForAppTypes(
     }
   }
 
-  // AppSync GraphQLSchema: `Id` is CloudFormation's id for it,
-  // `<apiId>GraphQLSchema` — the same value as its `Ref` (issue #5540).
+  // AppSync GraphQLSchema: `Id` is the registry schema's primaryIdentifier,
+  // so it takes the same value as its `Ref`, `<apiId>GraphQLSchema` (issue
+  // #5540). CloudFormation itself never serves it: a stack reading it ended
+  // `Internal Failure` with every resource created (measured 2026-10-30).
   if (resourceType === 'AWS::AppSync::GraphQLSchema' && attributeName === 'Id') {
     return graphQLSchemaCfnId(physicalId);
   }

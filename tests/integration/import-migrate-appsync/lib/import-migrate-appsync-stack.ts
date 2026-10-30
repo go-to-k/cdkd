@@ -55,6 +55,8 @@ export class ImportMigrateAppSyncStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'KeyArn', { value: key.attrArn });
     new cdk.CfnOutput(this, 'KeyRef', { value: key.ref });
     new cdk.CfnOutput(this, 'SchemaRef', { value: schema.ref });
-    new cdk.CfnOutput(this, 'SchemaId', { value: schema.attrId });
+    // No `Fn::GetAtt Schema.Id` output: CloudFormation itself cannot resolve
+    // it -- with every resource CREATE_COMPLETE, the stack sat ~23 min and
+    // failed `Internal Failure` (measured 2026-10-30, #5540).
   }
 }

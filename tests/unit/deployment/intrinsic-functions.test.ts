@@ -1658,8 +1658,8 @@ describe('IntrinsicFunctionResolver - per-type Arn handler sweep', () => {
       expected: 'arn:aws:appsync:us-east-1:123456789012:apis/abcdefg12345',
     },
     {
-      // Issue #5540: CloudFormation's id for the schema, the same value as
-      // its `Ref` — measured as `<apiId>GraphQLSchema`.
+      // Issue #5540: the same value as the schema's `Ref`, `<apiId>GraphQLSchema`
+      // (CloudFormation itself fails a stack reading `Id`).
       type: 'AWS::AppSync::GraphQLSchema',
       physicalId: 'abcdefg12345',
       attribute: 'Id',
