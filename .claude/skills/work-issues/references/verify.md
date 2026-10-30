@@ -91,11 +91,12 @@ tests passing is necessary but NOT sufficient:
 ### 8-d. Integ arms owe a discrimination proof (mutation-probe on real AWS)
 
 BEFORE the final integ, revert the fix, rebuild, run, confirm the arm goes RED
-**at YOUR assertion — read which one fired**, then remove the throwaway tree (below). A red
+**at YOUR assertion — read which one fired**. A red
 ELSEWHERE proves nothing: at the CREATE, a refusal of the shape under test
 means it is unreachable, so redo `triage.md`'s CFn premise (#5204), while a
-feature hitting an UNRELATED pre-fix limitation is dropped in the throwaway
-tree only, never the PR, and re-run (#5414); at an older step, harden it and
+feature hitting an UNRELATED pre-fix limitation is dropped or worked around in
+the throwaway tree only, never the PR, and re-run (#5414), at most twice
+(#5528) — a third stops the probe for the parent; at an older step, harden it and
 re-run (#5218). A refusal at the arm's OWN deploy, emitted by the route the
 fix replaces while the fixed route accepts the shape, IS the symptom (#5507);
 one on either route is #5204's. A GREEN pre-fix run BLOCKS the merge: rework the arm so the symptom reaches AWS
