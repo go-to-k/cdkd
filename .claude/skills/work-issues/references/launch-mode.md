@@ -104,7 +104,7 @@ IN-PLACE runs in a worktree someone else created — ONE launch tree (row 1):
 
 | # | Consequence | Where |
 |---|---|---|
-| 1 | Lanes in THIS tree run serially. A CONCURRENT lane gets a SIBLING worktree, never one NESTED inside this tree: `git -C <MAIN_CHECKOUT> worktree add <MAIN_CHECKOUT>/.claude/worktrees/<b> -b <b> origin/main` (go-to-k/cdkd#3902), and its claim names that worktree as `.claude/worktrees/<b>`, never its absolute path (claim.md). Integ runs and merges stay serialized; each tree runs its integ from its OWN `dist/` and `integ-destroy` marker; §9 removes a sibling with the MAIN-CHECKOUT arm | §3, §4, §5, §9 |
+| 1 | Lanes in THIS tree run serially. A CONCURRENT lane gets a SIBLING worktree, never one NESTED inside this tree: `git -C <MAIN_CHECKOUT> worktree add <MAIN_CHECKOUT>/.claude/worktrees/<b> -b <b> origin/main` (go-to-k/cdkd#3902), and its claim names that worktree as `.claude/worktrees/<b>`, never its absolute path (claim.md). Merges, and integs on the same fixture, stay serialized (integs on different fixtures run in parallel, ship.md); each tree runs its integ from its OWN `dist/` and `integ-destroy` marker; §9 removes a sibling with the MAIN-CHECKOUT arm | §3, §4, §5, §9 |
 | 2 | §2's worktree probes take `<MAIN_CHECKOUT>/.claude/worktrees/<w>`, not a relative path | §2 |
 | 3 | For a lane in THIS tree, the claim names the tree checked out here (by basename) plus the branch §5 WILL create in it — never `LAUNCH_BRANCH`, which belongs to the outer tool | §4 |
 | 4 | Create no worktree for a lane in THIS tree; after confirming the tree is YOURS, branch IN PLACE off `origin/main` — ALWAYS, not only when the tree is detached or its PR has merged — and never commit onto `LAUNCH_BRANCH` | §5 |
