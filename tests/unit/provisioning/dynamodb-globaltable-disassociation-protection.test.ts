@@ -82,7 +82,10 @@ describe('GlobalTable Replicas[].DisassociationProtectionEnabled (#5570)', () =>
     ['the local replica', bag(false, undefined), 'Replicas[0]'],
     ['a cross-region replica', bag(undefined, true), 'Replicas[1]'],
   ])('a template-path create declaring it on %s is refused before any call', async (_w, props, path) => {
-    const err = await provider.create('Gt', TYPE, props).catch((e: unknown) => e as Error);
+    const err = (await provider.create('Gt', TYPE, props).then(
+      () => new Error('not refused'),
+      (e: unknown) => e
+    )) as Error;
     expect(err.message).toMatch(REFUSED);
     expect(err.message).toContain(`${path}.DisassociationProtectionEnabled`);
     expect(mockSend).not.toHaveBeenCalled();

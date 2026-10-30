@@ -948,16 +948,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     const desiredReplicaTags = refuseMalformedReplicaTags(properties, resourceType, logicalId);
     // Refused before any call; a state replay only warns, the record's value
     // having been dropped the same way when it was first deployed.
-    const disassociationRefusal = disassociationProtectionRefusal(
-      properties,
-      undefined,
-      logicalId
-    );
+    const disassociationRefusal = disassociationProtectionRefusal(properties, undefined, logicalId);
     if (disassociationRefusal !== undefined) {
       if (context?.replayingState !== true) {
         throw new ProvisioningError(log.mask(disassociationRefusal), resourceType, logicalId);
       }
-      warn(`${disassociationRefusal} Proceeding without it: this create replays a cdkd state record.`);
+      warn(
+        `${disassociationRefusal} Proceeding without it: this create replays a cdkd state record.`
+      );
     }
 
     const tableName =

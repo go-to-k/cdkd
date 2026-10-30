@@ -27,21 +27,32 @@ const CLIENT_CONFIG = {
   credentials: { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'secret' },
 };
 
-/** The serialized body `client` would send for `command`; the request is never sent. */
-async function requestBody(
-  client: LambdaClient | LambdaCoreClient,
-  command: CreateEventSourceMappingCommand | CreateNetworkConnectorCommand
-): Promise<string> {
+/** A build-step middleware that records the serialized body and stops the send. */
+function captureBody(onBody: (body: string) => void) {
+  return () => async (args: { request: unknown }) => {
+    const raw = (args.request as { body?: unknown }).body;
+    onBody(typeof raw === 'string' ? raw : new TextDecoder().decode(raw as Uint8Array));
+    throw new Error('captured');
+  };
+}
+
+const CAPTURE_STEP = { step: 'build', priority: 'low' } as const;
+
+async function lambdaRequestBody(command: CreateEventSourceMappingCommand): Promise<string> {
+  const client = new LambdaClient(CLIENT_CONFIG);
   let body: string | undefined;
-  client.middlewareStack.add(
-    () => async (args) => {
-      const raw = (args.request as { body?: unknown }).body;
-      body = typeof raw === 'string' ? raw : new TextDecoder().decode(raw as Uint8Array);
-      throw new Error('captured');
-    },
-    { step: 'build', priority: 'low' }
-  );
-  await (client.send as (c: typeof command) => Promise<unknown>)(command).catch(() => undefined);
+  client.middlewareStack.add(captureBody((b) => (body = b)) as never, CAPTURE_STEP);
+  await client.send(command).catch(() => undefined);
+  client.destroy();
+  if (body === undefined) throw new Error('the request body was never captured');
+  return body;
+}
+
+async function lambdaCoreRequestBody(command: CreateNetworkConnectorCommand): Promise<string> {
+  const client = new LambdaCoreClient(CLIENT_CONFIG);
+  let body: string | undefined;
+  client.middlewareStack.add(captureBody((b) => (body = b)) as never, CAPTURE_STEP);
+  await client.send(command).catch(() => undefined);
   client.destroy();
   if (body === undefined) throw new Error('the request body was never captured');
   return body;
@@ -55,8 +66,7 @@ const PENDING_MEMBERS: readonly PendingMember[] = [
     member: 'ConsumptionMode',
     sentinel: 'group-sentinel',
     serialize: () =>
-      requestBody(
-        new LambdaClient(CLIENT_CONFIG),
+      lambdaRequestBody(
         new CreateEventSourceMappingCommand({
           FunctionName: 'fn',
           SelfManagedKafkaEventSourceConfig: {
@@ -74,8 +84,7 @@ const PENDING_MEMBERS: readonly PendingMember[] = [
     member: 'ElasticIpConfiguration',
     sentinel: 'subnet-sentinel',
     serialize: () =>
-      requestBody(
-        new LambdaCoreClient(CLIENT_CONFIG),
+      lambdaCoreRequestBody(
         new CreateNetworkConnectorCommand({
           Name: 'nc',
           Configuration: {
