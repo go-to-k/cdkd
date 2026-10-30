@@ -265,6 +265,18 @@ describe('EFSProvider FileSystem throughput removal semantics (#1160)', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    it('switching from elastic to provisioned without a value is refused too', async () => {
+      // Same refusal with the other prior mode: the guard must not be
+      // specific to a bursting prior mode.
+      const previous = { ThroughputMode: 'elastic' };
+      const next = { ThroughputMode: 'provisioned' };
+
+      await expect(
+        provider.update('L', 'fs-1', 'AWS::EFS::FileSystem', next, previous)
+      ).rejects.toThrow(refusal);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     it('a provisioned template that keeps its value is not refused', async () => {
       const previous = { ThroughputMode: 'provisioned', ProvisionedThroughputInMibps: 2 };
       const next = { ThroughputMode: 'provisioned', ProvisionedThroughputInMibps: 2 };
