@@ -341,7 +341,9 @@ function varied(
   const at = members?.findIndex((m) => m === value) ?? -1;
   if (variant) node[last] = variant.value;
   else if (members && at >= 0 && members.length > 1) node[last] = members[(at + 1) % members.length];
-  else if (typeof value === 'string' && /^-?\d+$/.test(value)) node[last] = String(Number(value) + 1);
+  else if (typeof value === 'string' && /^-?\d+$/.test(value)) node[last] = value.startsWith('0')
+      ? String(Number(value) + 1).padStart(value.length, '0')
+      : String(Number(value) + 1);
   else if (value === 'true' || value === 'false') node[last] = String(value !== 'true');
   else if (typeof value === 'string') node[last] = `${value}-alt`;
   else if (typeof value === 'number') node[last] = value + 1;
@@ -1212,7 +1214,8 @@ export function describeWireCases(cases: TypeCase[]): void {
     });
 
     // A bag value no valid template holds probes a shape no CDK app sends: a
-    // provider mishandling the real one stays green.
+    // provider mishandling the real one stays green. Legacy-schema types (no
+    // `handlers`) carry no `propertyTypes`, so this check is out of scope for them.
     it('its bags carry only values of the types and enum members the schema admits', () => {
       const mismatches = schemaMismatchesOf(t.resourceType, t.bags);
       expect(Object.keys(mismatches).sort(), JSON.stringify(mismatches, null, 2)).toEqual(

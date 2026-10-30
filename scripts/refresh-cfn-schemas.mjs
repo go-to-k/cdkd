@@ -938,7 +938,7 @@ export function extractPropertyTypes(schemaJson) {
     if (node.items) flatten(node.items, `${path}[]`);
   }
   for (const [topName, tree] of shapeTrees(schemaJson)) flatten(tree, topName);
-  /** @param {Map<string, any>} m */
+  /** @param {Map<string, unknown>} m */
   const sortedRecord = (m) => Object.fromEntries([...m.keys()].sort().map((k) => [k, m.get(k)]));
   return { propertyTypes: sortedRecord(types), propertyEnums: sortedRecord(enums) };
 }
