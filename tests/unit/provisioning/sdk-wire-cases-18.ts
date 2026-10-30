@@ -214,7 +214,11 @@ const PROJECT_BAG: Bag = {
     CombineArtifacts: true,
     TimeoutInMins: 90,
     BatchReportMode: 'REPORT_INDIVIDUAL_BUILDS',
-    Restrictions: { MaximumBuildsAllowed: 5, ComputeTypesAllowed: ['BUILD_GENERAL1_SMALL', 'BUILD_GENERAL1_MEDIUM'] },
+    Restrictions: {
+      MaximumBuildsAllowed: 5,
+      ComputeTypesAllowed: ['BUILD_GENERAL1_SMALL', 'BUILD_GENERAL1_MEDIUM'],
+      FleetsAllowed: ['arn:aws:codebuild:us-east-1:123456789012:fleet/f1'],
+    },
   },
   BadgeEnabled: true,
   AutoRetryLimit: 2,
