@@ -146,17 +146,17 @@ describe('AppSyncProvider records real ARNs for the child types (issue #1681)', 
 
   // `CreateApiKey` reports no ARN field at all, so this one is always
   // reconstructed. Two things are asserted at once: the real account / region,
-  // and the SINGULAR `apikey` segment — the documented form
-  // (`arn:aws:appsync:us-east-1:123456789012:apis/graphqlapiid/apikey/apikeya1bzhi`,
-  // read 2026-08-12). cdkd wrote the plural `apikeys` before #1681.
-  it('ApiKey reconstructs the ARN with the singular apikey segment', async () => {
+  // and the PLURAL `apikeys` segment CloudFormation returns for `Ref` and
+  // `Fn::GetAtt Arn` (measured on a live stack, #5540; the docs print the
+  // singular `apikey`, which #1681 followed).
+  it('ApiKey reconstructs the ARN with the plural apikeys segment CloudFormation returns', async () => {
     mockSend.mockResolvedValue({ apiKey: { id: 'da2-abcdefghij' } });
 
     const result = await provider.create('K', 'AWS::AppSync::ApiKey', { ApiId: 'abcd1234' });
 
     expect(result.physicalId).toBe('abcd1234|da2-abcdefghij');
     expect(result.attributes?.['Arn']).toBe(
-      'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/apikey/da2-abcdefghij'
+      'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/apikeys/da2-abcdefghij'
     );
     expect(result.attributes?.['ApiKey']).toBe('da2-abcdefghij');
   });
@@ -191,7 +191,7 @@ describe('AppSyncProvider records real ARNs for the child types (issue #1681)', 
       { Description: 'changed' },
       {
         ApiKey: 'da2-abcdefghij',
-        Arn: 'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/apikey/da2-abcdefghij',
+        Arn: 'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/apikeys/da2-abcdefghij',
       },
     ],
   ])(
@@ -420,7 +420,7 @@ describe('AppSyncProvider.import records the child ARN attributes (issue #1728)'
       'abcd1234|da2-abcdefghij',
       {
         ApiKey: 'da2-abcdefghij',
-        Arn: 'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/apikey/da2-abcdefghij',
+        Arn: 'arn:aws:appsync:us-east-1:123456789012:apis/abcd1234/apikeys/da2-abcdefghij',
       },
     ],
   ])('import of %s records the same attribute set create() does', async (type, id, expected) => {

@@ -6,8 +6,9 @@ The PARENT's serialization point: run your own review round on a merge-ready
 lane (`verify.md` §8-i — before EVERY merge, even when the lane's
 reviewers passed; #3906). Grant it its turn only once that round AND its
 delta reviews are CLEAN, since every fix round voids an integ started beside
-them (#5337). One lane at a time: run `/run-integ` and
-`gh pr merge` yourself FROM THAT LANE'S WORKTREE — never the lane agent. The
+them (#5337). Run `/run-integ` and `gh pr merge` yourself FROM THAT LANE'S
+WORKTREE — never the lane agent: integs of lanes on DIFFERENT fixtures run in
+parallel (each from its own tree's `dist/` and marker), merges one at a time. The
 auto-mode classifier can refuse the PARENT's calls too: any refused call goes
 to `AskUserQuestion`, never a reworded retry (#4059); only
 `/run-integ` step 9's one retry (marker set or ledger push) is exempt.
@@ -17,9 +18,24 @@ running BOTH the integ and the merge there. A fix
 round DURING that tree's integ edits a `--detach` sibling, pushes
 `HEAD:<branch>` (bash reads `verify.sh` live), and fast-forwards that tree
 before the marker, re-running an integ the fix touches (#4561). Never two
-lanes' integs or merges at once, nor a merge during another lane's integ: it
-can move `main` under that batch (#4864). A turn blocked on a fixture fix
-yields to the next merge-ready lane. ANY turn holding HOURS tells the user
+merges at once, nor two integs on the SAME fixture (one stack name, one state
+prefix): queue the later lane behind the earlier one's merge and rebase it. A
+merge during another lane's integ is allowed, but it moves `main` under that
+lane (#4864): before ITS merge, re-read its marker per `verify.md` §8-b and
+re-run when main changed a scoped file it changes or code its fixture
+exercises. A turn blocked on a fixture fix never blocks the other lanes.
+**Every integ in flight across lanes is ONE parallel set under `/run-integ`
+step 4**, whichever lane owns it — its isolation rules are not per-lane:
+- a `SAFETY NOTE` fixture gets its OWN region;
+- a `cdkd gc` fixture waits until no other lane's integ is running, and none
+  starts during it;
+- a rollback-journal reader or `cdkd rollback` caller gets its own state
+  bucket (#5104);
+- cap fixtures in flight per region at what the account's VPC / EIP / NAT
+  quotas carry, else spread them across regions.
+
+The PARENT checks all four before granting each further lane's integ. ANY
+turn holding HOURS tells the user
 unasked its ETA and queue. A subagent running a turn's integs, marker and
 ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
 it (#5245); the `.live` Monitor below is the only progress signal. Its brief

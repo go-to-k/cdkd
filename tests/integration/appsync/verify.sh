@@ -295,9 +295,9 @@ assert_child_ref_arn() { # $1 = output name, $2 = expected ARN infix
 }
 assert_child_ref_arn DataSourceRef "apis/${API_ID}/datasources/"
 assert_child_ref_arn ResolverRef "apis/${API_ID}/types/"
-# The segment is the SINGULAR `apikey` (docs-verified); cdkd wrote the plural
-# `apikeys` before #1681, so this also fences that half.
-assert_child_ref_arn ApiKeyRef "apis/${API_ID}/apikey/"
+# The segment is the PLURAL `apikeys` CloudFormation returns (measured,
+# #5540); the docs print the singular `apikey`, which #1681 followed.
+assert_child_ref_arn ApiKeyRef "apis/${API_ID}/apikeys/"
 
 echo "==> Phase 1 assertions: every config property reached AWS"
 # apiType / visibility are asserted at their AWS DEFAULTS: the non-default

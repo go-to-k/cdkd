@@ -9,6 +9,7 @@ import {
   refuseUnservedAttribute,
 } from './getatt-refusals.js';
 import { noteAttributeSecrecy } from './getatt.js';
+import { graphQLSchemaCfnId } from './ref-values.js';
 
 /**
  * `constructAttribute`'s per-type handlers for AWS::Events::Rule through AWS::SNS::Topic, moved
@@ -184,6 +185,14 @@ export async function constructAttributeForAppTypes(
           context
         );
     }
+  }
+
+  // AppSync GraphQLSchema: `Id` is the registry schema's primaryIdentifier,
+  // so it takes the same value as its `Ref`, `<apiId>GraphQLSchema` (issue
+  // #5540). CloudFormation itself never serves it: a stack reading it ended
+  // `Internal Failure` with every resource created (measured 2026-10-30).
+  if (resourceType === 'AWS::AppSync::GraphQLSchema' && attributeName === 'Id') {
+    return graphQLSchemaCfnId(physicalId);
   }
 
   // `AWS::ApiGatewayV2::Api` (physicalId is the bare api id). The provider

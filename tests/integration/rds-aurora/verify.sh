@@ -69,6 +69,14 @@
 # that destroy only passes the failure-set check if the target group is deleted
 # through the SDK provider.
 #
+# #2762 (DBProxyEndpoint EndpointNetworkType): the reader endpoint declares
+# EndpointNetworkType=IPV4. Before #2762 the key was a silent drop, which routed
+# the endpoint to Cloud Control; phase 1 asserts provisionedBy=sdk, the recorded
+# value, and the live value from DescribeDBProxyEndpoints. Only the routing
+# check discriminates: IPV4 is also AWS's default, so the live value cannot
+# prove cdkd sent the key (DUAL needs a dual-stack VPC). The unit and sdk-wire
+# suites own the CreateDBProxyEndpoint send.
+#
 # The SecurityCluster is also asserted to carry `provisionedBy=sdk` in cdkd
 # state — a routing guard proving none of the set props flipped the resource
 # to the Cloud Control path (which would make the SDK-provider verification
@@ -674,6 +682,33 @@ if [ "${PRE_DEBUG}" != "True" ]; then
   exit 1
 fi
 echo "    OK: #1160 DBProxy premise: ${PROXY_LOGICAL} (sdk) records and holds DebugLogging=true"
+
+# --- #2762: DBProxyEndpoint EndpointNetworkType stays on the SDK route -------
+# The stack declares exactly one DBProxyEndpoint; read its record once.
+EP_ENTRY=$(echo "${STATE}" | jq -c '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBProxyEndpoint")] | first // {}')
+EP_LOGICAL=$(echo "${EP_ENTRY}" | jq -r '.key // ""')
+EP_NAME=$(echo "${EP_ENTRY}" | jq -r '.value.physicalId // ""')
+if [ -z "${EP_LOGICAL}" ] || [ -z "${EP_NAME}" ]; then
+  echo "FAIL: #2762: could not resolve the DBProxyEndpoint from state" >&2
+  exit 1
+fi
+EP_PROVISIONED_BY=$(echo "${EP_ENTRY}" | jq -r '.value.provisionedBy // "sdk"')
+if [ "${EP_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: #2762: ${EP_LOGICAL} (AWS::RDS::DBProxyEndpoint) is routed via '${EP_PROVISIONED_BY}', expected 'sdk' (EndpointNetworkType must not route it to Cloud Control)" >&2
+  exit 1
+fi
+RECORDED_EP_NETWORK=$(echo "${EP_ENTRY}" | jq -r '.value.properties | if has("EndpointNetworkType") then .EndpointNetworkType | tostring else "absent" end')
+if [ "${RECORDED_EP_NETWORK}" != "IPV4" ]; then
+  echo "FAIL: #2762: ${EP_LOGICAL} records EndpointNetworkType=${RECORDED_EP_NETWORK}, expected IPV4" >&2
+  exit 1
+fi
+LIVE_EP_NETWORK=$(aws rds describe-db-proxy-endpoints --db-proxy-endpoint-name "${EP_NAME}" --region "${REGION}" \
+  --query 'DBProxyEndpoints[0].EndpointNetworkType' --output text)
+if [ "${LIVE_EP_NETWORK}" != "IPV4" ]; then
+  echo "FAIL: #2762: live EndpointNetworkType of ${EP_NAME} is '${LIVE_EP_NETWORK}', expected IPV4" >&2
+  exit 1
+fi
+echo "    OK: #2762: ${EP_LOGICAL} (sdk) records and holds EndpointNetworkType=IPV4"
 
 # --- Phase 2: UPDATE pass (#5004 removal keeps) --------------------
 echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (SecondsUntilAutoPause 600 -> 1800; DROP DeletionProtection + EnableIAMDatabaseAuthentication + MonitoringInterval + MonitoringRoleArn, all KEPT; DROP Port, reset to 5432; DROP the managed password for a MasterUserPassword; drop proxy DebugLogging; set proxy MaxConnectionsPercent=90)"
