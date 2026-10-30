@@ -539,6 +539,9 @@ const GLOBAL_TABLE_CASE: TypeCase = {
     TableClass:
       'not an AWS::DynamoDB::GlobalTable property (CloudFormation refuses it, measured on go-to-k/cdkd#5355): the provider reads it only as the fallback of the deploy-region Replicas[].TableClass, which the provisioned bag carries (dynamodb-globaltable-provider.ts, 9524-9541)',
   },
+  nestedExempt: {
+    'Replicas.DisassociationProtectionEnabled': `refused before any call: DynamoDB takes it only as a solo per-replica UpdateTable, which ${S} does not make yet (disassociationProtectionRefusal, issue #5570; pinned by dynamodb-globaltable-disassociation-protection.test.ts)`,
+  },
   targets: [
     { path: ['Replicas', 0, 'Tags', 0], command: 'UntagResourceCommand', names: '"k1"', notNames: '"k2"' },
     { path: ['Replicas', 0, 'Tags', 1], command: 'UntagResourceCommand', names: '"k2"', notNames: '"k1"' },

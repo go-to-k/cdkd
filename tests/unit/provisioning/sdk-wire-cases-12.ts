@@ -698,7 +698,9 @@ const ECS_APP_CONTAINER = {
     Type: 'fluentbit',
     Options: { 'enable-ecs-log-metadata': 'true', 'config-file-type': 'file' },
   },
-  ResourceRequirements: [{ Type: 'GPU', Value: '1' }],
+  ResourceRequirements: [
+    { Type: 'GPU', Value: '1', SharingStrategy: { NvidiaMps: { Memory: 1024, MaxComputePercent: 50 } } },
+  ],
   SystemControls: [{ Namespace: 'net.core.somaxconn', Value: '1024' }],
   ExtraHosts: [{ Hostname: 'db', IpAddress: '10.0.0.1' }],
   RestartPolicy: { Enabled: true, IgnoredExitCodes: [0, 1], RestartAttemptPeriod: 60 },
@@ -977,6 +979,7 @@ const SERVICE_TOP = {
       SecretOptions: [{ Name: 'n', ValueFrom: `arn:aws:ssm:us-east-1:${ACCOUNT}:parameter/n` }],
     },
     AccessLogConfiguration: { Format: 'TEXT', IncludeQueryParameters: 'ENABLED' },
+    ContainerConfigurations: [{ LogLevel: 'debug' }],
   },
   VolumeConfigurations: [
     {

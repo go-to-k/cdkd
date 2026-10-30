@@ -671,7 +671,15 @@ describe('ECS Service config properties (#609)', () => {
   describe('declarations', () => {
     it('reports no silent-drop property left for the type', () => {
       const coverage = PROPERTY_COVERAGE_BY_TYPE.get(TYPE);
-      expect([...(coverage?.silentDrop.keys() ?? [])]).toEqual([]);
+      // Added by AWS in the 2026-10-20 schema refresh (#5123). The installed
+      // `@aws-sdk/client-ecs` models it on CreateServiceRequest / UpdateServiceRequest,
+      // but the provider does not write it yet, so a template using it routes
+      // through Cloud Control. Drop the name from this set once the provider wires it.
+      const notYetWired = new Set(['GatewayConnectors']);
+      for (const property of notYetWired) {
+        expect(coverage?.silentDrop.has(property), property).toBe(true);
+      }
+      expect([...(coverage?.silentDrop.keys() ?? [])].filter((p) => !notYetWired.has(p))).toEqual([]);
       for (const property of [
         'AvailabilityZoneRebalancing',
         'DeploymentController',

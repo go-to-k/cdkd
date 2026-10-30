@@ -64,6 +64,7 @@
       "MultiRegionConsistency",
       "ReadOnDemandThroughputSettings",
       "ReadProvisionedThroughputSettings",
+      "TableType",
       "VectorIndexes",
       "WarmThroughput"
     ],
@@ -115,6 +116,9 @@
       "Ipv4IpamPoolId",
       "Ipv4NetmaskLength",
       "VpcEncryptionControl"
+    ],
+    "AWS::ECS::Service": [
+      "GatewayConnectors"
     ],
     "AWS::ElastiCache::CacheCluster": [
       "SnapshotArns"
@@ -189,7 +193,8 @@
       "SourceDbClusterResourceId",
       "SourceRegion",
       "StorageType",
-      "UseLatestRestorableTime"
+      "UseLatestRestorableTime",
+      "WithExpressConfiguration"
     ],
     "AWS::RDS::DBInstance": [
       "AdditionalStorageVolumes",
