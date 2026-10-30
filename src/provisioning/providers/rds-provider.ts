@@ -1133,7 +1133,8 @@ export class RDSProvider implements ResourceProvider {
 
     try {
       // Its own ProvisioningError names the cause; the catch passes it through.
-      const vpcSgIds = await this.dbClusterSecurityGroupsToSend(
+      const vpcSgIds = await this.securityGroupsToSend(
+        'DBCluster',
         logicalId,
         physicalId,
         resourceType,
@@ -1173,7 +1174,7 @@ export class RDSProvider implements ResourceProvider {
       //     on Aurora; on a Multi-AZ DB cluster CloudFormation sends 3306,
       //     which RDS refuses: `CLUSTER_REMOVED_PORT`), ManageMasterUserPassword
       //     (to false, `managedPasswordOnRemoval`), VpcSecurityGroupIds (to the
-      //     VPC's default security group, `dbClusterSecurityGroupsToSend`).
+      //     VPC's default security group, `securityGroupsToSend`).
       //   * KEPT (omitted = unchanged): DeletionProtection,
       //     EnableIAMDatabaseAuthentication, EngineVersion, MonitoringInterval,
       //     MonitoringRoleArn, ServerlessV2ScalingConfiguration.
@@ -1725,6 +1726,17 @@ export class RDSProvider implements ResourceProvider {
     this.logger.debug(`Updating DBInstance ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    // Outside the try: it throws only its own ProvisioningError, which names
+    // the cause and must not be re-wrapped.
+    const vpcSgIds = await this.securityGroupsToSend(
+      'DBInstance',
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
 
     try {
       // #609 backfill — 6 mutable sibling props matching DBCluster.
@@ -1767,8 +1779,10 @@ export class RDSProvider implements ResourceProvider {
       // MasterUserSecret removed while the managed password stays on: the
       // credential gate re-sends ManageMasterUserPassword=true with no key.
       // CloudFormation sends neither, and the secret stays on its customer key
-      // either way (#1160 comment 6484915102). VPCSecurityGroups is
-      // classified UNCERTAIN in the #1160 audit and sends nothing.
+      // either way (#1160 comment 6484915102).
+      // VPCSecurityGroups removed: CloudFormation sends the VPC's `default`
+      // security group, alone and beside another change (#5542 A/B), so
+      // `securityGroupsToSend` looks it up, as for a DB cluster.
       // DBInstanceClass is not required by the registry schema (no top-level
       // `required`), and a removal sends nothing: CloudFormation sends no class
       // either, and the update keeps the live one (same comment).
@@ -1812,9 +1826,7 @@ export class RDSProvider implements ResourceProvider {
               }),
               // #5153: only a changed password; any supplied one resets credentials.
               ...(instancePassword !== undefined && { MasterUserPassword: instancePassword }),
-              ...(properties['VPCSecurityGroups'] !== undefined && {
-                VpcSecurityGroupIds: properties['VPCSecurityGroups'] as string[],
-              }),
+              ...(vpcSgIds !== undefined && { VpcSecurityGroupIds: vpcSgIds }),
               // #609 security-cluster backfill — 5 mutable via ModifyDBInstance.
               // `KmsKeyId` is intentionally NOT forwarded here (storage-encryption
               // key is immutable post-create; a template change replaces the
@@ -2322,21 +2334,25 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
-   * The `VpcSecurityGroupIds` a DBCluster update sends, or `undefined` to omit
-   * it (ModifyDBCluster keeps the live groups then):
+   * The security groups a DBCluster (`VpcSecurityGroupIds`) or DBInstance
+   * (`VPCSecurityGroups`) update sends as SDK `VpcSecurityGroupIds`, or
+   * `undefined` to omit it (ModifyDBCluster / ModifyDBInstance keep the live
+   * groups then):
    *
    * - A non-empty declared list is sent as declared.
    * - An EMPTY list is omitted: `[]` would detach every group, and
    *   `readCurrentState` emits `[]` for a cluster with none, which
    *   `drift --revert` hands back as the desired bag.
    * - A list the previous template declared and the desired one omits is a
-   *   removal (issue #1160). A real CloudFormation A/B showed CloudFormation
+   *   removal (issue #1160). Real CloudFormation A/Bs showed CloudFormation
    *   then attaches the VPC's `default` security group in place of the
-   *   declared ones, so cdkd looks that group up and sends it. A previous
-   *   EMPTY list attached nothing, and a `drift --revert` baseline is a
-   *   readback rather than a template, so neither counts as a removal.
+   *   declared ones, for a DB cluster and (#5542) a DB instance alike, so cdkd
+   *   looks that group up and sends it. A previous EMPTY list attached
+   *   nothing, and a `drift --revert` baseline is a readback rather than a
+   *   template, so neither counts as a removal.
    */
-  private async dbClusterSecurityGroupsToSend(
+  private async securityGroupsToSend(
+    target: 'DBCluster' | 'DBInstance',
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -2344,9 +2360,11 @@ export class RDSProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context: UpdateContext | undefined
   ): Promise<string[] | undefined> {
-    const desired = properties['VpcSecurityGroupIds'] as string[] | undefined;
+    const key = target === 'DBCluster' ? 'VpcSecurityGroupIds' : 'VPCSecurityGroups';
+    const noun = target === 'DBCluster' ? 'cluster' : 'instance';
+    const desired = properties[key] as string[] | undefined;
     if (desired !== undefined) return desired.length > 0 ? desired : undefined;
-    const previous = previousProperties['VpcSecurityGroupIds'];
+    const previous = previousProperties[key];
     if (context?.desiredFromAwsReadback === true) return undefined;
     if (!Array.isArray(previous) || previous.length === 0) return undefined;
 
@@ -2356,15 +2374,25 @@ export class RDSProvider implements ResourceProvider {
     let missing: string | undefined;
     let awsError: unknown;
     try {
-      const subnetGroupName = (await this.describeDBCluster(physicalId))?.DBSubnetGroup;
-      const vpcId = subnetGroupName
-        ? (
-            await this.getClient().send(
-              new DescribeDBSubnetGroupsCommand({ DBSubnetGroupName: subnetGroupName })
-            )
-          ).DBSubnetGroups?.[0]?.VpcId
-        : undefined;
-      if (!subnetGroupName) missing = 'the cluster reports no DB subnet group';
+      // A DB instance reports its subnet group's VPC inline; a cluster names
+      // only the group, so its VPC takes one more read.
+      let subnetGroupName: string | undefined;
+      let vpcId: string | undefined;
+      if (target === 'DBInstance') {
+        const subnetGroup = (await this.describeDBInstance(physicalId))?.DBSubnetGroup;
+        subnetGroupName = subnetGroup?.DBSubnetGroupName;
+        vpcId = subnetGroupName ? subnetGroup?.VpcId : undefined;
+      } else {
+        subnetGroupName = (await this.describeDBCluster(physicalId))?.DBSubnetGroup;
+        vpcId = subnetGroupName
+          ? (
+              await this.getClient().send(
+                new DescribeDBSubnetGroupsCommand({ DBSubnetGroupName: subnetGroupName })
+              )
+            ).DBSubnetGroups?.[0]?.VpcId
+          : undefined;
+      }
+      if (!subnetGroupName) missing = `the ${noun} reports no DB subnet group`;
       else if (!vpcId) missing = `DB subnet group ${subnetGroupName} reports no VPC`;
       else {
         const groups = await this.getEc2Client().send(
@@ -2395,7 +2423,7 @@ export class RDSProvider implements ResourceProvider {
       }
       const shown = mask(failure?.summary ?? '');
       const refusal = new ProvisioningError(
-        `Failed to update DBCluster ${logicalId}: VpcSecurityGroupIds was removed from the template, so the cluster moves to its VPC's default security group (as CloudFormation does), but cdkd could not find that group: ${missing ?? shown}. Declare VpcSecurityGroupIds in the template to choose the cluster's security groups.`,
+        `Failed to update ${target} ${logicalId}: ${key} was removed from the template, so the ${noun} moves to its VPC's default security group (as CloudFormation does), but cdkd could not find that group: ${missing ?? shown}. Declare ${key} in the template to choose the ${noun}'s security groups.`,
         resourceType,
         logicalId,
         physicalId,
@@ -2412,7 +2440,7 @@ export class RDSProvider implements ResourceProvider {
     }
     // A warning, not info: the default group may grant wider access.
     this.logger.warn(
-      safeMsg`${logicalId}: VpcSecurityGroupIds was removed from the template; attaching the VPC's default security group ${groupId}, as CloudFormation does.`
+      safeMsg`${logicalId}: ${key} was removed from the template; attaching the VPC's default security group ${groupId}, as CloudFormation does.`
     );
     return [groupId];
   }

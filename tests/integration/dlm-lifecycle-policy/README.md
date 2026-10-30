@@ -39,7 +39,11 @@ the SDK provider.
    the live value of a removed shorthand field, so cdkd sends no reset;
    asserts AWS still reads back the baseline `2 / 3 / true / true / 1 / true / 1`
    (CreateInterval / RetainInterval / CopyTags / ExtendDeletion / #CrossRegionCopyTargets /
-   ExcludeBootVolumes / #ExcludeTags) with the policy id unchanged.
+   ExcludeBootVolumes / #ExcludeTags) with the policy id unchanged. The same
+   redeploy drops the standard policy's Description beside a RetainRule count
+   change (issue #5546): asserts AWS keeps the Description and applies the
+   count, that the deploy prints each policy's kept-removal warning exactly
+   once, and that no "CloudFormation would reset it" line names either policy.
 3. **Destroy** and assert both policies + the role are gone from AWS and
    the cdkd state file is removed.
 
