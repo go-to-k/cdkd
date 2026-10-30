@@ -15,6 +15,9 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
   true (ModifyDBProxy keeps an omitted setting, and a CFn A/B showed
   CloudFormation keeps it too) and that the deploy warned about it, saying
   CloudFormation leaves it (issue #1160)
+- **RDS Proxy endpoint** (`ReaderEndpoint`, READ_ONLY) - declares
+  `EndpointNetworkType: IPV4`; verify.sh asserts the endpoint stayed on the SDK
+  route, records the value and holds it live (issue #2762)
 
 - **SecurityCluster** (L1 `CfnDBCluster`, aurora-postgresql, no instance) - the
   issue #609 DBCluster security-property silent-drop assertions

@@ -284,7 +284,11 @@ const CLUSTER_CASE: TypeCase = {
 
 // --- AWS::RDS::DBInstance ------------------------------------------------------
 
-/** DescribeDBInstances answers the instance available with its ARN: the create wait settles at once. */
+/**
+ * DescribeDBInstances answers the instance available with its ARN: the create
+ * wait settles at once. Its subnet group's VPC and that VPC's `default` group
+ * serve a removed VPCSecurityGroups (go-to-k/cdkd#5542).
+ */
 function armInstance(): void {
   setOutputOverrides({
     DescribeDBInstancesCommand: () => ({
@@ -293,9 +297,11 @@ function armInstance(): void {
           DBInstanceIdentifier: INSTANCE_ID,
           DBInstanceArn: INSTANCE_ARN,
           DBInstanceStatus: 'available',
+          DBSubnetGroup: { DBSubnetGroupName: SUBNET_GROUP, VpcId: 'vpc-1' },
         },
       ],
     }),
+    DescribeSecurityGroupsCommand: () => ({ SecurityGroups: [{ GroupId: DEFAULT_SG }] }),
   });
 }
 
@@ -369,11 +375,10 @@ const INSTANCE_CASE: TypeCase = {
         'update-remove:MonitoringRoleArn': KEPT('MonitoringRoleArn', '1757-1760, 1826-1828'),
         'update-remove:Port': KEPT('Port', '1757-1760, 1804-1806'),
         'update-remove:PubliclyAccessible': KEPT('PubliclyAccessible', '1757-1760, 1778'),
-        'update-remove:VPCSecurityGroups': `not reset on removal: classified UNCERTAIN in the #1160 audit, so update() sends nothing and ModifyDBInstance keeps the live groups (${SRC}:1764-1765, 1809-1811)`,
         ...Object.fromEntries(
           [0, 1].map((i) => [
             `update-remove:VPCSecurityGroups.${i}`,
-            `ModifyDBInstance sends the WHOLE desired list from next, never reading prev (${SRC}:1809-1811), so an element removal is delivered by next alone (update-add observes it)`,
+            `ModifyDBInstance sends the WHOLE desired list from next (${SRC}:1829, 2366), so an element removal is delivered by next alone (update-add observes it); only a whole-list removal reads prev (the VPC default group, go-to-k/cdkd#5542, :2354-2445)`,
           ])
         ),
       },
