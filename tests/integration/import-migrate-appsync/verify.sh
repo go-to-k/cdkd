@@ -64,6 +64,12 @@ ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
+# The API key's id is the AppSync credential and lands in state (its physical
+# id). The state bucket is VERSIONED, so `cdkd destroy` leaves it readable in
+# prior versions: sweep the stack's prefix and assert it on the success path.
+. "${REPO_ROOT}/tests/integration/s3-versions.sh"
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cdkd-import-migrate-appsync.XXXXXX")"
 
 echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
@@ -93,6 +99,9 @@ cleanup() {
     echo "[verify] cleanup: aws appsync delete-graphql-api ${API_ID}"
     aws appsync delete-graphql-api --api-id "${API_ID}" --region "${REGION}" || true
   fi
+  # NONCURRENT only: a live state.json may be the only record of resources
+  # still standing.
+  s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent || true
   rm -rf "${WORK}"
   exit "${rc}"
 }
@@ -236,4 +245,6 @@ echo "[verify] step 8 ok: API and state gone"
 
 trap - EXIT INT TERM
 rm -rf "${WORK}"
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "import-migrate-appsync state teardown"
 echo "[verify] PASS"
