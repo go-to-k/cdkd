@@ -166,9 +166,10 @@ until the distribution is `Deployed`. The cloudfront row therefore uses
 waits, cdkd takes 11.1s and Terraform 10.3s (`wait_for_deployment = false`),
 which is also a tie.
 
-On ecs, cdkd's default does not wait for the service to reach a steady state,
-and neither does Terraform's. With both tools waiting for it, `cdkd
---full-wait` takes 227.7s against Terraform's 282.7s (1.24x).
+On ecs, the cdkd and Terraform columns do not wait for the service to reach a
+steady state, which is Terraform's default. cdkd's default waits for it. With
+both tools waiting for it, cdkd takes 227.7s against Terraform's 282.7s
+(1.24x).
 
 The `--no-wait` column has no Terraform counterpart. `cdkd deploy --no-wait`
 skips the wait for every resource type, and Terraform offers a per-resource

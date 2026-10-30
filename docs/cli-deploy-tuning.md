@@ -151,16 +151,17 @@ type does not hold the stack for an hour.
   the slow types, the minimum raises that to 60 minutes, so a slow delete is
   not cut off early.
 
-### Waits under `--full-wait`
+### Waits with a limit of their own
 
-`--resource-timeout` also reaches the waits that
-[`--full-wait`](cli-deploy-waits.md#what-full-wait-adds) adds, so that a wait
-does not give up before the limit you raised:
+`--resource-timeout` also reaches the [ECS service steady-state
+wait](cli-deploy-waits.md#ecs-service-steady-state) the default runs and the
+wait [`--full-wait`](cli-deploy-waits.md#what-full-wait-adds) adds, so that a
+wait does not give up before the limit you raised:
 
 | Wait | Limit |
 | --- | --- |
-| ECS service steady state | The larger of 600 seconds and the resolved `--resource-timeout`. |
-| CloudFront `Deployed` | The larger of 20 minutes and the resolved `--resource-timeout`. |
+| ECS service steady state (default and `--full-wait`) | The larger of 600 seconds and the resolved `--resource-timeout`. |
+| CloudFront `Deployed` (`--full-wait`) | The larger of 20 minutes and the resolved `--resource-timeout`. |
 
 ## `--prefix-user-supplied-names`
 

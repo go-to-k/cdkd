@@ -1,14 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { DeleteServiceCommand, DescribeServicesCommand, UpdateServiceCommand } from '@aws-sdk/client-ecs';
 
-// Issue #1275: cdkd does NOT wait for ECS Service steady state by default.
-// CloudFormation waits, Terraform's `aws_ecs_service` does not
-// (`wait_for_steady_state` defaults to false), and cdkd takes the fast side
-// on purpose. `--full-wait` opts into the CloudFormation definition.
+// go-to-k/cdkd#5571: cdkd waits for ECS Service steady state by DEFAULT, as
+// CloudFormation does, and a circuit-breaker verdict (a FAILED deployment, or
+// a rollback that settles on another deployment) fails the resource.
+// `--no-wait` skips the wait; `--full-wait` changes nothing for this type.
 //
-// These cases pin all three halves of that decision: no wait + an actionable
-// INFO line by default, a real waiter under --full-wait (create AND update),
-// and the partial-create cleanup when the opted-in wait fails.
+// These cases pin every half of that: the default wait (create AND update),
+// the --no-wait early return with its INFO line, the partial-create cleanup
+// when the wait fails, both breaker checks in both polarities, and the
+// warn-and-continue answer for the callers that are not a template deploy
+// (a rollback replay, `cdkd drift --revert`).
 
 const { mockSend, waitUntilServicesStableMock, infoSpy, warnSpy } = vi.hoisted(() => ({
   mockSend: vi.fn(),
@@ -48,14 +50,19 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
-import { ECSProvider, settleRolloutDelays } from '../../../src/provisioning/providers/ecs-provider.js';
+import {
+  ECSProvider,
+  failedRequestedDeployment,
+  requestedRolloutOf,
+  rolloutSupersededBy,
+  settleRolloutDelays,
+} from '../../../src/provisioning/providers/ecs-provider.js';
 
-// The by-name lookup before a --full-wait CreateService (go-to-k/cdkd#4403):
-// the name is free.
-vi.spyOn(
-  ECSProvider.prototype as unknown as { serviceNameHeld(): Promise<boolean> },
-  'serviceNameHeld'
-).mockResolvedValue(false);
+// The by-name lookup before a waiting CreateService (go-to-k/cdkd#4403): the
+// name is free.
+const serviceNameHeldSpy = vi
+  .spyOn(ECSProvider.prototype as unknown as { serviceNameHeld(): Promise<boolean> }, 'serviceNameHeld')
+  .mockResolvedValue(false);
 import {
   setResolvedResourceTimeouts,
   clearResolvedResourceTimeouts,
@@ -67,6 +74,8 @@ import {
 } from './pasteable-aws-command-assert.js';
 
 const SERVICE_ARN = 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service';
+const TD_V1 = 'arn:aws:ecs:us-east-1:123456789012:task-definition/my-task:1';
+const TD_V2 = 'arn:aws:ecs:us-east-1:123456789012:task-definition/my-task:2';
 
 const CREATE_PROPS = {
   Cluster: 'my-cluster',
@@ -87,91 +96,67 @@ function mockUpdateOk() {
   });
 }
 
-describe('ECS Service wait semantics (issue #1275)', () => {
-  let originalFullWait: string | undefined;
+/** An UpdateService answer whose PRIMARY deployment is `ecs-svc/new` on TD_V2. */
+function mockUpdateStartingRollout() {
+  mockSend.mockResolvedValueOnce({
+    service: {
+      serviceArn: SERVICE_ARN,
+      serviceName: 'my-service',
+      taskDefinition: TD_V2,
+      deployments: [
+        { id: 'ecs-svc/new', status: 'PRIMARY', taskDefinition: TD_V2, rolloutState: 'IN_PROGRESS' },
+        { id: 'ecs-svc/old', status: 'ACTIVE', taskDefinition: TD_V1, rolloutState: 'COMPLETED' },
+      ],
+    },
+  });
+}
+
+/** The post-stability DescribeServices answer: one settled deployment. */
+function mockSettledOn(id: string, taskDefinition: string) {
+  mockSend.mockResolvedValueOnce({
+    services: [{ deployments: [{ id, status: 'PRIMARY', taskDefinition, rolloutState: 'COMPLETED' }] }],
+  });
+}
+
+const ENV_KEYS = ['CDKD_FULL_WAIT', 'CDKD_NO_WAIT', 'CDKD_WAIT_FLAGS_AVAILABLE'] as const;
+
+describe('ECS Service wait semantics (go-to-k/cdkd#5571)', () => {
+  const saved: Record<string, string | undefined> = {};
 
   beforeEach(() => {
     vi.clearAllMocks();
     waitUntilServicesStableMock.mockResolvedValue({ state: 'SUCCESS' });
-    originalFullWait = process.env['CDKD_FULL_WAIT'];
-    delete process.env['CDKD_FULL_WAIT'];
+    for (const key of ENV_KEYS) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
   });
 
   afterEach(() => {
-    if (originalFullWait === undefined) delete process.env['CDKD_FULL_WAIT'];
-    else process.env['CDKD_FULL_WAIT'] = originalFullWait;
+    for (const key of ENV_KEYS) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
     clearResolvedResourceTimeouts();
+    // A non-Once implementation set by a case below must not leak into the
+    // next one: clearAllMocks does not drop implementations.
+    mockSend.mockReset();
   });
 
-  describe('default (no --full-wait)', () => {
-    it('does not wait after CreateService', async () => {
+  describe('--no-wait', () => {
+    beforeEach(() => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+    });
+
+    it('does not wait after CreateService, and skips the pre-create name probe', async () => {
       mockCreateOk();
 
-      const result = await new ECSProvider().create(
-        'MySvc',
-        'AWS::ECS::Service',
-        CREATE_PROPS
-      );
+      const result = await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
 
       expect(result.physicalId).toBe(SERVICE_ARN);
       expect(waitUntilServicesStableMock).not.toHaveBeenCalled();
-    });
-
-    it('mentions --full-wait only when the invoking command declares the flag (issue #1291 item 1)', async () => {
-      // `cdkd deploy` sets CDKD_WAIT_FLAGS_AVAILABLE; `cdkd drift --revert`
-      // reaches the same provider code through update() and does NOT -- the
-      // flag does not exist there, so the hint must not advertise it.
-      process.env['CDKD_WAIT_FLAGS_AVAILABLE'] = 'true';
-      try {
-        mockCreateOk();
-        await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
-        const hint = infoSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('aws ecs wait'));
-        expect(hint).toContain('pass --full-wait to wait');
-      } finally {
-        delete process.env['CDKD_WAIT_FLAGS_AVAILABLE'];
-      }
-    });
-
-    it('does NOT advertise --full-wait when the invoking command lacks the flag (drift --revert path)', async () => {
-      delete process.env['CDKD_WAIT_FLAGS_AVAILABLE'];
-      mockCreateOk();
-
-      await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
-
-      const hint = infoSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('aws ecs wait'));
-      expect(hint).toBeDefined();
-      expect(hint).not.toContain('--full-wait');
-    });
-
-    it('prints the exact command to wait manually', async () => {
-      mockCreateOk();
-
-      await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
-
-      // A copy-pasteable next step, NOT a health verdict: right after
-      // CreateService a healthy and a doomed service are indistinguishable,
-      // so cdkd must not imply it checked.
-      expect(infoSpy).toHaveBeenCalledWith(
-        expect.stringContaining(
-          'aws ecs wait services-stable --cluster my-cluster --services my-service'
-        )
-      );
-    });
-
-    it('omits --cluster from the hint when the template does not set one', async () => {
-      mockSend.mockResolvedValueOnce({
-        service: { serviceArn: SERVICE_ARN, serviceName: 'my-service' },
-      });
-
-      await new ECSProvider().create('MySvc', 'AWS::ECS::Service', {
-        ServiceName: 'my-service',
-        TaskDefinition: 'my-task:1',
-      });
-
-      const hint = infoSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('aws ecs wait'));
-      expect(hint).toBeDefined();
-      expect(hint).not.toContain('--cluster');
-      expect(hint).toContain('--services my-service');
+      // No step after CreateService can fail, so nothing to protect.
+      expect(serviceNameHeldSpy).not.toHaveBeenCalled();
     });
 
     it('does not wait after UpdateService either', async () => {
@@ -187,13 +172,34 @@ describe('ECS Service wait semantics (issue #1275)', () => {
 
       expect(waitUntilServicesStableMock).not.toHaveBeenCalled();
     });
-  });
 
-  describe('--full-wait', () => {
-    beforeEach(() => {
-      process.env['CDKD_FULL_WAIT'] = 'true';
+    it('prints the exact command to wait manually, naming --no-wait as the reason', async () => {
+      mockCreateOk();
+
+      await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
+
+      const hint = infoSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('aws ecs wait'));
+      expect(hint).toContain('not waiting for steady state under --no-wait');
+      expect(hint).toContain('aws ecs wait services-stable --cluster my-cluster --services my-service');
+      expect(hint).not.toContain('--full-wait');
     });
 
+    it('omits --cluster from the hint when the template does not set one', async () => {
+      mockCreateOk();
+
+      await new ECSProvider().create('MySvc', 'AWS::ECS::Service', {
+        ServiceName: 'my-service',
+        TaskDefinition: 'my-task:1',
+      });
+
+      const hint = infoSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('aws ecs wait'));
+      expect(hint).toBeDefined();
+      expect(hint).not.toContain('--cluster');
+      expect(hint).toContain('--services my-service');
+    });
+  });
+
+  describe('default', () => {
     it('waits for steady state after CreateService, with a tightened poll cap', async () => {
       mockCreateOk();
 
@@ -201,26 +207,50 @@ describe('ECS Service wait semantics (issue #1275)', () => {
 
       expect(waitUntilServicesStableMock).toHaveBeenCalledTimes(1);
       const [config, input] = waitUntilServicesStableMock.mock.calls[0] as unknown as [
-        { maxWaitTime: number; minDelay: number; maxDelay: number },
+        { maxWaitTime: number; minDelay: number; maxDelay: number; abortSignal?: AbortSignal },
         { cluster?: string; services: string[] },
       ];
       expect(input).toEqual({ cluster: 'my-cluster', services: ['my-service'] });
       expect(config.minDelay).toBeLessThanOrEqual(5);
       expect(config.maxDelay).toBeLessThanOrEqual(10);
       expect(config.maxWaitTime).toBe(600);
+      // The breaker watch can end the wait early.
+      expect(config.abortSignal).toBeInstanceOf(AbortSignal);
+      // A wait that can fail the create asks whether the name was free.
+      expect(serviceNameHeldSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('waits after UpdateService too', async () => {
+      mockUpdateOk();
+
+      await new ECSProvider().update(
+        'MySvc',
+        SERVICE_ARN,
+        'AWS::ECS::Service',
+        { ...CREATE_PROPS, DesiredCount: 2 },
+        CREATE_PROPS
+      );
+
+      expect(waitUntilServicesStableMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('emits no manual-wait hint (it did the waiting)', async () => {
+      mockCreateOk();
+
+      await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
+
+      const hint = infoSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('aws ecs wait'));
+      expect(hint).toBeUndefined();
     });
 
     // The stability waiter's condition (one deployment, running == desired) is
-    // satisfied a few seconds before ECS flips rolloutState to COMPLETED —
-    // --full-wait closes that race with a bounded post-stability poll (found
-    // live by the ecs-fargate fixture's update phase after the #609 SDK-route
-    // flip; the CC route's CFn handler had been absorbing the gap).
+    // satisfied a few seconds before ECS flips rolloutState to COMPLETED — the
+    // bounded post-stability poll closes that race.
     it('polls the PRIMARY rollout to COMPLETED after the stability waiter', async () => {
       const originalSleep = settleRolloutDelays.sleep;
       settleRolloutDelays.sleep = () => Promise.resolve();
       try {
         mockCreateOk();
-        // Post-waiter DescribeServices polls: IN_PROGRESS, then COMPLETED.
         mockSend.mockResolvedValueOnce({
           services: [{ deployments: [{ rolloutState: 'IN_PROGRESS' }] }],
         });
@@ -230,9 +260,7 @@ describe('ECS Service wait semantics (issue #1275)', () => {
 
         await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
 
-        const describeCalls = mockSend.mock.calls.filter(
-          ([cmd]) => cmd instanceof DescribeServicesCommand
-        );
+        const describeCalls = mockSend.mock.calls.filter(([cmd]) => cmd instanceof DescribeServicesCommand);
         expect(describeCalls).toHaveLength(2);
       } finally {
         settleRolloutDelays.sleep = originalSleep;
@@ -242,8 +270,6 @@ describe('ECS Service wait semantics (issue #1275)', () => {
     it('warns and continues when the rollout stays IN_PROGRESS past the grace window', async () => {
       vi.useFakeTimers();
       const originalSleep = settleRolloutDelays.sleep;
-      // Each "sleep" jumps system time past the 120s deadline so the loop
-      // exits on the next iteration instead of really waiting.
       settleRolloutDelays.sleep = () => {
         vi.setSystemTime(Date.now() + 130_000);
         return Promise.resolve();
@@ -260,21 +286,14 @@ describe('ECS Service wait semantics (issue #1275)', () => {
       } finally {
         settleRolloutDelays.sleep = originalSleep;
         vi.useRealTimers();
-        // mockResolvedValue (non-Once) would leak the permanent IN_PROGRESS
-        // response into later tests — clearAllMocks does not drop
-        // implementations.
-        mockSend.mockReset();
       }
     });
 
-    // Issue #1280: `--resource-timeout` must lift the steady-state waiter's
-    // 600s cap the same way it lifts the engine's outer per-resource deadline
-    // — the inner waiter firing first made the flag a no-op for slow services.
+    // Issue #1280: `--resource-timeout` lifts the steady-state waiter's 600s
+    // cap the same way it lifts the engine's outer per-resource deadline.
     describe('maxWaitTime vs --resource-timeout (issue #1280)', () => {
       function waiterMaxWaitTime(): number {
-        const [config] = waitUntilServicesStableMock.mock.calls[0] as unknown as [
-          { maxWaitTime: number },
-        ];
+        const [config] = waitUntilServicesStableMock.mock.calls[0] as unknown as [{ maxWaitTime: number }];
         return config.maxWaitTime;
       }
 
@@ -299,10 +318,7 @@ describe('ECS Service wait semantics (issue #1275)', () => {
       });
 
       it('per-type override wins over the global value', async () => {
-        setResolvedResourceTimeouts({
-          globalMs: 900_000,
-          perTypeMs: { 'AWS::ECS::Service': 1_800_000 },
-        });
+        setResolvedResourceTimeouts({ globalMs: 900_000, perTypeMs: { 'AWS::ECS::Service': 1_800_000 } });
         mockCreateOk();
         await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
         expect(waiterMaxWaitTime()).toBe(1800);
@@ -318,40 +334,9 @@ describe('ECS Service wait semantics (issue #1275)', () => {
       it('applies on the UPDATE-side wait too', async () => {
         setResolvedResourceTimeouts({ perTypeMs: { 'AWS::ECS::Service': 1_200_000 } });
         mockUpdateOk();
-        await new ECSProvider().update(
-          'MySvc',
-          SERVICE_ARN,
-          'AWS::ECS::Service',
-          CREATE_PROPS,
-          CREATE_PROPS
-        );
+        await new ECSProvider().update('MySvc', SERVICE_ARN, 'AWS::ECS::Service', CREATE_PROPS, CREATE_PROPS);
         expect(waiterMaxWaitTime()).toBe(1200);
       });
-    });
-
-    it('waits after UpdateService too', async () => {
-      mockUpdateOk();
-
-      await new ECSProvider().update(
-        'MySvc',
-        SERVICE_ARN,
-        'AWS::ECS::Service',
-        { ...CREATE_PROPS, DesiredCount: 2 },
-        CREATE_PROPS
-      );
-
-      expect(waitUntilServicesStableMock).toHaveBeenCalledTimes(1);
-    });
-
-    it('emits no manual-wait hint (it did the waiting)', async () => {
-      mockCreateOk();
-
-      await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
-
-      const hint = infoSpy.mock.calls
-        .map((c) => String(c[0]))
-        .find((m) => m.includes('aws ecs wait'));
-      expect(hint).toBeUndefined();
     });
 
     it('force-deletes the just-created service and fails when it never stabilizes', async () => {
@@ -359,18 +344,15 @@ describe('ECS Service wait semantics (issue #1275)', () => {
       waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
       mockSend.mockResolvedValueOnce({}); // the cleanup DeleteService
 
-      await expect(
-        new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS)
-      ).rejects.toThrow(/services stable timed out/);
+      await expect(new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS)).rejects.toThrow(
+        /did not reach steady state: services stable timed out/
+      );
 
-      // Without the delete the service exists on AWS but not in cdkd state,
-      // and the next deploy collides on the service name.
       const deleteCall = mockSend.mock.calls.find((c) => c[0] instanceof DeleteServiceCommand);
       expect(deleteCall).toBeDefined();
       const input = (deleteCall![0] as DeleteServiceCommand).input;
       expect(input.service).toBe(SERVICE_ARN);
       expect(input.cluster).toBe('my-cluster');
-      // force skips the separate scale-to-0 round trip.
       expect(input.force).toBe(true);
       expect(mockSend.mock.calls.some((c) => c[0] instanceof UpdateServiceCommand)).toBe(false);
     });
@@ -380,17 +362,10 @@ describe('ECS Service wait semantics (issue #1275)', () => {
       waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
       mockSend.mockResolvedValueOnce({}); // the cleanup DeleteService
 
-      // The thrown message must carry the diagnosis path itself: the dominant
-      // --full-wait failure is a crashing container, and the cleanup just
-      // deleted the service the user would have inspected first.
-      await expect(
-        new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS)
-      ).rejects.toThrow(
+      await expect(new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS)).rejects.toThrow(
         /aws ecs list-tasks --cluster my-cluster --desired-status STOPPED, then aws ecs describe-tasks --cluster my-cluster --tasks/
       );
 
-      // And the successful deletion is a warn, not a debug line: silently
-      // removing a service the user asked to wait for hides WHY it is gone.
       const warning = warnSpy.mock.calls
         .map((c) => String(c[0]))
         .find((m) => m.includes('Deleted partially-created ECS service'));
@@ -399,17 +374,33 @@ describe('ECS Service wait semantics (issue #1275)', () => {
       expect(warning).toContain('aws ecs list-tasks --cluster my-cluster --desired-status STOPPED');
     });
 
+    it('names --no-wait in the failure only when the invoking command declares it (issue #1291 item 1)', async () => {
+      const failureText = async (): Promise<string> => {
+        mockCreateOk();
+        waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
+        mockSend.mockResolvedValueOnce({}); // the cleanup DeleteService
+        return new ECSProvider()
+          .create('MySvc', 'AWS::ECS::Service', CREATE_PROPS)
+          .then(
+            () => '',
+            (e: unknown) => String((e as Error).message)
+          );
+      };
+      // `cdkd drift --revert` reaches the same code and has no such flag.
+      expect(await failureText()).not.toContain('--no-wait');
+      process.env['CDKD_WAIT_FLAGS_AVAILABLE'] = 'true';
+      expect(await failureText()).toContain('pass --no-wait');
+    });
+
     it('renders cluster-free diagnosis commands when the template has no Cluster', async () => {
       const { Cluster: _cluster, ...noClusterProps } = CREATE_PROPS;
       mockCreateOk();
       waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
       mockSend.mockResolvedValueOnce({}); // the cleanup DeleteService
 
-      // Without a Cluster the commands must degrade to the default cluster --
-      // no dangling `--cluster ` fragment that would break a copy-paste.
-      await expect(
-        new ECSProvider().create('MySvc', 'AWS::ECS::Service', noClusterProps)
-      ).rejects.toThrow(/aws ecs list-tasks --desired-status STOPPED/);
+      await expect(new ECSProvider().create('MySvc', 'AWS::ECS::Service', noClusterProps)).rejects.toThrow(
+        /aws ecs list-tasks --desired-status STOPPED/
+      );
     });
 
     it('warns with a manual-deletion pointer when the cleanup itself fails', async () => {
@@ -417,18 +408,14 @@ describe('ECS Service wait semantics (issue #1275)', () => {
       waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
       mockSend.mockRejectedValueOnce(new Error('delete denied'));
 
-      await expect(
-        new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS)
-      ).rejects.toThrow(/services stable timed out/);
-
-      // The pointer must carry --cluster: a service in a non-default cluster
-      // cannot be deleted without it, so a copy-pasted command would 404.
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('aws ecs delete-service --cluster my-cluster')
+      await expect(new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS)).rejects.toThrow(
+        /services stable timed out/
       );
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('aws ecs delete-service --cluster my-cluster'));
     });
 
-    it('does NOT delete the service when the UPDATE-side wait fails', async () => {
+    it('does NOT delete the service when the UPDATE-side wait fails, and names the diagnosis commands', async () => {
       mockUpdateOk();
       waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
 
@@ -440,12 +427,276 @@ describe('ECS Service wait semantics (issue #1275)', () => {
           { ...CREATE_PROPS, DesiredCount: 2 },
           CREATE_PROPS
         )
-      ).rejects.toThrow(/services stable timed out/);
+      ).rejects.toThrow(
+        /did not reach steady state: services stable timed out\. Inspect why its tasks stopped .*aws ecs list-tasks --cluster my-cluster --desired-status STOPPED/
+      );
 
-      // Cleanup is a CREATE-only concern: on update the service legitimately
-      // exists and must survive, with the deploy engine's rollback re-applying
-      // the previous properties instead.
+      // On update the service legitimately exists and must survive, with the
+      // deploy engine's rollback re-applying the previous properties instead.
       expect(mockSend.mock.calls.some((c) => c[0] instanceof DeleteServiceCommand)).toBe(false);
+    });
+  });
+
+  describe('--full-wait', () => {
+    beforeEach(() => {
+      process.env['CDKD_FULL_WAIT'] = 'true';
+    });
+
+    it('waits exactly as the default does', async () => {
+      mockCreateOk();
+      await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS);
+      mockUpdateOk();
+      await new ECSProvider().update(
+        'MySvc',
+        SERVICE_ARN,
+        'AWS::ECS::Service',
+        { ...CREATE_PROPS, DesiredCount: 2 },
+        CREATE_PROPS
+      );
+
+      expect(waitUntilServicesStableMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('deployment circuit breaker', () => {
+    it('fails the update when the service settles on another deployment (a rollback)', async () => {
+      mockUpdateStartingRollout();
+      // The breaker rolled back: the single settled deployment is the old one.
+      mockSettledOn('ecs-svc/old', TD_V1);
+
+      await expect(
+        new ECSProvider().update(
+          'MySvc',
+          SERVICE_ARN,
+          'AWS::ECS::Service',
+          { ...CREATE_PROPS, TaskDefinition: TD_V2 },
+          CREATE_PROPS
+        )
+      ).rejects.toThrow(
+        /did not reach steady state: its deployment circuit breaker rolled the rollout back: the service settled on task definition my-task:1, not on the deployment this update started \(task definition my-task:2\)\..*aws ecs list-tasks --cluster my-cluster --desired-status STOPPED/
+      );
+      expect(mockSend.mock.calls.some((c) => c[0] instanceof DeleteServiceCommand)).toBe(false);
+    });
+
+    it('passes an update whose settled deployment IS the one it started (negative control)', async () => {
+      mockUpdateStartingRollout();
+      mockSettledOn('ecs-svc/new', TD_V2);
+
+      const result = await new ECSProvider().update(
+        'MySvc',
+        SERVICE_ARN,
+        'AWS::ECS::Service',
+        { ...CREATE_PROPS, TaskDefinition: TD_V2 },
+        CREATE_PROPS
+      );
+
+      expect(result.physicalId).toBe(SERVICE_ARN);
+    });
+
+    it('ends the wait at once when the requested deployment turns FAILED, and fails the update', async () => {
+      mockUpdateStartingRollout();
+      // The waiter's own DescribeServices answer: the breaker marked the new
+      // deployment FAILED while ECS rolls back to the old one.
+      mockSend.mockResolvedValueOnce({
+        services: [
+          {
+            deployments: [
+              { id: 'ecs-svc/old', status: 'PRIMARY', taskDefinition: TD_V1, rolloutState: 'IN_PROGRESS' },
+              { id: 'ecs-svc/new', status: 'ACTIVE', taskDefinition: TD_V2, rolloutState: 'FAILED' },
+            ],
+          },
+        ],
+      });
+      let abortedWhenReturned: boolean | undefined;
+      waitUntilServicesStableMock.mockImplementationOnce((async (config: {
+        client: { send(c: unknown): Promise<unknown> };
+        abortSignal: AbortSignal;
+      }) => {
+        await config.client.send(new DescribeServicesCommand({ services: ['my-service'] }));
+        abortedWhenReturned = config.abortSignal.aborted;
+        // What `checkExceptions` throws for an ABORTED waiter result.
+        const abortError = new Error(JSON.stringify({ state: 'ABORTED' }));
+        abortError.name = 'AbortError';
+        throw abortError;
+      }) as unknown as () => Promise<{ state: string }>);
+
+      await expect(
+        new ECSProvider().update(
+          'MySvc',
+          SERVICE_ARN,
+          'AWS::ECS::Service',
+          { ...CREATE_PROPS, TaskDefinition: TD_V2 },
+          CREATE_PROPS
+        )
+      ).rejects.toThrow(
+        /its deployment circuit breaker failed the rollout of task definition my-task:2 \(deployment FAILED\)/
+      );
+      expect(abortedWhenReturned).toBe(true);
+      // No post-stability poll ran: only UpdateService and the waiter's read.
+      expect(mockSend.mock.calls.filter((c) => c[0] instanceof DescribeServicesCommand)).toHaveLength(1);
+    });
+
+    it('does not abort the wait while the requested deployment is still IN_PROGRESS', async () => {
+      mockUpdateStartingRollout();
+      mockSend.mockResolvedValueOnce({
+        services: [
+          {
+            deployments: [
+              { id: 'ecs-svc/new', status: 'PRIMARY', taskDefinition: TD_V2, rolloutState: 'IN_PROGRESS' },
+              // An OLD deployment's FAILED state is not this update's verdict.
+              { id: 'ecs-svc/old', status: 'ACTIVE', taskDefinition: TD_V1, rolloutState: 'FAILED' },
+            ],
+          },
+        ],
+      });
+      let aborted: boolean | undefined;
+      waitUntilServicesStableMock.mockImplementationOnce((async (config: {
+        client: { send(c: unknown): Promise<unknown> };
+        abortSignal: AbortSignal;
+      }) => {
+        await config.client.send(new DescribeServicesCommand({ services: ['my-service'] }));
+        aborted = config.abortSignal.aborted;
+        return { state: 'SUCCESS' };
+      }) as unknown as () => Promise<{ state: string }>);
+      mockSettledOn('ecs-svc/new', TD_V2);
+
+      await new ECSProvider().update(
+        'MySvc',
+        SERVICE_ARN,
+        'AWS::ECS::Service',
+        { ...CREATE_PROPS, TaskDefinition: TD_V2 },
+        CREATE_PROPS
+      );
+
+      expect(aborted).toBe(false);
+    });
+
+    describe('verdict helpers', () => {
+      it('requestedRolloutOf reads the PRIMARY deployment, else the service task definition', () => {
+        expect(
+          requestedRolloutOf({
+            deployments: [
+              { id: 'a', status: 'ACTIVE', taskDefinition: TD_V1 },
+              { id: 'b', status: 'PRIMARY', taskDefinition: TD_V2 },
+            ],
+          })
+        ).toEqual({ deploymentId: 'b', taskDefinition: TD_V2 });
+        expect(requestedRolloutOf({ taskDefinition: TD_V2 })).toEqual({
+          deploymentId: undefined,
+          taskDefinition: TD_V2,
+        });
+        expect(requestedRolloutOf({ serviceArn: SERVICE_ARN })).toBeUndefined();
+        expect(requestedRolloutOf(undefined)).toBeUndefined();
+      });
+
+      it('rolloutSupersededBy decides by deployment id, then task definition, and fails open', () => {
+        const requested = { deploymentId: 'ecs-svc/new', taskDefinition: TD_V2 };
+        expect(rolloutSupersededBy(requested, { id: 'ecs-svc/new', taskDefinition: TD_V2 })).toBeUndefined();
+        expect(rolloutSupersededBy(requested, { id: 'ecs-svc/old', taskDefinition: TD_V1 })).toBe(
+          'task definition my-task:1'
+        );
+        // A rollback to the same task definition (a failed network change)
+        // is still another deployment.
+        expect(rolloutSupersededBy(requested, { id: 'ecs-svc/old', taskDefinition: TD_V2 })).toBe(
+          'task definition my-task:2'
+        );
+        // No id on the requested side: the task-definition ARN decides.
+        expect(rolloutSupersededBy({ taskDefinition: TD_V2 }, { taskDefinition: TD_V2 })).toBeUndefined();
+        expect(rolloutSupersededBy({ taskDefinition: TD_V2 }, { taskDefinition: TD_V1 })).toBe(
+          'task definition my-task:1'
+        );
+        // Unreadable either side: no verdict.
+        expect(rolloutSupersededBy(undefined, { id: 'x' })).toBeUndefined();
+        expect(rolloutSupersededBy(requested, undefined)).toBeUndefined();
+        expect(rolloutSupersededBy({ deploymentId: 'ecs-svc/new' }, { taskDefinition: TD_V1 })).toBeUndefined();
+      });
+
+      it('failedRequestedDeployment matches the requested id, else the PRIMARY deployment', () => {
+        const failedNew = { id: 'ecs-svc/new', status: 'ACTIVE', rolloutState: 'FAILED' as const };
+        expect(failedRequestedDeployment({ deploymentId: 'ecs-svc/new' }, [failedNew])).toBe(failedNew);
+        expect(
+          failedRequestedDeployment({ deploymentId: 'ecs-svc/other' }, [failedNew])
+        ).toBeUndefined();
+        const failedPrimary = { id: 'p', status: 'PRIMARY', rolloutState: 'FAILED' as const };
+        expect(failedRequestedDeployment(undefined, [failedPrimary])).toBe(failedPrimary);
+        expect(
+          failedRequestedDeployment(undefined, [{ ...failedPrimary, rolloutState: 'IN_PROGRESS' as const }])
+        ).toBeUndefined();
+        expect(failedRequestedDeployment(undefined, undefined)).toBeUndefined();
+      });
+    });
+  });
+
+  // A rollback replay and `cdkd drift --revert` re-apply a configuration the
+  // service held before; failing them on the rollout would leave the stack
+  // un-rollbackable, so they warn and continue.
+  describe('callers that are not a template deploy', () => {
+    for (const [label, context] of [
+      ['rollback replay (replayingState)', { replayingState: true }],
+      ['drift --revert (desiredFromAwsReadback)', { desiredFromAwsReadback: true }],
+    ] as const) {
+      it(`${label}: a failed UPDATE wait warns and the update reports applied`, async () => {
+        mockUpdateOk();
+        waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
+
+        const result = await new ECSProvider().update(
+          'MySvc',
+          SERVICE_ARN,
+          'AWS::ECS::Service',
+          { ...CREATE_PROPS, DesiredCount: 2 },
+          CREATE_PROPS,
+          context
+        );
+
+        expect(result.physicalId).toBe(SERVICE_ARN);
+        const warning = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('steady state'));
+        expect(warning).toContain('services stable timed out');
+        expect(warning).toContain('aws ecs list-tasks --cluster my-cluster --desired-status STOPPED');
+        expect(warning).toContain('continuing');
+      });
+
+      it(`${label}: a breaker rollback warns instead of failing`, async () => {
+        mockUpdateStartingRollout();
+        mockSettledOn('ecs-svc/old', TD_V1);
+
+        const result = await new ECSProvider().update(
+          'MySvc',
+          SERVICE_ARN,
+          'AWS::ECS::Service',
+          { ...CREATE_PROPS, TaskDefinition: TD_V2 },
+          CREATE_PROPS,
+          context
+        );
+
+        expect(result.physicalId).toBe(SERVICE_ARN);
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('circuit breaker rolled the rollout back'));
+      });
+    }
+
+    it('a rollback re-create (CreateContext.replayingState) keeps the service and warns, no cleanup delete', async () => {
+      mockCreateOk();
+      waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
+
+      const result = await new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS, {
+        replayingState: true,
+      });
+
+      expect(result.physicalId).toBe(SERVICE_ARN);
+      expect(mockSend.mock.calls.some((c) => c[0] instanceof DeleteServiceCommand)).toBe(false);
+      // The cleanup never runs, so the name probe guarding it is not asked.
+      expect(serviceNameHeldSpy).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Continuing the rollback'));
+    });
+
+    it('a template-path create still deletes and fails (negative control for the replay arm)', async () => {
+      mockCreateOk();
+      waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
+      mockSend.mockResolvedValueOnce({}); // the cleanup DeleteService
+
+      await expect(
+        new ECSProvider().create('MySvc', 'AWS::ECS::Service', CREATE_PROPS, { replayingState: false })
+      ).rejects.toThrow(/did not reach steady state/);
+      expect(mockSend.mock.calls.some((c) => c[0] instanceof DeleteServiceCommand)).toBe(true);
     });
   });
 });
@@ -459,21 +710,22 @@ describe('ECS Service pasteable commands (issue #3136)', () => {
     vi.clearAllMocks();
     waitUntilServicesStableMock.mockResolvedValue({ state: 'SUCCESS' });
     delete process.env['CDKD_FULL_WAIT'];
+    delete process.env['CDKD_NO_WAIT'];
   });
 
   afterEach(() => {
     delete process.env['CDKD_FULL_WAIT'];
+    delete process.env['CDKD_NO_WAIT'];
   });
 
-  it('the manual-wait hint withholds the command for a forged cluster or service name', async () => {
+  it('the --no-wait manual-wait hint withholds the command for a forged cluster or service name', async () => {
+    process.env['CDKD_NO_WAIT'] = 'true';
     const hintFor = async (cluster: string, serviceName: string): Promise<string> => {
       infoSpy.mockReset();
       mockSend.mockResolvedValueOnce({ service: { serviceArn: SERVICE_ARN, serviceName } });
       await new ECSProvider().create('MySvc', 'AWS::ECS::Service', { ...CREATE_PROPS, Cluster: cluster });
       return infoSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('To wait manually'))!;
     };
-    // Each argument forged on its own, the other clean, so bypassing the gate
-    // for either one reds (go-to-k/cdkd#3950); both clean, the command prints.
     expectWithheld(await hintFor(`c${FORGED_QUOTE}`, 'svc'), 'aws ecs wait');
     expectWithheld(await hintFor('c', `svc${FORGED_QUOTE}`), 'aws ecs wait');
     expect(await hintFor('c', 'svc')).toContain('aws ecs wait services-stable --cluster c --services svc');
@@ -489,8 +741,7 @@ describe('ECS Service pasteable commands (issue #3136)', () => {
     );
   });
 
-  async function fullWaitFailure(cluster: string, deleteOk: boolean): Promise<{ thrown: string; warn: string }> {
-    process.env['CDKD_FULL_WAIT'] = 'true';
+  async function waitFailure(cluster: string, deleteOk: boolean): Promise<{ thrown: string; warn: string }> {
     mockCreateOk();
     waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
     if (deleteOk) mockSend.mockResolvedValueOnce({});
@@ -504,24 +755,25 @@ describe('ECS Service pasteable commands (issue #3136)', () => {
     return { thrown, warn: warnSpy.mock.calls.map((c) => String(c[0])).join('\n') };
   }
 
-  it('the --full-wait failure commands are withheld wherever they would name a forged cluster', async () => {
-    const clean = await fullWaitFailure('my-cluster', true);
+  it('the steady-state failure commands are withheld wherever they would name a forged cluster', async () => {
+    const clean = await waitFailure('my-cluster', true);
     // The task-arn hole is quoted: bare, `<task-arn>` is two redirections.
     expect(clean.thrown).toContain(`aws ecs describe-tasks --cluster my-cluster --tasks '<task-arn>'`);
 
     warnSpy.mockReset();
     const cluster = `c${FORGED_QUOTE}`;
-    const ok = await fullWaitFailure(cluster, true);
+    const ok = await waitFailure(cluster, true);
     expectWithheld(ok.warn, 'aws ecs list-tasks');
     expectWithheld(ok.thrown, 'aws ecs list-tasks');
     expectWithheld(ok.thrown, 'aws ecs describe-tasks');
 
     warnSpy.mockReset();
-    const failed = await fullWaitFailure(cluster, false);
+    const failed = await waitFailure(cluster, false);
     expectWithheld(failed.warn, 'aws ecs delete-service');
   });
 
   it('a NON-string Cluster withholds the manual-wait hint instead of dropping --cluster', async () => {
+    process.env['CDKD_NO_WAIT'] = 'true';
     mockCreateOk();
     await new ECSProvider().create('MySvc', 'AWS::ECS::Service', {
       ...CREATE_PROPS,
@@ -531,26 +783,25 @@ describe('ECS Service pasteable commands (issue #3136)', () => {
       infoSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('To wait manually'))!,
       'aws ecs wait'
     );
+    delete process.env['CDKD_NO_WAIT'];
     warnSpy.mockReset();
-    const failed = await fullWaitFailure({ Ref: 'X' } as unknown as string, false);
+    const failed = await waitFailure({ Ref: 'X' } as unknown as string, false);
     expectWithheld(failed.warn, 'aws ecs delete-service');
   });
 
   it('a NON-string Cluster withholds the commands instead of dropping --cluster', async () => {
-    // Dropping the flag would address the DEFAULT cluster.
-    const { thrown, warn } = await fullWaitFailure({ Ref: 'X' } as unknown as string, true);
+    const { thrown, warn } = await waitFailure({ Ref: 'X' } as unknown as string, true);
     expectWithheld(warn, 'aws ecs list-tasks');
     expectWithheld(thrown, 'aws ecs');
   });
 
-  it('the --full-wait failure commands are withheld for a cluster carrying a control byte', async () => {
-    const ok = await fullWaitFailure(`c${FORGED_CTRL}`, true);
+  it('the steady-state failure commands are withheld for a cluster carrying a control byte', async () => {
+    const ok = await waitFailure(`c${FORGED_CTRL}`, true);
     expectWithheld(ok.warn, 'aws ecs list-tasks');
     expectWithheld(ok.thrown, 'aws ecs');
 
     warnSpy.mockReset();
-    const failed = await fullWaitFailure(`c${FORGED_CTRL}`, false);
+    const failed = await waitFailure(`c${FORGED_CTRL}`, false);
     expectWithheld(failed.warn, 'aws ecs delete-service');
   });
 });
-

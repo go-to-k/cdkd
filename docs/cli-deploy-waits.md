@@ -1,6 +1,6 @@
 ---
 title: "cdkd deploy: wait mode details"
-description: "What cdkd deploy --no-wait leaves unfinished for each resource type, what --full-wait adds for ECS and CloudFront, and the waits a destroy always performs."
+description: "What cdkd deploy --no-wait leaves unfinished for each resource type, how the default waits for an ECS service, what --full-wait adds for CloudFront, and the waits a destroy always performs."
 ---
 
 # cdkd deploy: wait mode details
@@ -99,6 +99,21 @@ the failure still validate the next attempt. Use `--no-wait` to keep a
 cdkd returns while the image is `CREATING`. The image's ARN is available
 first, so stack outputs that use it still work.
 
+### ECS service
+
+cdkd returns once `CreateService` or `UpdateService` is accepted, and prints
+the command to wait manually:
+
+```text
+aws ecs wait services-stable --cluster <cluster> --services <service>
+```
+
+The service's `Name` and `ServiceArn` are valid at once, so the rest of the
+deploy is unaffected. What the deploy no longer tells you is whether the
+rollout succeeded: a service whose tasks crash or whose image cannot be pulled
+deploys with exit `0`. Use this for a first deploy before the image is pushed,
+a fast iteration loop, or a pipeline that runs its own health check.
+
 ### The wait `--no-wait` never skips
 
 A Lambda-backed custom resource is one wait that every mode keeps. Just before
@@ -139,55 +154,58 @@ that use an existing connector does not wait for it. Keeping the wait also
 means a connector that ends in `FAILED` fails the deploy that created it,
 rather than surfacing later as a revision error.
 
-## What `--full-wait` adds
+## ECS service steady state
 
-`--full-wait` adds two waits that CloudFormation performs and cdkd skips by
-default: an ECS service reaching steady state, and a CloudFront distribution
-reaching `Deployed`.
+The default waits for an ECS service, on create and on update, because
+accepting `CreateService` or `UpdateService` says nothing about whether the
+rollout will succeed. `--full-wait` waits the same way, and `--no-wait` skips
+it (see [ECS service](#ecs-service) above).
 
-```bash
-cdkd deploy MyStack --full-wait
-```
+The service is done when it is stable and its rollout has completed:
 
-### `AWS::ECS::Service`: steady state
-
-By default cdkd returns once `CreateService` or `UpdateService` is accepted,
-and prints the command to wait manually:
-
-```text
-aws ecs wait services-stable --cluster <cluster> --services <service>
-```
-
-The default does not wait because nothing later in the deploy needs a steady
-service. `Fn::GetAtt` on a service yields `Name` and `ServiceArn`, and both
-are valid at once. cdkd also does not check the rollout in the default mode,
-because right after `CreateService` a healthy service and a failing one look
-the same.
-
-Under `--full-wait`, the service is done when it is stable and its rollout
-has completed:
-
-| Step | Limit | When it runs out |
+| Step | Limit | When it ends badly |
 | --- | --- | --- |
 | Wait for steady state | 600 seconds | The deploy fails. |
+| The deployment this deploy started turns `FAILED` | Checked on every poll | The deploy fails at once. |
+| The service settles on a different deployment | Checked once stable | The deploy fails. |
 | Poll the primary deployment's `rolloutState` until `COMPLETED` | About two minutes | cdkd warns and continues. |
+
+With a [deployment circuit breaker](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-circuit-breaker.html),
+the wait ends as soon as ECS gives a verdict. The breaker marks a failing
+deployment `FAILED`, and with `Rollback: true` it returns the service to its
+last completed deployment. Either way the deploy fails with a message naming
+the circuit breaker. Without a breaker, a service that never stabilizes fails
+at the wait limit.
 
 A service can need longer than 600 seconds because of a large task count, a
 slow image pull or a long health-check grace period. Raise the limit for that
 type:
 
 ```bash
-cdkd deploy MyStack --full-wait --resource-timeout AWS::ECS::Service=20m
+cdkd deploy MyStack --resource-timeout AWS::ECS::Service=20m
 ```
 
 [`--resource-timeout`](cli-deploy-tuning.md#per-resource-timeout) can only
 raise this limit. It never lowers it.
 
-When a new service never stabilizes, cdkd tries to delete the service before
-it fails the deploy, so that the next deploy does not collide on the name. The
-failure message carries the `aws ecs list-tasks --desired-status STOPPED` and
-`describe-tasks` commands that show why the tasks stopped. Stopped tasks stay
-visible for about an hour after the service is deleted.
+Every failure message carries the `aws ecs list-tasks --desired-status STOPPED`
+and `describe-tasks` commands that show why the tasks stopped. Stopped tasks
+stay visible for about an hour.
+
+| Operation | What cdkd does when the wait fails |
+| --- | --- |
+| Create | Deletes the new service, so the next deploy does not collide on the name, then fails the deploy. |
+| Update | Fails the deploy and leaves the service in place; the automatic rollback re-applies its previous configuration. |
+| Automatic rollback, `cdkd rollback`, `cdkd drift --revert` | Warns and continues, so a rollout that does not settle never leaves the stack unable to roll back. |
+
+## What `--full-wait` adds
+
+`--full-wait` adds one wait that CloudFormation performs and cdkd skips by
+default: a CloudFront distribution reaching `Deployed`.
+
+```bash
+cdkd deploy MyStack --full-wait
+```
 
 ### `AWS::CloudFront::Distribution`: `Deployed`
 
@@ -198,9 +216,11 @@ command to wait manually:
 aws cloudfront wait distribution-deployed --id <distribution-id>
 ```
 
-The default does not wait because a distribution's `Fn::GetAtt` values (`Id`
-and `DomainName`) are final in the create or update response, so nothing in
-the deploy needs `Deployed`.
+The default does not wait because the outcome is settled once the call is
+accepted: AWS refuses a configuration error in the call itself. The wait
+changes only when the edge locations serve the distribution, never whether
+they will, and its `Id` and `DomainName` are final in the create or update
+response.
 
 Under `--full-wait`, cdkd waits about 20 minutes. To wait longer, raise the
 limit for the type:

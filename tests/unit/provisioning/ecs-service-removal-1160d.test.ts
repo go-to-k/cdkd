@@ -1,4 +1,14 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+
+// These cases pin the wire shape, not the steady-state wait the default runs
+// (go-to-k/cdkd#5571; ecs-service-full-wait.test.ts owns the wait): --no-wait
+// keeps the waiter and the pre-create name probe out of them.
+beforeEach(() => {
+  process.env['CDKD_NO_WAIT'] = 'true';
+});
+afterEach(() => {
+  delete process.env['CDKD_NO_WAIT'];
+});
 
 /**
  * AWS::ECS::Service removal semantics for the members a CloudFormation A/B
