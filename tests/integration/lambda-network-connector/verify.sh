@@ -9,7 +9,9 @@
 # to another subnet pair through UpdateNetworkConnector (a new connector
 # version; AWS refuses a change of AssociatedComputeResourceTypes on an
 # existing connector, measured), `cdkd drift` compares it, and destroy deletes
-# it through the SDK provider. A last phase creates a fresh connector through
+# it through the SDK provider. Between the update and drift, a deploy declaring
+# ElasticIpConfiguration (which the SDK cannot send) is refused (#5123). A last
+# phase creates a fresh connector through
 # the SDK provider and destroys it again.
 #
 # The connector lives in the account's default VPC; its subnets and default
@@ -188,6 +190,34 @@ LIVE_SUBNETS="$(live '.Configuration.VpcEgressConfiguration.SubnetIds | sort | j
 RECORDED_V="$(record '.attributes.LatestVersion')"
 [ "${RECORDED_V}" = "${V_AFTER}" ] || { echo "FAIL: state records LatestVersion ${RECORDED_V}, live is ${V_AFTER}" >&2; exit 1; }
 echo "    OK: version ${V_BEFORE} -> ${V_AFTER}, subnets moved, recorded"
+
+echo "==> Phase 3b: declaring ElasticIpConfiguration is refused before any call (#5123)"
+# No @aws-sdk/client-lambda-core release models the member, so before #5123 cdkd
+# dropped it, sent an UpdateNetworkConnector (a new version) and exited 0. The
+# deploy must now fail naming the member, and leave the connector and its
+# record exactly as phase 3 left them. Every input but ELASTIC_IP_PROBE is
+# phase 3's, so the member is the only template difference.
+NEEDLE_EIP='Configuration.VpcEgressConfiguration.ElasticIpConfiguration cannot be sent by cdkd yet'
+RECORD_BEFORE="$(record '.' | jq -cS .)"
+case "${RECORD_BEFORE}" in '{'*) ;; *) echo "FAIL (#5123): could not read the connector's record (${RECORD_BEFORE})" >&2; exit 1 ;; esac
+RC=0
+OUT="$(deploy "${LOCAL_DIST}" TAG_KEY=cdkd-integ-2 TAG_VALUE=v2 SUBNET_IDS="${SUBNET_IDS_ALT}" ELASTIC_IP_PROBE=cdkd-integ-probe)" || RC=$?
+OUT="$(printf '%s\n' "${OUT}" | sed $'s/\x1b\\[[0-9;]*m//g')"
+if [ "${RC}" = 0 ]; then
+  printf '%s\n' "${OUT}" >&2
+  echo "FAIL (#5123): the deploy declaring ElasticIpConfiguration SUCCEEDED; cdkd cannot send the member, so it must refuse it" >&2
+  exit 1
+fi
+if ! grep -qF "${NEEDLE_EIP}" <<<"${OUT}"; then
+  printf '%s\n' "${OUT}" >&2
+  echo "FAIL (#5123): the deploy failed (rc=${RC}), but not with the ElasticIpConfiguration refusal" >&2
+  exit 1
+fi
+V_REFUSED="$(version_of "$(live .LatestVersionArn)")"
+[ "${V_REFUSED}" = "${V_AFTER}" ] || { echo "FAIL (#5123): the refused deploy changed the connector (version ${V_AFTER} -> ${V_REFUSED})" >&2; exit 1; }
+[ "$(live .State)" = "ACTIVE" ] || { echo "FAIL (#5123): the connector is not ACTIVE after the refused deploy" >&2; exit 1; }
+[ "$(record '.' | jq -cS .)" = "${RECORD_BEFORE}" ] || { echo "FAIL (#5123): the refused deploy changed the connector's state record" >&2; exit 1; }
+echo "    OK: refused (rc=${RC}) naming ElasticIpConfiguration; connector still at version ${V_AFTER}, record unchanged"
 
 echo "==> Phase 4: cdkd drift compares the connector and finds nothing"
 DRIFT_OUT="$(env CONNECTOR_NAME="${CONNECTOR_NAME}" SUBNET_IDS="${SUBNET_IDS_ALT}" SECURITY_GROUP_ID="${SECURITY_GROUP_ID}" TAG_KEY=cdkd-integ-2 TAG_VALUE=v2 \

@@ -170,6 +170,18 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
 
     const historyTable = new ddb.TableV2(this, 'HistoryTable', tableProps);
 
+    // `disassociation-probe` (#5123): declares the deploy-region replica's
+    // DisassociationProtectionEnabled, which DynamoDB takes only as a solo
+    // per-replica UpdateTable that cdkd does not make. The deploy must be
+    // REFUSED before any call; before #5123 the member was dropped and the
+    // deploy exited 0. An override because the L2 has no such replica prop.
+    if (updateMode.includes('disassociation-probe')) {
+      (historyTable.node.defaultChild as cdk.CfnResource).addPropertyOverride(
+        'Replicas.0.DisassociationProtectionEnabled',
+        false
+      );
+    }
+
     if (updateMode.includes('tags')) {
       cdk.Tags.of(historyTable).add('UpdateTest', 'true');
     }
