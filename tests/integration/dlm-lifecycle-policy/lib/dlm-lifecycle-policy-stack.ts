@@ -80,7 +80,9 @@ export class DlmLifecyclePolicyStack extends cdk.Stack {
           {
             name: 'Daily',
             createRule: { interval: 24, intervalUnit: 'HOURS', times: ['09:00'] },
-            retainRule: { count: 1 },
+            // issue #5546: the REMOVAL redeploy also changes the count, so
+            // the kept Description rides a real UpdateLifecyclePolicy call.
+            retainRule: { count: isRemoval ? 2 : 1 },
           },
         ],
       },

@@ -56,7 +56,6 @@ import {
   type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
 import { orphanCommandRegionArg, reportPossibleOrphans } from './orphan-report.js';
-import { removedTemplateKeys } from '../update-removal.js';
 import { safeMsg } from '../../utils/display-safe.js';
 
 /**
@@ -83,6 +82,30 @@ const KEPT_ON_REMOVAL = [
   'CrossRegionCopyTargets',
   'Exclusions',
 ] as const;
+
+/**
+ * The {@link KEPT_ON_REMOVAL} properties this update leaves live: the previous
+ * side declared a value (a recorded explicit null declared nothing) and the
+ * desired side sends none, since `toSdkFields` drops a null as absent. The
+ * caller's `removedProperties` decides removal, plus a desired explicit null,
+ * which that set does not count; a direct call (no context) compares the bags.
+ * Nothing on `drift --revert`, whose previous side is an AWS readback, so no
+ * template ever declared what its desired side lacks.
+ */
+function keptRemovedNames(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined
+): string[] {
+  if (context?.desiredFromAwsReadback) return [];
+  const removed = context?.removedProperties;
+  return KEPT_ON_REMOVAL.filter(
+    (key) =>
+      previousProperties[key] != null &&
+      properties[key] == null &&
+      (removed === undefined || removed.has(key) || properties[key] === null)
+  );
+}
 
 /**
  * The ONE warning line for {@link KEPT_ON_REMOVAL} removals. Names are
@@ -540,6 +563,19 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
         })
       );
 
+      // Issue #5546: name what the policy kept as soon as UpdateLifecyclePolicy
+      // has applied it, so a later tag-call failure cannot drop the line.
+      const keptNames = keptRemovedNames(properties, previousProperties, context);
+      if (keptNames.length > 0) {
+        this.logger.warn(
+          keptOnRemovalWarning(
+            logicalId,
+            keptNames,
+            context?.replayingState ? 'rollback' : 'deploy'
+          )
+        );
+      }
+
       // Tag diff via TagResource / UntagResource — UpdateLifecyclePolicy has
       // no Tags parameter. TagResource is additive-only, so a tag dropped
       // from the template (partial removal) — or the entire `Tags` property
@@ -581,27 +617,6 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
             `Added/updated ${Object.keys(tagsToAdd).length} tag(s) on DLM Lifecycle Policy ${physicalId}`
           );
         }
-      }
-
-      // Issue #5546: name each removed property the policy kept, once and only
-      // after the update SUCCEEDED. `drift --revert` hands an EMPTY
-      // `removedProperties` (its previous side is an AWS readback), so it
-      // names none; a direct call (no context) compares the two bags.
-      const removed = new Set(
-        context?.removedProperties ?? removedTemplateKeys(previousProperties, properties)
-      );
-      // A recorded explicit null declared nothing, so nothing was kept.
-      const keptNames = KEPT_ON_REMOVAL.filter(
-        (key) => removed.has(key) && previousProperties[key] != null
-      );
-      if (keptNames.length > 0) {
-        this.logger.warn(
-          keptOnRemovalWarning(
-            logicalId,
-            keptNames,
-            context?.replayingState ? 'rollback' : 'deploy'
-          )
-        );
       }
 
       return {

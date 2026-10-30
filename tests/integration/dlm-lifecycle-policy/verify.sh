@@ -274,7 +274,12 @@ P2B_POLICY_NEEDLE="Policy (AWS::DLM::LifecyclePolicy): property Description was 
 P2B_DEFAULT_NEEDLE="DefaultPolicy (AWS::DLM::LifecyclePolicy): properties CreateInterval, RetainInterval, CopyTags, ExtendDeletion, CrossRegionCopyTargets, Exclusions were removed from the template and keep their current AWS value, as CloudFormation leaves them;"
 P2B_SENTINEL="UpdateLifecyclePolicy keeps a field it is not sent"
 for needle in "${P2B_POLICY_NEEDLE}" "${P2B_DEFAULT_NEEDLE}"; do
-  if ! grep -qF "${needle}" <<<"${P2B_PLAIN}"; then
+  hits="$(grep -cF "${needle}" <<<"${P2B_PLAIN}" || true)"
+  if [ "${hits}" -gt 1 ]; then
+    echo "FAIL [phase 2b]: the kept-removal warning printed ${hits} times, expected once: '${needle}'" >&2
+    exit 1
+  fi
+  if [ "${hits}" -ne 1 ]; then
     if grep -qF "${P2B_SENTINEL}" <<<"${P2B_PLAIN}"; then
       echo "FAIL [phase 2b]: a kept-removal warning fired but no longer reads '${needle}' -- the wording drifted; update this fixture" >&2
     else
@@ -300,7 +305,14 @@ if [ "${DESC_P2B}" != "cdkd integ policy updated" ]; then
   echo "FAIL [phase 2b]: removing Description did not keep the live value (got '${DESC_P2B}', expected 'cdkd integ policy updated' -- CloudFormation keeps it, issue #5546)" >&2
   exit 1
 fi
-echo "    removed Description kept at its live value (CloudFormation parity, issue #5546)"
+# The companion change proves UpdateLifecyclePolicy really ran on this deploy.
+COUNT_P2B="$(aws dlm get-lifecycle-policy --policy-id "${POLICY_ID_P2}" --region "${REGION}" \
+  --query 'Policy.PolicyDetails.Schedules[0].RetainRule.Count' --output text)"
+if [ "${COUNT_P2B}" != "2" ]; then
+  echo "FAIL [phase 2b]: the companion RetainRule.Count change did not reach AWS (got '${COUNT_P2B}', expected 2), so the Description check proves nothing" >&2
+  exit 1
+fi
+echo "    removed Description kept at its live value beside an applied RetainRule change (CloudFormation parity, issue #5546)"
 
 DEFAULT_POLICY_ID_P2B="$(policy_id_from_state DefaultPolicyId)"
 if [ "${DEFAULT_POLICY_ID_P1}" != "${DEFAULT_POLICY_ID_P2B}" ]; then

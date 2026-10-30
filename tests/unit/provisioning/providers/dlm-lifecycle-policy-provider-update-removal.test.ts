@@ -39,7 +39,11 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { DLMLifecyclePolicyProvider } from '../../../../src/provisioning/providers/dlm-lifecycle-policy-provider.js';
-import { UpdateLifecyclePolicyCommand, GetLifecyclePolicyCommand } from '@aws-sdk/client-dlm';
+import {
+  UpdateLifecyclePolicyCommand,
+  GetLifecyclePolicyCommand,
+  TagResourceCommand,
+} from '@aws-sdk/client-dlm';
 import { prepareRemovalForUpdate } from '../../../../src/provisioning/update-removal.js';
 
 const RESOURCE_TYPE = 'AWS::DLM::LifecyclePolicy';
@@ -353,6 +357,57 @@ describe('DLMLifecyclePolicyProvider names a kept removed property (issue #5546)
     const lines = keptWarnings();
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('property Description was removed');
+  });
+
+  it('names a desired explicit null, which is sent as absent and so kept', async () => {
+    await provider.update(
+      'Policy',
+      POLICY_ID,
+      RESOURCE_TYPE,
+      { ...BASE, Description: null },
+      { ...BASE, Description: 'old' },
+      { removedProperties: new Set(), replayingState: true }
+    );
+
+    const lines = keptWarnings();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('property Description is absent from the state being restored');
+  });
+
+  it('warns about nothing when the desired side is an AWS readback', async () => {
+    await provider.update(
+      'Policy',
+      POLICY_ID,
+      RESOURCE_TYPE,
+      { ...BASE },
+      { ...BASE, Description: 'read back' },
+      { removedProperties: new Set(['Description']), desiredFromAwsReadback: true }
+    );
+
+    expect(keptWarnings()).toEqual([]);
+  });
+
+  it('still names the kept removal when a later tag call fails', async () => {
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetLifecyclePolicyCommand) {
+        return Promise.resolve({ Policy: { PolicyId: POLICY_ID, PolicyArn: POLICY_ARN } });
+      }
+      if (cmd instanceof TagResourceCommand) return Promise.reject(new Error('AccessDenied'));
+      return Promise.resolve({});
+    });
+    await expect(
+      provider.update(
+        'Policy',
+        POLICY_ID,
+        RESOURCE_TYPE,
+        { ...BASE, Tags: [{ Key: 'k', Value: 'new' }] },
+        { ...BASE, Description: 'old', Tags: [{ Key: 'k', Value: 'old' }] },
+        { removedProperties: new Set(['Description']) }
+      )
+    ).rejects.toThrow();
+
+    expect(keptWarnings()).toHaveLength(1);
+    expect(keptWarnings()[0]).toContain('property Description was removed');
   });
 
   it('warns about nothing when nothing was removed', async () => {
