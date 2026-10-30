@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   ReplacementRulesRegistry,
   elastiCachePreferredAvailabilityZonesMovedToDisjoint,
+  elastiCacheAzModeRemovedFromSingleAz,
+  elastiCachePreferredAvailabilityZonesRemovedFromSingleAz,
 } from '../../../src/analyzer/replacement-rules.js';
 
 /**
@@ -64,8 +66,168 @@ describe('ReplacementRulesRegistry — AWS::ElastiCache::CacheCluster.PreferredA
 
   it('is classified, and leaves every other property to the schema fallback', () => {
     expect(registry.isClassified(TYPE, KEY)).toBe(true);
-    for (const key of ['CacheNodeType', 'NumCacheNodes', 'AZMode', 'Engine', 'ClusterName']) {
+    expect(registry.isClassified(TYPE, 'AZMode')).toBe(true);
+    for (const key of ['CacheNodeType', 'NumCacheNodes', 'Engine', 'ClusterName']) {
       expect(registry.isClassified(TYPE, key)).toBe(false);
     }
+  });
+});
+
+/**
+ * go-to-k/cdkd#5558: removing `AZMode` or `PreferredAvailabilityZones` replaces
+ * the cluster exactly when the PREVIOUS template said `AZMode: single-az` and
+ * the new one names no zone list, on 1 and 2 nodes alike; a `cross-az`
+ * cluster, or a `single-az` one keeping its zone list, is updated in place.
+ * Each row is a real CloudFormation stack update (memcached, us-east-1); the
+ * 1-node single-az and 2-node cross-az rows also beside a changed
+ * PreferredMaintenanceWindow.
+ */
+describe('ReplacementRulesRegistry — AWS::ElastiCache::CacheCluster AZ removals (#5558)', () => {
+  const registry = new ReplacementRulesRegistry();
+  const TYPE = 'AWS::ElastiCache::CacheCluster';
+  const W1 = 'sun:05:00-sun:06:00';
+  const W2 = 'mon:05:00-mon:06:00';
+  const base = (nodes: number, extra: Record<string, unknown>) => ({
+    Engine: 'memcached',
+    CacheNodeType: 'cache.t3.micro',
+    NumCacheNodes: nodes,
+    PreferredMaintenanceWindow: W1,
+    ...extra,
+  });
+  const without = (props: Record<string, unknown>, ...keys: string[]) =>
+    Object.fromEntries(Object.entries(props).filter(([k]) => !keys.includes(k)));
+  /** The keys the registry would replace for this old -> new template pair. */
+  const replacing = (oldProps: Record<string, unknown>, newProps: Record<string, unknown>) =>
+    [...new Set([...Object.keys(oldProps), ...Object.keys(newProps)])]
+      .filter((key) =>
+        registry.requiresReplacement(TYPE, key, oldProps[key], newProps[key], {
+          oldProperties: oldProps,
+          newProperties: newProps,
+        })
+      )
+      .sort();
+
+  const single1 = base(1, { AZMode: 'single-az', PreferredAvailabilityZones: ['us-east-1a'] });
+  const single2 = base(2, {
+    AZMode: 'single-az',
+    PreferredAvailabilityZones: ['us-east-1a', 'us-east-1a'],
+  });
+  const cross2 = base(2, {
+    AZMode: 'cross-az',
+    PreferredAvailabilityZones: ['us-east-1a', 'us-east-1b'],
+  });
+
+  it('replaces a single-az cluster whose zone list is removed (1 and 2 nodes)', () => {
+    for (const props of [single1, single2]) {
+      expect(replacing(props, without(props, 'PreferredAvailabilityZones'))).toEqual([
+        'PreferredAvailabilityZones',
+      ]);
+      // Beside an in-place change: the same verdict.
+      expect(
+        replacing(props, {
+          ...without(props, 'PreferredAvailabilityZones'),
+          PreferredMaintenanceWindow: W2,
+        })
+      ).toEqual(['PreferredAvailabilityZones']);
+    }
+  });
+
+  it('replaces a single-az cluster whose AZMode is removed with no zone list (1 and 2 nodes)', () => {
+    for (const props of [base(1, { AZMode: 'single-az' }), base(2, { AZMode: 'single-az' })]) {
+      expect(replacing(props, without(props, 'AZMode'))).toEqual(['AZMode']);
+      expect(replacing(props, { ...without(props, 'AZMode'), PreferredMaintenanceWindow: W2 })).toEqual(
+        ['AZMode']
+      );
+    }
+    expect(replacing(single1, without(single1, 'AZMode', 'PreferredAvailabilityZones'))).toEqual([
+      'AZMode',
+      'PreferredAvailabilityZones',
+    ]);
+  });
+
+  it('updates a single-az cluster in place when AZMode is removed but the zone list is kept', () => {
+    expect(replacing(single1, without(single1, 'AZMode'))).toEqual([]);
+  });
+
+  it('updates a cross-az cluster in place for either removal', () => {
+    for (const next of [
+      without(cross2, 'PreferredAvailabilityZones'),
+      { ...without(cross2, 'PreferredAvailabilityZones'), PreferredMaintenanceWindow: W2 },
+      without(cross2, 'AZMode'),
+      without(cross2, 'AZMode', 'PreferredAvailabilityZones'),
+    ]) {
+      expect(replacing(cross2, next)).toEqual([]);
+    }
+    const noZones = base(2, { AZMode: 'cross-az' });
+    expect(replacing(noZones, without(noZones, 'AZMode'))).toEqual([]);
+    expect(
+      replacing(noZones, { ...without(noZones, 'AZMode'), PreferredMaintenanceWindow: W2 })
+    ).toEqual([]);
+    // #5458's measured 2-node `[1c, 1b]` -> absent (cross-az).
+    const old5458 = base(2, {
+      AZMode: 'cross-az',
+      PreferredAvailabilityZones: ['us-east-1c', 'us-east-1b'],
+    });
+    expect(replacing(old5458, without(old5458, 'PreferredAvailabilityZones'))).toEqual([]);
+  });
+
+  it('keeps every other AZ change in place, and needs the previous AZMode to replace a zone-list removal', () => {
+    // Not removals: AZMode set or changed, a zone list added or kept.
+    expect(replacing(base(1, {}), base(1, { AZMode: 'single-az' }))).toEqual([]);
+    expect(replacing(base(2, { AZMode: 'single-az' }), base(2, { AZMode: 'cross-az' }))).toEqual(
+      []
+    );
+    expect(replacing(base(1, { AZMode: 'single-az' }), single1)).toEqual([]);
+    // A zone-list removal that also moves AZMode to cross-az is unmeasured.
+    expect(replacing(single2, base(2, { AZMode: 'cross-az' }))).toEqual([]);
+    // A zone list with no previous AZMode (CloudFormation refuses it at
+    // create), or no sibling bags at all: no replacement.
+    const noMode = base(1, { PreferredAvailabilityZones: ['us-east-1a'] });
+    expect(replacing(noMode, without(noMode, 'PreferredAvailabilityZones'))).toEqual([]);
+    expect(
+      elastiCachePreferredAvailabilityZonesRemovedFromSingleAz(['us-east-1a'], undefined)
+    ).toBe(false);
+    expect(
+      registry.requiresReplacement(TYPE, 'PreferredAvailabilityZones', ['us-east-1a'], undefined)
+    ).toBe(false);
+    // An empty previous list is no removal of zones.
+    expect(
+      elastiCachePreferredAvailabilityZonesRemovedFromSingleAz([], undefined, {
+        oldProperties: { AZMode: 'single-az', PreferredAvailabilityZones: [] },
+        newProperties: { AZMode: 'single-az' },
+      })
+    ).toBe(false);
+    // Callers outside a diff ask with no values at all.
+    expect(elastiCacheAzModeRemovedFromSingleAz(undefined, undefined)).toBe(false);
+    expect(registry.requiresReplacement(TYPE, 'AZMode', undefined, undefined)).toBe(false);
+    // The AZMode half reads the new zone list from the sibling bags too.
+    const bags = (newProperties: Record<string, unknown>) => ({
+      oldProperties: { Engine: 'memcached', AZMode: 'single-az' },
+      newProperties: { Engine: 'memcached', ...newProperties },
+    });
+    expect(elastiCacheAzModeRemovedFromSingleAz('single-az', undefined, bags({}))).toBe(true);
+    expect(
+      elastiCacheAzModeRemovedFromSingleAz('single-az', undefined, bags({ PreferredAvailabilityZones: [] }))
+    ).toBe(false);
+    expect(elastiCacheAzModeRemovedFromSingleAz('single-az', undefined)).toBe(false);
+    expect(elastiCacheAzModeRemovedFromSingleAz('cross-az', undefined, bags({}))).toBe(false);
+  });
+
+  it('keeps the unmeasured shapes in place: another engine, a singular PreferredAvailabilityZone', () => {
+    // Every measured row was memcached with no singular zone.
+    const redis = { ...base(1, { AZMode: 'single-az' }), Engine: 'redis' };
+    expect(replacing(redis, without(redis, 'AZMode'))).toEqual([]);
+    const redisZones = { ...single1, Engine: 'redis' };
+    expect(replacing(redisZones, without(redisZones, 'PreferredAvailabilityZones'))).toEqual([]);
+    const pinned = base(1, { AZMode: 'single-az', PreferredAvailabilityZone: 'us-east-1b' });
+    expect(replacing(pinned, without(pinned, 'AZMode'))).toEqual([]);
+    expect(replacing(pinned, without(pinned, 'AZMode', 'PreferredAvailabilityZone'))).toEqual([]);
+    // The list swapped for the singular key.
+    expect(
+      replacing(single1, {
+        ...without(single1, 'PreferredAvailabilityZones'),
+        PreferredAvailabilityZone: 'us-east-1a',
+      })
+    ).toEqual([]);
   });
 });

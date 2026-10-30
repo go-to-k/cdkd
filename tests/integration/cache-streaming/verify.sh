@@ -91,6 +91,14 @@ cleanup() {
   local rc=$?
   echo "==> Cleanup (errors tolerated)"
   set +e
+  # A failed replacement step (4f/4h/4i) can leave a Memcached cluster on the
+  # subnet group that cdkd state does not own; it would block the subnet-group
+  # delete and orphan it. Delete every cluster on that group first and wait.
+  for mc_leftover in $(aws elasticache describe-cache-clusters --region "${REGION}" \
+    --query "CacheClusters[?CacheSubnetGroupName=='${MC_SUBNET_GROUP}'].CacheClusterId" --output text 2>/dev/null); do
+    aws elasticache delete-cache-cluster --cache-cluster-id "${mc_leftover}" --region "${REGION}" >/dev/null 2>&1 || true
+    aws elasticache wait cache-cluster-deleted --cache-cluster-id "${mc_leftover}" --region "${REGION}" >/dev/null 2>&1 || true
+  done
   if [ -x "${LOCAL_DIST}" ]; then
     # Best-effort real teardown first (removes AWS resources if the run died
     # mid-flight), then drop any residual state record.
@@ -468,6 +476,64 @@ if [ "${CACHE_ID_SG}" != "${CACHE_ID}" ]; then
   exit 1
 fi
 echo "    OK: SG removal kept ${SG_BEFORE} on ${CACHE_ID} in place (#5491)"
+
+# Issue #5558: real CloudFormation REPLACES a single-az cluster when its
+# PreferredAvailabilityZones, or its AZMode, is removed from the template.
+# Before #5558 cdkd updated it in place (sending nothing) and the deploy
+# exited 0 with the old cluster kept, so the id comparison is the assertion
+# that discriminates. One removal per deploy: the zone-list half reads the
+# previous AZMode from the sibling properties, the AZMode half its own value.
+# Stateful type: the replacement needs --force-stateful-recreation.
+assert_memcached_replaced() { # usage: assert_memcached_replaced <phase label> <env assignments...>
+  local label="$1"
+  shift
+  local before after on_group rc
+  if ! before=$(mc_field 'CacheClusterId'); then
+    echo "FAIL: cannot read the Memcached cluster id before the ${label} (#5558)" >&2
+    exit 1
+  fi
+  if [ -z "${before}" ] || [ "${before}" = "None" ]; then
+    echo "FAIL: cannot resolve the Memcached cluster before the ${label} (#5558)" >&2
+    exit 1
+  fi
+  set +e
+  env "$@" node "${LOCAL_DIST}" deploy "${STACK}" --force-stateful-recreation \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+  rc=$?
+  set -e
+  if [ "${rc}" -ne 0 ]; then
+    echo "FAIL: ${label} deploy exited ${rc} (#5558)" >&2
+    tail -60 "${DEPLOY_LOG}" >&2
+    exit 1
+  fi
+  if ! on_group=$(aws elasticache describe-cache-clusters --region "${REGION}" \
+    --query "length(CacheClusters[?CacheSubnetGroupName=='${MC_SUBNET_GROUP}'])" --output text); then
+    echo "FAIL: cannot count the Memcached clusters after the ${label} (#5558)" >&2
+    exit 1
+  fi
+  if [ "${on_group}" != "1" ]; then
+    echo "FAIL: ${on_group} Memcached clusters on ${MC_SUBNET_GROUP} after the ${label}, expected 1 (old one not deleted?)" >&2
+    exit 1
+  fi
+  if ! after=$(mc_field 'CacheClusterId'); then
+    echo "FAIL: cannot read the Memcached cluster id after the ${label} (#5558)" >&2
+    exit 1
+  fi
+  if [ "${after}" = "${before}" ]; then
+    echo "FAIL: Memcached cluster ${before} was NOT replaced by the ${label} (#5558: CloudFormation replaces a single-az cluster)" >&2
+    exit 1
+  fi
+  assert_gone "replaced Memcached cluster ${before} still exists after the ${label}" \
+    aws elasticache describe-cache-clusters --cache-cluster-id "${before}" --region "${REGION}"
+  echo "    OK: ${label} replaced ${before} with ${after} (#5558)"
+}
+PRIOR_ENV=(CDKD_TEST_REMOVAL=true CDKD_TEST_NODETYPE=true CDKD_TEST_NODEREMOVE=true CDKD_TEST_PAZMOVE=true CDKD_TEST_SGREMOVE=true)
+
+echo "==> Step 4h: ZONE-LIST REMOVAL deploy (issue #5558) -- single-az Memcached PreferredAvailabilityZones removed"
+assert_memcached_replaced "zone-list removal" "${PRIOR_ENV[@]}" CDKD_TEST_PAZREMOVE=true
+
+echo "==> Step 4i: AZMODE REMOVAL deploy (issue #5558) -- single-az Memcached AZMode removed"
+assert_memcached_replaced "AZMode removal" "${PRIOR_ENV[@]}" CDKD_TEST_PAZREMOVE=true CDKD_TEST_AZMODEREMOVE=true
 
 echo "==> Step 5: destroy"
 set +e
