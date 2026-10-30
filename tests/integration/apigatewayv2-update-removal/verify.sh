@@ -592,12 +592,13 @@ if [ "${WS_RT}" != '{"statusCode":202}' ] || [ "${WS_PB}" != "NEVER" ] \
   echo "FAIL: WS MOCK Integration not updated (RT='${WS_RT}' PB='${WS_PB}' CHS='${WS_CH}')" >&2; exit 1
 fi
 
-# Issue #609: ApiKeyRequired is REMOVED in phase 2 and must reset to the CFn
-# default; the three expressions / the parameter map CHANGE value, and the two
+# Issue #5548: ApiKeyRequired is REMOVED in phase 2, beside the parameter-map
+# change; CloudFormation KEEPS it (real A/B), so it must stay true. The three
+# expressions / the parameter map CHANGE value, and the two
 # Stage blocks change too (UpdateStage merges them and AWS documents no
 # whole-block reset, so cdkd passes them through — asserted, not assumed).
-if [ "$(route_field "${WS_AID}" "${WS_CONNECT_ID}" 'ApiKeyRequired')" != "False" ]; then
-  echo "FAIL: WS \$connect ApiKeyRequired not reset to false (got '$(route_field "${WS_AID}" "${WS_CONNECT_ID}" ApiKeyRequired)')" >&2
+if [ "$(route_field "${WS_AID}" "${WS_CONNECT_ID}" 'ApiKeyRequired')" != "True" ]; then
+  echo "FAIL: WS \$connect ApiKeyRequired reset on removal; CloudFormation keeps it (#5548) (got '$(route_field "${WS_AID}" "${WS_CONNECT_ID}" ApiKeyRequired)')" >&2
   exit 1
 fi
 if [ "$(route_field "${WS_AID}" "${WS_CONNECT_ID}" 'RequestParameters."route.request.header.X-Cdkd".Required')" != "False" ]; then
