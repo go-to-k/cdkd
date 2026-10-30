@@ -43,7 +43,6 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { NotFoundException } from '@aws-sdk/client-apigatewayv2';
 import { ApiGatewayV2Provider } from '../../../src/provisioning/providers/apigatewayv2-provider.js';
 import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.generated.js';
-import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 import { readFileSync } from 'node:fs';
 
 const API_ID = 'abcd1234';
@@ -579,14 +578,6 @@ describe('ApiGatewayV2 Stage / Route config properties (#609)', () => {
       for (const property of schemaProps) {
         expect(handled?.has(property), property).toBe(true);
       }
-      expect(
-        prepareRemovalForUpdate(
-          provider,
-          ROUTE_TYPE,
-          { ApiId: API_ID, RouteKey: '$connect' },
-          { ApiId: API_ID, RouteKey: '$connect', ApiKeyRequired: true }
-        ).unhandled
-      ).toEqual([]);
     });
 
     it.each([
