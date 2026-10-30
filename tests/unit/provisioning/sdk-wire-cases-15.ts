@@ -12,10 +12,7 @@ import {
 import { FSxFileSystemProvider } from '../../../src/provisioning/providers/fsx-filesystem-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { NeptuneProvider } from '../../../src/provisioning/providers/neptune-provider.js';
-import {
-  DOCDB_CLUSTER_KEPT_ON_REMOVAL,
-  DocDBProvider,
-} from '../../../src/provisioning/providers/docdb-provider.js';
+import { DocDBProvider } from '../../../src/provisioning/providers/docdb-provider.js';
 import { DocDBSubnetGroupProvider } from '../../../src/provisioning/providers/docdb-subnet-group-provider.js';
 
 /**
@@ -902,7 +899,16 @@ const DOCDB_CLUSTER_CASE: TypeCase = {
       },
       expectedSilent: {
         ...Object.fromEntries(
-          DOCDB_CLUSTER_KEPT_ON_REMOVAL.map((key) => [
+          // Literal, not the src constant: this oracle stays independent of it.
+          [
+            'DeletionProtection',
+            'BackupRetentionPeriod',
+            'VpcSecurityGroupIds',
+            'EngineVersion',
+            'PreferredBackupWindow',
+            'PreferredMaintenanceWindow',
+            'DBClusterParameterGroupName',
+          ].map((key) => [
             `update-remove:${key}`,
             kept(
               `and CloudFormation keeps the live value too, warned about by update() (CFn A/B, #5004 / #1160 / go-to-k/cdkd#5543, ${DOCDB_SRC} DOCDB_CLUSTER_KEPT_ON_REMOVAL)`

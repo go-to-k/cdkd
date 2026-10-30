@@ -57,6 +57,7 @@ import {
 } from './deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
+import { removedTemplateKeys } from '../update-removal.js';
 
 /**
  * go-to-k/cdkd#5153: the `MasterUserPassword` a `ModifyDBCluster` carries, or
@@ -134,14 +135,14 @@ export const DOCDB_CLUSTER_KEPT_ON_REMOVAL = [
 ] as const;
 
 /** Issue #5543: the `AWS::DocDB::DBInstance` counterpart, measured in the same A/B. */
-export const DOCDB_INSTANCE_KEPT_ON_REMOVAL = ['PreferredMaintenanceWindow'] as const;
+const DOCDB_INSTANCE_KEPT_ON_REMOVAL = ['PreferredMaintenanceWindow'] as const;
 
 /**
  * The ONE warning line naming each of `keys` removed, which the resource keeps
  * at its live value as CloudFormation does, or `undefined` when none was.
- * Names are template-borne, so they go through `safeMsg`. A deploy reads
- * `removedProperties` (template to template); without it (a direct call) the
- * two bags are compared the way `removedTemplateKeys` does. A `drift --revert`
+ * The logical id is template-borne, so the line goes through `safeMsg`. A
+ * deploy reads `removedProperties` (template to template); without it (a
+ * direct call) the two bags are compared by `removedTemplateKeys`. A `drift --revert`
  * sets it empty, since its previous side is a readback. A rollback revert
  * restores an earlier state record, so there the property is one the failed
  * deploy ADDED, and the line says that instead.
@@ -155,16 +156,15 @@ function keptOnRemovalWarning(
   resourceType: string
 ): string | undefined {
   const removedProperties = context?.removedProperties;
-  const removed = keys.filter((key) =>
-    removedProperties !== undefined
-      ? removedProperties.has(key)
-      : previousProperties[key] !== undefined && properties[key] === undefined
-  );
+  const removedSet =
+    removedProperties ?? new Set(removedTemplateKeys(previousProperties, properties));
+  const removed = keys.filter((key) => removedSet.has(key));
   if (removed.length === 0) return undefined;
   const one = removed.length === 1;
   const names = `${one ? 'property' : 'properties'} ${removed.join(', ')}`;
+  const modify = resourceType === 'AWS::DocDB::DBInstance' ? 'ModifyDBInstance' : 'ModifyDBCluster';
   return context?.replayingState
-    ? safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'is' : 'are'} absent from the state being restored; the rollback leaves the value the failed deploy applied in place, as a Modify call keeps a setting it is not sent.`
+    ? safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'is' : 'are'} absent from the state being restored; ${modify} keeps a setting it is not sent, so the rollback leaves any value the failed deploy applied in place.`
     : safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'was' : 'were'} removed from the template; cdkd leaves the current AWS ${one ? 'value' : 'values'} in place, as CloudFormation does. Declare ${one ? 'it' : 'them'} to change ${one ? 'it' : 'them'}.`;
 }
 

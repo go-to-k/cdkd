@@ -179,7 +179,7 @@ describe('DocDBProvider removal of CloudFormation-kept properties (#5543)', () =
 
     expect(warnings()).toEqual([
       expect.stringContaining(
-        'L (AWS::DocDB::DBCluster): property EngineVersion is absent from the state being restored; the rollback leaves the value the failed deploy applied in place'
+        'L (AWS::DocDB::DBCluster): property EngineVersion is absent from the state being restored; ModifyDBCluster keeps a setting it is not sent, so the rollback leaves any value the failed deploy applied in place.'
       ),
     ]);
     expect(warnings()[0]).not.toContain('removed from the template');
@@ -305,6 +305,26 @@ describe('DocDBProvider removal of CloudFormation-kept properties (#5543)', () =
         'L (AWS::DocDB::DBInstance): property PreferredMaintenanceWindow was removed from the template; cdkd leaves the current AWS value in place, as CloudFormation does.'
       ),
     ]);
+  });
+
+  it('does not warn when the instance update fails after the Modify call', async () => {
+    routeDbSends();
+    const base = dbSend.getMockImplementation()!;
+    dbSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'AddTagsToResourceCommand') {
+        throw Object.assign(new Error('boom'), { name: 'InternalFailure' });
+      }
+      return base(command);
+    });
+    const previous = { ...INSTANCE_PREVIOUS, Tags: [] };
+    const { PreferredMaintenanceWindow: _dropped, ...desired } = INSTANCE_PREVIOUS;
+
+    await expect(
+      deployUpdate(INSTANCE, 'my-instance', { ...desired, Tags: [{ Key: 'k', Value: 'v' }] }, previous)
+    ).rejects.toThrow();
+    expect(sentInput('ModifyDBInstanceCommand')).toBeDefined();
+    expect(sentInput('AddTagsToResourceCommand')).toBeDefined();
+    expect(warnings()).toEqual([]);
   });
 
   it('a present instance PreferredMaintenanceWindow is still sent, with no warning', async () => {
