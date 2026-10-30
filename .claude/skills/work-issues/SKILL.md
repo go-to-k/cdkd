@@ -112,7 +112,9 @@ Running a lane in the parent stays legal; the stage files apply either way.
   `.claude/worktrees/<branch>/`, or the launch worktree itself IN-PLACE. (§5)
 - **Merges are SERIALIZED across lanes, and so are integs on the SAME
   fixture** (one stack name) — the parent grants each turn. Integs on
-  different fixtures run in parallel, as does everything else. (§9)
+  different fixtures run in parallel — all lanes' in-flight integs form ONE
+  `/run-integ` parallel set (own region / gc alone / own bucket) — as does
+  everything else. (§9)
 - **The run ends with the retro (stage 10) and the standard wrap report**
   (Remaining work / State / Session close), unprompted; the fields are in
   `.claude/rules/session-report.md`, which never auto-loads.

@@ -23,7 +23,18 @@ prefix): queue the later lane behind the earlier one's merge and rebase it. A
 merge during another lane's integ is allowed, but it moves `main` under that
 lane (#4864): before ITS merge, re-read its marker per `verify.md` §8-b and
 re-run when main changed a scoped file it changes or code its fixture
-exercises. A turn blocked on a fixture fix never blocks the other lanes. ANY turn holding HOURS tells the user
+exercises. A turn blocked on a fixture fix never blocks the other lanes.
+**Every integ in flight across lanes is ONE parallel set under `/run-integ`
+step 4**, whichever lane owns it — its isolation rules are not per-lane:
+- a `SAFETY NOTE` fixture gets its OWN region;
+- a `cdkd gc` fixture waits until no other lane's integ is running;
+- a rollback-journal reader or `cdkd rollback` caller gets its own state
+  bucket (#5104);
+- cap fixtures in flight per region at what the account's VPC / EIP / NAT
+  quotas carry, else spread them across regions.
+
+The PARENT checks all four before granting each further lane's integ. ANY
+turn holding HOURS tells the user
 unasked its ETA and queue. A subagent running a turn's integs, marker and
 ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
 it (#5245); the `.live` Monitor below is the only progress signal. Its brief
