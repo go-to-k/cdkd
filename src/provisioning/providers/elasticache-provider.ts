@@ -151,6 +151,63 @@ export function nodesToRemove(
 }
 
 /**
+ * `AWS::ElastiCache::CacheCluster` properties whose REMOVAL from the template
+ * leaves the live value in place (issue #1160): ModifyCacheCluster keeps a
+ * member it is not sent, and cdkd sends none of these on removal, because
+ * CloudFormation keeps each of them too. Measured with real CloudFormation
+ * stacks in us-east-1, each property set to a non-default value at create and
+ * then removed, read back for minutes after the update:
+ *
+ * - #5545 (2026-10-30), redis 7.0 and memcached 1.6.17 dual_stack clusters,
+ *   alone and beside a changed SnapshotRetentionLimit / maintenance window
+ *   (the companion change landed): EngineVersion stayed 7.0.7 / 1.6.17, the
+ *   custom CacheParameterGroupName stayed (no move to `default.<family>`),
+ *   PreferredMaintenanceWindow and SnapshotWindow stayed, and a memcached
+ *   IpDiscovery `ipv6` stayed (a redis CacheCluster refuses IpDiscovery at
+ *   create: "cannot be chosen for cluster mode disabled"). CloudTrail showed
+ *   CloudFormation's ModifyCacheCluster carrying none of the five. On a
+ *   memcached cluster, removing TransitEncryptionEnabled (true) or
+ *   PreferredAvailabilityZone, each alone, was an in-place update that kept
+ *   encryption on and the node's zone.
+ * - #5004: SnapshotRetentionLimit, AutoMinorVersionUpgrade,
+ *   NotificationTopicArn. #5491: VpcSecurityGroupIds.
+ *
+ * update() names these in its own warning, since the shared caller's line
+ * says CloudFormation would reset the value.
+ */
+const KEPT_ON_REMOVAL = [
+  'EngineVersion',
+  'CacheParameterGroupName',
+  'PreferredMaintenanceWindow',
+  'SnapshotWindow',
+  'IpDiscovery',
+  'SnapshotRetentionLimit',
+  'AutoMinorVersionUpgrade',
+  'NotificationTopicArn',
+  'VpcSecurityGroupIds',
+  'TransitEncryptionEnabled',
+  'PreferredAvailabilityZone',
+] as const;
+
+/**
+ * The ONE warning line for {@link KEPT_ON_REMOVAL} removals. Names are
+ * template-borne, so they go through `safeMsg`. A rollback revert restores an
+ * earlier state record, so there the property is one the failed deploy ADDED,
+ * and the line says that instead.
+ */
+const keptOnRemovalWarning = (
+  logicalId: string,
+  names: readonly string[],
+  caller: 'deploy' | 'rollback'
+): string => {
+  const one = names.length === 1;
+  const subject = one ? 'property' : 'properties';
+  return caller === 'rollback'
+    ? safeMsg`${logicalId} (AWS::ElastiCache::CacheCluster): ${subject} ${names.join(', ')} ${one ? 'is' : 'are'} absent from the state being restored; ModifyCacheCluster keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.`
+    : safeMsg`${logicalId} (AWS::ElastiCache::CacheCluster): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template and ${one ? 'keeps its' : 'keep their'} current AWS value, as CloudFormation leaves ${one ? 'it' : 'them'}; ModifyCacheCluster keeps a setting it is not sent. Declare the intended value explicitly to change it.`;
+};
+
+/**
  * AWS ElastiCache Provider
  *
  * Implements resource provisioning for ElastiCache resources:
@@ -267,6 +324,43 @@ export class ElastiCacheProvider implements ResourceProvider {
     ],
   ]);
 
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every
+   * CacheCluster property whose removal `update()` handles — so the shared
+   * caller warns only about the two listed as NOT handled below.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::ElastiCache::CacheCluster',
+      new Set<string>([
+        // Create-only (a removal replaces the cluster).
+        'CacheSubnetGroupName',
+        'ClusterName',
+        'Engine',
+        'NetworkType',
+        'Port',
+        'SnapshotName',
+        'SnapshotArns',
+        // EC2-Classic only (unhandledByDesign): never sent, so nothing to reset.
+        'CacheSecurityGroupNames',
+        // Required by CloudFormation: a template cannot remove them.
+        'CacheNodeType',
+        'NumCacheNodes',
+        // Diffed by AddTagsToResource / RemoveTagsFromResource.
+        'Tags',
+        // Reset: a removed log type is sent disabled (#5004).
+        'LogDeliveryConfigurations',
+        // Left in place, as CloudFormation leaves them, and named in
+        // update()'s own warning.
+        ...KEPT_ON_REMOVAL,
+        // NOT listed: AZMode and PreferredAvailabilityZones. CloudFormation
+        // REPLACES the cluster when either is removed (#5545 A/B, 1-node
+        // memcached), which cdkd does not plan yet (go-to-k/cdkd#5558), so
+        // the shared caller's warning names them meanwhile.
+      ]),
+    ],
+  ]);
+
   private getClient(): ElastiCacheClient {
     if (!this.client) {
       // Built together with the create client, so both capture the identity
@@ -353,7 +447,8 @@ export class ElastiCacheProvider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          mask
+          mask,
+          context
         );
       default:
         throw new ProvisioningError(
@@ -707,7 +802,8 @@ export class ElastiCacheProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    mask?: MaskerFn
+    mask?: MaskerFn,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CacheCluster ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -731,24 +827,10 @@ export class ElastiCacheProvider implements ResourceProvider {
       // #1160 reset-on-removal — ModifyCacheCluster has merge semantics (an
       // absent input field means "no change"), so a removed property is
       // sent as an explicit reset ONLY where CloudFormation resets it
-      // (LogDeliveryConfigurations; see #5004 below). Deliberately NOT
-      // reset here:
-      //   * EngineVersion — removal would imply moving to the engine's
-      //     default version, a risky version change cdkd must not
-      //     synthesize (ModifyCacheClusterMessage doc: downgrade is
-      //     impossible without recreate); leave unchanged.
-      //   * CacheParameterGroupName — the `default.<family>` name is
-      //     engine + version dependent; synthesizing it risks targeting the
-      //     wrong family (RDS-batch analog, #1222).
-      //   * PreferredMaintenanceWindow / SnapshotWindow — AWS assigns a
-      //     random per-cluster window when omitted; no documented reset
-      //     sentinel exists, so removal keeps the current window.
-      //   * IpDiscovery — a removal is only meaningful on `dual_stack`
-      //     clusters (ipv4 / ipv6 NetworkType forces the matching value),
-      //     and AWS does not document the dual-stack default; a wrong reset
-      //     flips client DNS resolution, so leave unchanged.
-      //   * VpcSecurityGroupIds — CloudFormation keeps the live groups on
-      //     removal (#5491 A/B; see the empty-guard above).
+      // (LogDeliveryConfigurations; see #5004 below). Every other mutable
+      // property CloudFormation was measured to KEEP on removal, so it is
+      // sent as absent and named in update()'s own warning
+      // (KEPT_ON_REMOVAL; the #5545 A/B is recorded there).
 
       // #5004 (real CloudFormation A/B, us-east-1): CloudFormation KEEPS the
       // live value when SnapshotRetentionLimit, AutoMinorVersionUpgrade or
@@ -859,6 +941,8 @@ export class ElastiCacheProvider implements ResourceProvider {
           properties['Tags']
         );
       }
+
+      this.warnKeptOnRemoval(logicalId, properties, previousProperties, context);
 
       const attributes: Record<string, unknown> = {};
 
@@ -1170,6 +1254,32 @@ export class ElastiCacheProvider implements ResourceProvider {
       safeMsg`CacheCluster ${logicalId}: the ${notApplied.join(', ')} change is not applied to the ` +
         `existing cluster (ModifyCacheCluster cannot change it, and CloudFormation leaves it ` +
         `unchanged too). To apply it, replace the cluster, for example by changing its logical ID.`
+    );
+  }
+
+  /**
+   * Name the {@link KEPT_ON_REMOVAL} properties this update removed, once,
+   * after the update succeeded. The caller's `removedProperties` is the
+   * template-to-template set; a direct call falls back to comparing the two
+   * bags. Not on `drift --revert`: its previous side is an AWS readback, so a
+   * key the desired side lacks was never removed from a template.
+   */
+  private warnKeptOnRemoval(
+    logicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): void {
+    if (context?.desiredFromAwsReadback) return;
+    const removed = context?.removedProperties;
+    const names = KEPT_ON_REMOVAL.filter((key) =>
+      removed !== undefined
+        ? removed.has(key)
+        : properties[key] === undefined && previousProperties[key] !== undefined
+    );
+    if (names.length === 0) return;
+    this.logger.warn(
+      keptOnRemovalWarning(logicalId, names, context?.replayingState ? 'rollback' : 'deploy')
     );
   }
 
