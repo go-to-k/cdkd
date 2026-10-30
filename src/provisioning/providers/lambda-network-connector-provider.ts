@@ -18,6 +18,7 @@ import {
   ResourceNotFoundException as LambdaResourceNotFoundException,
 } from '@aws-sdk/client-lambda';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { getLogger } from '../../utils/logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -252,7 +253,7 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
     const desiredElasticIp = declaredElasticIp(properties);
     if (
       desiredElasticIp !== undefined &&
-      JSON.stringify(desiredElasticIp) !== JSON.stringify(declaredElasticIp(previousProperties))
+      !isDeepStrictEqual(desiredElasticIp, declaredElasticIp(previousProperties))
     ) {
       const message = elasticIpRefusalMessage(logicalId, 'update');
       if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {

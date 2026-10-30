@@ -10123,6 +10123,7 @@ function disassociationProtectionRefusal(
   const replicas = properties['Replicas'];
   if (!Array.isArray(replicas)) return undefined;
   const pending: string[] = [];
+  let declaresTrue = false;
   replicas.forEach((entry: unknown, index) => {
     const replica = asRecord(entry);
     const declared = replica?.[DISASSOCIATION_PROTECTION_KEY];
@@ -10136,13 +10137,20 @@ function disassociationProtectionRefusal(
       if (deepEqual(declared, previous)) return;
     }
     pending.push(`Replicas[${index}].${DISASSOCIATION_PROTECTION_KEY}`);
+    if (coerceCfnBoolean(declared) === true) declaresTrue = true;
   });
   if (pending.length === 0) return undefined;
   return (
     `AWS::DynamoDB::GlobalTable ${logicalId}: ${pending.join(', ')} cannot be sent by cdkd yet — ` +
     'DynamoDB takes it only as a separate per-replica UpdateTable call, which cdkd does not make, ' +
     `so it would be dropped without an error. Remove ${DISASSOCIATION_PROTECTION_KEY} from the ` +
-    'replica to deploy the table without it.'
+    'replica to deploy the table without it.' +
+    // The SDK's own documentation, relayed as such: cdkd has not measured it
+    // on a replica it creates (issue #5570).
+    (declaresTrue
+      ? ' The AWS SDK documents disassociation protection as enabled by default, so removing a ' +
+        'declared true likely loses nothing; cdkd has not verified this.'
+      : '')
   );
 }
 

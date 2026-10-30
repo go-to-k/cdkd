@@ -78,16 +78,22 @@ beforeEach(() => {
 describe('GlobalTable Replicas[].DisassociationProtectionEnabled (#5570)', () => {
   const provider = new DynamoDBGlobalTableProvider();
 
+  // Said only for a declared `true`, and as the SDK's documentation, not a cdkd measurement.
+  const DEFAULT_NOTE =
+    'The AWS SDK documents disassociation protection as enabled by default, so removing a declared true likely loses nothing; cdkd has not verified this.';
+
   it.each([
-    ['the local replica', bag(false, undefined), 'Replicas[0]'],
-    ['a cross-region replica', bag(undefined, true), 'Replicas[1]'],
-  ])('a template-path create declaring it on %s is refused before any call', async (_w, props, path) => {
+    ['the local replica', bag(false, undefined), 'Replicas[0]', false],
+    ['a cross-region replica', bag(undefined, true), 'Replicas[1]', true],
+    ['a replica, as a CFn string', bag(undefined, 'true'), 'Replicas[1]', true],
+  ])('a template-path create declaring it on %s is refused before any call', async (_w, props, path, note) => {
     const err = (await provider.create('Gt', TYPE, props).then(
       () => new Error('not refused'),
       (e: unknown) => e
     )) as Error;
     expect(err.message).toMatch(REFUSED);
     expect(err.message).toContain(`${path}.DisassociationProtectionEnabled`);
+    expect(err.message.includes(DEFAULT_NOTE)).toBe(note);
     expect(mockSend).not.toHaveBeenCalled();
   });
 

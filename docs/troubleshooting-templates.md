@@ -319,8 +319,10 @@ that call yet. It refuses a create
 that declares the member, and an update that adds or changes it, rather than
 report a setting it never applied.
 
-Remove `DisassociationProtectionEnabled` from the replica. A `cdkd rollback`
-or `cdkd drift --revert` only warns.
+Remove `DisassociationProtectionEnabled` from the replica. For a declared
+`true`, the message adds that the AWS SDK documents the protection as enabled
+by default. cdkd has not verified that, so check the replica after you deploy.
+A `cdkd rollback` or `cdkd drift --revert` only warns.
 
 ## Related
 
