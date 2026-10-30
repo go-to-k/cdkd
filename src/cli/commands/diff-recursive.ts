@@ -119,6 +119,7 @@ import {
 } from '../../assets/asset-redirect.js';
 import {
   findActionableSilentDrops,
+  findHandledUnwrittenCreateOnly,
   unwrittenCreateOnlyReplacement,
 } from '../../provisioning/property-coverage.js';
 import { wouldReturnToSdkProvider } from '../../provisioning/provider-registry.js';
@@ -463,11 +464,15 @@ export function findUnwrittenCreateOnlyRefusals(
     if (record.resourceType !== change.resourceType) continue;
     // `requiresReplacement` is read before the engine's ceiling lowering, and
     // `desired` is the raw template plus each change's new value, so a row the
-    // engine would lower or resolve differently can go unwarned: this
-    // preview under-reports, never over-reports.
+    // engine would lower or resolve differently can go unwarned.
     // No `lostWithParent` gate, unlike the engine: no type a recreated
-    // parent takes with it has a create-only silent drop, so none can carry
-    // evidence (fenced in tests/unit/deployment/accepted-create-only-drops.test.ts).
+    // parent takes with it has a create-only silent drop TODAY (fenced in
+    // tests/unit/deployment/accepted-create-only-drops.test.ts). Evidence on
+    // such a type can still come from an earlier cdkd, written while a since
+    // backfilled key was a drop (#5572); for that record this warning can name
+    // a refusal the engine skips because the parent re-creates the child. It
+    // is a warning, never a blocking reason, so that over-report costs no
+    // exit code.
     const propertyChanges = change.propertyChanges ?? [];
     const desired: Record<string, unknown> = { ...(change.desiredProperties ?? {}) };
     for (const pc of propertyChanges) desired[pc.path] = pc.newValue;
@@ -489,11 +494,35 @@ export function findUnwrittenCreateOnlyRefusals(
       new Set<string>(),
       record.properties ?? {}
     ).map(({ property }) => property);
-    const keep = [...new Set([...keys, ...routeDriving])]
-      .sort((a, b) => a.localeCompare(b))
+    // Issue #5572: keys the SDK provider now writes, which no flag keeps
+    // dropped; the engine's refusal names the same subset.
+    const nowWritten = findHandledUnwrittenCreateOnly(
+      change.resourceType,
+      record.properties ?? {},
+      acceptedCreateOnlyDropsOf(record)
+    ).filter((property) => keys.includes(property));
+    const keepKeys = [...new Set([...keys, ...routeDriving])]
+      .filter((property) => !nowWritten.includes(property))
+      .sort((a, b) => a.localeCompare(b));
+    const keep = keepKeys
       .map((property) => displayIdent(`${change.resourceType}:${property}`))
       .join(',');
     const one = keys.length === 1;
+    if (nowWritten.length > 0) {
+      reasons.push(
+        `${displayIdent(logicalId)} (${displayIdent(change.resourceType)}): this previews a ` +
+          `replacement that would apply create-only ${keys.map((k) => displayIdent(k)).join(', ')}, ` +
+          `which the state record holds although the SDK provider that built the resource did ` +
+          `not write ${one ? 'it' : 'them'}, so AWS does not. This cdkd version's SDK provider ` +
+          `writes ${nowWritten.map((k) => displayIdent(k)).join(', ')}, so a deploy refuses it ` +
+          `(CREATE_ONLY_DROP_NEEDS_REPLACEMENT) unless --recreate-via-cc-api or --replace opts ` +
+          `in, whatever --prefer-sdk-route names; a deploy with ` +
+          `${nowWritten.map((k) => displayIdent(k)).join(', ')} removed from the template` +
+          (keepKeys.length > 0 ? ` and --prefer-sdk-route ${keep}` : '') +
+          ` changes nothing.`
+      );
+      continue;
+    }
     reasons.push(
       `${displayIdent(logicalId)} (${displayIdent(change.resourceType)}): this previews a ` +
         `replacement that would apply create-only ${keys.map((k) => displayIdent(k)).join(', ')}, ` +
@@ -2441,7 +2470,9 @@ export async function computeStackDiff(
   // `blocking` reason: blocking means exit 3 ("cdkd deploy would refuse to
   // start"), but this deploy refuses only without the flag and only when it
   // reaches the resource, so a stack always deployed WITH the flag would
-  // otherwise exit 3 on every `cdkd diff`.
+  // otherwise exit 3 on every `cdkd diff`. A key the SDK provider now writes
+  // (#5572) is refused under any flag, but still only at the resource, after
+  // other rows may have changed, so it is a warning too.
   for (const reason of findUnwrittenCreateOnlyRefusals(changes, stateForDiff.resources)) {
     logger.warn(printing.mask(reason));
   }

@@ -67,7 +67,7 @@ interface ResourceState {
 }
 ```
 
-`acceptedCreateOnlyDrops` is EVIDENCE, read only via `acceptedCreateOnlyDropsOf` (malformed = none): the #2790 refusal fires only for a key it names (an imported or pre-v7 record holds create-only keys AWS holds). An SDK-route create or replacement rebuilds it, an in-place update carries entries still in `properties` (`acceptedCreateOnlyDropsField`), Cloud Control clears it, a spreading writer keeps it.
+`acceptedCreateOnlyDrops` is EVIDENCE, read only via `acceptedCreateOnlyDropsOf` (malformed = none): the #2790 refusal fires only for a key it names (an imported or pre-v7 record holds create-only keys AWS holds). A create, replacement or rollback re-create rebuilds it, an in-place update carries what `properties` keeps (`acceptedCreateOnlyDropsEvidence`), CC clears it, other spreading writers keep it.
 
 Neither field hashes a secret-derived value. The input field is SEPARATE so an older binary still sends template edits; an input entry whose `+sha256:` half differs from the text entry is stale and is re-baselined without sending. A template literal equal to a `NoEcho` value or a resolved needle gets `REFUSED_FINGERPRINT` (no hash). Helpers: `src/deployment/masked-property-fingerprints.ts`; the save rebuilds both only for a bag `propertiesToRecord` wrote this deploy; absent keeps the pre-#4451 comparison.
 

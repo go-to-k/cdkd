@@ -928,6 +928,7 @@
         "codebuild-project",
         "docdb-neptune",
         "nested-stack-replace-guard",
+        "s3-tables",
         "sdk-to-cc-autoroute",
         "unrecognized-key-autoroute"
       ]
@@ -967,6 +968,7 @@
         "recreate-via-sdk-provider",
         "replacement-rename-onto-holder",
         "rollback-replay-cc-generated-name",
+        "s3-tables",
         "scheduler-custom-group",
         "schema-v10-to-v11-migration",
         "sdk-ccapi-crossref",

@@ -1,8 +1,7 @@
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import { findUnrewrittenAssetReferences } from '../../assets/asset-redirect.js';
 import {
-  findSilentDropProperties,
-  getPropertyCoverage,
+  acceptedCreateOnlyDropsEvidence,
   withoutSilentDropProperties,
 } from '../../provisioning/property-coverage.js';
 import { acceptedCreateOnlyDropsOf, type ResourceState } from '../../types/state.js';
@@ -225,7 +224,8 @@ export function extractTemplateAttributes(
  * - `'in-place'` (an SDK-route UPDATE of the same physical resource): only the
  *   `previous` record's entries still present. An update cannot set a
  *   create-only key, so it proves nothing new — and asserting one here would
- *   brand a key an imported resource DOES hold.
+ *   brand a key an imported resource DOES hold. A carried entry the provider
+ *   has since started writing stays too, while the record holds it (#5572).
  * - Cloud Control (`provisionedBy: 'cc-api'`): none; it sends the full bag.
  *
  * Always returns the key, `undefined` when empty, so spreading it over a
@@ -238,18 +238,17 @@ export function acceptedCreateOnlyDropsField(
   mode: 'new-resource' | 'in-place',
   previous?: Pick<ResourceState, 'acceptedCreateOnlyDrops'>
 ): { acceptedCreateOnlyDrops: string[] | undefined } {
-  if (provisionedBy !== 'sdk') return { acceptedCreateOnlyDrops: undefined };
-  const createOnly = getPropertyCoverage(resourceType)?.createOnlyDrops;
-  if (createOnly === undefined || createOnly.size === 0) {
-    return { acceptedCreateOnlyDrops: undefined };
-  }
+  // The rule itself lives in `acceptedCreateOnlyDropsEvidence`, shared with
+  // the rollback replay's re-create (issue #5572).
   const carried = mode === 'in-place' ? acceptedCreateOnlyDropsOf(previous) : undefined;
-  const names = findSilentDropProperties(resourceType, recordedProperties)
-    .map(({ property }) => property)
-    .filter(
-      (property) => createOnly.has(property) && (carried === undefined || carried.has(property))
-    );
-  return { acceptedCreateOnlyDrops: names.length > 0 ? names : undefined };
+  return {
+    acceptedCreateOnlyDrops: acceptedCreateOnlyDropsEvidence(
+      recordedProperties,
+      resourceType,
+      provisionedBy,
+      carried
+    ),
+  };
 }
 
 /**

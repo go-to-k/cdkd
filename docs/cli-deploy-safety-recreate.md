@@ -155,7 +155,10 @@ It comes about like this. An earlier deploy passed
 for a create-only property, so AWS never held the value. A later deploy then
 stops covering the resource with that flag. Two changes do that: removing the
 flag, and adding another property the flag does not name, since one uncovered
-property moves the whole resource to Cloud Control.
+property moves the whole resource to Cloud Control. A third is upgrading to a
+cdkd release whose SDK provider now writes that property: no flag can keep a
+property dropped once the provider writes it, so the deploy refuses even with
+`--prefer-sdk-route` still passed.
 
 cdkd refuses when that property is the only thing asking for a replacement and
 the template still sets it unchanged. The refused resource is not touched.
@@ -177,6 +180,24 @@ subnet's CIDR block.
 
 cdkd refuses `--recreate-via-cc-api` while `--prefer-sdk-route` still names
 the same property, so drop that entry in the same run.
+
+When the SDK provider now writes the property, the last remedy changes: the
+error says to remove the property from the template to keep the resource as it
+is, and names `--prefer-sdk-route` only for properties that are still dropped.
+
+The record can also be wrong about AWS, for example when the value is AWS's
+default or was set outside cdkd. Once [`cdkd drift`](cli-drift.md) shows AWS
+holds the value, re-record the resource instead of replacing it. This writes
+cdkd state only, and the error offers it only when every such property is one
+the SDK provider now writes, since it clears the record's evidence for all of
+them:
+
+```bash
+cdkd import MyStack --resource 'MyTable=<physical-id>' --force   # rebuilds the record from the template; AWS is only read
+```
+
+`cdkd diff` reports this refusal as a warning and still exits 0, because the
+deploy refuses when it reaches the resource, not before it starts.
 
 ### Edge cases
 

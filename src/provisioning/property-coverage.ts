@@ -22,6 +22,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { type PropertyCoverage, PROPERTY_COVERAGE_BY_TYPE } from './property-coverage.generated.js';
 import { hasNoCloudControlHandlers } from './unsupported-types.js';
+import { CREATE_ONLY_PATHS_SNAPSHOT } from './create-only-snapshot.generated.js';
 
 export { PROPERTY_COVERAGE_BY_TYPE };
 export type { PropertyCoverage };
@@ -424,6 +425,12 @@ function excludeCreateOnly(resourceType: string, names: string[]): string[] {
  * The same rule stops a NAMED key from forcing a replacement when the template
  * REMOVES it: AWS never held it, so there is nothing to take away.
  *
+ * A NAMED key this type's SDK provider has since started writing
+ * ({@link findHandledUnwrittenCreateOnly}, issue
+ * [#5572](https://github.com/go-to-k/cdkd/issues/5572)) is removed too, under
+ * any allow set: it is no longer a drop, so no flag can accept it, and keeping
+ * it would make an unchanged template diff as NO_CHANGE while AWS lacks it.
+ *
  * `allowedKeys` is this deploy's allow set; `cdkd diff` has none and passes an
  * empty one, since its preview is the flag-less deploy. Returns the input
  * UNCHANGED when nothing applies.
@@ -435,17 +442,26 @@ export function withoutUnwrittenSilentDropProperties(
   allowedKeys: ReadonlySet<string>,
   evidence: ReadonlySet<string>
 ): Record<string, unknown> {
-  const drops = findSilentDropProperties(resourceType, recordedProperties);
-  if (drops.length === 0) return recordedProperties;
   const createOnly = getPropertyCoverage(resourceType)?.createOnlyDrops;
-  const accepted = new Set(
-    findAcceptedSilentDrops(resourceType, desiredProperties, allowedKeys, recordedProperties)
-  );
-  const removable = drops
+  // A plain (mutable) drop is junk by construction on this side; an
+  // evidence-named create-only key goes only where the template still asks
+  // for it unchanged or no longer declares it (`evidenceNamedUnwritten`).
+  const removable = findSilentDropProperties(resourceType, recordedProperties)
     .map(({ property }) => property)
-    .filter(
-      (property) =>
-        createOnly?.has(property) !== true || (evidence.has(property) && !accepted.has(property))
+    .filter((property) => createOnly?.has(property) !== true)
+    .concat(
+      evidenceNamedUnwritten(
+        resourceType,
+        recordedProperties,
+        desiredProperties,
+        allowedKeys,
+        evidence
+      ).filter(
+        (property) =>
+          desiredProperties === undefined ||
+          !Object.hasOwn(desiredProperties, property) ||
+          askedUnchanged(recordedProperties, desiredProperties, property)
+      )
     );
   if (removable.length === 0) return recordedProperties;
   const narrowed = { ...recordedProperties };
@@ -478,21 +494,149 @@ export function findUnwrittenCreateOnlyDrops(
   allowedKeys: ReadonlySet<string>,
   evidence: ReadonlySet<string>
 ): string[] {
-  const createOnly = getPropertyCoverage(resourceType)?.createOnlyDrops;
-  if (createOnly === undefined || createOnly.size === 0 || evidence.size === 0) return [];
+  return evidenceNamedUnwritten(
+    resourceType,
+    recordedProperties,
+    desiredProperties,
+    allowedKeys,
+    evidence
+  ).filter(
+    (property) =>
+      Object.hasOwn(desiredProperties, property) &&
+      askedUnchanged(recordedProperties, desiredProperties, property)
+  );
+}
+
+/**
+ * The evidence-named create-only keys a record holds that AWS lacks on this
+ * deploy: each create-only drop the record names in `acceptedCreateOnlyDrops`
+ * and this deploy does not accept, plus each such key the SDK provider now
+ * writes ({@link findHandledUnwrittenCreateOnly}, #5572). Sorted.
+ *
+ * The ONE candidate list both readers filter, so the record side cannot drop a
+ * key the refusal does not cover. {@link withoutUnwrittenSilentDropProperties}
+ * removes a candidate only where the template asks for it unchanged (by
+ * {@link askedUnchanged}, the refusal's own test) or no longer declares it; a
+ * value that differs is left on both sides, so the diff compares it like any
+ * create-only change, through the canonicalizer, and never turns a
+ * canonically-equal value into a refusal-free replacement.
+ */
+function evidenceNamedUnwritten(
+  resourceType: string,
+  recordedProperties: Record<string, unknown>,
+  desiredProperties: Record<string, unknown> | undefined,
+  allowedKeys: ReadonlySet<string>,
+  evidence: ReadonlySet<string>
+): string[] {
+  if (evidence.size === 0) return [];
+  const createOnly = getPropertyCoverage(resourceType)?.createOnlyDrops ?? new Set<string>();
   const accepted = new Set(
     findAcceptedSilentDrops(resourceType, desiredProperties, allowedKeys, recordedProperties)
   );
-  return findSilentDropProperties(resourceType, recordedProperties)
+  const dropped = findSilentDropProperties(resourceType, recordedProperties)
     .map(({ property }) => property)
     .filter(
-      (property) =>
-        createOnly.has(property) &&
-        evidence.has(property) &&
-        !accepted.has(property) &&
-        Object.hasOwn(desiredProperties, property) &&
-        sameJsonValue(recordedProperties[property], desiredProperties[property], 'unchanged')
+      (property) => createOnly.has(property) && evidence.has(property) && !accepted.has(property)
     );
+  return [
+    ...dropped,
+    ...findHandledUnwrittenCreateOnly(resourceType, recordedProperties, evidence),
+  ].sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Whether the template asks for `property` with the value the record holds —
+ * the refusal's "unchanged". A dynamic-reference record value, or a desired
+ * value still behind an intrinsic, counts as unchanged: the refusal is the
+ * side that destroys nothing.
+ */
+function askedUnchanged(
+  recordedProperties: Record<string, unknown>,
+  desiredProperties: Record<string, unknown>,
+  property: string
+): boolean {
+  return sameJsonValue(recordedProperties[property], desiredProperties[property], 'unchanged');
+}
+
+/**
+ * The keys a state record NAMES in `acceptedCreateOnlyDrops` (`evidence`) and
+ * still holds, that this type's SDK provider now WRITES (issue
+ * [#5572](https://github.com/go-to-k/cdkd/issues/5572)). Sorted by property.
+ *
+ * Each was a create-only silent drop when an earlier cdkd recorded it, so the
+ * SDK route that built the resource never sent it; a later release moved it to
+ * `handledProperties` (a #2762 backfill slice). Today's coverage map no longer
+ * lists it as a drop, so {@link findSilentDropProperties} cannot see it, yet the
+ * evidence still holds: AWS does not have the value. Both #2790 readers take
+ * these keys exactly as they take a create-only drop the deploy stops
+ * accepting. A handled key is never "accepted" (the allow set covers drops
+ * only), so the flag cannot keep it quiet: the SDK route would send it, and
+ * sending a create-only value means creating the resource again.
+ *
+ * Only a key the committed snapshot still marks create-only AT THE TOP LEVEL
+ * counts: the writer only ever named top-level create-only keys. One a schema refresh made mutable is an ordinary addition: the
+ * next update sends it, and the writer must then stop naming it, or every
+ * later deploy would read it as unwritten and update again.
+ */
+export function findHandledUnwrittenCreateOnly(
+  resourceType: string,
+  recordedProperties: Record<string, unknown>,
+  evidence: ReadonlySet<string>
+): string[] {
+  if (evidence.size === 0) return [];
+  const handled = getPropertyCoverage(resourceType)?.handled;
+  if (handled === undefined) return [];
+  const createOnlyRoots = new Set(
+    (CREATE_ONLY_PATHS_SNAPSHOT.get(resourceType) ?? [])
+      .filter((path) => path.length === 1)
+      .map((path) => path[0])
+  );
+  return [...evidence]
+    .filter(
+      (property) =>
+        handled.has(property) &&
+        createOnlyRoots.has(property) &&
+        Object.hasOwn(recordedProperties, property)
+    )
+    .sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * The `acceptedCreateOnlyDrops` names a record written after a create or
+ * update holds (issue [#2790](https://github.com/go-to-k/cdkd/issues/2790)),
+ * shared by the deploy engine's writer (`acceptedCreateOnlyDropsField`) and
+ * the rollback replay's re-create, so the two cannot apply different rules.
+ *
+ * - Not on the SDK route: none, since Cloud Control sends the full bag.
+ * - `carried` undefined (a new resource: a create, a replacement, a replay's
+ *   re-create): every create-only silent drop `recordedProperties` holds. The
+ *   SDK route built the resource without them, and sent every handled key.
+ * - `carried` given (an in-place update): only those names still present,
+ *   among the create-only drops and the keys
+ *   {@link findHandledUnwrittenCreateOnly} returns (#5572). An update cannot
+ *   set a create-only key, so it proves nothing new.
+ *
+ * Sorted; `undefined` when empty.
+ */
+export function acceptedCreateOnlyDropsEvidence(
+  recordedProperties: Record<string, unknown>,
+  resourceType: string,
+  provisionedBy: 'sdk' | 'cc-api' | undefined,
+  carried?: ReadonlySet<string>
+): string[] | undefined {
+  if (provisionedBy !== 'sdk') return undefined;
+  const createOnly = getPropertyCoverage(resourceType)?.createOnlyDrops ?? new Set<string>();
+  const names = findSilentDropProperties(resourceType, recordedProperties)
+    .map(({ property }) => property)
+    .filter(
+      (property) => createOnly.has(property) && (carried === undefined || carried.has(property))
+    );
+  const handled =
+    carried === undefined
+      ? []
+      : findHandledUnwrittenCreateOnly(resourceType, recordedProperties, carried);
+  const all = [...names, ...handled].sort((a, b) => a.localeCompare(b));
+  return all.length > 0 ? all : undefined;
 }
 
 /**

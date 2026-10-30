@@ -7,6 +7,7 @@ import { reverseReplacementNewHoldsName } from '../replacement-name-holder.js';
 import { samePhysicalId } from '../replacement-name-holder/name-keys.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
 import { STATEFUL_TYPES } from '../../provisioning/stateful-types.js';
+import { acceptedCreateOnlyDropsEvidence } from '../../provisioning/property-coverage.js';
 import { applyDefaultNameForFallback } from '../../provisioning/resource-name.js';
 import {
   effectiveDeletionPolicy,
@@ -1216,12 +1217,22 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   // go-to-k/cdkd#5064 phase 2: the old resource comes back at its own name
   // generation, and the record remembers the one the deleted copy reached, so
   // the next replacement never asks for that name again.
+  const restoredProperties = recordedPropertiesAfterReplayCreate(prevRecord, createResult);
   stateResources[op.logicalId] = redactRollbackRecord(
     {
       ...withNameGenerationReached(prevRecord, op.logicalId, op.nameGeneration),
       physicalId: createResult.physicalId,
       attributes: createResult.attributes ?? {},
-      properties: recordedPropertiesAfterReplayCreate(prevRecord, createResult),
+      properties: restoredProperties,
+      // go-to-k/cdkd#5572: the re-create is a NEW resource, so its evidence
+      // is rebuilt for the route it took, never carried from the deleted
+      // copy's record: a key today's SDK provider writes reached AWS this
+      // time, and a stale name would refuse the next unchanged deploy.
+      acceptedCreateOnlyDrops: acceptedCreateOnlyDropsEvidence(
+        restoredProperties,
+        oldType,
+        createProvisionedBy
+      ),
     },
     secrets,
     prevRecord.properties,

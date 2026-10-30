@@ -932,6 +932,100 @@ describe('replayRollback', () => {
     expect(events.map((e) => e.eventType)).toContain('ROLLBACK_RESOURCE_SUCCEEDED');
   });
 
+  describe('reverse-replacement rebuilds acceptedCreateOnlyDrops for the re-create (#5572)', () => {
+    async function replayWith(
+      resourceType: string,
+      properties: Record<string, unknown>,
+      evidence: string[],
+      provisionedBy: 'sdk' | 'cc-api'
+    ): Promise<ResourceState> {
+      const create = vi.fn().mockResolvedValue({ physicalId: 'phys-old-2' });
+      const del = vi.fn().mockResolvedValue(undefined);
+      const { ctx } = makeCtx({ create, delete: del });
+      ctx.providerRegistry = {
+        getProviderFor: () => ({ provider: { create, delete: del }, provisionedBy }),
+      } as unknown as RollbackExecutorContext['providerRegistry'];
+      const prev = res({
+        resourceType,
+        physicalId: 'phys-old',
+        properties,
+        provisionedBy,
+        acceptedCreateOnlyDrops: evidence,
+      });
+      const ops: CompletedOperation[] = [
+        { logicalId: 'B', changeType: 'UPDATE', resourceType, physicalId: 'phys-new', previousState: prev },
+      ];
+      const state: Record<string, ResourceState> = {
+        B: res({ resourceType, physicalId: 'phys-new', properties }),
+      };
+      const result = await replayRollback(ops, state, 'S', ctx);
+      expect(result.failures).toBe(0);
+      expect(create).toHaveBeenCalled();
+      return state.B!;
+    }
+
+    it('drops a key the SDK provider now writes: the re-create sent it', async () => {
+      const record = await replayWith(
+        'AWS::S3Tables::Table',
+        { TableName: 't', StorageClassConfiguration: { StorageClass: 'INTELLIGENT_TIERING' } },
+        ['StorageClassConfiguration'],
+        'sdk'
+      );
+      expect(record.physicalId).toBe('phys-old-2');
+      expect(record.acceptedCreateOnlyDrops).toBeUndefined();
+    });
+
+    it('keeps a create-only key the SDK provider still drops', async () => {
+      const record = await replayWith(
+        'AWS::EC2::Subnet',
+        { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24', AvailabilityZoneId: 'use1-az1' },
+        ['AvailabilityZoneId'],
+        'sdk'
+      );
+      expect(record.acceptedCreateOnlyDrops).toEqual(['AvailabilityZoneId']);
+    });
+
+    it('GAINS it when the old record had none but the SDK re-create still drops a create-only key', async () => {
+      const create = vi.fn().mockResolvedValue({ physicalId: 'phys-old-2' });
+      const del = vi.fn().mockResolvedValue(undefined);
+      const { ctx } = makeCtx({ create, delete: del });
+      ctx.providerRegistry = {
+        getProviderFor: () => ({ provider: { create, delete: del }, provisionedBy: 'sdk' }),
+      } as unknown as RollbackExecutorContext['providerRegistry'];
+      const properties = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24', AvailabilityZoneId: 'use1-az1' };
+      const prev = res({
+        resourceType: 'AWS::EC2::Subnet',
+        physicalId: 'phys-old',
+        properties,
+        provisionedBy: 'sdk',
+      });
+      const ops: CompletedOperation[] = [
+        {
+          logicalId: 'B',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::EC2::Subnet',
+          physicalId: 'phys-new',
+          previousState: prev,
+        },
+      ];
+      const state: Record<string, ResourceState> = {
+        B: res({ resourceType: 'AWS::EC2::Subnet', physicalId: 'phys-new', properties }),
+      };
+      expect((await replayRollback(ops, state, 'S', ctx)).failures).toBe(0);
+      expect(state.B!.acceptedCreateOnlyDrops).toEqual(['AvailabilityZoneId']);
+    });
+
+    it('clears it on a Cloud Control re-create, which sends the full bag', async () => {
+      const record = await replayWith(
+        'AWS::EC2::Subnet',
+        { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24', AvailabilityZoneId: 'use1-az1' },
+        ['AvailabilityZoneId'],
+        'cc-api'
+      );
+      expect(record.acceptedCreateOnlyDrops).toBeUndefined();
+    });
+  });
+
   it('reverse-replacement warns on a stateful type but does NOT count a warning (exit stays 0)', async () => {
     const create = vi.fn().mockResolvedValue({ physicalId: 'tbl-old-2' });
     const del = vi.fn().mockResolvedValue(undefined);
