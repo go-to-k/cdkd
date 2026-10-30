@@ -182,7 +182,7 @@ describe('AppSyncProvider.import records cdkd ids for CloudFormation ids (issue 
       'AWS::AppSync::ApiKey',
       `${ARN}/apikeys/da2-abc`,
       `${API}|da2-abc`,
-      { ApiKey: 'da2-abc', Arn: `${ARN}/apikey/da2-abc` },
+      { ApiKey: 'da2-abc', Arn: `${ARN}/apikeys/da2-abc` },
     ],
   ])('%s: records the composite id and its attributes', async (type, cfnId, id, attributes) => {
     const result = await provider.import(importInput(type, cfnId));

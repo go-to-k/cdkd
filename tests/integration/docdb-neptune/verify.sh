@@ -130,7 +130,8 @@ DESTROY_3G_LOG=""
 # cleanup on every exit).
 EVENT_KEYS_3G=""
 EVENTS_3G=""
-# Step 3c's captured deploy output (issue #5544's warning is read from it).
+# Step 3c's captured deploy output (issues #5543's and #5544's warnings are
+# read from it).
 REMOVAL_3C_LOG=""
 # Issue #5184: when this run began (UTC, second precision, the prefix AWS's
 # ClusterCreateTime is compared on). Set before anything is created, so
@@ -684,6 +685,16 @@ if [ "${DOCDB_STATUS}" != "available" ] || [ "${DOCDB_PROT}" != "true" ] || [ "$
   echo "  neptune: status='${NEPTUNE_STATUS}' protection='${NEPTUNE_PROT}' retention='${NEPTUNE_RETENTION}' iamAuth='${NEPTUNE_IAM}' autoMinorVersionUpgrade='${NEPTUNE_AMVU}' (expected available/true/7/true/false)" >&2
   exit 1
 fi
+# Issue #5543: the DocDB properties CloudFormation keeps on removal are named
+# in one line per resource. Before the fix cdkd kept them silently, so this is
+# the arm's only post-fix-only assertion. The fixture drops three cluster
+# properties (listed in DOCDB_CLUSTER_KEPT_ON_REMOVAL's order); the instance
+# drops none, so it has no line.
+needle="DocdbCluster (AWS::DocDB::DBCluster): properties DeletionProtection, BackupRetentionPeriod, VpcSecurityGroupIds were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them."
+if ! grep -qF "${needle}" <<<"${REMOVAL_3C_PLAIN}"; then
+  echo "[verify] FAIL: #5543: the step-3c deploy output lacks the kept-removal warning '${needle}'" >&2
+  exit 1
+fi
 echo "[verify] step 3d ok: DeletionProtection=true + BackupRetentionPeriod=7 (+ Neptune IAMDatabaseAuthenticationEnabled=true, instance AutoMinorVersionUpgrade=false) retained after removal — #5004"
 
 # Issue #1160: Port was removed from both clusters. A real CloudFormation A/B
@@ -713,7 +724,7 @@ if [ "${NEPTUNE_KEPT}" != "1.4.7.0 03:00-03:30 ${NEPTUNE_CLUSTER_PG}" ] || [ "${
   exit 1
 fi
 # The kept removals are named, one line per resource. Before #5544 cdkd kept
-# them silently, so this is the arm's only post-fix-only assertion.
+# them silently, so this is #5544's only post-fix-only assertion.
 for needle in \
   "NeptuneCluster (AWS::Neptune::DBCluster): properties EngineVersion, PreferredBackupWindow, DBClusterParameterGroupName, DeletionProtection, IamAuthEnabled, BackupRetentionPeriod, DBPort were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them." \
   "NeptuneInstance (AWS::Neptune::DBInstance): properties DBParameterGroupName, AutoMinorVersionUpgrade were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them."; do

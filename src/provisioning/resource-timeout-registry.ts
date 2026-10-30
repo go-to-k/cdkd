@@ -2,7 +2,7 @@
  * Process-wide registry of the user's resolved `--resource-timeout` input.
  *
  * Providers with an INNER waiter cap (`ECSProvider.settleService`'s
- * `--full-wait` steady-state waiter, issue #1280, and
+ * steady-state waiter, which the default runs (issue #1280, go-to-k/cdkd#5571), and
  * `CloudFrontDistributionProvider.waitForDistributionStable`'s Deployed-wait
  * budget, issue #1282) consult this so the inner cap can never undercut the
  * OUTER per-resource deadline the same flag already lifts in the deploy
@@ -49,7 +49,7 @@ export function setResolvedResourceTimeouts(opt: ResolvedResourceTimeouts | unde
  * value. The compile-time default (`DEFAULT_RESOURCE_TIMEOUT_MS`) is
  * deliberately NOT applied here — an inner waiter's own floor (e.g. ECS 600s)
  * must only be raised by an EXPLICIT user value, never by the generic 30m
- * default silently multiplying every `--full-wait` failure by 3x.
+ * default silently multiplying every steady-state wait failure by 3x.
  */
 export function resolvedResourceTimeoutMs(resourceType: string): number | undefined {
   if (!resolved) return undefined;

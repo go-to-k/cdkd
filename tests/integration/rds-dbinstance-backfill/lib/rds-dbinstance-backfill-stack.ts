@@ -50,7 +50,9 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
     // #5004 removal UPDATE phase: CDKD_TEST_UPDATE=true DROPS
     // DeletionProtection + EnableIAMDatabaseAuthentication + MonitoringInterval
     // from the DBInstance below so cdkd's ModifyDBInstance sees ABSENT fields
-    // (removal), not a value change; CloudFormation keeps all three.
+    // (removal), not a value change; CloudFormation keeps all three. It also
+    // drops VPCSecurityGroups, which CloudFormation resets to the VPC's
+    // `default` security group (#5542).
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
 
     const vpc = new ec2.Vpc(this, 'BackfillVpc', {
@@ -111,6 +113,8 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
     //     for db.t3.micro Postgres); silent-drop → AWS-side false.
     //   * VPCSecurityGroups: explicit SG — silent-drop would have AWS
     //     assign the default VPC SG instead, which has a different id.
+    //     DROPPED in phase 2: verify.sh asserts the instance then sits on
+    //     the VPC's default SG only, as CloudFormation does (#5542).
     // Folded-in #609 security props:
     //   * ManageMasterUserPassword: true — Secrets-Manager-managed master
     //     password. Mutually exclusive with MasterUserPassword, so NO
@@ -148,7 +152,7 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
       ...(isUpdate ? {} : { monitoringInterval: 60 }),
       monitoringRoleArn: monitoringRole.roleArn,
       ...(isUpdate ? {} : { enableIamDatabaseAuthentication: true }),
-      vpcSecurityGroups: [securityGroup.securityGroupId],
+      ...(isUpdate ? {} : { vpcSecurityGroups: [securityGroup.securityGroupId] }),
       dbSubnetGroupName: subnetGroup.subnetGroupName,
       publiclyAccessible: false,
     });

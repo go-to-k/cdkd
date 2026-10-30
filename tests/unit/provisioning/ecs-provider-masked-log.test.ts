@@ -66,7 +66,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ECSProvider } from '../../../src/provisioning/providers/ecs-provider.js';
 
-// The by-name lookup before a --full-wait CreateService (go-to-k/cdkd#4403):
+// The by-name lookup before a waiting CreateService (go-to-k/cdkd#4403):
 // the name is free.
 vi.spyOn(
   ECSProvider.prototype as unknown as { serviceNameHeld(): Promise<boolean> },
@@ -159,12 +159,17 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
     waitUntilServicesStableMock.mockReset();
     savedFullWait = process.env['CDKD_FULL_WAIT'];
     delete process.env['CDKD_FULL_WAIT'];
+    // Most cases read the --no-wait INFO line (its manual-wait command); the
+    // steady-state failure cases delete this to run the default wait
+    // (go-to-k/cdkd#5571).
+    process.env['CDKD_NO_WAIT'] = 'true';
     provider = new ECSProvider();
   });
 
   afterEach(() => {
     if (savedFullWait === undefined) delete process.env['CDKD_FULL_WAIT'];
     else process.env['CDKD_FULL_WAIT'] = savedFullWait;
+    delete process.env['CDKD_NO_WAIT'];
   });
 
   describe('a secret-derived name on cdkd lines', () => {
@@ -482,8 +487,8 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
       expect(message).toContain('AWS::ECS::Service DC must be an object');
     });
 
-    it('create() Service under --full-wait: the successful cleanup warning masks the ARN', async () => {
-      process.env['CDKD_FULL_WAIT'] = 'true';
+    it('create() Service under the default wait: the successful cleanup warning masks the ARN', async () => {
+      delete process.env['CDKD_NO_WAIT'];
       waitUntilServicesStableMock.mockRejectedValue(new Error('Waiter has timed out'));
       fakeEcs({
         CreateServiceCommand: () => ({
@@ -507,8 +512,8 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
       expect(warned).not.toContain(TINY_B);
     });
 
-    it('create() Service under --full-wait: cleanup warning and wait failure, commands withheld', async () => {
-      process.env['CDKD_FULL_WAIT'] = 'true';
+    it('create() Service under the default wait: cleanup warning and wait failure, commands withheld', async () => {
+      delete process.env['CDKD_NO_WAIT'];
       waitUntilServicesStableMock.mockRejectedValue(new Error('Waiter has timed out'));
       fakeEcs({
         CreateServiceCommand: () => ({
@@ -533,7 +538,7 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
       expect(warned).not.toContain('Invalid value');
       expect(debugSpy.mock.calls.map((args) => String(args[0])).join('\n')).toContain(MASKED_ECHO);
       expect(warned).toContain(WITHHELD_AWS_COMMAND);
-      expect(message).toContain('did not reach steady state under --full-wait');
+      expect(message).toContain('did not reach steady state: Waiter has timed out');
       expect(message).toContain(WITHHELD_AWS_COMMAND);
       for (const text of [warned, message, transcript()]) {
         expect(text).not.toContain(LONG);
@@ -943,15 +948,15 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
       expect(lines).not.toContain(OLD_CLUSTER);
     });
   });
-  describe('the --full-wait lines name no payload logical id (go-to-k/cdkd#4295)', () => {
-    it('the accepted line, the full-wait refusal and the cleanup warning', async () => {
+  describe('the wait lines name no payload logical id (go-to-k/cdkd#4295)', () => {
+    it('the --no-wait accepted line, the steady-state refusal and the cleanup warning', async () => {
       const { PASTE_PAYLOADS, expectNoCommandBesideDisplay, spansThatRun, withPasteDir } =
         await import('../utils/paste-harness.js');
       for (const { value } of PASTE_PAYLOADS) {
         infoSpy.mockReset();
         warnSpy.mockReset();
         mockSend.mockReset();
-        delete process.env['CDKD_FULL_WAIT'];
+        process.env['CDKD_NO_WAIT'] = 'true';
         process.env['CDKD_WAIT_FLAGS_AVAILABLE'] = 'true';
         fakeEcs({
           CreateServiceCommand: () => ({
@@ -976,7 +981,7 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
 
         mockSend.mockReset();
         warnSpy.mockReset();
-        process.env['CDKD_FULL_WAIT'] = 'true';
+        delete process.env['CDKD_NO_WAIT'];
         waitUntilServicesStableMock.mockRejectedValue(new Error('Waiter has timed out'));
         fakeEcs({
           CreateServiceCommand: () => ({
@@ -992,9 +997,9 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
             TaskDefinition: 'td:1',
           })
         );
-        delete process.env['CDKD_FULL_WAIT'];
+        process.env['CDKD_NO_WAIT'] = 'true';
         expect(refusal, value).toContain(
-          'ECS service a logical id that is not a plain identifier did not reach steady state under --full-wait'
+          'ECS service a logical id that is not a plain identifier did not reach steady state:'
         );
         const cleanup = warnSpy.mock.calls
           .map((c) => String(c[0]))

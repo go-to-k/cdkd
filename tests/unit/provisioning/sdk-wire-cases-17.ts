@@ -151,12 +151,17 @@ const FILE_SYSTEM_CASE: TypeCase = {
       expectedSilent: {
         'update-remove:BackupPolicy.Status': `BackupPolicy.Status is required by the CloudFormation schema (nestedRequired), so no template drops it; a Status-less block is skipped before any call (${EFS_SRC}, applyBackupPolicy)`,
         'update-remove:FileSystemProtection.ReplicationOverwriteProtection': `CloudFormation refuses an emptied FileSystemProtection block (the update fails, live CFn A/B, go-to-k/cdkd#1160), so there is no reset to send; the apply helper skips it before any call (${EFS_SRC}, applyFileSystemProtection)`,
-        'update-remove:ProvisionedThroughputInMibps': `deferred by design: removing only ProvisionedThroughputInMibps while ThroughputMode stays provisioned has no wire shape (the API requires a value in provisioned mode, no documented default) (${EFS_SRC}, updateFileSystem)`,
         'update-remove:ThroughputMode': `CFn parity: CloudFormation RETAINS a provisioned mode when only ThroughputMode is removed and ProvisionedThroughputInMibps stays (live CFn A/B, go-to-k/cdkd#5464), so nothing is sent`,
       },
       // The file system checks its desired tags only when they changed, so
       // update-add's baseline (the same Key-less list on both sides) passes.
-      expectedRemovalThrows: efsTagThrows('FileSystemTags', ['update-remove']),
+      expectedRemovalThrows: {
+        ...efsTagThrows('FileSystemTags', ['update-remove']),
+        'update-remove:ProvisionedThroughputInMibps': {
+          why: `CloudFormation rejects ThroughputMode: provisioned without ProvisionedThroughputInMibps (live CFn A/B, go-to-k/cdkd#5547: the update fails and rolls back), so it is refused before any call (${EFS_SRC}, updateFileSystem)`,
+          says: /Throughput value must be specified for provisioned throughput mode/,
+        },
+      },
     },
     {
       name: 'elastic throughput, One Zone',

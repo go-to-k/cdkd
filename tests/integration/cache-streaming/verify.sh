@@ -223,6 +223,19 @@ assert_cc "baseline NotificationTopicArn" 'NotificationConfiguration.TopicArn' "
 assert_cc "baseline NotificationTopicStatus" 'NotificationConfiguration.TopicStatus' "active"
 assert_cc "baseline PreferredMaintenanceWindow" 'PreferredMaintenanceWindow' "tue:05:00-tue:06:00"
 assert_cc "baseline slow-log delivery status" "LogDeliveryConfigurations[?LogType=='slow-log'].Status | [0]" "active"
+# Issue #5545: the three properties CloudFormation keeps on removal.
+REDIS_PARAMS=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | jq -r '.resources.RedisParams.physicalId // empty')
+if [ -z "${REDIS_PARAMS}" ]; then
+  echo "FAIL: cannot resolve the RedisParams parameter group name from the state file" >&2
+  exit 1
+fi
+assert_cc "baseline CacheParameterGroupName" 'CacheParameterGroup.CacheParameterGroupName' "${REDIS_PARAMS}"
+assert_cc "baseline SnapshotWindow" 'SnapshotWindow' "02:00-03:00"
+BASE_ENGINE_VERSION=$(cc_field 'EngineVersion')
+case "${BASE_ENGINE_VERSION}" in
+  7.1*) echo "    OK: baseline EngineVersion ${BASE_ENGINE_VERSION} (template 7.1)" ;;
+  *) echo "FAIL: baseline EngineVersion is '${BASE_ENGINE_VERSION}', expected 7.1.x" >&2; exit 1 ;;
+esac
 
 echo "==> Step 4c: REMOVAL deploy -- drop the four properties, change PreferredMaintenanceWindow"
 # CDKD_TEST_REMOVAL=true synthesizes a cluster template that LACKS
@@ -260,6 +273,30 @@ if [ "${LOG_ACTIVE}" != "0" ]; then
   exit 1
 fi
 echo "    OK: LogDeliveryConfigurations RESET (slow-log delivery disabled)"
+# Issue #5545 (real CloudFormation A/B): CloudFormation KEEPS EngineVersion,
+# CacheParameterGroupName and SnapshotWindow on removal -- no move to
+# default.redis7 -- and cdkd names every kept removal in ONE warning. This
+# phase removes only kept properties, so no CacheCluster line may claim a
+# CloudFormation reset. Pre-#5545 cdkd kept the values silently, so the warning
+# is the assertion only the fix passes.
+assert_cc "RETAINED CacheParameterGroupName" 'CacheParameterGroup.CacheParameterGroupName' "${REDIS_PARAMS}"
+assert_cc "RETAINED SnapshotWindow" 'SnapshotWindow' "02:00-03:00"
+assert_cc "RETAINED EngineVersion" 'EngineVersion' "${BASE_ENGINE_VERSION}"
+REMOVAL_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${DEPLOY_LOG}")"
+KEPT_EXPECTED="RedisCluster (AWS::ElastiCache::CacheCluster): properties EngineVersion, CacheParameterGroupName, SnapshotWindow, SnapshotRetentionLimit, AutoMinorVersionUpgrade, NotificationTopicArn were removed from the template and keep their current AWS value, as CloudFormation leaves them;"
+if ! grep -qF "${KEPT_EXPECTED}" <<<"${REMOVAL_PLAIN}"; then
+  echo "FAIL: #5545: no warning naming the removed properties CloudFormation keeps. Expected:" >&2
+  echo "  ${KEPT_EXPECTED}" >&2
+  echo "RedisCluster lines in the output:" >&2
+  grep -F "RedisCluster" <<<"${REMOVAL_PLAIN}" >&2 || true
+  exit 1
+fi
+echo "    OK: the kept-on-removal warning names all six removed properties"
+if grep -F "(AWS::ElastiCache::CacheCluster)" <<<"${REMOVAL_PLAIN}" | grep -qF "would reset it"; then
+  echo "FAIL: #5545: a CacheCluster removal reached the shared 'CloudFormation would reset it' warning" >&2
+  exit 1
+fi
+echo "    OK: no CacheCluster removal claims a CloudFormation reset"
 # Replacement guard: the removal must be an in-place update.
 CACHE_ID_AFTER=$(aws elasticache describe-cache-clusters --region "${REGION}" \
   --query "CacheClusters[?CacheSubnetGroupName=='${SUBNET_GROUP}'].CacheClusterId | [0]" --output text)
