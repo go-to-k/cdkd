@@ -1448,8 +1448,13 @@ MaxInstanceLifetime: clearOnUpdateRemoval(newLifetime, prevLifetime, 0),
 
 A type whose `update()` has been audited for EVERY property also declares
 `removalHandledInUpdate`: the properties whose removal `update()` handles
-itself (a local reset, a diff, a required or create-only property, or a
-value left in place that `update()` names in its own warning). The caller
+itself (a local reset, a diff, a required or create-only property, a value
+left in place that `update()` names in its own warning, a keep a
+CloudFormation A/B measured — listed with no warning, since CloudFormation
+behaves the same (SSM `Parameter`, APIGWv2 `Route`) — or a property with no
+reset value at all, such as a secret with no default or a field AWS ignores
+(DocDB `MasterUserPassword`, `AutoMinorVersionUpgrade`), also listed with no
+warning). The caller
 then warns once per resource for any removed property in neither map,
 naming it as left at its current AWS value AND saying CloudFormation would
 reset it to its default — so a property with no such reset (FSx
