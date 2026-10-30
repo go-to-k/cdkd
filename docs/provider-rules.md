@@ -1451,15 +1451,15 @@ A type whose `update()` has been audited for EVERY property also declares
 itself (a local reset, a diff, a required or create-only property, a value
 left in place that `update()` names in its own warning, a keep a
 CloudFormation A/B measured — listed with no warning, since CloudFormation
-behaves the same (SSM `Parameter`, APIGWv2 `Route`) — or a property with no
-reset value at all, such as a secret with no default or a field AWS ignores
-(DocDB `MasterUserPassword`, `AutoMinorVersionUpgrade`), also listed with no
-warning). The caller
+behaves the same (SSM `Parameter`) — or a property with no default at all,
+such as a secret or a field AWS ignores (DocDB `MasterUserPassword`,
+`AutoMinorVersionUpgrade`), also listed with no warning). The caller
 then warns once per resource for any removed property in neither map,
 naming it as left at its current AWS value AND saying CloudFormation would
-reset it to its default — so a property with no such reset (FSx
-`StorageCapacity` cannot shrink), or one whose reset is unmeasured, goes into `removalHandledInUpdate` with its
-own warning, never into the shared line. A type without that entry is never
+reset it to its default — so a property with a default cdkd cannot reach
+(FSx `StorageCapacity` cannot shrink), or with a default whose CloudFormation
+reset is unmeasured, goes into `removalHandledInUpdate` with its own warning,
+never into the shared line. A type without that entry is never
 warned about, because cdkd cannot say what its `update()` does.
 
 Measured per type (#5004): ElastiCache `CacheCluster` KEEPS
