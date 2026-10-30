@@ -105,7 +105,7 @@ dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-10-18T05:07:43Z	PASS	279	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table rename replaces both ScalableTargets and both ScalingPolicies through ScalingTargetId, no NotFound; destroy 0 errors, 0 orphans
 dynamodb-fix-forward-orphan	2026-10-19T10:52:49Z	PASS	170	verify.sh	rc ok, orph clean
-dynamodb-globaltable	2026-10-20T03:28:23Z	PASS	1478	verify.sh	deploy+destroy clean, 0 orphans
+dynamodb-globaltable	2026-10-30T10:53:30Z	PASS	1405	verify.sh	rc 0, orph clean; PR #5123 e1e18f02a DisassociationProtectionEnabled refusal; probe red at 'deploy declaring DisassociationProtectionEnabled SUCCEEDED'
 dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-globaltable-replica-settings	2026-10-29T20:43:22Z	PASS	2917	verify.sh	PR #5535 dd4c69bb9; rc 0, destroy 0 errors, orph clean
 dynamodb-gsi-update	2026-10-29T20:43:22Z	PASS	2862	verify.sh	PR #5535 dd4c69bb9; rc 0, destroy 0 errors, orph clean; PASS at 53787485b + copy-revert probe RED at Phase 1d (53787485b)
@@ -215,7 +215,7 @@ lambda-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	142	verify.sh	rc 0, 0 orphan
 lambda-layer-version-update	2026-10-26T11:08:47Z	PASS	126	verify.sh	rc ok, orph clean
 lambda-log-retention	2026-08-10T05:38:11Z	PASS	69	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 lambda-microvm-image	2026-10-20T05:07:15Z	PASS	862	verify.sh	rc ok, orph clean; #5105
-lambda-network-connector	2026-10-22T10:18:37Z	PASS	969	verify.sh	PR #5170 redaction-slice; CC-to-SDK move + fresh create/delete clean, 0 orphans
+lambda-network-connector	2026-10-30T10:53:30Z	PASS	979	verify.sh	rc 0, orph clean; PR #5123 e1e18f02a ElasticIpConfiguration refusal; probe red at 'deploy declaring ElasticIpConfiguration SUCCEEDED'
 lambda-reserved-concurrency	2026-10-01T04:01:28Z	PASS	126	verify.sh	rc ok, orph clean (#4241)
 lambda-snapstart	2026-10-01T04:01:28Z	PASS	226	verify.sh	rc ok, orph clean (#4241)
 lambda-url-authtype-replay	2026-10-20T05:07:15Z	PASS	150	verify.sh	rc ok, orph clean; #5105
