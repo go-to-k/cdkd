@@ -32,6 +32,7 @@ describe('ServiceDiscoveryProvider — import', () => {
   let provider: ServiceDiscoveryProvider;
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSend.mockReset(); // drop queued Once values a failed test left behind
     provider = new ServiceDiscoveryProvider();
   });
 
@@ -137,6 +138,7 @@ describe('ServiceDiscoveryProvider — update', () => {
   let provider: ServiceDiscoveryProvider;
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSend.mockReset(); // drop queued Once values a failed test left behind
     provider = new ServiceDiscoveryProvider();
   });
 
@@ -181,6 +183,7 @@ describe('ServiceDiscoveryProvider — Service property removal follows CloudFor
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSend.mockReset(); // drop queued Once values a failed test left behind
     provider = new ServiceDiscoveryProvider();
     mockSend.mockImplementation(async (cmd: unknown) => {
       if (cmd instanceof GetServiceCommand) {
@@ -462,6 +465,7 @@ describe('ServiceDiscoveryProvider — Service without a Name (#5348)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSend.mockReset(); // drop queued Once values a failed test left behind
     provider = new ServiceDiscoveryProvider();
     mockSend.mockResolvedValue({
       Service: { Id: 'srv-1', Arn: 'arn:aws:servicediscovery:us-east-1:0:service/srv-1' },
@@ -550,6 +554,7 @@ describe('ServiceDiscoveryProvider — unapplied DnsConfig members are named (#5
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSend.mockReset(); // drop queued Once values a failed test left behind
     provider = new ServiceDiscoveryProvider();
     live = { Id: 'srv-1', NamespaceId: 'ns-a', DnsConfig: { ...BASE.DnsConfig } };
     mockSend.mockImplementation(async (cmd: unknown) => {
