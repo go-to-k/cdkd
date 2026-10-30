@@ -194,6 +194,19 @@ describe('EFSProvider FileSystem throughput removal semantics (#1160)', () => {
       expect(providerWarn).toHaveBeenCalledWith(expect.stringMatching(/leaving the file system's throughput as it is on AWS/));
     });
 
+    it('a state replay switching to provisioned with no value sends no mode change', async () => {
+      // The API would refuse ThroughputMode: provisioned with no value, so the
+      // warn path suppresses the mode switch rather than sending it.
+      const previous = { ThroughputMode: 'bursting' };
+      const next = { ThroughputMode: 'provisioned' };
+
+      await provider.update('L', 'fs-1', 'AWS::EFS::FileSystem', next, previous, {
+        replayingState: true,
+      });
+      expect(updateFileSystemCall()).toBeUndefined();
+      expect(providerWarn).toHaveBeenCalled();
+    });
+
     it('a value-less provisioned record on BOTH sides does not block an unrelated change', async () => {
       // Nothing is sent for the throughput when it does not change, so the
       // refusal is gated on the change (docs/provider-rules.md).
