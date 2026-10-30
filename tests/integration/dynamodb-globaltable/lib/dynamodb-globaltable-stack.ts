@@ -163,6 +163,11 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
               maxCapacity: 70,
               targetUtilizationPercent: 70,
             }),
+            // `replica-unprotected`: `deletion-protection` renders on every
+            // replica, and since #5355 cdkd applies a replica's own, so the
+            // replica must be unprotected before step 12d may remove it —
+            // AWS refuses to drop a protected replica, as it should.
+            ...(updateMode.includes('replica-unprotected') && { deletionProtection: false }),
           },
         ],
       }),
@@ -170,14 +175,17 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
 
     const historyTable = new ddb.TableV2(this, 'HistoryTable', tableProps);
 
-    // `disassociation-probe` (#5123): declares the deploy-region replica's
-    // DisassociationProtectionEnabled, which DynamoDB takes only as a solo
-    // per-replica UpdateTable that cdkd does not make. The deploy must be
-    // REFUSED before any call; before #5123 the member was dropped and the
-    // deploy exited 0. An override because the L2 has no such replica prop.
+    // `disassociation-probe` (#5570): declares the deploy-region replica's
+    // DisassociationProtectionEnabled as false (the AWS default is on), which
+    // DynamoDB takes only as a solo per-replica UpdateTable, and only on a
+    // replica of a multi-Region table. Single-region (the default flow) cdkd
+    // must REFUSE it before any call; with `cross-region` it must send it and
+    // the value read back live. TableV2 renders the deploy region LAST
+    // (synthesized 2026-10-30), hence the index. An override because the L2
+    // has no such replica prop.
     if (updateMode.includes('disassociation-probe')) {
       (historyTable.node.defaultChild as cdk.CfnResource).addPropertyOverride(
-        'Replicas.0.DisassociationProtectionEnabled',
+        `Replicas.${wantsCrossRegion ? 1 : 0}.DisassociationProtectionEnabled`,
         false
       );
     }

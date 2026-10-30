@@ -28,9 +28,11 @@
 #       (Issue #1419). Runs against the BASELINE deploy, so it pins the
 #       create-side half: pre-fix `create()` registered no autoscaling at
 #       all and NO code path ever registered a `dynamodb:index:*` dimension.
-#  4g. #5123: a deploy declaring Replicas[].DisassociationProtectionEnabled is
-#       refused before any call, record and table unchanged (pre-fix: the
-#       member was dropped and the deploy exited 0).
+#  4g. #5570: a deploy declaring Replicas[].DisassociationProtectionEnabled on
+#       the single-region table is refused before any call (DynamoDB answers
+#       500 there), record and table unchanged. The multi-region positive
+#       arms (declared false reaches AWS; removal keeps it) are 12c-4 / 12c-5;
+#       12c-6 unprotects the eu-west-1 replica (#5355) before 12d removes it.
 #  4f. issue #1857: assert the QUOTED-STRING per-GSI WarmThroughput on
 #       WarmCoercionTable reached AWS as NUMBERS. The arm's real
 #       discriminator is step 2 itself — pre-fix the string is forwarded
@@ -645,42 +647,45 @@ if [ "${PROV_TABLE_WRITE}" != "1" ]; then
 fi
 echo "[verify] step 4c ok: table-level write capacity created at MinCapacity (${PROV_TABLE_WRITE})"
 
-echo "[verify] step 4g (#5123): declaring Replicas[].DisassociationProtectionEnabled is refused before any call"
-# DynamoDB takes the member only as a solo per-replica UpdateTable, which cdkd
-# does not make, so before #5123 the deploy dropped it and exited 0. It must
-# now fail naming the member and leave the HistoryTable's records (every field,
-# not only properties), and the live table, as step 2 left them. `disassociation-probe` is the only mode: the
-# stack is still at its baseline here, so the member is the only difference.
-NEEDLE_DISASSOC='DisassociationProtectionEnabled cannot be sent by cdkd yet'
+echo "[verify] step 4g (#5570): a declared DisassociationProtectionEnabled on a single-region table is refused before any call"
+# DynamoDB applies the member only to a replica of a multi-Region (MREC) global
+# table: on this single-region HistoryTable the solo UpdateTable answered
+# InternalFailure (HTTP 500) on every retry (early run of PR #5577,
+# 2026-10-30). So cdkd must refuse it before any call, naming the property,
+# and leave the HistoryTable's records (every field) and the live table as
+# step 2 left them. Pre-fix (#5123) the refusal said "cannot be sent by cdkd
+# yet" instead, and before #5123 the deploy dropped the member and exited 0.
+# The multi-region positive arms are steps 12c-4 / 12c-5.
+NEEDLE_DISASSOC='is applied by DynamoDB only to a replica of a multi-Region (MREC) global table'
 history_record() {
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
     | jq -cS '[.resources | to_entries[] | select(.key | startswith("HistoryTable"))]'
 }
 RECORD_BEFORE="$(history_record)"
-case "${RECORD_BEFORE}" in '[{'*) ;; *) echo "[verify] FAIL (#5123): could not read the HistoryTable record (${RECORD_BEFORE})" >&2; exit 1 ;; esac
+case "${RECORD_BEFORE}" in '[{'*) ;; *) echo "[verify] FAIL (#5570): could not read the HistoryTable record (${RECORD_BEFORE})" >&2; exit 1 ;; esac
 set +e
 DISASSOC_OUT="$(CDKD_TEST_UPDATE=disassociation-probe ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" 2>&1)"
 DISASSOC_RC=$?
 set -e
 DISASSOC_OUT="$(printf '%s\n' "${DISASSOC_OUT}" | sed $'s/\x1b\\[[0-9;]*m//g')"
 if [ "${DISASSOC_RC}" = 0 ]; then
-  printf '%s\n' "${DISASSOC_OUT}" >&2
-  echo "[verify] FAIL (#5123): the deploy declaring DisassociationProtectionEnabled SUCCEEDED; cdkd cannot send the member, so it must refuse it" >&2
+  printf '%s\n' "${DISASSOC_OUT}" | tail -40 >&2
+  echo "[verify] FAIL (#5570): the deploy declaring DisassociationProtectionEnabled on a single-region table SUCCEEDED; DynamoDB does not apply it there, so cdkd must refuse it" >&2
   exit 1
 fi
 if ! grep -qF "${NEEDLE_DISASSOC}" <<<"${DISASSOC_OUT}"; then
-  printf '%s\n' "${DISASSOC_OUT}" >&2
-  echo "[verify] FAIL (#5123): the deploy failed (rc=${DISASSOC_RC}), but not with the DisassociationProtectionEnabled refusal" >&2
+  printf '%s\n' "${DISASSOC_OUT}" | tail -40 >&2
+  echo "[verify] FAIL (#5570): the deploy failed (rc=${DISASSOC_RC}), but not with the single-replica DisassociationProtectionEnabled refusal" >&2
   exit 1
 fi
 RECORD_AFTER="$(history_record)"
 if [ "${RECORD_AFTER}" != "${RECORD_BEFORE}" ]; then
-  echo "[verify] FAIL (#5123): the refused deploy changed the HistoryTable record" >&2
+  echo "[verify] FAIL (#5570): the refused deploy changed the HistoryTable record" >&2
   exit 1
 fi
 DISASSOC_STATUS="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" --query 'Table.TableStatus' --output text)"
-[ "${DISASSOC_STATUS}" = "ACTIVE" ] || { echo "[verify] FAIL (#5123): ${TABLE_NAME} is ${DISASSOC_STATUS} after the refused deploy, expected ACTIVE" >&2; exit 1; }
-echo "[verify] step 4g ok: refused (rc=${DISASSOC_RC}) naming DisassociationProtectionEnabled; record unchanged, table ACTIVE"
+[ "${DISASSOC_STATUS}" = "ACTIVE" ] || { echo "[verify] FAIL (#5570): ${TABLE_NAME} is ${DISASSOC_STATUS} after the refused deploy, expected ACTIVE" >&2; exit 1; }
+echo "[verify] step 4g ok: refused (rc=${DISASSOC_RC}) naming the single-replica rule; HistoryTable record unchanged, table ACTIVE"
 
 echo "[verify] step 5 (was steps 5/6/7): cdkd deploy with CDKD_TEST_UPDATE=deletion-protection (in-place update — Issue #389)"
 # ORDER NOTE (PR follow-up to #403): TTL toggle is intentionally
@@ -780,6 +785,22 @@ if [ "${CDKD_INTEG_MULTI_REGION:-0}" = "1" ]; then
     exit 1
   fi
   echo "[verify] step 12c ok: eu-west-1 replica = ${EU_STATUS}"
+
+  # Issue #5570 (probe 3): an AWS-BEHAVIOUR probe, not a regression guard --
+  # no cdkd code path sets this replica's protection, so it pins what AWS
+  # does, and a red here means AWS changed its default, not that cdkd broke.
+  # A replica cdkd adds through ReplicaUpdates Create
+  # starts with disassociation protection ON (the AWS default; the template
+  # declares none for it). Step 12d then removes this replica while it is
+  # protected, which is the live answer to probe 2: the protection guards only
+  # the Disassociate action, not a replica removal.
+  EU_DISASSOC="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region eu-west-1 \
+    --query 'Table.DisassociationProtectionEnabled' --output text)"
+  if [ "${EU_DISASSOC}" != "True" ]; then
+    echo "[verify] FAIL (#5570): the eu-west-1 replica cdkd added reads DisassociationProtectionEnabled='${EU_DISASSOC}', expected True (the AWS default)" >&2
+    exit 1
+  fi
+  echo "[verify] step 12c (#5570) ok: the added eu-west-1 replica is disassociation-protected by default"
 
   # --- step 12c-2 (Issue #1512): the PROVISIONED replica-level override ----
   # PR (#1503) taught `addReplica` to send the replica's TABLE-level
@@ -951,6 +972,91 @@ for logical_id, resource in json.load(sys.stdin).get("resources", {}).items():
   echo "[verify] step 12c-3 (b) ok: a legacy observed baseline compares clean"
   rm -rf "${DRIFT_3573_DIR}"
   DRIFT_3573_DIR=""
+
+  # --- steps 12c-4 / 12c-5 (#5570): disassociation protection on a multi-Region table ---
+  # The HistoryTable now has the eu-west-1 replica, so DynamoDB applies the
+  # member. 12c-4 declares false on the DEPLOY-REGION replica (REGION), so
+  # the eu-west-1 replica stays protected for 12d's removal (probe 2 above).
+  disassoc_live() {
+    aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+      --query 'Table.[TableStatus, DisassociationProtectionEnabled]' --output text
+  }
+  echo "[verify] step 12c-4 (#5570): a declared DisassociationProtectionEnabled=false reaches AWS"
+  # The baseline must read True first, or a False the arm did not set would
+  # make the assertion below pass on a tree that never sends the member.
+  DISASSOC_LIVE="$(disassoc_live)"
+  if [ "${DISASSOC_LIVE}" != "$(printf 'ACTIVE\tTrue')" ]; then
+    echo "[verify] FAIL (#5570 precondition): ${TABLE_NAME} in ${REGION} reads '${DISASSOC_LIVE}' before step 12c-4, expected ACTIVE / True (the AWS default)" >&2
+    exit 1
+  fi
+  set +e
+  DISASSOC_OUT="$(CDKD_TEST_UPDATE=deletion-protection,autoscaling,cross-region,disassociation-probe ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1)"
+  DISASSOC_RC=$?
+  set -e
+  DISASSOC_OUT="$(printf '%s\n' "${DISASSOC_OUT}" | sed $'s/\x1b\\[[0-9;]*m//g')"
+  if [ "${DISASSOC_RC}" != 0 ]; then
+    printf '%s\n' "${DISASSOC_OUT}" | tail -40 >&2
+    echo "[verify] FAIL (#5570): the deploy declaring DisassociationProtectionEnabled=false on the multi-region table failed (rc=${DISASSOC_RC})" >&2
+    exit 1
+  fi
+  # The provider's debug line for the solo write (setReplicaDisassociationProtection).
+  NEEDLE_DISASSOC_SENT="Sending UpdateTable DisassociationProtectionEnabled=false to the ${REGION} replica of"
+  if ! grep -qF "${NEEDLE_DISASSOC_SENT}" <<<"${DISASSOC_OUT}"; then
+    printf '%s\n' "${DISASSOC_OUT}" | tail -40 >&2
+    echo "[verify] FAIL (#5570): the deploy succeeded but the --verbose log shows no solo UpdateTable for DisassociationProtectionEnabled" >&2
+    exit 1
+  fi
+  DISASSOC_LIVE="$(disassoc_live)"
+  if [ "${DISASSOC_LIVE}" != "$(printf 'ACTIVE\tFalse')" ]; then
+    echo "[verify] FAIL (#5570): ${TABLE_NAME} in ${REGION} reads '${DISASSOC_LIVE}' after the deploy, expected ACTIVE / False" >&2
+    exit 1
+  fi
+  EU_DISASSOC="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region eu-west-1 \
+    --query 'Table.DisassociationProtectionEnabled' --output text)"
+  [ "${EU_DISASSOC}" = "True" ] || { echo "[verify] FAIL (#5570): the eu-west-1 replica reads '${EU_DISASSOC}' after a write to ${REGION} only, expected True" >&2; exit 1; }
+  echo "[verify] step 12c-4 ok: ${REGION} reads ACTIVE / False, eu-west-1 still True"
+
+  echo "[verify] step 12c-5 (#5570): removing the member sends nothing, and the replica keeps its setting"
+  set +e
+  DISASSOC_RM_OUT="$(CDKD_TEST_UPDATE=deletion-protection,autoscaling,cross-region ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" 2>&1)"
+  DISASSOC_RM_RC=$?
+  set -e
+  DISASSOC_RM_OUT="$(printf '%s\n' "${DISASSOC_RM_OUT}" | sed $'s/\x1b\\[[0-9;]*m//g')"
+  if [ "${DISASSOC_RM_RC}" != 0 ]; then
+    printf '%s\n' "${DISASSOC_RM_OUT}" | tail -40 >&2
+    echo "[verify] FAIL (#5570): the deploy removing DisassociationProtectionEnabled failed (rc=${DISASSOC_RM_RC})" >&2
+    exit 1
+  fi
+  NEEDLE_DISASSOC_KEPT="DisassociationProtectionEnabled was removed from the ${REGION} replica"
+  if ! grep -qF "${NEEDLE_DISASSOC_KEPT}" <<<"${DISASSOC_RM_OUT}"; then
+    printf '%s\n' "${DISASSOC_RM_OUT}" | tail -40 >&2
+    echo "[verify] FAIL (#5570): the deploy removing DisassociationProtectionEnabled did not warn that the replica keeps it" >&2
+    exit 1
+  fi
+  DISASSOC_LIVE="$(disassoc_live)"
+  if [ "${DISASSOC_LIVE}" != "$(printf 'ACTIVE\tFalse')" ]; then
+    echo "[verify] FAIL (#5570): ${TABLE_NAME} reads '${DISASSOC_LIVE}' after the removal, expected ACTIVE / False (kept)" >&2
+    exit 1
+  fi
+  echo "[verify] step 12c-5 ok: removal warned and ${REGION} kept False"
+
+  # --- step 12c-6: unprotect the eu-west-1 replica before 12d removes it ---
+  # `deletion-protection` renders DeletionProtectionEnabled on EVERY replica,
+  # and since #5355 cdkd applies a cross-region replica's own, so the
+  # eu-west-1 replica is protected here. AWS refuses to remove a protected
+  # replica ("Cannot delete table ... because it has deletion protection
+  # enabled"), which is the protection working: cdkd must not auto-disable
+  # it on a template change. So the template turns it off first, as a user
+  # would. (Multi-region mode last passed 2026-09-25, #3776, before #5355.)
+  echo "[verify] step 12c-6 (#5355): turn the eu-west-1 replica's deletion protection off before removing it"
+  CDKD_TEST_UPDATE=deletion-protection,autoscaling,cross-region,replica-unprotected ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
+  EU_DPE="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region eu-west-1 \
+    --query 'Table.DeletionProtectionEnabled' --output text)"
+  if [ "${EU_DPE}" != "False" ]; then
+    echo "[verify] FAIL (#5355): the eu-west-1 replica reads DeletionProtectionEnabled='${EU_DPE}' after the deploy that turns it off, expected False" >&2
+    exit 1
+  fi
+  echo "[verify] step 12c-6 ok: eu-west-1 replica DeletionProtectionEnabled = False"
 
   echo "[verify] step 12d: remove the eu-west-1 replica"
   CDKD_TEST_UPDATE=deletion-protection,autoscaling ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
@@ -2002,6 +2108,36 @@ if ! grep -q "GlobalTable GsiProvRecoveryTable: .*using the table's LIVE indexes
   echo "FAIL: issue #1585 — the recovery path did not run on GsiProvRecoveryTable (no LIVE-baseline warning)" >&2
   exit 1
 fi
+# Issue #1585 (autoscaled exclusion), read from what cdkd SENT, not from the
+# live capacity: Application Auto Scaling owns autoProvIdx's write capacity and
+# may scale the out-of-band 7 back in at any time. The PR #5577 final run
+# (CDKD_INTEG_MULTI_REGION=1, 2026-10-30) failed a live 7/7 read with write=1;
+# CloudTrail showed the UpdateTable 7 -> 1 at 15:30:47Z came from
+# dynamodb.application-autoscaling.amazonaws.com (AutoScaling-UpdateDesiredCapacity),
+# 10 s after 13h re-put the target-tracking policy, and cdkd sent no capacity.
+# The needles are the provider's debug lines, one per index Delete / Create /
+# Update it sends (a re-created index would carry the derived capacity too).
+GSI_SEND_PREFIX='Sending UpdateTable GlobalSecondaryIndexUpdates'
+GSI_SEND_NEEDLE="${GSI_SEND_PREFIX} Update for index"
+# Not vacuous: this deploy's own completion line, and a positive control --
+# the recoverIdx value edit asserted below goes out through the same line.
+if ! grep -qF "State saved after GsiProvRecoveryTable" "${RECOVERY_LOG}"; then
+  echo "FAIL: issue #1585 — the 13h --verbose log has no 'State saved after GsiProvRecoveryTable' line; the send check below would be vacuous" >&2
+  exit 1
+fi
+if ! grep -qF "${GSI_SEND_NEEDLE} recoverIdx on ${GSI_RECOVERY_TABLE}" "${RECOVERY_LOG}"; then
+  echo "FAIL: issue #1585 — the 13h --verbose log has no '${GSI_SEND_NEEDLE} recoverIdx' line (positive control); the send check below would be vacuous" >&2
+  exit 1
+fi
+if grep -F "${GSI_SEND_PREFIX}" "${RECOVERY_LOG}" | grep -F "for index autoProvIdx on ${GSI_PROV_RECOVERY_TABLE}" >&2; then
+  echo "FAIL: issue #1585 — the recovery deploy sent an index UpdateTable (Delete / Create / Update) for the autoscaled index autoProvIdx (an unrequested scale-down or re-create is the destructive failure mode the exclusion exists to prevent)" >&2
+  exit 1
+fi
+AUTO_PROV_STATUS="$(gsi_field "${GSI_PROV_RECOVERY_TABLE}" autoProvIdx IndexStatus)"
+case "${AUTO_PROV_STATUS}" in
+  ACTIVE|UPDATING) ;;
+  *) echo "FAIL: issue #1585 — autoProvIdx is '${AUTO_PROV_STATUS}' after the recovery deploy, expected ACTIVE or UPDATING (it must survive)" >&2; exit 1 ;;
+esac
 rm -f "${RECOVERY_LOG}"
 
 RECOVERED_READ="$(gsi_field "${GSI_RECOVERY_TABLE}" recoverIdx OnDemandThroughput.MaxReadRequestUnits)"
@@ -2032,16 +2168,10 @@ case "${LIVEONLY_AFTER}" in
     exit 1
     ;;
 esac
-# The autoscaled index's out-of-band capacity must be UNCHANGED: the exclusion
-# keeps its baseline entry identity-only, so the recovery deploy must not
-# scale the live 7/7 down to the desired side's derived 2/1.
-EXCL_READ="$(gsi_field "${GSI_PROV_RECOVERY_TABLE}" autoProvIdx ProvisionedThroughput.ReadCapacityUnits)"
-EXCL_WRITE="$(gsi_field "${GSI_PROV_RECOVERY_TABLE}" autoProvIdx ProvisionedThroughput.WriteCapacityUnits)"
-if [ "${EXCL_READ}" != "7" ] || [ "${EXCL_WRITE}" != "7" ]; then
-  echo "FAIL: issue #1585 — the recovery deploy touched the autoscaled index's capacity: read=${EXCL_READ} / write=${EXCL_WRITE} (expected 7/7 — an unrequested scale-down is the destructive failure mode the exclusion exists to prevent)" >&2
-  exit 1
-fi
-echo "    liveOnlyIdx survived (${LIVEONLY_AFTER}), autoProvIdx capacity unchanged at 7/7 — issue #1585 covered"
+# The autoscaled index's capacity is checked at step 13h from what cdkd SENT
+# (no UpdateTable for autoProvIdx): its live capacity is Application Auto
+# Scaling's to move, so a live 7/7 read here flakes (see 13h).
+echo "    liveOnlyIdx survived (${LIVEONLY_AFTER}); no capacity UpdateTable sent for autoProvIdx (13h) — issue #1585 covered"
 
 # ─── Issues #1733 / #1738 on BillingSeedTable ───────────────────────────────
 #

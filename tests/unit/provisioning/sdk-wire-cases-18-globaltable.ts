@@ -45,6 +45,13 @@ function armGlobalTable(_physicalId: string, bag: Bag): void {
   const replicas = new Set<string>(declared.map((r) => String(r['Region'])));
   let deletionProtection =
     (local['DeletionProtectionEnabled'] ?? bag['DeletionProtectionEnabled']) === true;
+  // What the last deploy left: the one replica that declares it, else AWS's
+  // default (on). Every region's describe answers it alike, which holds while
+  // only one replica of a bag declares it (go-to-k/cdkd#5570).
+  let disassociationProtection =
+    declared.find((r) => r['DisassociationProtectionEnabled'] !== undefined)?.[
+      'DisassociationProtectionEnabled'
+    ] ?? true;
   const gsis = (bag['GlobalSecondaryIndexes'] as Rec[] | undefined) ?? [];
   const localGsi = (name: unknown): Rec =>
     ((local['GlobalSecondaryIndexes'] as Rec[] | undefined) ?? []).find(
@@ -80,6 +87,7 @@ function armGlobalTable(_physicalId: string, bag: Bag): void {
         TableStatus: 'ACTIVE',
         LatestStreamArn: STREAM_ARN,
         DeletionProtectionEnabled: deletionProtection,
+        DisassociationProtectionEnabled: disassociationProtection,
         BillingModeSummary: { BillingMode: bag['BillingMode'] ?? 'PAY_PER_REQUEST' },
         TableClassSummary: { TableClass: local['TableClass'] ?? 'STANDARD' },
         OnDemandThroughput: onDemand(
@@ -121,6 +129,9 @@ function armGlobalTable(_physicalId: string, bag: Bag): void {
       }
       if (typeof input['DeletionProtectionEnabled'] === 'boolean') {
         deletionProtection = input['DeletionProtectionEnabled'];
+      }
+      if (typeof input['DisassociationProtectionEnabled'] === 'boolean') {
+        disassociationProtection = input['DisassociationProtectionEnabled'];
       }
       return {};
     },
@@ -325,7 +336,8 @@ const ON_DEMAND_BAG: Bag = {
         ],
       },
     },
-    { Region: 'us-west-2' },
+    // go-to-k/cdkd#5570: a solo UpdateTable in the replica's own region.
+    { Region: 'us-west-2', DisassociationProtectionEnabled: false },
   ],
 };
 
@@ -488,6 +500,14 @@ const PROVISIONED_SILENT: Record<string, string> = {
 const ON_DEMAND_THROWS: Record<string, Throw> = {
   ...keyThrows(ON_DEMAND_BAG),
   ...pick(ON_DEMAND_BAG, [
+    [/^create$/, /^Replicas\.0(\.Region)?$/, {
+      why: `without the deploy-region entry (or its Region) the table has a single replica, and DynamoDB applies DisassociationProtectionEnabled only to a replica of a multi-Region global table (InternalFailure 500 on a single-Region one, integ 2026-10-30), so the declared value is refused before any call (${S}, disassociationProtectionRefusal; go-to-k/cdkd#5570)`,
+      says: /only to a replica of a multi-Region \(MREC\) global table/,
+    }],
+    [/^(create|update-add|update-remove)$/, /^Replicas\.1\.Region$/, {
+      why: `an entry without its Region names no second Region, so the table counts as single-Region and the declared DisassociationProtectionEnabled is refused before any call (${S}, isMultiRegionReplicaSet / disassociationProtectionRefusal; go-to-k/cdkd#5570); Region is required by the CloudFormation schema`,
+      says: /only to a replica of a multi-Region \(MREC\) global table/,
+    }],
     [/^(create|update-remove)$/, /^Replicas\.0\.ReplicaStreamSpecification\.Tags\.\d+\.(Key|Value)$/, {
       why: `a replica stream tag without its Key or Value is refused before any call (${RS}, readStreamTags; go-to-k/cdkd#5489)`,
       says: /ReplicaStreamSpecification\.Tags must be a list of tags/,
@@ -503,6 +523,7 @@ const ON_DEMAND_SILENT: Record<string, string> = {
     [/^create$/, /^StreamSpecification\.StreamViewType$/, STREAM_VIEW_DEFAULT],
     [ANY, /^GlobalSecondaryIndexes\.0\.ReadOnDemandThroughputSettings/, GSI_READ_SHADOWED],
     [VARY_ON_UPDATE, /^GlobalSecondaryIndexes\.0\.(KeySchema|Projection)\./, GSI_SHAPE_WARNED],
+    [REMOVE, /^Replicas\.1\.DisassociationProtectionEnabled$/, `an UpdateTable that omits it leaves the replica's setting unchanged, so a removed value sends nothing and the replica keeps it, with a warning (${S}, convergeReplicaDisassociationProtection; go-to-k/cdkd#5570); CFn unmeasured`],
   ]),
 };
 
@@ -538,9 +559,6 @@ const GLOBAL_TABLE_CASE: TypeCase = {
   exempt: {
     TableClass:
       'not an AWS::DynamoDB::GlobalTable property (CloudFormation refuses it, measured on go-to-k/cdkd#5355): the provider reads it only as the fallback of the deploy-region Replicas[].TableClass, which the provisioned bag carries (dynamodb-globaltable-provider.ts, 9524-9541)',
-  },
-  nestedExempt: {
-    'Replicas.DisassociationProtectionEnabled': `refused before any call: DynamoDB takes it only as a solo per-replica UpdateTable, which ${S} does not make yet (disassociationProtectionRefusal, issue #5570; pinned by dynamodb-globaltable-disassociation-protection.test.ts)`,
   },
   targets: [
     { path: ['Replicas', 0, 'Tags', 0], command: 'UntagResourceCommand', names: '"k1"', notNames: '"k2"' },

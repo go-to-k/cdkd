@@ -946,16 +946,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     log.debug(`Creating DynamoDB GlobalTable ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed `Replicas[].Tags` is refused before any call.
     const desiredReplicaTags = refuseMalformedReplicaTags(properties, resourceType, logicalId);
-    // Refused before any call; a state replay only warns, the record's value
-    // having been dropped the same way when it was first deployed.
+    // go-to-k/cdkd#5570: a `Replicas[].DisassociationProtectionEnabled` that is
+    // not a boolean is refused before any call; a state replay warns and
+    // leaves that replica's protection as AWS has it.
     const disassociationRefusal = disassociationProtectionRefusal(properties, undefined, logicalId);
     if (disassociationRefusal !== undefined) {
       if (context?.replayingState !== true) {
         throw new ProvisioningError(log.mask(disassociationRefusal), resourceType, logicalId);
       }
-      warn(
-        `${disassociationRefusal} Proceeding without it: this create replays a cdkd state record.`
-      );
+      warn(`${disassociationRefusal} Proceeding: this create replays a cdkd state record.`);
     }
 
     const tableName =
@@ -1763,6 +1762,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         maskSecrets
       );
 
+      // go-to-k/cdkd#5570: each replica's declared disassociation protection,
+      // a solo UpdateTable in its own region once every replica is settled.
+      await this.convergeReplicaDisassociationProtection(
+        tableName,
+        logicalId,
+        currentRegion,
+        wiringProperties,
+        undefined,
+        context?.replayingState === true ? 'replay' : 'template',
+        warn,
+        maskSecrets
+      );
+
       // TTL is a separate API call (UpdateTimeToLive). Applied after
       // table + replicas are ACTIVE so the AWS-side request validates.
       // A disabled spec sends nothing: a new table starts with TTL disabled,
@@ -2272,22 +2284,27 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     enabled: boolean,
     logicalId: string,
     maskSecrets: SecretMasker,
-    budget?: ElapsedBudget
+    budget?: ElapsedBudget,
+    // go-to-k/cdkd#5570: the disassociation-protection pass waits the same
+    // way, on the replica region's own table (the local one included).
+    member:
+      | 'DeletionProtectionEnabled'
+      | 'DisassociationProtectionEnabled' = 'DeletionProtectionEnabled',
+    replicaClient: DynamoDBClient = this.getRegionalClient(region)
   ): Promise<void> {
     const wait = beginDeleteWait(REPLICA_PROTECTION_SETTLE_POLLS, budget);
+    const what =
+      member === 'DeletionProtectionEnabled' ? 'deletion-protection' : 'disassociation-protection';
     const watch = startInterruptWatch(
-      maskSecrets(`DynamoDB replica ${region} deletion-protection change on ${tableName}`)
+      maskSecrets(`DynamoDB replica ${region} ${what} change on ${tableName}`)
     );
     try {
       while (wait.nextPoll()) {
         if (watch.isInterrupted()) throw watch.onInterrupted();
-        const replica = await this.getRegionalClient(region).send(
+        const replica = await replicaClient.send(
           new DescribeTableCommand({ TableName: tableName })
         );
-        if (
-          replica.Table?.TableStatus === 'ACTIVE' &&
-          replica.Table.DeletionProtectionEnabled === enabled
-        ) {
+        if (replica.Table?.TableStatus === 'ACTIVE' && replica.Table[member] === enabled) {
           const source = await this.dynamoDBClient.send(
             new DescribeTableCommand({ TableName: tableName })
           );
@@ -2300,7 +2317,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
     throw new ProvisioningError(
       maskSecrets(
-        `DeletionProtectionEnabled=${enabled} on the ${region} replica of ${tableName} did not ` +
+        `${member}=${enabled} on the ${region} replica of ${tableName} did not ` +
           `settle within ${wait.pollsRun} polls${wait.note()}`
       ),
       'AWS::DynamoDB::GlobalTable',
@@ -2390,6 +2407,204 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         await this.setReplicaDeletionProtection(tableName, region, newDpe, logicalId, maskSecrets);
       }
     }
+  }
+
+  /**
+   * Each replica's declared `Replicas[].DisassociationProtectionEnabled`, the
+   * local table's included (go-to-k/cdkd#5570). DynamoDB takes it only as an
+   * `UpdateTable` of the replica's own table, in its own region, that changes
+   * nothing else, so it is one solo write per replica, made once every other
+   * change of the create or update has settled.
+   *
+   * AWS-aware: a replica already holding the declared value gets no write.
+   * The protection is on by default for every replica (DynamoDB Developer
+   * Guide, "Disassociating a global table replica"), so a declared `true`
+   * usually costs one read. A value the template changed, or declares on a
+   * replica this deploy creates, is sent when that read fails or reports no
+   * value; an unchanged one is only converged against a value AWS reports, so
+   * a failed read leaves the replica as it is.
+   *
+   * A REMOVED value sends nothing: an `UpdateTable` that omits the member
+   * leaves the setting unchanged, so the replica keeps it, and the template
+   * path says so (CloudFormation's behaviour on removal is unmeasured). A
+   * state replay is the exception: its desired side is the record an earlier
+   * deploy left, and a record without the member stands for the AWS default,
+   * so when the rolled-back deploy declared `false` and AWS reads `false`,
+   * the replay sends `true` — a rollback never leaves the protection weaker
+   * than the record it restores. It does not ask whether that deploy got as
+   * far as sending its `false`: a `false` set outside cdkd, which the record
+   * does not declare either, is turned back on as well, the way the replay
+   * restores every other recorded setting. A drift revert sends nothing for
+   * an absence: a read-back omits a member whose read failed.
+   *
+   * The protection guards only the `Disassociate` replica action, which cdkd
+   * never sends; deletion protection is the guard of a replica removal and of
+   * `DeleteTable`, so no delete path reads this one.
+   */
+  private async convergeReplicaDisassociationProtection(
+    tableName: string,
+    logicalId: string,
+    currentRegion: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown> | undefined,
+    origin: 'template' | 'replay' | 'readback',
+    warn: (message: string) => void,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const desired = Array.isArray(properties['Replicas'])
+      ? (properties['Replicas'] as unknown[])
+      : [];
+    let wrote = false;
+    // A single-Region table takes no write at all: DynamoDB answered the solo
+    // UpdateTable {false} with a 500 there. A new or changed `false` was
+    // refused (or, on a replay or a revert, warned) up front by
+    // disassociationProtectionRefusal; a `true` and an unchanged `false` are
+    // skipped here.
+    const multiRegion = isMultiRegionReplicaSet(properties);
+    for (const entry of desired) {
+      const replica = asRecord(entry);
+      const region = replica?.['Region'];
+      if (typeof region !== 'string' || region === '') continue;
+      const declared = readReplicaDisassociationProtection(replica);
+      const previous =
+        previousProperties === undefined
+          ? undefined
+          : readReplicaDisassociationProtection(localReplicaEntry(previousProperties, region));
+      // Resolved only for a replica the pass reads: a region-scoped client is
+      // never built for one that declares nothing.
+      const clientFor = (): DynamoDBClient =>
+        region === currentRegion ? this.dynamoDBClient : this.getRegionalClient(region);
+      const readLive = async (): Promise<boolean | undefined> => {
+        const client = clientFor();
+        try {
+          const described = await client.send(new DescribeTableCommand({ TableName: tableName }));
+          return described.Table?.DisassociationProtectionEnabled;
+        } catch (readError) {
+          this.logger.debug(
+            maskSecrets(
+              `Could not read ${DISASSOCIATION_PROTECTION_KEY} on the ${region} replica of ` +
+                `${tableName}: ${describeAwsFailure(readError).detail}`
+            )
+          );
+          return undefined;
+        }
+      };
+      if (!multiRegion) {
+        if (declared !== undefined) {
+          const message =
+            `${DISASSOCIATION_PROTECTION_KEY}=${declared} on the ${region} replica of ` +
+            `${tableName} is not sent: DynamoDB applies it only to a replica of a multi-Region ` +
+            "global table, and this table's Replicas name a single Region.";
+          // Said once, in the deploy that leaves one Region or that declares
+          // or changes the value; afterwards it is the steady state, at debug.
+          const justShrunk =
+            previousProperties !== undefined && isMultiRegionReplicaSet(previousProperties);
+          if (origin === 'template' && (justShrunk || declared !== previous)) warn(message);
+          else this.logger.debug(maskSecrets(message));
+        } else if (
+          origin !== 'readback' &&
+          replica?.[DISASSOCIATION_PROTECTION_KEY] === undefined &&
+          previous !== undefined
+        ) {
+          // Nothing can be sent here, the template's removal and a replay's
+          // restore alike: say what the replica keeps.
+          warn(
+            `${DISASSOCIATION_PROTECTION_KEY} was removed from the ${region} replica of ` +
+              `${tableName}, whose Replicas now name a single Region, so nothing is sent and ` +
+              `the replica keeps its current setting (${previous} when last deployed).`
+          );
+        }
+        continue;
+      }
+      if (declared === undefined) {
+        if (replica?.[DISASSOCIATION_PROTECTION_KEY] !== undefined || previous === undefined) {
+          continue;
+        }
+        if (origin === 'template') {
+          warn(
+            `${DISASSOCIATION_PROTECTION_KEY} was removed from the ${region} replica of ` +
+              `${tableName}; DynamoDB keeps the replica's current setting (${previous} when ` +
+              `last deployed), so nothing is sent. Declare it to change it.`
+          );
+        } else if (origin === 'replay' && previous === false && (await readLive()) === false) {
+          await this.setReplicaDisassociationProtection(
+            tableName,
+            region,
+            clientFor(),
+            true,
+            logicalId,
+            maskSecrets
+          );
+          wrote = true;
+        }
+        continue;
+      }
+      // go-to-k/cdkd#5487: an earlier update that failed part-way may have
+      // left a write unsent, so an unsettled `Replicas` counts as a change
+      // and is sent even when this deploy's read fails.
+      const changed = declared !== previous || isUnsettled('Replicas');
+      const live = await readLive();
+      if (live === declared) continue;
+      if (live === undefined && !changed) continue;
+      await this.setReplicaDisassociationProtection(
+        tableName,
+        region,
+        clientFor(),
+        declared,
+        logicalId,
+        maskSecrets
+      );
+      wrote = true;
+    }
+    // The replica-scoped wait above does not read the other replicas'
+    // statuses, and the steps after this pass (TTL, the index updates,
+    // auto-scaling) are refused with `ResourceInUseException` while any is
+    // still UPDATING: settle the whole table before handing it on.
+    if (wrote) await this.waitForGlobalTableSettled(tableName, logicalId, maskSecrets);
+  }
+
+  /**
+   * The solo disassociation-protection write on one replica's own table, once
+   * the table and every replica read settled (a change still in flight makes
+   * DynamoDB refuse it with `ResourceInUseException`, as it refuses the
+   * deletion-protection write), then the wait for the value to read back —
+   * see {@link waitForReplicaProtectionSettled}.
+   */
+  private async setReplicaDisassociationProtection(
+    tableName: string,
+    region: string,
+    client: DynamoDBClient,
+    enabled: boolean,
+    logicalId: string,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    await this.waitForGlobalTableSettled(
+      tableName,
+      logicalId,
+      maskSecrets,
+      client === this.dynamoDBClient ? {} : { region }
+    );
+    // A refusal propagates as the deletion-protection write's does: the
+    // caller's masked wrap names its class, never AWS's text (#2319).
+    markUnsettled('Replicas');
+    this.logger.debug(
+      maskSecrets(
+        `Sending UpdateTable ${DISASSOCIATION_PROTECTION_KEY}=${enabled} to the ${region} replica of ${tableName}`
+      )
+    );
+    await client.send(
+      new UpdateTableCommand({ TableName: tableName, DisassociationProtectionEnabled: enabled })
+    );
+    await this.waitForReplicaProtectionSettled(
+      tableName,
+      region,
+      enabled,
+      logicalId,
+      maskSecrets,
+      undefined,
+      DISASSOCIATION_PROTECTION_KEY,
+      client
+    );
   }
 
   /**
@@ -3988,8 +4203,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // go-to-k/cdkd#3994: a malformed desired `Replicas[].Tags` is refused
     // before any call.
     refuseMalformedReplicaTags(properties, resourceType, logicalId, physicalId);
-    // Refused before any call on the template path; warned on a state replay
-    // or a drift revert (see disassociationProtectionRefusal).
+    // go-to-k/cdkd#5570: refused before any call on the template path; warned
+    // on a state replay or a drift revert (see disassociationProtectionRefusal).
     const disassociationRefusal = disassociationProtectionRefusal(
       properties,
       previousProperties,
@@ -4005,7 +4220,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
       }
       warn(
-        `${disassociationRefusal} Proceeding without it: this update restores a recorded or read-back configuration.`
+        `${disassociationRefusal} Proceeding: this update restores a recorded or read-back configuration.`
       );
     }
 
@@ -5458,6 +5673,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         markUnsettled('BillingMode', 'WriteProvisionedThroughputSettings');
         if (billingUpdate.GlobalSecondaryIndexUpdates !== undefined) {
           markUnsettled('GlobalSecondaryIndexes');
+          for (const indexUpdate of billingUpdate.GlobalSecondaryIndexUpdates) {
+            debug(
+              `Sending UpdateTable GlobalSecondaryIndexUpdates Update for index ` +
+                `${maskSecrets(indexUpdate.Update?.IndexName ?? '')} on ${physicalId} (with the billing mode change)`
+            );
+          }
         }
         await this.dynamoDBClient.send(new UpdateTableCommand(billingUpdate));
         await this.waitForTableActiveAfterUpdate(
@@ -5938,6 +6159,23 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         warn,
         maskSecrets
       );
+      // go-to-k/cdkd#5570: after every replica change above, as a solo write
+      // per replica (the local table and the replicas this update added
+      // included); the GSI, auto-scaling and TTL steps below follow it.
+      await this.convergeReplicaDisassociationProtection(
+        physicalId,
+        logicalId,
+        currentRegion,
+        properties,
+        previousProperties,
+        context?.desiredFromAwsReadback === true
+          ? 'readback'
+          : context?.replayingState === true
+            ? 'replay'
+            : 'template',
+        warn,
+        maskSecrets
+      );
 
       // 6. GSI diff. New GSI Create may need additional AttributeDefinitions
       // — AWS allows combining `AttributeDefinitions` and one GSI
@@ -6068,6 +6306,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           Delete: { IndexName: gsi.IndexName },
         };
         markUnsettled('GlobalSecondaryIndexes');
+        debug(
+          `Sending UpdateTable GlobalSecondaryIndexUpdates Delete for index ` +
+            `${maskSecrets(gsi.IndexName)} on ${physicalId}`
+        );
         await this.dynamoDBClient.send(
           new UpdateTableCommand({
             TableName: physicalId,
@@ -6118,6 +6360,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           },
         };
         markUnsettled('GlobalSecondaryIndexes');
+        debug(
+          `Sending UpdateTable GlobalSecondaryIndexUpdates Create for index ` +
+            `${maskSecrets(gsi.IndexName ?? '')} on ${physicalId}`
+        );
         await this.dynamoDBClient.send(
           new UpdateTableCommand({
             TableName: physicalId,
@@ -6291,6 +6537,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         }
         const gsiUpdate: GlobalSecondaryIndexUpdate = { Update: update };
         markUnsettled('GlobalSecondaryIndexes');
+        // One line per index change sent, Delete / Create / Update alike (the
+        // dynamodb-globaltable integ reads them: an index it must not see
+        // touched, #1585).
+        debug(
+          `Sending UpdateTable GlobalSecondaryIndexUpdates Update for index ` +
+            `${maskSecrets(gsi.IndexName ?? '')} on ${physicalId}`
+        );
         await this.dynamoDBClient.send(
           new UpdateTableCommand({
             TableName: physicalId,
@@ -8400,7 +8653,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * `DeletionProtectionEnabled` (the deploy region's included; none of them
    * is emitted top-level any more), the declared `ResourcePolicy` /
    * `ReplicaStreamSpecification.ResourcePolicy` (`readReplicaPolicies`), the
-   * PITR `RecoveryPeriodInDays` and a declared Contributor Insights `Mode`.
+   * PITR `RecoveryPeriodInDays` and a declared Contributor Insights `Mode`,
+   * plus a declared `DisassociationProtectionEnabled` (go-to-k/cdkd#5570).
    * `canonicalizeDriftPair` converts a baseline the older read-back wrote.
    */
   async readCurrentState(
@@ -8557,9 +8811,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             // own region (best-effort — a failed read omits the members, and
             // `update()` never reads that absence as "unprotect").
             let protection: boolean | undefined;
+            let disassociationProtection: boolean | undefined;
             let streamArn: string | undefined;
             if (isLocal) {
               protection = table.DeletionProtectionEnabled;
+              disassociationProtection = table.DisassociationProtectionEnabled;
               streamArn = table.LatestStreamArn;
             } else {
               try {
@@ -8567,6 +8823,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
                   new DescribeTableCommand({ TableName: tableNameForSubs })
                 );
                 protection = regional.Table?.DeletionProtectionEnabled;
+                disassociationProtection = regional.Table?.DisassociationProtectionEnabled;
                 streamArn = regional.Table?.LatestStreamArn;
               } catch (err) {
                 // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
@@ -8583,6 +8840,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               }
             }
             if (typeof protection === 'boolean') entry['DeletionProtectionEnabled'] = protection;
+            // go-to-k/cdkd#5570: only where declared. An undeclared one is the
+            // AWS default (on) that `update()` never sends, so emitting it
+            // would read as drift on every table that leaves it alone.
+            if (
+              typeof disassociationProtection === 'boolean' &&
+              declaredReplica?.[DISASSOCIATION_PROTECTION_KEY] !== undefined
+            ) {
+              entry[DISASSOCIATION_PROTECTION_KEY] = disassociationProtection;
+            }
             await this.readReplicaPolicies(
               client,
               tableNameForSubs,
@@ -10101,19 +10367,24 @@ function refuseMalformedReplicaTags(
 const DISASSOCIATION_PROTECTION_KEY = 'DisassociationProtectionEnabled';
 
 /**
- * `Replicas[].DisassociationProtectionEnabled` (2026-10-21 schema refresh,
- * #5123) is not sent yet. `@aws-sdk/client-dynamodb` models it only on
- * `UpdateTableInput` — not on `CreateTable`, a `ReplicaUpdate` or
- * `CreateReplicationGroupMemberAction` — as a change that cannot share an
- * `UpdateTable` with any other, so delivering it means a solo per-region write
- * and its settle wait, which this provider does not make. Until it does, a
- * declared value would be dropped while the deploy reports success, so it is
- * refused on the template path instead: the `ConsumptionMode` mechanism of
- * `lambda-eventsource-provider.ts` (#3848). Wiring it is issue #5570.
+ * The refusals of a declared `Replicas[].DisassociationProtectionEnabled`
+ * (go-to-k/cdkd#5570), as one message, or `undefined` when there is none:
  *
- * Returns the refusal message, or `undefined` when nothing is pending. On an
- * update only a value that CHANGED from the replica's recorded one counts: an
- * unchanged one was never sent either, so AWS already lacks it.
+ * - a value that is not a boolean (a CFn string `'true'` / `'false'` counts
+ *   as a boolean). Never read as either value: `false` would let the replica
+ *   be detached from the global table, and `true` would undo a disable
+ *   nobody can read.
+ * - a `false` on a table whose desired `Replicas` names a single Region,
+ *   when it is new or changed. DynamoDB applies the member only to a replica
+ *   of a multi-Region (MREC) global table: on a table with no other replica
+ *   the solo `UpdateTable {DisassociationProtectionEnabled: false}` answered
+ *   `InternalFailure` (HTTP 500) on every retry (integ, us-east-1,
+ *   2026-10-30), so the disable the template asks for cannot be delivered. A
+ *   `true` is not refused: it is the AWS default, a single-Region table has
+ *   no global table to be detached from, so skipping it weakens nothing, and
+ *   CloudFormation accepts the template. Nor is an unchanged `false` — a
+ *   table that drops to one replica and keeps its declaration. The pass
+ *   skips both ({@link isMultiRegionReplicaSet}).
  */
 function disassociationProtectionRefusal(
   properties: Record<string, unknown>,
@@ -10122,36 +10393,75 @@ function disassociationProtectionRefusal(
 ): string | undefined {
   const replicas = properties['Replicas'];
   if (!Array.isArray(replicas)) return undefined;
-  const pending: string[] = [];
-  let declaresTrue = false;
+  const malformed: string[] = [];
+  const singleRegion: string[] = [];
+  const multiRegion = isMultiRegionReplicaSet(properties);
   replicas.forEach((entry: unknown, index) => {
     const replica = asRecord(entry);
-    const declared = replica?.[DISASSOCIATION_PROTECTION_KEY];
-    if (declared === undefined) return;
-    if (previousProperties !== undefined) {
-      const region = replica?.['Region'];
-      const previous =
-        typeof region === 'string'
-          ? localReplicaEntry(previousProperties, region)?.[DISASSOCIATION_PROTECTION_KEY]
-          : undefined;
-      if (deepEqual(declared, previous)) return;
+    if (replica === undefined) return;
+    const refusal = configBooleanRefusal(
+      replica,
+      DISASSOCIATION_PROTECTION_KEY,
+      `Replicas[${index}]`
+    );
+    if (refusal !== undefined) {
+      malformed.push(refusal);
+      return;
     }
-    pending.push(`Replicas[${index}].${DISASSOCIATION_PROTECTION_KEY}`);
-    if (coerceCfnBoolean(declared) === true) declaresTrue = true;
+    const declared = readReplicaDisassociationProtection(replica);
+    if (declared === undefined || multiRegion) return;
+    const region = replica['Region'];
+    const previous =
+      previousProperties === undefined || typeof region !== 'string'
+        ? undefined
+        : readReplicaDisassociationProtection(localReplicaEntry(previousProperties, region));
+    if (declared === false && declared !== previous)
+      singleRegion.push(`Replicas[${index}].${DISASSOCIATION_PROTECTION_KEY}`);
   });
-  if (pending.length === 0) return undefined;
-  return (
-    `AWS::DynamoDB::GlobalTable ${logicalId}: ${pending.join(', ')} cannot be sent by cdkd yet — ` +
-    'DynamoDB takes it only as a separate per-replica UpdateTable call, which cdkd does not make, ' +
-    `so it would be dropped without an error. Remove ${DISASSOCIATION_PROTECTION_KEY} from the ` +
-    'replica to deploy the table without it.' +
-    // The SDK's own documentation, relayed as such: cdkd has not measured it
-    // on a replica it creates (issue #5570).
-    (declaresTrue
-      ? ' The AWS SDK documents disassociation protection as enabled by default, so removing a ' +
-        'declared true likely loses nothing; cdkd has not verified this.'
-      : '')
-  );
+  const parts: string[] = [];
+  if (malformed.length > 0) {
+    parts.push(
+      `${malformed.join('; ')}. That replica's disassociation protection is left as it is.`
+    );
+  }
+  if (singleRegion.length > 0) {
+    parts.push(
+      `${singleRegion.join(', ')} is applied by DynamoDB only to a replica of a multi-Region ` +
+        "(MREC) global table, and this table's Replicas name a single Region, so cdkd does not send it. " +
+        `Remove ${DISASSOCIATION_PROTECTION_KEY}, or add a replica in another Region.`
+    );
+  }
+  if (parts.length === 0) return undefined;
+  return `AWS::DynamoDB::GlobalTable ${logicalId}: ${parts.join(' ')}`;
+}
+
+/**
+ * Whether a GlobalTable's desired `Replicas` names more than one Region — a
+ * multi-Region global table, the only kind DynamoDB applies
+ * `DisassociationProtectionEnabled` to (go-to-k/cdkd#5570). The protection
+ * pass runs after every replica change has settled, so an update that adds
+ * the second Region in the same deploy qualifies.
+ */
+function isMultiRegionReplicaSet(properties: Record<string, unknown>): boolean {
+  const replicas = properties['Replicas'];
+  if (!Array.isArray(replicas)) return false;
+  const regions = new Set<string>();
+  for (const entry of replicas) {
+    const region = asRecord(entry)?.['Region'];
+    if (typeof region === 'string' && region !== '') regions.add(region);
+  }
+  return regions.size > 1;
+}
+
+/**
+ * A replica's declared `DisassociationProtectionEnabled`: the boolean (a CFn
+ * string included), or `undefined` when it is absent or not a boolean — the
+ * latter refused or warned up front by {@link disassociationProtectionRefusal}.
+ */
+function readReplicaDisassociationProtection(
+  replica: Record<string, unknown> | undefined
+): boolean | undefined {
+  return coerceCfnBoolean(replica?.[DISASSOCIATION_PROTECTION_KEY]);
 }
 
 /**
