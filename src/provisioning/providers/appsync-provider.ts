@@ -182,6 +182,69 @@ const APPSYNC_APIKEY_ID_FORMAT: CompositeIdFormat = {
 };
 
 /**
+ * The resource path of an AppSync ARN as CloudFormation records it for each
+ * type (measured with `DescribeStackResources`, go-to-k/cdkd#5364), mapped to
+ * the segments of cdkd's physical id. No segment may hold `/` or `|`, so an ARN
+ * whose segment would break cdkd's `|`-joined id matches nothing.
+ */
+const CFN_APPSYNC_ARN_RESOURCE_PATHS: Readonly<Record<string, RegExp>> = {
+  'AWS::AppSync::GraphQLApi': /^apis\/([^/|]+)$/,
+  'AWS::AppSync::DataSource': /^apis\/([^/|]+)\/datasources\/([^/|]+)$/,
+  'AWS::AppSync::Resolver': /^apis\/([^/|]+)\/types\/([^/|]+)\/resolvers\/([^/|]+)$/,
+  // CloudFormation writes `apikeys/`; the ARN AppSync documents (and cdkd
+  // builds) says `apikey/`.
+  'AWS::AppSync::ApiKey': /^apis\/([^/|]+)\/apikeys?\/([^/|]+)$/,
+};
+
+/**
+ * The API id a GraphQLSchema physical id names: cdkd records the bare API id,
+ * CloudFormation `<apiId>GraphQLSchema` — which a record migrated before
+ * go-to-k/cdkd#5364 still holds. AppSync API ids are lowercase alphanumeric,
+ * so the suffix is unambiguous.
+ */
+function graphQLSchemaApiId(physicalId: string): string {
+  const schema = /^([a-z0-9]+)GraphQLSchema$/.exec(physicalId);
+  return schema ? schema[1]! : physicalId;
+}
+
+/**
+ * cdkd's physical id for an AppSync resource CloudFormation identifies
+ * differently (go-to-k/cdkd#5364). `cdkd import --migrate-from-cloudformation`
+ * hands `import()` the id `DescribeStackResources` reports: the ARN for the
+ * API and the three ARN-identified children, and `<apiId>GraphQLSchema` for a
+ * schema. cdkd's own records hold the bare API id and the `|`-joined child ids,
+ * and every reader addresses AppSync with those, so a verbatim CloudFormation
+ * id sends `GetGraphqlApi` / `GetIntrospectionSchema` an API that does not
+ * exist. Any other shape is returned unchanged.
+ *
+ * An ARN in another region is REFUSED: the provider's client is the import
+ * region's, so the bare id would address an API of the same id there, or none.
+ */
+export function appSyncPhysicalIdFromCfn(
+  resourceType: string,
+  logicalId: string,
+  physicalId: string,
+  region: string
+): string {
+  if (resourceType === 'AWS::AppSync::GraphQLSchema') return graphQLSchemaApiId(physicalId);
+  const pathPattern = CFN_APPSYNC_ARN_RESOURCE_PATHS[resourceType];
+  const arn = /^arn:[^:]+:appsync:([^:]*):[^:]*:(.+)$/.exec(physicalId);
+  const segments = pathPattern && arn ? pathPattern.exec(arn[2]!) : null;
+  if (!arn || !segments) return physicalId;
+  if (canonicalizeRegion(arn[1]!) !== canonicalizeRegion(region)) {
+    throw markNonRetryable(
+      new ProvisioningError(
+        `${resourceType} ${physicalId} is in region ${arn[1]}, not the import region ${region}`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+  return segments.slice(1).join('|');
+}
+
+/**
  * What state records for `GraphQLApi.EnvironmentVariables` when the env-var arm
  * sent something other than the desired map (issue #3781): the map AWS holds
  * afterwards, or `undefined` to drop the key.
@@ -1164,7 +1227,8 @@ export class AppSyncProvider implements ResourceProvider {
     // this update too (measured: the change set says no replacement, and the
     // update ends `Internal Failure` and rolls back, with or without a
     // definition change), so cdkd does not move it in place. The physical id
-    // is the API id, so it decides a secret-derived `ApiId` (go-to-k/cdkd#4275).
+    // names the API id, so it decides a secret-derived `ApiId` (go-to-k/cdkd#4275).
+    const recordedApiId = graphQLSchemaApiId(physicalId);
     if (
       properties['ApiId'] !== undefined &&
       previousProperties['ApiId'] !== undefined &&
@@ -1174,7 +1238,7 @@ export class AppSyncProvider implements ResourceProvider {
         key: 'ApiId',
         desired: properties['ApiId'],
         previous: previousProperties['ApiId'],
-        physicalName: physicalId,
+        physicalName: recordedApiId,
         maskSecrets: mask,
       }))
     ) {
@@ -1230,7 +1294,7 @@ export class AppSyncProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     }
 
-    const apiId = (properties['ApiId'] ?? physicalId) as string;
+    const apiId = (properties['ApiId'] ?? recordedApiId) as string;
     try {
       await this.getClient().send(
         new StartSchemaCreationCommand({
@@ -4055,10 +4119,11 @@ export class AppSyncProvider implements ResourceProvider {
     physicalId: string,
     properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const apiId = graphQLSchemaApiId(physicalId);
     let resp;
     try {
       resp = await this.getClient().send(
-        new GetIntrospectionSchemaCommand({ apiId: physicalId, format: 'SDL' })
+        new GetIntrospectionSchemaCommand({ apiId, format: 'SDL' })
       );
     } catch (err) {
       if (err instanceof AppSyncNotFoundException) return RESOURCE_NOT_FOUND;
@@ -4100,7 +4165,7 @@ export class AppSyncProvider implements ResourceProvider {
     }
 
     return {
-      ApiId: physicalId,
+      ApiId: apiId,
       Definition: definitionToReturn,
     };
   }
@@ -4567,21 +4632,30 @@ export class AppSyncProvider implements ResourceProvider {
    * first update (issue #1728) — see {@link childImportAttributes}.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    // A CloudFormation-shaped id (a migration's `DescribeStackResources`, or
+    // one pasted into `--resource`) is recorded in cdkd's shape (#5364).
+    const known =
+      input.knownPhysicalId &&
+      appSyncPhysicalIdFromCfn(
+        input.resourceType,
+        input.logicalId,
+        input.knownPhysicalId,
+        input.region
+      );
     if (input.resourceType !== 'AWS::AppSync::GraphQLApi') {
-      if (input.knownPhysicalId) {
+      if (known) {
         return {
-          physicalId: input.knownPhysicalId,
-          attributes: await this.childImportAttributes(
-            input.resourceType,
-            input.knownPhysicalId,
-            input.region
-          ),
+          physicalId: known,
+          attributes: await this.childImportAttributes(input.resourceType, known, input.region),
         };
       }
       return null;
     }
 
-    const explicit = resolveExplicitPhysicalId(input, null);
+    const explicit = resolveExplicitPhysicalId(
+      known ? { ...input, knownPhysicalId: known } : input,
+      null
+    );
     if (explicit) {
       try {
         const response = await this.getClient().send(new GetGraphqlApiCommand({ apiId: explicit }));
