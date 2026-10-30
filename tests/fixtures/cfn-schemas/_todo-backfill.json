@@ -64,11 +64,9 @@
       "MultiRegionConsistency",
       "ReadOnDemandThroughputSettings",
       "ReadProvisionedThroughputSettings",
+      "TableType",
       "VectorIndexes",
       "WarmThroughput"
-    ],
-    "AWS::DynamoDB::Table": [
-      "VectorIndexes"
     ],
     "AWS::EC2::Instance": [
       "AdditionalInfo",
@@ -115,6 +113,9 @@
       "Ipv4IpamPoolId",
       "Ipv4NetmaskLength",
       "VpcEncryptionControl"
+    ],
+    "AWS::ECS::Service": [
+      "GatewayConnectors"
     ],
     "AWS::ElastiCache::CacheCluster": [
       "SnapshotArns"
@@ -189,7 +190,8 @@
       "SourceDbClusterResourceId",
       "SourceRegion",
       "StorageType",
-      "UseLatestRestorableTime"
+      "UseLatestRestorableTime",
+      "WithExpressConfiguration"
     ],
     "AWS::RDS::DBInstance": [
       "AdditionalStorageVolumes",
@@ -252,31 +254,12 @@
       "UseDefaultProcessorFeatures",
       "UseLatestRestorableTime"
     ],
-    "AWS::RDS::DBProxy": [
-      "DefaultAuthScheme",
-      "EndpointNetworkType",
-      "TargetConnectionNetworkType"
-    ],
     "AWS::S3::Bucket": [
       "AbacStatus",
       "BucketNamePrefix",
       "BucketNamespace",
       "MetadataConfiguration",
       "MetadataTableConfiguration"
-    ],
-    "AWS::S3Tables::Table": [
-      "Compaction",
-      "IcebergMetadata",
-      "SnapshotManagement",
-      "StorageClassConfiguration",
-      "WithoutMetadata"
-    ],
-    "AWS::S3Tables::TableBucket": [
-      "EncryptionConfiguration",
-      "MetricsConfiguration",
-      "ReplicationConfiguration",
-      "StorageClassConfiguration",
-      "UnreferencedFileRemoval"
     ]
   },
   "bogusTolerated": {

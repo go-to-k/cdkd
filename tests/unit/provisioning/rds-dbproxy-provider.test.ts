@@ -39,6 +39,7 @@ import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors/m
 import { getLogger } from '../../../src/utils/logger.js';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
 
 const RESOURCE_TYPE = 'AWS::RDS::DBProxy';
 const PROXY_NAME = 'AuroraProxy';
@@ -62,11 +63,14 @@ describe('RDSDBProxyProvider', () => {
         'Auth',
         'DBProxyName',
         'DebugLogging',
+        'DefaultAuthScheme',
+        'EndpointNetworkType',
         'EngineFamily',
         'IdleClientTimeout',
         'RequireTLS',
         'RoleArn',
         'Tags',
+        'TargetConnectionNetworkType',
         'VpcSecurityGroupIds',
         'VpcSubnetIds',
       ]);
@@ -120,6 +124,73 @@ describe('RDSDBProxyProvider', () => {
       await expect(
         provider.create('Proxy', RESOURCE_TYPE, { ...validProps, Auth: [] })
       ).rejects.toThrow(/Auth \(at least one entry\) is required/);
+    });
+
+    // go-to-k/cdkd#2762: the three properties reach CreateDBProxy.
+    const availableDescribe = {
+      DBProxies: [
+        {
+          DBProxyName: PROXY_NAME,
+          DBProxyArn: PROXY_ARN,
+          Endpoint: PROXY_ENDPOINT,
+          VpcId: 'vpc-xxx',
+          Status: 'available',
+        },
+      ],
+    };
+
+    it('sends DefaultAuthScheme / EndpointNetworkType / TargetConnectionNetworkType on CreateDBProxy', async () => {
+      mockSend.mockResolvedValueOnce({ DBProxy: {} }).mockResolvedValueOnce(availableDescribe);
+      await provider.create('Proxy', RESOURCE_TYPE, {
+        ...validProps,
+        DefaultAuthScheme: 'NONE',
+        EndpointNetworkType: 'DUAL',
+        TargetConnectionNetworkType: 'IPV6',
+      });
+      const input = mockSend.mock.calls[0]![0].input;
+      expect(input.DefaultAuthScheme).toBe('NONE');
+      expect(input.EndpointNetworkType).toBe('DUAL');
+      expect(input.TargetConnectionNetworkType).toBe('IPV6');
+    });
+
+    it('sends none of the three when the template omits them', async () => {
+      mockSend.mockResolvedValueOnce({ DBProxy: {} }).mockResolvedValueOnce(availableDescribe);
+      await provider.create('Proxy', RESOURCE_TYPE, validProps);
+      const input = mockSend.mock.calls[0]![0].input;
+      expect(input.DefaultAuthScheme).toBeUndefined();
+      expect(input.EndpointNetworkType).toBeUndefined();
+      expect(input.TargetConnectionNetworkType).toBeUndefined();
+    });
+
+    // AWS requires Auth only while DefaultAuthScheme is NONE or unset, so a
+    // proxy with IAM_AUTH and no Auth deploys, as on CloudFormation.
+    it.each([
+      ['absent', undefined],
+      ['empty', []],
+    ])(
+      'creates a proxy with DefaultAuthScheme IAM_AUTH and Auth %s, sending no Auth',
+      async (_label, auth) => {
+        mockSend.mockResolvedValueOnce({ DBProxy: {} }).mockResolvedValueOnce(availableDescribe);
+        await provider.create('Proxy', RESOURCE_TYPE, {
+          ...validProps,
+          Auth: auth,
+          DefaultAuthScheme: 'IAM_AUTH',
+        });
+        const input = mockSend.mock.calls[0]![0].input;
+        expect(input.DefaultAuthScheme).toBe('IAM_AUTH');
+        expect(input.Auth).toBeUndefined();
+      }
+    );
+
+    it('still refuses a missing Auth before any call while DefaultAuthScheme is NONE', async () => {
+      await expect(
+        provider.create('Proxy', RESOURCE_TYPE, {
+          ...validProps,
+          Auth: undefined,
+          DefaultAuthScheme: 'NONE',
+        })
+      ).rejects.toThrow(/Auth \(at least one entry\) is required .* while DefaultAuthScheme is NONE or unset/);
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('rejects on missing RoleArn', async () => {
@@ -185,6 +256,40 @@ describe('RDSDBProxyProvider', () => {
           { VpcSubnetIds: ['subnet-old'] }
         )
       ).rejects.toThrow(/VpcSubnetIds is immutable/);
+    });
+
+    // go-to-k/cdkd#2762: create-only in the CFn schema, no ModifyDBProxy member.
+    it.each([
+      ['EndpointNetworkType', 'DUAL', 'IPV4'],
+      ['TargetConnectionNetworkType', 'IPV6', 'IPV4'],
+    ])('rejects when %s differs (immutable), before any call', async (field, next, prev) => {
+      await expect(
+        provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, { [field]: next }, { [field]: prev })
+      ).rejects.toThrow(new RegExp(`${field} is immutable`));
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it.each(['EndpointNetworkType', 'TargetConnectionNetworkType'])(
+      'classifies a %s change as a replacement',
+      (field) => {
+        const registry = new ReplacementRulesRegistry();
+        expect(registry.isClassified(RESOURCE_TYPE, field)).toBe(true);
+        expect(registry.requiresReplacement(RESOURCE_TYPE, field, 'IPV4', 'IPV6')).toBe(true);
+      }
+    );
+
+    it('sends a DefaultAuthScheme change on ModifyDBProxy', async () => {
+      mockSend.mockResolvedValueOnce({ DBProxy: {} });
+      await provider.update(
+        'Proxy',
+        PROXY_NAME,
+        RESOURCE_TYPE,
+        { DefaultAuthScheme: 'IAM_AUTH' },
+        { DefaultAuthScheme: 'NONE' }
+      );
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0]![0].constructor.name).toBe('ModifyDBProxyCommand');
+      expect(mockSend.mock.calls[0]![0].input.DefaultAuthScheme).toBe('IAM_AUTH');
     });
 
     it('issues ModifyDBProxy when RoleArn changes', async () => {
@@ -374,8 +479,8 @@ describe('RDSDBProxyProvider', () => {
     });
 
     it('keeps Auth and warns, claiming nothing about CloudFormation, when DefaultAuthScheme is set', async () => {
-      // CloudFormation's removal would be accepted here; the provider cannot
-      // send it (it does not handle DefaultAuthScheme), so it keeps Auth.
+      // CloudFormation's removal would be accepted here; cdkd sends no Auth
+      // reset, so the proxy keeps its live Auth and the update warns.
       const desired = { ...base, DefaultAuthScheme: 'IAM_AUTH' };
       await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, desired, {
         ...desired,
@@ -387,6 +492,150 @@ describe('RDSDBProxyProvider', () => {
       expect(warn.mock.calls[0]![0]).toBe(
         'Proxy (AWS::RDS::DBProxy): properties Auth, DebugLogging were removed from the template; ModifyDBProxy keeps a setting it is not sent, so the proxy keeps its current value. Declare the property with the value you want to change it.'
       );
+    });
+
+    // go-to-k/cdkd#2762: DefaultAuthScheme is mutable and retained on removal;
+    // CloudFormation's behavior there is unmeasured, so no claim about it.
+    it('keeps a removed DefaultAuthScheme without a call and warns, claiming nothing about CloudFormation', async () => {
+      await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, withAuth, {
+        ...withAuth,
+        DefaultAuthScheme: 'IAM_AUTH',
+      });
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toBe(
+        'Proxy (AWS::RDS::DBProxy): property DefaultAuthScheme was removed from the template; ModifyDBProxy keeps a setting it is not sent, so the proxy keeps its current value. Declare the property with the value you want to change it.'
+      );
+    });
+
+    // A removed DefaultAuthScheme is not sent, so the proxy keeps IAM_AUTH and
+    // AWS does not require Auth: removing both is kept and warned, not refused.
+    it('keeps both when Auth and a previous IAM_AUTH DefaultAuthScheme are removed together', async () => {
+      await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, base, {
+        ...withAuth,
+        DefaultAuthScheme: 'IAM_AUTH',
+      });
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toBe(
+        'Proxy (AWS::RDS::DBProxy): properties Auth, DefaultAuthScheme were removed from the template; ModifyDBProxy keeps a setting it is not sent, so the proxy keeps its current value. Declare the property with the value you want to change it.'
+      );
+    });
+
+    it('still refuses removing Auth together with a previous NONE DefaultAuthScheme', async () => {
+      await expect(
+        provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, base, {
+          ...withAuth,
+          DefaultAuthScheme: 'NONE',
+        })
+      ).rejects.toThrow(authRefusal);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    // go-to-k/cdkd#2762: IAM_AUTH -> NONE on a proxy the template gives no Auth.
+    const noneRefusal =
+      'Proxy (AWS::RDS::DBProxy): the update leaves the proxy with no Auth while DefaultAuthScheme is NONE or unset, and AWS requires Auth then. Declare Auth; nothing was changed.';
+
+    it.each([
+      ['absent', undefined],
+      ['null', null],
+      ['empty', []],
+    ])(
+      'refuses a switch to DefaultAuthScheme NONE before any call when Auth is %s',
+      async (_label, auth) => {
+        const error = await provider
+          .update(
+            'Proxy',
+            PROXY_NAME,
+            RESOURCE_TYPE,
+            { ...base, DefaultAuthScheme: 'NONE', ...(auth !== undefined && { Auth: auth }) },
+            { ...base, DefaultAuthScheme: 'IAM_AUTH' }
+          )
+          .then(
+            () => undefined,
+            (e: unknown) => e
+          );
+        expect(error).toBeInstanceOf(ProvisioningError);
+        expect((error as Error).message).toBe(noneRefusal);
+        expect(isMarkedNonRetryable(error)).toBe(true);
+        expect(mockSend).not.toHaveBeenCalled();
+      }
+    );
+
+    // The kept scheme requires Auth, and the template changes Auth to empty.
+    it.each([
+      ['NONE', 'NONE'],
+      ['unset', undefined],
+    ])(
+      'refuses a change to an empty Auth before any call while DefaultAuthScheme is %s',
+      async (_label, scheme) => {
+        const withScheme = scheme !== undefined ? { DefaultAuthScheme: scheme } : {};
+        await expect(
+          provider.update(
+            'Proxy',
+            PROXY_NAME,
+            RESOURCE_TYPE,
+            { ...base, ...withScheme, Auth: [] },
+            { ...withAuth, ...withScheme }
+          )
+        ).rejects.toThrow(noneRefusal);
+        expect(mockSend).not.toHaveBeenCalled();
+      }
+    );
+
+    it('does not refuse an empty Auth that is unchanged, or one under IAM_AUTH', async () => {
+      // Unchanged: nothing is sent, so nothing for AWS to refuse.
+      await provider.update(
+        'Proxy',
+        PROXY_NAME,
+        RESOURCE_TYPE,
+        { ...base, DefaultAuthScheme: 'NONE', Auth: [] },
+        { ...base, DefaultAuthScheme: 'NONE', Auth: [] }
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+      // IAM_AUTH does not require Auth.
+      mockSend.mockResolvedValueOnce({ DBProxy: {} });
+      await provider.update(
+        'Proxy',
+        PROXY_NAME,
+        RESOURCE_TYPE,
+        { ...base, DefaultAuthScheme: 'IAM_AUTH', Auth: [] },
+        { ...withAuth, DefaultAuthScheme: 'IAM_AUTH' }
+      );
+      expect(mockSend.mock.calls[0]![0].constructor.name).toBe('ModifyDBProxyCommand');
+    });
+
+    it('sends a switch to DefaultAuthScheme NONE that declares Auth', async () => {
+      mockSend.mockResolvedValueOnce({ DBProxy: {} });
+      await provider.update(
+        'Proxy',
+        PROXY_NAME,
+        RESOURCE_TYPE,
+        { ...withAuth, DefaultAuthScheme: 'NONE' },
+        { ...base, DefaultAuthScheme: 'IAM_AUTH' }
+      );
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const input = mockSend.mock.calls[0]![0].input;
+      expect(input.DefaultAuthScheme).toBe('NONE');
+      expect(input.Auth).toEqual(Auth);
+    });
+
+    it('does not refuse the switch to NONE on a rollback replay or drift --revert', async () => {
+      for (const context of [{ replayingState: true }, { desiredFromAwsReadback: true }]) {
+        mockSend.mockReset();
+        mockSend.mockRejectedValueOnce(new Error('AWS refused'));
+        await expect(
+          provider.update(
+            'Proxy',
+            PROXY_NAME,
+            RESOURCE_TYPE,
+            { ...base, DefaultAuthScheme: 'NONE' },
+            { ...base, DefaultAuthScheme: 'IAM_AUTH' },
+            context
+          )
+        ).rejects.not.toThrow(noneRefusal);
+        expect(mockSend.mock.calls[0]![0].constructor.name).toBe('ModifyDBProxyCommand');
+      }
     });
 
     it('does not refuse an Auth removal on a rollback replay, and words it as the state being restored', async () => {
@@ -700,6 +949,33 @@ describe('RDSDBProxyProvider', () => {
           ClientPasswordAuthType: undefined,
         },
       ]);
+      // No value AWS did not report is invented for the #2762 properties.
+      expect(result).not.toHaveProperty('DefaultAuthScheme');
+      expect(result).not.toHaveProperty('EndpointNetworkType');
+      expect(result).not.toHaveProperty('TargetConnectionNetworkType');
+    });
+
+    it('reads DefaultAuthScheme / EndpointNetworkType / TargetConnectionNetworkType back (go-to-k/cdkd#2762)', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          DBProxies: [
+            {
+              DBProxyName: PROXY_NAME,
+              DBProxyArn: PROXY_ARN,
+              DefaultAuthScheme: 'IAM_AUTH',
+              EndpointNetworkType: 'DUAL',
+              TargetConnectionNetworkType: 'IPV6',
+            },
+          ],
+        })
+        .mockResolvedValueOnce({ TagList: [] });
+
+      const result = await provider.readCurrentState(PROXY_NAME);
+      expect(result).toMatchObject({
+        DefaultAuthScheme: 'IAM_AUTH',
+        EndpointNetworkType: 'DUAL',
+        TargetConnectionNetworkType: 'IPV6',
+      });
     });
 
     it('returns RESOURCE_NOT_FOUND when proxy is gone', async () => {

@@ -1,9 +1,9 @@
 {
   "summary": {
     "targetCount": 28,
-    "nestedKeyCount": 1463,
-    "wholeDeliveredPathCount": 600,
-    "shapeClean": 178,
+    "nestedKeyCount": 1471,
+    "wholeDeliveredPathCount": 606,
+    "shapeClean": 182,
     "shapeHandled": 49,
     "shapeAllowListed": 9,
     "arrayVsWrapper": 0,
@@ -541,10 +541,10 @@
       "providerFile": "codebuild-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-codebuild",
       "keyStyle": "lower-first",
-      "nestedKeyCount": 98,
+      "nestedKeyCount": 99,
       "wholeDeliveredPaths": [],
       "shapeEntries": [],
-      "shapeCleanCount": 12,
+      "shapeCleanCount": 13,
       "unmatchedDefinitions": [
         "Artifacts",
         "Environment",
@@ -558,7 +558,7 @@
       "providerFile": "ecs-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-ecs",
       "keyStyle": "lower-first",
-      "nestedKeyCount": 122,
+      "nestedKeyCount": 124,
       "wholeDeliveredPaths": [
         "CapacityProviderStrategy.Base",
         "CapacityProviderStrategy.CapacityProvider",
@@ -612,6 +612,8 @@
         "ServiceConnectConfiguration.AccessLogConfiguration",
         "ServiceConnectConfiguration.AccessLogConfiguration.Format",
         "ServiceConnectConfiguration.AccessLogConfiguration.IncludeQueryParameters",
+        "ServiceConnectConfiguration.ContainerConfigurations",
+        "ServiceConnectConfiguration.ContainerConfigurations.LogLevel",
         "ServiceConnectConfiguration.Enabled",
         "ServiceConnectConfiguration.LogConfiguration",
         "ServiceConnectConfiguration.LogConfiguration.LogDriver",
@@ -679,10 +681,11 @@
           "bucket": "provider-handled"
         }
       ],
-      "shapeCleanCount": 18,
+      "shapeCleanCount": 21,
       "unmatchedDefinitions": [
         "ForceNewDeployment",
         "HookTimeoutConfig",
+        "ServiceConnectContainerConfiguration",
         "ServiceConnectTestTrafficRulesHeader",
         "ServiceConnectTestTrafficRulesHeaderValue"
       ],
@@ -693,7 +696,7 @@
       "providerFile": "ecs-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-ecs",
       "keyStyle": "lower-first",
-      "nestedKeyCount": 142,
+      "nestedKeyCount": 146,
       "wholeDeliveredPaths": [
         "ContainerDefinitions.ExtraHosts.Hostname",
         "ContainerDefinitions.ExtraHosts.IpAddress",
@@ -713,6 +716,10 @@
         "ContainerDefinitions.LinuxParameters.Tmpfs.MountOptions",
         "ContainerDefinitions.LinuxParameters.Tmpfs.Size",
         "ContainerDefinitions.RepositoryCredentials.CredentialsParameter",
+        "ContainerDefinitions.ResourceRequirements.SharingStrategy",
+        "ContainerDefinitions.ResourceRequirements.SharingStrategy.NvidiaMps",
+        "ContainerDefinitions.ResourceRequirements.SharingStrategy.NvidiaMps.MaxComputePercent",
+        "ContainerDefinitions.ResourceRequirements.SharingStrategy.NvidiaMps.Memory",
         "ContainerDefinitions.ResourceRequirements.Type",
         "ContainerDefinitions.ResourceRequirements.Value",
         "ContainerDefinitions.RestartPolicy.Enabled",
@@ -731,7 +738,8 @@
       "unmatchedDefinitions": [
         "AuthorizationConfig",
         "FSxAuthorizationConfig",
-        "RestartPolicy"
+        "RestartPolicy",
+        "SharingStrategy"
       ],
       "usedSegmentRenames": [
         "ProxyConfigurationProperties"
@@ -1118,7 +1126,7 @@
       "providerFile": "lambda-network-connector-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-lambda-core",
       "keyStyle": "exact",
-      "nestedKeyCount": 7,
+      "nestedKeyCount": 8,
       "wholeDeliveredPaths": [],
       "shapeEntries": [
         {

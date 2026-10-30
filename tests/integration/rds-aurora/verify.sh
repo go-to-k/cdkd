@@ -77,6 +77,14 @@
 # prove cdkd sent the key (DUAL needs a dual-stack VPC). The unit and sdk-wire
 # suites own the CreateDBProxyEndpoint send.
 #
+# #2762 (DBProxy DefaultAuthScheme / EndpointNetworkType /
+# TargetConnectionNetworkType): the proxy declares NONE / IPV4 / IPV4. Before
+# #2762 all three were silent drops, which routed the proxy to Cloud Control;
+# phase 1 asserts provisionedBy=sdk, the recorded values and the live values
+# from DescribeDBProxies. As for the endpoint, only the routing check
+# discriminates (the values are AWS's defaults here); the unit and sdk-wire
+# suites own the CreateDBProxy / ModifyDBProxy send.
+#
 # The SecurityCluster is also asserted to carry `provisionedBy=sdk` in cdkd
 # state — a routing guard proving none of the set props flipped the resource
 # to the Cloud Control path (which would make the SDK-provider verification
@@ -658,6 +666,32 @@ if [ "${PRE_MAX_CONN}" = "90" ]; then
   exit 1
 fi
 echo "    OK: #3945 premise: proxy ${PROXY_NAME} target group records [${AURORA_CLUSTER_ID}], MaxConnectionsPercent=${PRE_MAX_CONN}"
+
+# --- #2762: DBProxy auth / network keys keep the SDK route -----------------
+# Ahead of the #1160 premise, which checks the route too: a pre-fix binary
+# fails HERE, naming these keys. PROXY_NAME was read above (#3945).
+PROXY_LOGICAL=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBProxy") | .key] | first // ""')
+PROXY_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBProxy") | .value.provisionedBy // "sdk"] | first // ""')
+if [ "${PROXY_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: #2762: ${PROXY_LOGICAL} (AWS::RDS::DBProxy) is routed via '${PROXY_PROVISIONED_BY}', expected 'sdk' (DefaultAuthScheme / EndpointNetworkType / TargetConnectionNetworkType must not route it to Cloud Control)" >&2
+  exit 1
+fi
+for PAIR in DefaultAuthScheme=NONE EndpointNetworkType=IPV4 TargetConnectionNetworkType=IPV4; do
+  KEY="${PAIR%%=*}"
+  WANT="${PAIR#*=}"
+  RECORDED_VALUE=$(echo "${STATE}" | jq -r --arg k "${KEY}" '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBProxy") | .value.properties | if has($k) then .[$k] | tostring else "absent" end] | first // ""')
+  if [ "${RECORDED_VALUE}" != "${WANT}" ]; then
+    echo "FAIL: #2762: ${PROXY_LOGICAL} records ${KEY}=${RECORDED_VALUE}, expected ${WANT}" >&2
+    exit 1
+  fi
+  LIVE_VALUE=$(aws rds describe-db-proxies --db-proxy-name "${PROXY_NAME}" --region "${REGION}" \
+    --query "DBProxies[0].${KEY}" --output text)
+  if [ "${LIVE_VALUE}" != "${WANT}" ]; then
+    echo "FAIL: #2762: live ${KEY} of ${PROXY_NAME} is '${LIVE_VALUE}', expected ${WANT}" >&2
+    exit 1
+  fi
+done
+echo "    OK: #2762: ${PROXY_LOGICAL} (sdk) records and holds DefaultAuthScheme=NONE, EndpointNetworkType=IPV4, TargetConnectionNetworkType=IPV4"
 
 # --- #1160 DBProxy removal premise: DebugLogging is set, live and recorded --
 # The proxy must be SDK-routed (Cloud Control's update would never print the

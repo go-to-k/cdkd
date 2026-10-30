@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { CreateEventSourceMappingCommand, LambdaClient } from '@aws-sdk/client-lambda';
+import { CreateNetworkConnectorCommand, LambdaCoreClient } from '@aws-sdk/client-lambda-core';
 
 /**
  * CFn members the installed AWS SDK does not SEND yet, for which a provider
@@ -21,20 +22,36 @@ interface PendingMember {
   readonly serialize: () => Promise<string>;
 }
 
+const CLIENT_CONFIG = {
+  region: 'us-east-1',
+  credentials: { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'secret' },
+};
+
+/** A build-step middleware that records the serialized body and stops the send. */
+function captureBody(onBody: (body: string) => void) {
+  return () => async (args: { request: unknown }) => {
+    const raw = (args.request as { body?: unknown }).body;
+    onBody(typeof raw === 'string' ? raw : new TextDecoder().decode(raw as Uint8Array));
+    throw new Error('captured');
+  };
+}
+
+const CAPTURE_STEP = { step: 'build', priority: 'low' } as const;
+
 async function lambdaRequestBody(command: CreateEventSourceMappingCommand): Promise<string> {
-  const client = new LambdaClient({
-    region: 'us-east-1',
-    credentials: { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'secret' },
-  });
+  const client = new LambdaClient(CLIENT_CONFIG);
   let body: string | undefined;
-  client.middlewareStack.add(
-    () => async (args) => {
-      const raw = (args.request as { body?: unknown }).body;
-      body = typeof raw === 'string' ? raw : new TextDecoder().decode(raw as Uint8Array);
-      throw new Error('captured');
-    },
-    { step: 'build', priority: 'low' }
-  );
+  client.middlewareStack.add(captureBody((b) => (body = b)) as never, CAPTURE_STEP);
+  await client.send(command).catch(() => undefined);
+  client.destroy();
+  if (body === undefined) throw new Error('the request body was never captured');
+  return body;
+}
+
+async function lambdaCoreRequestBody(command: CreateNetworkConnectorCommand): Promise<string> {
+  const client = new LambdaCoreClient(CLIENT_CONFIG);
+  let body: string | undefined;
+  client.middlewareStack.add(captureBody((b) => (body = b)) as never, CAPTURE_STEP);
   await client.send(command).catch(() => undefined);
   client.destroy();
   if (body === undefined) throw new Error('the request body was never captured');
@@ -55,6 +72,26 @@ const PENDING_MEMBERS: readonly PendingMember[] = [
           SelfManagedKafkaEventSourceConfig: {
             ConsumerGroupId: 'group-sentinel',
             ConsumptionMode: 'Queue',
+          } as never,
+        })
+      ),
+  },
+  {
+    cfnPath:
+      'AWS::Lambda::NetworkConnector Configuration.VpcEgressConfiguration.ElasticIpConfiguration',
+    refusedBy:
+      'src/provisioning/providers/lambda-network-connector-provider.ts (#5123; forward it on create AND update, and read it back)',
+    member: 'ElasticIpConfiguration',
+    sentinel: 'subnet-sentinel',
+    serialize: () =>
+      lambdaCoreRequestBody(
+        new CreateNetworkConnectorCommand({
+          Name: 'nc',
+          Configuration: {
+            VpcEgressConfiguration: {
+              SubnetIds: ['subnet-sentinel'],
+              ElasticIpConfiguration: 'AUTO',
+            },
           } as never,
         })
       ),

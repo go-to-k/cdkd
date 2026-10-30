@@ -8,10 +8,9 @@
 #      calls `s3tables ListTagsForResource`, asserts the tags are present.
 #   2. (issues #974 / #5316) CloudFormation's `Ref` for an
 #      AWS::S3Tables::Table returns its TableARN. Asserts the Ref resolves to
-#      the TableARN for the SDK-routed Table (composite physical id) and for a
-#      CC-routed one (IcebergMetadata set → silent-drop → Cloud Control, the
-#      bare TableARN as physical id), via a CfnOutput AND a consuming SSM
-#      parameter round-trip, never the table name.
+#      the TableARN for the plain Table and for the schema-bearing
+#      IcebergTable (both SDK-routed, composite physical ids), via a CfnOutput
+#      AND a consuming SSM parameter round-trip, never the table name.
 #   3. (issue #2613) Phase 1b redeploys with changed tag values: the
 #      TableBucket and the SDK-routed Table update in place, through the
 #      provider's update() and its recorded-region guard.
@@ -24,6 +23,12 @@
 #      Table's recorded TableARN (a pre-v0.201.0 record), redeploys the same
 #      template, and asserts each reader is rewritten to the TableARN and the
 #      Table's TableARN is re-read from AWS and recorded.
+#   6. (issue #2762) The TableBucket's StorageClass / Metrics /
+#      UnreferencedFileRemoval and the IcebergTable's IcebergMetadata /
+#      StorageClass / Compaction / SnapshotManagement — Cloud Control routing
+#      silent drops before #2762 — are sent by the SDK provider: Phase 1
+#      routes the IcebergTable via the SDK and reads every value back from
+#      AWS; Phase 1b changes UnreferencedDays and Compaction in place.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -165,7 +170,9 @@ echo "    resolved TableBucket ARN: ${TABLE_BUCKET_ARN}"
 # Confirm cdkd routed via the SDK provider (not CC-API). If routing
 # flipped (e.g. an unhandled silent-drop sneaked in), the backfill
 # closure being tested IS the wrong code path.
-PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::S3Tables::Table") | .value.provisionedBy] | first // "sdk"')
+# Named: the stack holds two tables, and a `first` over both reads whichever
+# the state lists first.
+PROVISIONED_BY=$(echo "${STATE}" | jq -r '.resources.Table.provisionedBy // "MISSING"')
 if [ "${PROVISIONED_BY}" != "sdk" ]; then
   echo "FAIL: AWS::S3Tables::Table routed via '${PROVISIONED_BY}', expected 'sdk' (silent-drop routing flip — backfill is on the wrong path)" >&2
   exit 1
@@ -271,30 +278,31 @@ echo "    OK: bucket-team tag == '${EXPECTED_BUCKET_TEAM_TAG}' on AWS"
 
 # Confirm TableBucket routed via SDK provider too (same routing-flip guard
 # as the Table assertion above).
-BUCKET_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::S3Tables::TableBucket") | .value.provisionedBy] | first // "sdk"')
+# Before issue #2762 the bucket's StorageClass / Metrics / UnreferencedFileRemoval
+# routed it to Cloud Control, so this is where a pre-fix run goes RED first.
+BUCKET_PROVISIONED_BY=$(echo "${STATE}" | jq -r '.resources.TableBucket.provisionedBy // "MISSING"')
 if [ "${BUCKET_PROVISIONED_BY}" != "sdk" ]; then
   echo "FAIL: AWS::S3Tables::TableBucket routed via '${BUCKET_PROVISIONED_BY}', expected 'sdk' (silent-drop routing flip)" >&2
   exit 1
 fi
 echo "    OK: AWS::S3Tables::TableBucket routed via SDK provider (provisionedBy=sdk)"
 
-# --- Assertion: CC-routed Table `Ref` resolves to the TableARN (#974 / #5316)
-# The IcebergTable carries IcebergMetadata, which is a silent-drop on the
-# SDK provider, so cdkd routes it through Cloud Control. CC's Table
-# primaryIdentifier is the bare single-segment TableARN, and CloudFormation's
-# `Ref` for a Table returns that ARN (issue #5316; #974 had made cdkd return
-# the table name). Assert (1) the table DID route via CC, and (2) both the
-# CfnOutput Ref and the consuming SSM parameter's value equal the TableARN
+# --- Assertion: IcebergTable `Ref` resolves to the TableARN (#974 / #5316)
+# The IcebergTable carries IcebergMetadata / Compaction / SnapshotManagement /
+# StorageClassConfiguration, Cloud Control routing silent drops until issue
+# #2762 wired them into the SDK provider. Assert (1) it now routes via the
+# SDK provider, under cdkd's composite physical id, and (2) both the CfnOutput
+# Ref and the consuming SSM parameter's value equal the TableARN
 # (`Fn::GetAtt TableARN`), not the table name.
 ICEBERG_TABLE_NAME="cdkd_integ_cc_tbl"
 
-ICEBERG_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::S3Tables::Table" and (.value.properties.IcebergMetadata != null)) | .value.provisionedBy] | first // "sdk"')
-if [ "${ICEBERG_PROVISIONED_BY}" != "cc-api" ]; then
-  echo "FAIL: IcebergMetadata Table routed via '${ICEBERG_PROVISIONED_BY}', expected 'cc-api' (the #974 fixture must exercise the CC path — silent-drop routing changed?)" >&2
-  echo "${STATE}" | jq '.resources | to_entries[] | select(.value.resourceType == "AWS::S3Tables::Table") | {physicalId: .value.physicalId, provisionedBy: .value.provisionedBy, hasIceberg: (.value.properties.IcebergMetadata != null)}'
+ICEBERG_PROVISIONED_BY=$(echo "${STATE}" | jq -r '.resources.IcebergTable.provisionedBy // "MISSING"')
+ICEBERG_PHYSICAL_ID=$(echo "${STATE}" | jq -r '.resources.IcebergTable.physicalId // ""')
+if [ "${ICEBERG_PROVISIONED_BY}" != "sdk" ] || [ "${ICEBERG_PHYSICAL_ID}" != "${TABLE_BUCKET_ARN}|cdkd_integ_ns|${ICEBERG_TABLE_NAME}" ]; then
+  echo "FAIL: IcebergTable routed via '${ICEBERG_PROVISIONED_BY}' with physicalId '${ICEBERG_PHYSICAL_ID}', expected 'sdk' with '${TABLE_BUCKET_ARN}|cdkd_integ_ns|${ICEBERG_TABLE_NAME}' (issue #2762: its configuration properties must not route it to Cloud Control)" >&2
   exit 1
 fi
-echo "    OK: IcebergMetadata Table routed via Cloud Control (provisionedBy=cc-api)"
+echo "    OK: IcebergTable routed via the SDK provider (provisionedBy=sdk, composite physicalId; issue #2762)"
 
 EXPECTED_ICEBERG_ARN=$(echo "${STATE}" | jq -r '.outputs.IcebergTableArn // ""')
 case "${EXPECTED_ICEBERG_ARN}" in
@@ -340,6 +348,111 @@ if [ "${SSM_VALUE}" != "${EXPECTED_ICEBERG_ARN}" ]; then
   exit 1
 fi
 echo "    OK: consuming SSM parameter value == TableARN (Ref reached AWS correctly)"
+
+# --- Assertion: the configuration properties reached AWS (issue #2762) ----
+# Each read is its own assignment, so a failed `aws` trips `set -e` rather
+# than comparing as an empty string. Every expected value is a non-default.
+bucket_ufr() { # usage: bucket_ufr -> "<status> <unreferencedDays> <nonCurrentDays>"
+  aws s3tables get-table-bucket-maintenance-configuration --region "${REGION}" \
+    --table-bucket-arn "${TABLE_BUCKET_ARN}" --output json \
+    | jq -r '.configuration.icebergUnreferencedFileRemoval | "\(.status) \(.settings.icebergUnreferencedFileRemoval.unreferencedDays) \(.settings.icebergUnreferencedFileRemoval.nonCurrentDays)"'
+}
+table_maintenance() { # usage: table_maintenance -> "<compaction status> <target MB> <snapshot status> <min> <max age>"
+  aws s3tables get-table-maintenance-configuration --region "${REGION}" \
+    --table-bucket-arn "${TABLE_BUCKET_ARN}" --namespace cdkd_integ_ns --name "${ICEBERG_TABLE_NAME}" --output json \
+    | jq -r '.configuration | "\(.icebergCompaction.status) \(.icebergCompaction.settings.icebergCompaction.targetFileSizeMB) \(.icebergSnapshotManagement.status) \(.icebergSnapshotManagement.settings.icebergSnapshotManagement.minSnapshotsToKeep) \(.icebergSnapshotManagement.settings.icebergSnapshotManagement.maxSnapshotAgeHours)"'
+}
+BUCKET_STORAGE_CLASS="$(aws s3tables get-table-bucket-storage-class --region "${REGION}" --table-bucket-arn "${TABLE_BUCKET_ARN}" --query 'storageClassConfiguration.storageClass' --output text)"
+if [ "${BUCKET_STORAGE_CLASS}" != "INTELLIGENT_TIERING" ]; then
+  echo "FAIL: TableBucket storage class is '${BUCKET_STORAGE_CLASS}', expected 'INTELLIGENT_TIERING' (issue #2762: StorageClassConfiguration did not reach CreateTableBucket)" >&2
+  exit 1
+fi
+# The Get answers NotFound unless metrics are configured.
+if ! aws s3tables get-table-bucket-metrics-configuration --region "${REGION}" --table-bucket-arn "${TABLE_BUCKET_ARN}" >/dev/null; then
+  echo "FAIL: TableBucket has no metrics configuration (issue #2762: MetricsConfiguration Enabled did not reach PutTableBucketMetricsConfiguration)" >&2
+  exit 1
+fi
+BUCKET_UFR="$(bucket_ufr)"
+if [ "${BUCKET_UFR}" != "enabled 5 7" ]; then
+  echo "FAIL: TableBucket unreferenced file removal is '${BUCKET_UFR}', expected 'enabled 5 7' (issue #2762: UnreferencedFileRemoval did not reach PutTableBucketMaintenanceConfiguration)" >&2
+  exit 1
+fi
+echo "    OK: TableBucket storage class, metrics and unreferenced file removal on AWS (issue #2762)"
+
+TABLE_STORAGE_CLASS="$(aws s3tables get-table-storage-class --region "${REGION}" --table-bucket-arn "${TABLE_BUCKET_ARN}" --namespace cdkd_integ_ns --name "${ICEBERG_TABLE_NAME}" --query 'storageClassConfiguration.storageClass' --output text)"
+if [ "${TABLE_STORAGE_CLASS}" != "INTELLIGENT_TIERING" ]; then
+  echo "FAIL: IcebergTable storage class is '${TABLE_STORAGE_CLASS}', expected 'INTELLIGENT_TIERING' (issue #2762: StorageClassConfiguration did not reach CreateTable)" >&2
+  exit 1
+fi
+# S3 Tables writes a table's first metadata file only when CreateTable
+# carries a schema; a table created without one has no metadata location.
+METADATA_LOCATION="$(aws s3tables get-table-metadata-location --region "${REGION}" --table-bucket-arn "${TABLE_BUCKET_ARN}" --namespace cdkd_integ_ns --name "${ICEBERG_TABLE_NAME}" --query 'metadataLocation' --output text)"
+case "${METADATA_LOCATION}" in
+  s3://*) ;;
+  *)
+    echo "FAIL: IcebergTable metadata location is '${METADATA_LOCATION}', expected an s3:// URI (issue #2762: IcebergMetadata did not reach CreateTable)" >&2
+    exit 1
+    ;;
+esac
+ICEBERG_MAINTENANCE="$(table_maintenance)"
+# The template sets no target file size, so AWS may report its default or none.
+case "${ICEBERG_MAINTENANCE}" in
+  "disabled "*" enabled 2 200") ;;
+  *)
+    echo "FAIL: IcebergTable maintenance is '${ICEBERG_MAINTENANCE}', expected 'disabled <any> enabled 2 200' (issue #2762: Compaction / SnapshotManagement did not reach PutTableMaintenanceConfiguration)" >&2
+    exit 1
+    ;;
+esac
+echo "    OK: IcebergTable storage class, metadata, compaction and snapshot management on AWS (issue #2762)"
+
+# The readback of every new key (issue #2762) against what AWS really answers
+# (defaults included): a fresh deploy must read back as no drift.
+# Exit 1 = drift, 2 = a command error, which is not a verdict.
+assert_no_drift() { # usage: assert_no_drift "<phase label>"
+  local out rc
+  set +e
+  out="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
+  rc=$?
+  set -e
+  if [ "${rc}" -ne 0 ]; then
+    echo "FAIL: $1: cdkd drift exited ${rc} on an untouched stack (issue #2762 readback; 1 = drift, 2 = command error):" >&2
+    printf '%s\n' "${out}" >&2
+    exit 1
+  fi
+  echo "    OK: $1: cdkd drift reports no drift"
+}
+assert_no_drift "Phase 1"
+
+# Positive control for the drift-clean assertions: an out-of-band change to
+# the IcebergTable's compaction (disabled in the template) must be REPORTED,
+# or a clean drift proves nothing about the readback. Restored afterwards to
+# the exact value AWS held (settings included), and the stack must read back
+# clean again before Phase 1b.
+put_compaction() { # usage: put_compaction <value json>
+  aws s3tables put-table-maintenance-configuration --region "${REGION}" \
+    --table-bucket-arn "${TABLE_BUCKET_ARN}" --namespace cdkd_integ_ns --name "${ICEBERG_TABLE_NAME}" \
+    --type icebergCompaction --value "$1" >/dev/null
+}
+ORIGINAL_COMPACTION="$(aws s3tables get-table-maintenance-configuration --region "${REGION}" \
+  --table-bucket-arn "${TABLE_BUCKET_ARN}" --namespace cdkd_integ_ns --name "${ICEBERG_TABLE_NAME}" --output json \
+  | jq -c '.configuration.icebergCompaction')"
+case "${ORIGINAL_COMPACTION}" in
+  '{'*'"disabled"'*) ;;
+  *) echo "FAIL: IcebergTable compaction before the positive control is '${ORIGINAL_COMPACTION}', expected a disabled configuration" >&2; exit 1 ;;
+esac
+put_compaction '{"status":"enabled"}'
+set +e
+DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
+DRIFT_RC=$?
+set -e
+if [ "${DRIFT_RC}" -ne 1 ] || ! printf '%s' "${DRIFT_OUT}" | grep -q "Compaction"; then
+  echo "FAIL: cdkd drift exited ${DRIFT_RC} after an out-of-band compaction change, expected 1 naming Compaction (issue #2762: the readback does not see the change):" >&2
+  printf '%s\n' "${DRIFT_OUT}" >&2
+  exit 1
+fi
+echo "    OK: an out-of-band compaction change is reported as drift (issue #2762)"
+put_compaction "${ORIGINAL_COMPACTION}"
+assert_no_drift "Phase 1 after restoring compaction"
 
 # --- Phase 1b: in-place tag update (issue #2613) ---------------------
 # Only the `bucket-team` / `team` tag values change, so the redeploy reaches
@@ -391,6 +504,31 @@ if [ "${POST_TABLE_TEAM}" != "${UPDATED_TEAM_TAG}" ]; then
   exit 1
 fi
 echo "    OK: TableBucket and Table tags updated in place (issue #2613)"
+# Issue #2762: the same redeploy changes UnreferencedDays (5 -> 6) and turns
+# the IcebergTable's compaction on with a 256 MB target, in place.
+POST_ICEBERG_ID="$(state_physical_id IcebergTable)"
+if [ "${POST_ICEBERG_ID}" != "${ICEBERG_PHYSICAL_ID}" ]; then
+  echo "FAIL: Phase 1b replaced the IcebergTable (${ICEBERG_PHYSICAL_ID} -> ${POST_ICEBERG_ID}); a Compaction change must update in place (issue #2762)" >&2
+  exit 1
+fi
+POST_UFR="$(bucket_ufr)"
+if [ "${POST_UFR}" != "enabled 6 7" ]; then
+  echo "FAIL: TableBucket unreferenced file removal is '${POST_UFR}' after Phase 1b, expected 'enabled 6 7' (issue #2762: the update did not reach PutTableBucketMaintenanceConfiguration)" >&2
+  exit 1
+fi
+POST_MAINTENANCE="$(table_maintenance)"
+if [ "${POST_MAINTENANCE}" != "enabled 256 enabled 2 200" ]; then
+  echo "FAIL: IcebergTable maintenance is '${POST_MAINTENANCE}' after Phase 1b, expected 'enabled 256 enabled 2 200' (issue #2762: the update did not reach PutTableMaintenanceConfiguration)" >&2
+  exit 1
+fi
+echo "    OK: UnreferencedFileRemoval and Compaction updated in place (issue #2762)"
+# Phase 1b also drops MetricsConfiguration: the removal deletes the bucket's
+# metrics configuration, whose Get then answers NotFound (the premise the
+# readback's "NotFound = Disabled" rests on).
+assert_gone "TableBucket metrics configuration still exists after Phase 1b removed MetricsConfiguration (issue #2762)" \
+  aws s3tables get-table-bucket-metrics-configuration --region "${REGION}" --table-bucket-arn "${TABLE_BUCKET_ARN}"
+echo "    OK: removing MetricsConfiguration deleted the bucket's metrics configuration (issue #2762)"
+assert_no_drift "Phase 1b"
 
 # --- Phase 1c: in-place rename (issue #5313) -------------------------
 # Only the Table's TableName and Namespace change (the tag values stay at
@@ -514,10 +652,10 @@ if [ "${HEALED_TABLE_ARN}" != "${TABLE_ARN}" ]; then
 fi
 CONVERGED_CC_PARAM="$(aws ssm get-parameter --region "${REGION}" --name "${REF_PARAM_NAME}" --query 'Parameter.Value' --output text)"
 if [ "${CONVERGED_CC_PARAM}" != "${EXPECTED_ICEBERG_ARN}" ]; then
-  echo "FAIL: SSM parameter ${REF_PARAM_NAME} is '${CONVERGED_CC_PARAM}' after Phase 1d, expected the TableARN '${EXPECTED_ICEBERG_ARN}' (issue #5316: a Cloud Control table's reader recorded with the name was not rewritten)" >&2
+  echo "FAIL: SSM parameter ${REF_PARAM_NAME} is '${CONVERGED_CC_PARAM}' after Phase 1d, expected the TableARN '${EXPECTED_ICEBERG_ARN}' (issue #5316: the IcebergTable's reader recorded with the name was not rewritten)" >&2
   exit 1
 fi
-echo "    OK: readers recorded with the table name are rewritten to the TableARN on both routes (issue #5316)"
+echo "    OK: readers recorded with the table name are rewritten to the TableARN for both tables (issue #5316)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"

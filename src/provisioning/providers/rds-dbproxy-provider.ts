@@ -9,7 +9,10 @@ import {
   RemoveTagsFromResourceCommand,
   DBProxyNotFoundFault,
   type UserAuthConfig,
+  type DefaultAuthScheme,
+  type EndpointNetworkType,
   type EngineFamily,
+  type TargetConnectionNetworkType,
   type Tag,
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
@@ -69,9 +72,13 @@ const POLL_TIMEOUT_MS = 30 * 60 * 1000;
  * staying silent. `RoleArn` is required, and the create-only properties
  * replace the proxy, so neither belongs here. `Auth` is retained only where
  * the update does not refuse its removal ({@link authRemovalRefused}).
+ * `DefaultAuthScheme` (go-to-k/cdkd#2762) is mutable through `ModifyDBProxy`
+ * and is retained the same way; CloudFormation's behavior on its removal is
+ * not measured, so it is not in {@link CFN_KEEPS_ON_REMOVAL}.
  */
 const RETAINED_ON_REMOVAL: readonly string[] = [
   'Auth',
+  'DefaultAuthScheme',
   'RequireTLS',
   'IdleClientTimeout',
   'DebugLogging',
@@ -99,15 +106,54 @@ const CFN_KEEPS_ON_REMOVAL: ReadonlySet<string> = new Set([
  * sends the removal, so its update fails (CFn A/B us-east-1 2026-10-22:
  * `UPDATE_FAILED`, "the 'Auth' parameter is required when the
  * 'defaultAuthScheme' parameter is set to NONE or not specified"). cdkd
- * refuses the same deploy before any call. With `DefaultAuthScheme` set,
- * CloudFormation's removal would be accepted, so nothing is refused. That arm
- * reaches this provider only under `--allow-unsupported-properties
- * DefaultAuthScheme` (the property is a silent drop, so a template declaring
- * it otherwise routes through Cloud Control); the scheme was then never sent
- * and AWS still requires `Auth`, so the proxy keeps `Auth` and the update
- * warns, as before.
+ * refuses the same deploy before any call. With `DefaultAuthScheme` set to
+ * another value (`IAM_AUTH`), CloudFormation's removal would be accepted, so
+ * nothing is refused; cdkd sends no `Auth` reset, so the proxy keeps its live
+ * `Auth` and the update warns ({@link RETAINED_ON_REMOVAL}).
  */
-const authRemovalRefused = (properties: Record<string, unknown>): boolean => {
+const authRemovalRefused = (
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): boolean =>
+  // The scheme the proxy will HOLD: a removed `DefaultAuthScheme` is not sent
+  // (RETAINED_ON_REMOVAL), so the live value is still the previous one.
+  authRequired({
+    DefaultAuthScheme:
+      properties['DefaultAuthScheme'] !== undefined
+        ? properties['DefaultAuthScheme']
+        : previousProperties['DefaultAuthScheme'],
+  });
+
+/**
+ * Whether an update would leave the proxy with no `Auth` while AWS requires
+ * one (go-to-k/cdkd#2762); the shapes are named at its call in `update()`.
+ */
+const leavesProxyWithoutAuth = (
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): boolean => {
+  const desired = properties['Auth'];
+  const declaredEmpty = desired === null || (Array.isArray(desired) && desired.length === 0);
+  const switchesToNone =
+    properties['DefaultAuthScheme'] === 'NONE' &&
+    previousProperties['DefaultAuthScheme'] !== 'NONE';
+  if (switchesToNone && (desired === undefined || declaredEmpty)) return true;
+  return (
+    declaredEmpty &&
+    JSON.stringify(desired) !== JSON.stringify(previousProperties['Auth']) &&
+    authRemovalRefused(properties, previousProperties)
+  );
+};
+
+/**
+ * Whether AWS requires `Auth` for the proxy the bag describes: while
+ * `DefaultAuthScheme` is `NONE` or unset (AWS's own refusal, quoted above;
+ * the CFn schema does not list `Auth` as required).
+ * `create()` refuses a proxy without `Auth` only then, so a template declaring
+ * `DefaultAuthScheme: IAM_AUTH` alone deploys, as on CloudFormation
+ * (go-to-k/cdkd#2762).
+ */
+const authRequired = (properties: Record<string, unknown>): boolean => {
   const scheme = properties['DefaultAuthScheme'];
   return scheme === undefined || scheme === 'NONE';
 };
@@ -130,13 +176,15 @@ const authRemovalRefused = (properties: Record<string, unknown>): boolean => {
  *   `DBProxyStatus === 'available'`. Returns physicalId=DBProxyName plus
  *   `Endpoint` / `DBProxyArn` / `VpcId` in attributes.
  * - `update`: `ModifyDBProxyCommand` for the mutable fields (Auth /
- *   DebugLogging / IdleClientTimeout / RequireTLS / RoleArn /
- *   SecurityGroups); a removed field is left at its live value and warned
- *   about (`RETAINED_ON_REMOVAL`), except an `Auth` removal AWS would refuse,
- *   which is refused before any call (`authRemovalRefused`). Tags handled via separate `AddTagsToResource` /
- *   `RemoveTagsFromResource` diff. EngineFamily and VpcSubnetIds are
- *   immutable on AWS; a diff in those surfaces as `ResourceReplacement`
- *   from the deploy engine, not handled here.
+ *   DefaultAuthScheme / DebugLogging / IdleClientTimeout / RequireTLS /
+ *   RoleArn / SecurityGroups); a removed field is left at its live value and
+ *   warned about (`RETAINED_ON_REMOVAL`), except an `Auth` removal AWS would
+ *   refuse, which is refused before any call (`authRemovalRefused`). Tags
+ *   handled via separate `AddTagsToResource` / `RemoveTagsFromResource` diff.
+ *   EngineFamily, VpcSubnetIds, EndpointNetworkType and
+ *   TargetConnectionNetworkType are immutable on AWS (create-only in the CFn
+ *   schema, no `ModifyDBProxy` member; go-to-k/cdkd#2762); a diff in those
+ *   surfaces as `ResourceReplacement` from the deploy engine, not handled here.
  * - `delete`: `DeleteDBProxyCommand`, then poll for `DBProxyNotFoundFault`
  *   to confirm full removal (AWS keeps the proxy in `deleting` state for
  *   ~30-60s after the delete returns). `DBProxyNotFoundFault` at any
@@ -169,6 +217,9 @@ export class RDSDBProxyProvider implements ResourceProvider {
         'RequireTLS',
         'IdleClientTimeout',
         'DebugLogging',
+        'DefaultAuthScheme',
+        'EndpointNetworkType',
+        'TargetConnectionNetworkType',
         'Tags',
       ]),
     ],
@@ -240,9 +291,9 @@ export class RDSDBProxyProvider implements ResourceProvider {
       );
     }
     const auth = properties['Auth'] as UserAuthConfig[] | undefined;
-    if (!auth || auth.length === 0) {
+    if ((!auth || auth.length === 0) && authRequired(properties)) {
       throw new ProvisioningError(
-        `Auth (at least one entry) is required for AWS::RDS::DBProxy ${logicalId}`,
+        `Auth (at least one entry) is required for AWS::RDS::DBProxy ${logicalId} while DefaultAuthScheme is NONE or unset`,
         resourceType,
         logicalId
       );
@@ -266,14 +317,19 @@ export class RDSDBProxyProvider implements ResourceProvider {
 
     const client = this.getClient();
 
-    this.logger.debug(`Creating DBProxy ${dbProxyName} (${engineFamily})`);
+    this.logger.debug(mask(`Creating DBProxy ${dbProxyName} (${engineFamily})`));
 
     try {
       await this.getCreateClient().send(
         new CreateDBProxyCommand({
           DBProxyName: dbProxyName,
           EngineFamily: engineFamily,
-          Auth: auth,
+          Auth: auth && auth.length > 0 ? auth : undefined,
+          DefaultAuthScheme: properties['DefaultAuthScheme'] as DefaultAuthScheme | undefined,
+          EndpointNetworkType: properties['EndpointNetworkType'] as EndpointNetworkType | undefined,
+          TargetConnectionNetworkType: properties['TargetConnectionNetworkType'] as
+            | TargetConnectionNetworkType
+            | undefined,
           RoleArn: roleArn,
           VpcSubnetIds: vpcSubnetIds,
           VpcSecurityGroupIds: properties['VpcSecurityGroupIds'] as string[] | undefined,
@@ -389,11 +445,34 @@ export class RDSDBProxyProvider implements ResourceProvider {
       context?.replayingState !== true &&
       context?.desiredFromAwsReadback !== true &&
       this.removedRetained(properties, previousProperties, context).includes('Auth') &&
-      authRemovalRefused(properties)
+      authRemovalRefused(properties, previousProperties)
     ) {
       throw markNonRetryable(
         new ProvisioningError(
           safeMsg`${logicalId} (${resourceType}): Auth was removed from the template, but AWS requires Auth while DefaultAuthScheme is NONE or unset, and CloudFormation's update fails on the same change. Declare Auth again; nothing was changed.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    // go-to-k/cdkd#2762: an update that leaves the proxy with no Auth while the
+    // scheme it will hold requires one is refused before any call, the same
+    // way: AWS requires Auth under NONE, so ModifyDBProxy would only fail
+    // later. Two shapes reach that call: a switch TO `DefaultAuthScheme: NONE`
+    // whose template declares no Auth (absent, `null` or `[]`), and a changed
+    // Auth declared EMPTY while the kept scheme is NONE or unset. (A REMOVED
+    // Auth is the refusal above; an absent Auth with no scheme change sends
+    // nothing.) Not on a rollback replay or `drift --revert`, whose desired bag
+    // is not a template.
+    if (
+      context?.replayingState !== true &&
+      context?.desiredFromAwsReadback !== true &&
+      leavesProxyWithoutAuth(properties, previousProperties)
+    ) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          safeMsg`${logicalId} (${resourceType}): the update leaves the proxy with no Auth while DefaultAuthScheme is NONE or unset, and AWS requires Auth then. Declare Auth; nothing was changed.`,
           resourceType,
           logicalId,
           physicalId
@@ -421,7 +500,13 @@ export class RDSDBProxyProvider implements ResourceProvider {
     // recorded as its `{{resolve:...}}` reference and handed here resolved,
     // which is no change; the physical id IS the proxy name
     // (go-to-k/cdkd#4275).
-    for (const field of ['DBProxyName', 'EngineFamily', 'VpcSubnetIds']) {
+    for (const field of [
+      'DBProxyName',
+      'EngineFamily',
+      'VpcSubnetIds',
+      'EndpointNetworkType',
+      'TargetConnectionNetworkType',
+    ]) {
       if (
         JSON.stringify(properties[field]) !== JSON.stringify(previousProperties[field]) &&
         !(await unchangedBehindSecretReference({
@@ -445,6 +530,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
     let hasModify = false;
     const mutableFields: Array<keyof typeof properties> = [
       'Auth',
+      'DefaultAuthScheme',
       'RequireTLS',
       'IdleClientTimeout',
       'DebugLogging',
@@ -696,6 +782,9 @@ export class RDSDBProxyProvider implements ResourceProvider {
       RequireTLS?: boolean;
       IdleClientTimeout?: number;
       DebugLogging?: boolean;
+      DefaultAuthScheme?: string;
+      EndpointNetworkType?: string;
+      TargetConnectionNetworkType?: string;
       Auth?: Array<{
         Description?: string;
         UserName?: string;
@@ -722,6 +811,14 @@ export class RDSDBProxyProvider implements ResourceProvider {
         IAMAuth: a.IAMAuth,
         ClientPasswordAuthType: a.ClientPasswordAuthType,
       })),
+      // Omitted when AWS reports none: the drift comparator ignores a key
+      // state does not hold, and a proxy created without the property records
+      // none (go-to-k/cdkd#2762).
+      ...(p.DefaultAuthScheme !== undefined && { DefaultAuthScheme: p.DefaultAuthScheme }),
+      ...(p.EndpointNetworkType !== undefined && { EndpointNetworkType: p.EndpointNetworkType }),
+      ...(p.TargetConnectionNetworkType !== undefined && {
+        TargetConnectionNetworkType: p.TargetConnectionNetworkType,
+      }),
     };
 
     // Tags via ListTagsForResource.
