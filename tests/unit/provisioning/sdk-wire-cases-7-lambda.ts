@@ -105,7 +105,7 @@ const FUNCTION_FULL: Bag = {
     {
       Arn: `arn:aws:elasticfilesystem:us-east-1:${ACCOUNT}:access-point/fsap-1`,
       LocalMountPath: '/mnt/a',
-      S3FilesConfig: { DirectS3Read: true },
+      S3FilesConfig: { DirectS3Read: 'ENABLED' },
     },
   ],
   SnapStart: { ApplyOn: 'PublishedVersions' },
@@ -184,6 +184,8 @@ const FUNCTION_CASE: TypeCase = {
         // 1483-1485).
         'update-remove:RecursiveLoop':
           'a removed RecursiveLoop keeps its live value; left out of removalHandledInUpdate so the engine names it (lambda-function-provider.ts:610-613, 1483-1485)',
+        'create-vary:PackageType':
+          'varied to Image, refused before any call beside CodeSigningConfigArn and RuntimeManagementConfig (refuseImageFunctionUnsupported); the container image bag varies it',
       },
       expectedRemovalThrows: {
         'create:Code': CODE_REQUIRED,

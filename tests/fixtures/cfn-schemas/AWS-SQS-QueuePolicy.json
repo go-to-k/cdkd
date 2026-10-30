@@ -29,5 +29,11 @@
   },
   "propertyShapes": {
     "Queues": "array"
+  },
+  "propertyTypes": {
+    "Id": "string",
+    "PolicyDocument": "object|string",
+    "Queues": "array",
+    "Queues[]": "string"
   }
 }

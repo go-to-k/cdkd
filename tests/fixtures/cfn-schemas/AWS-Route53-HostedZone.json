@@ -134,5 +134,26 @@
     "QueryLoggingConfig": "object",
     "VPCs": "array",
     "VPCs[]": "object"
+  },
+  "propertyTypes": {
+    "DelegationSetId": "string",
+    "HostedZoneConfig": "object",
+    "HostedZoneConfig.Comment": "string",
+    "HostedZoneFeatures": "object",
+    "HostedZoneFeatures.EnableAcceleratedRecovery": "boolean",
+    "HostedZoneTags": "array",
+    "HostedZoneTags[]": "object",
+    "HostedZoneTags[].Key": "string",
+    "HostedZoneTags[].Value": "string",
+    "Id": "string",
+    "Name": "string",
+    "NameServers": "array",
+    "NameServers[]": "string",
+    "QueryLoggingConfig": "object",
+    "QueryLoggingConfig.CloudWatchLogsLogGroupArn": "string",
+    "VPCs": "array",
+    "VPCs[]": "object",
+    "VPCs[].VPCId": "string",
+    "VPCs[].VPCRegion": "string"
   }
 }

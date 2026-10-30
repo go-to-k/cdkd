@@ -119,6 +119,10 @@ export const S3TABLES_CASES: TypeCase[] = [
     // documented no-op for a namespace (s3-tables-provider.ts:414-416).
     createOnly: createOnlyOf('AWS::S3Tables::Namespace'),
     exempt: {},
+    schemaExempt: {
+      Namespace:
+        'the schema types it string; the singleton list is the addPropertyOverride spelling the provider also accepts (s3-tables-provider.ts:1384-1392)',
+    },
     targets: [],
     bags: [
       {
@@ -131,7 +135,7 @@ export const S3TABLES_CASES: TypeCase[] = [
       },
       {
         // A singleton list is accepted too (`addPropertyOverride`,
-        // s3-tables-provider.ts:674-680); its emptied form is refused.
+        // s3-tables-provider.ts:1384-1392); its emptied form is refused.
         name: 'namespace as a singleton list',
         bag: { TableBucketARN: BUCKET_ARN, Namespace: ['ns'] },
         expectedRemovalThrows: {

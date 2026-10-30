@@ -78,5 +78,16 @@
   "propertyShapes": {
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "ConsumerARN": "string",
+    "ConsumerCreationTimestamp": "string",
+    "ConsumerName": "string",
+    "ConsumerStatus": "string",
+    "StreamARN": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string"
   }
 }

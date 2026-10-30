@@ -73,5 +73,23 @@
     "IdentitySource": "array",
     "JwtConfiguration": "object",
     "JwtConfiguration.Audience": "array"
+  },
+  "propertyTypes": {
+    "ApiId": "string",
+    "AuthorizerCredentialsArn": "string",
+    "AuthorizerId": "string",
+    "AuthorizerPayloadFormatVersion": "string",
+    "AuthorizerResultTtlInSeconds": "integer",
+    "AuthorizerType": "string",
+    "AuthorizerUri": "string",
+    "EnableSimpleResponses": "boolean",
+    "IdentitySource": "array",
+    "IdentitySource[]": "string",
+    "IdentityValidationExpression": "string",
+    "JwtConfiguration": "object",
+    "JwtConfiguration.Audience": "array",
+    "JwtConfiguration.Audience[]": "string",
+    "JwtConfiguration.Issuer": "string",
+    "Name": "string"
   }
 }

@@ -27,5 +27,11 @@
     "#top": [
       "ApiId"
     ]
+  },
+  "propertyTypes": {
+    "ApiId": "string",
+    "Definition": "string",
+    "DefinitionS3Location": "string",
+    "Id": "string"
   }
 }

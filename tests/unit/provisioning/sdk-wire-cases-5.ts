@@ -345,7 +345,7 @@ export const CASES_5: TypeCase[] = [
           Origin: 'EXTERNAL',
           MultiRegion: true,
         },
-        variants: { KeySpec: 'HMAC_384', KeyUsage: 'ENCRYPT_DECRYPT', Origin: 'AWS_CLOUDHSM' },
+        variants: { KeySpec: 'HMAC_384', KeyUsage: 'ENCRYPT_DECRYPT' },
         expectedSilent: {
           'update-vary:KeySpec': FIXED_AT_CREATION,
           'update-vary:KeyUsage': FIXED_AT_CREATION,

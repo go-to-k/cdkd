@@ -76,5 +76,19 @@
     "EncryptionConfiguration.JobBookmarksEncryption": "object",
     "EncryptionConfiguration.S3Encryptions": "array",
     "EncryptionConfiguration.S3Encryptions[]": "object"
+  },
+  "propertyTypes": {
+    "EncryptionConfiguration": "object",
+    "EncryptionConfiguration.CloudWatchEncryption": "object",
+    "EncryptionConfiguration.CloudWatchEncryption.CloudWatchEncryptionMode": "string",
+    "EncryptionConfiguration.CloudWatchEncryption.KmsKeyArn": "string",
+    "EncryptionConfiguration.JobBookmarksEncryption": "object",
+    "EncryptionConfiguration.JobBookmarksEncryption.JobBookmarksEncryptionMode": "string",
+    "EncryptionConfiguration.JobBookmarksEncryption.KmsKeyArn": "string",
+    "EncryptionConfiguration.S3Encryptions": "array",
+    "EncryptionConfiguration.S3Encryptions[]": "object",
+    "EncryptionConfiguration.S3Encryptions[].KmsKeyArn": "string",
+    "EncryptionConfiguration.S3Encryptions[].S3EncryptionMode": "string",
+    "Name": "string"
   }
 }

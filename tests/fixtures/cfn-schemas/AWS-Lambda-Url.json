@@ -80,5 +80,43 @@
     "Cors.AllowMethods": "array",
     "Cors.AllowOrigins": "array",
     "Cors.ExposeHeaders": "array"
+  },
+  "propertyTypes": {
+    "AuthType": "string",
+    "Cors": "object",
+    "Cors.AllowCredentials": "boolean",
+    "Cors.AllowHeaders": "array",
+    "Cors.AllowHeaders[]": "string",
+    "Cors.AllowMethods": "array",
+    "Cors.AllowMethods[]": "string",
+    "Cors.AllowOrigins": "array",
+    "Cors.AllowOrigins[]": "string",
+    "Cors.ExposeHeaders": "array",
+    "Cors.ExposeHeaders[]": "string",
+    "Cors.MaxAge": "integer",
+    "FunctionArn": "string",
+    "FunctionUrl": "string",
+    "InvokeMode": "string",
+    "Qualifier": "string",
+    "TargetFunctionArn": "string"
+  },
+  "propertyEnums": {
+    "AuthType": [
+      "AWS_IAM",
+      "NONE"
+    ],
+    "Cors.AllowMethods[]": [
+      "*",
+      "DELETE",
+      "GET",
+      "HEAD",
+      "PATCH",
+      "POST",
+      "PUT"
+    ],
+    "InvokeMode": [
+      "BUFFERED",
+      "RESPONSE_STREAM"
+    ]
   }
 }

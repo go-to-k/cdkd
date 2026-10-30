@@ -103,5 +103,27 @@
     "DatabaseInput.FederatedDatabase": "object",
     "DatabaseInput.Parameters": "object",
     "DatabaseInput.TargetDatabase": "object"
+  },
+  "propertyTypes": {
+    "CatalogId": "string",
+    "DatabaseInput": "object",
+    "DatabaseInput.CreateTableDefaultPermissions": "array",
+    "DatabaseInput.CreateTableDefaultPermissions[]": "object",
+    "DatabaseInput.CreateTableDefaultPermissions[].Permissions": "array",
+    "DatabaseInput.CreateTableDefaultPermissions[].Permissions[]": "string",
+    "DatabaseInput.CreateTableDefaultPermissions[].Principal": "object",
+    "DatabaseInput.CreateTableDefaultPermissions[].Principal.DataLakePrincipalIdentifier": "string",
+    "DatabaseInput.Description": "string",
+    "DatabaseInput.FederatedDatabase": "object",
+    "DatabaseInput.FederatedDatabase.ConnectionName": "string",
+    "DatabaseInput.FederatedDatabase.Identifier": "string",
+    "DatabaseInput.LocationUri": "string",
+    "DatabaseInput.Name": "string",
+    "DatabaseInput.Parameters": "object",
+    "DatabaseInput.TargetDatabase": "object",
+    "DatabaseInput.TargetDatabase.CatalogId": "string",
+    "DatabaseInput.TargetDatabase.DatabaseName": "string",
+    "DatabaseInput.TargetDatabase.Region": "string",
+    "DatabaseName": "string"
   }
 }

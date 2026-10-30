@@ -1186,6 +1186,9 @@ const s3Target = (
 
 // --- AWS::S3::Bucket -----------------------------------------------------------
 
+const S3_OBJECT_SIZE_NUMBER =
+  "the schema types it string, but CDK's CfnBucket.RuleProperty types it number, so a CDK template carries a number";
+
 const BUCKET_CASE: TypeCase = {
   resourceType: 'AWS::S3::Bucket',
   provider: () => new S3BucketProvider(),
@@ -1194,6 +1197,10 @@ const BUCKET_CASE: TypeCase = {
   arm: s3Arm,
   wholeFromNext: { keys: (key) => key === 'PublicAccessBlockConfiguration', reason: S3_PAB_KEPT },
   exempt: {},
+  schemaExempt: {
+    'LifecycleConfiguration.Rules.0.ObjectSizeGreaterThan': S3_OBJECT_SIZE_NUMBER,
+    'LifecycleConfiguration.Rules.0.ObjectSizeLessThan': S3_OBJECT_SIZE_NUMBER,
+  },
   targets: [
     // PutBucketTagging replaces the whole set with the remaining tag.
     s3Target(['Tags', 0], 'PutBucketTaggingCommand', '<Key>tk2</Key>', '<Key>tk1</Key>'),

@@ -121,5 +121,44 @@
     "Configuration.VpcEgressConfiguration.SubnetIds": "array",
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "Configuration": "object",
+    "Configuration.VpcEgressConfiguration": "object",
+    "Configuration.VpcEgressConfiguration.AssociatedComputeResourceTypes": "array",
+    "Configuration.VpcEgressConfiguration.AssociatedComputeResourceTypes[]": "string",
+    "Configuration.VpcEgressConfiguration.NetworkProtocol": "string",
+    "Configuration.VpcEgressConfiguration.SecurityGroupIds": "array",
+    "Configuration.VpcEgressConfiguration.SecurityGroupIds[]": "string",
+    "Configuration.VpcEgressConfiguration.SubnetIds": "array",
+    "Configuration.VpcEgressConfiguration.SubnetIds[]": "string",
+    "LatestVersion": "integer",
+    "LatestVersionArn": "string",
+    "Name": "string",
+    "OperatorRole": "string",
+    "State": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string"
+  },
+  "propertyEnums": {
+    "Configuration.VpcEgressConfiguration.AssociatedComputeResourceTypes[]": [
+      "MicroVm",
+      "WebFunction"
+    ],
+    "Configuration.VpcEgressConfiguration.NetworkProtocol": [
+      "DualStack",
+      "IPv4"
+    ],
+    "State": [
+      "ACTIVE",
+      "DELETE_FAILED",
+      "DELETING",
+      "FAILED",
+      "INACTIVE",
+      "PENDING"
+    ]
   }
 }

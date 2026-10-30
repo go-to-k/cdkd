@@ -147,5 +147,38 @@
     "CidrRoutingConfig": "object",
     "GeoLocation": "object",
     "ResourceRecords": "array"
+  },
+  "propertyTypes": {
+    "AliasTarget": "object",
+    "AliasTarget.DNSName": "string",
+    "AliasTarget.EvaluateTargetHealth": "boolean",
+    "AliasTarget.HostedZoneId": "string",
+    "CidrRoutingConfig": "object",
+    "CidrRoutingConfig.CollectionId": "string",
+    "CidrRoutingConfig.LocationName": "string",
+    "Comment": "string",
+    "Failover": "string",
+    "GeoLocation": "object",
+    "GeoLocation.ContinentCode": "string",
+    "GeoLocation.CountryCode": "string",
+    "GeoLocation.SubdivisionCode": "string",
+    "HealthCheckId": "string",
+    "HostedZoneId": "string",
+    "HostedZoneName": "string",
+    "MultiValueAnswer": "boolean",
+    "Name": "string",
+    "Region": "string",
+    "ResourceRecords": "array",
+    "ResourceRecords[]": "string",
+    "SetIdentifier": "string",
+    "TTL": "string",
+    "Type": "string",
+    "Weight": "integer"
+  },
+  "propertyEnums": {
+    "Failover": [
+      "PRIMARY",
+      "SECONDARY"
+    ]
   }
 }

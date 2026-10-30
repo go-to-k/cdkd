@@ -322,16 +322,27 @@ function valueAt(value: unknown, segments: string[]): { resolved: boolean; value
 }
 
 /**
- * The bag with the leaf at `path` changed: to `variant` when given (an enum
- * member needs a valid alternative), else to another value of its type.
- * Undefined for a non-leaf.
+ * The bag with the leaf at `path` changed: to `variant` when given, else to
+ * the next of the schema's `members` when it lists the leaf's enum, else to
+ * another value of its type (a string spelling a number or boolean, as a
+ * schema typing one `string` has templates spell it, stays one). Undefined
+ * for a non-leaf.
  */
-function varied(bag: Bag, path: Path, variant?: { value: unknown }): Bag | undefined {
+function varied(
+  bag: Bag,
+  path: Path,
+  variant?: { value: unknown },
+  members?: readonly unknown[]
+): Bag | undefined {
   const copy = structuredClone(bag);
   const node = parentOf(copy, path);
   const last = path[path.length - 1]!;
   const value = node[last];
+  const at = members?.findIndex((m) => m === value) ?? -1;
   if (variant) node[last] = variant.value;
+  else if (members && at >= 0 && members.length > 1) node[last] = members[(at + 1) % members.length];
+  else if (typeof value === 'string' && /^-?\d+$/.test(value)) node[last] = String(Number(value) + 1);
+  else if (value === 'true' || value === 'false') node[last] = String(value !== 'true');
   else if (typeof value === 'string') node[last] = `${value}-alt`;
   else if (typeof value === 'number') node[last] = value + 1;
   else if (typeof value === 'boolean') node[last] = !value;
@@ -841,6 +852,7 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
   expect(await record(create(c.bag)), 'create is not deterministic').toEqual(full);
   expect(await record(update(c.bag, c.bag)), 'update is not deterministic').toEqual(settled);
   const fullWire = (full as { wire: string }).wire;
+  const enums = fixtureOf(c.resourceType).propertyEnums ?? {};
 
   const silent: string[] = [];
   const removalThrows: string[] = [];
@@ -915,7 +927,8 @@ export async function probe(c: ProbeCase): Promise<ProbeResult> {
     const alt = varied(
       c.bag,
       path,
-      c.variants && label in c.variants ? { value: c.variants[label] } : undefined
+      c.variants && label in c.variants ? { value: c.variants[label] } : undefined,
+      enums[schemaKey(path)]
     );
     if (varyOnCreate) {
       const altOutcome = alt === undefined ? undefined : await record(create(alt));
@@ -987,6 +1000,12 @@ export interface TypeCase {
    */
   nestedExempt?: Record<string, string>;
   /**
+   * Bag path label (` variant` appended for a variant) -> why a bag carries a
+   * value the schema fixture's `propertyTypes` / `propertyEnums` do not admit
+   * there. Exact: a fixed value must leave the list.
+   */
+  schemaExempt?: Record<string, string>;
+  /**
    * Removal probes that only see THAT the wire changed, not WHICH member it
    * names: removing one element of a two-element list (or one key of a map)
    * from `bags[0]` must send `command` exactly once, naming `names` and not
@@ -1014,6 +1033,10 @@ export interface TypeCase {
 interface SchemaFixture {
   createOnlyPropertyPaths: string[][];
   nestedPropertyPaths?: Record<string, string[]>;
+  /** Path (`[]` for list elements) -> the `type` names it admits, `|`-joined. */
+  propertyTypes?: Record<string, string>;
+  /** Path -> the only values it admits. */
+  propertyEnums?: Record<string, unknown[]>;
 }
 
 /** A type's committed schema fixture. */
@@ -1033,6 +1056,65 @@ export function createOnlyOf(resourceType: string): ReadonlySet<string> {
 /** Top-level -> every dotted nested path beneath it (no array indices), from the fixture. */
 function nestedPathsOf(resourceType: string): Record<string, string[]> {
   return fixtureOf(resourceType).nestedPropertyPaths ?? {};
+}
+
+/** A bag path as the fixture's `propertyTypes` keys it: `Tags.0.Key` is `Tags[].Key`. */
+export function schemaKey(path: Path): string {
+  return path.map((seg, i) => (typeof seg === 'number' ? '[]' : i === 0 ? seg : `.${seg}`)).join('');
+}
+
+/** A JSON value's JSON Schema type name; an integral number is an `integer`. */
+function jsonTypeOf(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  if (typeof value === 'number') return Number.isInteger(value) ? 'integer' : 'number';
+  return typeof value;
+}
+
+/**
+ * Why `value` at `path` is not what the type's schema admits there (a type it
+ * does not list, or a scalar outside its enum); undefined when it is, or
+ * when the schema does not constrain the path.
+ */
+function schemaMismatch(fixture: SchemaFixture, path: Path, value: unknown): string | undefined {
+  const key = schemaKey(path);
+  const types = fixture.propertyTypes?.[key]?.split('|');
+  const type = jsonTypeOf(value);
+  if (types && !types.includes(type) && !(type === 'integer' && types.includes('number'))) {
+    return `${type} where ${key} admits ${types.join(' | ')}`;
+  }
+  const members = fixture.propertyEnums?.[key];
+  if (members && (value === null || typeof value !== 'object')) {
+    const spelled = JSON.stringify(value);
+    if (!members.some((m) => JSON.stringify(m) === spelled)) {
+      return `${spelled} is not one of ${key}'s ${JSON.stringify(members)}`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Every bag value (containers and leaves, and each declared variant) the
+ * type's schema does not admit, by probe label (` variant` appended for a
+ * variant): the mismatch in each.
+ */
+export function schemaMismatchesOf(
+  resourceType: string,
+  bags: readonly Pick<BagCase, 'bag' | 'variants'>[]
+): Record<string, string> {
+  const fixture = fixtureOf(resourceType);
+  const out: Record<string, string> = {};
+  for (const b of bags) {
+    for (const path of paths(b.bag)) {
+      const why = schemaMismatch(fixture, path, parentOf(b.bag, path)[path[path.length - 1]!]);
+      if (why !== undefined) out[path.join('.')] = why;
+    }
+    for (const [label, value] of Object.entries(b.variants ?? {})) {
+      const why = schemaMismatch(fixture, label.split('.').map((s) => (/^\d+$/.test(s) ? Number(s) : s)), value);
+      if (why !== undefined) out[`${label} variant`] = why;
+    }
+  }
+  return out;
 }
 
 /**
@@ -1127,6 +1209,15 @@ export function describeWireCases(cases: TypeCase[]): void {
         const [top, ...rest] = label.split('.');
         expect(nested[top!] ?? [], label).toContain(rest.join('.'));
       }
+    });
+
+    // A bag value no valid template holds probes a shape no CDK app sends: a
+    // provider mishandling the real one stays green.
+    it('its bags carry only values of the types and enum members the schema admits', () => {
+      const mismatches = schemaMismatchesOf(t.resourceType, t.bags);
+      expect(Object.keys(mismatches).sort(), JSON.stringify(mismatches, null, 2)).toEqual(
+        Object.keys(t.schemaExempt ?? {}).sort()
+      );
     });
 
     if (t.noProperties) {

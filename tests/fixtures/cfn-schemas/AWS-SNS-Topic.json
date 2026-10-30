@@ -136,5 +136,42 @@
     "Subscription[]": "object",
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "ArchivePolicy": "object",
+    "ContentBasedDeduplication": "boolean",
+    "DataProtectionPolicy": "object",
+    "DeliveryStatusLogging": "array",
+    "DeliveryStatusLogging[]": "object",
+    "DeliveryStatusLogging[].FailureFeedbackRoleArn": "string",
+    "DeliveryStatusLogging[].Protocol": "string",
+    "DeliveryStatusLogging[].SuccessFeedbackRoleArn": "string",
+    "DeliveryStatusLogging[].SuccessFeedbackSampleRate": "string",
+    "DisplayName": "string",
+    "FifoThroughputScope": "string",
+    "FifoTopic": "boolean",
+    "KmsMasterKeyId": "string",
+    "MaximumMessageSize": "integer",
+    "SignatureVersion": "string",
+    "Subscription": "array",
+    "Subscription[]": "object",
+    "Subscription[].Endpoint": "string",
+    "Subscription[].Protocol": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "TopicArn": "string",
+    "TopicName": "string",
+    "TracingConfig": "string"
+  },
+  "propertyEnums": {
+    "DeliveryStatusLogging[].Protocol": [
+      "application",
+      "firehose",
+      "http/s",
+      "lambda",
+      "sqs"
+    ]
   }
 }

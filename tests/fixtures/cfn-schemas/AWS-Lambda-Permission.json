@@ -80,5 +80,23 @@
       "FunctionName",
       "Principal"
     ]
+  },
+  "propertyTypes": {
+    "Action": "string",
+    "EventSourceToken": "string",
+    "FunctionName": "string",
+    "FunctionUrlAuthType": "string",
+    "Id": "string",
+    "InvokedViaFunctionUrl": "boolean",
+    "Principal": "string",
+    "PrincipalOrgID": "string",
+    "SourceAccount": "string",
+    "SourceArn": "string"
+  },
+  "propertyEnums": {
+    "FunctionUrlAuthType": [
+      "AWS_IAM",
+      "NONE"
+    ]
   }
 }

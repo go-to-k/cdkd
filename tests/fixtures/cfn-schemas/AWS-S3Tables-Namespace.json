@@ -33,5 +33,9 @@
       "Namespace",
       "TableBucketARN"
     ]
+  },
+  "propertyTypes": {
+    "Namespace": "string",
+    "TableBucketARN": "string"
   }
 }

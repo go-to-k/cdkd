@@ -29,5 +29,11 @@
   },
   "propertyShapes": {
     "Topics": "array"
+  },
+  "propertyTypes": {
+    "Id": "string",
+    "PolicyDocument": "object|string",
+    "Topics": "array",
+    "Topics[]": "string"
   }
 }

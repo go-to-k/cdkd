@@ -174,5 +174,50 @@
     "ReplicationConfiguration": "object",
     "ReplicationConfiguration.Destinations": "array",
     "ReplicationConfiguration.Destinations[]": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "AvailabilityZoneName": "string",
+    "BackupPolicy": "object",
+    "BackupPolicy.Status": "string",
+    "BypassPolicyLockoutSafetyCheck": "boolean",
+    "Encrypted": "boolean",
+    "FileSystemId": "string",
+    "FileSystemPolicy": "object",
+    "FileSystemProtection": "object",
+    "FileSystemProtection.ReplicationOverwriteProtection": "string",
+    "FileSystemTags": "array",
+    "FileSystemTags[]": "object",
+    "FileSystemTags[].Key": "string",
+    "FileSystemTags[].Value": "string",
+    "KmsKeyId": "string",
+    "LifecyclePolicies": "array",
+    "LifecyclePolicies[]": "object",
+    "LifecyclePolicies[].TransitionToArchive": "string",
+    "LifecyclePolicies[].TransitionToIA": "string",
+    "LifecyclePolicies[].TransitionToPrimaryStorageClass": "string",
+    "PerformanceMode": "string",
+    "ProvisionedThroughputInMibps": "number",
+    "ReplicationConfiguration": "object",
+    "ReplicationConfiguration.Destinations": "array",
+    "ReplicationConfiguration.Destinations[]": "object",
+    "ReplicationConfiguration.Destinations[].AvailabilityZoneName": "string",
+    "ReplicationConfiguration.Destinations[].FileSystemId": "string",
+    "ReplicationConfiguration.Destinations[].KmsKeyId": "string",
+    "ReplicationConfiguration.Destinations[].Region": "string",
+    "ReplicationConfiguration.Destinations[].RoleArn": "string",
+    "ReplicationConfiguration.Destinations[].Status": "string",
+    "ReplicationConfiguration.Destinations[].StatusMessage": "string",
+    "ThroughputMode": "string"
+  },
+  "propertyEnums": {
+    "BackupPolicy.Status": [
+      "DISABLED",
+      "ENABLED"
+    ],
+    "FileSystemProtection.ReplicationOverwriteProtection": [
+      "DISABLED",
+      "ENABLED"
+    ]
   }
 }

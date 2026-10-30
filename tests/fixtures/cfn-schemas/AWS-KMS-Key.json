@@ -75,5 +75,59 @@
   "propertyShapes": {
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "BypassPolicyLockoutSafetyCheck": "boolean",
+    "Description": "string",
+    "EnableKeyRotation": "boolean",
+    "Enabled": "boolean",
+    "KeyId": "string",
+    "KeyPolicy": "object|string",
+    "KeySpec": "string",
+    "KeyUsage": "string",
+    "MultiRegion": "boolean",
+    "Origin": "string",
+    "PendingWindowInDays": "integer",
+    "RotationPeriodInDays": "integer",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string"
+  },
+  "propertyEnums": {
+    "KeySpec": [
+      "ECC_NIST_EDWARDS25519",
+      "ECC_NIST_P256",
+      "ECC_NIST_P384",
+      "ECC_NIST_P521",
+      "ECC_SECG_P256K1",
+      "HMAC_224",
+      "HMAC_256",
+      "HMAC_384",
+      "HMAC_512",
+      "ML_DSA_44",
+      "ML_DSA_65",
+      "ML_DSA_87",
+      "ML_KEM_1024",
+      "ML_KEM_512",
+      "ML_KEM_768",
+      "RSA_2048",
+      "RSA_3072",
+      "RSA_4096",
+      "SM2",
+      "SYMMETRIC_DEFAULT"
+    ],
+    "KeyUsage": [
+      "ENCAPSULATE_DECAPSULATE",
+      "ENCRYPT_DECRYPT",
+      "GENERATE_VERIFY_MAC",
+      "KEY_AGREEMENT",
+      "SIGN_VERIFY"
+    ],
+    "Origin": [
+      "AWS_KMS",
+      "EXTERNAL"
+    ]
   }
 }

@@ -331,5 +331,96 @@
     "StorageClassConfiguration": "object",
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "Compaction": "object",
+    "Compaction.Status": "string",
+    "Compaction.TargetFileSizeMB": "integer",
+    "IcebergMetadata": "object",
+    "IcebergMetadata.IcebergPartitionSpec": "object",
+    "IcebergMetadata.IcebergPartitionSpec.Fields": "array",
+    "IcebergMetadata.IcebergPartitionSpec.Fields[]": "object",
+    "IcebergMetadata.IcebergPartitionSpec.Fields[].FieldId": "integer",
+    "IcebergMetadata.IcebergPartitionSpec.Fields[].Name": "string",
+    "IcebergMetadata.IcebergPartitionSpec.Fields[].SourceId": "integer",
+    "IcebergMetadata.IcebergPartitionSpec.Fields[].Transform": "string",
+    "IcebergMetadata.IcebergPartitionSpec.SpecId": "integer",
+    "IcebergMetadata.IcebergSchema": "object",
+    "IcebergMetadata.IcebergSchema.SchemaFieldList": "array",
+    "IcebergMetadata.IcebergSchema.SchemaFieldList[]": "object",
+    "IcebergMetadata.IcebergSchema.SchemaFieldList[].Id": "integer",
+    "IcebergMetadata.IcebergSchema.SchemaFieldList[].Name": "string",
+    "IcebergMetadata.IcebergSchema.SchemaFieldList[].Required": "boolean",
+    "IcebergMetadata.IcebergSchema.SchemaFieldList[].Type": "string",
+    "IcebergMetadata.IcebergSchemaV2": "object",
+    "IcebergMetadata.IcebergSchemaV2.IdentifierFieldIds": "array",
+    "IcebergMetadata.IcebergSchemaV2.IdentifierFieldIds[]": "integer",
+    "IcebergMetadata.IcebergSchemaV2.SchemaId": "integer",
+    "IcebergMetadata.IcebergSchemaV2.SchemaV2FieldList": "array",
+    "IcebergMetadata.IcebergSchemaV2.SchemaV2FieldList[]": "object",
+    "IcebergMetadata.IcebergSchemaV2.SchemaV2FieldList[].Doc": "string",
+    "IcebergMetadata.IcebergSchemaV2.SchemaV2FieldList[].Id": "integer",
+    "IcebergMetadata.IcebergSchemaV2.SchemaV2FieldList[].Name": "string",
+    "IcebergMetadata.IcebergSchemaV2.SchemaV2FieldList[].Required": "boolean",
+    "IcebergMetadata.IcebergSchemaV2.SchemaV2FieldList[].Type": "object|string",
+    "IcebergMetadata.IcebergSchemaV2.SchemaV2FieldType": "string",
+    "IcebergMetadata.IcebergSortOrder": "object",
+    "IcebergMetadata.IcebergSortOrder.Fields": "array",
+    "IcebergMetadata.IcebergSortOrder.Fields[]": "object",
+    "IcebergMetadata.IcebergSortOrder.Fields[].Direction": "string",
+    "IcebergMetadata.IcebergSortOrder.Fields[].NullOrder": "string",
+    "IcebergMetadata.IcebergSortOrder.Fields[].SourceId": "integer",
+    "IcebergMetadata.IcebergSortOrder.Fields[].Transform": "string",
+    "IcebergMetadata.IcebergSortOrder.OrderId": "integer",
+    "IcebergMetadata.TableProperties": "object",
+    "Namespace": "string",
+    "OpenTableFormat": "string",
+    "SnapshotManagement": "object",
+    "SnapshotManagement.MaxSnapshotAgeHours": "integer",
+    "SnapshotManagement.MinSnapshotsToKeep": "integer",
+    "SnapshotManagement.Status": "string",
+    "StorageClassConfiguration": "object",
+    "StorageClassConfiguration.StorageClass": "string",
+    "TableARN": "string",
+    "TableBucketARN": "string",
+    "TableName": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "VersionToken": "string",
+    "WarehouseLocation": "string",
+    "WithoutMetadata": "string"
+  },
+  "propertyEnums": {
+    "Compaction.Status": [
+      "disabled",
+      "enabled"
+    ],
+    "IcebergMetadata.IcebergSchemaV2.SchemaV2FieldType": [
+      "struct"
+    ],
+    "IcebergMetadata.IcebergSortOrder.Fields[].Direction": [
+      "asc",
+      "desc"
+    ],
+    "IcebergMetadata.IcebergSortOrder.Fields[].NullOrder": [
+      "nulls-first",
+      "nulls-last"
+    ],
+    "OpenTableFormat": [
+      "ICEBERG"
+    ],
+    "SnapshotManagement.Status": [
+      "disabled",
+      "enabled"
+    ],
+    "StorageClassConfiguration.StorageClass": [
+      "INTELLIGENT_TIERING",
+      "STANDARD"
+    ],
+    "WithoutMetadata": [
+      "Yes"
+    ]
   }
 }

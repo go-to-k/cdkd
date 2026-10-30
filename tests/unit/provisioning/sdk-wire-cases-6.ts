@@ -66,7 +66,7 @@ const TEXT_TRANSFORMATIONS = [
   { Priority: 0, Type: 'LOWERCASE' },
   { Priority: 1, Type: 'URL_DECODE' },
 ];
-const PRE_PARSE = [{ Priority: 0, Type: 'BASE64_DECODE' }];
+const PRE_PARSE = [{ Priority: 0, Type: 'URL_DECODE_UNI' }];
 const RULE_VISIBILITY = (name: string) => ({
   CloudWatchMetricsEnabled: true,
   MetricName: name,

@@ -50,5 +50,11 @@
   },
   "propertyShapes": {
     "CloudFrontOriginAccessIdentityConfig": "object"
+  },
+  "propertyTypes": {
+    "CloudFrontOriginAccessIdentityConfig": "object",
+    "CloudFrontOriginAccessIdentityConfig.Comment": "string",
+    "Id": "string",
+    "S3CanonicalUserId": "string"
   }
 }

@@ -128,5 +128,51 @@
     "Tags": "array",
     "Tags[]": "object",
     "WarmThroughputObject": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "DesiredShardLevelMetrics": "array",
+    "DesiredShardLevelMetrics[]": "string",
+    "MaxRecordSizeInKiB": "integer",
+    "Name": "string",
+    "RecordDistributionStrategy": "string",
+    "RetentionPeriodHours": "integer",
+    "ShardCount": "integer",
+    "StreamEncryption": "object",
+    "StreamEncryption.EncryptionType": "string",
+    "StreamEncryption.KeyId": "string",
+    "StreamModeDetails": "object",
+    "StreamModeDetails.StreamMode": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "WarmThroughputMiBps": "integer",
+    "WarmThroughputObject": "object",
+    "WarmThroughputObject.CurrentMiBps": "integer",
+    "WarmThroughputObject.TargetMiBps": "integer"
+  },
+  "propertyEnums": {
+    "DesiredShardLevelMetrics[]": [
+      "ALL",
+      "IncomingBytes",
+      "IncomingRecords",
+      "IteratorAgeMilliseconds",
+      "OutgoingBytes",
+      "OutgoingRecords",
+      "ReadProvisionedThroughputExceeded",
+      "WriteProvisionedThroughputExceeded"
+    ],
+    "RecordDistributionStrategy": [
+      "AUTO",
+      "USER_PARTITION_KEY"
+    ],
+    "StreamEncryption.EncryptionType": [
+      "KMS"
+    ],
+    "StreamModeDetails.StreamMode": [
+      "ON_DEMAND",
+      "PROVISIONED"
+    ]
   }
 }

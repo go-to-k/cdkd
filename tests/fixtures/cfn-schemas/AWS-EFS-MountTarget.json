@@ -60,5 +60,22 @@
   },
   "propertyShapes": {
     "SecurityGroups": "array"
+  },
+  "propertyTypes": {
+    "FileSystemId": "string",
+    "Id": "string",
+    "IpAddress": "string",
+    "IpAddressType": "string",
+    "Ipv6Address": "string",
+    "SecurityGroups": "array",
+    "SecurityGroups[]": "string",
+    "SubnetId": "string"
+  },
+  "propertyEnums": {
+    "IpAddressType": [
+      "DUAL_STACK",
+      "IPV4_ONLY",
+      "IPV6_ONLY"
+    ]
   }
 }

@@ -61,5 +61,13 @@
   "propertyShapes": {
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "RouteTableId": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "VpcId": "string"
   }
 }

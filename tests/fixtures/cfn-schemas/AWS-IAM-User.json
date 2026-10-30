@@ -113,5 +113,26 @@
     "Policies[]": "object",
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "Groups": "array",
+    "Groups[]": "string",
+    "LoginProfile": "object",
+    "LoginProfile.Password": "string",
+    "LoginProfile.PasswordResetRequired": "boolean",
+    "ManagedPolicyArns": "array",
+    "ManagedPolicyArns[]": "string",
+    "Path": "string",
+    "PermissionsBoundary": "string",
+    "Policies": "array",
+    "Policies[]": "object",
+    "Policies[].PolicyDocument": "object|string",
+    "Policies[].PolicyName": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "UserName": "string"
   }
 }

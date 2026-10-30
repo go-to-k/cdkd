@@ -95,5 +95,25 @@
     "RouteSettings": "object",
     "StageVariables": "object",
     "Tags": "object"
+  },
+  "propertyTypes": {
+    "AccessLogSettings": "object",
+    "AccessLogSettings.DestinationArn": "string",
+    "AccessLogSettings.Format": "string",
+    "ApiId": "string",
+    "AutoDeploy": "boolean",
+    "ClientCertificateId": "string",
+    "DefaultRouteSettings": "object",
+    "DefaultRouteSettings.DataTraceEnabled": "boolean",
+    "DefaultRouteSettings.DetailedMetricsEnabled": "boolean",
+    "DefaultRouteSettings.LoggingLevel": "string",
+    "DefaultRouteSettings.ThrottlingBurstLimit": "integer",
+    "DefaultRouteSettings.ThrottlingRateLimit": "number",
+    "DeploymentId": "string",
+    "Description": "string",
+    "RouteSettings": "object",
+    "StageName": "string",
+    "StageVariables": "object",
+    "Tags": "object"
   }
 }

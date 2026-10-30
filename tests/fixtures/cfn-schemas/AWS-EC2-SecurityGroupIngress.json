@@ -91,5 +91,20 @@
     "#top": [
       "IpProtocol"
     ]
+  },
+  "propertyTypes": {
+    "CidrIp": "string",
+    "CidrIpv6": "string",
+    "Description": "string",
+    "FromPort": "integer",
+    "GroupId": "string",
+    "GroupName": "string",
+    "Id": "string",
+    "IpProtocol": "string",
+    "SourcePrefixListId": "string",
+    "SourceSecurityGroupId": "string",
+    "SourceSecurityGroupName": "string",
+    "SourceSecurityGroupOwnerId": "string",
+    "ToPort": "integer"
   }
 }

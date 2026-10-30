@@ -264,5 +264,102 @@
     "Resources[]": "object",
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "AdditionalOsCapabilities": "array",
+    "AdditionalOsCapabilities[]": "string",
+    "BaseImageArn": "string",
+    "BaseImageVersion": "string",
+    "BuildRoleArn": "string",
+    "CodeArtifact": "object",
+    "CodeArtifact.Uri": "string",
+    "CpuConfigurations": "array",
+    "CpuConfigurations[]": "object",
+    "CpuConfigurations[].Architecture": "string",
+    "CreatedAt": "string",
+    "Description": "string",
+    "EgressNetworkConnectors": "array",
+    "EgressNetworkConnectors[]": "string",
+    "EnvironmentVariables": "array",
+    "EnvironmentVariables[]": "object",
+    "EnvironmentVariables[].Key": "string",
+    "EnvironmentVariables[].Value": "string",
+    "Hooks": "object",
+    "Hooks.MicrovmHooks": "object",
+    "Hooks.MicrovmHooks.Resume": "string",
+    "Hooks.MicrovmHooks.ResumeTimeoutInSeconds": "integer",
+    "Hooks.MicrovmHooks.Run": "string",
+    "Hooks.MicrovmHooks.RunTimeoutInSeconds": "integer",
+    "Hooks.MicrovmHooks.Suspend": "string",
+    "Hooks.MicrovmHooks.SuspendTimeoutInSeconds": "integer",
+    "Hooks.MicrovmHooks.Terminate": "string",
+    "Hooks.MicrovmHooks.TerminateTimeoutInSeconds": "integer",
+    "Hooks.MicrovmImageHooks": "object",
+    "Hooks.MicrovmImageHooks.Ready": "string",
+    "Hooks.MicrovmImageHooks.ReadyTimeoutInSeconds": "integer",
+    "Hooks.MicrovmImageHooks.Validate": "string",
+    "Hooks.MicrovmImageHooks.ValidateTimeoutInSeconds": "integer",
+    "Hooks.Port": "integer",
+    "ImageArn": "string",
+    "LatestActiveImageVersion": "string",
+    "LatestFailedImageVersion": "string",
+    "Logging": "object",
+    "Logging.CloudWatch": "object",
+    "Logging.CloudWatch.LogGroup": "string",
+    "Logging.CloudWatch.LogStream": "string",
+    "Logging.Disabled": "boolean",
+    "Name": "string",
+    "Resources": "array",
+    "Resources[]": "object",
+    "Resources[].MinimumMemoryInMiB": "integer",
+    "State": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "UpdatedAt": "string"
+  },
+  "propertyEnums": {
+    "AdditionalOsCapabilities[]": [
+      "ALL"
+    ],
+    "CpuConfigurations[].Architecture": [
+      "ARM_64"
+    ],
+    "Hooks.MicrovmHooks.Resume": [
+      "DISABLED",
+      "ENABLED"
+    ],
+    "Hooks.MicrovmHooks.Run": [
+      "DISABLED",
+      "ENABLED"
+    ],
+    "Hooks.MicrovmHooks.Suspend": [
+      "DISABLED",
+      "ENABLED"
+    ],
+    "Hooks.MicrovmHooks.Terminate": [
+      "DISABLED",
+      "ENABLED"
+    ],
+    "Hooks.MicrovmImageHooks.Ready": [
+      "DISABLED",
+      "ENABLED"
+    ],
+    "Hooks.MicrovmImageHooks.Validate": [
+      "DISABLED",
+      "ENABLED"
+    ],
+    "State": [
+      "CREATED",
+      "CREATE_FAILED",
+      "CREATING",
+      "DELETED",
+      "DELETE_FAILED",
+      "DELETING",
+      "UPDATED",
+      "UPDATE_FAILED",
+      "UPDATING"
+    ]
   }
 }

@@ -78,5 +78,53 @@
     "ResourcePolicyDocument": "object",
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "BearerTokenAuthenticationEnabled": "boolean",
+    "DataProtectionPolicy": "object",
+    "DeletionProtectionEnabled": "boolean",
+    "FieldIndexPolicies": "array",
+    "FieldIndexPolicies[]": "object",
+    "KmsKeyId": "string",
+    "LogGroupClass": "string",
+    "LogGroupName": "string",
+    "ResourcePolicyDocument": "object",
+    "RetentionInDays": "integer",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string"
+  },
+  "propertyEnums": {
+    "LogGroupClass": [
+      "DELIVERY",
+      "INFREQUENT_ACCESS",
+      "STANDARD"
+    ],
+    "RetentionInDays": [
+      1,
+      1096,
+      120,
+      14,
+      150,
+      180,
+      1827,
+      2192,
+      2557,
+      2922,
+      3,
+      30,
+      3288,
+      365,
+      3653,
+      400,
+      5,
+      545,
+      60,
+      7,
+      731,
+      90
+    ]
   }
 }

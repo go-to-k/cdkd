@@ -93,5 +93,28 @@
   "propertyShapes": {
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "ContentBasedDeduplication": "boolean",
+    "DeduplicationScope": "string",
+    "DelaySeconds": "integer",
+    "FifoQueue": "boolean",
+    "FifoThroughputLimit": "string",
+    "KmsDataKeyReusePeriodSeconds": "integer",
+    "KmsMasterKeyId": "string",
+    "MaximumMessageSize": "integer",
+    "MessageRetentionPeriod": "integer",
+    "QueueName": "string",
+    "QueueUrl": "string",
+    "ReceiveMessageWaitTimeSeconds": "integer",
+    "RedriveAllowPolicy": "object|string",
+    "RedrivePolicy": "object|string",
+    "SqsManagedSseEnabled": "boolean",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "VisibilityTimeout": "integer"
   }
 }

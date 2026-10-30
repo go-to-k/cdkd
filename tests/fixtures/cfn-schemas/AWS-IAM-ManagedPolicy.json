@@ -75,5 +75,25 @@
     "Groups": "array",
     "Roles": "array",
     "Users": "array"
+  },
+  "propertyTypes": {
+    "AttachmentCount": "integer",
+    "CreateDate": "string",
+    "DefaultVersionId": "string",
+    "Description": "string",
+    "Groups": "array",
+    "Groups[]": "string",
+    "IsAttachable": "boolean",
+    "ManagedPolicyName": "string",
+    "Path": "string",
+    "PermissionsBoundaryUsageCount": "integer",
+    "PolicyArn": "string",
+    "PolicyDocument": "object|string",
+    "PolicyId": "string",
+    "Roles": "array",
+    "Roles[]": "string",
+    "UpdateDate": "string",
+    "Users": "array",
+    "Users[]": "string"
   }
 }

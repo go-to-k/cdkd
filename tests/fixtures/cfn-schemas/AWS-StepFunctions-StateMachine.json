@@ -176,5 +176,53 @@
     "Tags": "array",
     "Tags[]": "object",
     "TracingConfiguration": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "Definition": "object",
+    "DefinitionS3Location": "object",
+    "DefinitionS3Location.Bucket": "string",
+    "DefinitionS3Location.Key": "string",
+    "DefinitionS3Location.Version": "string",
+    "DefinitionString": "string",
+    "DefinitionSubstitutions": "object",
+    "EncryptionConfiguration": "object",
+    "EncryptionConfiguration.KmsDataKeyReusePeriodSeconds": "integer",
+    "EncryptionConfiguration.KmsKeyId": "string",
+    "EncryptionConfiguration.Type": "string",
+    "LoggingConfiguration": "object",
+    "LoggingConfiguration.Destinations": "array",
+    "LoggingConfiguration.Destinations[]": "object",
+    "LoggingConfiguration.Destinations[].CloudWatchLogsLogGroup": "object",
+    "LoggingConfiguration.Destinations[].CloudWatchLogsLogGroup.LogGroupArn": "string",
+    "LoggingConfiguration.IncludeExecutionData": "boolean",
+    "LoggingConfiguration.Level": "string",
+    "Name": "string",
+    "RoleArn": "string",
+    "StateMachineName": "string",
+    "StateMachineRevisionId": "string",
+    "StateMachineType": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "TracingConfiguration": "object",
+    "TracingConfiguration.Enabled": "boolean"
+  },
+  "propertyEnums": {
+    "EncryptionConfiguration.Type": [
+      "AWS_OWNED_KEY",
+      "CUSTOMER_MANAGED_KMS_KEY"
+    ],
+    "LoggingConfiguration.Level": [
+      "ALL",
+      "ERROR",
+      "FATAL",
+      "OFF"
+    ],
+    "StateMachineType": [
+      "EXPRESS",
+      "STANDARD"
+    ]
   }
 }

@@ -36,5 +36,10 @@
       "NetworkAclId",
       "SubnetId"
     ]
+  },
+  "propertyTypes": {
+    "AssociationId": "string",
+    "NetworkAclId": "string",
+    "SubnetId": "string"
   }
 }

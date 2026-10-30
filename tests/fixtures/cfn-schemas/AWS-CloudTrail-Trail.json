@@ -228,5 +228,83 @@
     "InsightSelectors[].EventCategories": "array",
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "AdvancedEventSelectors": "array",
+    "AdvancedEventSelectors[]": "object",
+    "AdvancedEventSelectors[].FieldSelectors": "array",
+    "AdvancedEventSelectors[].FieldSelectors[]": "object",
+    "AdvancedEventSelectors[].FieldSelectors[].EndsWith": "array",
+    "AdvancedEventSelectors[].FieldSelectors[].EndsWith[]": "string",
+    "AdvancedEventSelectors[].FieldSelectors[].Equals": "array",
+    "AdvancedEventSelectors[].FieldSelectors[].Equals[]": "string",
+    "AdvancedEventSelectors[].FieldSelectors[].Field": "string",
+    "AdvancedEventSelectors[].FieldSelectors[].NotEndsWith": "array",
+    "AdvancedEventSelectors[].FieldSelectors[].NotEndsWith[]": "string",
+    "AdvancedEventSelectors[].FieldSelectors[].NotEquals": "array",
+    "AdvancedEventSelectors[].FieldSelectors[].NotEquals[]": "string",
+    "AdvancedEventSelectors[].FieldSelectors[].NotStartsWith": "array",
+    "AdvancedEventSelectors[].FieldSelectors[].NotStartsWith[]": "string",
+    "AdvancedEventSelectors[].FieldSelectors[].StartsWith": "array",
+    "AdvancedEventSelectors[].FieldSelectors[].StartsWith[]": "string",
+    "AdvancedEventSelectors[].Name": "string",
+    "AggregationConfigurations": "array",
+    "AggregationConfigurations[]": "object",
+    "AggregationConfigurations[].EventCategory": "string",
+    "AggregationConfigurations[].Templates": "array",
+    "AggregationConfigurations[].Templates[]": "string",
+    "Arn": "string",
+    "CloudWatchLogsLogGroupArn": "string",
+    "CloudWatchLogsRoleArn": "string",
+    "EnableLogFileValidation": "boolean",
+    "EventSelectors": "array",
+    "EventSelectors[]": "object",
+    "EventSelectors[].DataResources": "array",
+    "EventSelectors[].DataResources[]": "object",
+    "EventSelectors[].DataResources[].Type": "string",
+    "EventSelectors[].DataResources[].Values": "array",
+    "EventSelectors[].DataResources[].Values[]": "string",
+    "EventSelectors[].ExcludeManagementEventSources": "array",
+    "EventSelectors[].ExcludeManagementEventSources[]": "string",
+    "EventSelectors[].IncludeManagementEvents": "boolean",
+    "EventSelectors[].ReadWriteType": "string",
+    "IncludeGlobalServiceEvents": "boolean",
+    "InsightSelectors": "array",
+    "InsightSelectors[]": "object",
+    "InsightSelectors[].EventCategories": "array",
+    "InsightSelectors[].EventCategories[]": "string",
+    "InsightSelectors[].InsightType": "string",
+    "IsLogging": "boolean",
+    "IsMultiRegionTrail": "boolean",
+    "IsOrganizationTrail": "boolean",
+    "KMSKeyId": "string",
+    "S3BucketName": "string",
+    "S3KeyPrefix": "string",
+    "SnsTopicArn": "string",
+    "SnsTopicName": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "TrailName": "string"
+  },
+  "propertyEnums": {
+    "AggregationConfigurations[].EventCategory": [
+      "Data"
+    ],
+    "AggregationConfigurations[].Templates[]": [
+      "API_ACTIVITY",
+      "RESOURCE_ACCESS",
+      "USER_ACTIONS"
+    ],
+    "EventSelectors[].ReadWriteType": [
+      "All",
+      "ReadOnly",
+      "WriteOnly"
+    ],
+    "InsightSelectors[].EventCategories[]": [
+      "Data",
+      "Management"
+    ]
   }
 }

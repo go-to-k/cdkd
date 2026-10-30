@@ -24,6 +24,10 @@ export declare function extractDefinitionRequired(
 ): Record<string, string[]>;
 export declare function extractNestedRequired(schemaJson: string): Record<string, string[]>;
 export declare function extractPropertyShapes(schemaJson: string): Record<string, string>;
+export declare function extractPropertyTypes(schemaJson: string): {
+  propertyTypes: Record<string, string>;
+  propertyEnums: Record<string, unknown[]>;
+};
 export declare function buildFixture(
   schemaJson: string,
   resourceType: string,

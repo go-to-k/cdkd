@@ -187,5 +187,78 @@
     "MethodResponses[].ResponseParameters": "object",
     "RequestModels": "object",
     "RequestParameters": "object"
+  },
+  "propertyTypes": {
+    "ApiKeyRequired": "boolean",
+    "AuthorizationScopes": "array",
+    "AuthorizationScopes[]": "string",
+    "AuthorizationType": "string",
+    "AuthorizerId": "string",
+    "HttpMethod": "string",
+    "Integration": "object",
+    "Integration.CacheKeyParameters": "array",
+    "Integration.CacheKeyParameters[]": "string",
+    "Integration.CacheNamespace": "string",
+    "Integration.ConnectionId": "string",
+    "Integration.ConnectionType": "string",
+    "Integration.ContentHandling": "string",
+    "Integration.Credentials": "string",
+    "Integration.IntegrationHttpMethod": "string",
+    "Integration.IntegrationResponses": "array",
+    "Integration.IntegrationResponses[]": "object",
+    "Integration.IntegrationResponses[].ContentHandling": "string",
+    "Integration.IntegrationResponses[].ResponseParameters": "object",
+    "Integration.IntegrationResponses[].ResponseTemplates": "object",
+    "Integration.IntegrationResponses[].SelectionPattern": "string",
+    "Integration.IntegrationResponses[].StatusCode": "string",
+    "Integration.IntegrationTarget": "string",
+    "Integration.PassthroughBehavior": "string",
+    "Integration.RequestParameters": "object",
+    "Integration.RequestTemplates": "object",
+    "Integration.ResponseTransferMode": "string",
+    "Integration.TimeoutInMillis": "integer",
+    "Integration.Type": "string",
+    "Integration.Uri": "string",
+    "MethodResponses": "array",
+    "MethodResponses[]": "object",
+    "MethodResponses[].ResponseModels": "object",
+    "MethodResponses[].ResponseParameters": "object",
+    "MethodResponses[].StatusCode": "string",
+    "OperationName": "string",
+    "RequestModels": "object",
+    "RequestParameters": "object",
+    "RequestValidatorId": "string",
+    "ResourceId": "string",
+    "RestApiId": "string"
+  },
+  "propertyEnums": {
+    "Integration.ConnectionType": [
+      "INTERNET",
+      "VPC_LINK"
+    ],
+    "Integration.ContentHandling": [
+      "CONVERT_TO_BINARY",
+      "CONVERT_TO_TEXT"
+    ],
+    "Integration.IntegrationResponses[].ContentHandling": [
+      "CONVERT_TO_BINARY",
+      "CONVERT_TO_TEXT"
+    ],
+    "Integration.PassthroughBehavior": [
+      "NEVER",
+      "WHEN_NO_MATCH",
+      "WHEN_NO_TEMPLATES"
+    ],
+    "Integration.ResponseTransferMode": [
+      "BUFFERED",
+      "STREAM"
+    ],
+    "Integration.Type": [
+      "AWS",
+      "AWS_PROXY",
+      "HTTP",
+      "HTTP_PROXY",
+      "MOCK"
+    ]
   }
 }

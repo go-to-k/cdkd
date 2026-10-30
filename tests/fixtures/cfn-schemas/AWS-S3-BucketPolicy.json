@@ -28,5 +28,9 @@
       "Bucket",
       "PolicyDocument"
     ]
+  },
+  "propertyTypes": {
+    "Bucket": "string",
+    "PolicyDocument": "object|string"
   }
 }

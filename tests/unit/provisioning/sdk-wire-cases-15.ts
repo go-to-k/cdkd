@@ -716,7 +716,7 @@ const NEPTUNE_CLUSTER_CASE: TypeCase = {
     {
       // The pair as one template could declare it: which one reaches the wire.
       name: 'DBPort and Port both declared',
-      bag: { DBPort: 8183, Port: 8184 },
+      bag: { DBPort: 8183, Port: '8184' },
       expectedSilent: {
         'create:Port': PORT_SHADOWED,
         'create-vary:Port': PORT_SHADOWED,
@@ -728,7 +728,7 @@ const NEPTUNE_CLUSTER_CASE: TypeCase = {
     },
     {
       name: 'Port only (older CDK output)',
-      bag: { Port: 8184 },
+      bag: { Port: '8184' },
       expectedSilent: {
         'update-remove:Port': PORT_KEPT,
       },

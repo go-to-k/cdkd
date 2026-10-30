@@ -63,5 +63,16 @@
     "ManagedPolicyArns": "array",
     "Policies": "array",
     "Policies[]": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "GroupName": "string",
+    "ManagedPolicyArns": "array",
+    "ManagedPolicyArns[]": "string",
+    "Path": "string",
+    "Policies": "array",
+    "Policies[]": "object",
+    "Policies[].PolicyDocument": "object|string",
+    "Policies[].PolicyName": "string"
   }
 }

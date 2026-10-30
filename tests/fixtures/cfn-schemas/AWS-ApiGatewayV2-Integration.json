@@ -109,5 +109,27 @@
     "RequestTemplates": "object",
     "ResponseParameters": "object",
     "TlsConfig": "object"
+  },
+  "propertyTypes": {
+    "ApiId": "string",
+    "ConnectionId": "string",
+    "ConnectionType": "string",
+    "ContentHandlingStrategy": "string",
+    "CredentialsArn": "string",
+    "Description": "string",
+    "IntegrationId": "string",
+    "IntegrationMethod": "string",
+    "IntegrationSubtype": "string",
+    "IntegrationType": "string",
+    "IntegrationUri": "string",
+    "PassthroughBehavior": "string",
+    "PayloadFormatVersion": "string",
+    "RequestParameters": "object",
+    "RequestTemplates": "object",
+    "ResponseParameters": "object",
+    "TemplateSelectionExpression": "string",
+    "TimeoutInMillis": "integer",
+    "TlsConfig": "object",
+    "TlsConfig.ServerNameToVerify": "string"
   }
 }

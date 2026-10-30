@@ -18,5 +18,9 @@
       "Id": "scalar",
       "CloudWatchRoleArn": "scalar"
     }
+  },
+  "propertyTypes": {
+    "CloudWatchRoleArn": "string",
+    "Id": "string"
   }
 }

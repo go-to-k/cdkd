@@ -599,7 +599,7 @@ describe('serializeFixture matches the committed corpus byte-for-byte', () => {
     const built = buildFixture(
       JSON.stringify({
         properties: {
-          A: { type: 'string' },
+          A: { type: 'string', enum: ['a'] },
           Obj: { type: 'object', required: ['P'], properties: { P: {} } },
         },
         readOnlyProperties: ['/properties/A'],
@@ -625,6 +625,8 @@ describe('serializeFixture matches the committed corpus byte-for-byte', () => {
       'definitionRequired',
       'nestedRequired',
       'propertyShapes',
+      'propertyTypes',
+      'propertyEnums',
     ]);
   });
 });

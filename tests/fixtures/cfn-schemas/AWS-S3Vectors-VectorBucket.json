@@ -80,5 +80,23 @@
     "EncryptionConfiguration": "object",
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "CreationTime": "string",
+    "EncryptionConfiguration": "object",
+    "EncryptionConfiguration.KmsKeyArn": "string",
+    "EncryptionConfiguration.SseType": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string",
+    "VectorBucketArn": "string",
+    "VectorBucketName": "string"
+  },
+  "propertyEnums": {
+    "EncryptionConfiguration.SseType": [
+      "AES256",
+      "aws:kms"
+    ]
   }
 }

@@ -105,5 +105,25 @@
     "Policies[]": "object",
     "Tags": "array",
     "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "AssumeRolePolicyDocument": "object|string",
+    "Description": "string",
+    "ManagedPolicyArns": "array",
+    "ManagedPolicyArns[]": "string",
+    "MaxSessionDuration": "integer",
+    "Path": "string",
+    "PermissionsBoundary": "string",
+    "Policies": "array",
+    "Policies[]": "object",
+    "Policies[].PolicyDocument": "object|string",
+    "Policies[].PolicyName": "string",
+    "RoleId": "string",
+    "RoleName": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string"
   }
 }
