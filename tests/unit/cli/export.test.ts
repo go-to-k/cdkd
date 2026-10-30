@@ -953,17 +953,22 @@ describe('splitCompositePhysicalId', () => {
     });
   });
 
-  it('parses the AWS::AppSync::ApiKey ARN (CloudFormation `Ref`, the migrate-from-cfn PhysicalResourceId)', () => {
-    expect(
-      splitCompositePhysicalId(
-        'AWS::AppSync::ApiKey',
-        'arn:aws:appsync:us-east-1:123456789012:apis/abc123/apikey/da2-key456'
-      )
-    ).toEqual({
-      resourceIdentifier: { ApiId: 'abc123', ApiKeyId: 'da2-key456' },
-      propertiesOverlay: { ApiId: 'abc123' },
-    });
-  });
+  // CloudFormation's `Ref` spells the segment `apikeys` (measured, #5540); the
+  // docs print `apikey`. Both decode.
+  it.each(['apikeys', 'apikey'])(
+    'parses the AWS::AppSync::ApiKey ARN with the %s segment (CloudFormation `Ref`, a pre-#5364 migrate record)',
+    (segment) => {
+      expect(
+        splitCompositePhysicalId(
+          'AWS::AppSync::ApiKey',
+          `arn:aws:appsync:us-east-1:123456789012:apis/abc123/${segment}/da2-key456`
+        )
+      ).toEqual({
+        resourceIdentifier: { ApiId: 'abc123', ApiKeyId: 'da2-key456' },
+        propertiesOverlay: { ApiId: 'abc123' },
+      });
+    }
+  );
 
   it('parses a bare AWS::AppSync::ApiKey id (pre-flip Cloud Control record), taking ApiId from state', () => {
     expect(
@@ -1004,12 +1009,13 @@ describe('splitCompositePhysicalId', () => {
   });
 
   it('refuses an ARN that is not the AppSync key ARN instead of shipping it as a bare key id', () => {
-    // Review of #3414: a mis-spelled ARN (plural `apikeys`, another service)
+    // Review of #3414: a mis-spelled ARN (a wrong segment, another service)
     // has no `|`, so without the guard it fell through to the bare arm and
     // went out verbatim as `ApiKeyId` — a wrong identifier only CreateChangeSet
-    // would have noticed.
+    // would have noticed. (The plural `apikeys` was listed here until #5540
+    // measured it as CloudFormation's own spelling.)
     for (const arn of [
-      'arn:aws:appsync:us-east-1:123456789012:apis/abc123/apikeys/da2-key456',
+      'arn:aws:appsync:us-east-1:123456789012:apis/abc123/apikeyz/da2-key456',
       'arn:aws:lambda:us-east-1:123456789012:function:not-a-key',
     ]) {
       expect(() =>

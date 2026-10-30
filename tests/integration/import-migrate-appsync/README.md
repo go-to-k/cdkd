@@ -18,7 +18,9 @@ reported not found, and `cdkd drift` read the schema as deleted.
 
 The run asserts every record carries cdkd's id, that `cdkd drift` reports none
 of them drifted or deleted, that an unchanged `cdkd deploy` updates nothing, and
-then destroys with gone-probes.
+that cdkd's stack outputs (the API key's `Arn` / `Ref`, the schema's `Ref`) equal
+CloudFormation's (issue [#5540](https://github.com/go-to-k/cdkd/issues/5540)).
+It then destroys with gone-probes.
 
 ## Run
 

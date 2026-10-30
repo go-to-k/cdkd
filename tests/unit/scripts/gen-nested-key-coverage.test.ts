@@ -3707,10 +3707,11 @@ describe('real-code regression probes (per the repo checker rules)', () => {
       'serviceRole',
       'timeoutInMins',
     ]);
-    // ...and the two members one level deeper sit under THEIR path since #1464,
+    // ...and the members one level deeper sit under THEIR path since #1464,
     // which is where `BuildBatchConfig.Restrictions.*` now looks for them.
     expect([...(scopes.get('buildBatchConfig.restrictions') ?? [])].sort()).toEqual([
       'computeTypesAllowed',
+      'fleetsAllowed',
       'maximumBuildsAllowed',
     ]);
   });

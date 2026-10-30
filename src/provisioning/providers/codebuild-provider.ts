@@ -450,6 +450,7 @@ export class CodeBuildProvider implements ResourceProvider {
           ? {
               maximumBuildsAllowed: restrictions['MaximumBuildsAllowed'] as number | undefined,
               computeTypesAllowed: restrictions['ComputeTypesAllowed'] as string[] | undefined,
+              fleetsAllowed: restrictions['FleetsAllowed'] as string[] | undefined,
             }
           : undefined,
       };
@@ -1220,6 +1221,9 @@ export class CodeBuildProvider implements ResourceProvider {
         }
         if (project.buildBatchConfig.restrictions.computeTypesAllowed !== undefined) {
           r['ComputeTypesAllowed'] = project.buildBatchConfig.restrictions.computeTypesAllowed;
+        }
+        if (project.buildBatchConfig.restrictions.fleetsAllowed !== undefined) {
+          r['FleetsAllowed'] = project.buildBatchConfig.restrictions.fleetsAllowed;
         }
         bbc['Restrictions'] = r;
       }
