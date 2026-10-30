@@ -1148,12 +1148,24 @@ export class ReplacementRulesRegistry {
       ]),
     });
 
-    // RDS DBProxy — EngineFamily + VpcSubnetIds + DBProxyName are immutable on
-    // AWS. ModifyDBProxy only accepts Auth / RequireTLS / IdleClientTimeout /
-    // DebugLogging / RoleArn / SecurityGroups (+ NewDBProxyName rename, which
-    // cdkd does not implement). A diff in any other field needs replacement.
+    // RDS DBProxy — EngineFamily + VpcSubnetIds + DBProxyName +
+    // EndpointNetworkType + TargetConnectionNetworkType are immutable on AWS.
+    // ModifyDBProxy only accepts Auth / DefaultAuthScheme / RequireTLS /
+    // IdleClientTimeout / DebugLogging / RoleArn / SecurityGroups (+
+    // NewDBProxyName rename, which cdkd does not implement). A diff in any other
+    // field needs replacement.
     this.rules.set('AWS::RDS::DBProxy', {
-      replacementProperties: new Set(['DBProxyName', 'EngineFamily', 'VpcSubnetIds']),
+      // EndpointNetworkType / TargetConnectionNetworkType are create-only in the
+      // CFn schema and ModifyDBProxy has no such member; named here, not left to
+      // the create-only fallback, so the replacement does not hinge on a
+      // DescribeType answer (go-to-k/cdkd#2762).
+      replacementProperties: new Set([
+        'DBProxyName',
+        'EngineFamily',
+        'VpcSubnetIds',
+        'EndpointNetworkType',
+        'TargetConnectionNetworkType',
+      ]),
     });
 
     // RDS DBProxyEndpoint — DBProxyName + DBProxyEndpointName + VpcSubnetIds +

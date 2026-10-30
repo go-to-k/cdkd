@@ -301,7 +301,7 @@ pipes-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	128	verify.sh	rc 0, 0 orphans
 profile-region-default	2026-10-13T14:31:12Z	PASS	155	verify.sh	rc ok, orph clean, own state bucket, after §8-d probe; PR #4864 06b838511
 propagation-races-2	2026-10-22T21:44:19Z	PASS	130	verify.sh	PR #5187; ran alone after batch of 4; rc ok, destroy clean 0 errors, 0 orphans
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-10-30T06:11:29Z	PASS	4976	verify.sh	rc 0, orph clean (#5551 DBProxyEndpoint EndpointNetworkType sdk route; probe red at #2762)
+rds-aurora	2026-10-30T11:30:28Z	PASS	5494	verify.sh	rc 0, orph clean; PR #5567 bc4ba6424 DBProxy sdk route; probe red at #2762 DBProxy provisionedBy=sdk assertion
 rds-dbinstance-backfill	2026-10-30T07:03:21Z	PASS	969	verify.sh	rc ok, orph clean; #5542 SG removal reset to VPC default
 rds-fix-forward-orphan	2026-10-24T22:46:19Z	PASS	1031	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans
 rds-full-stack	2026-10-24T22:46:19Z	PASS	1011	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans
