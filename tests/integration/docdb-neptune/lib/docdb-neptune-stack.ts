@@ -40,7 +40,11 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * reset them to false / 1 / false / true). Each cluster also starts on a
  * non-default port (DocDB 27018, Neptune 8183) that the removal drops: a real
  * CloudFormation A/B (#1160) resets the DocDB one to 27017 and keeps the
- * Neptune one, and verify.sh asserts both.
+ * Neptune one, and verify.sh asserts both. The Neptune cluster also drops
+ * its `engineVersion` (1.4.7.0), `preferredBackupWindow` and cluster
+ * parameter group, and the Neptune instance its parameter group: a real
+ * CloudFormation A/B (#5544) keeps every one, so verify.sh asserts them
+ * still live and asserts cdkd's warning naming each kept removal.
  *
  * Both clusters have `RemovalPolicy: SNAPSHOT` and every other L1 resource
  * `RemovalPolicy: DESTROY`. verify.sh turns DeletionProtection back ON out
@@ -171,6 +175,32 @@ export class DocdbNeptuneStack extends cdk.Stack {
     );
     neptuneSubnetGroup.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
+    // Issue #5544: custom parameter groups, attached in the baseline and
+    // DETACHED from the template by the CDKD_TEST_REMOVAL redeploy. A real
+    // CloudFormation A/B keeps both attached (neither moves back to
+    // `default.neptune1.4`). Present in both deploys, so the removal deletes
+    // neither while it is still attached.
+    const neptuneClusterParams = new neptune.CfnDBClusterParameterGroup(
+      this,
+      'NeptuneClusterParams',
+      {
+        family: 'neptune1.4',
+        description: 'cdkd integ neptune cluster parameter group (#5544)',
+        parameters: { neptune_enable_audit_log: 1 },
+      }
+    );
+    neptuneClusterParams.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    const neptuneInstanceParams = new neptune.CfnDBParameterGroup(
+      this,
+      'NeptuneInstanceParams',
+      {
+        family: 'neptune1.4',
+        description: 'cdkd integ neptune instance parameter group (#5544)',
+        parameters: { neptune_query_timeout: 120001 },
+      }
+    );
+    neptuneInstanceParams.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
     const neptuneCluster = new neptune.CfnDBCluster(this, 'NeptuneCluster', {
       dbSubnetGroupName: neptuneSubnetGroup.ref,
       // Issue #1160: DROPPED in the CDKD_TEST_REMOVAL redeploy. CloudFormation
@@ -191,6 +221,14 @@ export class DocdbNeptuneStack extends cdk.Stack {
       // redeploy. CloudFormation KEEPS a removed Neptune DBPort (real A/B), so
       // verify.sh asserts 8183 is still live after the removal.
       dbPort: isRemoval ? undefined : 8183,
+      // Issue #5544: an engine below the default (1.4.8.0 on 2026-10-30), a
+      // backup window and the custom parameter group, DROPPED in the
+      // CDKD_TEST_REMOVAL redeploy. CloudFormation KEEPS all three (real
+      // A/B), so verify.sh asserts they are still live and that cdkd's
+      // warning names them.
+      engineVersion: isRemoval ? undefined : '1.4.7.0',
+      preferredBackupWindow: isRemoval ? undefined : '03:00-03:30',
+      dbClusterParameterGroupName: isRemoval ? undefined : neptuneClusterParams.ref,
       storageEncrypted: true,
     });
     // Issue #5184: the final destroy takes a final snapshot after the
@@ -199,6 +237,9 @@ export class DocdbNeptuneStack extends cdk.Stack {
     neptuneCluster.addDependency(neptuneSubnetGroup);
     // Issue #1160: see the DocDB cluster's dependency on `Sg`.
     neptuneCluster.node.addDependency(sg);
+    // Issue #5544: as `Sg`, so the destroy after the removal still deletes
+    // the cluster before its (still attached) parameter group.
+    neptuneCluster.addDependency(neptuneClusterParams);
 
     const neptuneInstance = new neptune.CfnDBInstance(this, 'NeptuneInstance', {
       dbClusterIdentifier: neptuneCluster.ref,
@@ -208,9 +249,13 @@ export class DocdbNeptuneStack extends cdk.Stack {
       autoMinorVersionUpgrade: isRemoval ? undefined : false,
       // Companion change (#5004): proves ModifyDBInstance fired.
       preferredMaintenanceWindow: isRemoval ? 'wed:06:00-wed:06:30' : 'tue:06:00-tue:06:30',
+      // Issue #5544: DROPPED in the CDKD_TEST_REMOVAL redeploy; CloudFormation
+      // keeps it attached (real A/B), so verify.sh asserts it still is.
+      dbParameterGroupName: isRemoval ? undefined : neptuneInstanceParams.ref,
     });
     neptuneInstance.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     neptuneInstance.addDependency(neptuneCluster);
+    neptuneInstance.addDependency(neptuneInstanceParams);
 
     // Outputs for human-readable verification (verify.sh greps the
     // post-deploy state list, not these — but they are useful when
