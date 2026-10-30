@@ -99,8 +99,7 @@ import { reportCreatedResource, retractCreatedResource } from '../created-resour
  *    PR #201-era live observation recorded on the create path below) +
  *    live CFn A/B 2026-08-11 on the private kind itself.
  * Removing `Description` clears it entirely on every kind (the `''`
- * sentinel; live CFn A/B'd on all three kinds 2026-08-11, the HTTP and
- * public kinds re-measured 2026-10-30, go-to-k/cdkd#5549).
+ * sentinel; measured per kind, see `removalDefaults`).
  */
 const PUBLIC_DNS_NAMESPACE_DEFAULT_SOA_TTL = 60;
 const PRIVATE_DNS_NAMESPACE_DEFAULT_SOA_TTL = 15;
@@ -963,9 +962,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * Removal reset (issue #1160): `HttpNamespaceChange` MERGES conceptually
    * (skipping the call keeps the live value), so a Description REMOVED from
    * the template must be cleared explicitly via the `''` sentinel — the
-   * CFn-parity shape, live A/B'd 2026-08-11 on this exact kind and
-   * re-measured 2026-10-30, alone and beside a Tags change
-   * (go-to-k/cdkd#5549).
+   * CFn-parity shape, measured on this kind (see {@link removalDefaults}).
    */
   private async updateHttpNamespace(
     logicalId: string,
@@ -1160,9 +1157,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * change"), so a Description / SOA.TTL REMOVED from the template must be
    * reset explicitly — Description via the `''` clear sentinel, TTL to the
    * kind's Cloud Map default ({@link PUBLIC_DNS_NAMESPACE_DEFAULT_SOA_TTL}) —
-   * the CFn-parity shape, live A/B'd 2026-08-11 on this exact kind. The
-   * Description clear was re-measured 2026-10-30, alone and beside a Tags or
-   * an SOA TTL change (go-to-k/cdkd#5549).
+   * the CFn-parity shape. The TTL reset was live A/B'd 2026-08-11 on this
+   * exact kind; the Description clear's measurements are on
+   * {@link removalDefaults}.
    */
   private async updatePublicDnsNamespace(
     logicalId: string,
