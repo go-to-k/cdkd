@@ -1061,6 +1061,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
       mockSend.mockResolvedValueOnce({}); // UpdateTable (replica Delete)
       mockSend.mockResolvedValueOnce({ Table: { Replicas: [{ RegionName: 'us-east-1' }] } }); // waitForReplicaGone
+      mockSend.mockRejectedValueOnce(newRnf()); // #5581: the replica's own table, read in eu-west-1
       mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
 
       await provider.update(
@@ -1987,6 +1988,8 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       mockSend.mockResolvedValueOnce({
         Table: { Replicas: [{ RegionName: 'us-east-1' }] },
       });
+      // #5581: the replica's own table, read in eu-west-1 — gone
+      mockSend.mockRejectedValueOnce(newRnf());
       // DeleteTable
       mockSend.mockResolvedValueOnce({});
       // waitForTableGone — table now gone
@@ -1999,7 +2002,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(UpdateTableCommand);
       const updateInput = (mockSend.mock.calls[1]?.[0] as UpdateTableCommand).input;
       expect(updateInput.ReplicaUpdates).toEqual([{ Delete: { RegionName: 'eu-west-1' } }]);
-      const deleteCall = mockSend.mock.calls[3]?.[0];
+      const deleteCall = mockSend.mock.calls[4]?.[0];
       expect(deleteCall).toBeInstanceOf(DeleteTableCommand);
     });
 
@@ -2058,6 +2061,8 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       mockSend.mockResolvedValueOnce({
         Table: { Replicas: [{ RegionName: 'us-east-1' }] },
       });
+      // 5b. #5581: the replica's own table, read in eu-west-1 — gone.
+      mockSend.mockRejectedValueOnce(newRnf());
       // 6. DeleteTable
       mockSend.mockResolvedValueOnce({});
       // 7. waitForTableGone → RNF.
@@ -2068,13 +2073,15 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       });
 
       const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
-      // Pre-delete describe + UpdateTable + 3 DescribeTable polls + DeleteTable + final RNF poll.
+      // Pre-delete describe + UpdateTable + 3 DescribeTable polls + the
+      // regional read + DeleteTable + final RNF poll.
       expect(names).toEqual([
         'DescribeTableCommand', // pre-delete scan
         'UpdateTableCommand', // Delete eu-west-1
         'DescribeTableCommand', // waitForReplicaGone poll #1 (still DELETING)
         'DescribeTableCommand', // waitForReplicaGone poll #2 (still DELETING)
         'DescribeTableCommand', // waitForReplicaGone poll #3 (gone)
+        'DescribeTableCommand', // #5581: the replica's own table in eu-west-1 (RNF)
         'DeleteTableCommand',
         'DescribeTableCommand', // waitForTableGone -> RNF
       ]);
@@ -3518,11 +3525,13 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       mockSend.mockResolvedValueOnce({
         Table: { Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }] },
       }); // waitForReplicaGone
+      mockSend.mockRejectedValueOnce(newRnf()); // #5581: the replica's own table, read in eu-west-1
       mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
 
       mockAutoScalingSend.mockReset();
       mockAutoScalingSend.mockResolvedValueOnce({}); // DeleteScalingPolicy
       mockAutoScalingSend.mockResolvedValueOnce({}); // DeregisterScalableTarget
+      mockAutoScalingSend.mockResolvedValueOnce({ ScalableTargets: [] }); // #5581 listing: nothing left
 
       await provider.update(
         'X',
@@ -3553,9 +3562,11 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       );
 
       const asCalls = mockAutoScalingSend.mock.calls.map((c) => c[0]);
-      expect(asCalls.length).toBe(2);
+      // The read teardown, then the #5581 listing (nothing left to remove).
+      expect(asCalls.length).toBe(3);
       expect(asCalls[0]).toBeInstanceOf(DeleteScalingPolicyCommand);
       expect(asCalls[1]).toBeInstanceOf(DeregisterScalableTargetCommand);
+      expect(asCalls[2]).toBeInstanceOf(DescribeScalableTargetsCommand);
       const delInput = (asCalls[0] as DeleteScalingPolicyCommand).input;
       expect(delInput.PolicyName).toBe(
         `DynamoDBReadCapacityUtilization:table/${TABLE_NAME}`

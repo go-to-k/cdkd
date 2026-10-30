@@ -1921,6 +1921,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               undefined,
               maskSecrets
             );
+            // go-to-k/cdkd#5581: DynamoDB registered targets for the replica
+            // this create added; they outlive it.
+            await this.deregisterRemovedReplicaScalableTargets(tableName, region, {
+              maskSecrets,
+            });
           } catch (replicaCleanupErr) {
             // A Ctrl-C stops the cleanup like every other wait here.
             if (isInterruptedWaitError(replicaCleanupErr)) throw replicaCleanupErr;
@@ -5824,6 +5829,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           undefined,
           maskSecrets
         );
+        // go-to-k/cdkd#5581: the targets DynamoDB registered for this replica
+        // (its write dimension included) outlive it; drop them once its table
+        // is past the point of return.
+        await this.deregisterRemovedReplicaScalableTargets(physicalId, region, { maskSecrets });
       }
       for (const replica of replicaDiff.added) {
         const region = replica['Region'] as string | undefined;
@@ -7029,9 +7038,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     budget?: ElapsedBudget,
     // The caller's secret masker (issue #1997). The malformed-capacity warning
     // below names `MinCapacity` / `MaxCapacity` straight out of the RESOLVED
-    // auto-scaling settings bag. Defaults to IDENTITY, which is what the DELETE
-    // path takes: its teardown passes EMPTY settings, so that warning cannot
-    // fire there and there is no value to mask.
+    // auto-scaling settings bag. The DELETE path passes its
+    // `DeleteContext.maskSecrets` too (go-to-k/cdkd#5581): its teardown sends
+    // EMPTY settings, so that warning cannot fire there, but the teardown's own
+    // warnings name the table. Defaults to IDENTITY for a caller passing none.
     maskSecrets: SecretMasker = (text) => text,
     // go-to-k/cdkd#4946: the delete's flag, set once the teardown may have
     // removed a policy or target. Absent on every create / update caller.
@@ -8003,7 +8013,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             this.getRegionalAutoScalingClient(region),
             undefined /* indexName — table level */,
             budget,
-            undefined,
+            deleteMask,
             progress
           );
           // Index names come from the TABLE's index list, not the replica's
@@ -8024,7 +8034,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               this.getRegionalAutoScalingClient(region),
               indexName,
               budget,
-              undefined,
+              deleteMask,
               progress
             );
           }
@@ -8045,6 +8055,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             budget,
             context?.maskSecrets
           );
+          // go-to-k/cdkd#5581: the read teardown above names only the read
+          // dimension; DynamoDB also registered the replica's WRITE target
+          // there, which survives the replica and the table.
+          await this.deregisterRemovedReplicaScalableTargets(physicalId, region, {
+            budget,
+            maskSecrets: deleteMask,
+            progress,
+          });
         } catch (replicaErr) {
           // Table itself already gone — outer DeleteTable will handle
           // idempotency (the region check below ensures a mismatched
@@ -8066,7 +8084,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         localAsClient,
         undefined /* indexName — table level */,
         budget,
-        undefined,
+        deleteMask,
         progress
       );
       await this.applyAutoScalingDiff(
@@ -8077,7 +8095,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         localAsClient,
         undefined /* indexName — table level */,
         budget,
-        undefined,
+        deleteMask,
         progress
       );
       // Per-index targets in the local region (Issue #1419). Without this
@@ -8094,7 +8112,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           localAsClient,
           indexName,
           budget,
-          undefined,
+          deleteMask,
           progress
         );
         await this.applyAutoScalingDiff(
@@ -8105,7 +8123,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           localAsClient,
           indexName,
           budget,
-          undefined,
+          deleteMask,
           progress
         );
       }
@@ -10234,6 +10252,211 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
+   * go-to-k/cdkd#5581: deregister every application-autoscaling target still
+   * registered for a REMOVED replica's table in that replica's own region.
+   *
+   * Adding a replica to an autoscaled PROVISIONED global table makes DynamoDB
+   * itself (`replication.dynamodb.amazonaws.com`, measured in CloudTrail)
+   * register targets for the new replica table in its region — the write
+   * dimension included, which no cdkd call ever names there. Removing the
+   * replica does NOT deregister them, so before this the write target (and any
+   * index target) outlived the replica and the table, and a later table of the
+   * same name in that region inherited it.
+   *
+   * Callers run it for EVERY removed non-local replica, not only one whose
+   * template declared read auto-scaling: DynamoDB registers these targets on
+   * its own, so the template is no evidence either way. Do not gate it on the
+   * replica's settings.
+   *
+   * Runs AFTER `waitForReplicaGone`, and only once the replica's table reads
+   * `DELETING` or `ResourceNotFound` in its region: those are the two states a
+   * table never comes back from, so no target removed here can belong to a
+   * live table. A table reading any other state gets a warning instead of a
+   * deregistration.
+   *
+   * The targets are LISTED, not named: an index target exists for whatever
+   * index the replica had, which the template may no longer declare. Matched
+   * on the exact resource id `table/<name>` and the prefix
+   * `table/<name>/index/`, so a sibling table sharing a name prefix is never
+   * touched (`/` is not a legal table-name character). Every such target goes,
+   * whoever registered it — one another stack declared in that region too: it
+   * names a table that is DELETING or gone, so it scales nothing.
+   *
+   * Best-effort, like the rest of the auto-scaling teardown: every AWS failure
+   * is a masked warning naming the command to finish by hand (AWS's class at
+   * warn, its text at debug, go-to-k/cdkd#2319), and nothing but a user
+   * interrupt is thrown — so a ResourceNotFound read here can never reach a
+   * caller that reads it as the GLOBAL table being gone.
+   */
+  private async deregisterRemovedReplicaScalableTargets(
+    tableName: string,
+    region: string,
+    options: {
+      readonly budget?: ElapsedBudget | undefined;
+      readonly maskSecrets?: SecretMasker | undefined;
+      readonly progress?: DeleteProgress | undefined;
+    } = {}
+  ): Promise<void> {
+    const mask: SecretMasker = options.maskSecrets ?? ((text: string) => text);
+    const tableResourceId = autoScalingResourceId(tableName);
+    const indexPrefix = `${tableResourceId}/index/`;
+    const leaveTargets = (reason: string, awsDetail?: string): void => {
+      this.logger.warn(
+        mask(
+          `The ${region} replica of ${tableName} was removed, but its application-autoscaling ` +
+            `targets there were left registered: ${reason}. Once that table is gone, run: ` +
+            `${pasteableAwsCommand(mask)`aws application-autoscaling describe-scalable-targets --service-namespace dynamodb --region ${region}`.render()} ` +
+            `and deregister each target whose ResourceId is ${tableResourceId} or starts with ` +
+            `${indexPrefix}.`
+        )
+      );
+      if (awsDetail !== undefined) {
+        this.logger.debug(mask(`${region} replica of ${tableName}: ${awsDetail}`));
+      }
+    };
+    // ONE watch for the read and every listing page: a Ctrl-C aborts a throttle
+    // backoff like every other retry on these paths, and is checked between
+    // pages too (issue #2053).
+    const watch = startInterruptWatch(
+      mask(`application-autoscaling target cleanup for ${tableName} in ${region}`)
+    );
+    const found: Array<{ dimension: DynamoDBScalableDimension; indexName?: string }> = [];
+    const asClient = this.getRegionalAutoScalingClient(region);
+    try {
+      const retired = await this.readReplicaTableRetired(tableName, region, options.budget, watch);
+      if (retired !== true) {
+        leaveTargets(retired.reason, retired.awsDetail);
+        return;
+      }
+
+      try {
+        let nextToken: string | undefined;
+        do {
+          if (watch.isInterrupted()) throw watch.onInterrupted();
+          const token = nextToken;
+          const res: DescribeScalableTargetsCommandOutput | undefined = await withRetry(
+            () =>
+              asClient.send(
+                new DescribeScalableTargetsCommand({
+                  ServiceNamespace: 'dynamodb',
+                  ...(token ? { NextToken: token } : {}),
+                })
+              ),
+            `${tableResourceId} targets in ${region}`,
+            {
+              isRetryable: (_message, error) => isThrottlingError(error),
+              maxRetries: autoScalingRetriesWithinDeleteBudget(
+                options.budget,
+                AUTO_SCALING_TEARDOWN_MAX_RETRIES
+              ),
+              isInterrupted: watch.isInterrupted,
+              onInterrupted: watch.onInterrupted,
+              ...(autoScalingRetryDelays.sleep ? { sleep: autoScalingRetryDelays.sleep } : {}),
+            }
+          );
+          for (const target of res?.ScalableTargets ?? []) {
+            const dimension = target.ScalableDimension;
+            const resourceId = target.ResourceId;
+            if (!resourceId || !isDynamoDBScalableDimension(dimension)) continue;
+            if (resourceId === tableResourceId && dimension.startsWith('dynamodb:table:')) {
+              found.push({ dimension });
+            } else if (
+              resourceId.startsWith(indexPrefix) &&
+              resourceId.length > indexPrefix.length &&
+              dimension.startsWith('dynamodb:index:')
+            ) {
+              found.push({ dimension, indexName: resourceId.slice(indexPrefix.length) });
+            }
+          }
+          nextToken = res?.NextToken;
+        } while (nextToken);
+      } catch (err) {
+        if (isInterruptedWaitError(err)) throw err;
+        const failure = describeAwsFailure(err);
+        leaveTargets(`listing them failed (${failure.summary})`, failure.detail);
+        return;
+      }
+    } finally {
+      watch.dispose();
+    }
+
+    for (const target of found) {
+      // The teardown branch of the shared helper: policy delete, then the
+      // deregister, each with its own masked warning and pasteable command,
+      // `ObjectNotFoundException` silent.
+      await this.applyAutoScalingDiff(
+        tableName,
+        target.dimension,
+        {},
+        undefined,
+        asClient,
+        target.indexName,
+        options.budget,
+        mask,
+        options.progress
+      );
+    }
+    if (found.length > 0) {
+      this.logger.debug(
+        mask(
+          `Deregistered ${found.length} auto-scaling target(s) left by the removed ${region} ` +
+            `replica of ${tableName}`
+        )
+      );
+    }
+  }
+
+  /**
+   * go-to-k/cdkd#5581: whether a removed replica's table reads `DELETING` or
+   * `ResourceNotFound` in its own region. `true` when it does; otherwise the
+   * reason for the caller's warning, and AWS's own text for its debug line.
+   *
+   * ONE read (throttle-retried), not a poll. `waitForReplicaGone` returns once
+   * the SOURCE table's `Replicas[]` has dropped the entry, and by then the
+   * regional copy is expected to be deleting: the `dynamodb-globaltable`
+   * integ's step 12e sees it stay `DELETING` for minutes after that before its
+   * ResourceNotFound. Both states are past the point of return, so `DELETING`
+   * is accepted rather than waited out — that wait would add those minutes to
+   * every replica removal. A table reading anything else keeps its targets,
+   * with a warning.
+   */
+  private async readReplicaTableRetired(
+    tableName: string,
+    region: string,
+    budget: ElapsedBudget | undefined,
+    watch: ReturnType<typeof startInterruptWatch>
+  ): Promise<true | { reason: string; awsDetail?: string }> {
+    try {
+      const response = await withRetry(
+        () =>
+          this.getRegionalClient(region).send(new DescribeTableCommand({ TableName: tableName })),
+        `${tableName} in ${region}`,
+        {
+          isRetryable: (_message, error) => isThrottlingError(error),
+          maxRetries: autoScalingRetriesWithinDeleteBudget(
+            budget,
+            AUTO_SCALING_TEARDOWN_MAX_RETRIES
+          ),
+          isInterrupted: watch.isInterrupted,
+          onInterrupted: watch.onInterrupted,
+          ...(autoScalingRetryDelays.sleep ? { sleep: autoScalingRetryDelays.sleep } : {}),
+        }
+      );
+      const status = response.Table?.TableStatus;
+      if (status === 'DELETING') return true;
+      return { reason: `the table there still reads ${status ?? 'no status'}` };
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return true;
+      if (isInterruptedWaitError(err)) throw err;
+      const failure = describeAwsFailure(err);
+      return {
+        reason: `reading the table there failed (${failure.summary})`,
+        awsDetail: failure.detail,
+      };
+    }
+  }
+
+  /**
    * Wait for `DescribeTable` to return `ResourceNotFoundException`,
    * confirming the table has actually been removed. `DeleteTable` is
    * async — the call returns immediately with `TableStatus: DELETING`
@@ -10969,6 +11192,18 @@ export type DynamoDBScalableDimension =
   | 'dynamodb:table:ReadCapacityUnits'
   | 'dynamodb:index:WriteCapacityUnits'
   | 'dynamodb:index:ReadCapacityUnits';
+
+const DYNAMODB_SCALABLE_DIMENSIONS: ReadonlySet<string> = new Set<DynamoDBScalableDimension>([
+  'dynamodb:table:WriteCapacityUnits',
+  'dynamodb:table:ReadCapacityUnits',
+  'dynamodb:index:WriteCapacityUnits',
+  'dynamodb:index:ReadCapacityUnits',
+]);
+
+/** Whether an AWS-reported `ScalableDimension` is one of the four above. */
+function isDynamoDBScalableDimension(value: unknown): value is DynamoDBScalableDimension {
+  return typeof value === 'string' && DYNAMODB_SCALABLE_DIMENSIONS.has(value);
+}
 
 /**
  * One application-autoscaling target derivable from a CFn
