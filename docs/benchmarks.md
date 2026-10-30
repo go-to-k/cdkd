@@ -16,7 +16,7 @@ the stack can be created in parallel.
 | CloudFormation | Types deployed through the Cloud Control API | 1.6x faster |
 | CloudFormation Express mode | VPC + CloudFront + Lambda, with `--no-wait` | 9x faster |
 | Terraform | Wide and serverless stacks | 2.2x to 2.3x faster |
-| Terraform | Stacks dominated by one slow resource | 1.2x to 1.3x faster, or a tie |
+| Terraform | Stacks dominated by one slow resource | 1.2x faster, or a tie |
 
 cdkd does not make AWS itself faster. It removes the time a deploy tool spends
 between API calls, so the gain is largest where that time is most of the
@@ -136,16 +136,18 @@ and each tool deployed them.
 | serverless | **25.9** | 57.5 | 127.1 | 24.6 |
 | ec2 | **29.1** | 35.9 | 193.9 | 22.0 |
 | webapp | 109.7 | 127.3 | 166.1 | 23.4 |
-| ecs | **162.8** | 209.5 | 276.7 | 34.5 |
+| ecs, until steady state | 227.7 | 282.7 | 276.7 | 34.5 |
 | cloudfront, until `Deployed` | 174.0 | 166.4 | 232.3 | n/a |
 
-Bold marks a win over Terraform. The other two rows are ties.
+Bold marks a win over Terraform. The other three rows are ties.
 
 cdkd's lead depends on how much of the deploy is the tool's own work. The wide
 and serverless stacks are almost all scheduling and API calls, and there cdkd
 is about 2.2x to 2.3x faster than Terraform. Where one slow resource takes
 most of the time, both tools wait for the same thing and the gap narrows:
-1.23x on ec2 and 1.29x on ecs.
+1.23x on ec2. On ecs the cdkd median is 1.24x lower, but the runs overlap
+(218-290s against 260-324s), because the ECS rollout varies by more than the
+gap.
 
 On webapp the cdkd median is 17.6s lower, but the runs overlap (98-138s
 against 106-138s), because NAT gateway creation varies by more than the gap.
@@ -166,10 +168,9 @@ until the distribution is `Deployed`. The cloudfront row therefore uses
 waits, cdkd takes 11.1s and Terraform 10.3s (`wait_for_deployment = false`),
 which is also a tie.
 
-On ecs, the cdkd and Terraform columns do not wait for the service to reach a
-steady state, which is Terraform's default. cdkd's default waits for it. With
-both tools waiting for it, cdkd takes 227.7s against Terraform's 282.7s
-(1.24x).
+ECS needs the same care. cdkd's default and CloudFormation wait for the
+service to reach a steady state, and Terraform's default does not. The ecs row
+therefore uses Terraform with `wait_for_steady_state = true`.
 
 The `--no-wait` column has no Terraform counterpart. `cdkd deploy --no-wait`
 skips the wait for every resource type, and Terraform offers a per-resource

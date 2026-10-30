@@ -151,7 +151,7 @@ Best of 3 runs, deploy-phase only, seconds, `us-west-2`.
 
 ### vs Terraform: cdkd deploys faster
 
-We also raced cdkd against Terraform: the same logical stacks expressed both as CDK apps and as Terraform HCL, deployed against real AWS. **cdkd is clearly faster in four of six scenarios — 1.23x to 2.31x, with fully separated run distributions — and statistically tied in the rest.**
+We also raced cdkd against Terraform: the same logical stacks expressed both as CDK apps and as Terraform HCL, deployed against real AWS. **cdkd is clearly faster in three of six scenarios — 1.23x to 2.31x, with fully separated run distributions — and statistically tied in the rest.**
 
 | Scenario | Stack | cdkd | Terraform | CloudFormation | cdkd `--no-wait` |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -159,7 +159,7 @@ We also raced cdkd against Terraform: the same logical stacks expressed both as 
 | serverless | Lambda ×3 + HTTP API + DynamoDB + SNS / SQS + EventBridge | **25.9** | 57.5 | 127.1 | 24.6 |
 | ec2 | VPC + subnet + SG + IAM role + EC2 instance ×3 | **29.1** | 35.9 | 193.9 | 22.0 |
 | webapp | VPC + NAT + subnets + DynamoDB + SQS + S3 + Lambda ×2 + HTTP API | 109.7 | 127.3 | 166.1 | 23.4 |
-| ecs | VPC ×2 AZ + Fargate cluster / task / service + ALB | **162.8** | 209.5 | 276.7 | 34.5 |
+| ecs — steady state | VPC ×2 AZ + Fargate cluster / task / service + ALB | 227.7 | 282.7 (`wait_for_steady_state = true`) | 276.7 | 34.5 |
 | cloudfront — created (fire and forget) | S3 origin + CloudFront + OAC | 11.1 | 10.3 (`wait_for_deployment = false`) | no such mode | 10.4 |
 | cloudfront — `Deployed` | S3 origin + CloudFront + OAC | 174.0 (`--full-wait`) | 166.4 | 232.3 | n/a |
 
