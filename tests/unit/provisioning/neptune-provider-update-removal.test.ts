@@ -365,7 +365,7 @@ describe('NeptuneProvider removal semantics (issues #1160 / #5004)', () => {
         expect(input[key]).toBeUndefined();
       }
       expect(warnings()).toEqual([
-        'MyCluster (AWS::Neptune::DBCluster): properties EngineVersion, PreferredBackupWindow, PreferredMaintenanceWindow, DBClusterParameterGroupName were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does.',
+        'MyCluster (AWS::Neptune::DBCluster): properties EngineVersion, PreferredBackupWindow, PreferredMaintenanceWindow, DBClusterParameterGroupName were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them.',
       ]);
     });
 
@@ -384,7 +384,7 @@ describe('NeptuneProvider removal semantics (issues #1160 / #5004)', () => {
       expect(input.DBParameterGroupName).toBeUndefined();
       expect(input.PreferredMaintenanceWindow).toBeUndefined();
       expect(warnings()).toEqual([
-        'MyInstance (AWS::Neptune::DBInstance): properties DBParameterGroupName, PreferredMaintenanceWindow were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does.',
+        'MyInstance (AWS::Neptune::DBInstance): properties DBParameterGroupName, PreferredMaintenanceWindow were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them.',
       ]);
     });
 
@@ -422,7 +422,7 @@ describe('NeptuneProvider removal semantics (issues #1160 / #5004)', () => {
       );
 
       expect(warnings()).toEqual([
-        'MyCluster (AWS::Neptune::DBCluster): property EngineVersion was removed from the template; cdkd leaves the current AWS value in place, as CloudFormation does.',
+        'MyCluster (AWS::Neptune::DBCluster): property EngineVersion was removed from the template; cdkd leaves the current AWS value in place, as CloudFormation does. Declare it to change it.',
       ]);
     });
 
@@ -446,7 +446,7 @@ describe('NeptuneProvider removal semantics (issues #1160 / #5004)', () => {
         { DBPort: 8183 }
       );
       expect(warnings()).toEqual([
-        'MyCluster (AWS::Neptune::DBCluster): property DBPort was removed from the template; cdkd leaves the current AWS value in place, as CloudFormation does.',
+        'MyCluster (AWS::Neptune::DBCluster): property DBPort was removed from the template; cdkd leaves the current AWS value in place, as CloudFormation does. Declare it to change it.',
       ]);
     });
 
@@ -463,9 +463,28 @@ describe('NeptuneProvider removal semantics (issues #1160 / #5004)', () => {
       );
 
       expect(warnings()).toEqual([
-        'MyInstance (AWS::Neptune::DBInstance): property DBParameterGroupName is absent from the configuration being restored; cdkd leaves the current AWS value in place, as CloudFormation does.',
+        'MyInstance (AWS::Neptune::DBInstance): property DBParameterGroupName is absent from the state being restored; ModifyDBInstance keeps a setting it is not sent, so the rollback leaves any value the failed deploy applied in place.',
       ]);
     });
+
+    it.each([
+      ['AWS::Neptune::DBCluster', 'DBClusters', 'DBClusterArn', CLUSTER_PREVIOUS],
+      ['AWS::Neptune::DBInstance', 'DBInstances', 'DBInstanceArn', INSTANCE_PREVIOUS],
+    ] as const)(
+      'warns about nothing when a step after the Modify fails (%s), so a retried update cannot warn twice',
+      async (type, describeKey, arnKey, previous) => {
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({ [describeKey]: [{ [arnKey]: 'arn:aws:rds:us-east-1:123456789012:x' }] });
+        // The tag call rejects.
+        mockSend.mockRejectedValueOnce(new Error('tagging failed'));
+
+        await expect(
+          provider.update('Res', 'res-id', type, { Tags: [{ Key: 'a', Value: 'b' }] }, previous)
+        ).rejects.toThrow();
+
+        expect(warn()).not.toHaveBeenCalled();
+      }
+    );
 
     it('warns about nothing on a drift --revert, whose baseline is a readback', async () => {
       mockModify('DBClusters');

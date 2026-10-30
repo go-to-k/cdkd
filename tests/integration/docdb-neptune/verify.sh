@@ -715,8 +715,8 @@ fi
 # The kept removals are named, one line per resource. Before #5544 cdkd kept
 # them silently, so this is the arm's only post-fix-only assertion.
 for needle in \
-  "NeptuneCluster (AWS::Neptune::DBCluster): properties EngineVersion, PreferredBackupWindow, DBClusterParameterGroupName, DeletionProtection, IamAuthEnabled, BackupRetentionPeriod, DBPort were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does." \
-  "NeptuneInstance (AWS::Neptune::DBInstance): properties DBParameterGroupName, AutoMinorVersionUpgrade were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does."; do
+  "NeptuneCluster (AWS::Neptune::DBCluster): properties EngineVersion, PreferredBackupWindow, DBClusterParameterGroupName, DeletionProtection, IamAuthEnabled, BackupRetentionPeriod, DBPort were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them." \
+  "NeptuneInstance (AWS::Neptune::DBInstance): properties DBParameterGroupName, AutoMinorVersionUpgrade were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them."; do
   if ! grep -qF "${needle}" <<<"${REMOVAL_3C_PLAIN}"; then
     echo "[verify] FAIL: #5544: the step-3c deploy output lacks the kept-removal warning '${needle}'" >&2
     exit 1
@@ -868,7 +868,11 @@ for cluster_lid in DocdbCluster NeptuneCluster; do
     exit 1
   fi
 done
-UNEXPECTED_3G="$(printf '%s\n' "${FAILED_3G}" | grep -vE '^(DocdbCluster|NeptuneCluster|DocdbSubnetGroup|NeptuneSubnetGroup|Sg[0-9A-F]{8}|Vpc[A-Za-z0-9]*)$' || true)"
+# NeptuneClusterParams / NeptuneInstanceParams: the NeptuneCluster delete fails
+# on purpose, and destroy's level loop does not skip dependents, so the parameter
+# groups (NeptuneCluster depends on them) are attempted too and fail because the
+# surviving cluster still has them attached.
+UNEXPECTED_3G="$(printf '%s\n' "${FAILED_3G}" | grep -vE '^(DocdbCluster|NeptuneCluster|NeptuneClusterParams|NeptuneInstanceParams|DocdbSubnetGroup|NeptuneSubnetGroup|Sg[0-9A-F]{8}|Vpc[A-Za-z0-9]*)$' || true)"
 if [ -n "${UNEXPECTED_3G}" ]; then
   echo "[verify] FAIL: step 3g: deletes failed outside the engineered set: $(printf '%s ' ${UNEXPECTED_3G})" >&2
   exit 1
@@ -972,6 +976,23 @@ if ${CLI} state list --state-bucket "${STATE_BUCKET}" | grep -q "${STACK}"; then
   exit 1
 fi
 echo "[verify] step 5 ok: state cleared"
+
+# The step-3g failure set let both Neptune parameter groups fail while the
+# surviving cluster held them; the final destroy must have removed them.
+for pg in "${NEPTUNE_CLUSTER_PG}:describe-db-cluster-parameter-groups --db-cluster-parameter-group-name" "${NEPTUNE_INSTANCE_PG}:describe-db-parameter-groups --db-parameter-group-name"; do
+  pg_name=${pg%%:*}
+  pg_cmd=${pg#*:}
+  # shellcheck disable=SC2086
+  if pg_out=$(aws neptune ${pg_cmd} "${pg_name}" --output text 2>&1); then
+    echo "[verify] FAIL: step 5: Neptune parameter group ${pg_name} still exists after the final destroy" >&2
+    exit 1
+  fi
+  if ! grep -q 'NotFound' <<<"${pg_out}"; then
+    echo "[verify] FAIL: step 5: could not confirm Neptune parameter group ${pg_name} is gone (probe failed with something other than NotFound)" >&2
+    exit 1
+  fi
+done
+echo "[verify] step 5 ok: both Neptune parameter groups are gone"
 
 # Issue #5184: step 4 turned each guard off and then deleted the cluster with a
 # final snapshot. The snapshot needs the cluster `available`, and right after

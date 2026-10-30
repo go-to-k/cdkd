@@ -800,15 +800,6 @@ export class NeptuneProvider implements ResourceProvider {
       );
 
       this.logger.debug(`Successfully updated Neptune DBCluster ${logicalId}`);
-      this.warnKeptRemovals(
-        logicalId,
-        resourceType,
-        properties,
-        previousProperties,
-        CLUSTER_KEPT_ON_REMOVAL,
-        context
-      );
-
       const described = await this.describeDBCluster(physicalId);
 
       // A changed VpcSecurityGroupIds also moves every member instance to
@@ -842,6 +833,15 @@ export class NeptuneProvider implements ResourceProvider {
           properties['Tags']
         );
       }
+
+      this.warnKeptRemovals(
+        logicalId,
+        resourceType,
+        properties,
+        previousProperties,
+        CLUSTER_KEPT_ON_REMOVAL,
+        context
+      );
 
       return {
         physicalId,
@@ -1176,15 +1176,6 @@ export class NeptuneProvider implements ResourceProvider {
       });
 
       this.logger.debug(`Successfully updated Neptune DBInstance ${logicalId}`);
-      this.warnKeptRemovals(
-        logicalId,
-        resourceType,
-        properties,
-        previousProperties,
-        INSTANCE_KEPT_ON_REMOVAL,
-        context
-      );
-
       const described = await this.describeDBInstance(physicalId);
 
       if (described?.DBInstanceArn) {
@@ -1196,6 +1187,15 @@ export class NeptuneProvider implements ResourceProvider {
           properties['Tags']
         );
       }
+
+      this.warnKeptRemovals(
+        logicalId,
+        resourceType,
+        properties,
+        previousProperties,
+        INSTANCE_KEPT_ON_REMOVAL,
+        context
+      );
 
       return {
         physicalId,
@@ -1619,12 +1619,12 @@ export class NeptuneProvider implements ResourceProvider {
     );
     if (names.length === 0) return;
     const one = names.length === 1;
-    const what =
-      context?.replayingState === true
-        ? `${one ? 'is' : 'are'} absent from the configuration being restored`
-        : `${one ? 'was' : 'were'} removed from the template`;
+    const modify =
+      resourceType === 'AWS::Neptune::DBInstance' ? 'ModifyDBInstance' : 'ModifyDBCluster';
     this.logger.warn(
-      safeMsg`${logicalId} (${resourceType}): ${one ? 'property' : 'properties'} ${names.join(', ')} ${what}; cdkd leaves the current AWS ${one ? 'value' : 'values'} in place, as CloudFormation does.`
+      context?.replayingState === true
+        ? safeMsg`${logicalId} (${resourceType}): ${one ? 'property' : 'properties'} ${names.join(', ')} ${one ? 'is' : 'are'} absent from the state being restored; ${modify} keeps a setting it is not sent, so the rollback leaves any value the failed deploy applied in place.`
+        : safeMsg`${logicalId} (${resourceType}): ${one ? 'property' : 'properties'} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template; cdkd leaves the current AWS ${one ? 'value' : 'values'} in place, as CloudFormation does. Declare ${one ? 'it' : 'them'} to change ${one ? 'it' : 'them'}.`
     );
   }
 
