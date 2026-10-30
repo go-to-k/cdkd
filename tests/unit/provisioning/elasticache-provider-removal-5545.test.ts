@@ -4,9 +4,9 @@
 // CacheParameterGroupName, PreferredMaintenanceWindow, SnapshotWindow or
 // IpDiscovery sent a ModifyCacheCluster without the member, and each live
 // value stayed. cdkd sends nothing for them either and names them in one
-// warning. AZMode / PreferredAvailabilityZones removals are in place on a
-// cross-az cluster and join that line (go-to-k/cdkd#5558; on a single-az one
-// the replacement rules replace the cluster, so update() never sees them).
+// warning. AZMode / PreferredAvailabilityZones removals that reach update()
+// get a second line saying what CloudFormation was measured to do
+// (go-to-k/cdkd#5558; the replacing shape is planned by the replacement rules).
 // The type declares removalHandledInUpdate, so the
 // shared caller's "CloudFormation would reset it" line names no CacheCluster
 // property.
@@ -169,7 +169,7 @@ describe('ElastiCacheProvider CacheCluster removals CloudFormation keeps (issue 
     );
   });
 
-  it('names a cross-az AZMode / PreferredAvailabilityZones removal as kept in place (#5558)', async () => {
+  it('names an AZMode / PreferredAvailabilityZones removal in its own line (#5558)', async () => {
     await update(
       { NumCacheNodes: 2 },
       { NumCacheNodes: 2, AZMode: 'cross-az', PreferredAvailabilityZones: ['us-east-1a', 'us-east-1b'] }
@@ -180,15 +180,16 @@ describe('ElastiCacheProvider CacheCluster removals CloudFormation keeps (issue 
     expect(input['NewAvailabilityZones']).toBeUndefined();
     expect(warnings()).toEqual([
       expect.stringContaining(
-        'properties AZMode, PreferredAvailabilityZones were removed from the template and keep their current AWS value, as CloudFormation leaves them'
+        'properties AZMode, PreferredAvailabilityZones were removed from the template; cdkd sends nothing for a removed property, so the nodes stay in their zones.'
       ),
     ]);
-    // Declaring a value places only nodes a Modify adds: the remedy says so.
+    // What was measured, never "as CloudFormation leaves it": a shape kept in
+    // place may be an unmeasured one.
     expect(warnings()[0]).toContain(
-      'To change a value, declare it explicitly (AZMode, PreferredAvailabilityZones change only by replacing the cluster).'
+      'CloudFormation updates a cross-az cluster, or a single-az one that keeps its zone list, in place. It replaces a memcached single-az cluster left with no zone, and cdkd plans that replacement too (go-to-k/cdkd#5558).'
     );
+    expect(warnings()[0]).not.toContain('as CloudFormation leaves');
     expect(warnings()[0]).not.toContain('would reset');
-    expect(warnings()[0]).not.toContain('leaves the cluster unchanged');
   });
 
   it('names the #5004 / #5491 kept properties in the same line', async () => {
@@ -213,11 +214,14 @@ describe('ElastiCacheProvider CacheCluster removals CloudFormation keeps (issue 
   });
 
   it('says only what a rollback does', async () => {
-    await update({}, { EngineVersion: '7.1', AZMode: 'cross-az' }, { replayingState: true });
+    await update({}, { EngineVersion: '7.1', AZMode: 'single-az' }, { replayingState: true });
 
     expect(warnings()).toEqual([
       expect.stringContaining(
-        'properties EngineVersion, AZMode are absent from the state being restored; the rollback sends nothing for them, so the cluster keeps the value it holds now.'
+        'property EngineVersion is absent from the state being restored; the rollback sends nothing for it, so the cluster keeps the value it holds now.'
+      ),
+      expect.stringContaining(
+        'property AZMode is absent from the state being restored; the rollback leaves the cluster unchanged.'
       ),
     ]);
   });

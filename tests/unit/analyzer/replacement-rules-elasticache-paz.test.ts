@@ -202,8 +202,8 @@ describe('ReplacementRulesRegistry — AWS::ElastiCache::CacheCluster AZ removal
     expect(registry.requiresReplacement(TYPE, 'AZMode', undefined, undefined)).toBe(false);
     // The AZMode half reads the new zone list from the sibling bags too.
     const bags = (newProperties: Record<string, unknown>) => ({
-      oldProperties: { AZMode: 'single-az' },
-      newProperties,
+      oldProperties: { Engine: 'memcached', AZMode: 'single-az' },
+      newProperties: { Engine: 'memcached', ...newProperties },
     });
     expect(elastiCacheAzModeRemovedFromSingleAz('single-az', undefined, bags({}))).toBe(true);
     expect(
@@ -211,5 +211,23 @@ describe('ReplacementRulesRegistry — AWS::ElastiCache::CacheCluster AZ removal
     ).toBe(false);
     expect(elastiCacheAzModeRemovedFromSingleAz('single-az', undefined)).toBe(false);
     expect(elastiCacheAzModeRemovedFromSingleAz('cross-az', undefined, bags({}))).toBe(false);
+  });
+
+  it('keeps the unmeasured shapes in place: another engine, a singular PreferredAvailabilityZone', () => {
+    // Every measured row was memcached with no singular zone.
+    const redis = { ...base(1, { AZMode: 'single-az' }), Engine: 'redis' };
+    expect(replacing(redis, without(redis, 'AZMode'))).toEqual([]);
+    const redisZones = { ...single1, Engine: 'redis' };
+    expect(replacing(redisZones, without(redisZones, 'PreferredAvailabilityZones'))).toEqual([]);
+    const pinned = base(1, { AZMode: 'single-az', PreferredAvailabilityZone: 'us-east-1b' });
+    expect(replacing(pinned, without(pinned, 'AZMode'))).toEqual([]);
+    expect(replacing(pinned, without(pinned, 'AZMode', 'PreferredAvailabilityZone'))).toEqual([]);
+    // The list swapped for the singular key.
+    expect(
+      replacing(single1, {
+        ...without(single1, 'PreferredAvailabilityZones'),
+        PreferredAvailabilityZone: 'us-east-1a',
+      })
+    ).toEqual([]);
   });
 });

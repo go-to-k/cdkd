@@ -435,15 +435,18 @@ describe('ElastiCacheProvider CacheCluster in-place modify (issue #5438)', () =>
         }
       );
 
-      // No not-applied line. The removals are named only by the #5545 line:
-      // CloudFormation keeps the node's zone, and an AZMode removal update()
-      // sees is one CloudFormation keeps too (a replacing one is planned as a
-      // replacement by the diff, go-to-k/cdkd#5558).
+      // No not-applied line. The removals are named only by the removal
+      // lines: CloudFormation keeps the node's zone (#5545), and the AZMode
+      // removal gets the placement line (go-to-k/cdkd#5558; with a singular
+      // zone the replacement rules keep it in place, so update() runs).
       const lines = warn.mock.calls.map((c) => String(c[0]));
       expect(lines.filter((l) => l.includes('is not applied'))).toEqual([]);
       expect(lines).toEqual([
         expect.stringContaining(
-          'properties PreferredAvailabilityZone, AZMode were removed from the template and keep their current AWS value'
+          'property PreferredAvailabilityZone was removed from the template and keeps its current AWS value'
+        ),
+        expect.stringContaining(
+          'property AZMode was removed from the template; cdkd sends nothing for a removed property, so the nodes stay in their zones.'
         ),
       ]);
     });
