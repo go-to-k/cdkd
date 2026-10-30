@@ -480,7 +480,7 @@ assert_memcached_replaced() { # usage: assert_memcached_replaced <phase label> <
   local label="$1"
   shift
   local before after on_group rc
-  before=$(mc_field 'CacheClusterId')
+  before=$(mc_field 'CacheClusterId') || return 1
   if [ -z "${before}" ] || [ "${before}" = "None" ]; then
     echo "FAIL: cannot resolve the Memcached cluster before the ${label} (#5558)" >&2
     exit 1
@@ -496,12 +496,12 @@ assert_memcached_replaced() { # usage: assert_memcached_replaced <phase label> <
     exit 1
   fi
   on_group=$(aws elasticache describe-cache-clusters --region "${REGION}" \
-    --query "length(CacheClusters[?CacheSubnetGroupName=='${MC_SUBNET_GROUP}'])" --output text)
+    --query "length(CacheClusters[?CacheSubnetGroupName=='${MC_SUBNET_GROUP}'])" --output text) || return 1
   if [ "${on_group}" != "1" ]; then
     echo "FAIL: ${on_group} Memcached clusters on ${MC_SUBNET_GROUP} after the ${label}, expected 1 (old one not deleted?)" >&2
     exit 1
   fi
-  after=$(mc_field 'CacheClusterId')
+  after=$(mc_field 'CacheClusterId') || return 1
   if [ "${after}" = "${before}" ]; then
     echo "FAIL: Memcached cluster ${before} was NOT replaced by the ${label} (#5558: CloudFormation replaces a single-az cluster)" >&2
     exit 1
