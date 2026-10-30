@@ -50,7 +50,7 @@ cc-write-only-create-only	2026-10-11T09:33:22Z	PASS	170	verify.sh	PR #4720 (#470
 cdk-cross-account-lookup-role	2026-10-24T01:12:39Z	PASS	171	verify.sh	PR 5227 rc0 on shared bucket (own-bucket first try failed: lookup role reads default bucket), b1 prefix ok, orph clean
 ci-cd	2026-10-11T09:33:22Z	PASS	75	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 cloudfront-function-url	2026-10-23T23:55:45Z	PASS	225	verify.sh	rc ok, orph clean, stmt-id fixture fixed
-cloudtrail-trail	2026-10-30T21:05:24Z	PASS	316	verify.sh	rc ok, phase-2 no trail removal warning (#5541), orph clean
+cloudtrail-trail	2026-10-30T21:13:31Z	PASS	311	verify.sh	rc ok, phase-2 no trail removal warning (#5541), orph clean
 cloudwatch	2026-10-29T22:28:12Z	PASS	185	verify.sh	rc ok, orph clean; alarm EvaluationWindow/PromQL on SDK route
 cloudwatch-anomaly-detector	2026-10-26T05:42:10Z	PASS	61	verify.sh	rc ok, orph clean; TZ=Asia/Tokyo offset-less range read as UTC (5311)
 codebuild-project	2026-10-30T04:45:16Z	PASS	125	verify.sh	rc ok, orph clean
