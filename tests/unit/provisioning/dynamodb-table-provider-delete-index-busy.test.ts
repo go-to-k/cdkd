@@ -294,7 +294,8 @@ describe('DynamoDBTable delete retry on the index-busy refusal (issue #1931)', (
       // in the thrown (persisted) message; AWS's own sentence is the cause.
       message:
         `Failed to delete DynamoDB table ${LOGICAL_ID}: ResourceInUseException. ${VERBOSE_POINTER} ` +
-        'AWS reports that a global secondary index is still being created, updated or ' +
+        // go-to-k/cdkd#5574: this type can hold vector indexes, so it names both.
+        'AWS reports that a global secondary index or vector index is still being created, updated or ' +
         'deleted; re-running the destroy succeeds once the index is ACTIVE.',
       cause: {
         message: expect.stringContaining('Cannot delete table while indexes are being created'),

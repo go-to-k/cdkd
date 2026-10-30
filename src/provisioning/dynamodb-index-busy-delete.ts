@@ -48,7 +48,10 @@
  * implementation would otherwise re-derive: the predicate, the classifier, the
  * two budgets, the proceed note, the warning text and the retry loop itself.
  *
- * Issues: #1830 / #1521 (GlobalTable, PR #1930), #1931 (Table).
+ * The settle wait reads vector indexes as well as GSIs (go-to-k/cdkd#5574;
+ * see {@link hasTransitionalTableIndex}); the classifier is unchanged.
+ *
+ * Issues: #1830 / #1521 (GlobalTable, PR #1930), #1931 (Table), #5574.
  */
 
 import {
@@ -60,6 +63,7 @@ import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { startInterruptWatch } from './interrupt-watch.js';
 import { isThrottlingError } from '../deployment/retryable-errors.js';
 import type { Logger } from '../types/config.js';
+import { safeMsg } from '../utils/display-safe.js';
 
 /**
  * `logger` with every message routed through `maskSecrets` (go-to-k/cdkd#2319).
@@ -115,6 +119,48 @@ export function hasTransitionalIndex(
 }
 
 /**
+ * Whether ANY index on a `DescribeTable` snapshot is mid-transition: a GSI, or
+ * a vector index (go-to-k/cdkd#5574). AWS's refusal says "indexes", not "global
+ * secondary indexes", and `VectorIndexes[].IndexStatus` reports `CREATING` /
+ * `DELETING` the way a GSI does, so a settle wait that read only
+ * `GlobalSecondaryIndexes` returned at once on a table whose vector index was
+ * still building, and every retry then spent only its backoff.
+ *
+ * Whether AWS refuses `DeleteTable` during a vector-index transition at all is
+ * UNMEASURED; the SDK model's `DeleteTable` text names neither index kind
+ * (the GSI refusal itself is known only from a live run, #1830). Reading both
+ * lists is safe either way: the wait runs only AFTER a refusal the classifier
+ * matched, so when AWS does not refuse, nothing here changes.
+ */
+export function hasTransitionalTableIndex(
+  table:
+    | {
+        readonly GlobalSecondaryIndexes?:
+          | ReadonlyArray<{ readonly IndexStatus?: string | undefined }>
+          | undefined;
+        readonly VectorIndexes?:
+          | ReadonlyArray<{ readonly IndexStatus?: string | undefined }>
+          | undefined;
+      }
+    | undefined
+): boolean {
+  return (
+    hasTransitionalIndex(table?.GlobalSecondaryIndexes) ||
+    hasTransitionalIndex(table?.VectorIndexes)
+  );
+}
+
+/**
+ * How cdkd's own index-busy lines name the busy index. `AWS::DynamoDB::Table`
+ * can hold vector indexes (go-to-k/cdkd#2762), `AWS::DynamoDB::GlobalTable`
+ * cannot, so each provider passes its own noun and neither line names an index
+ * kind its type cannot have. The default is the `GlobalTable` one, which keeps
+ * that provider's text as it was.
+ */
+export const GSI_INDEX_NOUN = 'a global secondary index';
+export const TABLE_INDEX_NOUN = 'a global secondary index or vector index';
+
+/**
  * AWS's refusal when `DeleteTable` lands while one of the table's GSIs is
  * mid-transition (issue #1830). Observed verbatim on a real destroy:
  *
@@ -142,7 +188,8 @@ export function isIndexBusyDeleteError(message: string): boolean {
 
 /**
  * What a DynamoDB delete wrap that withheld AWS's text (go-to-k/cdkd#2319)
- * restates of it: that a global secondary index was still busy. Once the
+ * restates of it: that an index was still busy (`indexNoun` names which kinds
+ * the caller's type can have, {@link GSI_INDEX_NOUN} by default). Once the
  * index-busy retry gives up, AWS's refusal is the one thing that tells the
  * operator what to do, and a wrap reduced to `ResourceInUseException` (a class
  * shared with terminal conflicts) would drop it. Worded in cdkd's own words on
@@ -151,9 +198,12 @@ export function isIndexBusyDeleteError(message: string): boolean {
  * Returns a leading space plus the sentence, or `''`. Both DynamoDB
  * providers' wraps read it, beside the classifier it reuses.
  */
-export function relayedIndexBusyDelete(withheldText: string): string {
+export function relayedIndexBusyDelete(
+  withheldText: string,
+  indexNoun: string = GSI_INDEX_NOUN
+): string {
   return isIndexBusyDeleteError(withheldText)
-    ? ' AWS reports that a global secondary index is still being created, updated or ' +
+    ? ` AWS reports that ${indexNoun} is still being created, updated or ` +
         'deleted; re-running the destroy succeeds once the index is ACTIVE.'
     : '';
 }
@@ -327,6 +377,27 @@ export const GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES = 8;
 export const DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS = 60;
 
 /**
+ * The re-arm's bound while the busy index is a VECTOR index
+ * (go-to-k/cdkd#5574), for the `AWS::DynamoDB::Table` callers that pass
+ * `shortCapUnlessVectorBusy`.
+ *
+ * MEASURED (`dynamodb-gsi-update` Phase V3b, us-east-1, 2026-10-30): AWS refused
+ * `DeleteTable` with the same `Cannot delete table while indexes are being
+ * created, updated, or deleted.` sentence while a 3-dimension vector index on
+ * a near-empty table was `CREATING`, and the build took ~8.5 min (first refusal
+ * 14:45:56, accepted 14:54:19). At the 60-poll re-arm that was five timed-out
+ * waits, each followed by a blind `DeleteTable`, with the retry budget rather
+ * than the wait carrying it.
+ *
+ * 900 polls (~18 min at ~1.2s a poll) covers that build about twice over in ONE
+ * wait. It is a cap, not the bound: the delete path's shared allowance
+ * (`providers/dynamodb-delete-budget.ts`, 26 min) grants only what still fits,
+ * re-checked every poll, so the per-resource deadline's margin holds whatever
+ * this says.
+ */
+export const VECTOR_INDEX_BUSY_REARM_MAX_ATTEMPTS = 900;
+
+/**
  * Sleep between two `DescribeTable` polls of {@link waitForIndexesSettled}.
  *
  * Named rather than inlined because it is the unit every poll budget on the
@@ -367,7 +438,7 @@ export const INDEX_SETTLE_POLL_INTERVAL_MS = 1_000;
 export const DELETE_INDEX_WAIT_PROCEED_NOTE = `the DeleteTable goes ahead anyway and AWS's own refusal stays the backstop.`;
 
 /**
- * Poll `DescribeTable` until no GSI is transitioning, bounded by
+ * Poll `DescribeTable` until no GSI or vector index is transitioning, bounded by
  * `maxAttempts` (~1s apart).
  *
  * **Best-effort by design**: on timeout it warns and returns rather than
@@ -409,11 +480,28 @@ export async function waitForIndexesSettled(opts: {
   budgetWait?: {
     nextPoll(): boolean;
     readonly pollsRun: number;
-    note(): string;
+    note(shownCap?: number): string;
   };
+  /**
+   * go-to-k/cdkd#5574: when set, `maxAttempts` / `budgetWait` are the LONG
+   * bound ({@link VECTOR_INDEX_BUSY_REARM_MAX_ATTEMPTS}), which only a building
+   * VECTOR index may use: past this many polls the wait stops unless the last
+   * `DescribeTable` showed a vector index transitioning and no GSI. A GSI keeps
+   * the short re-arm, and with it the fresh `DeleteTable` probe per retry that
+   * {@link TABLE_DELETE_INDEX_BUSY_MAX_RETRIES} argues for.
+   */
+  shortCapUnlessVectorBusy?: number;
 }): Promise<void> {
   const { tableName, logicalId, logger, describeTable, maxAttempts, proceedNote } = opts;
   const budgetWait = opts.budgetWait;
+  const shortCap = opts.shortCapUnlessVectorBusy;
+  let vectorOnlyBusy = false;
+  let stoppedAtShortCap = false;
+  let announced = false;
+  // The cap THIS wait is actually under, for the lines that quote one: the
+  // short cap unless a vector index alone is building (go-to-k/cdkd#5574).
+  const effectiveCap = (): number =>
+    shortCap !== undefined && !vectorOnlyBusy ? Math.min(shortCap, maxAttempts) : maxAttempts;
   // Interruptible (issue #1952). This one wait serves BOTH delete-path callers
   // — `GlobalTable`'s #1521 pre-delete gate and the #1830 / #1931 retry re-arm
   // on both DynamoDB types — so threading it here is what makes them all
@@ -425,7 +513,13 @@ export async function waitForIndexesSettled(opts: {
   const watch = startInterruptWatch(`index settle wait on ${tableName}`);
   let attempt = 0;
   try {
-    while (budgetWait ? budgetWait.nextPoll() : attempt < maxAttempts) {
+    for (;;) {
+      // Checked BEFORE `nextPoll()`, which counts the poll it grants.
+      if (shortCap !== undefined && attempt >= shortCap && !vectorOnlyBusy) {
+        stoppedAtShortCap = true;
+        break;
+      }
+      if (!(budgetWait ? budgetWait.nextPoll() : attempt < maxAttempts)) break;
       attempt += 1;
       if (watch.isInterrupted()) {
         logger.debug(
@@ -436,13 +530,37 @@ export async function waitForIndexesSettled(opts: {
       }
       try {
         const response = await describeTable();
-        const indexes = response.Table?.GlobalSecondaryIndexes ?? [];
         // Block on the TRANSITIONAL statuses, not on "!== ACTIVE": an absent
         // or unrecognized `IndexStatus` must not park the caller for the full
         // cap on a table that is fine. AWS always sets the field, so the two
         // readings only differ for a partial response — where proceeding and
-        // letting AWS answer is the better failure mode.
-        if (!hasTransitionalIndex(indexes)) return;
+        // letting AWS answer is the better failure mode. GSIs AND vector
+        // indexes (go-to-k/cdkd#5574): AWS reports none of the latter on a
+        // table that has none, so a `GlobalTable` caller reads the same.
+        if (!hasTransitionalTableIndex(response.Table)) {
+          // How long the indexes took, once they did: what the integ arm reads
+          // to prove a vector build really outlasted the short cap.
+          if (attempt > 1) {
+            logger.debug(
+              safeMsg`Indexes on ${tableName} (${logicalId}) settled after ${attempt} DescribeTable polls`
+            );
+          }
+          return;
+        }
+        const gsiBusy = hasTransitionalIndex(response.Table?.GlobalSecondaryIndexes);
+        const vectorBusy = hasTransitionalIndex(response.Table?.VectorIndexes);
+        vectorOnlyBusy = vectorBusy && !gsiBusy;
+        if (!announced) {
+          announced = true;
+          const busyKinds = gsiBusy
+            ? vectorBusy
+              ? 'a global secondary index and a vector index'
+              : 'a global secondary index'
+            : 'a vector index';
+          logger.debug(
+            safeMsg`Index settle wait on ${tableName} (${logicalId}): ${busyKinds} still transitioning (poll ${attempt})`
+          );
+        }
       } catch (err) {
         const message = describeAwsFailure(err).detail;
         // A THROTTLED describe says nothing about the indexes, so reading it
@@ -454,7 +572,7 @@ export async function waitForIndexesSettled(opts: {
         if (isThrottlingError(err)) {
           logger.debug(
             `DescribeTable throttled while waiting for indexes on ${tableName} ` +
-              `(attempt ${attempt}/${maxAttempts}); still waiting: ${message}`
+              `(attempt ${attempt}/${effectiveCap()}); still waiting: ${message}`
           );
           await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
           continue;
@@ -508,11 +626,11 @@ export async function waitForIndexesSettled(opts: {
   const pollSeconds = INDEX_SETTLE_POLL_INTERVAL_MS / 1000;
   // Polls actually RUN, not granted: with a budget the loop can also stop
   // mid-way. `note()` is empty unless the allowance is what ended it.
-  const pollsRun = budgetWait ? budgetWait.pollsRun : maxAttempts;
+  const pollsRun = budgetWait ? budgetWait.pollsRun : attempt;
   logger.warn(
     `Indexes on ${tableName} (${logicalId}) did not all reach ACTIVE within ` +
       `${pollsRun} DescribeTable polls (~${pollSeconds}s apart, so a little over ` +
-      `${pollsRun * pollSeconds}s of wall clock).${budgetWait?.note() ?? ''} ${proceedNote}`
+      `${pollsRun * pollSeconds}s of wall clock).${stoppedAtShortCap ? '' : (budgetWait?.note(shortCap !== undefined && !vectorOnlyBusy ? shortCap : undefined) ?? '')} ${proceedNote}`
   );
 }
 
@@ -581,6 +699,8 @@ export function indexBusyRetryWarning(opts: {
   attemptNumber: number;
   /** The CALLER's budget — the two DynamoDB types do not share one. */
   maxRetries: number;
+  /** Which index kinds the caller's type can have; {@link GSI_INDEX_NOUN} by default. */
+  indexNoun?: string;
 }): string {
   // Clamped: exported, so nothing stops a caller passing an attempt past the
   // budget, and the unclamped form printed "up to 0 more attempts" at 15 and
@@ -605,7 +725,7 @@ export function indexBusyRetryWarning(opts: {
   const pollSeconds = INDEX_SETTLE_POLL_INTERVAL_MS / 1000;
   return (
     `DynamoDB ${opts.typeLabel} ${opts.logicalId}: AWS refused DeleteTable on ${opts.physicalId} ` +
-    `because a global secondary index is still being created, updated or ` +
+    `because ${opts.indexNoun ?? GSI_INDEX_NOUN} is still being created, updated or ` +
     `deleted — application auto-scaling can start an index capacity change at ` +
     `any moment, including during this destroy. Waiting for the index to settle ` +
     `and retrying (this attempt plus up to ${remainingAttempts} more attempts; ` +
@@ -683,6 +803,14 @@ export async function deleteTableWithIndexBusyRetry(opts: {
    * running behind the failed run.
    */
   shouldKeepRetrying?: () => boolean;
+  /** Passed to {@link indexBusyRetryWarning}; {@link GSI_INDEX_NOUN} by default. */
+  indexNoun?: string;
+  /**
+   * The first-retry line, when the caller is NOT a destroy: the default line
+   * tells the operator the destroy fails and is re-run, which is false for
+   * `create()`'s rollback of a partially-created table (go-to-k/cdkd#5574).
+   */
+  retryWarning?: () => string;
 }): Promise<void> {
   let deleteAttempts = 0;
   // Interruptible (issue #1952). This loop can keep re-issuing `DeleteTable`
@@ -702,13 +830,15 @@ export async function deleteTableWithIndexBusyRetry(opts: {
             // ONE line, on the FIRST retry only: this announces the CONDITION,
             // not each attempt (which is what `withRetry`'s debug line does).
             opts.logger.warn(
-              indexBusyRetryWarning({
-                typeLabel: opts.typeLabel,
-                logicalId: opts.logicalId,
-                physicalId: opts.physicalId,
-                attemptNumber: deleteAttempts,
-                maxRetries: opts.maxRetries,
-              })
+              opts.retryWarning?.() ??
+                indexBusyRetryWarning({
+                  typeLabel: opts.typeLabel,
+                  logicalId: opts.logicalId,
+                  physicalId: opts.physicalId,
+                  attemptNumber: deleteAttempts,
+                  maxRetries: opts.maxRetries,
+                  ...(opts.indexNoun !== undefined && { indexNoun: opts.indexNoun }),
+                })
             );
           }
           await opts.reArm();

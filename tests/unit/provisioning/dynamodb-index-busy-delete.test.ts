@@ -93,6 +93,7 @@ import {
   GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
   INDEX_SETTLE_POLL_INTERVAL_MS,
   TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
+  VECTOR_INDEX_BUSY_REARM_MAX_ATTEMPTS,
   deleteTableWithIndexBusyRetry,
   hasTransitionalIndex,
   indexBusyRetryWarning,
@@ -920,11 +921,18 @@ describe('both DynamoDB providers route DeleteTable through the shared retry', (
     // removed `reArm` must FAIL here rather than merely go unobserved.
     expect(settleSpy).toHaveBeenCalledTimes(1);
     const reArmCall = settleSpy.mock.calls.at(-1)?.[0];
-    expect(reArmCall).toMatchObject({ maxAttempts: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS });
+    // go-to-k/cdkd#5574: the GRANT is the long vector-index cap, but a GSI
+    // still stops at the short re-arm (`shortCapUnlessVectorBusy`), and the
+    // shared delete allowance (`budgetWait`) re-checks every poll — which is
+    // what keeps 14 x 900 polls from being reachable inside the deadline.
+    expect(reArmCall).toMatchObject({
+      maxAttempts: VECTOR_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+      shortCapUnlessVectorBusy: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+    });
+    expect(reArmCall?.budgetWait?.cap).toBe(VECTOR_INDEX_BUSY_REARM_MAX_ATTEMPTS);
+    // The wall-clock half of the fence is in dynamodb-delete-budget.test.ts
+    // (G2): a mostly-spent allowance clamps this grant far below the cap.
     expect(reArmCall?.proceedNote).toBe(DELETE_INDEX_WAIT_PROCEED_NOTE);
-    // The specific regression: reaching for the 15-minute cap that belongs to
-    // the sibling's #1521 gate. At this type's budget that is ~3.5h of polling.
-    expect(reArmCall?.maxAttempts).not.toBe(900);
   });
 
   it('the GlobalTable DELETE path re-arms with the shared bound and NOT the auto-scaling note', async () => {

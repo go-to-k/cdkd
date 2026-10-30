@@ -106,6 +106,7 @@ import {
   GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
   INDEX_SETTLE_POLL_INTERVAL_MS,
   TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
+  VECTOR_INDEX_BUSY_REARM_MAX_ATTEMPTS,
 } from '../../../src/provisioning/dynamodb-index-busy-delete.js';
 // The REAL deadline the budget has to fit inside. IMPORTED, not restated, so
 // lowering it reds this suite — a fence has to watch the field it claims.
@@ -550,9 +551,10 @@ describe('the DELETE path spends ONE shared allowance (issue #1955)', () => {
       new DynamoDBTableProvider().delete('Orders', 'shared-table', 'AWS::DynamoDB::Table', {})
     ).rejects.toMatchObject({
       // go-to-k/cdkd#2319: the thrown (persisted) message names the class and
-      // restates the condition; AWS's own sentence stays on the `cause`.
+      // restates the condition; AWS's own sentence stays on the `cause`. The
+      // `Table` restatement names vector indexes too (go-to-k/cdkd#5574).
       message: expect.stringMatching(
-        /ResourceInUseException\. .*AWS reports that a global secondary index is still being/
+        /ResourceInUseException\. .*AWS reports that a global secondary index or vector index is still being/
       ),
       cause: { message: expect.stringMatching(/Cannot delete table while indexes are being/) },
     });
@@ -1227,7 +1229,10 @@ describe('every wait on the DELETE path draws from the allowance (issue #1955)',
     // count, so the loop re-checks the allowance per poll and owns its own
     // give-up wording rather than reading as an AWS timeout.
     expect(reArm?.budgetWait).toBeDefined();
-    expect(reArm?.budgetWait?.cap).toBe(DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS);
+    // go-to-k/cdkd#5574: GRANTED the vector-index cap (a GSI still stops at
+    // the short re-arm inside the wait); the clamp above is what bounds it.
+    expect(reArm?.budgetWait?.cap).toBe(VECTOR_INDEX_BUSY_REARM_MAX_ATTEMPTS);
+    expect(reArm?.shortCapUnlessVectorBusy).toBe(DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS);
     expect(reArm?.budgetWait?.note()).toContain('delete allowance');
   });
 

@@ -2715,6 +2715,7 @@
     "--value",
     "--vector-bucket-arn",
     "--vector-bucket-name",
+    "--vector-index-updates",
     "--version",
     "--version-id",
     "--version-number",
