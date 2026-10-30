@@ -60,6 +60,17 @@ export class CodeBuildProjectStack extends cdk.Stack {
     // (CreateProject refuses "conflicting source locations").
     const primaryRepo = codecommit.Repository.fromRepositoryName(this, 'PrimaryRepo', 'cdkd-integ-none');
     const secondaryRepo = codecommit.Repository.fromRepositoryName(this, 'SecondaryRepo', 'cdkd-integ-none-2');
+    // `BuildBatchConfig.Restrictions.FleetsAllowed` target: CreateProject
+    // refuses a fleet ARN that does not exist ("Fleet(s) provided in
+    // BatchRestriction does not exist"), so the fixture owns a real one. Kept in
+    // BOTH phases, like the scaffolding above, so Phase 2 drops only the
+    // project's reference to it. Smallest reserved capacity; no build runs.
+    const fleet = new codebuild.CfnFleet(this, 'BatchFleet', {
+      name: `${cdk.Stack.of(this).stackName}-fleet`,
+      baseCapacity: 1,
+      computeType: 'BUILD_GENERAL1_SMALL',
+      environmentType: 'LINUX_CONTAINER',
+    });
 
     const project = new codebuild.Project(this, 'BatchProject', {
       projectName: `${cdk.Stack.of(this).stackName}-batch`,
@@ -175,6 +186,8 @@ export class CodeBuildProjectStack extends cdk.Stack {
         timeoutInMins: 120,
         combineArtifacts: true,
       };
+      // This aws-cdk-lib's `BatchRestrictionsProperty` predates `FleetsAllowed`.
+      cfnProject.addPropertyOverride('BuildBatchConfig.Restrictions.FleetsAllowed', [fleet.attrArn]);
     } else {
       // The L2 emits `Cache: { Type: NO_CACHE }` UNCONDITIONALLY, so simply
       // omitting the `cache` prop renders a template that still DECLARES the
