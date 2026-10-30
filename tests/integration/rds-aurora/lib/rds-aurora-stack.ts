@@ -111,6 +111,15 @@ export class RdsAuroraStack extends cdk.Stack {
       requireTLS: false,
       ...(isUpdate ? { maxConnectionsPercent: 90 } : { debugLogging: true }),
     });
+    // go-to-k/cdkd#2762: DefaultAuthScheme / EndpointNetworkType /
+    // TargetConnectionNetworkType must keep the proxy on the SDK route. NONE and
+    // IPV4 are the values an IPv4-only VPC with secret-based Auth takes; verify.sh
+    // asserts the route, the record and the live values. Declared in every phase,
+    // so no phase changes a create-only key.
+    const cfnProxy = proxy.node.defaultChild as rds.CfnDBProxy;
+    cfnProxy.addPropertyOverride('DefaultAuthScheme', 'NONE');
+    cfnProxy.addPropertyOverride('EndpointNetworkType', 'IPV4');
+    cfnProxy.addPropertyOverride('TargetConnectionNetworkType', 'IPV4');
 
     // Issue #4087: Tags on the proxy's DBProxyTargetGroup, keyed by
     // CDKD_TEST_TG_TAGS (v1 / v2; unset = no Tags). aws-cdk-lib does not expose

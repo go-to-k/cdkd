@@ -252,11 +252,6 @@
       "UseDefaultProcessorFeatures",
       "UseLatestRestorableTime"
     ],
-    "AWS::RDS::DBProxy": [
-      "DefaultAuthScheme",
-      "EndpointNetworkType",
-      "TargetConnectionNetworkType"
-    ],
     "AWS::S3::Bucket": [
       "AbacStatus",
       "BucketNamePrefix",
