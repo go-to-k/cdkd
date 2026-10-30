@@ -108,7 +108,7 @@ dynamodb-fix-forward-orphan	2026-10-19T10:52:49Z	PASS	170	verify.sh	rc ok, orph 
 dynamodb-globaltable	2026-10-20T03:28:23Z	PASS	1478	verify.sh	deploy+destroy clean, 0 orphans
 dynamodb-globaltable-implied-stream	2026-10-03T04:18:36Z	PASS	285	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-globaltable-replica-settings	2026-10-29T20:43:22Z	PASS	2917	verify.sh	PR #5535 dd4c69bb9; rc 0, destroy 0 errors, orph clean
-dynamodb-gsi-update	2026-10-29T20:43:22Z	PASS	2862	verify.sh	PR #5535 dd4c69bb9; rc 0, destroy 0 errors, orph clean; PASS at 53787485b + copy-revert probe RED at Phase 1d (53787485b)
+dynamodb-gsi-update	2026-10-30T11:15:38Z	PASS	3077	verify.sh	rc 0, orph clean; PR #5569 3dd67a648 VectorIndexes sdk route V1-V4; probe red at Phase V1 provisionedBy assertion (cc-api vs sdk)
 dynamodb-ondemand	2026-10-27T17:47:12Z	PASS	560	verify.sh	rc ok, orph clean, KinesisRemovalTable arm (#5423) green, pre-fix probe red at Phase 1.5
 dynamodb-sse	2026-10-29T16:45:21Z	PASS	53	verify.sh	rc ok, orph clean; #5514 table gone straight after destroy, probe without wait RED
 dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean (#4283 PR #4449)
